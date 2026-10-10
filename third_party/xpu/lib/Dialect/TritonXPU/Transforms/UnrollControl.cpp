@@ -2,6 +2,7 @@
 #include "triton/Analysis/TileAnalysis.h"
 #include "triton/Analysis/TileDecision.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
@@ -33,6 +34,20 @@ COMOP(arith::MinNumFOp, triton::xpu::VvminNumFOp);
 COMOP(arith::OrIOp, triton::xpu::VvorIOp);
 COMOP(arith::XOrIOp, triton::xpu::VvxorIOp);
 COMOP(arith::AndIOp, triton::xpu::VvandIOp);
+// TLE-ext combine ops (see COMBINE_OP_TLE_EXT in Analysis/Utility.h): the
+// reduces that carry them are admitted by reduceCombineIsVectorizable, so
+// these fire only where that predicate already let the op into a combine.
+COMOP(arith::AddIOp, triton::xpu::VvaddIOp);
+COMOP(arith::SubIOp, triton::xpu::VvsubIOp);
+COMOP(arith::MulIOp, triton::xpu::VvmulIOp);
+COMOP(arith::MaxSIOp, triton::xpu::VvmaxSIOp);
+COMOP(arith::MinSIOp, triton::xpu::VvminSIOp);
+COMOP(arith::MaxUIOp, triton::xpu::VvmaxUIOp);
+COMOP(arith::MinUIOp, triton::xpu::VvminUIOp);
+COMOP(arith::DivSIOp, triton::xpu::VvdivSIOp);
+COMOP(arith::DivUIOp, triton::xpu::VvdivUIOp);
+COMOP(arith::MaximumFOp, triton::xpu::VvmaxFOp);
+COMOP(arith::MinimumFOp, triton::xpu::VvminFOp);
 
 struct TritonXPUUnrollControl
     : public impl::TritonXPUUnrollControlBase<TritonXPUUnrollControl> {
@@ -113,7 +128,10 @@ public:
   void processOpVecTy(ModuleOp &m) {
     m.walk([&](Operation *op) {
       TypeSwitch<Operation *>(op)
-          .Case<COMBINE_BINARY_OP, arith::SubFOp, arith::DivFOp>(
+          .Case<COMBINE_BINARY_OP, arith::SubFOp, arith::DivFOp, arith::AddIOp,
+                arith::SubIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,
+                arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp,
+                arith::MinimumFOp, arith::DivSIOp, arith::DivUIOp>(
               [&](auto combineBinaryOp) {
                 if (auto tensorTy = dyn_cast<RankedTensorType>(
                         combineBinaryOp.getResult().getType())) {
@@ -148,6 +166,23 @@ public:
                 ;
                 cmpFOp.replaceAllUsesWith(vecOp.getResult());
                 cmpFOp.erase();
+              }
+            }
+          })
+          // Integer twin of the CmpFOp case. A select(cmpi) combine reaches
+          // this pass as arith.cmpi on tensor-of-vector operands, which the
+          // arith verifier rejects outright, so it must be rewritten to the
+          // TTX form before the pass manager gets to verify anything.
+          .Case<arith::CmpIOp>([&](auto cmpIOp) {
+            if (auto tensorTy =
+                    dyn_cast<RankedTensorType>(cmpIOp.getResult().getType())) {
+              if (isa<VectorType>(getElementTypeOrSelf(tensorTy))) {
+                OpBuilder builder(cmpIOp);
+                auto vecOp = builder.create<triton::xpu::VCmpIOp>(
+                    cmpIOp.getLoc(), cmpIOp.getResult().getType(),
+                    cmpIOp.getPredicate(), cmpIOp.getLhs(), cmpIOp.getRhs());
+                cmpIOp.replaceAllUsesWith(vecOp.getResult());
+                cmpIOp.erase();
               }
             }
           });
@@ -188,11 +223,19 @@ public:
                      SetVector<Operation *> &visitedOps,
                      SetVector<Operation *> &excludeChainOps, Operation *rootOp,
                      bool isTop2Bottom = true, bool needBefore = false) {
+    // ttg.local_alloc is on the stop list for the same reason as a boundary
+    // buffer (see createLoopBody): it defines storage rather than computing a
+    // value, so a tiled segment has to keep reading the one buffer that already
+    // exists instead of getting a private clone per iteration. On TLE cloning
+    // it is additionally unsound -- the buffer is filled by a tle_copy_g2l that
+    // is not part of the segment, so a cloned alloc is never written and the
+    // segment reads uninitialised LM.
     if (!op || visitedOps.count(op) ||
         isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp,
             triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp, scf::YieldOp,
             triton::xpu::ReduceOp, triton::xpu::ReduceReturnOp,
-            triton::xpu::ScanOp, triton::xpu::ScanReturnOp>(op)) {
+            triton::xpu::ScanOp, triton::xpu::ScanReturnOp,
+            triton::gpu::LocalAllocOp>(op)) {
       return;
     }
 
@@ -320,11 +363,19 @@ public:
                                SetVector<Operation *> &visitedOps,
                                SetVector<Operation *> &excludeChainOps,
                                Operation *rootOp) {
+    // `ttg.local_alloc` is on the stop list here for the same reason as in
+    // getUnrollTree: it defines storage rather than computing a value. Cloning
+    // it into the tile loop gives every iteration a private, uninitialised
+    // buffer -- measured on the layernorm ams kernel, whose post-reduce segment
+    // then read a fresh alloc instead of the one `tle_copy_g2l` filled and
+    // wrote one that `tle_copy_l2g` never reads (assert_close failed while the
+    // stack did drop 9536 -> 4928 B).
     if (!op || visitedOps.count(op) ||
         isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp,
             triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp, scf::YieldOp,
             triton::xpu::ReduceOp, triton::xpu::ReduceReturnOp,
-            triton::xpu::ScanOp, triton::xpu::ScanReturnOp>(op)) {
+            triton::xpu::ScanOp, triton::xpu::ScanReturnOp,
+            triton::gpu::LocalAllocOp>(op)) {
       return;
     }
 
@@ -594,6 +645,9 @@ public:
   // in different units, which is what makes the vector row a legality bound
   // rather than just the widest thing in the tree.
   bool hasVecScalarBoundary(const SetVector<Operation *> &unrollOpTree) {
+    for (auto *op : unrollOpTree)
+      if (isa<triton::xpu::UnpackOp, triton::xpu::PackOp>(op))
+        return true;
     return false;
   }
 
@@ -649,7 +703,10 @@ public:
       return false;
     if (op->use_empty())
       return false;
-    return false;
+    for (auto *user : op->getUsers())
+      if (!isa<triton::xpu::PackOp, triton::xpu::UnpackOp>(user))
+        return false;
+    return true;
   }
 
   // Is there anything for the model to pick besides "do not tile"? Used at the
@@ -1010,9 +1067,24 @@ public:
     run.ctx.peakVRegs = std::max(run.treeP.vecPeak, run.blockP.vecPeak);
     run.ctx.maxVecWidth =
         std::max(run.treeP.maxVecWidth, run.blockP.maxVecWidth);
+    // The tree's own row, kept apart from the block-wide one: the width
+    // conversion needs to know how wide *this* tree is, and the store value it
+    // reads that off is the narrow end of a mixed-width segment.
+    run.ctx.treeVecWidth = run.treeP.maxVecWidth;
     run.ctx.scalarPeak = std::max(run.treeP.scalarPeak, run.blockP.scalarPeak);
-    run.ctx.vecRow =
-        hasVecScalarBoundary(unrollOpTree) ? run.treeP.minVecWidth : 0;
+    // Every tree, not just the ones holding a vector<->scalar boundary. The
+    // bound is about the *clamp* in setTensorType/createEncoding
+    // (`max(1, sizePerCore/iterNum)`), and that fires on any tree whose vector
+    // rows differ in width -- which a boundary is only one way to get. A
+    // vectorized TLE segment is another and has no pack/unpack in it: an f16
+    // load extended to f32 is an 8-slot row feeding a 16-slot one, and at
+    // iterNum=16 both saturate to one slot, so `vextf` claims one slot in and
+    // one slot out where the lowering emits two. Measured on test_kernel_72 at
+    // vrf-budget=6 as `size mismatch when packing elements for LLVM struct
+    // expected 1 but got 2` out of ConvertTritonXPUToLLVM. On a uniform-width
+    // tree `minVecWidth` is the store row, so `widthPerCore % iterNum == 0`
+    // already implies this and nothing moves.
+    run.ctx.vecRow = run.treeP.minVecWidth;
     run.ctx.vrfBudget = this->vrfBudget;
     run.ctx.loopResults = loopResults;
     run.ctx.boundaryCrossings = countBoundaryCrossings(unrollOpTree);
@@ -1509,25 +1581,72 @@ public:
   // Earliest store of the tree plus the geometry it implies. Returns false when
   // the stores of one tree live in different blocks, which the rewrite cannot
   // handle yet.
+  // The value a tile-site root writes. Two store forms reach this pass -- the
+  // normcopy `xpu::StoreOp` and TLE's `tle_vstore` -- and all the tiler asks of
+  // a root is the stored value's type plus the op's position, so one accessor
+  // is enough to make a TLE compute segment a site. The rewrite side already
+  // knows how to slice one: `createLoopBody` appends `$loopIndex` to
+  // `tle_vload`/`tle_vstore`/`tle_local_ptr`, which is how the reduce segments
+  // of the ams TLE kernels are tiled today.
+  static Value storedValueOf(Operation *op) {
+    if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(op))
+      return storeOp.getValue();
+    if (auto vstoreOp = dyn_cast<triton::xpu::TLEVStoreOp>(op))
+      return vstoreOp.getValue();
+    return Value();
+  }
+
   bool getTreeUnrollInfo(const SetVector<Operation *> &unrollOpTree,
-                         triton::xpu::StoreOp &insertPt,
-                         SmallVector<triton::xpu::StoreOp> &allStoreOps,
-                         int64_t &numCol, int64_t &numUnroll) {
+                         Operation *&insertPt,
+                         SmallVector<Operation *> &allStoreOps, int64_t &numCol,
+                         int64_t &numUnroll) {
     for (auto op : unrollOpTree) {
-      auto storeOp = dyn_cast<triton::xpu::StoreOp>(op);
-      if (!storeOp)
+      Value stored = storedValueOf(op);
+      if (!stored)
         continue;
-      auto type = storeOp.getValue().getType();
+      auto type = stored.getType();
       numUnroll = numUnroll == 1 ? getNumUnroll(type)
                                  : std::min(numUnroll, getNumCol(type));
       numCol =
           numCol == 1 ? getNumCol(type) : std::min(numCol, getNumCol(type));
-      allStoreOps.emplace_back(storeOp);
+      allStoreOps.emplace_back(op);
       //[TODO] To deal with the case that storeOps are in more than one block
-      if (insertPt && insertPt->getBlock() != storeOp->getBlock())
+      if (insertPt && insertPt->getBlock() != op->getBlock())
         return false;
-      if (!insertPt || storeOp->isBeforeInBlock(insertPt))
-        insertPt = storeOp;
+      if (!insertPt || op->isBeforeInBlock(insertPt))
+        insertPt = op;
+    }
+
+    // The tree gets wrapped in a loop built at insertPt, i.e. at its earliest
+    // store. An op that currently sits after insertPt may read a value produced
+    // in between, and once it moves inside the loop that value no longer
+    // dominates it -- MLIR rejects the module with "operand #N does not
+    // dominate this use". One DAG walk reaches both halves of a 2x-unrolled
+    // body when they share a subexpression (the same [W] weight read), and then
+    // the earliest store belongs to the first half while the second half still
+    // needs its own reduce. Refuse such a tree; the caller already treats a
+    // false return as "leave this tree unsliced". A tree that compiles today
+    // cannot trip this, because the condition is exactly the dominance
+    // violation the verifier would have rejected.
+    if (insertPt) {
+      for (auto op : unrollOpTree) {
+        for (Value operand : op->getOperands()) {
+          Operation *def = operand.getDefiningOp();
+          if (!def || def->getBlock() != insertPt->getBlock() ||
+              unrollOpTree.contains(def))
+            continue;
+          // `moveAllocaAndGM2LM` hoists the alloca behind a store and the
+          // gm2lm behind a load above the loop, so those two cannot be the
+          // dominance violation this guard is looking for. Counting them
+          // refused the layernorm ams post-reduce init tree, whose second
+          // alloca is written before it is declared.
+          if (isa<triton::xpu::AllocaOp, triton::xpu::GM2LMOp,
+                  triton::xpu::GM2LMMaskOp>(def))
+            continue;
+          if (insertPt->isBeforeInBlock(def))
+            return false;
+        }
+      }
     }
     return true;
   }
@@ -1539,8 +1658,8 @@ public:
                const char *site) {
     SmallVector<int64_t> plan;
     for (auto &unrollOpTree : unrollOpTrees) {
-      triton::xpu::StoreOp insertPt;
-      SmallVector<triton::xpu::StoreOp> allStoreOps;
+      Operation *insertPt = nullptr;
+      SmallVector<Operation *> allStoreOps;
       int64_t numCol = 1, numUnroll = 1;
       if (!getTreeUnrollInfo(unrollOpTree, insertPt, allStoreOps, numCol,
                              numUnroll) ||
@@ -1552,7 +1671,7 @@ public:
       // with an empty range at :1263), so the loop-overhead criterion sees
       // only the index arithmetic.
       plan.emplace_back(decideIterNum(site, insertPt, unrollOpTree,
-                                      insertPt.getValue().getType(), numCol,
+                                      storedValueOf(insertPt).getType(), numCol,
                                       numUnroll, /*loopResults=*/0)
                             .iterNum);
     }
@@ -1595,8 +1714,14 @@ public:
           shape[shape.size() - 1] = ceil<int64_t>(shape.back(), iterNum);
         }
         RankedTensorType controledTensorTy;
-        if (auto sliceEncoding = dyn_cast<triton::gpu::SliceEncodingAttr>(
-                tensorTy.getEncoding())) {
+        Attribute enc = tensorTy.getEncoding();
+        if (!enc) {
+          // TLE: unencoded tensor (tle_local_ptr / tt.load on local_ptr before
+          // tiling stamps the layout). Slice the shape and keep it unencoded.
+          controledTensorTy =
+              RankedTensorType::get(shape, tensorTy.getElementType(), nullptr);
+        } else if (auto sliceEncoding =
+                       dyn_cast<triton::gpu::SliceEncodingAttr>(enc)) {
           auto clusterEncoding =
               cast<triton::xpu::ClusterLayoutAttr>(sliceEncoding.getParent());
           auto newClusterEncoding =
@@ -1606,8 +1731,7 @@ public:
           controledTensorTy = RankedTensorType::get(
               shape, tensorTy.getElementType(), newEncoding);
         } else {
-          auto clusterEncoding =
-              cast<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding());
+          auto clusterEncoding = cast<triton::xpu::ClusterLayoutAttr>(enc);
           auto newClusterEncoding =
               createEncoding(context, clusterEncoding, iterNum);
           controledTensorTy = RankedTensorType::get(
@@ -1616,6 +1740,53 @@ public:
         op->getResult(i).setType(controledTensorTy);
       }
     }
+  }
+
+  // Can this hoisted operand be narrowed to the slice type at all?
+  //
+  // The only narrowing here is extract_slice, whose lowering carries no offset
+  // (XPUExtractSliceOpConversion always reads slice 0), so it is exact only for
+  // a splat. arith.constant was the whole test, which stopped holding once
+  // vectorization turned splats into triton_xpu.vconst -- and vconst keeps
+  // whatever attribute the constant had, so splatness is checked, not assumed.
+  // Replaces an assert that named nothing and aborted inside the pass.
+  static bool isSliceInvariant(Value v) {
+    Operation *defOp = v.getDefiningOp();
+    if (!defOp)
+      return false;
+    Attribute value;
+    if (auto cstOp = dyn_cast<arith::ConstantOp>(defOp))
+      value = cstOp.getValue();
+    else if (auto vcstOp = dyn_cast<triton::xpu::VConstOp>(defOp))
+      value = vcstOp.getValue();
+    else
+      return false;
+    if (auto denseAttr = dyn_cast_or_null<DenseElementsAttr>(value))
+      return denseAttr.isSplat();
+    // A scalar constant has no slices to differ in.
+    return true;
+  }
+
+  bool reportUnsliceableOperand(Operation *op, unsigned i, Type wantedTy) {
+    Value operand = op->getOperand(i);
+    if (isSliceInvariant(operand))
+      return false;
+    InFlightDiagnostic diag =
+        op->emitError()
+        << "unroll control cannot narrow hoisted operand #" << i
+        << " to the tiled type: only a splat constant may be narrowed with "
+           "extract_slice, whose lowering always reads slice 0";
+    diag << "\n  operand type: " << operand.getType();
+    diag << "\n  wanted type:  " << wantedTy;
+    if (Operation *defOp = operand.getDefiningOp()) {
+      diag << "\n  defined by:   " << defOp->getName();
+      if (Operation *defParent = defOp->getBlock()->getParentOp())
+        diag << " inside " << defParent->getName();
+    } else {
+      diag << "\n  defined by:   a block argument";
+    }
+    signalPassFailure();
+    return true;
   }
 
   void setHoistedOperand(MLIRContext *context, OpBuilder &builder,
@@ -1640,12 +1811,10 @@ public:
           if (!isOperandValidInSameForBlock[i]) {
             // triton_xpu.vconst is what TritonXPUVectorize turns a top-level
             // arith.constant into, and it is just as pure and loop-invariant,
-            // so the hoisted extract_slice below is equally safe for it.
-            assert((isa<arith::ConstantOp>(
-                        inBlockOp.getOperand(i).getDefiningOp()) ||
-                    isa<triton::xpu::VConstOp>(
-                        inBlockOp.getOperand(i).getDefiningOp())) &&
-                   "Unable to extract the non-constant operand.");
+            // so the hoisted extract_slice below is equally safe for it -- but
+            // only for a splat, because that lowering always reads slice 0.
+            if (reportUnsliceableOperand(&inBlockOp, i, ifOpResTy))
+              continue;
             auto extractSliceOp =
                 getExtractedOperand(context, builder, loc, yieldOp, i, iterNum);
             extractSliceOp->moveBefore(ifOp);
@@ -1665,11 +1834,9 @@ public:
                 (inBlockOp.getOperand(i).getType() ==
                  inBlockOp.getOperand(i ^ 1).getType());
             if (!isOperandValidInSameForBlock[i]) {
-              assert((isa<arith::ConstantOp>(
-                          inBlockOp.getOperand(i).getDefiningOp()) ||
-                      isa<triton::xpu::VConstOp>(
-                          inBlockOp.getOperand(i).getDefiningOp())) &&
-                     "Unable to extract the non-constant operand.");
+              if (reportUnsliceableOperand(
+                      &inBlockOp, i, inBlockOp.getOperand(i ^ 1).getType()))
+                continue;
               auto extractSliceOp = getExtractedOperand(context, builder, loc,
                                                         &inBlockOp, i, iterNum);
               extractSliceOp->moveBefore(ifOp);
@@ -1728,19 +1895,95 @@ public:
     return false;
   }
 
+  // The geometry a strided slice needs, handed to the lowering on the op.
+  //
+  // `xpu.slice_cols` is this op's sliced per-core row and `xpu.row_stride` is
+  // what that row was before the slice, both in the op's own unit -- elements
+  // for tle_local_ptr, whole vectors for tle_vload / tle_vstore -- because that
+  // is the unit `tleSlotIndex` addresses LM in. Only a segment with more than
+  // one row per core is stamped: a single-row slice already is a contiguous run
+  // of slots, so leaving it unstamped keeps single-row IR byte-identical. The
+  // pre-slice row is `sliceCols * iterNum`, exact because `isLegalIterNum`
+  // admits only divisors of the per-core row. Same quantity `tensorColSize`
+  // carries for the xpu::LoadOp / StoreOp / gm2lm / lm2gm side, stamped rather
+  // than added to the TLE ops because it is wanted pre-normalised into each
+  // op's own unit.
+  void stampSliceGeometry(Operation *op, int64_t iterNum) {
+    Type geomTy;
+    if (auto vstoreOp = dyn_cast<triton::xpu::TLEVStoreOp>(op))
+      geomTy = vstoreOp.getValue().getType();
+    else if (op->getNumResults() == 1)
+      geomTy = op->getResult(0).getType();
+    else
+      return;
+    // An output buffer's pointer tensor carries no encoding; the encoded
+    // sibling the TLE type conversion left beside it is the reading the slice
+    // was made in (see tleEncodedFacingType).
+    if (auto tensorTy = dyn_cast<RankedTensorType>(geomTy))
+      if (!tensorTy.getEncoding() && op->getNumResults() == 1)
+        geomTy = tleEncodedFacingType(op->getResult(0));
+    auto tensorTy = dyn_cast<RankedTensorType>(geomTy);
+    if (!tensorTy)
+      return;
+    auto layout = getClusterLayout(tensorTy);
+    if (!layout)
+      return;
+    auto sizePerCore = layout.getSizePerCore();
+    if (sizePerCore.size() < 2)
+      return;
+    int64_t rowsPerCore = 1;
+    for (unsigned d = 0; d + 1 < sizePerCore.size(); ++d)
+      rowsPerCore *= sizePerCore[d];
+    // A single-row slice already is a contiguous run of slots, so LM ops are
+    // left unstamped to keep single-row IR byte-identical. A scope=smem read is
+    // the exception: its lowering has to rebuild the per-core column base in
+    // PRE-slice units, and `xpu.row_stride` is the only carrier of that number.
+    bool smemRead = false;
+    if (auto vload = dyn_cast<triton::xpu::TLEVLoadOp>(op))
+      if (Operation *alloc = vload.getBuffer().getDefiningOp())
+        if (auto scope = alloc->getAttrOfType<StringAttr>("xpu.mem_scope"))
+          smemRead = scope.getValue() == "smem";
+    if (rowsPerCore <= 1 && !smemRead)
+      return;
+    int64_t sliceCols = sizePerCore.back();
+    OpBuilder builder(op);
+    op->setAttr("xpu.slice_cols", builder.getI32IntegerAttr(sliceCols));
+    op->setAttr("xpu.row_stride",
+                builder.getI32IntegerAttr(sliceCols * iterNum));
+  }
+
   void insertIndex(Operation *op, Value idxVar) {
     OpBuilder builder(op);
-    auto operandSegmentSizesAttr =
-        op->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
-    SmallVector<int, 4> operandSegmentSizes(
-        operandSegmentSizesAttr.asArrayRef());
     // LoadOp: 0: ptr, 1: mask, 2: other, 3: index
     // StoreOp: 0: ptr, 1: value, 2: mask, 3: index
     // MakeRangeOp: 0: loopIndex, 1: unrollIndex
     // InterleaveOp: 0: loopIndex, 1: unrollIndex
-    ++operandSegmentSizes[operandSegmentSizes.size() - 1];
-    op->setAttr("operandSegmentSizes",
-                builder.getDenseI32ArrayAttr(operandSegmentSizes));
+    // The index always goes into the last operand group, EXCEPT tle_vload: its
+    // last group is $smElemOffset, the SM index's element addend, and the tile
+    // index belongs to $loopIndex in the middle. Appending there would add the
+    // two as if they were one number and read another core's columns.
+    if (isa<triton::xpu::TLEVLoadOp>(op)) {
+      auto segs = op->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+      assert(segs && segs.size() == 3 && segs[1] == 0 &&
+             "tle_vload already carries a $loopIndex");
+      SmallVector<int, 4> newSegs(segs.asArrayRef());
+      ++newSegs[1];
+      op->insertOperands(/*index=*/1, {idxVar});
+      op->setAttr("operandSegmentSizes", builder.getDenseI32ArrayAttr(newSegs));
+      return;
+    }
+    // Ops that declare their groups (AttrSizedOperandSegments) have to have the
+    // attribute grown with the operand; tle_vstore holds a single trailing
+    // optional operand, which needs no attribute -- presence is the operand
+    // count there.
+    if (auto operandSegmentSizesAttr =
+            op->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes")) {
+      SmallVector<int, 4> operandSegmentSizes(
+          operandSegmentSizesAttr.asArrayRef());
+      ++operandSegmentSizes[operandSegmentSizes.size() - 1];
+      op->setAttr("operandSegmentSizes",
+                  builder.getDenseI32ArrayAttr(operandSegmentSizes));
+    }
     op->insertOperands(op->getNumOperands(), {idxVar});
   }
 
@@ -1901,7 +2144,25 @@ public:
       if (isBoundaryBuffer(op))
         continue;
       bool isOuter = inOpChain(outerChain, op);
-      auto newOp = builder.clone(*op, mapping);
+      Operation *newOp = nullptr;
+      if (auto ttRangeOp = dyn_cast<triton::MakeRangeOp>(op)) {
+        // TLE: tt.make_range is static (start/end attrs, no loop/unroll index
+        // operands), so the reduce split cannot give it a slice-local offset
+        // in place. Rebuild it as xpu::MakeRangeOp (start/end/realSize + empty
+        // indices); the xpu::MakeRangeOp TypeSwitch case below then wires the
+        // loop var through insertIndex when this is the sliced dimension.
+        uint32_t start = ttRangeOp.getStart();
+        uint32_t end = ttRangeOp.getEnd();
+        uint32_t realSize = end - start;
+        auto newRangeOp = builder.create<triton::xpu::MakeRangeOp>(
+            loc, ttRangeOp.getType(), builder.getI32IntegerAttr(start),
+            builder.getI32IntegerAttr(end), builder.getI32IntegerAttr(realSize),
+            Value(), Value());
+        mapping.map(ttRangeOp.getResult(), newRangeOp.getResult());
+        newOp = newRangeOp.getOperation();
+      } else {
+        newOp = builder.clone(*op, mapping);
+      }
       setTensorType(context, newOp, iterNum, isOuter);
       TypeSwitch<Operation *>(newOp)
           .Case<triton::xpu::LoadOp>([&](auto loadOp) {
@@ -1924,9 +2185,24 @@ public:
               }
             }
           })
+          .Case<triton::xpu::TLEVLoadOp, triton::xpu::TLEVStoreOp,
+                triton::xpu::TLELocalPtrOp>([&](auto tleOp) {
+            // The LM buffer operand keeps its full width (a memdesc is not
+            // sliced); what setTensorType sliced is the value tensor, so
+            // one slice per iteration has to be selected by index. Only the
+            // sliced ops need it -- an outer-chain op still covers the
+            // whole buffer.
+            if (!isOuter) {
+              insertIndex(newOp, idxVar);
+              stampSliceGeometry(newOp, iterNum);
+            }
+          })
           .Case<triton::xpu::MakeRangeOp>([&](auto makeRangeOp) {
-            if (auto tensorTy =
-                    dyn_cast<RankedTensorType>(op->getResults()[0].getType())) {
+            // A reduction slice advances only the inner range. Indexing an
+            // outer range shifts row IDs on every iteration and can make a
+            // valid row mask progressively disappear.
+            if (!isOuter &&
+                isa<RankedTensorType>(op->getResults()[0].getType())) {
               insertIndex(newOp, idxVar);
             }
           })
@@ -1946,7 +2222,8 @@ public:
                 xpuprintOp.getPidz(), xpuprintOp.getOuterIndex(),
                 xpuprintOp.getInnerIndex(), idxVar64,
                 xpuprintOp.getInnerBound(), ucBound, xpuprintOp.getPrefixAttr(),
-                xpuprintOp.getHexAttr(), xpuprintOp.getArgs());
+                xpuprintOp.getHexAttr(), xpuprintOp.getArgs(),
+                xpuprintOp.getIsSignedAttr());
             newOp->erase();
           })
           .Case<triton::AddPtrOp>([&](auto addPtrOp) {
@@ -2021,7 +2298,7 @@ public:
           .Case<scf::ForOp>([&](auto forOp) {
             // step 1 : set iter arg type.
             unsigned numInitArgs =
-                forOp.getNumOperands() - 3; // 减去初始值、上界和步长
+                forOp.getNumOperands() - 3; // minus init, upper bound and step
             Block &entryBlock = forOp.getBodyRegion().front();
             if (numInitArgs > 0 && entryBlock.getNumArguments() > 1) {
               for (unsigned i = 0; i < numInitArgs; ++i) {
@@ -2129,14 +2406,17 @@ public:
       // 1. Prepare for unroll control
       int64_t numCol = 1;
       int64_t numUnroll = 1;
-      triton::xpu::StoreOp insertPt;
-      SmallVector<triton::xpu::StoreOp> allStoreOps;
+      Operation *insertPt = nullptr;
+      SmallVector<Operation *> allStoreOps;
       // 1.1 Get insertPt and tensor num
+      // Skip this tree only, for the same reason as the iterNum gate below:
+      // planIterNums already planned a 1 here, and the trees after it are
+      // independent segments that still want their loop.
       if (!getTreeUnrollInfo(unrollOpTree, insertPt, allStoreOps, numCol,
                              numUnroll))
-        return;
+        continue;
       if (insertPt) {
-        auto loc = insertPt.getLoc();
+        auto loc = insertPt->getLoc();
         // Decided in planIterNums, before any IR was touched.
         int64_t iterNum = plan[i];
         // Skip this tree only: unlike the legacy gate, the budget model can
@@ -2258,6 +2538,17 @@ public:
             if (acessOp.getMask()) {
               getOpChainBwd(excludeChainOps, acessOp.getMask().getDefiningOp());
             }
+          })
+          .Case<triton::xpu::TLELocalPtrOp>([&](auto lpOp) {
+            for (auto idx : lpOp.getIndices())
+              getOpChainBwd(excludeChainOps, idx.getDefiningOp());
+          })
+          .Case<triton::xpu::TLECopyGlobalToLocalOp,
+                triton::xpu::TLECopyLocalToGlobalOp>([&](auto copyOp) {
+            for (auto off : copyOp.getOffsets())
+              getOpChainBwd(excludeChainOps, off.getDefiningOp());
+            for (auto sh : copyOp.getShapes())
+              getOpChainBwd(excludeChainOps, sh.getDefiningOp());
           });
     });
   }
@@ -2304,6 +2595,20 @@ public:
                               loadOp.getMask().getDefiningOp());
               }
             }
+          })
+          .Case<triton::xpu::TLELocalPtrOp>([&](auto lpOp) {
+            // The index tensors (make_range/broadcast/expand_dims) address the
+            // LM buffer; they are not part of the reduce data chain and must
+            // not be sliced by the reduce split.
+            for (auto idx : lpOp.getIndices())
+              getOpChainBwd(excludeChainOps, idx.getDefiningOp());
+          })
+          .Case<triton::xpu::TLECopyGlobalToLocalOp,
+                triton::xpu::TLECopyLocalToGlobalOp>([&](auto copyOp) {
+            for (auto off : copyOp.getOffsets())
+              getOpChainBwd(excludeChainOps, off.getDefiningOp());
+            for (auto sh : copyOp.getShapes())
+              getOpChainBwd(excludeChainOps, sh.getDefiningOp());
           });
     });
   }
@@ -2444,14 +2749,25 @@ public:
     // 1.2 Get load -> store DAG
     SetVector<Operation *> visitedOps;
     SmallVector<SetVector<Operation *>> unrollOpTrees;
-    m.walk([&](triton::xpu::StoreOp storeOp) {
-      auto valType = storeOp.getValue().getType();
+    // Both store forms are sites. A TLE compute segment needs the tiling at
+    // least as much as a normcopy one: on the layernorm ams kernel the final
+    // pointwise segment keeps a whole tensor<64x16xvector<16xf32>> live from
+    // `tle_vload` to `tle_vstore`, and untiled that is what puts
+    // KERNEL_STACK_SIZE at 9536 B against the 8000 B budget. Rooting at
+    // `tle_vstore` is all that was missing -- `storedValueOf` answers for both
+    // ops, `createLoopBody` already slices the TLE ops through `$loopIndex`,
+    // and `tleSlotIndex` addresses whatever slice the trip count implies.
+    m.walk([&](Operation *op) {
+      Value stored = storedValueOf(op);
+      if (!stored)
+        return;
+      auto valType = stored.getType();
       int64_t numCol = getNumCol(valType);
       int64_t numUnroll = getNumUnroll(valType);
       if (dryRun)
-        reportGate("pointwise", storeOp, numCol, numUnroll);
-      if (canTile(storeOp, valType, numCol, numUnroll)) {
-        getDAG(storeOp, visitedOps, unrollOpTrees, excludeChainOps);
+        reportGate("pointwise", op, numCol, numUnroll);
+      if (canTile(op, valType, numCol, numUnroll)) {
+        getDAG(op, visitedOps, unrollOpTrees, excludeChainOps);
       }
       for (auto visitedOp : visitedOps) {
         if (isa<arith::ConstantOp>(visitedOp)) {
@@ -2486,20 +2802,37 @@ public:
     int64_t vecSize = getNumInVector(yieldElemType);
     Type ptrTy = createPointerType(yieldType, vecSize);
     int64_t tensorSize = getTensorSize(yieldType);
+    // The alloca is written one slice per tile iteration but read back whole
+    // after the loop, so both views must agree on where slice s of row r lives.
+    // `tensorColSize == -1` packs slices contiguously, which matches the
+    // row-major view the post-loop `extract_slice` takes only while a core owns
+    // one row; with rowsPerCore > 1 every row but the first comes out mixed.
+    // The column count switches the accesses to the `CoreDealMultiRows`
+    // addressing that already serves gm2lm/lm2gm, which is that row-major view.
+    //
+    // Per core, not logical: the array being indexed is per-core, the same
+    // confusion XPUTC-8016 fixed on the extract_slice side. The two agree while
+    // columns are not split across cores, which is every TLE layout today.
+    int32_t tensorColSize = -1;
+    if (auto yieldTensorTy = dyn_cast<RankedTensorType>(yieldType))
+      if (yieldTensorTy.getShape().size() == 2)
+        if (auto clusterEncoding = getClusterLayout(yieldTensorTy))
+          if (clusterEncoding.getSizePerCore()[0] > 1)
+            tensorColSize = clusterEncoding.getSizePerCore()[1] * vecSize;
     if (!forOp.getResults()[i].use_empty()) {
       // Create Alloca Store for Init Args
       auto initForArg = forOp.getInitArgs()[i];
       auto newAllocaOp = builder.create<triton::xpu::AllocaOp>(
           loc, ptrTy, tensorSize * vecSize);
       auto initStoreOp = builder.create<triton::xpu::StoreOp>(
-          loc, newAllocaOp, initForArg, Value(), Value(), -1, false,
+          loc, newAllocaOp, initForArg, Value(), Value(), tensorColSize, false,
           Dtype::UNKNOWN, MemorySyncMode::SYNC);
       newAllocaOp->moveBefore(forOp);
       initStoreOp->moveBefore(forOp);
       // Create Load for Input
       auto inputLoadOp = builder.create<triton::xpu::LoadOp>(
-          loc, yieldType, newAllocaOp, Value(), Value(), Value(), 1, -1, false,
-          false, false, MemorySyncMode::SYNC);
+          loc, yieldType, newAllocaOp, Value(), Value(), Value(), 1,
+          tensorColSize, false, false, false, MemorySyncMode::SYNC);
       auto notUsedForYield = [&](OpOperand &operand) {
         return !isa<scf::YieldOp>(operand.getOwner());
       };
@@ -2508,14 +2841,14 @@ public:
       inputLoadOp->moveBefore(&block.front());
       // Create Store for Output
       auto outputStoreOp = builder.create<triton::xpu::StoreOp>(
-          loc, newAllocaOp, yield, Value(), Value(), -1, false, Dtype::UNKNOWN,
-          MemorySyncMode::SYNC);
+          loc, newAllocaOp, yield, Value(), Value(), tensorColSize, false,
+          Dtype::UNKNOWN, MemorySyncMode::SYNC);
       outputStoreOp->moveBefore(yieldOp);
       storeOps.emplace_back(outputStoreOp);
       // Create Load for Reduce
       auto reduceLoadOp = builder.create<triton::xpu::LoadOp>(
-          loc, yieldType, newAllocaOp, Value(), Value(), Value(), 1, -1, false,
-          false, false, MemorySyncMode::SYNC);
+          loc, yieldType, newAllocaOp, Value(), Value(), Value(), 1,
+          tensorColSize, false, false, false, MemorySyncMode::SYNC);
 
       // Replace For Result with Load
       auto notReduceLoadOp = [&](OpOperand &operand) {
@@ -2848,9 +3181,10 @@ public:
     });
   }
 
-  bool isPostReduceStore(triton::xpu::StoreOp storeOp) {
+  bool isPostReduceStore(Operation *storeOp) {
     bool _isPostReduceStore = false;
-    if (auto valTy = dyn_cast<RankedTensorType>(storeOp.getValue().getType())) {
+    if (auto valTy =
+            dyn_cast<RankedTensorType>(storedValueOf(storeOp).getType())) {
       auto shape = valTy.getShape();
       if (shape.size() > 1 && shape.back() > 1) {
         _isPostReduceStore = true;
@@ -2910,14 +3244,22 @@ public:
     getExcludeChainOps(m, excludeChainOps);
     // 1.2 Get load -> store DAG
     SmallVector<SetVector<Operation *>> unrollOpTrees;
-    m.walk([&](triton::xpu::StoreOp storeOp) {
+    // A reduce-carrying kernel reaches its final pointwise segment here, and
+    // TLE's version of that segment ends in `tle_vstore`. Rooting at both store
+    // forms is what makes the layernorm ams kernel's post-reduce segment a
+    // tile site at all -- untiled it holds a whole
+    // tensor<64x16xvector<16xf32>> live across the segment.
+    m.walk([&](Operation *op) {
+      Value stored = storedValueOf(op);
+      if (!stored)
+        return;
       SetVector<Operation *> visitedOps;
-      auto valType = storeOp.getValue().getType();
+      auto valType = stored.getType();
       int64_t numCol = getNumCol(valType);
       int64_t numUnroll = getNumUnroll(valType);
-      bool _isPostReduceStore = isPostReduceStore(storeOp);
-      if (canTile(storeOp, valType, numCol, numUnroll) && _isPostReduceStore) {
-        getPostReduceDAG(storeOp, visitedOps, unrollOpTrees, excludeChainOps);
+      bool _isPostReduceStore = isPostReduceStore(op);
+      if (canTile(op, valType, numCol, numUnroll) && _isPostReduceStore) {
+        getPostReduceDAG(op, visitedOps, unrollOpTrees, excludeChainOps);
       }
     });
     if (unrollOpTrees.size() == 0)
@@ -2952,6 +3294,12 @@ public:
 
     dryRun = std::getenv("TRITONXPU_UNROLL_DRYRUN") != nullptr;
 
+    // TLE kernels carry their reduce as a triton_xpu.reduce inside the tile
+    // loop. The non-TLE reductionUnrollControl splits the reduction width into
+    // iterNum slices; the TLE exclude chains below keep the local_ptr/copy
+    // index/offset chains out of that split. The tt.make_range in the mask
+    // chain (tl.where's r_mask) is given a slice-local offset in
+    // createLoopBody, mirroring the non-TLE xpu::MakeRangeOp insertIndex path.
     bool isScan = false;
     m.walk([&](triton::xpu::ScanOp scanOp) { isScan = true; });
     if (isScan) {

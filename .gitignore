@@ -134,8 +134,19 @@ AGENTS.md
 third_party/mthreads/backend/bin/
 
 # XPU local/generated dependency trees
-third_party/xpu.bak/
 third_party/xpu/backend/xpu3/
+# XTDK LLVM 19 toolchain staged by setup.py (large third-party download, never in-tree)
+third_party/xpu/backend/llvm19/
+third_party/_xtdk_llvm19/
+# Package-level LICENSE / PROVENANCE — copied into the tree root by setup.py's
+# stage step.  They are **package metadata, not tree content**: the repository
+# root already carries the LICENSE, and the package's own copy travels inside
+# the tarball (MIT: "shall be included in all copies").  Without these entries
+# a `git add -A` after an install would sweep them into a commit.
+third_party/xpu/LICENSE
+third_party/xpu/PROVENANCE
+third_party/xpu/PROVENANCE.json
+third_party/xpu/python/triton/backends/_tables/
 .comate/
 
 # tsingmicro backend build artifacts and runtime logs

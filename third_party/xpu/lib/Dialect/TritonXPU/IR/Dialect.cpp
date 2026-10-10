@@ -136,6 +136,178 @@ getDefaultClusterEncoding(MLIRContext *context, ArrayRef<int64_t> shape,
   return encoding;
 }
 
+// See the contract on the declaration in Dialect.h: this is the one place the
+// unencoded-TLE-tensor reading lives, and it has to stay the same reading
+// `TypeConverter` uses when it lowers one.
+Type withTLEDefaultEncoding(Type type) {
+  auto tensorTy = mlir::dyn_cast<RankedTensorType>(type);
+  if (!tensorTy || tensorTy.getEncoding())
+    return type;
+  auto encoding =
+      getDefaultClusterEncoding(type.getContext(), tensorTy.getShape(),
+                                /*buffer_size=*/128,
+                                /*core_num=*/64);
+  return RankedTensorType::get(tensorTy.getShape(), tensorTy.getElementType(),
+                               encoding);
+}
+
+// See the contract on the declaration in Dialect.h. Only a cluster-layout
+// sibling of the same shape and element type counts: anything else is a real
+// layout change, not the encoding-stripping cvt this looks through.
+static bool isTLESibling(RankedTensorType candidate, RankedTensorType ty) {
+  return candidate &&
+         mlir::isa_and_nonnull<triton::xpu::ClusterLayoutAttr>(
+             candidate.getEncoding()) &&
+         candidate.getShape() == ty.getShape() &&
+         candidate.getElementType() == ty.getElementType();
+}
+
+Type tleEncodedFacingTypeOrNull(Value value) {
+  auto ty = mlir::dyn_cast<RankedTensorType>(value.getType());
+  if (!ty)
+    return Type();
+  if (ty.getEncoding())
+    return value.getType();
+  if (auto cvt = value.getDefiningOp<triton::xpu::ConvertLayoutOp>()) {
+    auto srcTy = mlir::dyn_cast<RankedTensorType>(cvt.getOperand().getType());
+    if (isTLESibling(srcTy, ty))
+      return srcTy;
+  }
+  for (Operation *user : value.getUsers()) {
+    if (auto cvt = mlir::dyn_cast<triton::xpu::ConvertLayoutOp>(user)) {
+      auto resTy = mlir::dyn_cast<RankedTensorType>(cvt.getResult().getType());
+      if (isTLESibling(resTy, ty))
+        return resTy;
+    }
+  }
+  return Type();
+}
+
+Type tleEncodedFacingType(Value value) {
+  if (Type sibling = tleEncodedFacingTypeOrNull(value))
+    return sibling;
+  return withTLEDefaultEncoding(value.getType());
+}
+
+// The `tle_local_ptr` behind a TLE `tt.load`, looking through the identity
+// `convert_layout` the TLE type conversion leaves on SM pointers (addrspace 2):
+// the canonicalizer that would fold it runs later, so a plain `getDefiningOp`
+// is null there and every SM weight read stays scalar. Only a cvt whose result
+// type equals its operand type is skipped -- a real relayout would change the
+// per-core element distribution `tle_vload` assumes.
+triton::xpu::TLELocalPtrOp getTLELocalPtrThroughCvt(Value ptr) {
+  while (auto cvt = mlir::dyn_cast_or_null<triton::xpu::ConvertLayoutOp>(
+             ptr.getDefiningOp())) {
+    if (cvt.getResult().getType() != cvt.getOperand().getType())
+      return nullptr;
+    ptr = cvt.getOperand();
+  }
+  return ptr.getDefiningOp<triton::xpu::TLELocalPtrOp>();
+}
+
+// Whether a TLE buffer read is expressible as whole vector loads, and if so its
+// uniform element addend.
+//
+// An LM buffer is per-core and its staging DMA already dropped this core's
+// slice at the buffer base, so the lowering ignores the index tensor entirely:
+// always admissible, `off` stays null. A `scope=smem` buffer instead holds the
+// FULL array once per cluster, so the index tensor is what selects the elements
+// and a vector read has to reproduce it. `tle_vload` expresses exactly
+// `buffer + off + <this core's contiguous block> + i`, i.e. only
+// `[roff +] tl.arange(0, n)`; anything permuted / gathered / strided has no
+// such form and has to stay on the scalar SM path, which honors the indices
+// element by element.
+bool tleBufferIsSmem(Value buffer) {
+  Operation *alloc = buffer.getDefiningOp();
+  if (!alloc)
+    return false;
+  auto scope = alloc->getAttrOfType<StringAttr>("xpu.mem_scope");
+  return scope && scope.getValue() == "smem";
+}
+
+bool tleSmemSliceOffset(triton::xpu::TLELocalPtrOp lp, Value &off,
+                        bool allowSmem) {
+  off = Value();
+  Operation *alloc = lp.getBuffer().getDefiningOp();
+  auto scope =
+      alloc ? alloc->getAttrOfType<StringAttr>("xpu.mem_scope") : StringAttr();
+  if (!scope || scope.getValue() != "smem")
+    return true;
+  // The escape hatch: refuse the whole scope, index or no index.
+  if (!allowSmem)
+    return false;
+  if (lp.getIndices().empty())
+    return false;
+  Value idx = lp.getIndices().back();
+  while (Operation *d = idx.getDefiningOp()) {
+    // Layout casts and the rank change do not alter the index VALUES.
+    if (auto cvt = mlir::dyn_cast<triton::xpu::ConvertLayoutOp>(d)) {
+      idx = cvt.getOperand();
+      continue;
+    }
+    if (auto ex = mlir::dyn_cast<triton::ExpandDimsOp>(d)) {
+      idx = ex.getSrc();
+      continue;
+    }
+    if (auto addOp = mlir::dyn_cast<arith::AddIOp>(d)) {
+      // Exactly one splatted addend is representable, as the element offset.
+      auto splatSrc = [](Value v) -> Value {
+        if (auto s = v.getDefiningOp<triton::SplatOp>())
+          return s.getSrc();
+        return Value();
+      };
+      Value uniform = splatSrc(addOp.getLhs());
+      Value other = addOp.getRhs();
+      if (!uniform) {
+        uniform = splatSrc(addOp.getRhs());
+        other = addOp.getLhs();
+      }
+      if (!uniform || off)
+        return false;
+      off = uniform;
+      idx = other;
+      continue;
+    }
+    break;
+  }
+  auto mr = idx.getDefiningOp<triton::MakeRangeOp>();
+  return mr && mr.getStart() == 0;
+}
+
+bool tleSmemGather(triton::xpu::TLELocalPtrOp lp) {
+  Operation *alloc = lp.getBuffer().getDefiningOp();
+  auto scope =
+      alloc ? alloc->getAttrOfType<StringAttr>("xpu.mem_scope") : StringAttr();
+  if (!scope || scope.getValue() != "smem")
+    return false;
+  if (lp.getIndices().empty())
+    return false;
+  // bf16 is supported via the HF vgather (16-bit lanes) + a bf16->f32 fold that
+  // turns TWO 32-lane gathers into f32 result vectors, so the per-core element
+  // count must be a whole number of 32-lane gathers. Otherwise keep bf16 on the
+  // scalar SM path. Check the BUFFER element type, not the local_ptr pointee:
+  // tritonxpu-tle-dtype-convert promotes the bf16 load's pointee to f32.
+  if (mlir::getElementTypeOrSelf(lp.getBuffer().getType()).isBF16()) {
+    auto ptrTensorTy =
+        mlir::dyn_cast<RankedTensorType>(lp.getResult().getType());
+    auto cl = ptrTensorTy
+                  ? mlir::dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(
+                        ptrTensorTy.getEncoding())
+                  : nullptr;
+    if (!cl)
+      return false;
+    int64_t perCore = 1;
+    for (auto s : cl.getSizePerCore())
+      perCore *= s;
+    if (perCore % 32 != 0)
+      return false;
+  }
+  // A sliceable index (`[uniform +] arange(0,n)`) is a contiguous read handled
+  // by tle_vload; only a genuinely non-slice index needs the gather.
+  Value off;
+  return !tleSmemSliceOffset(lp, off, /*allowSmem=*/true);
+}
+
 SmallVector<unsigned>
 getCoresPerClusterWithUniqueData(Attribute layout,
                                  ArrayRef<int64_t> tensorShape) {

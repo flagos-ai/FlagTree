@@ -455,6 +455,14 @@ class FlagTreeCache:
         empty = (not os.path.exists(_path)) or (origin_file_path and not os.path.exists(origin_file_path))
         if empty:
             return False
+        # A cache entry may be a **directory**: `store()` downloads to the same
+        # path it later unpacks into, so a staged package stays unpacked.  That
+        # is a cache hit -- but `_md5()` on a directory raises
+        # `IsADirectoryError`, which made every install *after the first one*
+        # fail.  Directory entries carry their own `version.txt` (the caller
+        # checks it and re-downloads on a version mismatch), so report the hit.
+        if os.path.isdir(_path):
+            return True
         if md5_digest is None:
             return True
         else:
@@ -676,6 +684,12 @@ def get_spec_packages():
 
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
+
+
+def generate_backend_intrinsic_tables():
+    hook_call = get_hook_instance("generate_intrinsic_tables")
+    if hook_call:
+        hook_call()
 
 
 def get_package_data(backends):

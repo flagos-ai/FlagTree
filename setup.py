@@ -25,6 +25,7 @@ import platform
 import re
 import contextlib
 import functools  # FlagPrism
+import importlib.machinery
 import shlex
 import shutil
 import subprocess
@@ -143,7 +144,14 @@ class BackendInstaller:
             tools_dir = None
 
         for file in ["compiler.py", "driver.py"]:
-            assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
+            # The XPU backend ships its Python implementation compiled, so the
+            # backend entry points may be extension modules rather than sources.
+            stem = file[:-len(".py")]
+            found = any(
+                os.path.exists(os.path.join(backend_path, stem + suffix))
+                for suffix in (".py", *importlib.machinery.EXTENSION_SUFFIXES))
+            assert found, f"${file} does not exist in ${backend_path}"
+            # assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
 
         install_dir = os.path.join(os.path.dirname(__file__), "python", "triton", "backends", backend_name)
 
@@ -458,6 +466,7 @@ class CMakeBuildPy(build_py):
         # FlagPrism: prepare the external component tree before compiling.
         FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)
         self.run_command('build_ext')
+        helper.generate_backend_intrinsic_tables()
         helper.write_flagtree_backend_file()  # flagtree
         helper.overlay_backend_runtime_so(self, backends)  # flagtree
         helper.refresh_generated_backend_packages(self, backends)  # flagtree

@@ -1439,6 +1439,7 @@ public:
           fixedStride = INT32_MIN;
           rowLen = -1;
           rowStride = -1;
+          lrie = -1;
         };
 
     mod.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
@@ -1668,7 +1669,7 @@ public:
 private:
   llvm::DenseMap<mlir::Operation *, int32_t> op2Line;
   int32_t line = 0;
-  int32_t fixedStride = -1;
+  int32_t fixedStride = INT32_MIN;
   int64_t rowLen = -1;
   int64_t rowStride = -1;
   int32_t lrie = -1; // Longest Run Of Identical Elements
