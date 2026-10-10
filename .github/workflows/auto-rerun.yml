@@ -1,0 +1,84 @@
+name: Auto-Rerun (test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID to inspect'
+        required: true
+      repo:
+        description: 'owner/repo'
+        required: true
+        default: 'flagos-ai/FlagTree'
+      dry_run:
+        description: 'If true, only check and do not trigger rerun'
+        required: false
+        default: 'true'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if failure was in Set up job
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=${{ inputs.run_id }}
+          REPO=${{ inputs.repo }}
+
+          echo "Checking run $RUN_ID ..."
+
+          failed_job_ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+            --jq '.jobs[] | select(.conclusion=="failure") | .id')
+
+          if [ -z "$failed_job_ids" ]; then
+            echo "No failed jobs found. Skip rerun."
+            echo "should_rerun=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Failed job ids:"
+          echo "$failed_job_ids"
+
+          should_rerun=false
+          for job_id in $failed_job_ids; do
+            echo "----- Fetching log for job $job_id -----"
+            log=$(gh api "repos/$REPO/actions/jobs/$job_id/logs" 2>/dev/null || true)
+
+            echo "----- Log size: $(echo "$log" | wc -c) bytes -----"
+            echo "----- Last 20 lines of log -----"
+            echo "$log" | tail -n 20
+
+            if echo "$log" | grep -qE \
+              "Failed to download archive .* after [0-9]+ (attempts|retries)|Action .* download has timed out"; then
+              echo "MATCH: job $job_id failed during Set up job (action download exhausted retries)."
+              should_rerun=true
+              break
+            else
+              echo "NO MATCH for job $job_id"
+            fi
+          done
+
+          echo "should_rerun=$should_rerun" >> "$GITHUB_OUTPUT"
+
+      - name: Rerun failed jobs
+        if: steps.check.outputs.should_rerun == 'true' && inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=${{ inputs.run_id }}
+          REPO=${{ inputs.repo }}
+          echo "Rerunning failed jobs of run $RUN_ID ..."
+          gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"
+          echo "Rerun triggered."
+
+      - name: Summary
+        run: |
+          echo "should_rerun=${{ steps.check.outputs.should_rerun }}"
+          echo "dry_run=${{ inputs.dry_run }}"
+
