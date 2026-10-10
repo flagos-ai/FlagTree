@@ -653,10 +653,10 @@ _DtypeClass = dtype
 
 class pointer_type(dtype):
 
-    def __init__(self, element_ty: dtype, address_space: int = 1, const: bool = False):
+    def __init__(self, element_ty: base_type, address_space: int = 1, const: bool = False):
         element_ty = _unwrap_if_constexpr(element_ty)
-        if not isinstance(element_ty, dtype):
-            raise TypeError(f'element_ty has type `{type(element_ty).__name__}`; expected `dtype`.')
+        if not isinstance(element_ty, base_type):
+            raise TypeError(f'element_ty has type `{type(element_ty).__name__}`; expected `dtype` or an aggregate type.')
         self.element_ty = element_ty
         self.address_space = address_space
         self.const = const
@@ -686,6 +686,16 @@ class pointer_type(dtype):
     @property
     def scalar(self):
         return self
+
+    def _unflatten_ir(self, handles, cursor):
+        # A pointer to a struct/array yields a value with field/element access;
+        # any other pointee yields an ordinary pointer tensor.
+        from . import _custom_types
+        if isinstance(self.element_ty, _custom_types._struct_type):
+            return _custom_types.struct_pointer(handles[cursor], self), cursor + 1
+        if isinstance(self.element_ty, _custom_types._array_type):
+            return _custom_types.array_pointer(handles[cursor], self), cursor + 1
+        return tensor(handles[cursor], self), cursor + 1
 
     def mangle(self) -> str:
         return f"P{self.element_ty.mangle()}"
@@ -3402,3 +3412,15 @@ def binary_op_type_legalization(lhs, rhs, semantic):
 def extern(fn):
     """A decorator for external functions."""
     return builtin(fn)
+
+
+# ---------------------------------------------------------------------------
+# Custom C-interoperable struct/array types (reference-only).
+# The implementation lives in a shared module imported here at the end of the
+# file so the circular import resolves cleanly; see docs/custom-types/RFC.md.
+# ---------------------------------------------------------------------------
+from . import _custom_types  # noqa: E402
+
+struct_type = _custom_types.struct_type
+to_device = _custom_types.to_device
+StructView = _custom_types.StructView
