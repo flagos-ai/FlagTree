@@ -5,15 +5,16 @@
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     qkv_cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
-    qkv_cache_logical_block = qkv_cache_position // {{ call.block_size }}
-    qkv_cache_block_offset = qkv_cache_position % {{ call.block_size }}
-    qkv_cache_physical_block = tl.load(
-        {{ call.block_table }} + qkv_cache_logical_block
-    ).to(tl.int64)
 {% for head in (call.q, call.k) %}
 {% set intermediate_type = head.intermediate_type | default(head.input_type) %}
 {% set prefix = "qkv_q" if loop.first else "qkv_k" %}
     for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
+        # Per-token cache slot: chunk base plus this token's sequence position.
+        {{ prefix }}_cache_token = qkv_cache_position + ({{ head.cache_seq }})
+        {{ prefix }}_cache_block_offset = {{ prefix }}_cache_token % {{ call.block_size }}
+        {{ prefix }}_cache_physical_block = tl.load(
+            {{ call.block_table }} + {{ prefix }}_cache_token // {{ call.block_size }}
+        ).to(tl.int64)
 {% if head.use_mean %}
         {{ prefix }}_mean_sum = tl.load(
             {{ head.stats }} + ({{ head.stats_sum_offset }}),
@@ -132,6 +133,12 @@ def {{ call.symbol }}({{ call.signature }}):
             (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
             & ({{ call.v.compute_active }})
         )
+        qkv_v_cache_token = qkv_cache_position + ({{ call.v.cache_seq }})
+        qkv_v_cache_block_offset = qkv_v_cache_token % {{ call.block_size }}
+        qkv_v_cache_physical_block = tl.load(
+            {{ call.block_table }} + qkv_v_cache_token // {{ call.block_size }},
+            mask=qkv_v_mask, other=0,
+        ).to(tl.int64)
         qkv_v_value = tl.load(
             {{ call.v.input }} + ({{ call.v.input_offset }}),
             mask=qkv_v_mask, other=0.0,
@@ -144,7 +151,7 @@ def {{ call.symbol }}({{ call.signature }}):
     if shard_index == 0:
         tl.store({{ call.slot_mapping }}, qkv_cache_position)
         if {{ call.advance_sequence }}:
-            tl.store({{ call.sequence_lengths }}, qkv_cache_position + 1)
+            tl.store({{ call.sequence_lengths }}, qkv_cache_position + {{ call.num_tokens }})
 
 
 {% endif %}

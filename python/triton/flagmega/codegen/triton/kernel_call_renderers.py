@@ -4208,23 +4208,28 @@ def _encode_qkv_rope_with_cache(
         )
 
     layer_expression = _scalar_expression(layer_id)
-    cache_block = "qkv_cache_physical_block"
-    cache_offset = "qkv_cache_block_offset"
+    # The query chunk may carry more than one token (prefill). Each token writes
+    # its K/V to a distinct cache slot (chunk base + its own sequence position),
+    # so the physical block and in-block offset are computed per token in the
+    # kernel (see cache_seq). Decode (one token, seq coordinate 0) is unchanged.
+    q_context["cache_seq"] = q_context["apply_domain"]["global_by_kind"]["seq"]
+    k_context["cache_seq"] = k_context["apply_domain"]["global_by_kind"]["seq"]
+    v_context["cache_seq"] = v_context["global_by_kind"]["seq"]
     k_context["cache_offset"] = _paged_cache_scalar_offset(
         cache_abi,
         k_context["apply_domain"],
         cache_index=0,
         layer=layer_expression,
-        physical_block=cache_block,
-        block_offset=cache_offset,
+        physical_block="qkv_k_cache_physical_block",
+        block_offset="qkv_k_cache_block_offset",
     )
     v_context["cache_offset"] = _paged_cache_scalar_offset(
         cache_abi,
         v_context,
         cache_index=1,
         layer=layer_expression,
-        physical_block=cache_block,
-        block_offset=cache_offset,
+        physical_block="qkv_v_cache_physical_block",
+        block_offset="qkv_v_cache_block_offset",
     )
     v_context.update({
         "input": _pointer(v),
@@ -4256,6 +4261,7 @@ def _encode_qkv_rope_with_cache(
         "layer_id": layer_expression,
         "advance_sequence": _scalar_expression(advance),
         "block_size": cache_shape[3],
+        "num_tokens": k_context["apply_domain"]["global_extents"]["seq"],
     }
 
 
