@@ -14,7 +14,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType, emit_module, load_module
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 @pytest.mark.parametrize("suffix", (
@@ -27,7 +27,7 @@ def test_glu_partial_unroll_matches_torch_after_resume(tmp_path, suffix, unroll)
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     implementation_id = "tir.dense_matmul_glu." + suffix
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     model = replace(model, implementations=tuple(
         replace(implementation, parameters={**implementation.parameters, "reduction_unroll": unroll})
         if implementation.id == implementation_id else implementation

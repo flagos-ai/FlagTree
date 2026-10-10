@@ -166,7 +166,40 @@ def test_legacy_scalar_physical_packing_uses_the_same_local_abi_rule():
     assert "(shard_index) * 256" in call["weight"]
     assert "dense_local_n_offsets" in call["weight_offset"]
     assert "dense_local_k_offsets" in call["weight_offset"]
+    # The packed-lane payload combination ((n%8)*16 + k%16) must still be
+    # present. It is no longer split into `// 64` and `% 64` terms and
+    # recombined: for this ABI's strides (64, 1) the split-then-recombine
+    # is a provable no-op (floor-division identity), simplified away as a
+    # redundant div/mod round-trip on every packed-weight element -- see
+    # perf-iteration/ITERATION.md (Qwen3-1.7B tutorial), Trial 52.
+    assert "// 64" not in call["weight_offset"]
+    assert "% 8) * 16" in call["weight_offset"]
+
+
+def test_non_contiguous_scalar_physical_packing_keeps_the_general_split():
+    # Same shape/rank as the contiguous case above, but dim 2's stride no
+    # longer equals payload_width * dim 3's stride (96 != 64*1) -- e.g. a
+    # padded or non-standard physical layout. The split-then-recombine is
+    # NOT a no-op here, so the general (unsimplified) form must still be
+    # emitted; collapsing it would silently compute the wrong address.
+    weight_abi = _abi(
+        logical_shape=(2, 2, 2, 64),
+        local_shape=(2, 1, 2, 64),
+        scalar_strides=(128, 128, 96, 1),
+        storage_kind="compact_per_owner",
+        logical_coordinates=(
+            "local_coord_0",
+            "local_coord_1 + shard_coord_1",
+            "local_coord_2",
+            "local_coord_3",
+        ),
+        component_stride=256,
+    )
+    call = _dense_matmul_call(_raw_call(weight_abi))
+
     assert "// 64" in call["weight_offset"]
+    assert "% 64" in call["weight_offset"]
+    assert "* 96" in call["weight_offset"]
 
 
 def test_unpacked_compact_rhs_uses_local_dense_coordinates():

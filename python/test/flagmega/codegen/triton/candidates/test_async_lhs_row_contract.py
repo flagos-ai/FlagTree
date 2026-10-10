@@ -8,7 +8,7 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.candidates.dense_matmul import _supports_lhs_staging
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 @pytest.mark.parametrize("shape, policy, expected", (
@@ -20,7 +20,7 @@ from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
     ((2, 6144), fm.SBP.broadcast(), False),
 ))
 def test_candidate_uses_local_capacity_and_all_owner_activity(shape, policy, expected):
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     candidate = next(value for value in model.implementations if value.id.endswith("norm_stats_lhs8192_async"))
     value = fm.DistributedType(fm.tensor_type("bfloat16", shape),
                                (fm.SBP.broadcast(), policy), fm.Placement((2, 3), "ab", "bb"))

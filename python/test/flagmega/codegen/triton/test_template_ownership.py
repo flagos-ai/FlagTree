@@ -5,14 +5,14 @@ from triton.flagmega.codegen.triton.templates import (
     KernelTemplateSpec,
     TritonTemplateRegistry,
 )
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 
 
 def test_every_registered_tir_implementation_template_owns_wrapper_rendering():
     registry = TritonTemplateRegistry()
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     resolved = {
         registry.resolve(
             KernelTemplateSpec(

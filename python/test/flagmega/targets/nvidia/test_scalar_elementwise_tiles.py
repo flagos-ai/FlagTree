@@ -7,12 +7,12 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton import render_triton_package
 from triton.flagmega.compiler import Compiler
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 @pytest.mark.parametrize("variant", ("add", "mul", "silu", "cast"))
 def test_scalar_elementwise_catalog_schedules_a_tensor_tile(variant):
-    implementation = next(value for value in sm90_triton_implementation_model().implementations
+    implementation = next(value for value in portable_triton_implementation_model().implementations
                           if value.id == f"tir.elementwise.{variant}.scalar")
     assert implementation.contract["vectorization_kind"] == "scalar"
     assert implementation.parameters["elements_per_program"] == 256

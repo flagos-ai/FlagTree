@@ -5,6 +5,49 @@ from triton.flagmega.codegen.triton.tir_package import (
     describe_tir_package,
     render_tir_package,
 )
+from triton.flagmega.codegen.triton.pipeline_source import (
+    _configure_inter_stage_buffer_slots,
+    _delay_inter_stage_drains,
+)
+
+
+def test_inter_stage_slots_delay_reuse_drain_until_slot_reuse():
+    stages = [
+        {
+            "id": f"stage_{index}",
+            "inter_stage_buffer_slots": 2,
+            "workspaces": [{
+                "offset_bytes": 0,
+                "nbytes": 8192,
+                "shape": (2, 4, 512),
+                "strides": (2048, 512, 1),
+                "element_type": "bfloat16",
+                "dtype": "bfloat16",
+                "alignment_bytes": 128,
+                "allocation_alignment_bytes": 128,
+            }],
+        }
+        for index in range(3)
+    ]
+    slots, stride = _configure_inter_stage_buffer_slots(stages)
+
+    events = [
+        {"kind": "pipeline_kernel_call", "_pipeline_stage_ids": ("stage_0",)},
+        {"kind": "drain", "_drain_stage_ids": ("stage_0",), "endpoints": ["r0"]},
+        {"kind": "pipeline_kernel_call", "_pipeline_stage_ids": ("stage_1",)},
+        {"kind": "drain", "_drain_stage_ids": ("stage_1",), "endpoints": ["r1"]},
+        {"kind": "pipeline_kernel_call", "_pipeline_stage_ids": ("stage_2",)},
+    ]
+    delayed = _delay_inter_stage_drains(events, stages)
+
+    assert (slots, stride) == (2, 8192)
+    assert [stage["workspaces"][0]["offset_bytes"] for stage in stages] == [0, 8192, 0]
+    assert [event["kind"] for event in delayed] == [
+        "pipeline_kernel_call", "pipeline_kernel_call", "drain",
+        "pipeline_kernel_call", "drain",
+    ]
+    assert delayed[2]["endpoints"] == ["r0"]
+    assert all("_drain_stage_ids" not in event for event in delayed)
 
 
 def test_direct_region_generates_both_roles_and_typed_shared_alias(

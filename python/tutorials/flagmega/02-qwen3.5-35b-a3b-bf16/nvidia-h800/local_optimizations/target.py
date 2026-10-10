@@ -3,7 +3,7 @@
 from dataclasses import replace
 
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 def create_target(*, gate_n=8, gate_k=128, down_n=8, down_k=128, gdn_value_tile=None, gdn_projection_tile=None,
@@ -14,7 +14,7 @@ def create_target(*, gate_n=8, gate_k=128, down_n=8, down_k=128, gdn_value_tile=
     if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 or v & (v - 1)
            for v in checked_tiles):
         raise ValueError("Tiles must be positive integer powers of two")
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
 
     def configure(implementation):
         if implementation.family == "gdn_recurrent" and implementation.variant == "persistent":

@@ -5,13 +5,13 @@ from triton.flagmega.codegen.triton.templates import (
     KernelTemplateSpec,
     TritonTemplateRegistry,
 )
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 
 
 def test_hybrid_split_k_n_uses_a_mesh_parameterized_generic_template():
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         "tir.dense_matmul.split_k_n_packed_k_major_gemv"
     )
 

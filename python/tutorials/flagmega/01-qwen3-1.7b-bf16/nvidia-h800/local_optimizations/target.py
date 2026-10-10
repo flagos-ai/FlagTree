@@ -3,13 +3,13 @@
 from dataclasses import replace
 
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 def create_target(*, glu_reduction_group=32):
     if glu_reduction_group not in {32, 64, 128}:
         raise ValueError("The reviewed GLU reduction experiments use 32/64/128 elements")
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
 
     def configure(implementation):
         parameters = dict(implementation.parameters)

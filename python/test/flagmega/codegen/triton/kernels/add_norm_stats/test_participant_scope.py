@@ -9,8 +9,8 @@ from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.call_abi import describe_local_buffer_abi
 from triton.flagmega.codegen.triton.kernel_call_renderers import prepare_kernel_calls
 from triton.flagmega.errors import CodegenError
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 
 
@@ -75,7 +75,7 @@ def _call(scope):
 
 
 def test_single_program_scope_is_an_enforced_implementation_fact():
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         "tir.add_norm_stats.persistent_rms"
     )
 

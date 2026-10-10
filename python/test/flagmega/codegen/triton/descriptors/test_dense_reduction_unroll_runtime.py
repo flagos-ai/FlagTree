@@ -13,7 +13,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType, emit_module, load_module
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 @pytest.mark.parametrize("suffix,k,n", (
@@ -26,7 +26,7 @@ def test_partial_unroll_exact_dyadic_projection_after_resume(tmp_path, suffix, k
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     implementation_id = "tir.dense_matmul." + suffix
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     model = replace(model, implementations=tuple(replace(value, parameters={**value.parameters, "reduction_unroll": unroll})
         if value.id == implementation_id else value for value in model.implementations))
     compiler = Compiler()

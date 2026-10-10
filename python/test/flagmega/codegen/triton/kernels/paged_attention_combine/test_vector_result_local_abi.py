@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
+
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
     _paged_attention_combine_call,
     _paged_attention_gated_combine_call,
@@ -214,3 +216,71 @@ def test_dim_sharded_output_uses_global_dimension_for_broadcast_partial_state():
 
     assert "shard_y" in call["dimension"]
     assert "shard_y" in call["partial_accumulator_offset"]
+
+
+
+@pytest.mark.parametrize("cyclic", [False, True])
+@pytest.mark.parametrize("gated", [False, True])
+def test_combine_resharded_heads_reads_source_owner_and_local_head(tmp_path, cyclic, gated):
+    import importlib.util
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("requires a GPU")
+    mesh = (4, 4)
+    source_split = {"kind": "split", "stages": [{"hierarchy_axes": (1,), "distribution": (
+        {"kind": "block_cyclic", "block_size": 1} if cyclic else
+        {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 4}})}]}
+    stats = _abi((1, 16, 1), local_shape=(1, 4, 1), storage_kind="compact_per_owner",
+                 coordinate_space="local", owner_stride=4, partial=True)
+    accumulator = _abi((1, 16, 8), local_shape=(1, 4, 8), storage_kind="compact_per_owner",
+                       coordinate_space="local", owner_stride=32, partial=True)
+    for abi in (stats, accumulator):
+        abi["distributed_type"]["placement"]["hierarchy"] = mesh
+        abi["distributed_type"]["axis_policies"] = (
+            {"kind": "broadcast"}, source_split, {"kind": "broadcast"})
+    stats["scalar_storage_strides"] = (4, 1, 1)
+    accumulator["scalar_storage_strides"] = (32, 8, 1)
+    result = _abi((1, 16, 2), local_shape=(1, 1, 2), lanes=4, dtype="bfloat16", itemsize=2,
+                  logical_coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 4 + shard_coord_1", "local_coord_2"))
+    result["distributed_type"]["placement"]["hierarchy"] = mesh
+    result["distributed_type"]["axis_policies"] = (
+        {"kind": "broadcast"}, {"kind": "split", "stages": [{"hierarchy_axes": (0, 1),
+        "distribution": {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 1}}}]}, {"kind": "broadcast"})
+    raw = {"semantic_attrs": {"layout": ("seq", "head", "dim"), "split_hierarchy_axis": 0, "split_count": 4},
+           "parameters": {"elements_per_program": 8}, "inputs": (
+               _parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
+           "outputs": (_parameter("result", result),), "workspaces": ()}
+    family = "paged_attention_gated_combine" if gated else "paged_attention_combine"
+    if gated:
+        raw["inputs"] = (*raw["inputs"], _parameter("gate", result))
+    call = (_paged_attention_gated_combine_call(raw) if gated else _paged_attention_combine_call(raw))
+    call.update(family=family, variant="decode", symbol="run",
+                signature="max_state, sum_state, acc_state, result" + (", gate" if gated else ""))
+    body = TritonTemplateRegistry().render(f"kernels/{family}/decode.py.jinja", {
+        "render_calls": [call], "distributed_entry": True,
+        "mesh_hierarchy": mesh, "mesh_axis_names": ("block_y", "block_x")})
+    path = tmp_path / "attention_reshard.py"
+    path.write_text('''import triton
+import triton.language as tl
+import triton.experimental.tle.language as tle
+FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({"block": [("block_y",4),("block_x",4)]}))
+''' + body)
+    spec = importlib.util.spec_from_file_location("attention_reshard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    maximum = torch.zeros((16, 4), device="cuda", dtype=torch.float32)
+    total = torch.ones_like(maximum)
+    partial = torch.empty((16, 4, 8), device="cuda", dtype=torch.float32)
+    for owner in range(16):
+        for local_head in range(4):
+            head = local_head * 4 + owner % 4 if cyclic else owner % 4 * 4 + local_head
+            partial[owner, local_head] = head * 16 + torch.arange(8, device="cuda") + (owner // 4) * 2
+    output = torch.full((1, 16, 8), -100., device="cuda", dtype=torch.bfloat16)
+    args = (maximum, total, partial, output)
+    if gated:
+        args = (*args, torch.zeros_like(output))
+    module.run[(16,)](*args)
+    expected = (torch.arange(16, device="cuda")[:, None] * 16 + torch.arange(8, device="cuda") + 3).bfloat16()
+    if gated:
+        expected *= .5
+    torch.testing.assert_close(output.reshape(16, 8), expected, rtol=0, atol=0)

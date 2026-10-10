@@ -7,7 +7,7 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 def projection(k, n, *, output_split=False):
@@ -51,7 +51,7 @@ def test_packed_partial_projection_accepts_actual_masked_simt_capability(k, n, o
 
 
 def test_packed_partial_tail_requires_masked_capability_and_does_not_relax_descriptors():
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     model = replace(
         model, implementations=tuple(
             replace(value, contract={**value.contract, "supports_masked_tiles": False}) if value.variant in

@@ -11,7 +11,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.microkernels import (
     PackedQKVMicroKernelProvider, TIRMicroKernelContext,
 )
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 IMPLEMENTATION = "tir.qkv_parallel_linear.packed_gemv_smem_pipeline"
@@ -24,7 +24,7 @@ def _context(module, changes=None):
     parameters = {name: replace(parameter, type=(changes or {}).get(name, parameter.type))
                   for name, parameter in function.parameter_map.items()}
     return TIRMicroKernelContext(module, SimpleNamespace(parameter_map=parameters),
-                                fm.kernel_dispatch_of(function), sm90_triton_implementation_model())
+                                fm.kernel_dispatch_of(function), portable_triton_implementation_model())
 
 
 def _ids(context):

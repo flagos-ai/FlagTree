@@ -1,13 +1,13 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 
 
 def test_catalog_exposes_physical_knobs_but_not_semantic_weight_geometry():
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
 
     for name in (
         "tir.block_fp8.simt",
@@ -25,7 +25,7 @@ def test_catalog_exposes_physical_knobs_but_not_semantic_weight_geometry():
 
 
 def test_previously_hidden_tiles_are_owned_by_the_implementation_catalog():
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
 
     embedding = model.implementation("tir.embedding.decode")
     recurrent = model.implementation("tir.gdn_recurrent.persistent")

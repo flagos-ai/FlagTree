@@ -71,11 +71,11 @@ def test_matmul_glu_scale_geometry_comes_from_semantic_weight_format():
 
 
 def test_matmul_glu_catalog_does_not_own_weight_format_geometry():
-    from triton.flagmega.targets.nvidia.implementations import (
-        sm90_triton_implementation_model,
+    from triton.flagmega.targets.portable_triton_implementations import (
+        portable_triton_implementation_model,
     )
 
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     for name in ("tir.matmul_glu.simt", "tir.matmul_glu.mma"):
         implementation = model.implementation(name)
         assert implementation is not None

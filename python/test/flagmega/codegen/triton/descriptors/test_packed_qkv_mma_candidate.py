@@ -11,7 +11,7 @@ from triton.flagmega.codegen.triton.microkernels import (
     TIRMicroKernelContext,
 )
 from triton.flagmega.ir import kernel_dispatch_of
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 _CANDIDATE = "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"
@@ -41,7 +41,7 @@ def _context(module, *, parameter_types=None):
         module,
         SimpleNamespace(parameter_map=parameters),
         dispatch,
-        sm90_triton_implementation_model(),
+        portable_triton_implementation_model(),
     )
 
 

@@ -286,3 +286,85 @@ def test_pair_local_dimension_sharding_uses_global_coordinates_and_external_stat
     assert "shard_x" in call["q"]["partner_domain"]["global_by_kind"]["dim"]
     assert call["q"]["normalization_size"] == 256
     assert "reduce_input_offset" not in call["q"]
+
+
+def test_sequence_advance_waits_for_all_cache_position_readers(tmp_path):
+    import importlib.util
+    import torch
+    import triton
+    from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
+    if not torch.cuda.is_available():
+        pytest.skip('requires a GPU')
+    split = {"kind": "split", "stages": ({"hierarchy_axes": (0, 1),
+        "distribution": {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 1}}},)}
+    policies = ({"kind": "broadcast"}, split, {"kind": "broadcast"})
+    coordinates = ("local_coord_0", "local_coord_1 + shard_coord_0 * 2 + shard_coord_1", "local_coord_2")
+    source = _abi((1, 4, 128), local_shape=(1, 1, 128), coordinates=coordinates, axis_policies=policies)
+    result = _abi((1, 4, 16), lanes=8, local_shape=(1, 1, 16), coordinates=coordinates, axis_policies=policies)
+    raw = _raw(q_abi=source, k_abi=source, v_abi=source, q_result_abi=result)
+    state = (_abi((2, 1, 2, 4, 4, 16), lanes=8, distributed=False,
+                  storage_kind='compact_local', coordinate_space='local'),
+             _abi((2,), dtype='int32', itemsize=4, distributed=False),
+             _abi((1,), dtype='int32', itemsize=4, distributed=False),
+             _abi((1,), dtype='int64', itemsize=8, distributed=False),
+             _abi((1, 2), dtype='int32', itemsize=4, distributed=False))
+    for section in ('inputs', 'outputs'):
+        for parameter in raw[section]:
+            for i, binding in enumerate(parameter['buffers']):
+                if parameter['formal'] in ('state', 'result_1'):
+                    binding['abi'] = state[i]
+                    binding['runtime_argument'] = f'S{i}'
+                if parameter['formal'] == 'layer_id':
+                    binding['runtime_argument'] = '0'
+                abi = binding['abi']
+                if abi.get('distributed_type'):
+                    abi['distributed_type']['placement']['hierarchy'] = (2, 2)
+    raw['facts'] = {'internal_grid_barriers': 1}
+    call = prepare_kernel_calls((raw,), function_name='position_probe')[0]
+    source_code = TritonTemplateRegistry().render('kernels/qkv_rope_with_cache/decode.py.jinja', {
+        'render_calls': [call], 'distributed_entry': True, 'mesh_hierarchy': (2, 2),
+        'mesh_axis_names': ('block_y', 'block_x')})
+    header = '''import triton
+import triton.language as tl
+from triton.language.extra import libdevice
+import triton.experimental.tle.language as tle
+FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({"block": [("block_y",2),("block_x",2)]}))
+'''
+    wrapper = f'''\n@triton.jit
+def run({call['signature']}, DelayOut):
+    pid = tl.program_id(0)
+    if pid == 1:
+        for i in range(10000):
+            tl.atomic_add(DelayOut + pid, 1, sem='relaxed')
+    offset = tl.atomic_add(DelayOut + pid, 0, sem='acquire') - tl.where(pid == 1, 10000, 0)
+    {call['symbol']}({', '.join('(S2 + offset)' if x.strip() == 'S2' else x.strip() for x in call['signature'].split(','))})
+'''
+    path = tmp_path / 'cache_position.py'
+    path.write_text(header + source_code + wrapper)
+    spec = importlib.util.spec_from_file_location('cache_position', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    values = {name: torch.ones((1, 4, 128), device='cuda', dtype=torch.bfloat16) for name in ('q', 'k')}
+    values['v'] = torch.arange(1, 5, device='cuda').bfloat16()[None, :, None].expand(1, 4, 128).contiguous()
+    for name in ('q_scale', 'k_scale'):
+        values[name] = torch.ones((128,), device='cuda', dtype=torch.bfloat16)
+    for name in ('q_bias', 'k_bias'):
+        values[name] = torch.zeros((128,), device='cuda', dtype=torch.bfloat16)
+    for name in ('q_stats', 'k_stats'):
+        values[name] = torch.full((1, 1, 4, 1), 128., device='cuda')
+    values['cos'] = torch.ones((1, 1, 128), device='cuda')
+    values['sin'] = torch.zeros_like(values['cos'])
+    values['query_result'] = torch.empty((1, 4, 16, 8), device='cuda', dtype=torch.bfloat16)
+    values['S0'] = torch.full((2, 1, 2, 4, 4, 16, 8), float('nan'), device='cuda', dtype=torch.bfloat16)
+    values['S1'] = torch.tensor([0, 1], device='cuda', dtype=torch.int32)
+    values['S2'] = torch.zeros((1,), device='cuda', dtype=torch.int32)
+    values['S3'] = torch.zeros((1,), device='cuda', dtype=torch.int64)
+    values['S4'] = torch.tensor([[0, 1]], device='cuda', dtype=torch.int32)
+    arguments = [values[x.strip()] for x in call['signature'].split(',')]
+    triton.set_allocator(lambda size, alignment, stream: torch.zeros(max(16, size), device='cuda', dtype=torch.uint8))
+    delay = torch.zeros((4,), device='cuda', dtype=torch.int32)
+    module.run[(4,)](*arguments, delay)
+    torch.cuda.synchronize()
+    assert delay.cpu().tolist() == [0, 10000, 0, 0]
+    torch.testing.assert_close(values['S0'][0, 0, 1, 0].reshape(1, 4, 128), values['v'], rtol=0, atol=0)
+    assert values['S2'].item() == 1 and values['S3'].item() == 0

@@ -125,11 +125,13 @@ def test_default_selects_truthful_packed_qkv_after_fused_rhs_canonicalization():
     assert dispatch.semantic_op == "ntt.packed_qkv_parallel_linear_fused_rhs"
     assert dispatch.semantic_candidate == "semantic.ntt.packed_qkv_parallel_linear"
     assert dispatch.microkernel.implementation == (
-        "tir.qkv_parallel_linear.packed_fused_gemv"
+        # Largest tile that fits the register contract; tn512 is registered
+        # but deliberately not preferred (fails prepare() on BI-V150).
+        "tir.qkv_parallel_linear.packed_fused_gemv_tn256"
     )
     assert dispatch.microkernel.facts["portable_triton"] is True
     assert not dispatch.microkernel.requires
     assert compiled.selection_map[f"microkernel.{function.name}"].candidate_id == (
         dispatch.microkernel.implementation
     )
-    assert compiled.metadata["launch_contract"]["num_warps"] == 4
+    assert compiled.metadata["launch_contract"]["num_warps"] == 16
