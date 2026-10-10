@@ -49,7 +49,7 @@ jobs:
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
       - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        uses: ./.github/actions/smart-checkout
         with:
           checkout_version: 'v6'
 
