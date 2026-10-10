@@ -23,6 +23,7 @@
 
 #include "tle/utils/include/TleRawMaterialize.h"
 #include "ir.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Parser/Parser.h"
 #include "tle/utils/include/Protocol.h"
@@ -31,6 +32,22 @@
 
 using namespace mlir;
 namespace tle = mlir::triton::tle;
+
+// python/src/ir.cc provides the strong definition for libtriton.so.
+// triton-opt links this library and not ir.cc, so it needs a weak copy.
+// 3.5 TritonOpBuilder::create calls this; main's builder does not.
+__attribute__((weak)) void setAsyncTaskIds(Operation *op,
+                                           llvm::ArrayRef<AsyncTaskId> asyncTaskIds) {
+  llvm::SmallVector<AsyncTaskId> sortedAsyncTaskIds(asyncTaskIds.begin(),
+                                                    asyncTaskIds.end());
+  llvm::sort(sortedAsyncTaskIds);
+  auto i32Ty = IntegerType::get(op->getContext(), 32);
+  auto size = static_cast<int64_t>(sortedAsyncTaskIds.size());
+  auto vecTy = VectorType::get(size, i32Ty);
+  (void)vecTy;
+  op->setAttr("async_task_id",
+              DenseI32ArrayAttr::get(op->getContext(), sortedAsyncTaskIds));
+}
 
 namespace {
 SmallVector<Value> flatten(TritonOpBuilder &builder,

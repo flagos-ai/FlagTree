@@ -12,6 +12,7 @@ add_triton_library(NvidiaTLERawTransforms
   LINK_LIBS PUBLIC
   TleIR
   TritonIR
+  TritonTLERawUtils
 )
 
 target_include_directories(NvidiaTLERawTransforms PUBLIC

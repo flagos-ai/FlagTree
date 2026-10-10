@@ -13,6 +13,7 @@ if(FLAGTREE_BACKEND STREQUAL "ascend")
   add_subdirectory(dsa)
 endif()
 add_subdirectory(dialect/lib)
+add_subdirectory(utils)
 if(FLAGTREE_BACKEND STREQUAL "ascend")
   add_subdirectory(dsa/dialect/lib/Conversion)
 endif()
@@ -22,13 +23,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_raw.cc
     ${TLE_DSA_PLUGIN_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/Protocol.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/AnalyzeReturnType.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/lib/TleRawMaterialize.cpp
     DEPENDS
     ${TLE_DSA_PLUGIN_DEPENDS}
     LINK_LIBS
     MLIRTargetLLVMIRImport
+    TritonTLERawUtils
     ${TLE_DSA_PLUGIN_LINK_LIBS}
     TritonTLETransforms
     TritonIR)
