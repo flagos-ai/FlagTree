@@ -36,8 +36,8 @@ namespace tle = mlir::triton::tle;
 // python/src/ir.cc provides the strong definition for libtriton.so.
 // triton-opt links this library and not ir.cc, so it needs a weak copy.
 // 3.5 TritonOpBuilder::create calls this; main's builder does not.
-__attribute__((weak)) void setAsyncTaskIds(Operation *op,
-                                           llvm::ArrayRef<AsyncTaskId> asyncTaskIds) {
+__attribute__((weak)) void
+setAsyncTaskIds(Operation *op, llvm::ArrayRef<AsyncTaskId> asyncTaskIds) {
   llvm::SmallVector<AsyncTaskId> sortedAsyncTaskIds(asyncTaskIds.begin(),
                                                     asyncTaskIds.end());
   llvm::sort(sortedAsyncTaskIds);
