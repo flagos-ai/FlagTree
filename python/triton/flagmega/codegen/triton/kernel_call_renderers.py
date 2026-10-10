@@ -523,19 +523,29 @@ def _embedding_call(raw) -> dict[str, object]:
     result = _buffer(raw, "outputs", "result")
     result_abi = result["abi"]
     local_shape = _static_shape(result_abi, "local_capacity_shape")
-    if len(local_shape) != 2 or local_shape[0] != 1:
-        raise CodegenError("TIR decode embedding requires one local token row; batching is "
-                           "lowered by a separate schedule.")
+    if len(local_shape) != 2:
+        raise CodegenError(
+            "TIR embedding requires a rank-2 (row, feature) local result."
+        )
+    # M==1 is decode; M>1 (prefill) loops the leading token rows, each loading
+    # its own index and copying the matching vocabulary row.
+    local_m = local_shape[0]
+    row_coordinate = "embedding_row" if local_m != 1 else "0"
     lanes = int(result_abi.get("scalar_lane_count", 1))
     if (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
         raise CodegenError("Embedding weight and output must have identical vector element lanes.")
     local_feature = "local_offsets" if lanes == 1 else f"(local_offsets // {lanes})"
     lane_coordinate = None if lanes == 1 else f"(local_offsets % {lanes})"
-    global_feature = emit_logical_coordinate(result_abi, 1, ("0", local_feature))
+    global_feature = emit_logical_coordinate(
+        result_abi, 1, (row_coordinate, local_feature)
+    )
     weight_abi = weight["abi"]
     if str(weight_abi["coordinate_space"]) != "canonical_global":
-        raise CodegenError("Embedding lookup requires a canonical vocabulary table or an "
-                           "explicit lookup-table Boxing implementation.")
+        raise CodegenError(
+            "Embedding lookup requires a canonical vocabulary table or an "
+            "explicit lookup-table Boxing implementation."
+        )
+    indices_abi = indices["abi"]
     padding_idx = raw.get("semantic_attrs", {}).get("padding_idx")
     encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
     if encoding not in (None, "IQ4_XS", "Q4_K"):
@@ -549,29 +559,19 @@ def _embedding_call(raw) -> dict[str, object]:
     if encoding is not None and hidden % 256:
         raise CodegenError("Native GGUF quantized embedding requires hidden size divisible by 256.")
     return {
-        "indices":
-        _pointer(indices),
-        "weight":
-        _pointer(weight),
-        "result":
-        _pointer(result),
-        "local_capacity":
-        local_shape[-1] * lanes,
-        "active":
-        f"({emit_active_extent(result_abi, 1)}) * {lanes}",
-        "weight_offset":
-        emit_global_scalar_offset(
-            weight_abi,
-            ("token_id", global_feature),
-            lane_coordinate=lane_coordinate,
+        "indices": _pointer(indices),
+        "weight": _pointer(weight),
+        "result": _pointer(result),
+        "local_m": local_m,
+        "indices_offset": emit_local_scalar_offset(indices_abi, (row_coordinate,)),
+        "local_capacity": local_shape[-1] * lanes,
+        "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
+        "weight_offset": emit_global_scalar_offset(
+            weight_abi, ("token_id", global_feature), lane_coordinate=lane_coordinate,
         ),
-        "global_feature":
-        global_feature,
-        "result_offset":
-        emit_local_scalar_offset(
-            result_abi,
-            ("0", local_feature),
-            lane_coordinate=lane_coordinate,
+        "global_feature": global_feature,
+        "result_offset": emit_local_scalar_offset(
+            result_abi, (row_coordinate, local_feature), lane_coordinate=lane_coordinate,
         ),
         "tile":
         int(raw["parameters"]["elements_per_program"]),
@@ -1364,7 +1364,15 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
                 "AddNormStats local_partial_rms requires an explicit Sum-partial "
                 "statistics result."
             )
-        domain = _scalar_local_domain(result_abi, "add_stats_local_offsets")
+        # M==1 (decode) flattens one owner-local row; M>1 (prefill) iterates an
+        # explicit row loop (add_stats_row) with one RMS partial statistic per
+        # leading row.
+        result_local_shape = _static_shape(result_abi, "local_capacity_shape")
+        local_m = prod(result_local_shape[:-1], start=1)
+        row_coordinate = "add_stats_row" if local_m != 1 else None
+        domain = _scalar_local_domain(
+            result_abi, "add_stats_local_offsets", row_coordinate=row_coordinate
+        )
         local_capacity = int(domain["capacity"])
         for name, abi in (("input", source_abi), ("addend", residual_abi)):
             if (
@@ -1378,11 +1386,16 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
                 )
         lane_coordinate = domain["lane_coordinate"]
         stats_shape = _static_shape(stats_abi, "local_capacity_shape")
-        if prod(stats_shape, start=1) != 1:
+        if prod(stats_shape, start=1) != local_m:
             raise CodegenError(
-                "AddNormStats local_partial_rms currently requires one local "
-                "statistics element."
+                "AddNormStats local_partial_rms requires one local statistics "
+                "element per result row."
             )
+        stats_coordinates = (
+            _unflattened_coordinates(stats_shape, "add_stats_row")
+            if local_m != 1
+            else ("0",) * len(stats_shape)
+        )
         return {
             "source": _pointer(source),
             "residual": _pointer(residual),
@@ -1390,6 +1403,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
             "stats": _pointer(stats),
             "partials": None,
             "mode": "local_partial_rms",
+            "local_m": local_m,
             "local_capacity": local_capacity,
             "active": domain["active"],
             "source_offset": _access_in_result_domain(
@@ -1406,7 +1420,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
                 lane_coordinate=lane_coordinate,
             ),
             "stats_offset": emit_local_scalar_offset(
-                stats_abi, ("0",) * len(stats_shape)
+                stats_abi, stats_coordinates
             ),
             "stats_writer_active": _canonical_writer_active(stats_abi),
             "tile": _bounded_vector_tile(
@@ -1455,12 +1469,11 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
     residual_abi = residual["abi"]
     result_abi = result["abi"]
     stats_abi = stats["abi"]
-    logical_shape = _static_shape(partial_abi, "logical_shape")
-    if prod(logical_shape[:-1], start=1) != 1:
-        raise CodegenError(
-            "GatherReduceAddNormStats sum_rms currently requires one logical "
-            "outer row; select a row-indexed implementation for batched input."
-        )
+    # M==1 (decode) reduces one owner-local row; M>1 (prefill) iterates an
+    # explicit row loop (gather_row), one RMS partial per (owner, row).
+    partial_local_shape = _static_shape(partial_abi, "local_capacity_shape")
+    local_m = prod(partial_local_shape[:-1], start=1)
+    row_coordinate = "gather_row" if local_m != 1 else None
     if bool(raw.get("semantic_attrs", {}).get("use_mean", False)):
         raise CodegenError("GatherReduceAddNormStats sum_rms does not implement mean.")
     if str(partial_abi.get("storage_kind")) != "compact_per_owner":
@@ -1488,20 +1501,17 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
         raise CodegenError(
             "GatherReduceAddNormStats statistics result must be scalar-valued."
         )
-    local_shape = _static_shape(partial_abi, "local_capacity_shape")
-    scalar_capacity = prod(local_shape, start=1) * lane_count
-    flat = "gather_local_offsets"
-    physical_flat = flat if lane_count == 1 else f"(({flat}) // {lane_count})"
-    lane_coordinate = None if lane_count == 1 else f"(({flat}) % {lane_count})"
-    local_coordinates = _unflattened_coordinates(local_shape, physical_flat)
-    logical_coordinates = tuple(
-        emit_logical_coordinate(partial_abi, axis, local_coordinates)
-        for axis in range(len(local_shape))
+    # With row_coordinate the domain's capacity is one owner-local row; the row
+    # loop (gather_row) supplies the leading coordinate. M==1 keeps the flat
+    # whole-tensor domain (scalar_capacity == the single row).
+    gather_domain = _scalar_local_domain(
+        partial_abi, "gather_local_offsets", row_coordinate=row_coordinate
     )
-    active = " & ".join(
-        f"(({coordinate}) < ({emit_active_extent(partial_abi, axis)}))"
-        for axis, coordinate in enumerate(local_coordinates)
-    ) or "True"
+    scalar_capacity = int(gather_domain["capacity"])
+    lane_coordinate = gather_domain["lane_coordinate"]
+    local_coordinates = gather_domain["local_coordinates"]
+    logical_coordinates = gather_domain["logical_coordinates"]
+    active = gather_domain["active"]
     domain = {
         "local_coordinates": local_coordinates,
         "logical_coordinates": logical_coordinates,
@@ -1610,6 +1620,12 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
         "work_partition_index": work_partition_index,
         "work_partition_count": work_partition_count,
         "local_capacity": scalar_capacity,
+        "local_m": local_m,
+        "stats_partials_store_offset": (
+            "shard_index" if local_m == 1
+            else f"shard_index * {local_m} + gather_row"
+        ),
+        "stats_partials_owner_stride": local_m,
         "active": active,
         "partial_offset": emit_local_scalar_offset(
             partial_abi,
@@ -1631,7 +1647,10 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
             lane_coordinate=lane_coordinate,
         ),
         "stats_offset": emit_global_scalar_offset(
-            stats_abi, ("0",) * len(_static_shape(stats_abi, "logical_shape"))
+            stats_abi,
+            (("0",) * len(_static_shape(stats_abi, "logical_shape")))
+            if local_m == 1
+            else ("gather_stats_row", *(("0",) * (len(_static_shape(stats_abi, "logical_shape")) - 1))),
         ),
         "tile": work_tile,
         "partial_reduction_width": _bounded_vector_tile(
@@ -3277,19 +3296,21 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
             "Packed MatMulNormStats statistics reduction requires a contiguous "
             "result backing."
         )
+    # M>1 (prefill) iterates the matmul's own row loop (dense_local_m); each row
+    # addresses its residual slice and writes its own statistic. The statistics
+    # are one-per-OWNER-LOCAL row, so they must match the matmul's local row
+    # count (not the logical M, which can be larger when rows are sharded).
+    local_m = int(result.get("local_m_capacity", 1))
     stats_shape = _static_shape(stats_abi, "local_capacity_shape")
     if (
         int(stats_abi.get("scalar_lane_count", 1)) != 1
-        or prod(stats_shape, start=1) != value_rows
+        or prod(stats_shape, start=1) != local_m
         or str(stats_abi.get("scalar_dtype")) != "float32"
     ):
         raise CodegenError(
             "Packed MatMulNormStats requires one scalar F32 statistic per "
-            "result row."
+            "owner-local result row."
         )
-    # M>1 (prefill) iterates the matmul's own row loop (dense_local_m); each row
-    # addresses its residual slice and writes its own statistic.
-    local_m = int(result.get("local_m_capacity", 1))
     row_coordinate = "dense_local_m" if local_m != 1 else None
     residual_domain = _scalar_last_axis_domain(
         residual_abi,
@@ -3386,11 +3407,18 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
     result = _buffer(raw, "outputs", "result")
     source_abi = source["abi"]
     result_abi = result["abi"]
+    # M==1 is decode; M>1 (prefill) wraps the fused gate/up gemv in a token-row
+    # loop (dense_glu_local_m); the gate/up weights are shared across rows.
+    source_local_shape = _static_shape(source_abi, "local_capacity_shape")
+    local_m = prod(source_local_shape[:-1], start=1)
+    row_coordinate = "dense_glu_local_m" if local_m != 1 else None
     source_domain = _scalar_last_axis_domain(
-        source_abi, "dense_glu_local_k_offsets", owner="DenseMatMulGlu input"
+        source_abi, "dense_glu_local_k_offsets", owner="DenseMatMulGlu input",
+        row_coordinate=row_coordinate,
     )
     result_domain = _scalar_last_axis_domain(
-        result_abi, "dense_glu_local_n_offsets", owner="DenseMatMulGlu result"
+        result_abi, "dense_glu_local_n_offsets", owner="DenseMatMulGlu result",
+        row_coordinate=row_coordinate,
     )
     global_k = _scalar_logical_axis_extent(source_abi, -1)
     global_n = _scalar_logical_axis_extent(result_abi, -1)
@@ -3465,6 +3493,7 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
         "gate_weight": gate_weight_pointer,
         "up_weight": up_weight_pointer,
         "result": _pointer(result),
+        "local_m": local_m,
         "local_k_capacity": source_domain["capacity"],
         "local_n_capacity": result_domain["capacity"],
         "source_active": source_domain["active"],
@@ -3779,12 +3808,19 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
     )
     source_abi = source["abi"]
     weight_abi = weight["abi"]
+    # M==1 is decode; M>1 (prefill) wraps the fused gemv in a token-row loop
+    # (qkv_local_m), each row reading its own input slice and writing its q/k/v.
+    source_local_shape = _static_shape(source_abi, "local_capacity_shape")
+    local_m = prod(source_local_shape[:-1], start=1)
+    row_coordinate = "qkv_local_m" if local_m != 1 else None
     source_domain = _scalar_last_axis_domain(
-        source_abi, "qkv_local_k_offsets", owner="PackedQKV input"
+        source_abi, "qkv_local_k_offsets", owner="PackedQKV input",
+        row_coordinate=row_coordinate,
     )
     output_domains = tuple(
         _scalar_last_axis_domain(
-            output["abi"], "qkv_local_n_offsets", owner=f"PackedQKV output {index}"
+            output["abi"], "qkv_local_n_offsets", owner=f"PackedQKV output {index}",
+            row_coordinate=row_coordinate,
         )
         for index, output in enumerate(outputs)
     )
@@ -3841,6 +3877,7 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         group_start += group_capacity
     result = {
         "source": _pointer(source),
+        "local_m": local_m,
         "source_offset": source_domain["offset"],
         "source_active": source_domain["active"],
         "local_k_capacity": source_domain["capacity"],
@@ -6042,13 +6079,20 @@ def _local_domain(
 
 
 def _scalar_local_domain(
-    abi: Mapping[str, object], flat_coordinate: str
+    abi: Mapping[str, object],
+    flat_coordinate: str,
+    *,
+    row_coordinate: str | None = None,
 ) -> dict[str, object]:
     """Build an owner-local domain whose induction variable counts scalars.
 
     ``local_capacity_shape`` describes physical vector elements.  Kernels that
     perform scalar arithmetic must additionally iterate the element-type lanes
     and pass the lane coordinate to physical addressing.
+
+    With ``row_coordinate`` the domain iterates the LAST axis only (``capacity``
+    is one owner-local row), while the leading rows are indexed by the caller's
+    ``row_coordinate`` loop variable -- the per-row (M>1 prefill) form.
     """
 
     shape = _static_shape(abi, "local_capacity_shape")
@@ -6065,6 +6109,24 @@ def _scalar_local_domain(
         if lane_count == 1
         else f"(({flat_coordinate}) % {lane_count})"
     )
+    if row_coordinate is not None:
+        row_coordinates = _unflattened_coordinates(shape[:-1], row_coordinate)
+        local_coordinates = (*row_coordinates, physical_flat)
+        active = " & ".join(
+            f"(({coordinate}) < ({emit_active_extent(abi, axis)}))"
+            for axis, coordinate in enumerate(local_coordinates)
+        ) or "True"
+        logical_coordinates = tuple(
+            emit_logical_coordinate(abi, axis, local_coordinates)
+            for axis in range(len(shape))
+        )
+        return {
+            "capacity": shape[-1] * lane_count,
+            "local_coordinates": local_coordinates,
+            "logical_coordinates": logical_coordinates,
+            "lane_coordinate": lane_coordinate,
+            "active": active,
+        }
     local_coordinates = _unflattened_coordinates(shape, physical_flat)
     active = " & ".join(
         f"(({coordinate}) < ({emit_active_extent(abi, axis)}))"

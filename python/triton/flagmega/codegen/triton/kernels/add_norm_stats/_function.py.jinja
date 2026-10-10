@@ -5,6 +5,10 @@
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
 {% if call.mode == "local_partial_rms" %}
+{% if call.local_m != 1 %}
+    for add_stats_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
     add_stats_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
     for add_stats_start in tl.range(
         0, {{ call.local_capacity }}, {{ call.tile }}
@@ -42,6 +46,7 @@ def {{ call.symbol }}({{ call.signature }}):
         tl.sum(add_stats_square_sum, axis=0),
         mask={{ call.stats_writer_active }},
     )
+{% endfilter %}
 {% elif call.partials is not none %}
     _flagmega_add_norm_stats_rms(
         {{ call.source }}, {{ call.residual }}, {{ call.result }},
