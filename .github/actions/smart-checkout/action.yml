@@ -19,7 +19,8 @@
 # SOFTWARE.
 
 name: 'Smart Checkout with Retry'
-description: 'Attempts to checkout code with multiple retries and sleep intervals'
+description: 'Attempts to checkout code with multiple retries. Each attempt has a 1-minute timeout so that slow checkouts fail fast and are retried immediately. No sleep between attempts.'
+
 inputs:
   checkout_version:
     description: 'The version of actions/checkout to use'
@@ -34,42 +35,373 @@ runs:
       run: |
         find . -type f -name '*.lock' -delete || true
 
+    # ------------------------------------------------------------------
+    # Attempt 1
+    # ------------------------------------------------------------------
     - name: Checkout code (attempt 1)
       id: checkout1
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
+      timeout-minutes: 1
       continue-on-error: true
 
-    - name: Sleep before checkout2
-      if: steps.checkout1.outcome == 'failure'
-      shell: bash
-      run: |
-        echo "First checkout attempt failed. Sleeping for 60 seconds before retry..."
-        sleep 60
-
+    # ------------------------------------------------------------------
+    # Attempt 2
+    # ------------------------------------------------------------------
     - name: Checkout code (attempt 2)
       id: checkout2
       if: steps.checkout1.outcome == 'failure'
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
+      timeout-minutes: 1
       continue-on-error: true
 
-    - name: Sleep before final checkout
-      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-      shell: bash
-      run: |
-        echo "Second checkout attempt failed. Sleeping for 120 seconds before final retry..."
-        sleep 120
-
-    - name: Checkout code (final attempt)
-      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+    # ------------------------------------------------------------------
+    # Attempt 3
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 3)
+      id: checkout3
+      if: steps.checkout2.outcome == 'failure'
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
 
+    # ------------------------------------------------------------------
+    # Attempt 4
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 4)
+      id: checkout4
+      if: steps.checkout3.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 5
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 5)
+      id: checkout5
+      if: steps.checkout4.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 6
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 6)
+      id: checkout6
+      if: steps.checkout5.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 7
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 7)
+      id: checkout7
+      if: steps.checkout6.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 8
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 8)
+      id: checkout8
+      if: steps.checkout7.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 9
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 9)
+      id: checkout9
+      if: steps.checkout8.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 10
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 10)
+      id: checkout10
+      if: steps.checkout9.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 11
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 11)
+      id: checkout11
+      if: steps.checkout10.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 12
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 12)
+      id: checkout12
+      if: steps.checkout11.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 13
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 13)
+      id: checkout13
+      if: steps.checkout12.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 14
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 14)
+      id: checkout14
+      if: steps.checkout13.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 15
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 15)
+      id: checkout15
+      if: steps.checkout14.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 16
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 16)
+      id: checkout16
+      if: steps.checkout15.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 17
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 17)
+      id: checkout17
+      if: steps.checkout16.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 18
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 18)
+      id: checkout18
+      if: steps.checkout17.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 19
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 19)
+      id: checkout19
+      if: steps.checkout18.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 20
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 20)
+      id: checkout20
+      if: steps.checkout19.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 1
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 21
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 21)
+      id: checkout21
+      if: steps.checkout20.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 22
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 22)
+      id: checkout22
+      if: steps.checkout21.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 23
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 23)
+      id: checkout23
+      if: steps.checkout22.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 24
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 24)
+      id: checkout24
+      if: steps.checkout23.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 25
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 25)
+      id: checkout25
+      if: steps.checkout24.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 26
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 26)
+      id: checkout26
+      if: steps.checkout25.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 27
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 27)
+      id: checkout27
+      if: steps.checkout26.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 28
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 28)
+      id: checkout28
+      if: steps.checkout27.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 29
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 29)
+      id: checkout29
+      if: steps.checkout28.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Attempt 30 (final attempt, no continue-on-error)
+    # ------------------------------------------------------------------
+    - name: Checkout code (attempt 30, final)
+      id: checkout30
+      if: steps.checkout29.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      timeout-minutes: 2
+      continue-on-error: true
+
+    # ------------------------------------------------------------------
+    # Verify
+    # ------------------------------------------------------------------
     - name: Verify checkout success
       shell: bash
-      if: success()
-      run: echo "Checkout completed successfully"
+      run: |
+        if [ ! -d ".git" ]; then
+          echo "🚨 FATAL: smart checkout failed after all attempts."
+          exit 1
+        fi
+        echo "✅ Smart checkout completed successfully."
