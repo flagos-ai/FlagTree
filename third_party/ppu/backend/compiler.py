@@ -82,9 +82,9 @@ def min_dot_size(target: GPUTarget):
     return check_dot_compatibility
 
 
-# Whole-byte dtypes covered by the inherited async-copy/descriptor movement paths
-_MOVEMENT_DTYPES = ("fp8e4nv", "fp8e5", "fp8e4b15", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64",
-                    "uint64", "fp16", "bf16", "fp32", "fp64")
+# Whole-byte dtypes the AIU bulk copy moves (1/2/4-byte elements, .b8/.b16/.b32)
+_MOVEMENT_DTYPES = ("fp8e4nv", "fp8e5", "fp8e4b15", "int8", "uint8", "int16", "uint16", "int32", "uint32", "fp16",
+                    "bf16", "fp32")
 
 # fp8e4b15 is upcast to f16 by the common semantic layer before resolve_dot
 # runs (upstream legacy behavior), so it never reaches these rules
@@ -121,12 +121,13 @@ def _make_resolve_dot(capability: int):
 
 def _make_resolve_dot_scaled(capability: int):
     """resolve_dot_scaled rule: cap89 has a native scaled-MMA path for
-    mxfp4; everything else decomposes to a promoted fp16/bf16 dot and is
-    declared NON_NATIVE with a compile-time warning."""
+    mxfp4 x mxfp4 (ScaledBlockedToMMAv2 only matches e2m1 on both sides);
+    everything else decomposes to a promoted fp16/bf16 dot and is declared
+    NON_NATIVE with a compile-time warning."""
     product = _product_name(capability)
 
     def resolve_dot_scaled(lhs_format, rhs_format):
-        if capability >= 89 and "e2m1" in (lhs_format, rhs_format):
+        if capability >= 89 and lhs_format == rhs_format == "e2m1":
             return DotCap(DotSupport.NATIVE)
         return DotCap(
             DotSupport.NON_NATIVE, diag=f"tl.dot_scaled ({lhs_format} x {rhs_format}) on {product} is not native: "

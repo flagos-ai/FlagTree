@@ -1,6 +1,7 @@
 import contextlib
 import pytest
 import os
+import warnings
 
 import torch
 import triton
@@ -429,6 +430,52 @@ def test_min_dot_size(dtype):
             raise assertion_err from e.value
 
 
+@pytest.mark.parametrize("dtype", [tl.int16, tl.int32, tl.uint8])
+def test_int_dot_rejected(dtype):
+    # Integer dot is only supported for int8 x int8; other integer operand types
+    # are rejected at compile time, naming the product, the combination and the
+    # native alternatives
+    if not is_musa():
+        pytest.skip("resolve_dot rules under test are the MUSA ones")
+
+    @triton.jit
+    def dot_kernel(dtype: tl.constexpr):
+        a = tl.full((64, 64), 0, dtype)
+        b = tl.full((64, 64), 0, dtype)
+        tl.dot(a, b)
+
+    with pytest.raises(CompilationError) as e:
+        triton.compile(
+            triton.compiler.ASTSource(fn=dot_kernel, signature={"dtype": "constexpr"}, constexprs={"dtype": dtype}))
+    try:
+        cause = str(e.value.__cause__)
+        assert "is not supported on" in cause
+        assert dtype.name in cause
+        assert "native alternatives" in cause
+    except AssertionError as assertion_err:
+        raise assertion_err from e.value
+
+
+def test_dot_acc_type_mismatch():
+    # An explicit dot accumulator must match the result element type; int8 dot
+    # returns int32 regardless of out_dtype, so a float32 accumulator is
+    # rejected at compile time
+
+    @triton.jit
+    def dot_kernel():
+        a = tl.full((64, 64), 0, tl.int8)
+        b = tl.full((64, 64), 0, tl.int8)
+        acc = tl.full((64, 64), 0.0, tl.float32)
+        tl.dot(a, b, acc=acc)
+
+    with pytest.raises(CompilationError) as e:
+        triton.compile(triton.compiler.ASTSource(fn=dot_kernel, signature={}, constexprs={}))
+    try:
+        assert "incompatible with the dot result type" in str(e.value.__cause__)
+    except AssertionError as assertion_err:
+        raise assertion_err from e.value
+
+
 def test_max_num_imprecise_acc_limit():
 
     @triton.jit
@@ -565,3 +612,82 @@ def test_dot_scaled_shape_verification(fresh_triton_cache):
         triton.compile(triton.compiler.ASTSource(fn=kernel, signature={}, constexprs={}))
 
     assert str(e.value.__cause__) == "lhs_scale must be a tensor of shape [..., 32, 2]. Got ['32', '4']"
+
+
+def test_dot_scaled_acc_type_mismatch(fresh_triton_cache):
+    # dot_scaled shares the tl.dot accumulator rule: an explicit acc must match the
+    # result element type (out_dtype) and a mismatch is a front-end error, not a
+    # bare AssertionError
+
+    @triton.jit
+    def kernel():
+        a = tl.full((32, 64), 0, tl.uint8)
+        b = tl.full((64, 32), 0, tl.uint8)
+        a_scale = tl.full((32, 2), 0, tl.uint8)
+        acc = tl.full((32, 32), 0.0, tl.float16)
+        tl.dot_scaled(a, a_scale, "e5m2", b, None, "e5m2", acc=acc, out_dtype=tl.float32)
+
+    with pytest.raises(CompilationError) as e:
+        triton.compile(triton.compiler.ASTSource(fn=kernel, signature={}, constexprs={}))
+    try:
+        assert "incompatible with the dot_scaled result type" in str(e.value.__cause__)
+    except AssertionError as assertion_err:
+        raise assertion_err from e.value
+
+
+@pytest.mark.parametrize("lhs_format, rhs_format", [("int4", "e4m3"), ("e4m3", "fp8"), ("int8", "int8")])
+def test_dot_scaled_invalid_format(fresh_triton_cache, lhs_format, rhs_format):
+    # format tags outside {e2m1, e4m3, e5m2, bf16, fp16} are rejected before any
+    # backend rule runs
+
+    @triton.jit
+    def kernel(lhs_format: tl.constexpr, rhs_format: tl.constexpr):
+        a = tl.full((32, 64), 0, tl.uint8)
+        b = tl.full((64, 32), 0, tl.uint8)
+        a_scale = tl.full((32, 2), 0, tl.uint8)
+        tl.dot_scaled(a, a_scale, lhs_format, b, None, rhs_format, out_dtype=tl.float32)
+
+    with pytest.raises(CompilationError) as e:
+        triton.compile(
+            triton.compiler.ASTSource(fn=kernel, signature={"lhs_format": "constexpr", "rhs_format": "constexpr"},
+                                      constexprs={"lhs_format": lhs_format, "rhs_format": rhs_format}))
+    try:
+        assert "Invalid float format" in str(e.value.__cause__)
+    except AssertionError as assertion_err:
+        raise assertion_err from e.value
+
+
+# (lhs_format, rhs_format, rhs container dtype): 8-bit formats ride on uint8, 16-bit on uint16
+_DOT_SCALED_FORMATS = [("e2m1", "e2m1", tl.uint8), ("e2m1", "bf16", tl.uint16), ("e4m3", "e4m3", tl.uint8),
+                       ("e5m2", "fp16", tl.uint16)]
+
+
+@pytest.mark.parametrize("lhs_format, rhs_format, rhs_dtype", _DOT_SCALED_FORMATS)
+def test_dot_scaled_native_declaration(fresh_triton_cache, lhs_format, rhs_format, rhs_dtype):
+    # No MUSA capability has a native scaled-MMA path (the SQMMA/WMMA scale slot
+    # semantics are unconfirmed), so resolve_dot_scaled declares every format
+    # combination NON_NATIVE: it decomposes to a promoted dot and must warn at
+    # compile time with native=false
+    if not is_musa():
+        pytest.skip("resolve_dot_scaled rules under test are the MUSA ones")
+
+    @triton.jit
+    def kernel(lhs_format: tl.constexpr, rhs_format: tl.constexpr, rhs_dtype: tl.constexpr):
+        PACK_A: tl.constexpr = 2 if lhs_format == "e2m1" else 1
+        PACK_B: tl.constexpr = 2 if rhs_format == "e2m1" else 1
+        a = tl.full((32, 64 // PACK_A), 0, tl.uint8)
+        b = tl.full((64 // PACK_B, 32), 0, rhs_dtype)
+        a_scale = tl.full((32, 2), 0, tl.uint8)
+        b_scale = tl.full((32, 2), 0, tl.uint8)
+        tl.dot_scaled(a, a_scale, lhs_format, b, b_scale, rhs_format, out_dtype=tl.float32)
+
+    src = triton.compiler.ASTSource(
+        fn=kernel, signature={"lhs_format": "constexpr", "rhs_format": "constexpr", "rhs_dtype": "constexpr"},
+        constexprs={"lhs_format": lhs_format, "rhs_format": rhs_format, "rhs_dtype": rhs_dtype})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        triton.compile(src)
+    diags = [str(w.message) for w in caught if "tl.dot_scaled" in str(w.message)]
+    assert len(diags) == 1, f"expected exactly one non-native warning, got {diags}"
+    assert "is not native" in diags[0] and "native=false" in diags[0]
+    assert f"({lhs_format} x {rhs_format})" in diags[0]
