@@ -60,17 +60,17 @@ jobs:
         with:
           backend: mthreads
 
-      - name: Cleanup FlagTree Environment
-        if: steps.check_backend.outputs.should_skip != 'true'
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+      #- name: Cleanup FlagTree Environment
+      #  if: steps.check_backend.outputs.should_skip != 'true'
+      #  uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
-      - name: Build FlagTree
-        if: steps.check_backend.outputs.should_skip != 'true'
-        shell: bash
-        run: |
-          set -x
-          export FLAGTREE_BACKEND=mthreads
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+      #- name: Build FlagTree
+      #  if: steps.check_backend.outputs.should_skip != 'true'
+      #  shell: bash
+      #  run: |
+      #    set -x
+      #    export FLAGTREE_BACKEND=mthreads
+      #    MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       #- name: Clear cache if ClearCache label present
       #  if: steps.check_backend.outputs.should_skip != 'true'
