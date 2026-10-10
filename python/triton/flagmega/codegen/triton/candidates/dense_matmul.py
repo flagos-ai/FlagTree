@@ -237,6 +237,7 @@ class DenseMatmulCandidateProvider:
         return TritonCandidateProposal(
             variants, context.choose_default("dense_matmul", variants)
         )
+
     def _propose_logical(
         self,
         node: Node,
@@ -403,9 +404,37 @@ class DenseMatmulCandidateProvider:
             )
         if not variants:
             return None
-        return TritonCandidateProposal(
-            variants, context.choose_default("dense_matmul", variants)
+        default = context.choose_default("dense_matmul", variants)
+        leading_rows = _local_leading_rows(
+            context.module.node_map[node.inputs[0]].type
         )
+        if leading_rows is not None and leading_rows > 1:
+            tensor_core = next(
+                (
+                    candidate for candidate in variants
+                    if candidate.parameters.get("variant") == "mma"
+                ),
+                None,
+            )
+            if tensor_core is not None:
+                default = tensor_core.id
+        return TritonCandidateProposal(variants, default)
+
+
+def _local_leading_rows(value_type):
+    """Product of the non-reduction leading extents (the GEMM M), or None.
+
+    M==1 is the gemv regime (split-K floods CUs); M>1 is the GEMM regime where
+    a tensor-core (WMMA) tl.dot kernel wins, so it drives the tir default.
+    """
+
+    shape = (
+        local_shape(value_type) if isinstance(value_type, DistributedType)
+        else logical_type(value_type).shape
+    )
+    if not shape or any(not dimension.is_fixed for dimension in shape[:-1]):
+        return None
+    return prod(dimension.fixed_value for dimension in shape[:-1])
 
 
 def _supports_local_rows(implementation, value_type):
