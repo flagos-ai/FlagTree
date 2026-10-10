@@ -152,6 +152,17 @@ def _flash_fwd_tile(
 
     v10 = tle.gpu.metax.local_load(v_fragments.slot(1), intrinsic=True, is_constant_offs=True)
     acc_o = tl.dot(p1, v10, acc_o, input_precision="tf32")
+
+    # Scheduling hints
+    # config_3/4 retain compiler defaults for shared stores / other instructions.
+    tle.gpu.metax.iglp(
+        config_0=2,  # mxcc instruction-group scheduling mode (0 selects automatically).
+        config_1=16, # Prefetched shared-load instructions.
+        config_2=4,  # MMA instructions between shared-load groups.
+        config_5=1,  # Shared-load instructions per group.
+        config_6=1,  # MMA instructions between global loads.
+        config_7=8,  # MMA instructions between the last shared load and ARRIVE.
+    )
     return next_k_register, acc_o, m_i, l_i
 
 
