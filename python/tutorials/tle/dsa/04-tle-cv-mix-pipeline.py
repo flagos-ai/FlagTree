@@ -144,6 +144,151 @@ def cv_mix_matmul_add_double_buffer_kernel(
         tle.dsa.ascend.sync_block_set('vector', 'cube', buffer_id, pipe.PIPE_MTE2, pipe.PIPE_FIX)
 
 
+@triton.jit
+def _cv_mix_cube_producer(
+    c_writer,
+    block_idx,
+    a_ptr,
+    b_ptr,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    K: tl.constexpr,
+):
+    start_m = block_idx * BLOCK_SIZE_M
+
+    # 偏移量
+    offs_am = start_m + tl.arange(0, BLOCK_SIZE_M)
+    offs_an = tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, K)
+
+    # ===== Cube计算: 矩阵乘法 =====
+    a = tl.load(a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
+    b = tl.load(b_ptr + offs_k[:, None] * stride_bk + offs_an[None, :] * stride_bn)
+    accumulator = tl.dot(a, b)
+
+    # ===== 写入 pipe slot: 等 free -> 写 workspace -> set ready =====
+    write_slot = c_writer.acquire(block_idx)
+    tl.store(write_slot.c, accumulator)
+    c_writer.commit(block_idx)
+
+
+@triton.jit
+def _cv_mix_vector_consumer(
+    c_reader,
+    block_idx,
+    c_ptr,
+    stride_cn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    start_m = block_idx * BLOCK_SIZE_M
+
+    # 偏移量
+    offs_am = start_m + tl.arange(0, BLOCK_SIZE_M)
+    offs_an = tl.arange(0, BLOCK_SIZE_N)
+
+    # ===== Vector处理: 等 ready -> 读 slot -> 计算 -> set free =====
+    result = c_reader.wait(block_idx)
+    c_reload = tl.load(result.slot.c)
+    d = c_reload + 1.0
+    # 循环100次模拟更长的Vector计算时间
+    for _ in range(100):
+        d = d + 0.001
+
+    # 存储最终结果
+    tl.store(c_ptr + offs_am[:, None] * stride_cn + offs_an[None, :], d)
+
+    # 释放缓冲区
+    c_reader.release(block_idx)
+
+
+@triton.jit
+def cv_mix_matmul_add_pipe_kernel(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    workspace_ptr,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cn,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    K: tl.constexpr,
+):
+    """
+    双缓冲流水 (tle.pipe 版): 与上面的手写 sync_block kernel 语义等价
+    - workspace ring 的 stage 选择、event id 分配、初始 free 标记
+      全部由 tle.pipe 接管，kernel 里只剩 producer/consumer 四步握手
+    """
+    num_blocks = M // BLOCK_SIZE_M
+
+    # GM workspace 按 capacity 切 ring stage，pipe 只管同步不管数据
+    c_workspace = tle.dsa.workspace(
+        workspace_ptr,
+        capacity=2,
+        shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
+        dtype=tl.float32,
+    )
+
+    # 公共 tle.pipe 签名与后端无关（与 GPU 侧逐字一致）：默认即 cube->vector 的 CV-mix 握手。
+    # 需要显式控制同步方向或 event id 布局时，把调度器传给编排入口）：
+    #   scheduler = tle.dsa.ascend.pipe_scheduler(
+    #       ready_sync=tle.dsa.ascend.SyncSpec(...),
+    #       free_sync=tle.dsa.ascend.SyncSpec(...),
+    #       event_base=0,  # 缺省自动分配
+    #   )
+    #   tle.dsa.ascend.run_pipeline([...], scheduler=scheduler)
+    #   # 多条 pipe 各自配置时传 (pipe_name, scheduler) 对的 tuple
+    c_pipe = tle.pipe(
+        capacity=2,
+        scope="cta",
+        name="cv_mix_c_pipe",
+        c=c_workspace,
+    )
+    c_writer = c_pipe.writer()
+    c_reader = c_pipe.reader()
+
+    for block_idx in range(num_blocks):
+        # run_pipeline 把 producer/consumer 两个函数按序 inline 展开
+        tle.dsa.ascend.run_pipeline([
+            (
+                _cv_mix_cube_producer,
+                (
+                    c_writer,
+                    block_idx,
+                    a_ptr,
+                    b_ptr,
+                    stride_am,
+                    stride_ak,
+                    stride_bk,
+                    stride_bn,
+                    BLOCK_SIZE_M,
+                    BLOCK_SIZE_N,
+                    K,
+                ),
+            ),
+            (
+                _cv_mix_vector_consumer,
+                (
+                    c_reader,
+                    block_idx,
+                    c_ptr,
+                    stride_cn,
+                    BLOCK_SIZE_M,
+                    BLOCK_SIZE_N,
+                ),
+            ),
+        ])
+
+
 def cv_mix_matmul_add(a: torch.Tensor, b: torch.Tensor):
     """单缓冲包装函数 (单核心): D = (A @ B) + 1.1"""
     M, K = a.shape
@@ -186,6 +331,28 @@ def cv_mix_matmul_add_double_buffer(a: torch.Tensor, b: torch.Tensor):
                                                  stride_bk=b.stride(0), stride_bn=b.stride(1), stride_cn=c.stride(0),
                                                  M=M, N=N, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, K=K,
                                                  disable_auto_inject_block_sync=True, multibuffer=False)
+    return c
+
+
+def cv_mix_matmul_add_pipe(a: torch.Tensor, b: torch.Tensor):
+    """双缓冲包装函数 (tle.pipe版): 单核心，M方向切分流水"""
+    M, K = a.shape
+    K2, N = b.shape
+    assert K == K2, f"Incompatible dimensions: A[{M},{K}] x B[{K2},{N}]"
+
+    BLOCK_SIZE_M = 128
+    BLOCK_SIZE_N = 128
+    assert M % BLOCK_SIZE_M == 0, f"M={M} must be multiple of BLOCK_SIZE_M={BLOCK_SIZE_M}"
+    assert N % BLOCK_SIZE_N == 0, f"N={N} must be multiple of BLOCK_SIZE_N={BLOCK_SIZE_N}"
+
+    grid = (1, )
+    workspace = torch.empty((2 * BLOCK_SIZE_M * BLOCK_SIZE_N, ), dtype=torch.float32, device=a.device)
+    c = torch.empty((M, N), dtype=torch.float32, device=a.device)
+
+    cv_mix_matmul_add_pipe_kernel[grid](a, b, c, workspace, stride_am=a.stride(0), stride_ak=a.stride(1),
+                                        stride_bk=b.stride(0), stride_bn=b.stride(1), stride_cn=c.stride(0), M=M, N=N,
+                                        BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_N=BLOCK_SIZE_N, K=K,
+                                        disable_auto_inject_block_sync=True)
     return c
 
 
@@ -251,6 +418,21 @@ def test_cv_mix_matmul_add():
         except Exception as e:
             print(f"    ✗ 失败: {e}")
 
+        # ===== 双缓冲 tle.pipe 版本 =====
+        print("  [双缓冲 tle.pipe 版本]")
+        c_pipe_out = None
+        try:
+            c_pipe_out = cv_mix_matmul_add_pipe(a, b)
+            torch.testing.assert_close(c_pipe_out, c_ref, rtol=1e-2, atol=1e-2)
+            print("    ✓ 精度验证通过")
+
+            pipe_time = do_bench_npu(lambda: cv_mix_matmul_add_pipe(a, b), clear_l2_cache=True)
+            print(f"    Time: {pipe_time:.4f} us")
+            if 'db_time' in locals():
+                print(f"    pipe/双缓冲耗时比: {pipe_time / db_time:.2f}x")
+        except Exception as e:
+            print(f"    ✗ 失败: {e}")
+
         # ===== 单缓冲 vs 双缓冲对比 =====
         if c_triton is not None and c_db is not None:
             print("  [单缓冲 vs 双缓冲对比]")
@@ -259,6 +441,15 @@ def test_cv_mix_matmul_add():
                 print("    ✓ 单缓冲和双缓冲结果一致")
             except Exception as e:
                 print(f"    ✗ 单缓冲和双缓冲结果不一致: {e}")
+
+        # ===== 手写 sync_block vs tle.pipe 对比 =====
+        if c_db is not None and c_pipe_out is not None:
+            print("  [sync_block vs tle.pipe 对比]")
+            try:
+                torch.testing.assert_close(c_db, c_pipe_out, rtol=1e-5, atol=1e-5)
+                print("    ✓ 手写 sync_block 和 tle.pipe 结果一致")
+            except Exception as e:
+                print(f"    ✗ 手写 sync_block 和 tle.pipe 结果不一致: {e}")
 
     print("\n" + "=" * 60)
     print("测试完成!")
