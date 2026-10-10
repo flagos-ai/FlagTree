@@ -413,7 +413,8 @@ def _supports_local_rows(implementation, value_type):
     if not shape or any(not dimension.is_fixed for dimension in shape[:-1]):
         return False
     return (prod(d.fixed_value for d in shape[:-1]) == 1
-            or implementation.contract.get("supports_local_row_loop", False))
+            or implementation.contract.get("supports_local_row_loop", False)
+            or implementation.contract.get("supports_local_row_tile", False))
 
 
 def _supports_contiguous_descriptor_tiles(

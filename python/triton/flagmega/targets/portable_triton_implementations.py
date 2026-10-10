@@ -502,6 +502,32 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
                 "portable_triton": True,
             },
         ),
+        # Prefill (M>1) bf16 WMMA GEMM via tl.dot. Catalog + renderer
+        # (_dense_matmul_mma_call) + template (mma.py.jinja) + provider gate
+        # (supports_local_row_tile) are wired. It stays dormant until a
+        # logical+canonical matmul DISTRIBUTION candidate is offered: the default
+        # matmul distribution is split-K (output_reduction_split, packed), which
+        # is incompatible with this candidate's logical/canonical contract, so
+        # propose-tir never offers it today. Wiring that GEMM-shaped distribution
+        # path (plus an M>1 cost-model preference) completes automatic selection;
+        # until then the standalone amd-r9700 tutorial kernel (prefill_wmma.py)
+        # is the proven ~10-30x microkernel.
+        _implementation(
+            "tir.dense_matmul.mma",
+            "dense_matmul",
+            "mma",
+            {"block_k": 32, "tile_n": 128},
+            contract={
+                "supports_local_row_loop": False,
+                "supports_local_row_tile": True,
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+            },
+            requires=("wmma", ),
+            facts={"portable_triton": True},
+        ),
         _implementation(
             "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64",
             "dense_matmul",

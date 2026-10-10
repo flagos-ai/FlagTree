@@ -2718,9 +2718,77 @@ def _norm_stats_call(raw) -> dict[str, object]:
     }
 
 
+def _dense_matmul_mma_call(raw) -> dict[str, object]:
+    """Render a bf16 WMMA GEMM (M>1) dense_matmul: M is a tile, not a row loop,
+    so the weight tile is read once and reused across BM rows via tl.dot."""
+    source = _buffer(raw, "inputs", "lhs")
+    weight = _buffer_from_formals(raw, "inputs", ("rhs", "weight"))
+    result = _buffer(raw, "outputs", "result")
+    source_abi = source["abi"]
+    weight_abi = weight["abi"]
+    result_abi = result["abi"]
+    if raw["parameters"].get("packed_layout") is not None:
+        raise CodegenError("DenseMatMul mma requires a logical (unpacked) RHS.")
+    source_shape = _static_shape(source_abi, "local_capacity_shape")
+    result_shape = _static_shape(result_abi, "local_capacity_shape")
+    local_m = prod(source_shape[:-1], start=1)
+    local_k = source_shape[-1] * int(source_abi.get("scalar_lane_count", 1))
+    local_n = result_shape[-1] * int(result_abi.get("scalar_lane_count", 1))
+    global_k = _scalar_logical_axis_extent(source_abi, -1)
+    global_n = _scalar_logical_axis_extent(result_abi, -1)
+    weight_shape = _static_shape(weight_abi, "logical_shape")
+    transpose_b = bool(raw.get("semantic_attrs", {}).get("transpose_b", False))
+    expected = (global_n, global_k) if transpose_b else (global_k, global_n)
+    if len(weight_shape) != 2 or weight_shape != expected:
+        raise CodegenError("TIR DenseMatMul mma RHS shape disagrees with MxK@KxN contract.")
+    # 2D owner-local tile offsets: M as arange rows (dense_m_offsets[:, None]),
+    # the contracted/output axis as the last axis (dense_*_offsets[None, :]).
+    source_domain = _scalar_last_axis_domain(
+        source_abi, "dense_local_k_offsets[None, :]",
+        owner="DenseMatMul mma lhs", row_coordinate="dense_m_offsets[:, None]")
+    result_domain = _scalar_last_axis_domain(
+        result_abi, "dense_local_n_offsets[None, :]",
+        owner="DenseMatMul mma result", row_coordinate="dense_m_offsets[:, None]")
+    # M-independent (1D) global N/K coordinates for the weight tile (row=0).
+    global_k_axis = _scalar_last_axis_domain(
+        source_abi, "dense_local_k_offsets", owner="DenseMatMul mma lhs K", row_coordinate="0")
+    global_n_axis = _scalar_last_axis_domain(
+        result_abi, "dense_local_n_offsets", owner="DenseMatMul mma result N", row_coordinate="0")
+    weight_pointer, weight_offset = _dense_weight_access(
+        weight, packed_layout=None, transpose_b=transpose_b,
+        local_n="dense_local_n_offsets[:, None]",
+        local_k="dense_local_k_offsets[None, :]",
+        global_n="dense_global_n[:, None]",
+        global_k="dense_global_k[None, :]",
+    )
+    block_k = _bounded_vector_tile(raw["parameters"]["block_k"], local_k, name="mma K tile")
+    tile_n = _bounded_vector_tile(raw["parameters"]["tile_n"], local_n, name="mma N tile")
+    return {
+        "source": _pointer(source),
+        "weight": weight_pointer,
+        "result": _pointer(result),
+        "local_m_capacity": local_m,
+        "local_k_capacity": local_k,
+        "local_n_capacity": local_n,
+        "tile_n": tile_n,
+        "block_k": block_k,
+        "source_offset": source_domain["offset"],
+        "result_offset": result_domain["offset"],
+        "weight_offset": weight_offset,
+        "global_n": global_n_axis["global_scalar"],
+        "global_k": global_k_axis["global_scalar"],
+        "m_active_extent": emit_active_extent(source_abi, 0),
+        "k_active_extent": emit_active_extent(source_abi, len(source_shape) - 1),
+        "n_active_extent": emit_active_extent(result_abi, len(result_shape) - 1),
+        "output_type": _triton_dtype(str(result_abi["scalar_dtype"])),
+    }
+
+
 def _dense_matmul_call(raw) -> dict[str, object]:
     if str(raw.get("semantic_op", "")) == "ntt.matmul_norm_stats":
         return _dense_matmul_norm_stats_call(raw)
+    if str(raw["variant"]) == "mma":
+        return _dense_matmul_mma_call(raw)
     source = _buffer(raw, "inputs", "lhs")
     weight = _buffer_from_formals(raw, "inputs", ("rhs", "weight"))
     result = _buffer(raw, "outputs", "result")
