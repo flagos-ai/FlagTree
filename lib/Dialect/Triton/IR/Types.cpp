@@ -57,9 +57,12 @@ void PointerType::print(AsmPrinter &printer) const {
 // Custom C-interoperable types (struct / array)
 //===----------------------------------------------------------------------===//
 
+namespace mlir {
+namespace triton {
+
 // Returns (size, align) in bytes for the types allowed inside a struct field,
 // or std::nullopt if the type is not supported.
-static std::optional<std::pair<int64_t, int64_t>> getTypeSizeAlign(Type type) {
+std::optional<std::pair<int64_t, int64_t>> getTypeSizeAlign(Type type) {
   if (auto intTy = dyn_cast<IntegerType>(type)) {
     int64_t bytes = std::max<int64_t>(1, (intTy.getWidth() + 7) / 8);
     return std::make_pair(bytes, bytes);
@@ -83,6 +86,9 @@ static std::optional<std::pair<int64_t, int64_t>> getTypeSizeAlign(Type type) {
   }
   return std::nullopt;
 }
+
+} // namespace triton
+} // namespace mlir
 
 // !tt.struct<{name: type:offset, ...}, size = N, align = N>
 Type StructType::parse(AsmParser &parser) {

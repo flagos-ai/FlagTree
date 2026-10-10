@@ -90,4 +90,20 @@ def TritonLoopAwareCSE : Pass<"triton-loop-aware-cse", "mlir::ModuleOp"> {
   }];
 }
 
+def TritonLowerStructs : Pass<"triton-lower-structs", "mlir::ModuleOp"> {
+  let summary = "Lower custom struct/array types to byte-offset pointer arithmetic";
+
+  let description = [{
+    Rewrites `tt.struct_gep` / `tt.array_gep` into byte-offset address
+    arithmetic (`tt.ptr_to_int` + `arith.addi`/`arith.muli` + `tt.int_to_ptr`)
+    and rewrites pointer types whose pointee is a struct/array into opaque byte
+    pointers, so that no custom aggregate type reaches a backend.
+  }];
+
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect"
+  ];
+}
+
 #endif
