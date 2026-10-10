@@ -142,6 +142,8 @@ class BackendInstaller:
         if not os.path.exists(tools_dir):
             tools_dir = None
 
+        helper.prepare_backend_runtime_files(backend_name, backend_src_dir, get_cmake_dir())
+
         for file in ["compiler.py", "driver.py"]:
             assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
 
@@ -496,7 +498,7 @@ class CMakeBuild(build_ext):
         # with an actionable message otherwise. Done here (build_ext) rather than at
         # import so non-build commands don't run the check.
         helper.check_pybind11_abi()
-        if active_backend not in ("xpu", ):
+        if active_backend not in ("xpu", "spacemit"):
             download_and_copy_dependencies()
 
         try:
@@ -552,7 +554,7 @@ class CMakeBuild(build_ext):
             "-G", "Ninja",  # Ninja is much faster than make
             "-DCMAKE_MAKE_PROGRAM=" +
             ninja_dir,  # Pass explicit path to ninja otherwise cmake may cache a temporary path
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "-DLLVM_ENABLE_WERROR=ON",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",  # flagtree: "-DLLVM_ENABLE_WERROR=ON" move to setup_helper.py
             "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + extdir, "-DTRITON_BUILD_PYTHON_MODULE=ON",
             "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable, "-DPython3_INCLUDE_DIR=" + python_include_dir,
             "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),

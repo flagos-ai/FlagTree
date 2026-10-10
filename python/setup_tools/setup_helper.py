@@ -25,6 +25,8 @@ import shutil
 import sys
 import sysconfig
 import functools
+import glob
+from collections import defaultdict
 from pathlib import Path
 import hashlib
 from distutils.sysconfig import get_python_lib
@@ -84,6 +86,76 @@ def init_backends(backend_installer):
             *backend_installer.copy_externals(),
         ]
     return backends
+
+
+def prepare_backend_runtime_files(backend_name, backend_src_dir, cmake_dir):
+    """Vendor runtime files required by a backend into its package tree."""
+    if backend_name != "spacemit":
+        return
+
+    backend_dir = os.path.join(backend_src_dir, "backend")
+    bin_dir = os.path.join(backend_dir, "bin")
+    if os.path.isdir(bin_dir):
+        spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR")
+        if spine_mlir_install_dir:
+            for bin_file in ("llc", "spine-opt", "mlir-translate", "opt"):
+                src = os.path.join(spine_mlir_install_dir, "bin", bin_file)
+                if os.path.exists(src):
+                    shutil.copy(src, os.path.join(bin_dir, bin_file))
+                    print(f"[spacemit] Copied {bin_file} to backend/bin/")
+
+        # spine-triton-opt is built by this backend rather than shipped in
+        # SPINE_MLIR_INSTALL_DIR. Copy it when reusing an existing build tree.
+        spine_triton_opt_src = os.path.join(str(cmake_dir), "third_party", "spacemit", "tools", "spine-triton-opt",
+                                            "spine-triton-opt")
+        if os.path.exists(spine_triton_opt_src):
+            dst = os.path.join(bin_dir, "spine-triton-opt")
+            shutil.copy(spine_triton_opt_src, dst)
+            os.chmod(dst, 0o755)
+            print("[spacemit] Copied spine-triton-opt to backend/bin/")
+
+    lib_dir = os.path.join(backend_dir, "lib")
+    if os.path.isdir(lib_dir):
+        so_file_list = []
+        spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR")
+        if spine_mlir_install_dir:
+            for pattern in ("libSpeIR*.so*", "libspine_tcm.so*"):
+                so_file_list.extend(glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern)))
+
+        spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR")
+        if spine_runtime_install_dir:
+            so_file_list.extend(glob.glob(os.path.join(spine_runtime_install_dir, "lib", "libspert.so*")))
+
+        lib_groups = defaultdict(list)
+        for so_file in so_file_list:
+            basename = os.path.basename(so_file)
+            lib_groups[basename.split(".so")[0]].append(so_file)
+        for files in lib_groups.values():
+            real_file = max(files, key=lambda f: len(os.path.basename(f)))
+            real_base = os.path.basename(real_file)
+            shutil.copy(os.path.realpath(real_file), os.path.join(lib_dir, real_base))
+            print(f"[spacemit] Copied {real_base} to backend/lib/")
+            # Recreate the SONAME symlink chain so transitive dependencies
+            # such as libspert.so.0 resolve to the versioned real file.
+            for so_file in files:
+                link_base = os.path.basename(so_file)
+                if link_base == real_base:
+                    continue
+                link_path = os.path.join(lib_dir, link_base)
+                if os.path.islink(link_path) or os.path.exists(link_path):
+                    os.unlink(link_path)
+                os.symlink(real_base, link_path)
+                print(f"[spacemit] Symlink {link_base} -> {real_base}")
+
+    spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR")
+    if spine_runtime_install_dir:
+        include_dir = os.path.join(backend_dir, "include", "SpineRuntime")
+        os.makedirs(include_dir, exist_ok=True)
+        for header in ("spert.hpp", "spert_engine.hpp", "spert_abi.h"):
+            src = os.path.join(spine_runtime_install_dir, "include", header)
+            if os.path.exists(src):
+                shutil.copy(src, os.path.join(include_dir, header))
+                print(f"[spacemit] Vendored {header} from spine-runtime")
 
 
 # flagtree: extend yield "triton.backends.{backend.name}"
@@ -185,6 +257,8 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args += ["-DEDITABLE_MODE=ON"]
     if flagtree_backend not in configs.default_backends:
         cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
+    if flagtree_backend != "spacemit":
+        cmake_args += ["-DLLVM_ENABLE_WERROR=ON"]
     return cmake_args
 
 
