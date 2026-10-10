@@ -1,5 +1,6 @@
 add_triton_library(CommonIRToHIVM
   CommonIRToHIVM.cpp
+  ReduceSumStrengthPass.cpp
 
   DEPENDS
   CommonIRToHIVMConversionPassIncGen
@@ -15,4 +16,5 @@ add_triton_library(CommonIRToHIVM
   MLIRMemRefDialect
   MLIRTensorDialect
   MLIRBufferizationDialect
+  MLIRArithDialect
 )

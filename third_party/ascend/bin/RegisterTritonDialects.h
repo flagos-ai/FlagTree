@@ -1,5 +1,6 @@
 #pragma once
 #include "ascend/include/AutoBlockify/Passes.h"
+#include "ascend/include/CommonIRToHIVM/Passes.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
 #include "ascend/include/TritonToAnnotation/Passes.h"
 #include "ascend/include/TritonToHFusion/Passes.h"
@@ -112,6 +113,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonToHFusionPasses();
   mlir::triton::registerTritonToLLVMPasses();
   mlir::triton::registerAutoBlockifyPasses();
+  mlir::triton::registerCommonIRToHIVMPasses();
   mlir::triton::cfg::registerTritonToGraphPasses();
   mlir::triton::registerBubbleUpOperationPass();
 

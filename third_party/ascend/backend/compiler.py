@@ -154,6 +154,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         ascend.passes.ttir.add_bubble_up_operation(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
 
+        ascend.passes.ttir.add_reduce_sum_strength(pm, metadata["enable_reduce_sum_strength"], 2)
         ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, enable_nd2nz_on_vector, enable_select_analysis,
                                                 compile_on_910_95)
 
@@ -901,6 +902,13 @@ class NPUOptions:
     enable_persistent: bool = False
     optimize_epilogue: bool = False
     enable_fp_fusion: bool = True
+    # Reduce sum strength: rewrites an add-reduce (e.g. tl.sum) on a
+    # large power-of-two reduce dim into "pre-add the two halves with vector
+    # adds, then reduce the halved tensor". This reorders floating-point
+    # addition, so at low precision (f16/bf16, ~10/8 mantissa bits) the reduce
+    # result may differ from the original summation order by 1~2 ulp. Enable
+    # only when such rounding-order changes are acceptable. Off by default.
+    enable_reduce_sum_strength: bool = False
     allow_fp8e4nv: bool = False
     auto_tile_and_bind_subblock: bool = True
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e4b15", "fp8e4nv", "fp8e4b8", "fp8e5b16")
