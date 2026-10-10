@@ -129,7 +129,7 @@ public:
                                         rewriter.getIndexAttr(0));
     SmallVector<OpFoldResult> sizes;
     SmallVector<OpFoldResult> strides(inputType.getRank(),
-                                       rewriter.getIndexAttr(1));
+                                      rewriter.getIndexAttr(1));
     sizes.reserve(inputType.getRank());
     for (int64_t dim = 0; dim < inputType.getRank(); ++dim)
       sizes.push_back(rewriter.getIndexAttr(halfShape[dim]));
