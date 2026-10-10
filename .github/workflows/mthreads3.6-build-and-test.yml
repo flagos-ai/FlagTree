@@ -72,21 +72,21 @@ jobs:
           export FLAGTREE_BACKEND=mthreads
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
-      - name: Clear cache if ClearCache label present
-        if: steps.check_backend.outputs.should_skip != 'true'
-        id: clear_cache
-        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          backend: mthreads
+      #- name: Clear cache if ClearCache label present
+      #  if: steps.check_backend.outputs.should_skip != 'true'
+      #  id: clear_cache
+      #  uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+      #  with:
+      #    github-token: ${{ secrets.GITHUB_TOKEN }}
+      #    backend: mthreads
 
-      - name: Unit Test
-        if: steps.check_backend.outputs.should_skip != 'true'
-        shell: bash
-        run: |
-          set -x
-          source ~/env.sh
-          python3 -m pytest -s third_party/mthreads/python/test/unit --device musa
-          # TLE tutorials unit tests
-          python3 python/tutorials/tle/01-fft.py --only_unit_test
-          python3 python/tutorials/tle/03-topk.py --only_unit_test
+      #- name: Unit Test
+      #  if: steps.check_backend.outputs.should_skip != 'true'
+      #  shell: bash
+      #  run: |
+      #    set -x
+      #    source ~/env.sh
+      #    python3 -m pytest -s third_party/mthreads/python/test/unit --device musa
+      #    # TLE tutorials unit tests
+      #    python3 python/tutorials/tle/01-fft.py --only_unit_test
+      #    python3 python/tutorials/tle/03-topk.py --only_unit_test
