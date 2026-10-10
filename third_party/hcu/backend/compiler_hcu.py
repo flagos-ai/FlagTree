@@ -385,6 +385,9 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, options):
+        # flagtree tle raw: dushmemx_cumodule_init runs after the hsaco is loaded.
+        kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
+        metadata["kernel_init_hooks"] = kernel_init_hooks.split(",") if kernel_init_hooks else []
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -551,6 +554,18 @@ class HIPBackend(BaseBackend):
         passes.convert.add_index_to_llvmir(pm)
 
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
+        # flagtree tle raw: fill deferred HIP call stubs, then inline dsl regions
+        # before TritonGPU->LLVM so no tle.dsl_region survives.
+        from .deferred_raw import (
+            consume_link_sources,
+            deferred_raw_materialize,
+            finish_deferred_raw_materialize,
+        )
+        deferred_raw_materialize(pm, mod)
+        tle.raw_passes.add_tle_dsl_region_inline(pm)
+        link_sources = consume_link_sources()
+        if link_sources:
+            metadata["hcu_raw_link_sources"] = link_sources
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if HIPBackend.instrumentation:
             HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
@@ -600,6 +615,7 @@ class HIPBackend(BaseBackend):
         # TritonDistributed Extension: libdevice -> llvm
         distributed.passes.ttgpuir.hcu.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod, 'make_llir')
+        finish_deferred_raw_materialize()
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it
@@ -643,7 +659,11 @@ class HIPBackend(BaseBackend):
         total_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
 
         # Set kernel attributes first given this may affect later optimizations.
-        fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
+        # tle.raw leaves an internal device function in the module until LLVM
+        # inlines it. The kernel is the unique externally linked definition.
+        defs = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
+        kernels = [fn for fn in defs if fn.is_external_linkage()]
+        fns = kernels if len(kernels) == 1 else defs
         # If wdra is enabled, this attribute is required by the LLVM backend.
         if options.wdra_enabled:
             fns[0].add_fn_attr("hcu-wdra-waves-per-tg", str(total_num_warps))
@@ -730,6 +750,20 @@ class HIPBackend(BaseBackend):
         # Find kernel names (there should only be one)
         # We get the name at the last possible step to accommodate `triton.compile`
         # on user-provided LLVM
+        link_sources = metadata.get("hcu_raw_link_sources")
+        # hipcc's device compiler (dcc) is what vectorizes HCU HIP. aillvm
+        # clang drops those target features and leaves a scalar loop.
+        # dcc 17 rejects Triton's buffer-resource intrinsic
+        # (llvm.amdgcn.make.buffer.rsrc.p8.p1). call_smem kernels load and
+        # store through that intrinsic, so those modules stay on aillvm.
+        kernel_ir = str(src)
+        kernel_uses_buffer_rsrc = "llvm.amdgcn.make.buffer.rsrc" in kernel_ir
+        dcc = os.environ.get("TRITON_HIP_DCC_PATH", "/opt/dtk/dcc/bin/dcc")
+        use_dcc = bool(link_sources) and os.path.isfile(dcc) and not kernel_uses_buffer_rsrc
+        metadata["hcu_raw_dcc"] = use_dcc
+        if link_sources:
+            from .deferred_raw import link_raw_bitcode
+            src = link_raw_bitcode(kernel_ir, link_sources, options.arch)
         names = re.findall(r"define amdgpu_kernel void @([a-zA-Z_][a-zA-Z0-9_]*)", src)
         assert len(names) == 1
         metadata["name"] = names[0]
@@ -744,6 +778,9 @@ class HIPBackend(BaseBackend):
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
+        llir_file = ""
+        asm_file = ""
+        amdgcn = ""
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
@@ -751,8 +788,21 @@ class HIPBackend(BaseBackend):
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
 
-            clang_path = HIPBackend.path_to_rocm_clang()
-            clang_args = HIPBackend._get_clang_args(metadata, options) + flags
+            if use_dcc:
+                # Same device compiler hipcc uses, so the linked HIP bitcode
+                # keeps the codegen a pure HIP build would get. DUSHMEM's
+                # device bitcode is built +sramecc. Textual asm from that IR
+                # fails to assemble (v_writelane_b32 / m0), so the hsaco step
+                # LTO-links this file the way hipcc links libdushmem_device.
+                mcpu = options.arch
+                if "+sramecc" in str(src) and "sramecc" not in mcpu:
+                    mcpu = f"{mcpu}:sramecc+"
+                    metadata["hcu_raw_lto"] = True
+                clang_path = dcc
+                clang_args = ["-target", hcu.TARGET_TRIPLE, f"-mcpu={mcpu}", "-O3"]
+            else:
+                clang_path = HIPBackend.path_to_rocm_clang()
+                clang_args = HIPBackend._get_clang_args(metadata, options) + flags
 
             # Compile to ASM
             asm_command = [clang_path] + clang_args + [llir_file, "-S", "-o", asm_file]
@@ -771,10 +821,12 @@ class HIPBackend(BaseBackend):
             print(f"File operation failed: {str(e)}")
             raise HSACOError(f"File operation failed: {str(e)}") from e
         finally:
-            # Clean up temporary files
-            for file in [llir_file, asm_file]:
-                if os.path.exists(file):
-                    os.remove(file)
+            if metadata.get("hcu_raw_lto") and llir_file:
+                metadata["hcu_raw_linked_ll"] = llir_file
+            elif llir_file and os.path.exists(llir_file):
+                os.remove(llir_file)
+            if asm_file and os.path.exists(asm_file):
+                os.remove(asm_file)
         if knobs.hcu.dump_amdgcn:
             print("// -----// HCUGCN Dump //----- //")
             print(amdgcn)
@@ -793,12 +845,75 @@ class HIPBackend(BaseBackend):
 
             hsaco_file = tempfile.mktemp(suffix=".hsaco")
 
-            clang_path = HIPBackend.path_to_rocm_clang()
-            clang_args = HIPBackend._get_clang_args(metadata, options)
-
-            # Compile to HSACO
-            hsaco_command = [clang_path] + clang_args + [asm_file, "-x", "assembler", "-o", hsaco_file]
-            subprocess.run(hsaco_command, check=True, capture_output=True, text=True)
+            linked_ll = metadata.pop("hcu_raw_linked_ll", None)
+            if metadata.pop("hcu_raw_lto", None) and linked_ll:
+                # hipcc device-links DUSHMEM with lld LTO. The text assembler
+                # rejects some of that codegen.
+                hsaco_file = tempfile.mktemp(suffix=".hsaco")
+                lld_candidates = [
+                    *sorted(Path("/opt").glob("dtk*/llvm/bin/lld")),
+                    Path("/opt/dtk/llvm/bin/lld"),
+                ]
+                lld = next((path for path in lld_candidates if path.is_file()), None)
+                if lld is None:
+                    raise HSACOError("llvm lld for DUSHMEM LTO was not found")
+                bitcode = hsaco_file + ".bc"
+                llvm_as = Path("/opt/dtk/aillvm/bin/llvm-as")
+                subprocess.run([str(llvm_as), linked_ll, "-o", bitcode], check=True, capture_output=True, text=True)
+                link_command = [
+                    str(lld),
+                    "-flavor",
+                    "gnu",
+                    "-m",
+                    "elf64_amdgpu",
+                    "--no-undefined",
+                    "-shared",
+                    "-plugin-opt=-amdgpu-internalize-symbols",
+                    f"-plugin-opt=mcpu={options.arch}",
+                    "-plugin-opt=O3",
+                    "--lto-CGO3",
+                    "-plugin-opt=-mattr=+sramecc",
+                    "-plugin-opt=-amdgpu-early-inline-all=true",
+                    "-plugin-opt=-amdgpu-function-calls=false",
+                    "-o",
+                    hsaco_file,
+                    bitcode,
+                ]
+                try:
+                    subprocess.run(link_command, check=True, capture_output=True, text=True)
+                finally:
+                    if os.path.exists(linked_ll):
+                        os.remove(linked_ll)
+            elif metadata.get("hcu_raw_dcc"):
+                # dcc asm is not accepted by aillvm clang, and dcc itself will
+                # try to host-link unless we assemble with -c and then make
+                # the shared code object the loader expects.
+                clang_path = os.environ.get("TRITON_HIP_DCC_PATH", "/opt/dtk/dcc/bin/dcc")
+                obj_file = hsaco_file + ".o"
+                # Linked HIP (dushmem device bc) can emit gfx936:sramecc+ even
+                # when the Triton arch is gfx936. Assemble with that target id.
+                target_id = options.arch
+                match = re.search(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa--([^"]+)"', str(src))
+                if match:
+                    target_id = match.group(1)
+                asm_command = [
+                    clang_path, "-c", "-target", hcu.TARGET_TRIPLE, f"-mcpu={target_id}", "-x", "assembler",
+                    asm_file, "-o", obj_file
+                ]
+                subprocess.run(asm_command, check=True, capture_output=True, text=True)
+                lld = Path(clang_path).with_name("ld.lld")
+                if not lld.is_file():
+                    found = sorted(Path("/opt").glob("dtk*/dcc/bin/ld.lld"))
+                    if not found:
+                        raise HSACOError("dcc ld.lld was not found")
+                    lld = found[-1]
+                link_command = [str(lld), "-shared", "-o", hsaco_file, obj_file]
+                subprocess.run(link_command, check=True, capture_output=True, text=True)
+            else:
+                clang_path = HIPBackend.path_to_rocm_clang()
+                clang_args = HIPBackend._get_clang_args(metadata, options)
+                hsaco_command = [clang_path] + clang_args + ["-x", "assembler", asm_file, "-o", hsaco_file]
+                subprocess.run(hsaco_command, check=True, capture_output=True, text=True)
 
             with open(hsaco_file, "rb") as fd_out:
                 ret = fd_out.read()

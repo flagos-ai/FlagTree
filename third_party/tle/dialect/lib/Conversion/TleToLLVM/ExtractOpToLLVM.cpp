@@ -194,12 +194,19 @@ LogicalResult ExtractPtrOpConversion::matchAndRewrite(
     tle::ExtractPtrOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
   auto input = adaptor.getInput();
-  if (isa<LLVM::LLVMPointerType>(input.getType())) {
+  auto inPtr = dyn_cast<LLVM::LLVMPointerType>(input.getType());
+  auto outPtr = dyn_cast<LLVM::LLVMPointerType>(op.getType());
+  if (!inPtr || !outPtr)
+    return failure();
+  // Triton global pointers are address space 1. HIP and CUDA device functions
+  // often take generic pointers. A plain replace would leave an unrealized
+  // cast that cannot be translated to LLVM IR.
+  if (inPtr == outPtr) {
     rewriter.replaceOp(op, input);
     return success();
-  } else {
-    return failure();
   }
+  rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, outPtr, input);
+  return success();
 }
 
 void tle::populateExtractOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
