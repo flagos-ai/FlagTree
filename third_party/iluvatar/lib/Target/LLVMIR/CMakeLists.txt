@@ -1,4 +1,4 @@
-add_triton_library(TritonLLVMIR
+flagtree_add_iluvatar_library(TritonLLVMIR
         LLVMDIScope.cpp
         LLVMDILocalVariable.cpp
         LLVMIRBreakPhiStruct.cpp

@@ -1,4 +1,4 @@
-add_triton_library(TritonInstrumentToLLVM
+flagtree_add_iluvatar_library(TritonInstrumentToLLVM
     InstrumentationToLLVM.cpp
 
     LINK_LIBS PUBLIC

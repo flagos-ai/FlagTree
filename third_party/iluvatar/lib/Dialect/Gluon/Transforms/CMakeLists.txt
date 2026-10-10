@@ -1,4 +1,4 @@
-add_triton_library(GluonTransforms
+flagtree_add_iluvatar_library(GluonTransforms
   Canonicalize.cpp
   Inline.cpp
   ResolveAutoEncodings.cpp

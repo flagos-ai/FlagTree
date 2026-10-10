@@ -1,4 +1,4 @@
-add_triton_library(TritonAnalysis
+flagtree_add_iluvatar_library(TritonAnalysis
   AxisInfo.cpp
   Allocation.cpp
   Membar.cpp
