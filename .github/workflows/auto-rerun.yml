@@ -1,0 +1,108 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Auto-Rerun
+
+on:
+  workflow_run:
+    workflows:
+      - "Mthreads3.6-Build-And-Test"
+      # Add more workflow names here if needed, e.g.:
+      # - "Another-Workflow-Name"
+    types: [completed]
+
+permissions:
+  actions: write      # Required to trigger rerun via the API
+  contents: read
+
+jobs:
+  rerun:
+    # Only act on failed runs that have not exceeded the retry budget.
+    # run_attempt is incremented by BOTH automatic (watchdog) and manual reruns,
+    # so once it reaches 5 the watchdog stops intervening.
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt < 5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check action download timeout in "Set up job"
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=${{ github.event.workflow_run.id }}
+          REPO=${{ github.repository }}
+
+          echo "Checking run $RUN_ID (run_attempt=${{ github.event.workflow_run.run_attempt }}) ..."
+
+          # Fetch failed job ids, with a few retries to survive transient API 503s.
+          failed_job_ids=""
+          for i in 1 2 3; do
+            failed_job_ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+              --jq '.jobs[] | select(.conclusion=="failure") | .id' 2>/dev/null || true)
+            if [ -n "$failed_job_ids" ]; then
+              break
+            fi
+            echo "gh api .../jobs returned empty (attempt $i), retrying in 5s..."
+            sleep 5
+          done
+
+          if [ -z "$failed_job_ids" ]; then
+            echo "No failed jobs found (or API unavailable). Skip rerun."
+            echo "should_rerun=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Failed job ids:"
+          echo "$failed_job_ids"
+
+          should_rerun=false
+          for job_id in $failed_job_ids; do
+            echo "----- Fetching log for job $job_id -----"
+            log=$(gh api "repos/$REPO/actions/jobs/$job_id/logs" 2>/dev/null || true)
+
+            echo "----- Log size: $(echo "$log" | wc -c) bytes -----"
+
+            # Match only the final "retries exhausted" errors, not the per-attempt
+            # Warning lines. The runner emits these only after giving up:
+            #   Error: Failed to download archive '...' after N attempts.
+            #   Error: Action '...' download has timed out.
+            if echo "$log" | grep -qE \
+              "Failed to download archive .* after [0-9]+ (attempts|retries)|Action .* download has timed out"; then
+              echo "MATCH: job $job_id failed during Set up job (action download exhausted retries)."
+              should_rerun=true
+              break
+            else
+              echo "NO MATCH for job $job_id"
+            fi
+          done
+
+          echo "should_rerun=$should_rerun" >> "$GITHUB_OUTPUT"
+
+      - name: Rerun failed jobs
+        if: steps.check.outputs.should_rerun == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=${{ github.event.workflow_run.id }}
+          REPO=${{ github.repository }}
+          echo "Set up job download failure detected. Rerunning failed jobs of run $RUN_ID ..."
+          gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"
+          echo "Rerun triggered."
