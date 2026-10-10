@@ -11,6 +11,7 @@ custom_ops/
 ├── build_custom_ops.sh             # 手动重新编译统一 bitcode
 ├── custom_ops.bc                   # 所有注册算子共用的 bitcode，编译后生成
 ├── mem_ops/
+│   ├── data_copy_gm_to_l1_nd2nz_int8.cpp # Single INT8 GM → L1 ND2NZ transfer
 │   ├── duplicate.cpp               # 将一个变量或立即数复制多次并填充到向量中，暂只支持 tensor 高维切分计算中 mask 逐比特模式
 │   ├── gather_gm_to_l1.cpp         # GM → L1/CBUF 按索引行 gather
 │   ├── gather_gm_to_ub.cpp         # GM → UB 按索引行 gather
@@ -66,6 +67,7 @@ output0, output1 = tle.dsa.ascend.raw(
 | --- | --- | --- | --- | --- |
 | `duplicate_bitwise_mask` | VECTOR / V | 将一个变量或立即数复制多次并填充到向量中 | 需要填充数据的向量，对应 Ascend C `const LocalTensor<T>& dst` | `mem_ops/ duplicate.cpp` |
 | `gather_gm_to_l1` | CUBE / MTE2 | 按索引将 GM 连续张量中的 half/bf16 数据行收集到 L1/CBUF，并完成 ND2NZ 搬运 | L1/CBUF half/bf16 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_l1.cpp` |
+| `data_copy_gm_to_l1_nd2nz_int8` | CUBE / MTE2 | One signed INT8 GM → L1 ND2NZ transfer | Logical 2D INT8 output, consumed by `tl.dot` as 4D L1 NZ | `mem_ops/data_copy_gm_to_l1_nd2nz_int8.cpp` |
 | `gather_gm_to_ub` | VECTOR / MTE2 | 按索引将 GM 连续张量中的 half/bf16 数据行收集到 UB | UB half/bf16 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_ub.cpp` |
 | `gather_mask_builtin_pattern` | VECTOR / V | 以内置固定模式对应的二进制对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中 | 目的操作数，`out[0]` 对应 Ascend C `const LocalTensor<T>& dst`, `out[1]` 对应 Ascend C `uint64_t& rsvdCnt` | `mem_ops/gather_mask.cpp` |
 | `gather_mask_custom_pattern` | VECTOR / V | 以用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中 | 目的操作数，`out[0]`对应 Ascend C `const LocalTensor<T>& dst`, `out[1]`对应 Ascend C `uint64_t& rsvdCnt` | `mem_ops/gather_mask.cpp` |
@@ -100,6 +102,64 @@ dst = tle.dsa.ascend.raw(
 - `dst`：UB 一维 half/bf16/fp32 输出
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_duplicate`）。
+
+### `data_copy_gm_to_l1_nd2nz_int8`
+
+```python
+tile = tle.dsa.ascend.raw(
+    "data_copy_gm_to_l1_nd2nz_int8",
+    src, nd_num, n_value, d_value, src_nd_matrix_stride, src_d_value,
+    dst_nz_c0_stride, dst_nz_n_stride, dst_nz_matrix_stride,
+    out=tile,
+)
+```
+
+This is the signed INT8 overload of CANN's
+`DataCopy(dstLocal, srcGlobal, Nd2NzParams)`. All eight dav_c220 struct fields
+are exposed with their original `uint16_t` types. Static parameters are
+checked against CANN 9.1 `CheckNd2NzParamsCommon`:
+
+| Parameter | Range | Meaning |
+| --- | --- | --- |
+| `nd_num` | 0–4095 | Number of source matrices |
+| `n_value` | 0–16384 | Rows per source matrix |
+| `d_value` | 0–65535 | Columns per source matrix |
+| `src_nd_matrix_stride` | 0–65535 | Source matrix stride, in INT8 elements |
+| `src_d_value` | 1–65535 | Source row stride, in INT8 elements |
+| `dst_nz_c0_stride` | 1–16384 | Destination stride between C0 blocks, in 32-byte units |
+| `dst_nz_n_stride` | 1–16384 | Destination row stride, in 32-byte units |
+| `dst_nz_matrix_stride` | 0–65535 | Destination matrix stride, in INT8 elements |
+
+`src` must be a rank-two GM block pointer and `out` a logical rank-two INT8
+tensor. A following `tl.dot` anchors its physical L1 NZ layout to
+`[ceil(cols / 32), ceil(rows / 16), 16, 32]`; a standalone raw-output-to-store
+graph is not supported. Static destination strides are checked against that
+buffer's capacity using CANN's overflow formula. Dynamic parameters must
+satisfy the same ranges and bounds at runtime. Source bounds, source strides,
+destination alignment, and initialization of any untouched elements remain
+the caller's responsibility. Zero `nd_num`, `n_value`, or `d_value` is a no-op.
+
+For an aligned `[M, K]` tile with contiguous columns and a valid `row_stride`,
+the parameter tuple is `(1, M, K, 0, row_stride, M, 1, 1)`. The source block
+pointer carries the starting offset. A row stride above 65535 must be handled
+outside this primitive, rather than narrowed to uint16.
+
+The C++ implementation follows CANN 9.1
+`dav_c220/kernel_operator_data_copy_impl.h::DataCopyGM2L1ND2NZImplBase` and
+calls `copy_gm_to_cbuf_multi_nd2nz_b8` once. It contains no allocation, loop,
+matrix multiply, scale application, or pipeline barrier. Pipeline ordering
+is the caller/compiler's responsibility. On CANN 9.1, use
+`enable_legacy_insert_load_store_for_mix_cv=True` for the same custom MTE2
+output-memory-scope inference issue documented for `gather_gm_to_l1` below.
+
+`python/tutorials/tle/custom/test_nd2nz_int8.py` checks registration and exact
+INT8 copy results through an identity matrix multiply, including source
+padding, nonzero offsets, and output guards. Device cases use `nd_num=1`.
+Dynamic parameters have registration-only coverage; multiple-matrix copies
+have not been device-validated. Its optional `--benchmark`
+compares this primitive with `dsa.alloc/copy/to_tensor` using identical
+identity-dot consumers and compiler options. It does not benchmark a whole
+quantized operator or hide application packing costs.
 
 ### `gather_gm_to_l1`
 

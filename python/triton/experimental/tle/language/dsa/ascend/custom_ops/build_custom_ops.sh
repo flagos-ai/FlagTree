@@ -34,6 +34,7 @@ fi
 # bitcode: "<src>::<arch>" — arch is the ccec aicore target for that op.
 CUSTOM_OPS=(
   "mem_ops/duplicate.cpp:dav-c220-vec"
+  "mem_ops/data_copy_gm_to_l1_nd2nz_int8.cpp:dav-c220-cube"
   "mem_ops/gather_gm_to_l1.cpp:dav-c220-cube"
   "mem_ops/gather_gm_to_ub.cpp:dav-c220-vec"
   "mem_ops/gather_mask.cpp:dav-c220-vec"

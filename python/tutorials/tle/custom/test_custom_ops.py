@@ -7,6 +7,7 @@ Minimal standalone correctness checks for every op registered in
 custom_ops.bc, one group per op:
 
   - gather_gm_to_l1      (fp16 / bf16): verified through a following tl.dot
+  - data_copy_gm_to_l1_nd2nz_int8: checked with an INT8 identity dot
   - gather_gm_to_ub      (fp16 / bf16): verified by storing the result to GM
   - sort_1d_pack         (all three sort paths BASE / S4096_K129_512 /
                           S4096_K1_128_K2048, plus an index_offset case)
@@ -680,6 +681,7 @@ def test_duplicate():
 def main():
     from test_cast_ops import main as test_cast_ops
     from test_compare_scalar import main as test_compare_scalar
+    from test_nd2nz_int8 import main as test_nd2nz_int8
 
     for torch_dtype, tol in ((torch.float16, 1e-3), (torch.bfloat16, 1e-2)):
         test_gather_gm_to_l1(torch_dtype, tol)
@@ -689,6 +691,7 @@ def main():
     test_unpack_sort()
     test_compare_scalar()
     test_cast_ops()
+    test_nd2nz_int8()
     test_sort32()
     test_mrgsort()
     test_gather_mask()
