@@ -9,10 +9,19 @@ from triton.flagmega.targets.ntt_options import NttTargetOptions, PyNttTargetOpt
 from triton.flagmega.targets.pyntt import PyNttTarget
 from triton.flagmega.targets.machine import NttTargetMachine
 from triton.flagmega.targets.nvidia.machine import NvidiaSm90Machine
+from triton.flagmega.targets.iluvatar_bi_v150 import (
+    IluvatarBiV150Capability,
+    IluvatarBiV150Machine,
+    IluvatarBiV150Target,
+)
 
 register_target(NvidiaSm90Target())
+register_target(IluvatarBiV150Target())
 
 __all__ = [
+    "IluvatarBiV150Capability",
+    "IluvatarBiV150Machine",
+    "IluvatarBiV150Target",
     "NttTargetOptions",
     "PyNttTargetOptions",
     "NttTargetMachine",

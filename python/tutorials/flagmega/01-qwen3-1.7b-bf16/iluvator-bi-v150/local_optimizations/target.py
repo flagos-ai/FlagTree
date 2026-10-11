@@ -72,12 +72,18 @@ def create_target(*, glu_reduction_group=32):
     # but expose it here so select_tir can actually materialize the WS path.
     async_qkv = "tir.qkv_parallel_linear.packed_gemv_async_smem_pipeline"
     qkv_preferences = tuple(preferences.get("qkv_parallel_linear", ()))
-    if async_qkv not in {value.id for value in implementations}:
-        raise RuntimeError("The BI-V150 async QKV implementation is unavailable")
-    preferences["qkv_parallel_linear"] = (
-        async_qkv,
-        *(candidate for candidate in qkv_preferences if candidate != async_qkv),
-    )
+    # That WS path currently deadlocks at runtime (ITERATION.md Trials 80-82:
+    # the `tle.pipe` + `warp_specialize` rendezvous is a primitive-level
+    # deadlock, not a megakernel interaction), so preferring it first makes
+    # this profile uncompilable. Keep the experiment opt-in until that defect
+    # is fixed; the shipping path is the non-p/c physical-order template.
+    if os.environ.get("FLAGMEGA_QKV_ASYNC") == "1":
+        if async_qkv not in {value.id for value in implementations}:
+            raise RuntimeError("The BI-V150 async QKV implementation is unavailable")
+        preferences["qkv_parallel_linear"] = (
+            async_qkv,
+            *(candidate for candidate in qkv_preferences if candidate != async_qkv),
+        )
     # Keep experimental attention variants opt-in until the full-model
     # graph/chat contract has a complete end-to-end measurement across prompt
     # shapes.

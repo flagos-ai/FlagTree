@@ -111,6 +111,57 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
             {"mode": "decode"},
             facts=portable,
         ),
+        # Warp-layout variants of the same token tiles: these choose how a
+        # token row's 128-wide reduction maps onto warps rather than how many
+        # tokens a program covers, so they are independent of `token_tile`.
+        TritonImplementation(
+            "tir.paged_attention_partial.decode_layout4",
+            "paged_attention_partial",
+            "decode_layout4",
+            {"token_tile": 16},
+            {"mode": "decode"},
+            facts=portable,
+        ),
+        TritonImplementation(
+            "tir.paged_attention_partial.decode_layout32",
+            "paged_attention_partial",
+            "decode_layout32",
+            {"token_tile": 32},
+            {"mode": "decode"},
+            facts=portable,
+        ),
+        # Larger token tiles. These templates
+        # (kernels/paged_attention_partial/decode_t128.py.jinja,
+        # decode_t256.py.jinja, decode_layout4/32 above and
+        # decode_t128_layout32 below) were in the tree but had no registration
+        # entry, so they were unselectable. ITERATION.md's t128 measurement
+        # records 13.276/13.289/14.374/16.330 ms/token at contexts
+        # 1/128/1024/2048 against decode_t16's 12.128/13.119/20.623/29.114 --
+        # t16 wins at short context and collapses at long, t128 is flat.
+        TritonImplementation(
+            "tir.paged_attention_partial.decode_t128",
+            "paged_attention_partial",
+            "decode_t128",
+            {"token_tile": 128},
+            {"mode": "decode"},
+            facts=portable,
+        ),
+        TritonImplementation(
+            "tir.paged_attention_partial.decode_t256",
+            "paged_attention_partial",
+            "decode_t256",
+            {"token_tile": 256},
+            {"mode": "decode"},
+            facts=portable,
+        ),
+        TritonImplementation(
+            "tir.paged_attention_partial.decode_t128_layout32",
+            "paged_attention_partial",
+            "decode_t128_layout32",
+            {"token_tile": 128},
+            {"mode": "decode"},
+            facts=portable,
+        ),
         TritonImplementation(
             "tir.paged_attention_combine.decode",
             "paged_attention_combine",
@@ -155,9 +206,17 @@ def portable_attention_preferences() -> Mapping[str, tuple[str, ...]]:
         "update_paged_attention_kv_cache": (
             "tir.update_paged_attention_kv_cache.decode",
         ),
+        # decode_t16 stays first: it is the measured best at short context,
+        # which is what batch-one decode serves. The rest are ordered so a
+        # target that filters out earlier entries still lands on a legal tile.
         "paged_attention_partial": (
             "tir.paged_attention_partial.decode_t16",
+            "tir.paged_attention_partial.decode_layout4",
+            "tir.paged_attention_partial.decode_layout32",
             "tir.paged_attention_partial.decode_t32",
+            "tir.paged_attention_partial.decode_t256",
+            "tir.paged_attention_partial.decode_t128",
+            "tir.paged_attention_partial.decode_t128_layout32",
         ),
         "paged_attention_combine": ("tir.paged_attention_combine.decode",),
         "paged_attention_gated_combine": (

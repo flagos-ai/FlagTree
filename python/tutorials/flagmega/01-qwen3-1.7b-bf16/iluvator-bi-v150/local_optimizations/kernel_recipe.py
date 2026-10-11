@@ -32,7 +32,13 @@ def select_tir(module, *, residual_kernel="direct"):
     # this trial added `..._tn64`; measure its effect the same way before
     # relying on it further.
     qkv = "tir.qkv_parallel_linear.packed_fused_gemv_tn64"
-    async_qkv = "tir.qkv_parallel_linear.packed_gemv_async_smem_pipeline"
+    # The async warp-specialized QKV pipeline deadlocks on this build
+    # (ITERATION.md Trials 80-82: the `tle.pipe` + `warp_specialize`
+    # rendezvous is a primitive-level runtime deadlock, not a megakernel
+    # interaction). Selecting it unconditionally makes this profile
+    # uncompilable, so keep it opt-in until that defect is fixed.
+    async_qkv = ("tir.qkv_parallel_linear.packed_gemv_async_smem_pipeline"
+                 if os.environ.get("FLAGMEGA_QKV_ASYNC") == "1" else None)
     # projection_wide (Trial 63): the site was de facto on the small
     # tiles via inherited ordering; force the largest registered packed
     # GEMV tile (tn64_bk256) the same way the glu override works.

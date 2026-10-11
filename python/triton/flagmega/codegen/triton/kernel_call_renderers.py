@@ -4868,6 +4868,12 @@ def _paged_attention_partial_call(raw) -> dict[str, object]:
         "partial_max": head_pointer(partial_max),
         "partial_sum": head_pointer(partial_sum),
         "partial_accumulator": head_pointer(partial_accumulator),
+        # Physical block count: the kernel clamps block_table entries against
+        # it, because the host driver refreshes only the leading columns per
+        # step and a stale tail entry would otherwise address outside the
+        # cache. The template referenced this field but the encoder never
+        # provided it, so this kernel failed to render at all.
+        "num_blocks": cache_shape[0],
         "num_layers": cache_shape[1],
         "num_query_heads": query_shape[head_axis],
         "num_kv_heads": cache_shape[-2],
@@ -5397,6 +5403,38 @@ def _dense_weight_access(
         )
     payload_width = shape[3]
     payload = f"(({n_coordinate}) % 8) * 16 + (({k_coordinate}) % 16)"
+    strides = tuple(int(value) for value in abi["scalar_storage_strides"])
+    if len(strides) != 4:
+        raise CodegenError(
+            "Scalar-physical k_major_n8_k16 RHS stride rank disagrees with its "
+            "logical shape."
+        )
+    if strides[2] == payload_width * strides[3]:
+        # The two trailing axes only carry one 128-element payload slot, and
+        # here they are contiguous, so splitting the slot across them is the
+        # identity: `(p // w) * (w * s) + (p % w) * s == p * s` for
+        # `0 <= p < 2 * w`. Emit the collapsed form. The split form is
+        # value-identical but not code-identical: Triton cannot fold `//`/`%`
+        # back through the stride multiply, so the weight load loses its
+        # provable contiguity and stops being treated as a contiguous stream.
+        # On BI-V150 the split form costs ~5 ms per token, dominated by the
+        # GLU and QKV weight traffic.
+        offset = emit_offset(
+            abi,
+            (
+                f"({k_coordinate}) // 16",
+                f"({n_coordinate}) // 8",
+                "0",
+                payload,
+            ),
+        )
+        zero_term = f"(0) * {strides[2]} + "
+        if zero_term not in offset:
+            raise CodegenError(
+                "Collapsed k_major_n8_k16 payload addressing did not emit the "
+                "expected zero group term."
+            )
+        return pointer, offset.replace(zero_term, "", 1)
     return pointer, emit_offset(
         abi,
         (
