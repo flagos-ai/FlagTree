@@ -897,10 +897,29 @@ class Qwen3ModelImporter:
             (config.hidden_size,),
             node_id="w_norm_weight",
         )
+        head_input = hidden
+        head_hidden_type = hidden_type
+        head_logits_bf16_type = logits_bf16_type
+        head_logits_type = logits_type
+        if self.execution_phase == "prefill" and tokens > 1:
+            # Only the last token's logits drive next-token prediction, so slice
+            # it out before the final norm + LM head: they then run at M=1 rather
+            # than M=num_tokens, dropping the 152K-vocab LM head's (fixed) cost
+            # ~num_tokens-fold. The per-layer work still covers every token.
+            head_hidden_type = tensor_type(DType.BFLOAT16, [1, config.hidden_size])
+            head_logits_bf16_type = tensor_type(DType.BFLOAT16, [1, config.vocab_size])
+            head_logits_type = tensor_type(DType.FLOAT32, [1, config.vocab_size])
+            head_input = builder.call(
+                "tensors.slice",
+                [hidden],
+                head_hidden_type,
+                id="prefill_last_hidden",
+                attrs={"starts": (tokens - 1,), "ends": (tokens,), "axes": (0,), "steps": (1,)},
+            )
         final_hidden = builder.call(
             "nn.rms_norm",
-            [hidden, final_norm_weight],
-            hidden_type,
+            [head_input, final_norm_weight],
+            head_hidden_type,
             id="final_norm",
             attrs={"epsilon": config.epsilon, "weight_bias": 0.0},
         )
@@ -916,21 +935,19 @@ class Qwen3ModelImporter:
         logits_bf16 = builder.call(
             "math.matmul",
             [final_hidden, lm_head_weight],
-            logits_bf16_type,
+            head_logits_bf16_type,
             id="lm_head",
             attrs={"transpose_a": False, "transpose_b": True},
         )
         logits = builder.call(
             "tensors.cast",
             [logits_bf16],
-            logits_type,
+            head_logits_type,
             id="logits",
             attrs={"dtype": DType.FLOAT32.value},
         )
         if self.execution_phase == "prefill":
-            # Prefill returns all-token logits without the greedy-sample
-            # (argmax) fusion, so the lm_head stays an un-fused M=num_tokens
-            # GEMM that the M>1 tensor-core (WMMA) path can claim.
+            # Prefill emits only the last token's logits (next-token prediction).
             builder.function("main", [input_ids, entry_state], [logits, state])
         else:
             next_token = builder.call(
