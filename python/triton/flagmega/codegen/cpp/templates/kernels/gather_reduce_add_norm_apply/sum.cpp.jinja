@@ -1,0 +1,175 @@
+// flagmega-kernel: gather_reduce_add_norm_apply/sum platform=generic
+{# Gather partial projections, add the residual, publish the value and its
+   statistic, then normalize -- a two-phase kernel split by a grid barrier.
+
+   Phase one must finish on every participating CTA before phase two can read
+   the statistic partials they wrote, which is why the barrier is internal to
+   this call rather than between two calls. `entry.phase_schedule` emits the
+   wrapper that separates them.
+
+   The rounding sequence matches the Triton form: the gathered projection is
+   rounded to the output dtype, the residual add is rounded again, and that
+   stored value -- not the fp32 sum -- is what the statistic squares. #}
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gather_reduce_add_norm_apply" and call.variant == "sum" %}
+static FTT_DEVICE void {{ call.symbol }}__partials({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    __shared__ float ftt_gather_square_partial[{{ block_threads }}];
+{% if call.use_mean %}
+    __shared__ float ftt_gather_mean_partial[{{ block_threads }}];
+{% endif %}
+    float gather_square_sum = 0.0f;
+{% if call.use_mean %}
+    float gather_mean_sum = 0.0f;
+{% endif %}
+    if ({{ call.participant_active | cppexpr }}) {
+        auto *const ftt_partial = {{ call.partial | cppexpr }};
+        auto *const ftt_addend = {{ call.addend | cppexpr }};
+        auto *const ftt_value_result = {{ call.value_result | cppexpr }};
+{# The Triton form strides this loop by work partition so each CTA covers a
+   slice; here the CTA's threads additionally split that slice. #}
+        for (ftt::dim_t gather_local_offsets =
+                 {{ call.work_partition_index | cppexpr }} * ftt_threads + ftt_thread;
+             gather_local_offsets < {{ call.local_capacity }}LL;
+             gather_local_offsets +=
+                 {{ call.work_partition_count | cppexpr }} * ftt_threads) {
+            if (!({{ call.active | cppexpr }})) {
+                continue;
+            }
+            float gather_projection = 0.0f;
+            for (ftt::dim_t gather_partial_lane = 0;
+                 gather_partial_lane < {{ call.partial_owner_count }}LL;
+                 ++gather_partial_lane) {
+                const ftt::dim_t gather_partial_owner =
+                    {{ call.partial_owner | cppexpr }};
+                gather_projection += ftt::to_float(ftt_partial[
+                    gather_partial_owner * {{ call.owner_stride }}LL
+                    + ({{ call.partial_offset | cppexpr }})]);
+            }
+            const float gather_rounded = ftt::to_float(
+                ftt::store_as(ftt_value_result, gather_projection));
+            const auto gather_value = ftt::store_as(
+                ftt_value_result,
+                gather_rounded
+                + ftt::to_float(ftt_addend[{{ call.addend_offset | cppexpr }}]));
+            ftt_value_result[{{ call.value_offset | cppexpr }}] = gather_value;
+            const float gather_value_fp32 = ftt::to_float(gather_value);
+            gather_square_sum += gather_value_fp32 * gather_value_fp32;
+{% if call.use_mean %}
+            gather_mean_sum += gather_value_fp32;
+{% endif %}
+        }
+    }
+{# Combine the threads' partials, then one thread publishes this CTA's slot. #}
+{# Two-stage tree reduction; see kernels/norm_stats/_function.cpp.jinja for the
+   measurement behind it. #}
+    gather_square_sum = ftt::arch::warp_reduce_sum(gather_square_sum);
+{% if call.use_mean %}
+    gather_mean_sum = ftt::arch::warp_reduce_sum(gather_mean_sum);
+{% endif %}
+    if ((ftt_thread % 64LL) == 0) {
+        ftt_gather_square_partial[ftt_thread / 64LL] = gather_square_sum;
+{% if call.use_mean %}
+        ftt_gather_mean_partial[ftt_thread / 64LL] = gather_mean_sum;
+{% endif %}
+    }
+    ftt::arch::cta_sync();
+    if (ftt_thread == 0 && ({{ call.participant_active | cppexpr }})) {
+        for (ftt::dim_t warp_index = 1;
+             warp_index < (ftt_threads / 64LL); ++warp_index) {
+            gather_square_sum += ftt_gather_square_partial[warp_index];
+{% if call.use_mean %}
+            gather_mean_sum += ftt_gather_mean_partial[warp_index];
+{% endif %}
+        }
+        auto *const ftt_stats_partials = {{ call.stats_partials | cppexpr }};
+{% if call.use_mean %}
+        ftt_stats_partials[{{ call.stats_writer_index | cppexpr }}] =
+            ftt::store_as(ftt_stats_partials, gather_mean_sum);
+{% endif %}
+        ftt_stats_partials[{{ call.stats_square_base }}LL
+                           + ({{ call.stats_writer_index | cppexpr }})] =
+            ftt::store_as(ftt_stats_partials, gather_square_sum);
+    }
+    ftt::arch::cta_sync();
+}
+
+
+static FTT_DEVICE void {{ call.symbol }}__finalize({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_stats_partials = {{ call.stats_partials | cppexpr }};
+{% if call.use_mean %}
+    float norm_mean_sum = 0.0f;
+{% endif %}
+    float norm_square_sum = 0.0f;
+    for (ftt::dim_t norm_owner_offsets = 0;
+         norm_owner_offsets < {{ call.stats_owner_count }}LL;
+         ++norm_owner_offsets) {
+{% if call.use_mean %}
+        norm_mean_sum += ftt::to_float(ftt_stats_partials[norm_owner_offsets]);
+{% endif %}
+        norm_square_sum += ftt::to_float(
+            ftt_stats_partials[{{ call.stats_square_base }}LL + norm_owner_offsets]);
+    }
+    const float norm_count = {{ call.normalization_size }}.0f;
+{% if call.use_mean %}
+    const float norm_mean = norm_mean_sum / norm_count;
+    const float norm_variance =
+        norm_square_sum / norm_count - norm_mean * norm_mean;
+{% else %}
+    const float norm_mean = 0.0f;
+    const float norm_variance = norm_square_sum / norm_count;
+{% endif %}
+    const float norm_inverse_std =
+        ftt::rsqrt(ftt::max(norm_variance, 0.0f) + {{ call.epsilon }}f);
+    if ({{ call.participant_active | cppexpr }}) {
+        auto *const ftt_value_result = {{ call.value_result | cppexpr }};
+        auto *const ftt_scale = {{ call.scale | cppexpr }};
+        auto *const ftt_norm_result = {{ call.norm_result | cppexpr }};
+{% if call.has_bias %}
+        auto *const ftt_bias = {{ call.bias | cppexpr }};
+{% endif %}
+        for (ftt::dim_t gather_local_offsets =
+                 {{ call.work_partition_index | cppexpr }} * ftt_threads + ftt_thread;
+             gather_local_offsets < {{ call.local_capacity }}LL;
+             gather_local_offsets +=
+                 {{ call.work_partition_count | cppexpr }} * ftt_threads) {
+            if (!({{ call.active | cppexpr }})) {
+                continue;
+            }
+            const float norm_value = ftt::to_float(
+                ftt_value_result[{{ call.value_offset | cppexpr }}]);
+            const float norm_scale =
+                ftt::to_float(ftt_scale[{{ call.scale_offset | cppexpr }}]);
+{% if call.has_bias %}
+            const float norm_bias =
+                ftt::to_float(ftt_bias[{{ call.bias_offset | cppexpr }}]);
+{% else %}
+            const float norm_bias = 0.0f;
+{% endif %}
+            float norm_normalized =
+                (norm_value - norm_mean) * norm_inverse_std;
+{% if call.round_before_scale %}
+            norm_normalized = ftt::to_float(
+                ftt::store_as(ftt_value_result, norm_normalized));
+{% endif %}
+            const float norm_output = norm_normalized * norm_scale + norm_bias;
+            ftt_norm_result[{{ call.norm_offset | cppexpr }}] = ftt::store_as(
+                ftt_norm_result,
+                ftt::to_float(
+                    ftt::store_as(ftt_value_result, norm_output)));
+        }
+    }
+}
+
+
+{{ entry.phase_schedule(call, ("partials", "finalize")) }}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

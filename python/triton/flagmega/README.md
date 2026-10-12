@@ -503,6 +503,73 @@ shape-preserving dataflow and declared reusable-call ABIs, so residual Add/Norm
 can directly consume this producer layout; explicit agent selections remain
 authoritative and round-trip in Python proposals.
 
+## Codegen backends: Triton and C++ (FTT)
+
+Selected, bufferized TIR can be emitted as Triton Python (the default) or as
+C++. `write_artifact(..., codegen_backend="cpp")` selects the second; the CLI
+and tutorials keep the Triton default. The manifest records which backend
+produced an artifact, and the runtime dispatches on it, so the choice is a
+property of the artifact rather than of the calling process.
+
+Both backends consume the *same* package descriptor. The buffer plan, the call
+ABI, the event schedule, and the index/predicate algebra are facts about the
+artifact, not about a language: the same offsets address the same bytes
+whichever kernel loads them. `codegen/cpp/renderer.py` therefore extends
+`describe_tir_package` rather than re-deriving it, and
+`codegen/cpp/expressions.py` translates the renderer's expression strings into
+C++ through a Python AST walk. Two operators differ and are handled explicitly:
+`//` is floor division (valid as `/` only because every operand is a
+non-negative index, which the translator proves per expression), and `&`/`|`
+are Triton's elementwise boolean operators. Anything outside that grammar
+raises, so a new renderer construct surfaces as a codegen error instead of
+wrong arithmetic.
+
+The emitted source is built against **FTT** (FlagMega Tensor Template), a small
+C++20 header library under `codegen/cpp/ftt/include/ftt`, modelled on nncase's
+NTT and scoped to what the FlagMega IR emits. Two deliberate differences from
+NTT: shapes are always fixed, because the IR resolves every extent before a
+codegen package plan exists; and tensors are views only, because generated
+kernels never allocate. Arch dispatch follows NTT's pattern — `ftt.h` includes
+`arch/<name>/{arch_types,primitive_ops}.h`, and adding a target means adding a
+sibling directory rather than touching the layers above. Iluvatar BI-V150 is
+the first arch.
+
+A package is entirely C++ or entirely Triton. A kernel family without a C++
+template raises at compile time; it does not fall back per kernel. The same
+applies to descriptor features the C++ templates do not implement — a
+warp-specialized producer/consumer pipeline, a fused epilogue, an intermediate
+addend cast, a host tensor descriptor — each of which would otherwise change
+results or the schedule silently.
+
+Thread mapping differs by necessity. A Triton kernel walks vector tiles; a C++
+kernel walks one scalar index per thread, strided by the block size, with the
+tile loop bound becoming the loop bound and the data-dependent part of the mask
+becoming a branch. Reductions that Triton expresses as `tl.sum` over a tile
+become either thread-local accumulators (where each thread owns an output
+element) or a shared-memory combine (where the whole CTA reduces one value).
+Reduction *order* therefore differs from the Triton backend, which is visible
+in the low bits of a bf16 statistic; rounding *boundaries* are preserved
+exactly, because those are where each kernel agrees with its reference
+implementation.
+
+A C++ package is compiled ahead of time by the vendor device compiler into one
+shared library and launched through the plain-C ABI in `<ftt/runtime.h>`:
+`flagmega_launch(void **arguments, void *stream)` takes the artifact's runtime
+binding signature as a flat array of device addresses. The library is a hashed
+artifact section like the generated source, so a stale or hand-edited `.so` is
+rejected at load time, and it reports its own argument count and ABI version so
+a mismatch against the manifest is caught before a launch reads past the array.
+Because the vendor compiler does not expose per-kernel register/shared/spill
+counters through this path, a C++ artifact's `resource_report` is `None` rather
+than a contract that was never evaluated.
+
+Validated on BI-V150: the full 28-layer Qwen3-1.7B batch-1 decode model
+compiles and runs through the C++ backend and produces **token-identical**
+output to the Triton backend (checked on a 9-token and a 47-token greedy
+generation). Measured decode latency was lower than the Triton path in that
+configuration, but the Triton path carries tuned kernel selections this
+tutorial profile does not, so that is not a backend performance claim.
+
 ## Standalone text serving
 
 ```sh

@@ -1,0 +1,44 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "elementwise" and call.variant == elementwise_variant %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{{ entry.strided_loop("local_offsets", call.local_capacity) }} {
+        if (!({{ call.active | cppexpr }})) {
+            continue;
+        }
+        const float lhs_value = ftt::to_float(
+            ({{ call.lhs | cppexpr }})[{{ call.lhs_offset | cppexpr }}]);
+{% if call.variant in ("add", "mul", "div") %}
+        const float rhs_value = ftt::to_float(
+            ({{ call.rhs | cppexpr }})[{{ call.rhs_offset | cppexpr }}]);
+{% endif %}
+{% if call.fusion_lines %}
+{# Fusion epilogues are emitted as Triton statements, which have no C++
+   spelling here. The implementation model refuses a fused call rather than
+   dropping the epilogue, so reaching this branch is a codegen bug. #}
+{{ undefined_fusion_is_rejected_by_the_implementation_model }}
+{% endif %}
+{% if call.variant == "add" %}
+        const float ftt_value = lhs_value + rhs_value;
+{% elif call.variant == "mul" %}
+        const float ftt_value = lhs_value * rhs_value;
+{% elif call.variant == "div" %}
+        const float ftt_value = lhs_value / rhs_value;
+{% elif call.variant == "sigmoid" %}
+        const float ftt_value = ftt::sigmoid(lhs_value);
+{% elif call.variant == "silu" %}
+        const float ftt_value = ftt::silu(lhs_value);
+{% elif call.variant == "cast" %}
+        const float ftt_value = lhs_value;
+{% endif %}
+        auto *const ftt_result = {{ call.result | cppexpr }};
+        ftt_result[{{ call.result_offset | cppexpr }}] =
+            ftt::store_as(ftt_result, ftt_value);
+    }
+}
+
+
+{% endif %}
+{% endfor %}

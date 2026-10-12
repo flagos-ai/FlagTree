@@ -1,0 +1,277 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == dense_matmul_variant %}
+{# Batch-one GEMV. The Triton form holds a [tile_n, block_k] FP32 accumulator
+   and defers the K reduction to loop exit, because on this machine the
+   per-iteration reduce->add->reload chain costs ~26% (ITERATION.md Trial 60).
+   That tradeoff is specific to vector tiles: here each thread owns one N
+   element and reduces its own K axis into a register, so there is no
+   cross-lane reduction in the loop to break up and the accumulator is a
+   scalar.
+
+   Products are formed in FP32, matching the Triton form -- bf16 operands
+   multiplied in bf16 would lose the product's low bits before accumulation. #}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{% set streams = call.k_streams | default(1) %}
+{% set lane = call.weight_k_lane | default(0) %}
+{% set chunk = 8 %}
+{# Tile only where the scalar walk was underfilling the block. Above that it
+   already saturates residency and the wider load just adds address
+   arithmetic. The bound is measured per site, tiled vs untiled end to end:
+
+     N=128   2048 slots, 0.25 chunked iters/thread   tile   (win)
+     N=384   6144 slots, 0.75                        tile   (win, GLU)
+     N=512   8192 slots, 1.00                        tile   (win: 20.04,
+                                                      excluding it cost 20.38)
+     N=9496  151936 slots, 18.6                      scalar (tiling: 21.03)
+
+   so `<=` is the measured boundary, not a guess -- tightening it to `<` to
+   exclude the N=512 site was tried and is worse. The same arithmetic admits
+   the QKV kernel, which measured a loss for an unrelated reason; see the note
+   in qkv_parallel_linear/packed_fused_gemv.cpp.jinja. #}
+{% set tiled = lane >= chunk and lane % chunk == 0
+       and call.weight_block_n and call.weight_block_k == lane
+       and (call.local_n_capacity * lane) % chunk == 0
+       and ((call.local_k_capacity // lane) % streams == 0)
+       and call.local_n_capacity * lane <= block_threads * chunk %}
+    auto *const ftt_source = {{ call.source | cppexpr }};
+    auto *const ftt_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{% if call.local_m_capacity != 1 %}
+    for (ftt::dim_t dense_local_m = 0;
+         dense_local_m < {{ call.local_m_capacity }}LL; ++dense_local_m) {
+{% endif %}
+{% if tiled %}
+{% set chunks = (call.local_n_capacity * lane) // chunk %}
+{% set groups = (call.local_k_capacity // lane) %}
+{% set coop = lane // chunk %}
+{# Vectorized payload walk: `chunk` consecutive payload slots per thread.
+   See the note in dense_matmul_glu/_function.cpp.jinja -- the packed layout
+   stores a whole contiguous (`weight_block_n` N by `lane` K) tile, so those
+   slots are one 16-byte transaction.
+
+   This supersedes the whole-run widening the note below warns about. That form
+   gave each thread an entire run and dropped to one dependent chain, which is
+   why it lost (30.5 vs 27.7 there, 30.1 vs 21.8 in the GLU kernel). A `chunk`
+   of 8 is one 16-byte load while still leaving `lane / chunk` threads per N
+   and `streams` groups in flight, so width is gained without giving up either
+   residency or depth. Measured on the GLU kernel first: 21.84 -> 20.90
+   ms/token end to end. #}
+{# Depth of the tiled K walk; see `CPP_TILED_DEPTH` in codegen/cpp/renderer.py
+   for why this is independent of `k_streams`. #}
+{% set depth = tiled_depth | default(8) %}
+{% set kg_streams = depth if groups % depth == 0 else streams %}
+    for (ftt::dim_t dense_chunk = ftt_thread;
+         dense_chunk < {{ chunks }}LL;
+         dense_chunk += ftt_threads) {
+        const ftt::dim_t dense_local_n_offsets =
+            (dense_chunk * {{ chunk }}LL) / {{ lane }}LL;
+        const ftt::dim_t dense_k_in_lane =
+            (dense_chunk * {{ chunk }}LL) % {{ lane }}LL;
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+        float dense_partial[{{ kg_streams }}] = {};
+        for (ftt::dim_t dense_group_base = 0;
+             dense_group_base < {{ groups }}LL;
+             dense_group_base += {{ kg_streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0;
+                 dense_stream < {{ kg_streams }}LL; ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    (dense_group_base + dense_stream) * {{ lane }}LL
+                    + dense_k_in_lane;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+                const auto dense_weight_run =
+                    ftt::load_run<{{ chunk }}>(
+                        &ftt_weight[{{ call.weight_offset | cppexpr }}]);
+                const auto dense_source_run =
+                    ftt::load_run<{{ chunk }}>(
+                        &ftt_source[{{ call.source_offset | cppexpr }}]);
+                float dense_step = 0.0f;
+                FTT_UNROLL
+                for (int dense_element = 0; dense_element < {{ chunk }};
+                     ++dense_element) {
+                    dense_step += dense_weight_run.at(dense_element)
+                        * dense_source_run.at(dense_element);
+                }
+                dense_partial[(int)dense_stream] += dense_step;
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ kg_streams }};
+             ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+{% if coop > 1 %}
+        dense_accumulator =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_accumulator);
+{% endif %}
+        if (dense_k_in_lane == 0) {
+            ftt_result[{{ call.result_offset | cppexpr }}] =
+                ftt::store_as(ftt_result, dense_accumulator);
+        }
+    }
+{% if call.local_m_capacity != 1 %}
+    }
+{% endif %}
+}
+
+{% elif lane > 1 %}
+{# Physical-order payload walk: one payload slot per thread.
+
+   The packed weight stores `lane` consecutive K values for one N, with the N
+   groups following each other, so payload slot `s` is `(n = s / lane,
+   k_in_lane = s % lane)` and consecutive slots are consecutive addresses.
+   One slot per thread therefore makes adjacent threads read adjacent bytes.
+
+   The logical-order alternative -- one thread per N, stepping K -- puts
+   adjacent threads a whole run apart, which the Triton backend measured as the
+   difference between ~16-25 GB/s and full bandwidth on this layout
+   (ITERATION.md Trial 79).
+
+   Each thread holds a partial for one `(n, k_in_lane)`; the `lane` threads
+   sharing an N are consecutive, so a `lane`-wide shuffle folds them in
+   registers with no shared-memory exchange.
+
+   Giving each thread its *whole* run instead -- so it could issue wide 16-byte
+   loads -- was tried and is slower here (30.5 ms at 8 streams, 30.9 at 2,
+   36.7 at 1, against 27.7 for this form), even though it does triple the
+   `dwordx4` count in the generated SASS. One slot per thread keeps more
+   threads resident per unit of work, and at batch 1 that matters more than
+   load width. Do not re-try widening without re-measuring this comparison. #}
+{% set groups = (call.local_k_capacity // lane) %}
+{% set kg_streams = streams if groups % streams == 0 else 1 %}
+    for (ftt::dim_t dense_payload = ftt_thread;
+         dense_payload < {{ call.local_n_capacity }}LL * {{ lane }}LL;
+         dense_payload += ftt_threads) {
+        const ftt::dim_t dense_local_n_offsets = dense_payload / {{ lane }}LL;
+        const ftt::dim_t dense_k_in_lane = dense_payload % {{ lane }}LL;
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+{# `result_active` depends on N only, so it is uniform across a lane group and
+   the group still reaches its shuffle convergently. #}
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+        float dense_partial[{{ kg_streams }}] = {};
+        for (ftt::dim_t dense_group_base = 0;
+             dense_group_base < {{ groups }}LL;
+             dense_group_base += {{ kg_streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0;
+                 dense_stream < {{ kg_streams }}LL; ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    (dense_group_base + dense_stream) * {{ lane }}LL
+                    + dense_k_in_lane;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                dense_partial[(int)dense_stream] +=
+                    ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
+                    * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ kg_streams }};
+             ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+        dense_accumulator =
+            ftt::arch::lane_group_reduce_sum<{{ lane }}>(dense_accumulator);
+        if (dense_k_in_lane == 0) {
+            ftt_result[{{ call.result_offset | cppexpr }}] =
+                ftt::store_as(ftt_result, dense_accumulator);
+        }
+    }
+{% if call.local_m_capacity != 1 %}
+    }
+{% endif %}
+}
+
+{% else %}
+{{ entry.strided_loop("dense_local_n_offsets", call.local_n_capacity) }} {
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+{% if streams > 1 %}
+{# Software-pipelined K reduction.
+
+   This kernel is latency-bound, not bandwidth-bound: a single dependent load
+   chain reaches ~94 GB/s on BI-V150 against a 819 GB/s peak, because each
+   load is waited on before the next address is formed (one `sl_wait` per load
+   in the generated SASS). Splitting K into `streams` independent partial sums
+   keeps that many loads outstanding before the first wait. Measured on an
+   isolated probe over identical bytes: 1 chain 94 GB/s, 8 streams 317 GB/s.
+
+   Each stream's partials are summed in a fixed order at loop exit, so the
+   reduction order is deterministic -- it differs from both the scalar form and
+   the Triton backend's tile reduction, which is visible in the low bits of a
+   bf16 result but is not a correctness question. #}
+        float dense_partial[{{ streams }}] = {};
+        for (ftt::dim_t dense_pipeline_base = 0;
+             dense_pipeline_base < {{ call.local_k_capacity }}LL;
+             dense_pipeline_base += {{ streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0; dense_stream < {{ streams }}LL;
+                 ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    dense_pipeline_base + dense_stream;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                dense_partial[(int)dense_stream] +=
+                    ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
+                    * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ streams }}; ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+{% else %}
+{# (unreachable when k_lane > 0; kept for layouts whose payload order the
+   renderer could not verify) #}
+        float dense_accumulator = 0.0f;
+        for (ftt::dim_t dense_local_k_offsets = 0;
+             dense_local_k_offsets < {{ call.local_k_capacity }}LL;
+             ++dense_local_k_offsets) {
+            const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+            (void)dense_global_k;
+            if (!({{ call.source_active | cppexpr }})) {
+                continue;
+            }
+            const float dense_source_value =
+                ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            const float dense_weight_value =
+                ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}]);
+            dense_accumulator += dense_weight_value * dense_source_value;
+        }
+{% endif %}
+        ftt_result[{{ call.result_offset | cppexpr }}] =
+            ftt::store_as(ftt_result, dense_accumulator);
+    }
+{% if call.local_m_capacity != 1 %}
+    }
+{% endif %}
+}
+
+{% endif %}
+
+{% endif %}
+{% endfor %}

@@ -177,7 +177,13 @@ class ArtifactBackend:
                 "load_ms": self.load_ms, "prepare_ms": self.prepare_ms,
                 "allocated_bytes": torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else None,
                 "peak_allocated_bytes": torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None,
-                "artifact_source_sha256": hashlib.sha256((artifact / "generated_kernels.py").read_bytes()).hexdigest(),
+                # The generated source's filename depends on the codegen
+                # backend (`generated_kernels.py` for Triton, `.cpp` for the
+                # C++/FTT backend), so take it from the manifest's own codegen
+                # descriptor rather than assuming one.
+                "artifact_source_sha256": hashlib.sha256(
+                    (artifact / str(self.model.manifest["codegen"]["source"])).read_bytes()
+                ).hexdigest(),
                 "artifact_semantic_hash": self.model.manifest["semantic_hash"],
                 "serving_source_sha256": serving_source.hexdigest(),
                 "numerical_contract": self.model.ir_module.metadata.get("numerical_contract"),

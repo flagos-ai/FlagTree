@@ -1,0 +1,4 @@
+// flagmega-kernel: embedding/decode platform=generic
+{% if render_calls is defined %}
+{% include "kernels/embedding/_function.cpp.jinja" %}
+{% endif %}

@@ -1,0 +1,5 @@
+// flagmega-kernel: elementwise/sigmoid platform=generic
+{% set elementwise_variant = "sigmoid" %}
+{% if render_calls is defined %}
+{% include "kernels/elementwise/_function.cpp.jinja" %}
+{% endif %}

@@ -1,0 +1,5 @@
+// flagmega-kernel: distributed_boxing/gather_reduce_scatter platform=generic
+{% set distributed_boxing_variant = "gather_reduce_scatter" %}
+{% if render_calls is defined %}
+{% include "kernels/distributed_boxing/_function.cpp.jinja" %}
+{% endif %}

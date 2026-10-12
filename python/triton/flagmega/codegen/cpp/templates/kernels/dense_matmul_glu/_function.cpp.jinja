@@ -1,0 +1,288 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul_glu" and call.variant == dense_matmul_glu_variant %}
+{# Fused gate/up GEMV with the SwiGLU activation. One thread per N element,
+   reducing its own K axis -- see the note in dense_matmul/_function.cpp.jinja
+   on why the Triton form's deferred K reduce does not apply here.
+
+   The rounding boundaries are load-bearing and match the Triton form exactly:
+   both projections are rounded to the output dtype before the activation,
+   and (when `round_activation` is set) the activation is rounded again before
+   multiplying by `up`. Those are the points where this kernel agrees with the
+   reference implementation; collapsing them to one final round changes
+   results. #}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{% set streams = call.k_streams | default(1) %}
+{% set lane = call.weight_k_lane | default(0) %}
+{# One 16-byte transaction. Not a free parameter: `chunk` must leave
+   `lane / chunk` threads sharing an N, and at `chunk == lane` that collapses
+   to one thread per N -- measured 30.5 ms/token against 20.6 at 8, the same
+   residency cliff the whole-run attempt fell off. #}
+{% set chunk = 8 %}
+{# `tiled`'s last term is the residency guard described in
+   dense_matmul/_function.cpp.jinja: tiling only pays when one payload slot per
+   thread would leave the block underfilled. #}
+{% set tiled = lane >= chunk and lane % chunk == 0
+       and call.weight_block_n and call.weight_block_k == lane
+       and (call.local_n_capacity * lane) % chunk == 0
+       and ((call.local_k_capacity // lane) % streams == 0)
+       and call.local_n_capacity * lane <= block_threads * chunk %}
+    auto *const ftt_source = {{ call.source | cppexpr }};
+    auto *const ftt_gate_weight = {{ call.gate_weight | cppexpr }};
+    auto *const ftt_up_weight = {{ call.up_weight | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{% if tiled %}
+{% set chunks = (call.local_n_capacity * lane) // chunk %}
+{% set groups = (call.local_k_capacity // lane) %}
+{% set coop = lane // chunk %}
+{# Depth of the tiled K walk, independent of `k_streams`.
+
+   `k_streams` is tuned for the scalar walk, where one stream is one 2-byte
+   load; here one stream is three 16-byte loads, so the two knobs want
+   different values and sweeping `k_streams` globally conflates them (it also
+   moves the non-tiled kernels). This machine is latency-bound rather than
+   bandwidth-bound -- the whole model runs at 183 GB/s against a ~670 GB/s
+   scalar ceiling -- so the figure of merit is independent loads in flight per
+   thread, and that is exactly what this controls. #}
+{% set depth = tiled_depth | default(4) %}
+{% set tdepth = depth if groups % depth == 0 else streams %}
+{# Vectorized payload walk. The packed layout stores a whole contiguous tile
+   (`weight_block_n` N by `lane` K, N-major), so `chunk` consecutive payload
+   slots are `chunk` consecutive addresses: one 16-byte transaction instead of
+   eight 2-byte loads.
+
+   Both halves of the BI-V150 story are kept at once, which is what the
+   earlier attempts got wrong:
+     * width -- each thread's weight read is a single `load_run<8>`;
+     * depth -- `streams` K groups stay in flight, because this device is
+       limited by loads in flight, not load width. One wide run per iteration
+       (a single dependent chain) measured 30.1 ms/token against the scalar
+       8-stream loop's 21.8; width alone is a regression.
+   Per-thread work also stays balanced: `chunks` is the N extent times `lane`
+   over `chunk`, so the strided loop covers every thread rather than leaving
+   most of the block idle on one N each (measured 29.4 that way).
+   `coop` threads share an N and fold through the lane group at the end. #}
+    for (ftt::dim_t dense_glu_chunk = ftt_thread;
+         dense_glu_chunk < {{ chunks }}LL;
+         dense_glu_chunk += ftt_threads) {
+        const ftt::dim_t dense_glu_local_n_offsets =
+            (dense_glu_chunk * {{ chunk }}LL) / {{ lane }}LL;
+        const ftt::dim_t dense_glu_k_in_lane =
+            (dense_glu_chunk * {{ chunk }}LL) % {{ lane }}LL;
+        const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_glu_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+        float dense_glu_gate_partial[{{ tdepth }}] = {};
+        float dense_glu_up_partial[{{ tdepth }}] = {};
+        for (ftt::dim_t dense_glu_group_base = 0;
+             dense_glu_group_base < {{ groups }}LL;
+             dense_glu_group_base += {{ tdepth }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_glu_stream = 0;
+                 dense_glu_stream < {{ tdepth }}LL; ++dense_glu_stream) {
+                const ftt::dim_t dense_glu_local_k_offsets =
+                    (dense_glu_group_base + dense_glu_stream) * {{ lane }}LL
+                    + dense_glu_k_in_lane;
+                const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_glu_global_k;
+                const auto dense_glu_gate_run =
+                    ftt::load_run<{{ chunk }}>(
+                        &ftt_gate_weight[{{ call.gate_weight_offset | cppexpr }}]);
+                const auto dense_glu_up_run =
+                    ftt::load_run<{{ chunk }}>(
+                        &ftt_up_weight[{{ call.up_weight_offset | cppexpr }}]);
+                const auto dense_glu_source_run =
+                    ftt::load_run<{{ chunk }}>(
+                        &ftt_source[{{ call.source_offset | cppexpr }}]);
+                float dense_glu_gate_step = 0.0f;
+                float dense_glu_up_step = 0.0f;
+                FTT_UNROLL
+                for (int dense_glu_element = 0;
+                     dense_glu_element < {{ chunk }}; ++dense_glu_element) {
+                    const float dense_glu_source_value =
+                        dense_glu_source_run.at(dense_glu_element);
+                    dense_glu_gate_step +=
+                        dense_glu_gate_run.at(dense_glu_element)
+                        * dense_glu_source_value;
+                    dense_glu_up_step +=
+                        dense_glu_up_run.at(dense_glu_element)
+                        * dense_glu_source_value;
+                }
+                dense_glu_gate_partial[(int)dense_glu_stream] +=
+                    dense_glu_gate_step;
+                dense_glu_up_partial[(int)dense_glu_stream] +=
+                    dense_glu_up_step;
+            }
+        }
+        float dense_glu_gate_sum = 0.0f;
+        float dense_glu_up_sum = 0.0f;
+        FTT_UNROLL
+        for (int dense_glu_stream = 0; dense_glu_stream < {{ tdepth }};
+             ++dense_glu_stream) {
+            dense_glu_gate_sum += dense_glu_gate_partial[dense_glu_stream];
+            dense_glu_up_sum += dense_glu_up_partial[dense_glu_stream];
+        }
+{% if coop > 1 %}
+{# Fold the cooperating threads before the activation: the rounding boundary
+   below applies to the complete projection, not a partial one. #}
+        dense_glu_gate_sum =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_gate_sum);
+        dense_glu_up_sum =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_up_sum);
+        if (dense_glu_k_in_lane != 0) {
+            continue;
+        }
+{% endif %}
+{% elif lane > 1 %}
+{# Physical-order payload walk over both projections; see the note in
+   dense_matmul/_function.cpp.jinja. Gate and up share the payload slot, so
+   each iteration issues two contiguous loads. #}
+    for (ftt::dim_t dense_glu_payload = ftt_thread;
+         dense_glu_payload < {{ call.local_n_capacity }}LL * {{ lane }}LL;
+         dense_glu_payload += ftt_threads) {
+        const ftt::dim_t dense_glu_local_n_offsets =
+            dense_glu_payload / {{ lane }}LL;
+        const ftt::dim_t dense_glu_k_in_lane =
+            dense_glu_payload % {{ lane }}LL;
+        const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_glu_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+{% set groups = (call.local_k_capacity // lane) %}
+{% set kg = streams if groups % streams == 0 else 1 %}
+        float dense_glu_gate_partial[{{ kg }}] = {};
+        float dense_glu_up_partial[{{ kg }}] = {};
+        for (ftt::dim_t dense_glu_group_base = 0;
+             dense_glu_group_base < {{ groups }}LL;
+             dense_glu_group_base += {{ kg }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_glu_stream = 0;
+                 dense_glu_stream < {{ kg }}LL; ++dense_glu_stream) {
+                const ftt::dim_t dense_glu_local_k_offsets =
+                    (dense_glu_group_base + dense_glu_stream) * {{ lane }}LL
+                    + dense_glu_k_in_lane;
+                const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_glu_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                const float dense_glu_source_value =
+                    ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+                dense_glu_gate_partial[(int)dense_glu_stream] +=
+                    ftt::to_float(ftt_gate_weight[{{ call.gate_weight_offset | cppexpr }}])
+                    * dense_glu_source_value;
+                dense_glu_up_partial[(int)dense_glu_stream] +=
+                    ftt::to_float(ftt_up_weight[{{ call.up_weight_offset | cppexpr }}])
+                    * dense_glu_source_value;
+            }
+        }
+        float dense_glu_gate_sum = 0.0f;
+        float dense_glu_up_sum = 0.0f;
+        FTT_UNROLL
+        for (int dense_glu_stream = 0; dense_glu_stream < {{ kg }};
+             ++dense_glu_stream) {
+            dense_glu_gate_sum += dense_glu_gate_partial[dense_glu_stream];
+            dense_glu_up_sum += dense_glu_up_partial[dense_glu_stream];
+        }
+{# Fold the lane group before the activation: the rounding boundary below
+   applies to the complete projection, not a partial one. #}
+        dense_glu_gate_sum =
+            ftt::arch::lane_group_reduce_sum<{{ lane }}>(dense_glu_gate_sum);
+        dense_glu_up_sum =
+            ftt::arch::lane_group_reduce_sum<{{ lane }}>(dense_glu_up_sum);
+        if (dense_glu_k_in_lane != 0) {
+            continue;
+        }
+{% else %}
+{{ entry.strided_loop("dense_glu_local_n_offsets", call.local_n_capacity) }} {
+        const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_glu_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+{% if streams > 1 %}
+{# Software-pipelined K reduction over both projections; see the note in
+   dense_matmul/_function.cpp.jinja for the measurement that motivates it.
+   Gate and up share the K loop, so this keeps 2 x `streams` loads in flight. #}
+        float dense_glu_gate_partial[{{ streams }}] = {};
+        float dense_glu_up_partial[{{ streams }}] = {};
+        for (ftt::dim_t dense_glu_pipeline_base = 0;
+             dense_glu_pipeline_base < {{ call.local_k_capacity }}LL;
+             dense_glu_pipeline_base += {{ streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_glu_stream = 0;
+                 dense_glu_stream < {{ streams }}LL; ++dense_glu_stream) {
+                const ftt::dim_t dense_glu_local_k_offsets =
+                    dense_glu_pipeline_base + dense_glu_stream;
+                const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_glu_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                const float dense_glu_source_value =
+                    ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+                dense_glu_gate_partial[(int)dense_glu_stream] +=
+                    ftt::to_float(ftt_gate_weight[{{ call.gate_weight_offset | cppexpr }}])
+                    * dense_glu_source_value;
+                dense_glu_up_partial[(int)dense_glu_stream] +=
+                    ftt::to_float(ftt_up_weight[{{ call.up_weight_offset | cppexpr }}])
+                    * dense_glu_source_value;
+            }
+        }
+        float dense_glu_gate_sum = 0.0f;
+        float dense_glu_up_sum = 0.0f;
+        FTT_UNROLL
+        for (int dense_glu_stream = 0; dense_glu_stream < {{ streams }};
+             ++dense_glu_stream) {
+            dense_glu_gate_sum += dense_glu_gate_partial[dense_glu_stream];
+            dense_glu_up_sum += dense_glu_up_partial[dense_glu_stream];
+        }
+{% else %}
+        float dense_glu_gate_sum = 0.0f;
+        float dense_glu_up_sum = 0.0f;
+        for (ftt::dim_t dense_glu_local_k_offsets = 0;
+             dense_glu_local_k_offsets < {{ call.local_k_capacity }}LL;
+             ++dense_glu_local_k_offsets) {
+            const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+            (void)dense_glu_global_k;
+            if (!({{ call.source_active | cppexpr }})) {
+                continue;
+            }
+            const float dense_glu_source_value =
+                ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            dense_glu_gate_sum +=
+                ftt::to_float(ftt_gate_weight[{{ call.gate_weight_offset | cppexpr }}])
+                * dense_glu_source_value;
+            dense_glu_up_sum +=
+                ftt::to_float(ftt_up_weight[{{ call.up_weight_offset | cppexpr }}])
+                * dense_glu_source_value;
+        }
+{% endif %}
+{% endif %}
+        const float dense_glu_gate =
+            ftt::to_float(ftt::store_as(ftt_result, dense_glu_gate_sum));
+        const float dense_glu_up =
+            ftt::to_float(ftt::store_as(ftt_result, dense_glu_up_sum));
+        float dense_glu_activated =
+            dense_glu_gate * ftt::sigmoid(dense_glu_gate);
+{% if call.round_activation | default(true) %}
+        dense_glu_activated =
+            ftt::to_float(ftt::store_as(ftt_result, dense_glu_activated));
+{% endif %}
+        ftt_result[{{ call.result_offset | cppexpr }}] =
+            ftt::store_as(ftt_result, dense_glu_activated * dense_glu_up);
+    }
+}
+
+
+{% endif %}
+{% endfor %}

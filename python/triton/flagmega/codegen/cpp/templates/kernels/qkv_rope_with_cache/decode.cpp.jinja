@@ -1,0 +1,4 @@
+// flagmega-kernel: qkv_rope_with_cache/decode platform=generic
+{% if render_calls is defined %}
+{% include "kernels/qkv_rope_with_cache/_function.cpp.jinja" %}
+{% endif %}

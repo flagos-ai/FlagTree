@@ -1,0 +1,242 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "paged_attention_partial" and call.variant == paged_attention_partial_variant %}
+{# Per-context-shard online-softmax state.
+
+   This is the one kernel whose thread mapping cannot follow the pattern used
+   elsewhere. The other templates walk a flat output index because each output
+   element is independent. Here the two reductions run along different axes of
+   the same tile: the score is a dot product along head_dim, and the softmax
+   accumulator is a weighted sum along the token axis. Assigning one thread per
+   output element would make every score a cross-thread reduction.
+
+   So the mapping is: one thread per head_dim element. A thread holds its own
+   accumulator lane for the whole token loop, which keeps the accumulator
+   update thread-local; only the score and the probability sum cross threads,
+   through shared memory once per token.
+
+   Everything numerically load-bearing is preserved from the Triton form: the
+   running max/sum rescaling by exp(previous_max - updated_max), the
+   `context_length` derived from slot_mapping rather than sequence_lengths, and
+   the physical_block clamp -- a stale block_table tail entry would otherwise
+   compute an out-of-bounds address and fault the device (dmesg "XID: 24 mmu
+   page fault"), which a grid barrier then turns into a permanent hang. #}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    __shared__ float ftt_attention_score[{{ call.token_tile }}];
+    __shared__ float ftt_attention_probability[{{ call.token_tile }}];
+    __shared__ float ftt_attention_reduce[4];
+    __shared__ float ftt_attention_value_partial[{{ block_threads }}];
+    const ftt::dim_t attention_context_shard = {{ call.context_shard | cppexpr }};
+    const ftt::dim_t attention_layer_id = {{ call.layer_id | cppexpr }};
+{# The query and partial-state pointers are rebased per local head, so they
+   depend on this loop's variable and cannot be hoisted out of it. #}
+    for (ftt::dim_t attention_state_offsets = 0;
+         attention_state_offsets < {{ call.local_capacity }}LL;
+         ++attention_state_offsets) {
+        const ftt::dim_t attention_head = {{ call.head | cppexpr }};
+        if (!({{ call.active | cppexpr }})
+            || attention_head >= {{ call.num_query_heads }}LL) {
+            continue;
+        }
+        auto *const ftt_query = {{ call.query | cppexpr }};
+        auto *const ftt_kv_cache = {{ call.kv_cache | cppexpr }};
+        auto *const ftt_slot_mapping = {{ call.slot_mapping | cppexpr }};
+        auto *const ftt_block_table = {{ call.block_table | cppexpr }};
+        auto *const ftt_partial_max = {{ call.partial_max | cppexpr }};
+        auto *const ftt_partial_sum = {{ call.partial_sum | cppexpr }};
+        auto *const ftt_partial_accumulator = {{ call.partial_accumulator | cppexpr }};
+{# slot_mapping publishes the current chunk base; sequence_lengths only
+   advances after the final layer, so it cannot describe the token just
+   written for every reusable decode-layer invocation. #}
+        const ftt::dim_t context_length =
+            static_cast<ftt::dim_t>(ftt_slot_mapping[0])
+            + ({{ call.query_token | cppexpr }}) + 1;
+        const ftt::dim_t token_begin =
+            (context_length * attention_context_shard)
+            / {{ call.context_shards }}LL;
+        const ftt::dim_t token_end =
+            (context_length * (attention_context_shard + 1))
+            / {{ call.context_shards }}LL;
+        const ftt::dim_t kv_head =
+            attention_head
+            / ({{ call.num_query_heads }}LL / {{ call.num_kv_heads }}LL);
+        float running_max = -__builtin_inff();
+        float running_sum = 0.0f;
+{# Each thread owns the head_dim lanes congruent to its id, so a head wider
+   than the CTA still works and the accumulator stays in registers. #}
+        float accumulator[
+            ({{ call.head_dim }} + {{ block_threads }} - 1) / {{ block_threads }}] = {};
+        for (ftt::dim_t token_start = token_begin; token_start < token_end;
+             token_start += {{ call.token_tile }}LL) {
+{# Score: one thread per token of the tile, each reducing the full head_dim.
+   This is the transpose of the accumulator's mapping, so it reads the query
+   and key rows directly rather than reusing the per-thread lanes. #}
+{# `group` lanes cooperate on one token's QK dot product.
+
+   One thread per token left `token_tile` threads busy out of the CTA (16 of
+   1024 here) and walked all `head_dim` dimensions serially, which is what made
+   this kernel dominate at long context: measured 1.49 ms/token at context 1
+   but 16.05 at context 512, i.e. essentially all of the backend's
+   long-context cost. Splitting `head_dim` across a lane group turns that
+   serial walk into `head_dim / group` steps plus one shuffle fold, and raises
+   the active-thread count by the same factor. #}
+{% set group = 64 %}
+            for (ftt::dim_t token_lane = ftt_thread / {{ group }}LL;
+                 token_lane < {{ call.token_tile }}LL;
+                 token_lane += ftt_threads / {{ group }}LL) {
+                const ftt::dim_t attention_dim_lane = ftt_thread % {{ group }}LL;
+                const ftt::dim_t token = token_start + token_lane;
+                if (token >= token_end) {
+                    if (attention_dim_lane == 0) {
+                        ftt_attention_score[token_lane] = -__builtin_inff();
+                    }
+                    continue;
+                }
+                const ftt::dim_t logical_block = token / {{ call.block_size }}LL;
+                const ftt::dim_t block_offset = token % {{ call.block_size }}LL;
+{# Clamp: see the fault note in this template's header comment. #}
+                ftt::dim_t physical_block =
+                    static_cast<ftt::dim_t>(ftt_block_table[logical_block]);
+                physical_block = ftt::min(
+                    ftt::max(physical_block, (ftt::dim_t)0),
+                    (ftt::dim_t)({{ call.num_blocks }}LL - 1));
+                const ftt::dim_t key_base =
+                    ((((physical_block * {{ call.num_layers }}LL
+                        + attention_layer_id) * 2LL) * {{ call.block_size }}LL
+                      + block_offset) * {{ call.num_kv_heads }}LL + kv_head)
+                    * {{ call.head_dim }}LL;
+                float score = 0.0f;
+                for (ftt::dim_t dimension = attention_dim_lane;
+                     dimension < {{ call.head_dim }}LL;
+                     dimension += {{ group }}LL) {
+                    const ftt::dim_t query_offset =
+                        (dimension / {{ call.query_lanes }}LL)
+                            * {{ call.query_dim_stride }}LL
+                        + dimension % {{ call.query_lanes }}LL;
+                    score += ftt::to_float(ftt_kv_cache[key_base + dimension])
+                             * ftt::to_float(ftt_query[query_offset]);
+                }
+                score = ftt::arch::lane_group_reduce_sum<{{ group }}>(score);
+                if (attention_dim_lane == 0) {
+                    ftt_attention_score[token_lane] = score * {{ call.scale }}f;
+                }
+            }
+            ftt::arch::cta_sync();
+{# Tile maximum and the rescaled probabilities. One thread computes them so
+   every thread sees identical running state -- recomputing per thread would
+   be cheaper but must then agree bit-for-bit, which is a stronger assumption
+   than this is worth. #}
+            if (ftt_thread == 0) {
+                float tile_max = -__builtin_inff();
+                for (ftt::dim_t token_lane = 0;
+                     token_lane < {{ call.token_tile }}LL; ++token_lane) {
+                    tile_max = ftt::max(tile_max, ftt_attention_score[token_lane]);
+                }
+                const float updated_max = ftt::max(running_max, tile_max);
+                const float previous_scale = ftt::exp(running_max - updated_max);
+                float probability_sum = 0.0f;
+                for (ftt::dim_t token_lane = 0;
+                     token_lane < {{ call.token_tile }}LL; ++token_lane) {
+{# Predicate on the token bound, not on the score being -inf: when every token
+   of a tile is out of range, `updated_max` is itself -inf and
+   `exp(-inf - -inf)` is NaN, which would poison the accumulator. The Triton
+   form's `tl.where(valid, ...)` has the same role. #}
+                    const bool valid =
+                        (token_start + token_lane) < token_end;
+                    const float probability =
+                        valid ? ftt::exp(ftt_attention_score[token_lane]
+                                         - updated_max)
+                              : 0.0f;
+                    ftt_attention_probability[token_lane] = probability;
+                    probability_sum += probability;
+                }
+                ftt_attention_reduce[0] = previous_scale;
+                ftt_attention_reduce[1] = updated_max;
+                ftt_attention_reduce[2] = probability_sum;
+            }
+            ftt::arch::cta_sync();
+            const float previous_scale = ftt_attention_reduce[0];
+            const float updated_max = ftt_attention_reduce[1];
+            const float probability_sum = ftt_attention_reduce[2];
+{# Accumulator: `head_dim` lanes over dimensions, and the CTA's remaining
+   threads split the token tile, so the per-token block-table lookup is shared
+   across a group instead of repeated by every dimension lane. The partial sums
+   fold through shared memory at the end of the tile. Without this the loop
+   used only `head_dim` of the CTA's threads (128 of 1024). #}
+{% set vgroup = 8 %}
+            for (ftt::dim_t dimension = ftt_thread % {{ call.head_dim }}LL,
+                            slot = 0;
+                 dimension < {{ call.head_dim }}LL;
+                 dimension += {{ call.head_dim }}LL, ++slot) {
+                const ftt::dim_t attention_token_group =
+                    ftt_thread / {{ call.head_dim }}LL;
+                float weighted = 0.0f;
+                for (ftt::dim_t token_lane = attention_token_group;
+                     token_lane < {{ call.token_tile }}LL;
+                     token_lane += {{ vgroup }}LL) {
+                    const ftt::dim_t token = token_start + token_lane;
+                    if (token >= token_end) {
+                        continue;
+                    }
+                    const ftt::dim_t logical_block =
+                        token / {{ call.block_size }}LL;
+                    const ftt::dim_t block_offset =
+                        token % {{ call.block_size }}LL;
+                    ftt::dim_t physical_block =
+                        static_cast<ftt::dim_t>(ftt_block_table[logical_block]);
+                    physical_block = ftt::min(
+                        ftt::max(physical_block, (ftt::dim_t)0),
+                        (ftt::dim_t)({{ call.num_blocks }}LL - 1));
+                    const ftt::dim_t value_base =
+                        ((((physical_block * {{ call.num_layers }}LL
+                            + attention_layer_id) * 2LL)
+                          * {{ call.block_size }}LL + block_offset)
+                         * {{ call.num_kv_heads }}LL + kv_head)
+                        * {{ call.head_dim }}LL
+                        + {{ call.block_size }}LL * {{ call.num_kv_heads }}LL
+                            * {{ call.head_dim }}LL;
+                    weighted += ftt_attention_probability[token_lane]
+                                * ftt::to_float(
+                                    ftt_kv_cache[value_base + dimension]);
+                }
+{# Fold the token groups' partials for this dimension. #}
+                ftt_attention_value_partial[ftt_thread] = weighted;
+                ftt::arch::cta_sync();
+                if (attention_token_group == 0) {
+                    FTT_UNROLL
+                    for (ftt::dim_t g = 1; g < {{ vgroup }}LL; ++g) {
+                        weighted += ftt_attention_value_partial[
+                            g * {{ call.head_dim }}LL + dimension];
+                    }
+                    accumulator[slot] =
+                        accumulator[slot] * previous_scale + weighted;
+                }
+                ftt::arch::cta_sync();
+            }
+            running_sum = running_sum * previous_scale + probability_sum;
+            running_max = updated_max;
+            ftt::arch::cta_sync();
+        }
+{# The call ABI already rebased every partial pointer to this owner's compact
+   component, which holds one local head: reapplying `head` here would write
+   into a later owner's component. #}
+        if (ftt_thread == 0) {
+            ftt_partial_max[0] = ftt::store_as(ftt_partial_max, running_max);
+            ftt_partial_sum[0] = ftt::store_as(ftt_partial_sum, running_sum);
+        }
+        for (ftt::dim_t dimension = ftt_thread, slot = 0;
+             dimension < {{ call.head_dim }}LL;
+             dimension += ftt_threads, ++slot) {
+            ftt_partial_accumulator[
+                dimension * {{ call.accumulator_dim_stride }}LL] =
+                ftt::store_as(ftt_partial_accumulator, accumulator[slot]);
+        }
+        ftt::arch::cta_sync();
+    }
+}
+
+
+{% endif %}
+{% endfor %}

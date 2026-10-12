@@ -1,0 +1,27 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == transform_family %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{{ entry.strided_loop("offsets", call.capacity) }} {
+        if (!({{ call.active | cppexpr }})) {
+            continue;
+        }
+{# The Triton form loads with `mask & input_active, other=pad_value`: an
+   out-of-range source index contributes the pad value instead of a load.
+   Here the same predicate selects between the load and the pad constant. #}
+        auto *const ftt_source = {{ call.source | cppexpr }};
+        auto *const ftt_result = {{ call.result | cppexpr }};
+        const float ftt_value =
+            ({{ call.input_active | cppexpr }})
+                ? ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}])
+                : {{ call.pad_value | cppfloat }};
+        ftt_result[{{ call.result_offset | cppexpr }}] =
+            ftt::store_as(ftt_result, ftt_value);
+    }
+}
+
+
+{% endif %}
+{% endfor %}

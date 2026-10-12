@@ -1,0 +1,189 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "qkv_rope_with_cache" and call.variant == "decode" %}
+{# Q/K normalization + RoPE + KV cache write, fused.
+
+   Q and K share the whole body and differ only in their destination: Q writes
+   the attention input, K writes the cache line. V is copied straight through.
+
+   The rounding sequence is the numerical contract and is reproduced exactly:
+   the normalized unit is rounded to the intermediate dtype (when
+   `round_before_scale` is set), the scaled value is rounded again, and only
+   then does RoPE multiply in fp32. Collapsing any of these changes results.
+
+   The rotation pairs `x[i]` with its partner at `partner_offset`, which the
+   renderer computes -- it is Qwen3's half-split convention, where the partner
+   of lane i is lane i + rotary_dim/2, not the adjacent lane. The sign flip
+   applies to the first half only. #}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_sequence_lengths = {{ call.sequence_lengths | cppexpr }};
+    auto *const ftt_block_table = {{ call.block_table | cppexpr }};
+    auto *const ftt_kv_cache = {{ call.kv_cache | cppexpr }};
+    const ftt::dim_t qkv_cache_position =
+        static_cast<ftt::dim_t>(ftt_sequence_lengths[0]);
+    const ftt::dim_t qkv_cache_logical_block =
+        qkv_cache_position / {{ call.block_size }}LL;
+    const ftt::dim_t qkv_cache_block_offset =
+        qkv_cache_position % {{ call.block_size }}LL;
+    const ftt::dim_t qkv_cache_physical_block =
+        static_cast<ftt::dim_t>(ftt_block_table[qkv_cache_logical_block]);
+    (void)qkv_cache_block_offset;
+    (void)qkv_cache_physical_block;
+{% for head in (call.q, call.k) %}
+{% set prefix = "qkv_q" if loop.first else "qkv_k" %}
+    {
+        auto *const ftt_{{ prefix }}_input = {{ head.input | cppexpr }};
+        auto *const ftt_{{ prefix }}_stats = {{ head.stats | cppexpr }};
+        auto *const ftt_{{ prefix }}_scale = {{ head.scale | cppexpr }};
+        auto *const ftt_{{ prefix }}_bias = {{ head.bias | cppexpr }};
+        auto *const ftt_{{ prefix }}_cosine = {{ head.cosine | cppexpr }};
+        auto *const ftt_{{ prefix }}_sine = {{ head.sine | cppexpr }};
+{% if loop.first %}
+        auto *const ftt_{{ prefix }}_output = {{ head.output | cppexpr }};
+{% endif %}
+        for (ftt::dim_t {{ prefix }}_outer_index = 0;
+             {{ prefix }}_outer_index < {{ head.outer_capacity }}LL;
+             ++{{ prefix }}_outer_index) {
+            if (!(({{ head.compute_active | cppexpr }})
+                  && ({{ head.stats_active | cppexpr }}))) {
+                continue;
+            }
+{% if head.use_mean %}
+            const float {{ prefix }}_mean_sum = ftt::to_float(
+                ftt_{{ prefix }}_stats[{{ head.stats_sum_offset | cppexpr }}]);
+{% endif %}
+            const float {{ prefix }}_square_sum = ftt::to_float(
+                ftt_{{ prefix }}_stats[
+                    {{ head.stats_square_sum_offset | cppexpr }}]);
+{% if head.use_mean %}
+            const float {{ prefix }}_mean =
+                {{ prefix }}_mean_sum / {{ head.normalization_size }}.0f;
+            const float {{ prefix }}_variance =
+                {{ prefix }}_square_sum / {{ head.normalization_size }}.0f
+                - {{ prefix }}_mean * {{ prefix }}_mean;
+{% else %}
+            const float {{ prefix }}_mean = 0.0f;
+            const float {{ prefix }}_variance =
+                {{ prefix }}_square_sum / {{ head.normalization_size }}.0f;
+{% endif %}
+            const float {{ prefix }}_inverse = ftt::rsqrt(
+                ftt::max({{ prefix }}_variance, 0.0f) + {{ head.epsilon }}f);
+{{ entry.strided_loop(prefix ~ "_element_offsets", head.apply_capacity) }} {
+                if (!(({{ head.apply_active | cppexpr }})
+                      && ({{ head.compute_active | cppexpr }}))) {
+                    continue;
+                }
+                const float {{ prefix }}_value = ftt::to_float(
+                    ftt_{{ prefix }}_input[{{ head.input_offset | cppexpr }}]);
+                const float {{ prefix }}_partner = ftt::to_float(
+                    ftt_{{ prefix }}_input[{{ head.partner_offset | cppexpr }}]);
+                const float {{ prefix }}_scale_value = ftt::to_float(
+                    ftt_{{ prefix }}_scale[{{ head.scale_offset | cppexpr }}]);
+                const float {{ prefix }}_bias_value = ftt::to_float(
+                    ftt_{{ prefix }}_bias[{{ head.bias_offset | cppexpr }}]);
+                const float {{ prefix }}_partner_scale = ftt::to_float(
+                    ftt_{{ prefix }}_scale[
+                        {{ head.partner_scale_offset | cppexpr }}]);
+                const float {{ prefix }}_partner_bias = ftt::to_float(
+                    ftt_{{ prefix }}_bias[
+                        {{ head.partner_bias_offset | cppexpr }}]);
+                float {{ prefix }}_unit =
+                    ({{ prefix }}_value - {{ prefix }}_mean)
+                    * {{ prefix }}_inverse;
+                float {{ prefix }}_partner_unit =
+                    ({{ prefix }}_partner - {{ prefix }}_mean)
+                    * {{ prefix }}_inverse;
+{% if head.round_before_scale %}
+                {{ prefix }}_unit = ftt::to_float(ftt::store_as(
+                    ftt_{{ prefix }}_input, {{ prefix }}_unit));
+                {{ prefix }}_partner_unit = ftt::to_float(ftt::store_as(
+                    ftt_{{ prefix }}_input, {{ prefix }}_partner_unit));
+{% endif %}
+                const float {{ prefix }}_normalized =
+                    ftt::to_float(ftt::store_as(
+                        ftt_{{ prefix }}_input,
+                        {{ prefix }}_unit * {{ prefix }}_scale_value
+                            + {{ prefix }}_bias_value));
+                const float {{ prefix }}_partner_normalized =
+                    ftt::to_float(ftt::store_as(
+                        ftt_{{ prefix }}_input,
+                        {{ prefix }}_partner_unit * {{ prefix }}_partner_scale
+                            + {{ prefix }}_partner_bias));
+                const ftt::dim_t {{ prefix }}_dimension =
+                    {{ head.dimension | cppexpr }};
+                const bool {{ prefix }}_rotary =
+                    {{ prefix }}_dimension
+                    < {{ head.rotary_dim | default(head.head_dim) }}LL;
+                const float {{ prefix }}_rotated =
+                    ({{ prefix }}_dimension
+                     < {{ head.rotary_dim | default(head.head_dim) }}LL / 2LL)
+                        ? -{{ prefix }}_partner_normalized
+                        : {{ prefix }}_partner_normalized;
+                const float {{ prefix }}_cosine_value =
+                    {{ prefix }}_rotary
+                        ? ftt::to_float(ftt_{{ prefix }}_cosine[
+                              {{ head.cosine_offset | cppexpr }}])
+                        : 0.0f;
+                const float {{ prefix }}_sine_value =
+                    {{ prefix }}_rotary
+                        ? ftt::to_float(ftt_{{ prefix }}_sine[
+                              {{ head.sine_offset | cppexpr }}])
+                        : 0.0f;
+{# RoPE multiplies in fp32 after the normalization store boundary. #}
+                const float {{ prefix }}_result =
+                    {{ prefix }}_rotary
+                        ? ({{ prefix }}_normalized * {{ prefix }}_cosine_value
+                           + {{ prefix }}_rotated * {{ prefix }}_sine_value)
+                        : {{ prefix }}_normalized;
+{% if loop.first %}
+                if (({{ head.output_active | cppexpr }})
+                    && ({{ head.writer_active | cppexpr }})) {
+                    ftt_{{ prefix }}_output[{{ head.output_offset | cppexpr }}] =
+                        ftt::store_as(ftt_{{ prefix }}_output,
+                                      {{ prefix }}_result);
+                }
+{% else %}
+                if ({{ head.writer_active | cppexpr }}) {
+                    ftt_kv_cache[{{ head.cache_offset | cppexpr }}] =
+                        ftt::store_as(ftt_kv_cache, {{ prefix }}_result);
+                }
+{% endif %}
+            }
+        }
+    }
+{% endfor %}
+    {
+        auto *const ftt_v_input = {{ call.v.input | cppexpr }};
+{{ entry.strided_loop("qkv_v_offsets", call.v.capacity) }} {
+            if (!(({{ call.v.active | cppexpr }})
+                  && ({{ call.v.compute_active | cppexpr }}))) {
+                continue;
+            }
+            if ({{ call.v.writer_active | cppexpr }}) {
+                ftt_kv_cache[{{ call.v.cache_offset | cppexpr }}] =
+                    ftt::store_as(
+                        ftt_kv_cache,
+                        ftt::to_float(
+                            ftt_v_input[{{ call.v.input_offset | cppexpr }}]));
+            }
+        }
+    }
+{# One owner publishes the cache position, and advances the sequence length
+   only after the final layer -- see the slot_mapping note in
+   paged_attention_partial. #}
+    if (shard_index == 0 && ftt_thread == 0) {
+        auto *const ftt_slot_mapping = {{ call.slot_mapping | cppexpr }};
+        ftt_slot_mapping[0] =
+            ftt::store_index(ftt_slot_mapping, qkv_cache_position);
+        if ({{ call.advance_sequence | cppexpr }}) {
+            ftt_sequence_lengths[0] =
+                ftt::store_index(ftt_sequence_lengths, qkv_cache_position + 1);
+        }
+    }
+}
+
+
+{% endif %}
+{% endfor %}

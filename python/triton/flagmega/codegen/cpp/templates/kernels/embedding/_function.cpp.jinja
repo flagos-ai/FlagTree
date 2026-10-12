@@ -1,0 +1,33 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "embedding" and call.variant == "decode" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_indices = {{ call.indices | cppexpr }};
+    const ftt::dim_t token_id = static_cast<ftt::dim_t>(ftt_indices[0]);
+{# The Triton form asserts the id is in range through `tl.device_assert`. An
+   out-of-range id would read outside the embedding table, so keep the check:
+   clamping instead would silently return another token's embedding. #}
+    if (token_id < 0 || token_id >= {{ call.vocab_size }}LL) {
+        __builtin_trap();
+    }
+    auto *const ftt_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{{ entry.strided_loop("local_offsets", call.local_capacity) }} {
+        if (!(local_offsets < ({{ call.active | cppexpr }}))) {
+            continue;
+        }
+        const float value =
+            (({{ call.padding_idx }}LL >= 0)
+             && (token_id == {{ call.padding_idx }}LL))
+                ? 0.0f
+                : ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}]);
+        ftt_result[{{ call.result_offset | cppexpr }}] =
+            ftt::store_as(ftt_result, value);
+    }
+}
+
+
+{% endif %}
+{% endfor %}

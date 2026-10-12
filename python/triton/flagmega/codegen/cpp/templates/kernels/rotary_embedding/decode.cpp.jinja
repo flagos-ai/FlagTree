@@ -1,0 +1,4 @@
+// flagmega-kernel: rotary_embedding/decode platform=generic
+{% if render_calls is defined %}
+{% include "kernels/rotary_embedding/_function.cpp.jinja" %}
+{% endif %}

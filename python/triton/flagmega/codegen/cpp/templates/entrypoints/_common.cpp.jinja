@@ -1,0 +1,156 @@
+{# Shared macros for the C++ backend's kernel and entry templates.
+
+   The Triton templates express every kernel as a loop over vector tiles:
+
+       for start in tl.range(0, CAPACITY, TILE):
+           offsets = start + tl.arange(0, TILE)
+           mask = (offsets < CAPACITY) & (ACTIVE)
+
+   A C++ kernel has no tile vectors, so the same index space is walked one
+   scalar index per thread, strided by the CTA's thread count:
+
+       for (offsets = tid; offsets < CAPACITY; offsets += nthreads)
+           if (ACTIVE) ...
+
+   This covers both halves of the Triton mask: `offsets < CAPACITY` becomes the
+   loop bound, and the data-dependent part becomes a branch.  The induction
+   variable keeps the Triton spelling (`offsets` / `local_offsets`) because the
+   renderer's address expressions are shared between the two backends and name
+   it directly -- see `codegen/cpp/expressions.py`. #}
+
+{% macro mesh_coordinates() -%}
+{% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
+{% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}
+{% if distributed_entry %}
+{% for axis in range(effective_mesh_rank) %}
+{% if effective_mesh_levels[axis] == "b" %}
+    const ftt::dim_t shard_coord{{ axis }} = ftt::arch::mesh_shard_id<{{ axis }}>({{ mesh_hierarchy | join(", ") }});
+{% else %}
+    const ftt::dim_t shard_coord{{ axis }} = 0;
+{% endif %}
+{% endfor %}
+{% else %}
+{% for axis in range(effective_mesh_rank) %}
+    const ftt::dim_t shard_coord{{ axis }} = 0;
+{% endfor %}
+{% endif %}
+{% if effective_mesh_rank == 2 %}
+    const ftt::dim_t shard_y = shard_coord0;
+    const ftt::dim_t shard_x = shard_coord1;
+{% endif %}
+{% set linear = namespace(expression="") %}
+{% for axis in range(effective_mesh_rank) %}
+{% if loop.first %}
+{% set linear.expression = "shard_coord" ~ axis %}
+{% else %}
+{% set linear.expression = "(" ~ linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
+{% endif %}
+{% endfor %}
+    const ftt::dim_t shard_index = {{ linear.expression }};
+    (void)shard_index;
+{% for axis in range(effective_mesh_rank) %}
+    (void)shard_coord{{ axis }};
+{% endfor %}
+{%- endmacro %}
+
+{# One kernel body's thread identity.  Every generated device function is
+   called from the entry with the full CTA resident, so the thread span is the
+   launch's block size, known at codegen time. #}
+{% macro thread_identity() -%}
+    const ftt::dim_t ftt_thread = ftt::arch::thread_id();
+    const ftt::dim_t ftt_threads = {{ block_threads }};
+{%- endmacro %}
+
+{# The strided walk described above.  `induction` is the Triton name the
+   renderer's expressions use for this loop's index. #}
+{% macro strided_loop(induction, capacity) -%}
+    for (ftt::dim_t {{ induction }} = ftt_thread; {{ induction }} < {{ capacity }}LL;
+         {{ induction }} += ftt_threads)
+{%- endmacro %}
+
+{# Device-function signature.  A pointer parameter carries the element type the
+   buffer plan assigned it (see `_argument_types` in `codegen/cpp/renderer.py`);
+   byte pools stay `unsigned char *` because the renderer's own pointer
+   expressions retype them at each use, exactly as they apply
+   `.to(tl.pointer_type(...))` on the Triton side. #}
+{% macro parameter(name) -%}
+{{ argument_types[name].type }}{{ " *" if argument_types[name].pointer else " " }}{{ name }}
+{%- endmacro %}
+
+{% macro device_signature(call) -%}
+{% if call.arguments %}
+{%- for name in call.arguments %}{{ parameter(name) }}{{ ", " if not loop.last }}{% endfor %}
+{%- else %}void{% endif %}
+{%- endmacro %}
+
+{# Grid-wide rendezvous.
+
+   `axis_group_key` names a subset of the block mesh when the barrier only
+   needs the CTAs sharing the other axes' coordinates -- a partial-sum
+   reduction over one mesh axis, for instance. Those groups each get their own
+   counter slot, indexed by the CTA's position outside the group, so two groups
+   cannot release each other. A barrier with no key spans the whole grid. #}
+{% macro stage_barrier(axis_group_key=none) -%}
+{% if not distributed_entry %}
+    ftt::arch::cta_sync();
+{%- elif axis_group_key %}
+{% set group = (grid_barrier_axis_groups | selectattr("key", "equalto", axis_group_key) | first) %}
+    ftt::arch::grid_barrier(
+        ftt_grid_barrier + {{ grid_barrier_group_bases[group.key][0] }}
+            + FTT_BARRIER_GROUP_{{ group.key }}_SLOT,
+        {{ group.shape | join(" * ") }});
+{%- else %}
+    ftt::arch::grid_barrier(ftt_grid_barrier, {{ grid_total_blocks }});
+{%- endif %}
+{%- endmacro %}
+
+{# A call whose schedule contains an internal grid barrier is emitted as one
+   function per phase plus a wrapper that separates them with that barrier.
+   Nothing may live in a register across the barrier: every cross-phase value
+   has explicit buffer ABI storage, which is what makes the split legal. #}
+{% macro phase_schedule(call, phases) -%}
+static FTT_DEVICE void {{ call.symbol }}({{ device_signature(call) }}) {
+{% if distributed_entry %}
+    unsigned int *const ftt_grid_barrier = _ftt_grid_barrier_counters;
+{% endif %}
+{{ mesh_coordinates() }}
+{{ barrier_group_slots() }}
+{% for phase in phases %}
+    {{ call.symbol }}__{{ phase }}({{ call.arguments | join(", ") }});
+{% if not loop.last %}
+{{ stage_barrier() }}
+{% endif %}
+{% endfor %}
+}
+{%- endmacro %}
+
+{# Per-group counter slot: the linear index of this CTA's coordinates on the
+   mesh axes the group does NOT span. CTAs in one group share a slot; CTAs in
+   different groups never do. #}
+{% macro barrier_group_slots() -%}
+{% for group in grid_barrier_axis_groups | default(()) %}
+{% set outside = namespace(terms=[], count=1) %}
+{% for axis in range(mesh_rank) %}
+{% if axis not in group.axes %}
+{% do outside.terms.append("shard_coord" ~ axis) %}
+{% set outside.count = outside.count * mesh_hierarchy[axis] %}
+{% endif %}
+{% endfor %}
+{% if outside.terms %}
+    const ftt::dim_t FTT_BARRIER_GROUP_{{ group.key }}_SLOT =
+{% set linear = namespace(expression="") %}
+{% for axis in range(mesh_rank) %}
+{% if axis not in group.axes %}
+{% if linear.expression %}
+{% set linear.expression = "(" ~ linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
+{% else %}
+{% set linear.expression = "shard_coord" ~ axis %}
+{% endif %}
+{% endif %}
+{% endfor %}
+        {{ linear.expression }};
+{% else %}
+    const ftt::dim_t FTT_BARRIER_GROUP_{{ group.key }}_SLOT = 0;
+{% endif %}
+{% endfor %}
+{%- endmacro %}

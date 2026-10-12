@@ -1,0 +1,119 @@
+{# Entry point for a C++ package: the __global__ kernel, the event schedule,
+   and the C launch shim the Python runtime calls through ctypes.
+
+   The schedule is the same `entry_events` list the Triton entry consumes, so
+   call order and barrier placement are the artifact's, not this template's.
+   The one structural difference: a Triton package is a JIT function the
+   runtime launches directly, while a C++ package is a shared library, so the
+   host side of the launch is generated here too. #}
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+
+
+{% macro entry_events_body(events) -%}
+{% if not events %}
+    // No executable events in this entry.
+{% else %}
+{% for event in events %}
+{% if event.kind == "barrier" %}
+{% if event.scope == "grid" %}
+{{ entry.stage_barrier(event.barrier_axis_group_key | default(none)) }}
+{% else %}
+    ftt::arch::cta_sync();
+{% endif %}
+{% elif event.kind == "function_call" %}
+{# `arguments` is a comma-separated argument list in the renderer's shared
+   expression dialect, so each element needs translating, not the whole string.
+   The callee's Triton name carries a `__consumer` role suffix; a C++ package
+   has no warp roles, so it calls the function this template emitted. #}
+{% set callee_symbol = event.symbol | replace("__consumer", "") %}
+    // tir.call {{ event.call }} -> @{{ event.callee }}
+{% if event.participation_active | default("True") != "True" %}
+    if ({{ event.participation_active | cppexpr }}) {
+        {{ callee_symbol }}({{ event.arguments | cppargs }});
+    }
+{% else %}
+    {{ callee_symbol }}({{ event.arguments | cppargs }});
+{% endif %}
+{% else %}
+{% if event.barrier_before %}
+{% if event.barrier_scope | default("grid") == "grid" %}
+{{ entry.stage_barrier(event.barrier_axis_group_key | default(none)) }}
+{% else %}
+    ftt::arch::cta_sync();
+{% endif %}
+{% endif %}
+    // tir.call {{ event.call }} -> {{ event.family }}/{{ event.variant }} ({{ event.execution_kind }})
+{% if event.participation_active | default("True") != "True" %}
+    if ({{ event.participation_active | cppexpr }}) {
+        {{ event.symbol }}({{ event.arguments }});
+    }
+{% else %}
+    {{ event.symbol }}({{ event.arguments }});
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{%- endmacro %}
+
+{# Reusable device functions. The Triton backend emits these `noinline=True`
+   to share code across call sites; here they are ordinary functions and the
+   COREX backend force-inlines every device call anyway (it cannot execute an
+   out-of-line device call), so the attribute would be inert. #}
+{% for definition in device_functions | default(()) %}
+static FTT_DEVICE void {{ definition.symbol }}(
+{% for argument in definition.signature_arguments %}
+    {{ entry.parameter(argument) }}{{ "," if not loop.last }}
+{% endfor %}
+) {
+{% if distributed_entry %}
+    unsigned int *const ftt_grid_barrier = _ftt_grid_barrier_counters;
+{% endif %}
+{{ entry.mesh_coordinates() }}
+{{ entry.barrier_group_slots() }}
+{{ entry_events_body(definition.schedule.consumer_events) }}
+}
+
+
+{% endfor %}
+FTT_GLOBAL void {{ symbol }}(
+{% for argument in signature_arguments %}
+    {{ entry.parameter(argument) }}{{ "," if not loop.last }}
+{% endfor %}
+) {
+{% for argument in signature_arguments %}
+    (void){{ argument }};
+{% endfor %}
+{% if distributed_entry %}
+{# Grid barriers need counters in global memory. The Triton backend gets them
+   from Triton's compiler-owned global scratch, which the FlagMega runtime
+   allocates and zeroes per launch (see runtime/prepared.py). A C++ package
+   has no such allocator, so they live in a __device__ array: zero-initialized
+   at module load, and `grid_barrier` only ever increments, so successive
+   launches keep working without a reset. #}
+    unsigned int *const ftt_grid_barrier = _ftt_grid_barrier_counters;
+{% endif %}
+{{ entry.mesh_coordinates() }}
+{{ entry.barrier_group_slots() }}
+{{ entry_events_body(entry_events) }}
+}
+
+
+// Host launch shim.  `arguments` is the artifact's runtime-binding signature
+// in order (external buffers, then memory pools), each entry a device address
+// the Python runtime obtained from `tensor.data_ptr()`.
+extern "C" int flagmega_launch(void **arguments, void *stream) {
+    if (arguments == nullptr) {
+        return -1;
+    }
+    {{ symbol }}<<<dim3({{ grid[0] }}, {{ grid[1] }}, {{ grid[2] }}),
+        dim3({{ block_threads }}), 0, (cudaStream_t)stream>>>(
+{% for argument in signature_arguments %}
+        reinterpret_cast<{{ argument_types[argument].type }} *>(arguments[{{ loop.index0 }}]){{ "," if not loop.last }}
+{% endfor %}
+    );
+    return (int)cudaGetLastError();
+}
+
+extern "C" int flagmega_argument_count() { return {{ signature_arguments | length }}; }
+
+extern "C" int flagmega_abi_version() { return FLAGMEGA_CPP_ABI_VERSION; }

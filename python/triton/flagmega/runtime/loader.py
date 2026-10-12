@@ -12,6 +12,7 @@ from typing import Mapping
 from triton.flagmega.artifacts import load_artifact
 from triton.flagmega.artifacts.manifest import resolve_artifact_path
 from triton.flagmega.errors import ArtifactError
+from triton.flagmega.runtime.cpp_module import create_cpp_tir_runtime
 from triton.flagmega.runtime.module import (
     GeneratedAddModule,
     GeneratedElementwiseModule,
@@ -27,6 +28,9 @@ def _register_builtin_packages() -> None:
     package_registry.register("elementwise_add/v1", "iluvatar-bi-v150", GeneratedAddModule)
     package_registry.register("elementwise/v2", "iluvatar-bi-v150", GeneratedElementwiseModule)
     package_registry.register("tir_call_graph/v1", "iluvatar-bi-v150", create_tir_runtime)
+    package_registry.register(
+        "tir_call_graph_cpp/v1", "iluvatar-bi-v150", create_cpp_tir_runtime
+    )
 
 
 _register_builtin_packages()
@@ -60,17 +64,23 @@ def load(path: str | Path, *, device: str | None = None):
         # already touched a CUDA device beforehand.
         os.environ["CUDA_MODULE_LOADING"] = "0"
     adapter = package_registry.resolve(kind, target)
-    source = resolve_artifact_path(artifact, str(codegen.get("source", "")))
-    module_name = f"_flagmega_artifact_{manifest['semantic_hash'][:16]}"
-    spec = importlib.util.spec_from_file_location(module_name, source)
-    if spec is None or spec.loader is None:
-        raise ArtifactError(f"Cannot import generated kernel source {source}.")
-    generated = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(generated)
-    except Exception as error:
-        raise ArtifactError(f"Cannot import generated kernel source {source}: {error}.") from error
-    kernel = _resolve_kernel(generated, codegen, source)
+    if str(manifest.get("codegen_backend", "triton")) == "cpp":
+        # A C++ package is already compiled; its generated source is kept for
+        # inspection and hash verification, not imported. The adapter opens the
+        # artifact's built library itself, so there is no kernel object here.
+        kernel = None
+    else:
+        source = resolve_artifact_path(artifact, str(codegen.get("source", "")))
+        module_name = f"_flagmega_artifact_{manifest['semantic_hash'][:16]}"
+        spec = importlib.util.spec_from_file_location(module_name, source)
+        if spec is None or spec.loader is None:
+            raise ArtifactError(f"Cannot import generated kernel source {source}.")
+        generated = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(generated)
+        except Exception as error:
+            raise ArtifactError(f"Cannot import generated kernel source {source}: {error}.") from error
+        kernel = _resolve_kernel(generated, codegen, source)
     result = adapter.factory(artifact, manifest, module, kernel)
     return result.load(device) if device is not None else result
 

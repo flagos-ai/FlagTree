@@ -1,0 +1,205 @@
+// flagmega-kernel: dense_matmul/packed_k_major_gemv_norm_stats platform=generic
+{# Packed GEMV fused with the residual add and the next layer's RMS statistic.
+
+   Two things carry over from the Triton form and must not be simplified:
+
+   * The projection is rounded to its own dtype before the residual add. The
+     reference implementation publishes bf16 there, and the fusion preserves
+     that boundary including cancellation at ties.
+   * The statistic is the sum of squares of the *stored* (rounded) value, not
+     of the fp32 sum.
+
+   The statistic is a reduction over the whole N axis, which the threads split,
+   so it finishes through shared memory the way norm_stats/local does. #}
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "packed_k_major_gemv_norm_stats" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    __shared__ float ftt_dense_stats_partial[{{ block_threads }}];
+    auto *const ftt_source = {{ call.source | cppexpr }};
+    auto *const ftt_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_residual = {{ call.residual | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+    float dense_stats_square_sum = 0.0f;
+{% set streams = call.k_streams | default(1) %}
+{% set lane = call.weight_k_lane | default(0) %}
+{% set chunk = 8 %}
+{# Same vectorized payload walk and residency guard as
+   dense_matmul/_function.cpp.jinja; see that file for the measurements. This
+   variant has its own payload loop, so the chunking has to be repeated here
+   rather than inherited -- it was the single largest non-GEMV cost before
+   (3.42 ms/token at 128 N over 1024 threads). #}
+{# Measured a loss here: 24.47 vs 20.04 ms/token. This variant's K extent is
+   6144 (384 groups), so chunking drops the payload walk to 0.25 iterations per
+   thread *and* fuses a shared-memory norm_stats reduction into the same loop;
+   the wide load cannot pay for the lost residency. Kept for symmetry with the
+   other dense templates -- flip to re-measure if the fused shape changes. #}
+{% set tiled = false and lane >= chunk and lane % chunk == 0
+       and call.weight_block_n and call.weight_block_k == lane
+       and (call.local_n_capacity * lane) % chunk == 0
+       and call.local_n_capacity * lane <= block_threads * chunk
+       and ((call.local_k_capacity // lane) % streams == 0) %}
+{% set step = chunk if tiled else 1 %}
+{% set coop = (lane // chunk) if tiled else lane %}
+{% if lane > 1 %}
+{# Physical-order payload walk; see the note in
+   dense_matmul/_function.cpp.jinja. This is the heaviest per-layer GEMV in the
+   Qwen3 decode path (K=6144), so the access pattern matters most here.
+
+   Only the lane holding `k_in_lane == 0` stores and contributes to the
+   statistic, so the sum of squares still counts each output element once. #}
+    for (ftt::dim_t dense_payload = ftt_thread * {{ step }}LL;
+         dense_payload < {{ call.local_n_capacity }}LL * {{ lane }}LL;
+         dense_payload += ftt_threads * {{ step }}LL) {
+        const ftt::dim_t dense_local_n_offsets = dense_payload / {{ lane }}LL;
+        const ftt::dim_t dense_k_in_lane = dense_payload % {{ lane }}LL;
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+{% set groups = (call.local_k_capacity // lane) %}
+{% set kg_streams = streams if groups % streams == 0 else 1 %}
+        float dense_partial[{{ kg_streams }}] = {};
+        for (ftt::dim_t dense_group_base = 0;
+             dense_group_base < {{ groups }}LL;
+             dense_group_base += {{ kg_streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0;
+                 dense_stream < {{ kg_streams }}LL; ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    (dense_group_base + dense_stream) * {{ lane }}LL
+                    + dense_k_in_lane;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+{% if tiled %}
+                const auto dense_weight_run = ftt::load_run<{{ chunk }}>(
+                    &ftt_weight[{{ call.weight_offset | cppexpr }}]);
+                const auto dense_source_run = ftt::load_run<{{ chunk }}>(
+                    &ftt_source[{{ call.source_offset | cppexpr }}]);
+                float dense_step = 0.0f;
+                FTT_UNROLL
+                for (int dense_element = 0; dense_element < {{ chunk }};
+                     ++dense_element) {
+                    dense_step += dense_weight_run.at(dense_element)
+                        * dense_source_run.at(dense_element);
+                }
+                dense_partial[(int)dense_stream] += dense_step;
+{% else %}
+                dense_partial[(int)dense_stream] +=
+                    ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
+                    * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+{% endif %}
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ kg_streams }};
+             ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+        dense_accumulator =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_accumulator);
+        if (dense_k_in_lane != 0) {
+            continue;
+        }
+{% else %}
+{{ entry.strided_loop("dense_local_n_offsets", call.local_n_capacity) }} {
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+{% if streams > 1 %}
+        float dense_partial[{{ streams }}] = {};
+        for (ftt::dim_t dense_pipeline_base = 0;
+             dense_pipeline_base < {{ call.local_k_capacity }}LL;
+             dense_pipeline_base += {{ streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0; dense_stream < {{ streams }}LL;
+                 ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    dense_pipeline_base + dense_stream;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                dense_partial[(int)dense_stream] +=
+                    ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
+                    * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ streams }}; ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+{% else %}
+        float dense_accumulator = 0.0f;
+        for (ftt::dim_t dense_local_k_offsets = 0;
+             dense_local_k_offsets < {{ call.local_k_capacity }}LL;
+             ++dense_local_k_offsets) {
+            const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+            (void)dense_global_k;
+            if (!({{ call.source_active | cppexpr }})) {
+                continue;
+            }
+            dense_accumulator +=
+                ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
+                * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+        }
+{% endif %}
+{% endif %}
+        const float dense_residual =
+            ftt::to_float(ftt_residual[{{ call.residual_offset | cppexpr }}]);
+{# `addend_cast_types` records intermediate rounding of the residual before the
+   add. Each entry is one round-trip through that dtype; the C++ side cannot
+   name an arbitrary Triton dtype, so a non-empty list is rejected in
+   `_reject_unsupported_constructs` rather than silently skipped. #}
+        const float dense_projection =
+            ftt::to_float(ftt::store_as(ftt_result, dense_accumulator));
+        const auto dense_value =
+            ftt::store_as(ftt_result, dense_projection + dense_residual);
+        if ({{ call.result_writer_active | cppexpr }}) {
+            ftt_result[{{ call.result_offset | cppexpr }}] = dense_value;
+        }
+        const float dense_value_fp32 = ftt::to_float(dense_value);
+        dense_stats_square_sum += dense_value_fp32 * dense_value_fp32;
+    }
+{# Two-stage tree reduction; see kernels/norm_stats/_function.cpp.jinja for the
+   measurement. Thread 0 walking all `ftt_threads` shared slots serially is
+   1023 dependent shared reads per statistic; folding inside each warp first
+   leaves only `ftt_threads / 64` slots to merge. #}
+    dense_stats_square_sum =
+        ftt::arch::warp_reduce_sum(dense_stats_square_sum);
+    if ((ftt_thread % 64LL) == 0) {
+        ftt_dense_stats_partial[ftt_thread / 64LL] = dense_stats_square_sum;
+    }
+    ftt::arch::cta_sync();
+    if (ftt_thread == 0) {
+        for (ftt::dim_t warp_index = 1;
+             warp_index < (ftt_threads / 64LL); ++warp_index) {
+            dense_stats_square_sum += ftt_dense_stats_partial[warp_index];
+        }
+        if ({{ call.stats_writer_active | cppexpr }}) {
+            auto *const ftt_stats = {{ call.stats | cppexpr }};
+            ftt_stats[{{ call.stats_offset | cppexpr }}] =
+                ftt::store_as(ftt_stats, dense_stats_square_sum);
+        }
+    }
+    ftt::arch::cta_sync();
+}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,84 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == attention_combine_family|default("paged_attention_combine") and call.variant == "decode" %}
+{# Merge per-context-shard online-softmax states into one attention output.
+
+   Two passes over the shards, as in the Triton form: the first finds the
+   merged maximum, the second rescales each shard's sum and accumulator by
+   exp(shard_max - merged_max). The two-pass structure is what makes the merge
+   numerically stable -- rescaling against a running maximum instead would
+   change the result. #}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_partial_max = {{ call.partial_max | cppexpr }};
+    auto *const ftt_partial_sum = {{ call.partial_sum | cppexpr }};
+    auto *const ftt_partial_accumulator = {{ call.partial_accumulator | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{% if call.family == "paged_attention_gated_combine" %}
+    auto *const ftt_gate = {{ call.gate | cppexpr }};
+{% endif %}
+{{ entry.strided_loop("attention_output_offsets", call.local_capacity) }} {
+        if (!(({{ call.active | cppexpr }})
+              && ({{ call.writer_active | cppexpr }}))) {
+            continue;
+        }
+        const ftt::dim_t attention_head = {{ call.head | cppexpr }};
+        const ftt::dim_t attention_dimension = {{ call.dimension | cppexpr }};
+        (void)attention_head;
+        (void)attention_dimension;
+        float attention_merged_max = -__builtin_inff();
+        FTT_UNROLL
+        for (ftt::dim_t attention_part = 0;
+             attention_part < {{ call.context_shards }}LL; ++attention_part) {
+            const ftt::dim_t attention_index = {{ call.partial_owner | cppexpr }};
+            attention_merged_max = ftt::max(
+                attention_merged_max,
+                ftt::to_float(ftt_partial_max[
+                    attention_index * {{ call.partial_max_owner_stride }}LL
+                    + ({{ call.partial_max_offset | cppexpr }})]));
+        }
+        float attention_merged_sum = 0.0f;
+        float attention_merged_accumulator = 0.0f;
+        FTT_UNROLL
+        for (ftt::dim_t attention_part = 0;
+             attention_part < {{ call.context_shards }}LL; ++attention_part) {
+            const ftt::dim_t attention_index = {{ call.partial_owner | cppexpr }};
+            const float attention_factor = ftt::exp(
+                ftt::to_float(ftt_partial_max[
+                    attention_index * {{ call.partial_max_owner_stride }}LL
+                    + ({{ call.partial_max_offset | cppexpr }})])
+                - attention_merged_max);
+            attention_merged_sum +=
+                ftt::to_float(ftt_partial_sum[
+                    attention_index * {{ call.partial_sum_owner_stride }}LL
+                    + ({{ call.partial_sum_offset | cppexpr }})])
+                * attention_factor;
+            attention_merged_accumulator +=
+                ftt::to_float(ftt_partial_accumulator[
+                    attention_index * {{ call.partial_accumulator_owner_stride }}LL
+                    + ({{ call.partial_accumulator_offset | cppexpr }})])
+                * attention_factor;
+        }
+        float attention_merged =
+            attention_merged_accumulator / attention_merged_sum;
+{% if call.family == "paged_attention_gated_combine" %}
+{# The gate is rounded to the output dtype before and after multiplying, as in
+   the Triton form. #}
+        const float attention_sigmoid = ftt::to_float(ftt::store_as(
+            ftt_result,
+            ftt::sigmoid(
+                ftt::to_float(ftt_gate[{{ call.gate_offset | cppexpr }}]))));
+        attention_merged = ftt::to_float(ftt::store_as(
+            ftt_result,
+            ftt::to_float(ftt::store_as(ftt_result, attention_merged))
+                * attention_sigmoid));
+{% endif %}
+        ftt_result[{{ call.result_offset | cppexpr }}] =
+            ftt::store_as(ftt_result, attention_merged);
+    }
+}
+
+
+{% endif %}
+{% endfor %}

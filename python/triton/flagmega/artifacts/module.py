@@ -33,6 +33,18 @@ if TYPE_CHECKING:
 
 ARTIFACT_VERSION = 2
 
+# Codegen backends an executable artifact can be emitted through. Both consume
+# the same selected, bufferized TIR; they differ only in what they emit and how
+# the runtime launches it.
+CODEGEN_BACKENDS = ("triton", "cpp")
+
+# Section kind per backend, so a manifest states which one produced it and
+# `load_artifact` can require the right sections.
+_CODEGEN_SECTION_KINDS = {
+    "triton": "codegen.triton-python/v1",
+    "cpp": "codegen.cpp-source/v1",
+}
+
 
 def write_artifact(
     module: IRModule,
@@ -41,10 +53,16 @@ def write_artifact(
     target: str,
     checkpoint: Checkpoint | None = None,
     emit_executable: bool = False,
+    codegen_backend: str = "triton",
     dumper: Dumper | None = None,
     rdata_cache_dir: str | Path | None = None,
 ) -> Path:
     verify_module(module)
+    if codegen_backend not in CODEGEN_BACKENDS:
+        raise ArtifactError(
+            f"Unknown codegen backend {codegen_backend!r}; "
+            f"expected one of {list(CODEGEN_BACKENDS)}."
+        )
     plan = None
     if module.stage == "bufferized_tir":
         from triton.flagmega.ir import verify_buffer_plan
@@ -70,7 +88,10 @@ def write_artifact(
             cache_dir=rdata_cache_dir,
         )
     codegen = (
-        render_triton_package(module, destination, dumper=dumper)
+        _render_codegen_package(
+            module, destination, target=target,
+            codegen_backend=codegen_backend, dumper=dumper,
+        )
         if emit_executable
         else None
     )
@@ -107,8 +128,18 @@ def write_artifact(
             destination,
             destination / str(codegen["source"]),
             name="codegen.source",
-            kind="codegen.triton-python/v1",
+            kind=_CODEGEN_SECTION_KINDS[codegen_backend],
         ))
+        # A C++ package is only loadable through its built library, so the
+        # library is a verified section too: a hand-edited or stale .so is
+        # rejected at load time exactly as a stale generated source is.
+        if codegen_backend == "cpp":
+            sections.append(record_section(
+                destination,
+                destination / str(codegen["library"]),
+                name="codegen.library",
+                kind="codegen.cpp-library/v1",
+            ))
     manifest = {
         "flagmega_artifact_version": ARTIFACT_VERSION,
         "schema": ARTIFACT_SCHEMA,
@@ -131,9 +162,30 @@ def write_artifact(
             "sha256": rdata["sha256"],
         },
         "codegen": codegen,
+        # Stated even for a compiler_ir artifact: "which backend would emit
+        # this" is a property of the compile, and the loader needs it before
+        # it has looked at the codegen descriptor.
+        "codegen_backend": codegen_backend,
     }
     write_json_atomic(destination / "artifact.json", manifest)
     return destination
+
+
+def _render_codegen_package(
+    module: IRModule,
+    destination: Path,
+    *,
+    target: str,
+    codegen_backend: str,
+    dumper: Dumper | None,
+) -> dict[str, object]:
+    if codegen_backend == "triton":
+        return render_triton_package(module, destination, dumper=dumper)
+    from triton.flagmega.codegen.cpp import render_cpp_package_artifact
+
+    return render_cpp_package_artifact(
+        module, destination, target=target, dumper=dumper
+    )
 
 
 def load_artifact(path: str | Path) -> tuple[dict[str, object], IRModule]:
@@ -165,8 +217,16 @@ def load_artifact(path: str | Path) -> tuple[dict[str, object], IRModule]:
     required = {"ir.python": "ir.python/v1", "ir.text": "ir.text/v1"}
     if manifest.get("rdata") is not None:
         required.update({"rdata.index": "rdata.index/v1", "rdata.image": "rdata.image/v1"})
+    # Older v2 artifacts predate the backend field; they are all Triton.
+    codegen_backend = str(manifest.get("codegen_backend", "triton"))
+    if codegen_backend not in CODEGEN_BACKENDS:
+        raise ArtifactError(
+            f"Artifact declares unknown codegen backend {codegen_backend!r}."
+        )
     if manifest.get("status") == "executable":
-        required["codegen.source"] = "codegen.triton-python/v1"
+        required["codegen.source"] = _CODEGEN_SECTION_KINDS[codegen_backend]
+        if codegen_backend == "cpp":
+            required["codegen.library"] = "codegen.cpp-library/v1"
     elif manifest.get("status") != "compiler_ir":
         raise ArtifactError(f"Unsupported artifact status {manifest.get('status')!r}.")
     require_sections(by_name, required)
@@ -202,6 +262,16 @@ def load_artifact(path: str | Path) -> tuple[dict[str, object], IRModule]:
             raise ArtifactError("Artifact codegen descriptor does not match its source section.")
         if not str(codegen.get("kind", "")) or not str(codegen.get("symbol", "")):
             raise ArtifactError("Artifact codegen descriptor requires non-empty kind and symbol.")
+        if codegen_backend == "cpp":
+            library = by_name["codegen.library"]
+            if (
+                str(codegen.get("library")) != library.path
+                or codegen.get("library_sha256") != library.sha256
+            ):
+                raise ArtifactError(
+                    "Artifact codegen descriptor does not match its built "
+                    "library section."
+                )
     elif codegen is not None:
         raise ArtifactError("compiler_ir artifact cannot contain a codegen descriptor.")
     return manifest, module

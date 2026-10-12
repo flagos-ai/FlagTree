@@ -1,0 +1,95 @@
+// flagmega-kernel: greedy_sample/distributed_argmax platform=generic
+{# Greedy token selection: each owner's argmax over its vocabulary shard, then
+   a merge across owners. Two phases split by a grid barrier, because the
+   merge reads every owner's partial. #}
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "greedy_sample" and call.variant == "distributed_argmax" %}
+static FTT_DEVICE void {{ call.symbol }}__partials({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    __shared__ float ftt_argmax_value[{{ block_threads }}];
+    __shared__ ftt::dim_t ftt_argmax_index[{{ block_threads }}];
+    auto *const ftt_logits = {{ call.logits | cppexpr }};
+    auto *const ftt_partial_max = {{ call.partial_max | cppexpr }};
+    auto *const ftt_partial_index = {{ call.partial_index | cppexpr }};
+    for (ftt::dim_t batch_local = 0;
+         batch_local < {{ call.batch_capacity }}LL; ++batch_local) {
+        float greedy_best = -__builtin_inff();
+        ftt::dim_t greedy_index = {{ call.vocab_size }}LL;
+{{ entry.strided_loop("vocab_offsets", call.local_capacity) }} {
+            if (!({{ call.active | cppexpr }})) {
+                continue;
+            }
+            const float vocab_value =
+                ftt::to_float(ftt_logits[{{ call.logits_offset | cppexpr }}]);
+            ftt::argmax_combine(greedy_best, greedy_index, vocab_value,
+                                {{ call.logical_index | cppexpr }});
+        }
+        ftt_argmax_value[ftt_thread] = greedy_best;
+        ftt_argmax_index[ftt_thread] = greedy_index;
+        ftt::arch::cta_sync();
+        if (ftt_thread == 0) {
+            for (ftt::dim_t lane = 1; lane < ftt_threads; ++lane) {
+                ftt::argmax_combine(greedy_best, greedy_index,
+                                    ftt_argmax_value[lane],
+                                    ftt_argmax_index[lane]);
+            }
+            const ftt::dim_t partial_offset =
+                batch_local * {{ mesh_size }}LL + shard_index;
+            ftt_partial_max[partial_offset] =
+                ftt::store_as(ftt_partial_max, greedy_best);
+            ftt_partial_index[partial_offset] =
+                ftt::store_index(ftt_partial_index, greedy_index);
+        }
+        ftt::arch::cta_sync();
+    }
+}
+
+
+static FTT_DEVICE void {{ call.symbol }}__finalize({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{# One thread does the merge: it is `mesh_size` elements wide and writes a
+   single token id, so splitting it across the CTA would only add a barrier. #}
+    if (ftt_thread != 0 || !({{ call.result_writer | cppexpr }})) {
+        return;
+    }
+    auto *const ftt_partial_max = {{ call.partial_max | cppexpr }};
+    auto *const ftt_partial_index = {{ call.partial_index | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+    for (ftt::dim_t result_batch = 0;
+         result_batch < {{ call.result_capacity }}LL; ++result_batch) {
+        float greedy_best = -__builtin_inff();
+        ftt::dim_t greedy_result = {{ call.vocab_size }}LL;
+        for (ftt::dim_t partial_batch = 0;
+             partial_batch < {{ call.batch_capacity }}LL; ++partial_batch) {
+            for (ftt::dim_t greedy_owners = 0;
+                 greedy_owners < {{ mesh_size }}LL; ++greedy_owners) {
+                if (!(({{ call.partial_batch_logical | cppexpr }})
+                      == ({{ call.result_logical_batch | cppexpr }}))) {
+                    continue;
+                }
+                const ftt::dim_t partial_offset =
+                    partial_batch * {{ mesh_size }}LL + greedy_owners;
+                ftt::argmax_combine(
+                    greedy_best, greedy_result,
+                    ftt::to_float(ftt_partial_max[partial_offset]),
+                    static_cast<ftt::dim_t>(ftt_partial_index[partial_offset]));
+            }
+        }
+        if ({{ call.result_active | cppexpr }}) {
+            ftt_result[{{ call.result_offset | cppexpr }}] =
+                ftt::store_index(ftt_result, greedy_result);
+        }
+    }
+}
+
+
+{{ entry.phase_schedule(call, ("partials", "finalize")) }}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

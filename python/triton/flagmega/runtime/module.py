@@ -1049,6 +1049,18 @@ def create_tir_runtime(artifact, manifest, ir_module, kernel):
     from importer architecture names or codegen-side model reconstruction.
     """
 
+    return tir_runtime_type(ir_module)(artifact, manifest, ir_module, kernel)
+
+
+def tir_runtime_type(ir_module):
+    """Return the runtime adapter class one entry's ABI calls for.
+
+    Split out from :func:`create_tir_runtime` so a second codegen backend can
+    reuse the selection without duplicating it: the choice depends only on the
+    entry's structural ABI, which is the same whichever language the package
+    was generated in. See ``runtime/cpp_module.py``.
+    """
+
     function = ir_module.function_map[ir_module.entry]
     if any(
         isinstance(ir_module.node_map[value].type, TupleType)
@@ -1057,7 +1069,7 @@ def create_tir_runtime(artifact, manifest, ir_module, kernel):
         # Aggregate entries expose flattened buffers through the general ABI.
         # Tensor/state convenience adapters require top-level named tensors;
         # a one-leaf tuple is still an aggregate, not a scalar tensor result.
-        return GeneratedTirCallGraphModule(artifact, manifest, ir_module, kernel)
+        return GeneratedTirCallGraphModule
     reference_types = tuple(
         ir_module.node_map[value].type
         for value in function.parameters
@@ -1079,16 +1091,14 @@ def create_tir_runtime(artifact, manifest, ir_module, kernel):
             or not all(axis.is_fixed for axis in tensor_parameters[0].shape)
             or tuple(axis.fixed_value for axis in tensor_parameters[0].shape) != (1,)
         ):
-            return GeneratedTirCallGraphModule(artifact, manifest, ir_module, kernel)
+            return GeneratedTirCallGraphModule
     reference_fields = (
         frozenset(name for name, _ in reference_types[0].fields)
         if len(reference_types) == 1
         else frozenset()
     )
     if reference_fields == {"convolution", "recurrent"}:
-        return GeneratedTirGatedDeltaNetModule(
-            artifact, manifest, ir_module, kernel
-        )
+        return GeneratedTirGatedDeltaNetModule
     if reference_fields == {
         "kv_caches",
         "query_start_loc",
@@ -1102,19 +1112,15 @@ def create_tir_runtime(artifact, manifest, ir_module, kernel):
             if len(tensor_outputs) == 2
             else GeneratedTirPagedAttentionLayerModule
         )
-        return runtime_type(artifact, manifest, ir_module, kernel)
+        return runtime_type
     if not reference_types and len(_named_tensor_outputs(ir_module)) == 1:
         parameter_types = tuple(
             logical_type(ir_module.node_map[value].type)
             for value in function.parameters
         )
         if all(isinstance(value, TensorType) for value in parameter_types):
-            return GeneratedTirSingleTensorModule(
-                artifact, manifest, ir_module, kernel
-            )
-    return GeneratedTirCallGraphModule(
-        artifact, manifest, ir_module, kernel
-    )
+            return GeneratedTirSingleTensorModule
+    return GeneratedTirCallGraphModule
 
 
 def _torch():

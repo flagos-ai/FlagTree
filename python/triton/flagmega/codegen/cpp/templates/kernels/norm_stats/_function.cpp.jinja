@@ -1,0 +1,86 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "norm_stats" and call.variant == "local" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{# The Triton form reduces a tile vector with `tl.sum` and has one program per
+   outer row. Here the CTA's threads split the reduction axis and combine
+   through shared memory, so the result is one scalar per outer index -- and
+   the reduction order differs from the Triton backend's, which is visible in
+   the low bits of a bf16 statistic. #}
+    __shared__ float ftt_norm_partial[{{ block_threads }}];
+{% if call.use_mean %}
+    __shared__ float ftt_norm_mean_partial[{{ block_threads }}];
+{% endif %}
+    for (ftt::dim_t norm_outer_index = 0;
+         norm_outer_index < {{ call.outer_capacity }}LL; ++norm_outer_index) {
+        float norm_square_sum = 0.0f;
+{% if call.use_mean %}
+        float norm_sum = 0.0f;
+{% endif %}
+        auto *const ftt_source = {{ call.source | cppexpr }};
+{{ entry.strided_loop("norm_reduction_offsets", call.reduction_capacity) }} {
+            if (!({{ call.source_active | cppexpr }})) {
+                continue;
+            }
+            const float norm_value =
+                ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            norm_square_sum += norm_value * norm_value;
+{% if call.use_mean %}
+            norm_sum += norm_value;
+{% endif %}
+        }
+{# Two-stage tree reduction: fold inside each warp with shuffles, then fold the
+   per-warp totals.
+
+   The previous form had thread 0 walk all `ftt_threads` shared slots serially.
+   That is 1023 dependent shared-memory reads per statistic, and this kernel
+   runs twice per layer (query and key) across 4 outer heads and 28 layers, so
+   it cost 5.38 ms/token end to end -- the second largest item in the model --
+   for a reduction over only 128 values. Measured 3.63 ms for query_norm_stats
+   and 1.81 ms for key_norm_stats in isolation before this change.
+
+   Only `warps` slots are written now instead of `ftt_threads`, and the final
+   fold is over `warps` (16 at a 1024-wide CTA) rather than 1024. #}
+{% set warp = 64 %}
+        norm_square_sum = ftt::arch::warp_reduce_sum(norm_square_sum);
+{% if call.use_mean %}
+        norm_sum = ftt::arch::warp_reduce_sum(norm_sum);
+{% endif %}
+        if ((ftt_thread % {{ warp }}LL) == 0) {
+            ftt_norm_partial[ftt_thread / {{ warp }}LL] = norm_square_sum;
+{% if call.use_mean %}
+            ftt_norm_mean_partial[ftt_thread / {{ warp }}LL] = norm_sum;
+{% endif %}
+        }
+        ftt::arch::cta_sync();
+        if (ftt_thread == 0) {
+            for (ftt::dim_t warp_index = 1;
+                 warp_index < (ftt_threads / {{ warp }}LL); ++warp_index) {
+                norm_square_sum += ftt_norm_partial[warp_index];
+{% if call.use_mean %}
+                norm_sum += ftt_norm_mean_partial[warp_index];
+{% endif %}
+            }
+            if (({{ call.outer_active | cppexpr }})
+                && ({{ call.writer_active | cppexpr }})) {
+                auto *const ftt_result = {{ call.result | cppexpr }};
+{% if call.use_mean %}
+                ftt_result[{{ call.result_offsets[0] | cppexpr }}] =
+                    ftt::store_as(ftt_result, norm_sum);
+                ftt_result[{{ call.result_offsets[1] | cppexpr }}] =
+                    ftt::store_as(ftt_result, norm_square_sum);
+{% else %}
+                ftt_result[{{ call.result_offsets[0] | cppexpr }}] =
+                    ftt::store_as(ftt_result, norm_square_sum);
+{% endif %}
+            }
+        }
+        ftt::arch::cta_sync();
+    }
+}
+
+
+{% endif %}
+{% endfor %}

@@ -1,0 +1,39 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "rotary_embedding" and call.variant == "decode" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_sequence_lengths = {{ call.sequence_lengths | cppexpr }};
+    const float rotary_position =
+        static_cast<float>(ftt_sequence_lengths[0]);
+    auto *const ftt_cosine = {{ call.cosine | cppexpr }};
+    auto *const ftt_sine = {{ call.sine | cppexpr }};
+{{ entry.strided_loop("rotary_offsets", call.local_capacity) }} {
+        if (!({{ call.active | cppexpr }})) {
+            continue;
+        }
+        const ftt::dim_t rotary_dimension = {{ call.dimension_coordinate | cppexpr }};
+        const ftt::dim_t rotary_frequency_dimension =
+            rotary_dimension % ({{ call.head_dim }}LL / 2LL);
+        const float rotary_inverse_frequency = ftt::exp(
+            (-2.0f * static_cast<float>(rotary_frequency_dimension)
+             / {{ call.head_dim }}.0f) * ftt::log({{ call.theta }}f));
+        const float rotary_token_position =
+            rotary_position
+            + static_cast<float>({{ call.token_coordinate | cppexpr }});
+        const float rotary_angle =
+            rotary_token_position * rotary_inverse_frequency;
+{# The Triton form uses `libdevice.fast_cosf`/`fast_sinf`. These are the
+   COREX equivalents; the reduced-accuracy variants are what the reference
+   schedule was measured against, so do not substitute the exact ones. #}
+        ftt_cosine[{{ call.cosine_offset | cppexpr }}] = ftt::store_as(
+            ftt_cosine, __cosf(rotary_angle) * {{ call.attention_scaling }}f);
+        ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt::store_as(
+            ftt_sine, __sinf(rotary_angle) * {{ call.attention_scaling }}f);
+    }
+}
+
+
+{% endif %}
+{% endfor %}
