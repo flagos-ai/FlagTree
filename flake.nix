@@ -194,7 +194,7 @@
         # uses pybind11 directly, so keep MLIR's python bindings off.
         TRITON_APPEND_CMAKE_ARGS = "-DMLIR_DISABLE_CONFIGURE_PYTHON_DEV_PACKAGES=ON -DMLIR_ENABLE_BINDINGS_PYTHON=OFF -DCCEC_EXECUTABLE=${ccecShim}/bin/ccec -DLLVM_LINK_EXECUTABLE=${llvm}/bin/llvm-link";
         # Avoid OOM on a 16 GiB machine; raise if you have headroom.
-        MAX_JOBS = "4";
+        MAX_JOBS = "6";
 
         PYTHONNOUSERSITE = "1";
         PIP_DISABLE_PIP_VERSION_CHECK = "1";
