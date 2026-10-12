@@ -378,6 +378,11 @@ registered as `triton-lower-structs`) does:
 3. Folds the redundant `ptr_to_int(int_to_ptr(x))` round-trips that chained
    access (e.g. `o.arr[i].b`) would otherwise create. A canonicalizer + CSE runs
    after the pass in `make_ttir` to clean up offset-0 adds.
+4. Lowers **pointer-typed fields** (`x_view.base`, i.e. a `ptr<ptr<X>>`): the
+   field's storage is represented as `ptr<i64>` and the load/store is rewritten
+   into an integer round-trip (`tt.load : ptr<i64>` + `int_to_ptr`;
+   `ptr_to_int` + `tt.store : ptr<i64>`). A memref element type may not be a
+   pointer, so Ascend cannot represent pointer-typed memory otherwise.
 
 Because structs and arrays are never values, the pass does **not** scalarize
 values, rewrite calls, or touch `scf` loop-carried values or returns — those
