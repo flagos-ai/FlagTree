@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, accepted for implementation |
+| **Status** | Implemented (verified on the Ascend build) |
 | **Target backend** | Ascend (design is kept backend-agnostic) |
 | **Owners** | FlagTree |
 
@@ -46,6 +46,13 @@ GPU-to-LLVM path: it lowers through its own passes into Huawei's *HIVM*
 representation and then a proprietary `bishengir` toolchain, which cannot be
 expected to understand new types. Removing the types *before* those passes keeps
 the feature backend-agnostic and low-risk.
+
+**Status.** This design is implemented and verified on the Ascend build: the
+frontend, the IR types/ops, the lowering pass, the host wrapper, and a CPU
+**interpreter** implementation all work. Kernels that read and write struct
+fields — including nested structs, array elements, and arrays of structs —
+compile through every Triton/Ascend IR stage, and execute under the interpreter.
+Launching on an actual NPU still requires CANN. See §9–§10.
 
 ---
 
@@ -353,17 +360,24 @@ a pointer).
 ### 8.1 The `tt-lower-structs` pass
 
 A small shared pass (`lib/Dialect/Triton/Transforms/LowerStructs.cpp`,
-registered as `triton-lower-structs`) does two things:
+registered as `triton-lower-structs`) does:
 
-1. Rewrites each `tt.struct_gep`/`tt.array_gep` into a `tt.addptr` by the
-   appropriate byte offset.
-2. Rewrites pointer types whose pointee is a struct or array to an opaque
-   pointer, and fails if any struct/array type remains.
+1. Rewrites each `tt.struct_gep`/`tt.array_gep` into **byte-offset address
+   arithmetic**: `ptr_to_int(base) + offset` (a constant for a field,
+   `index * sizeof(element)` for an array element), then `int_to_ptr` to the
+   field/element pointer type. `tt.addptr` is not used because it advances in
+   *pointee* units and cannot express arbitrary field offsets.
+2. Rewrites pointer types whose pointee is a struct or array to an opaque byte
+   pointer (`!tt.ptr<i8>`), across function signatures, block arguments, and op
+   results, and fails if any struct/array type remains.
+3. Folds the redundant `ptr_to_int(int_to_ptr(x))` round-trips that chained
+   access (e.g. `o.arr[i].b`) would otherwise create. A canonicalizer + CSE runs
+   after the pass in `make_ttir` to clean up offset-0 adds.
 
 Because structs and arrays are never values, the pass does **not** scalarize
-values, rewrite function signatures or calls, or touch `scf` loop-carried values
-or returns — those only carry pointers. The pass runs at the end of `make_ttir`
-for Ascend, before the Ascend passes.
+values, rewrite calls, or touch `scf` loop-carried values or returns — those
+only carry pointers. The pass runs at the end of `make_ttir` for Ascend, before
+the Ascend passes.
 
 ### 8.2 ABI and layout correctness
 
@@ -375,60 +389,116 @@ buffer with `ctypes`, the kernel sees exactly the host/C layout, independent of
 the backend and its data-layout rules. The compiler adds two safety checks: the
 host and target pointer sizes must match, and both must be little-endian.
 
-**Open item (highest risk):** Ascend flattens pointer arguments into a
-one-dimensional memref tuple (base pointer, data pointer, offset, shape, stride).
-Confirm that `ptr<struct>` uses the simple scalar-pointer path, or special-case
-it.
+Because the pass removes the aggregate types first, the kernel argument that
+reaches the backend is a plain `!tt.ptr<i8>`, so the Ascend memref-tuple handling
+sees an ordinary byte pointer. (An actual NPU launch still has to be exercised
+with CANN.)
 
 ---
 
-## 9. Implementation plan
+## 9. Implementation status
 
-| Phase | Scope | Key files |
+All of the design is implemented and committed on the `custom-types` branch.
+
+| Phase | Scope | State |
 |---|---|---|
-| 0 | Shared frontend module: `ctypes` mapping, layout, types, decorator, signature serialization, `StructView`/`to_device` | `python/triton/language/_custom_types.py`; imports in both `core.py` copies |
-| 1 | Python plumbing: allow `pointer_type` to point at composite types; extend `str_to_ty`; add the `StructView` case to `specialize_impl` | `core.py`, `language/__init__.py`, `runtime/jit.py`, `spec/ascend/runtime/jit.py` |
-| 2 | C++ types, the two address ops, verification rules, Python builder bindings | `TritonTypes.td`, `Types.h/.cpp`, `TritonOps.td`, `Ops.cpp`, `python/src/ir.cc` |
-| 3 | The lowering pass and its registration | `Passes.td`, `LowerStructs.cpp`, `python/src/passes.cc`, Ascend `make_ttir` |
-| 4 | Ascend host/runtime wiring; interpreter behavior | `third_party/ascend/backend/driver.py`, `spec/ascend/runtime/interpreter.py` |
-| 5 | Tests and documentation | `python/test/unit/language/...`, pass tests, end-to-end test |
+| 0 | Shared frontend module (`_custom_types.py`): ctypes mapping, layout, types, `@struct_type`, signature (de)serialization, `StructView`/`to_device` | done |
+| 1 | Python plumbing: `pointer_type` accepts aggregate pointees; `str_to_ty`; `specialize_impl` handles `StructView` | done |
+| 2 | C++ `!tt.struct`/`!tt.array` types, `tt.struct_gep`/`tt.array_gep`, verifiers, pybind bindings | done (mirrored into the Ascend spec copies, §3.3) |
+| 3 | `tt-lower-structs` pass, registration, Ascend `make_ttir` wiring | done |
+| 4 | Ascend host/runtime; interpreter | done (CPU interpreter; NPU launch needs CANN) |
+| 5 | Tests and documentation | done (§10) |
 
-**Order (vertical slices)**
+Delivered in vertical slices:
 
-1. **Scalar fields, by reference.** Implement all phases for scalar fields and
-   get one Ascend kernel that reads and writes `x_view.ndim` working end to end.
-2. **Arrays and nesting.** Add array fields, `tt.array_gep`, nested structs, and
-   `x_view.shape[i]` with static and dynamic indices.
-3. **Polish.** Verification-failure tests, interpreter behavior, documentation,
-   and clear error messages.
+1. **Scalar fields, by reference** — done.
+2. **Arrays and nesting** (`x_view.shape[i]`, nested structs, arrays of structs)
+   — done.
+3. **Polish** — round-trip folding, interpreter support, docs, tests — done.
+
+Deferred (per §2.2/§12): value semantics and by-value kernel arguments.
 
 ---
 
 ## 10. Testing
 
-- **Layout:** computed offsets/size/alignment equal `ctypes.offsetof`/`sizeof`/
-  `alignment` for nested, array, and packed structs; rejected fields raise.
-- **Frontend/lit:** field reads and writes, nested access, array access with
-  static and dynamic indices, by-reference passing.
-- **Verification (negative):** malformed layouts and out-of-range indices are
-  rejected with clear messages.
-- **Pass:** no struct/array type remains and the address ops are rewritten to
-  `addptr`.
-- **End-to-end:** a `TensorView`-style Ascend kernel that reads and writes
-  fields, validated against a host-computed reference.
+### Test locations
+
+- `test/Triton/lower-structs.mlir` — lit test for `--triton-lower-structs`:
+  scalar field at offset 0 and non-zero, nested struct, array element, and array
+  of struct; asserts that no `!tt.struct`/`!tt.array` remains.
+- `python/test/unit/language/test_custom_types.py` — pytest: layout and
+  signature, field read/write/nested/pointer, array element read / dynamic
+  index / write, array-of-struct, host `to_device`/`StructView`/`mangle_type`,
+  and (CPU) interpreter execution of scalar, array, nested, array-of-struct, and
+  pointer-field kernels.
+
+### Build
+
+The repo ships a Nix flake that provides the toolchain. Enter the dev shell (it
+creates and activates a writable `.venv`) and build:
+
+```bash
+nix develop --command bash -c 'source .venv/bin/activate && \
+  python -m pip install -e . --no-build-isolation -v'
+```
+
+Use a **non-login** shell (`bash -c`, not `bash -lc`): a login shell resets
+`PATH` and loses the venv (pip would then hit the read-only Nix Python).
+
+### Run the tests
+
+Python (frontend + interpreter + host path):
+
+```bash
+nix develop --command bash -c 'source .venv/bin/activate && \
+  python -m pytest python/test/unit/language/test_custom_types.py -v'
+```
+
+Lit (lowering pass). The build currently does not place `triton-opt` in
+`<build>/bin`, so symlink it once and run lit filtered to this test:
+
+```bash
+B=build/cmake.linux-x86_64-cpython-3.11
+mkdir -p $B/bin && ln -sf "$PWD/python/triton/_C/triton-opt" $B/bin/triton-opt
+nix develop --command bash -c "source .venv/bin/activate && \
+  lit -v $B/test --filter=lower-structs"
+```
+
+Or run the pass directly, without lit:
+
+```bash
+nix develop --command bash -c 'source .venv/bin/activate && \
+  python/triton/_C/triton-opt --triton-lower-structs --split-input-file \
+    test/Triton/lower-structs.mlir | \
+  $LLVM_SYSPATH/bin/FileCheck test/Triton/lower-structs.mlir'
+```
+
+### Exercise it end to end
+
+1. **Inspect the generated IR** (no hardware). Compile a kernel that takes a
+   struct and read the cached stage files under `~/.triton/cache/<hash>/`:
+   `*.source` is the pre-pass TTIR (shows `tt.struct_gep`), `*.ttir` is the
+   post-pass IR (byte arithmetic, no `!tt.struct`).
+2. **Run it on the CPU** with the interpreter: pass a `tl.StructView` over a
+   host buffer to an `InterpretedFunction` and check the buffer (this is what
+   the interpreter tests do).
+3. **Run it on an NPU** (requires CANN): source the toolkit's `set_env.sh`,
+   build the `tl.to_device(struct_instance)` view, and launch normally with
+   `kernel[grid](view)`.
 
 ---
 
-## 11. Risks
+## 11. Risks and open items
 
-1. **Ascend pointer lowering for `ptr<struct>`** — the memref-tuple handling must
-   be checked early; highest integration risk.
-2. **Python bindings** for the two ops are needed before the frontend can emit
-   them.
-3. **Frontend module resolution** — both `core.py` copies must import the shared
-   module without being shadowed by the Ascend path injection.
-4. **Coexistence with `_aggregate`** — independent by design, but should not
-   collide on shared names or markers.
+1. **Ascend pointer lowering for `ptr<struct>`** — mitigated: the pass removes
+   the aggregate types before the backend passes, so the backend only sees
+   `!tt.ptr<i8>`. Verified up to the external `bishengir-opt` stage.
+2. **Ascend C++ spec copies** — `TritonOps.td`, `Ops.cpp`, and `python/src/ir.cc`
+   are spec-copied (§3.3); new ops/bindings must be mirrored. Done for this
+   feature.
+3. **NPU launch** — not yet exercised; requires CANN and hardware.
+4. **Coexistence with `_aggregate`** — independent by design; no shared names.
 
 ---
 
