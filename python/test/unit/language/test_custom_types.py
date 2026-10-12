@@ -24,7 +24,9 @@ class TensorView(ctypes.Structure):
 
 @tl.struct_type
 class Inner(ctypes.Structure):
-    _fields_ = [("a", ctypes.c_int32), ("b", ctypes.c_double)]
+    # float32 (not float64): Ascend's BiShengIR pipeline does not support
+    # 64-bit float arithmetic.
+    _fields_ = [("a", ctypes.c_int32), ("b", ctypes.c_float)]
 
 
 @tl.struct_type

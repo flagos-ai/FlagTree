@@ -239,9 +239,15 @@ class _struct_type(_core.base_type):
         return f"ST{len(self.fields)}_{body}_s{self.size}a{self.align}"
 
     def signature(self) -> str:
-        """Self-contained string reconstructible by :func:`parse_signature`."""
+        """Self-contained string reconstructible by :func:`parse_signature`.
+
+        Must not contain commas: the Ascend launcher joins/splits the argument
+        signature on commas (to flatten tuples), so a comma here would corrupt
+        the kernel argument list.  Fields are separated by `;` and an array is
+        written `array<elem[N]>`.
+        """
         label = f"<{self.name}>" if self.name else ""
-        body = ",".join(f"{n}:{_type_sig(t)}@{o}" for (n, t, o) in self.fields)
+        body = ";".join(f"{n}:{_type_sig(t)}@{o}" for (n, t, o) in self.fields)
         return f"struct{label}{{{body}}};size={self.size};align={self.align}"
 
 
@@ -266,7 +272,7 @@ def type_sizeof(ty) -> int:
 
 def _type_sig(ty: Any) -> str:
     if isinstance(ty, _array_type):
-        return f"array<{_type_sig(ty.element_ty)},{ty.count}>"
+        return f"array<{_type_sig(ty.element_ty)}[{ty.count}]>"
     if isinstance(ty, _struct_type):
         return ty.signature()
     if isinstance(ty, _core.pointer_type):
@@ -316,8 +322,9 @@ class _SigParser:
             self._expect("<")
             if name == "array":
                 element_ty = self.parse_type()
-                self._expect(",")
+                self._expect("[")
                 count = self._int()
+                self._expect("]")
                 self._expect(">")
                 return _array_type(element_ty, count)
             if name == "struct":
@@ -341,7 +348,7 @@ class _SigParser:
                 self._expect("@")
                 offset = self._int()
                 fields.append((field_name, field_ty, offset))
-                if self._peek() == ",":
+                if self._peek() == ";":
                     self.pos += 1
                     continue
                 break
