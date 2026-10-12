@@ -232,6 +232,25 @@ FTT_DEVICE_INLINE void grid_barrier(unsigned int *counter, int blocks) {
 //     to reach 816 GB/s; it only accumulated a checksum and never validated
 //     the staged bytes, so it was timing work that never happened. Validate
 //     staged data before believing any bandwidth number from this engine.
+//
+//     The one-transaction cap, not the bandwidth figure, is what rules this
+//     engine out, and the distinction matters because the GEMV path turned
+//     out to be bound by load-issue slots rather than bandwidth. Per issue
+//     slot SME looks excellent: one instruction stages 1 KB where a
+//     `load_run<8>` moves 16 B, a 64x advantage in exactly the resource that
+//     constrains those kernels. It still loses, because a drain is a CTA-wide
+//     sync point and only one transaction survives it. Staging the Qwen3 GLU
+//     weights needs 6144 tiles per CTA per layer, so 172032 drains per token;
+//     at the >=7.7 us a CTA-wide sync costs in this megakernel (0.395 ms for
+//     the 51 barriers of an empty shell) that is ~1332 ms/token against 10.2
+//     for the scalar path. Even the 4 KB activation vector, 4 tiles per
+//     layer, costs ~0.87 ms/token to save at most ~0.02. Both are net
+//     negative by one to three orders of magnitude.
+//
+//     So the useful precondition to re-test is not bandwidth but *queue
+//     depth*: SME becomes interesting here only if hardware or driver gains
+//     multi-transaction queueing, which divides those drain counts by the
+//     number that land per drain.
 //   * The descriptor's third lane must be -1 and its fourth the source row
 //     stride in *bytes*.
 //   * The row stride has a 64-byte minimum. Below it the instruction silently
