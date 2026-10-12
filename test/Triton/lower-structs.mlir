@@ -79,3 +79,35 @@ tt.func public @array_of_struct(%p: !tt.ptr<!tt.array<!tt.struct<{a: i32:0, b: f
   %v = tt.load %f : !tt.ptr<f64>
   tt.return
 }
+
+// -----
+
+// A pointer-typed field: its storage becomes a ptr<i64> and the value is
+// restored with an int round-trip, so no pointer-typed memory is created.
+
+// CHECK-LABEL: tt.func public @pointer_field
+tt.func public @pointer_field(%p: !tt.ptr<!tt.struct<{base: !tt.ptr<i8>:0}, size = 8, align = 8>>) {
+  // CHECK: arith.constant 0 : i64
+  // CHECK: tt.int_to_ptr %{{.*}} : i64 -> !tt.ptr<i64>
+  // CHECK: tt.load %{{.*}} : !tt.ptr<i64>
+  // CHECK: tt.int_to_ptr %{{.*}} : i64 -> !tt.ptr<i8>
+  %0 = tt.struct_gep %p, "base" : !tt.ptr<!tt.struct<{base: !tt.ptr<i8>:0}, size = 8, align = 8>> -> !tt.ptr<!tt.ptr<i8>>
+  %1 = tt.load %0 : !tt.ptr<!tt.ptr<i8>>
+  %2 = tt.ptr_to_int %1 : !tt.ptr<i8> -> i64
+  tt.return
+}
+
+// -----
+
+// Storing a pointer value: the value is converted to i64 and stored into the
+// ptr<i64> storage.
+
+// CHECK-LABEL: tt.func public @pointer_field_store
+tt.func public @pointer_field_store(%p: !tt.ptr<!tt.struct<{base: !tt.ptr<i8>:0}, size = 8, align = 8>>, %v: !tt.ptr<i8>) {
+  // CHECK: tt.int_to_ptr %{{.*}} : i64 -> !tt.ptr<i64>
+  // CHECK: tt.ptr_to_int %arg1 : !tt.ptr<i8> -> i64
+  // CHECK: tt.store %{{.*}}, %{{.*}} : !tt.ptr<i64>
+  %0 = tt.struct_gep %p, "base" : !tt.ptr<!tt.struct<{base: !tt.ptr<i8>:0}, size = 8, align = 8>> -> !tt.ptr<!tt.ptr<i8>>
+  tt.store %0, %v : !tt.ptr<!tt.ptr<i8>>
+  tt.return
+}
