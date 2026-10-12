@@ -131,7 +131,8 @@ void rewriteAggregatePointerTypes(ModuleOp mod, MLIRContext *ctx) {
       inputs.push_back(canonicalizeType(t, ctx));
     for (Type t : fnTy.getResults())
       results.push_back(canonicalizeType(t, ctx));
-    func.setFunctionType(FunctionType::get(ctx, inputs, results));
+    function_interface_impl::setFunctionType(
+        func, FunctionType::get(ctx, inputs, results));
   });
 
   mod.walk([&](Operation *op) {
