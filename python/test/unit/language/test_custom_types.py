@@ -271,3 +271,79 @@ def test_interpreter_pointer_field():
     _interp(_k_copy_base.fn).run(view, grid=(1,))
     # `base` (a pointer field) is copied verbatim into a uint64 field.
     assert tv.shape[3] == 0x1234567890
+
+
+# --- real hardware (Ascend NPU) --------------------------------------------------
+
+
+def _ascend_device():
+    """Return the current Ascend device string, or None if unavailable."""
+    try:
+        import torch
+        import torch_npu  # noqa: F401
+        if torch.npu.is_available() and torch.npu.device_count() > 0:
+            return f"npu:{torch.npu.current_device()}"
+    except Exception:
+        pass
+    return None
+
+
+requires_ascend = pytest.mark.skipif(_ascend_device() is None, reason="requires an Ascend NPU (torch_npu + CANN)")
+
+
+@requires_ascend
+def test_hardware_struct_read_write():
+    """Launch a real kernel that reads and writes struct fields."""
+    import torch
+    device = _ascend_device()
+
+    tv = TensorView()
+    tv.ndim = 7
+    tv.shape[0] = 3
+    view = tl.to_device(tv, device=device)
+
+    @triton.jit
+    def kernel(x_view):
+        x_view.ndim = x_view.ndim + 1  # scalar field write
+        x_view.shape[0] = x_view.shape[0] + 10  # array element write
+
+    kernel[(1,)](view)
+    torch.npu.synchronize()
+
+    # Copy the struct bytes back and decode them with ctypes: the kernel must
+    # have written the host/C layout exactly.
+    host = bytearray(view.buffer.cpu().numpy().tobytes())
+    result = TensorView.from_buffer(host)
+    assert result.ndim == 8
+    assert result.shape[0] == 13
+
+
+@requires_ascend
+def test_hardware_nested_and_array_of_struct():
+    import torch
+    device = _ascend_device()
+
+    outer = Outer()
+    outer.inner.a = 10
+    view_o = tl.to_device(outer, device=device)
+
+    arr = WithArray()
+    arr.arr[1].b = 3.5
+    view_a = tl.to_device(arr, device=device)
+
+    @triton.jit
+    def nested_kernel(o):
+        o.inner.a = o.inner.a + 3
+
+    @triton.jit
+    def array_of_struct_kernel(o, i):
+        o.arr[i].b = o.arr[i].b + 1.5
+
+    nested_kernel[(1,)](view_o)
+    array_of_struct_kernel[(1,)](view_a, 1)
+    torch.npu.synchronize()
+
+    res_o = Outer.from_buffer(bytearray(view_o.buffer.cpu().numpy().tobytes()))
+    assert res_o.inner.a == 13
+    res_a = WithArray.from_buffer(bytearray(view_a.buffer.cpu().numpy().tobytes()))
+    assert abs(res_a.arr[1].b - 5.0) < 1e-9
