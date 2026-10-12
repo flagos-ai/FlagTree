@@ -194,3 +194,80 @@ def test_structview_signature():
     sig = mangle_type(view)
     assert sig.startswith("*struct<")
     assert "ndim:u32@72" in sig
+
+
+# --- interpreter -----------------------------------------------------------------
+
+
+@triton.jit
+def _k_write_ndim(x_view):
+    x_view.ndim = x_view.ndim + 1
+
+
+@triton.jit
+def _k_write_shape(x_view, i):
+    x_view.shape[i] = x_view.shape[i] + 10
+
+
+@triton.jit
+def _k_nested_write(o):
+    o.inner.a = o.inner.a + 3
+
+
+@triton.jit
+def _k_array_of_struct(o, i):
+    o.arr[i].b = o.arr[i].b + 1.5
+
+
+@triton.jit
+def _k_copy_base(x_view):
+    x_view.shape[3] = x_view.base
+
+
+def _interp(fn):
+    from triton.runtime.interpreter import InterpretedFunction
+    return InterpretedFunction(fn)
+
+
+def test_interpreter_scalar_and_array_field():
+    st = TensorView._triton_struct_type
+    buf = _FakeDeviceBuffer(st.size)
+    tv = TensorView.from_buffer(buf)
+    tv.ndim = 41
+    tv.shape[2] = 5
+    view = tl.StructView(st, buf)
+    _interp(_k_write_ndim.fn).run(view, grid=(1,))
+    _interp(_k_write_shape.fn).run(view, 2, grid=(1,))
+    assert tv.ndim == 42
+    assert tv.shape[2] == 15
+
+
+def test_interpreter_nested_struct():
+    st = Outer._triton_struct_type
+    buf = _FakeDeviceBuffer(st.size)
+    o = Outer.from_buffer(buf)
+    o.inner.a = 10
+    view = tl.StructView(st, buf)
+    _interp(_k_nested_write.fn).run(view, grid=(1,))
+    assert o.inner.a == 13
+
+
+def test_interpreter_array_of_struct():
+    st = WithArray._triton_struct_type
+    buf = _FakeDeviceBuffer(st.size)
+    wa = WithArray.from_buffer(buf)
+    wa.arr[1].b = 3.5
+    view = tl.StructView(st, buf)
+    _interp(_k_array_of_struct.fn).run(view, 1, grid=(1,))
+    assert abs(wa.arr[1].b - 5.0) < 1e-9
+
+
+def test_interpreter_pointer_field():
+    st = TensorView._triton_struct_type
+    buf = _FakeDeviceBuffer(st.size)
+    tv = TensorView.from_buffer(buf)
+    tv.base = 0x1234567890
+    view = tl.StructView(st, buf)
+    _interp(_k_copy_base.fn).run(view, grid=(1,))
+    # `base` (a pointer field) is copied verbatim into a uint64 field.
+    assert tv.shape[3] == 0x1234567890

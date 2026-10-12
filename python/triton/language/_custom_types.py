@@ -22,6 +22,16 @@ from typing import Any, List, Optional, Sequence, Tuple
 # end of its own body, so ``core.base_type`` exists by the time it is used.
 from . import core as _core
 
+# The Triton interpreter executes the kernel's Python directly and therefore
+# cannot inject ``_semantic`` into attribute access.  It installs its semantic
+# here so struct/array value objects can resolve field/element access.
+_default_semantic = None
+
+
+def set_default_semantic(semantic) -> None:
+    global _default_semantic
+    _default_semantic = semantic
+
 
 # ---------------------------------------------------------------------------
 # ctypes -> Triton mapping
@@ -235,6 +245,20 @@ class _struct_type(_core.base_type):
         return f"struct{label}{{{body}}};size={self.size};align={self.align}"
 
 
+def type_sizeof(ty) -> int:
+    """Size in bytes of a struct/array field type (host layout)."""
+    if isinstance(ty, _array_type):
+        return type_sizeof(ty.element_ty) * ty.count
+    if isinstance(ty, _struct_type):
+        return ty.size
+    if isinstance(ty, _core.pointer_type):
+        return 8
+    bitwidth = getattr(ty, "primitive_bitwidth", None)
+    if bitwidth is not None:
+        return max(1, bitwidth // 8)
+    raise TypeError(f"cannot compute the size of {ty!r}")
+
+
 # ---------------------------------------------------------------------------
 # Signature strings
 # ---------------------------------------------------------------------------
@@ -381,6 +405,25 @@ class struct_pointer(_core.base_value):
     def _flatten_ir(self, handles: List[Any]) -> None:
         handles.append(self.handle)
 
+    # The interpreter executes Python directly, so field access arrives as a
+    # plain attribute access.  Under the JIT code generator these are handled
+    # by CodeGenerator.visit_Attribute instead and never reach here.
+    def __getattr__(self, name):
+        if name.startswith("_") or name in ("handle", "type"):
+            raise AttributeError(name)
+        if _default_semantic is None:
+            raise AttributeError(f"{type(self).__name__} has no attribute '{name}'")
+        return _default_semantic.struct_field(self, name)
+
+    def __setattr__(self, name, value):
+        if name.startswith("_") or name in ("handle", "type"):
+            object.__setattr__(self, name, value)
+            return
+        if _default_semantic is None:
+            object.__setattr__(self, name, value)
+            return
+        _default_semantic.struct_field_store(self, name, value)
+
 
 class array_pointer(_core.base_value):
     """A pointer to an array, with element access in kernels."""
@@ -392,9 +435,16 @@ class array_pointer(_core.base_value):
     def _flatten_ir(self, handles: List[Any]) -> None:
         handles.append(self.handle)
 
-    @_core.builtin
     def __getitem__(self, index, _semantic=None):
-        return _semantic.array_element(self, index)
+        semantic = _semantic if _semantic is not None else _default_semantic
+        if semantic is None:
+            raise ValueError("no semantic available for array element access")
+        return semantic.array_element(self, index)
+
+    def __setitem__(self, index, value):
+        if _default_semantic is None:
+            raise ValueError("no semantic available for array element store")
+        _default_semantic.array_element_store(self, index, value)
 
 
 # ---------------------------------------------------------------------------
