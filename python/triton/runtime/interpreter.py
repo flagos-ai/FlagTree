@@ -1232,7 +1232,7 @@ class GridExecutor:
                 )
             elif isinstance(arg, _custom_types.StructView):
                 return arg
-            elif not hasattr(arg, "data_ptr"):
+            elif not hasattr(arg, "untyped_storage"):
                 return arg
 
             unwrapped_arg = _unwrap_tensor(arg)
@@ -1260,7 +1260,7 @@ class GridExecutor:
         def _from_cpu(arg_dev, arg_hst):
             if isinstance(arg_dev, _custom_types.StructView):
                 return
-            if hasattr(arg_dev, "data_ptr"):
+            if hasattr(arg_dev, "untyped_storage"):
                 # No need to rewrap because this just modifies internal
                 arg_dev, arg_hst = _unwrap_tensor(arg_dev), _unwrap_tensor(arg_hst)
                 storages[arg_dev.untyped_storage().data_ptr()] = (arg_dev.untyped_storage(), arg_hst.untyped_storage())
