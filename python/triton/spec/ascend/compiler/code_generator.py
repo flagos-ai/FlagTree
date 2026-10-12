@@ -1187,6 +1187,10 @@ class CodeGenerator(ast.NodeVisitor):
         return lhs[slices]
 
     def visit_Subscript_Store(self, node, value):
+        lhs = self.visit(node.value)
+        if isinstance(lhs, _custom_types.array_pointer):
+            slices = self.visit(node.slice)
+            return self.semantic.array_element_store(lhs, slices, value)
         raise NotImplementedError("__setitem__ is not supported in triton")
 
     def visit_Subscript(self, node):
