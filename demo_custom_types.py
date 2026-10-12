@@ -4,10 +4,10 @@
 The host and the kernel share a single C struct definition:
 
     struct TensorView {
-        float   *base;       // pointer to the tensor data
-        uint32_t size;       // number of elements
-        uint32_t shape[4];   // shape (a fixed-size array field)
-        uint32_t counter;    // updated by the kernel
+        float  *base;      // pointer to the tensor data
+        int32_t size;      // number of elements
+        int32_t shape[4];  // shape (a fixed-size array field)
+        int32_t counter;   // updated by the kernel
     };
 
 The host fills the struct in, uploads it with ``tl.to_device``, and passes it
@@ -41,9 +41,9 @@ DEVICE = "npu"
 class TensorView(ctypes.Structure):
     _fields_ = [
         ("base", ctypes.POINTER(ctypes.c_float)),  # float* into the data
-        ("size", ctypes.c_uint32),  # number of elements
-        ("shape", ctypes.c_uint32 * 4),  # fixed-size array field
-        ("counter", ctypes.c_uint32),  # a field the kernel updates
+        ("size", ctypes.c_int32),  # number of elements
+        ("shape", ctypes.c_int32 * 4),  # fixed-size array field
+        ("counter", ctypes.c_int32),  # a field the kernel updates
     ]
 
 
