@@ -264,11 +264,16 @@ a 64-bit little-endian host.
 A struct argument is encoded as a self-contained string parsed by `str_to_ty`:
 
 ```
-*struct<TensorView>{shape:array<u64,4>@0,stride:array<u64,4>@32,base:*i8@64,ndim:u32@72};size=80;align=8
+*struct<TensorView>{shape:array<u64[4]>@0;stride:array<u64[4]>@32;base:*i8@64;ndim:u32@72};size=80;align=8
 ```
 
 The leading `*` denotes by-reference passing. The parser is added to the shared
 `str_to_ty`; it is not duplicated for Ascend.
+
+The encoding is deliberately **comma-free**: the Ascend launch wrapper joins the
+argument signature with `,` and splits it back on `,` (to flatten tuple
+arguments), so a comma inside a struct/array type would corrupt the argument
+list. Fields are separated by `;` and an array is written `array<elem[N]>`.
 
 ### 5.4 Existing `_aggregate`
 
