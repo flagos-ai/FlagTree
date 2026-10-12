@@ -11,11 +11,11 @@ The host and the kernel share a single C struct definition:
     };
 
 The host fills the struct in, uploads it with ``tl.to_device``, and passes it
-to the kernel.  The kernel reads its fields (including the ``base`` pointer,
-which it dereferences) and writes back to ``counter`` and ``shape[0]``.  The
-host then copies the struct back and reads the updated fields.
+to the kernel.  The kernel reads its fields (including dereferencing ``base``)
+and writes ``counter`` and ``shape[0]`` back.  The host then copies the struct
+back and reads the updated fields.
 
-Because both sides use the same C layout, the bytes line up exactly.
+Both sides use the same C layout, so the bytes line up exactly.
 
 Run on a machine with an Ascend NPU + torch_npu + CANN:
     python demo_custom_types.py
@@ -51,19 +51,19 @@ class TensorView(ctypes.Structure):
 # The kernel receives a pointer to the struct and uses its fields.
 # ---------------------------------------------------------------------------
 @triton.jit
-def double_kernel(view, out_ptr, BLOCK: tl.constexpr):
+def bias_kernel(view, out_ptr, BLOCK: tl.constexpr):
     n = view.size  # scalar field read
+    bias = tl.load(view.base)  # pointer field, dereferenced (base[0])
     offs = tl.arange(0, BLOCK)
     mask = offs < n
-    x = tl.load(view.base + offs, mask=mask)  # pointer field, dereferenced
-    tl.store(out_ptr + offs, x * 2.0, mask=mask)
+    tl.store(out_ptr + offs, offs.to(tl.float32) + bias, mask=mask)
     view.counter = view.counter + 1  # scalar field write
     view.shape[0] = n + 100  # array element write
 
 
 def main():
     n = 8
-    x = torch.arange(n, dtype=torch.float32, device=DEVICE)
+    x = torch.arange(1, n + 1, dtype=torch.float32, device=DEVICE)  # data; base[0] == 1
     out = torch.zeros(n, dtype=torch.float32, device=DEVICE)
 
     # 1. Host: fill in the struct.
@@ -75,18 +75,18 @@ def main():
 
     # 2. Upload the struct and launch the kernel, passing it by reference.
     view_dev = tl.to_device(view, device=DEVICE)
-    double_kernel[(1,)](view_dev, out, BLOCK=n)
+    bias_kernel[(1,)](view_dev, out, BLOCK=n)
     torch.npu.synchronize()
 
     # 3. Copy the struct back and decode it with the same ctypes type.
     view_back = TensorView.from_buffer(bytearray(view_dev.buffer.cpu().numpy().tobytes()))
 
-    print("input       :", x.cpu().tolist())
-    print("output (x2) :", out.cpu().tolist())
-    print("counter     :", view_back.counter, "  (kernel incremented it)")
-    print("shape[0]    :", view_back.shape[0], "  (kernel wrote size + 100)")
+    print("bias (base[0]) :", x[0].item())
+    print("output         :", out.cpu().tolist(), "  (offs + bias)")
+    print("counter        :", view_back.counter, "  (kernel incremented it)")
+    print("shape[0]       :", view_back.shape[0], "  (kernel wrote size + 100)")
 
-    assert out.cpu().tolist() == [2.0 * v for v in x.cpu().tolist()]
+    assert out.cpu().tolist() == [float(i) + x[0].item() for i in range(n)]
     assert view_back.counter == 1
     assert view_back.shape[0] == n + 100
     print("OK")
