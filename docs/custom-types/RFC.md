@@ -156,6 +156,13 @@ Two consequences:
   `triton.runtime`, and `triton.compiler` resolve to near-copies under
   `python/triton/spec/ascend/...`. New frontend code must therefore be factored
   into a **shared module** rather than edited twice.
+- **Ascend also copies parts of the C++ IR.** The build selects
+  `third_party/ascend/backend/spec/...` over `lib/Dialect/Triton/IR/...` for the
+  ops (`TritonOps.td` and `Ops.cpp`, via `flagtree_spec.h` and the include
+  path), and uses `third_party/ascend/python/src/ir.cc` for the pybind module.
+  The shared `Types.h`/`Types.cpp` are *not* copied. New ops, op verifiers, and
+  builder bindings must be **mirrored** into the Ascend copies, or the feature
+  will silently be absent on Ascend.
 - **Ascend does not use the common GPU-to-LLVM path.** It runs the usual early
   Triton passes and then its own passes into HIVM, which is fed to the
   proprietary `bishengir` toolchain. There is no shared `TritonGPUToLLVM` type
@@ -166,6 +173,9 @@ Two consequences:
 1. A host wrapper must carry the struct type across the boundary.
 2. New frontend code lives in a shared module imported by both frontends.
 3. The new types must be removed before backend-specific passes.
+4. New ops, op verifiers, and pybind builder bindings must be mirrored into the
+   Ascend C++ spec copies (`third_party/ascend/backend/spec/...`,
+   `third_party/ascend/python/src/ir.cc`); `Types.h`/`Types.cpp` are shared.
 
 ---
 
@@ -271,6 +281,10 @@ imported by both `python/triton/language/core.py` and
 layout computation, the type classes, the `@struct_type` decorator, signature
 serialization, and the host wrapper. The two `core.py` copies only re-export the
 public symbols.
+
+Note that the **C++ side is not shared**: the Ascend build compiles its own
+copies of `TritonOps.td`, `Ops.cpp`, and `python/src/ir.cc`, so any new op, op
+verifier, or builder binding must be mirrored there (see §3.3).
 
 ### 6.2 Using a struct
 
