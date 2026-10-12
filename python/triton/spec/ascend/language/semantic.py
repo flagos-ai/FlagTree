@@ -1371,8 +1371,15 @@ class TritonSemantic(Generic[TensorTy]):
             return _custom_types.struct_pointer(res_ptr_handle, res_ptr_ty)
         if isinstance(field_ty, _custom_types._array_type):
             return _custom_types.array_pointer(res_ptr_handle, res_ptr_ty)
-        res_ptr = self.tensor(res_ptr_handle, res_ptr_ty)
+        return self._load_field(res_ptr_handle, field_ty)
+
+    def _load_field(self, addr_handle, ty):
+        res_ptr = self.tensor(addr_handle, tl.pointer_type(ty))
         return self.load(res_ptr, None, None, (), "", "", "", False, "")
+
+    def _store_field(self, addr_handle, ty, value) -> None:
+        res_ptr = self.tensor(addr_handle, tl.pointer_type(ty))
+        self.store(res_ptr, value, None, (), "", "")
 
     def struct_field_store(self, ptr, name: str, value) -> None:
         """Write a scalar/pointer field of a struct pointer."""
@@ -1383,8 +1390,7 @@ class TritonSemantic(Generic[TensorTy]):
         if isinstance(field_ty, (_custom_types._struct_type, _custom_types._array_type)):
             raise ValueError(f"cannot assign to aggregate struct field '{name}'")
         res_ptr_handle = self.builder.create_struct_gep(ptr.handle, name)
-        res_ptr = self.tensor(res_ptr_handle, tl.pointer_type(field_ty))
-        self.store(res_ptr, value, None, (), "", "")
+        self._store_field(res_ptr_handle, field_ty, value)
 
     def array_element(self, ptr, index):
         """Address (and load) an element of an array pointer.
@@ -1405,8 +1411,7 @@ class TritonSemantic(Generic[TensorTy]):
             return _custom_types.struct_pointer(res_ptr_handle, res_ptr_ty)
         if isinstance(elem_ty, _custom_types._array_type):
             return _custom_types.array_pointer(res_ptr_handle, res_ptr_ty)
-        res_ptr = self.tensor(res_ptr_handle, res_ptr_ty)
-        return self.load(res_ptr, None, None, (), "", "", "", False, "")
+        return self._load_field(res_ptr_handle, elem_ty)
 
     def array_element_store(self, ptr, index, value) -> None:
         """Write a scalar/pointer element of an array pointer."""
@@ -1420,8 +1425,7 @@ class TritonSemantic(Generic[TensorTy]):
         if not isinstance(index, tl.tensor):
             index = self.to_tensor(index)
         res_ptr_handle = self.builder.create_array_gep(ptr.handle, index.handle)
-        res_ptr = self.tensor(res_ptr_handle, tl.pointer_type(elem_ty))
-        self.store(res_ptr, value, None, (), "", "")
+        self._store_field(res_ptr_handle, elem_ty, value)
 
     def store(self, ptr: TensorTy, val: TensorTy, mask: Optional[TensorTy], boundary_check, cache_modifier: str,
               eviction_policy: str) -> TensorTy:
