@@ -392,6 +392,10 @@ class array_pointer(_core.base_value):
     def _flatten_ir(self, handles: List[Any]) -> None:
         handles.append(self.handle)
 
+    @_core.builtin
+    def __getitem__(self, index, _semantic=None):
+        return _semantic.array_element(self, index)
+
 
 # ---------------------------------------------------------------------------
 # Host wrapper

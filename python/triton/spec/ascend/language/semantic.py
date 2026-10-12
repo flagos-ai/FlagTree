@@ -1386,6 +1386,43 @@ class TritonSemantic(Generic[TensorTy]):
         res_ptr = self.tensor(res_ptr_handle, tl.pointer_type(field_ty))
         self.store(res_ptr, value, None, (), "", "")
 
+    def array_element(self, ptr, index):
+        """Address (and load) an element of an array pointer.
+
+        For struct/array elements a pointer value is returned so it can be
+        dereferenced further; scalar/pointer elements are loaded.
+        """
+        arr_ty = ptr.type.element_ty
+        if not isinstance(arr_ty, _custom_types._array_type):
+            raise ValueError(f"expected a pointer to an array, got {ptr.type}")
+        elem_ty = arr_ty.element_ty
+        index = tl._unwrap_if_constexpr(index)
+        if not isinstance(index, tl.tensor):
+            index = self.to_tensor(index)
+        res_ptr_handle = self.builder.create_array_gep(ptr.handle, index.handle)
+        res_ptr_ty = tl.pointer_type(elem_ty)
+        if isinstance(elem_ty, _custom_types._struct_type):
+            return _custom_types.struct_pointer(res_ptr_handle, res_ptr_ty)
+        if isinstance(elem_ty, _custom_types._array_type):
+            return _custom_types.array_pointer(res_ptr_handle, res_ptr_ty)
+        res_ptr = self.tensor(res_ptr_handle, res_ptr_ty)
+        return self.load(res_ptr, None, None, (), "", "", "", False, "")
+
+    def array_element_store(self, ptr, index, value) -> None:
+        """Write a scalar/pointer element of an array pointer."""
+        arr_ty = ptr.type.element_ty
+        if not isinstance(arr_ty, _custom_types._array_type):
+            raise ValueError(f"expected a pointer to an array, got {ptr.type}")
+        elem_ty = arr_ty.element_ty
+        if isinstance(elem_ty, (_custom_types._struct_type, _custom_types._array_type)):
+            raise ValueError("cannot assign to an aggregate array element")
+        index = tl._unwrap_if_constexpr(index)
+        if not isinstance(index, tl.tensor):
+            index = self.to_tensor(index)
+        res_ptr_handle = self.builder.create_array_gep(ptr.handle, index.handle)
+        res_ptr = self.tensor(res_ptr_handle, tl.pointer_type(elem_ty))
+        self.store(res_ptr, value, None, (), "", "")
+
     def store(self, ptr: TensorTy, val: TensorTy, mask: Optional[TensorTy], boundary_check, cache_modifier: str,
               eviction_policy: str) -> TensorTy:
         # Cache and eviction options

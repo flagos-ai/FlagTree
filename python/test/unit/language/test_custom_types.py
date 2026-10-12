@@ -32,6 +32,11 @@ class Outer(ctypes.Structure):
     _fields_ = [("inner", Inner), ("n", ctypes.c_uint32)]
 
 
+@tl.struct_type
+class WithArray(ctypes.Structure):
+    _fields_ = [("arr", Inner * 2), ("n", ctypes.c_uint32)]
+
+
 class _FakeBuffer:
     """Minimal stand-in for a device buffer: just needs data_ptr()."""
 
@@ -110,3 +115,53 @@ def test_unknown_field_raises():
 
     with pytest.raises(Exception):
         run_parser(kernel, args=(_view(TensorView),))
+
+
+def test_array_element_read():
+    @triton.jit
+    def kernel(x_view):
+        return x_view.shape[0]
+
+    text = run_parser(kernel, args=(_view(TensorView),)).str_nodebug()
+    # struct_gep for the "shape" field, then array_gep for the element.
+    assert "tt.struct_gep" in text
+    assert "tt.array_gep" in text
+
+
+def test_array_element_dynamic_index():
+    @triton.jit
+    def kernel(x_view, i):
+        return x_view.shape[i]
+
+    text = run_parser(kernel, args=(_view(TensorView), 0)).str_nodebug()
+    assert "tt.array_gep" in text
+
+
+def test_array_element_write():
+    @triton.jit
+    def kernel(x_view):
+        x_view.shape[0] = 7
+
+    text = run_parser(kernel, args=(_view(TensorView),)).str_nodebug()
+    assert "tt.array_gep" in text
+    assert "tt.store" in text
+
+
+def test_array_of_struct_element():
+    @triton.jit
+    def kernel(o, i):
+        return o.arr[i].b
+
+    text = run_parser(kernel, args=(_view(WithArray), 0)).str_nodebug()
+    # struct_gep for "arr", array_gep for the element, struct_gep for "b".
+    assert text.count("tt.struct_gep") == 2
+    assert "tt.array_gep" in text
+
+
+def test_array_of_struct_type_model():
+    st = WithArray._triton_struct_type
+    arr_ty = st.fields[0][1]
+    assert isinstance(arr_ty.element_ty, type(Inner._triton_struct_type))
+    assert arr_ty.count == 2
+    from triton.language import str_to_ty
+    assert str_to_ty("*" + st.signature(), None).element_ty == st
