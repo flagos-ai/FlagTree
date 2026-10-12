@@ -206,5 +206,88 @@ FTT_DEVICE_INLINE void grid_barrier(unsigned int *counter, int blocks) {
 #endif
 }
 
+
+// Asynchronous global->shared tile copy on the SME engine.
+//
+// `rowxfb16` moves 16 source rows of 64-bit granules into shared memory and
+// interleaves two rows per 32-bit word: shared slot `i` holds
+// `src(row = i % 2, col = i / 2)`. That is exactly the `k_major_n8_k16` packed
+// weight order, which is why the GEMV kernels can consume the tile directly.
+//
+// Three things about this engine are load-bearing, all measured (see the
+// tutorial's .local/perf-iteration/cpp-backend-iteration.zh.md):
+//
+//   * `sme_wait()` drains *every* outstanding G2S transaction; there is no
+//     "wait for the oldest N" form. So a classic double-buffer that issues the
+//     next tile and then waits on the current one gains nothing -- measured
+//     61 GB/s against 88 for plain scalar loads.
+//   * Only ONE transaction per CTA is in flight. Issuing N copies before a
+//     drain lands exactly one of them: the filled-slot count scales as 1/N,
+//     measured 6144/3072/1536/512 slots for 1/2/4/12 copies per drain. The
+//     others are silently dropped, with no fault and no partial write.
+//
+//     This caps the engine at one 512-element tile per drain, which measures
+//     ~1.6 GB/s per CTA and ~26 GB/s across 16 CTAs -- far below the 88 GB/s
+//     the ordinary scalar load path reaches. An earlier batched probe appeared
+//     to reach 816 GB/s; it only accumulated a checksum and never validated
+//     the staged bytes, so it was timing work that never happened. Validate
+//     staged data before believing any bandwidth number from this engine.
+//   * The descriptor's third lane must be -1 and its fourth the source row
+//     stride in *bytes*.
+//   * The row stride has a 64-byte minimum. Below it the instruction silently
+//     reads only 16 source elements and repeats them across the destination --
+//     no fault, no partial write, just duplicated data. A 32-byte stride
+//     (16 bf16, which is what a `k_major_n8_k16` lane looks like) is therefore
+//     unusable, and that single fact produced four rounds of apparently
+//     unrelated wrong-token bugs.
+//   * One instruction moves 16 rows x 32 columns = 512 elements, independent of
+//     the stride; the stride only sets the row pitch. So it cannot densely copy
+//     a contiguous run whose rows are narrower than 32 elements -- it is built
+//     for taking a 16x32 tile out of a wider matrix, which is how the Triton
+//     backend uses it for dot operands.
+//   * The destination permutation is regular only over the first 256 slots
+//     (`smem[i] = src(row = 2*(i/32) + i%2, col = (i/2)%16)`); slots 256..511
+//     follow a different pattern (slot 256 holds row 4, not row 0). Measure it
+//     with an integer-only probe before relying on it. `__bf16` and FTT's own
+//     `bfloat16_t` both read back as zero in a standalone translation unit on
+//     this toolchain, which makes float-based probes report "nothing was
+//     copied" when the copy in fact succeeded.
+//
+// The destination must be 64-bit aligned shared memory with room for
+// 16 * `granules_per_row` 16-bit elements.
+FTT_DEVICE_INLINE void sme_copy_tile(void *destination, const void *source,
+                                     int source_row_stride_bytes,
+                                     int source_byte_offset = 0) {
+#if defined(FTT_DEVICE_PASS)
+    using descriptor_t = int __attribute__((__vector_size__(16)));
+    const unsigned long long address =
+        reinterpret_cast<unsigned long long>(source);
+    const descriptor_t base = {
+        static_cast<int>(address & 0xffffffffu),
+        static_cast<int>(address >> 32),
+        -1,
+        source_row_stride_bytes,
+    };
+    __ivcorex_sme_load_16x1b64_rowxfb16(
+        static_cast<int>(reinterpret_cast<unsigned long long>(destination)),
+        base, source_byte_offset, 0);
+#else
+    (void)destination;
+    (void)source;
+    (void)source_row_stride_bytes;
+    (void)source_byte_offset;
+#endif
+}
+
+// Drain the G2S queue and rendezvous the CTA, so every thread may read any
+// tile the batch just published. Both halves are required: the wait makes the
+// data visible, the barrier makes the *producer's* issue visible to consumers.
+FTT_DEVICE_INLINE void sme_wait() {
+#if defined(FTT_DEVICE_PASS)
+    __ivcorex_sl_waitcnt(12);  // bit2 = shared stores, bit3 = G2S
+    cta_sync();
+#endif
+}
+
 } // namespace arch
 } // namespace ftt

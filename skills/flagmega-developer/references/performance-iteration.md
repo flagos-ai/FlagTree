@@ -26,6 +26,41 @@ Choose the earliest checkpoint whose incoming contracts remain valid:
 | Candidate parameters, capabilities, workspace, or ABI | Resume before candidate proposal generation; regenerate selection and dependent memory/synchronization plans. |
 | Contract-compatible kernel source or renderer override | A valid later TIR checkpoint may be reusable; regenerate source and device code with the override loaded and new source identity. |
 
+Rebuild only the stage the hypothesis touches. An artifact holds three
+independent things -- the readonly weight data, the generated source, and the
+compiled device library -- and a template or kernel-source edit invalidates only
+the last two. Re-running the whole artifact write re-packs gigabytes of weights
+for nothing; measured on the 28-layer Qwen3-1.7B BI-V150 C++ artifact:
+
+| Action after a template edit | Cost |
+| --- | --- |
+| Re-render source into the existing artifact | ~4 s |
+| Recompile the device library | ~18 s |
+| Re-pack readonly weights (not needed) | the rest of ~28 s, plus 3.9 GB of disk per trial |
+
+So the loop is: render into the artifact directory in place, rebuild the
+library, refresh the `codegen.source` / `codegen.library` hashes and `nbytes`
+in the manifest, then run. Skipping the hash refresh fails the load with
+`Artifact section 'codegen.source' size does not match its manifest`, which is
+the loader correctly refusing a stale pairing rather than a bug to work around.
+
+Two practical consequences. Each full re-write costs disk as well as time --
+repeatedly copying whole artifacts per variant filled a 438 GB scratch volume
+twice in one session and started failing builds with `No space left on device`;
+delete a variant once it is measured. And when a template edit needs several
+attempts, the per-attempt cost decides whether to think or to try: at ~22 s a
+sweep is cheap, at ~30 minutes it is not, which is reason enough to find the
+in-place path before starting the sweep.
+
+Validate index arithmetic off-device before rebuilding anything. A packed-layout
+walk, a permuted copy, or a loop restructure is pure integer algebra, so a host
+model that enumerates what each thread multiplies and compares the multiset per
+output against the reference form settles correctness in under a second. That
+oracle found a real defect -- a chunk-base shortcut that was wrong for 217 of
+512 bases because the chunk can cross a row boundary -- after three device
+rebuilds had failed to localize it, and it also showed that two earlier device
+measurements had been attributed to the wrong cause.
+
 Do not infer compatibility from a retained candidate ID. A source override that
 changes buffer access, scratch requirements, execution roles, or transfer
 lifetimes belongs in the contract-changing case. An unchanged semantic IR hash
@@ -95,6 +130,39 @@ do not automatically fragment every operation into an independent region or
 duplicate implementations per invocation. Only hoist expressions after proving
 argument invariance and absence of mutable-state dependencies or side effects.
 
+## Count the work items before tuning any knob
+
+Compute how much of the block has work before reaching for a depth, width, or
+stage count. For a per-thread GEMV walk that is `work_items /
+block_threads`, where `work_items` is the payload extent divided by the
+per-thread chunk. A site at 25% or 75% residency is a defect that no amount of
+knob tuning reaches, and one division finds it.
+
+When the payload walk underfills the block, cooperate along the *long*
+reduction axis rather than shrinking the parallel axis: give each output
+element a group of adjacent threads that each own an interleaved slice of the
+reduction, which restores residency while keeping each thread's read wide. Put
+the slice index on the fastest-varying thread axis so the group is a contiguous
+aligned lane run and folds with one shuffle instead of shared memory, and
+interleave rather than block the slices so the concurrently active window stays
+cache-resident.
+
+Verify in the generated assembly that a concurrency knob changes concurrency.
+An unrolled issue-and-consume body can leave the scheduler draining each stage
+before starting the next, so the nominal depth is not the in-flight depth; the
+knob then measures as noise and the real limiter is elsewhere. After any
+bottleneck moves, re-sweep the knobs rather than trusting an earlier optimum --
+a flat curve is evidence that the knob is no longer the constraint.
+
+Convert per-family times into achieved bandwidth (GB/s) before ranking them.
+An outlier can sit mid-table by milliseconds while being far off the
+others' bandwidth, which is the form the defect is visible in.
+
+When a measured-negative path is disabled in code, record *why* it lost, not
+only that it did. "The wide load cannot pay for the lost residency" names the
+real cause and makes the path recoverable by splitting a different axis;
+"measured slower" invites repeating the same experiment.
+
 ## Build correctness evidence at the right level
 
 For a defect, retain a minimal reproducer and identify file, function/pass,
@@ -144,6 +212,21 @@ Run comparable variants sequentially on the same device, rotate order, repeat
 enough to assess variation, and retain raw samples and per-round summaries.
 Keep correctness diagnostics outside timing, avoid competing jobs on the measured
 device, and do not rebuild native libraries or mutate artifacts during a run.
+
+For a grid-barrier megakernel, concurrency on one device is not merely noisy,
+it deadlocks: the kernel needs every CTA co-resident to pass a barrier, so two
+processes each get a partial share and neither proceeds. Expect a hang, a lost
+card, and an illegal-instruction entry in the kernel log. Serialize runs on one
+device or give each run its own, and treat any measurement taken while another
+job shared the device as discarded rather than merely suspect. A test suite
+that executes kernels counts as such a job; apparent suite slowness is often
+self-inflicted contention, not a slow test.
+
+Verify that a reference artifact was built from the same module as the variant
+before comparing. An artifact left over from a different profile can still load
+and run, so the comparison fails silently and in whichever direction its own
+configuration happens to favor. Re-derive the baseline from the same source and
+confirm it reproduces its historical numbers.
 Report all requested scenarios, medians and tails, including regressions and
 noise. A favorable sample or recovery to a historical range does not establish
 a strict win in every scenario; do not change acceptance after seeing results.

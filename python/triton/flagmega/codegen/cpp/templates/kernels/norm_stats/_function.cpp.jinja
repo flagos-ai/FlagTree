@@ -9,9 +9,16 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    through shared memory, so the result is one scalar per outer index -- and
    the reduction order differs from the Triton backend's, which is visible in
    the low bits of a bf16 statistic. #}
-    __shared__ float ftt_norm_partial[{{ block_threads }}];
+    {# Only one slot per warp is written: the warp-shuffle stage folds inside each
+   warp and just the lane-0 thread publishes, so this needs `block_threads /
+   warp_size` floats rather than one per thread. That matters because shared
+   memory is a single budget for the whole inlined megakernel -- every device
+   function's declaration is co-resident -- and oversizing these five buffers
+   cost 40 KB of a 64 KB budget. Exceeding it does not fail the launch, it
+   silently reads garbage. #}
+__shared__ float ftt_norm_partial[{{ warps }}];
 {% if call.use_mean %}
-    __shared__ float ftt_norm_mean_partial[{{ block_threads }}];
+    __shared__ float ftt_norm_mean_partial[{{ warps }}];
 {% endif %}
     for (ftt::dim_t norm_outer_index = 0;
          norm_outer_index < {{ call.outer_capacity }}LL; ++norm_outer_index) {
@@ -43,7 +50,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 
    Only `warps` slots are written now instead of `ftt_threads`, and the final
    fold is over `warps` (16 at a 1024-wide CTA) rather than 1024. #}
-{% set warp = 64 %}
+{% set warp = warp_size %}
         norm_square_sum = ftt::arch::warp_reduce_sum(norm_square_sum);
 {% if call.use_mean %}
         norm_sum = ftt::arch::warp_reduce_sum(norm_sum);

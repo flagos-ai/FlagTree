@@ -17,9 +17,16 @@
 static FTT_DEVICE void {{ call.symbol }}__partials({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
-    __shared__ float ftt_gather_square_partial[{{ block_threads }}];
+    {# Only one slot per warp is written: the warp-shuffle stage folds inside each
+   warp and just the lane-0 thread publishes, so this needs `block_threads /
+   warp_size` floats rather than one per thread. That matters because shared
+   memory is a single budget for the whole inlined megakernel -- every device
+   function's declaration is co-resident -- and oversizing these five buffers
+   cost 40 KB of a 64 KB budget. Exceeding it does not fail the launch, it
+   silently reads garbage. #}
+__shared__ float ftt_gather_square_partial[{{ warps }}];
 {% if call.use_mean %}
-    __shared__ float ftt_gather_mean_partial[{{ block_threads }}];
+    __shared__ float ftt_gather_mean_partial[{{ warps }}];
 {% endif %}
     float gather_square_sum = 0.0f;
 {% if call.use_mean %}
@@ -70,16 +77,16 @@ static FTT_DEVICE void {{ call.symbol }}__partials({{ entry.device_signature(cal
 {% if call.use_mean %}
     gather_mean_sum = ftt::arch::warp_reduce_sum(gather_mean_sum);
 {% endif %}
-    if ((ftt_thread % 64LL) == 0) {
-        ftt_gather_square_partial[ftt_thread / 64LL] = gather_square_sum;
+    if ((ftt_thread % {{ warp_size }}LL) == 0) {
+        ftt_gather_square_partial[ftt_thread / {{ warp_size }}LL] = gather_square_sum;
 {% if call.use_mean %}
-        ftt_gather_mean_partial[ftt_thread / 64LL] = gather_mean_sum;
+        ftt_gather_mean_partial[ftt_thread / {{ warp_size }}LL] = gather_mean_sum;
 {% endif %}
     }
     ftt::arch::cta_sync();
     if (ftt_thread == 0 && ({{ call.participant_active | cppexpr }})) {
         for (ftt::dim_t warp_index = 1;
-             warp_index < (ftt_threads / 64LL); ++warp_index) {
+             warp_index < (ftt_threads / {{ warp_size }}LL); ++warp_index) {
             gather_square_sum += ftt_gather_square_partial[warp_index];
 {% if call.use_mean %}
             gather_mean_sum += ftt_gather_mean_partial[warp_index];

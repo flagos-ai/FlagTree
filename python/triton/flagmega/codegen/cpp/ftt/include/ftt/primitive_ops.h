@@ -212,6 +212,37 @@ FTT_DEVICE_INLINE bf16_run_t<Count> load_run(const bfloat16_t *source) {
     return value;
 }
 
+// Same run, loaded as 4-byte transactions instead of one 16-byte transaction.
+//
+// Load *width* and loads *in flight* are separate knobs on this device and
+// pull in opposite directions: a 128-bit load is capped near one instruction
+// per cycle per MP (~46% of the 819 GB/s per-die peak) while 32-bit loads
+// reach ~82%, because four of them issue in the same window. One `load_run`
+// is a single in-flight transaction where this is four, at four times the
+// issue slots.
+//
+// Measured on the Qwen3 decode package: **exactly neutral**, 10.380 vs
+// 10.378 ms/token. The width advantage is real on a streaming probe but does
+// not reach this kernel, whose grid-barrier megakernel is pinned to 16 CTAs
+// (1 per MP) -- the regime where the vendor's own analysis has 128-bit loads
+// ahead. Kept because it costs nothing and the ordering inverts with
+// occupancy, so a higher-occupancy caller may want it; selected by
+// `FLAGMEGA_CPP_NARROW_LOADS`, off by default.
+//
+// Alignment requirement is 4 bytes rather than 16, so this also covers runs
+// whose base the buffer plan only aligns to a payload boundary.
+template <int Count>
+FTT_DEVICE_INLINE bf16_run_t<Count> load_run_narrow(const bfloat16_t *source) {
+    bf16_run_t<Count> value;
+    const unsigned int *words =
+        reinterpret_cast<const unsigned int *>(source);
+    FTT_UNROLL
+    for (int i = 0; i < Count / 2; ++i) {
+        value.word[i] = words[i];
+    }
+    return value;
+}
+
 // Argmax reduction step, matching `torch.argmax` exactly.
 //
 // Three rules, all of which the generated kernels depend on:

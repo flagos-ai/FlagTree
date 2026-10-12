@@ -84,6 +84,44 @@ CPP_BLOCK_THREADS = 1024
 # scalar path's own tuning.
 CPP_TILED_DEPTH = int(os.environ.get("FLAGMEGA_CPP_TILED_DEPTH", "2"))
 
+# Use the SME G2S engine with a batched producer/consumer loop in the GEMV
+# kernels. Off by default until it beats the vectorized scalar path end to end.
+CPP_USE_SME = os.environ.get("FLAGMEGA_CPP_SME", "0") == "1"
+
+# Load the packed weight runs as 4-byte transactions instead of 16-byte ones.
+#
+# On BI-V150 a 128-bit load is issue-capped near one per cycle per MP (~46% of
+# the per-die peak) while 32-bit loads reach ~82%, so narrowing can raise
+# throughput even though it issues four times as many instructions. Measured
+# neutral on this package (10.380 vs 10.378 ms/token): the advantage shows up
+# at high occupancy, and these grid-barrier megakernels are pinned to 16 CTAs,
+# one per MP. Off by default; kept because the ordering inverts with occupancy.
+CPP_NARROW_LOADS = os.environ.get("FLAGMEGA_CPP_NARROW_LOADS", "0") == "1"
+
+
+def _target_warp_size(architecture: str) -> int:
+    """Warp width for the rendered target, from its registered capability.
+
+    Warp geometry belongs to the target, not to FTT: the reductions fold inside
+    a warp before touching shared memory, so the shared slot count follows this
+    number. Reading it from the registry means a target with a different warp
+    width renders correct buffer sizes instead of silently mis-sizing them.
+    """
+
+    from triton.flagmega.targets import get_target, target_names
+
+    for name in target_names():
+        target = get_target(name)
+        if str(getattr(target, "codegen_architecture", "")) != architecture:
+            continue
+        width = getattr(getattr(target, "capability", None), "warp_size", None)
+        if width:
+            return int(width)
+    raise CodegenError(
+        f"No registered target reports a warp size for architecture "
+        f"{architecture!r}; the C++ reductions cannot size their shared buffers."
+    )
+
 
 def describe_cpp_package(module: IRModule) -> dict[str, object]:
     """Extend the shared TIR descriptor with the C++ package's own facts."""
@@ -120,6 +158,16 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "entry_template": "entrypoints/call_graph.cpp.jinja",
         "block_threads": CPP_BLOCK_THREADS,
         "tiled_depth": CPP_TILED_DEPTH,
+        # Warp geometry is a target property, not an FTT constant: the
+        # reductions fold inside a warp before touching shared memory, so the
+        # slot count follows the target's warp size. Taken from the registered
+        # target's capability rather than hardcoded, so a target with a
+        # different warp width renders correctly instead of silently
+        # mis-sizing the buffers.
+        "warp_size": _target_warp_size(architecture),
+        "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
+        "sme": CPP_USE_SME,
+        "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
         "grid_total_blocks": _grid_total_blocks(descriptor),
         "grid_barrier_counter_slots": _grid_barrier_counter_slots(descriptor),
         "grid_barrier_group_bases": _barrier_group_bases(descriptor),

@@ -18,7 +18,14 @@
 static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
-    __shared__ float ftt_dense_stats_partial[{{ block_threads }}];
+    {# Only one slot per warp is written: the warp-shuffle stage folds inside each
+   warp and just the lane-0 thread publishes, so this needs `block_threads /
+   warp_size` floats rather than one per thread. That matters because shared
+   memory is a single budget for the whole inlined megakernel -- every device
+   function's declaration is co-resident -- and oversizing these five buffers
+   cost 40 KB of a 64 KB budget. Exceeding it does not fail the launch, it
+   silently reads garbage. #}
+__shared__ float ftt_dense_stats_partial[{{ warps }}];
     auto *const ftt_source = {{ call.source | cppexpr }};
     auto *const ftt_weight = {{ call.weight | cppexpr }};
     auto *const ftt_residual = {{ call.residual | cppexpr }};
@@ -32,19 +39,107 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    variant has its own payload loop, so the chunking has to be repeated here
    rather than inherited -- it was the single largest non-GEMV cost before
    (3.42 ms/token at 128 N over 1024 threads). #}
-{# Measured a loss here: 24.47 vs 20.04 ms/token. This variant's K extent is
-   6144 (384 groups), so chunking drops the payload walk to 0.25 iterations per
-   thread *and* fuses a shared-memory norm_stats reduction into the same loop;
-   the wide load cannot pay for the lost residency. Kept for symmetry with the
-   other dense templates -- flip to re-measure if the fused shape changes. #}
-{% set tiled = false and lane >= chunk and lane % chunk == 0
+{# Chunking the *payload* (the N x lane walk) is a measured loss here: 24.47 vs
+   20.04 ms/token. This variant's N extent is only 128, so `N * lane / chunk`
+   is 256 work items over 1024 threads -- 25% residency -- and the wide load
+   cannot pay for the three quarters of the block it idles. The K-split below
+   is the shape that keeps the wide load *and* the residency. #}
+{# Splitting K instead of N is what makes the wide load affordable: the K axis
+   is the long one here (6144 = 384 groups), so handing each N a group of
+   cooperating threads that each own a *slice of K* keeps the whole block busy
+   AND gives every thread a 16-byte run.
+
+     halves  = lane / chunk            positions inside one lane run
+     coop    = block_threads / N       threads per output element
+     kslice  = coop / halves           K slices per output element
+
+   For Qwen3's 128 x 6144 shard that is 2 x 4 = 8 threads per N, 128 x 8 =
+   1024 = the whole block, and 384 / 4 = 96 groups per slice.
+
+   `coop_id` is the *fastest* thread dimension so the cooperating threads are
+   adjacent lanes and fold with one shuffle instead of through shared memory.
+   It also keeps the reads wide: for a fixed K slice the `(n, half)` pairs of
+   16 consecutive threads cover `chunk * 16` consecutive elements, i.e. one
+   256-byte segment, against 128 bytes per warp on the scalar walk.
+
+   The K slices are interleaved rather than blocked so the concurrently active
+   K range stays narrow and the shared activation vector is read out of L2. #}
+{% set halves = (lane // chunk) if chunk and lane % chunk == 0 else 0 %}
+{% set coop_width = (block_threads // call.local_n_capacity)
+       if call.local_n_capacity else 0 %}
+{% set kslice = (coop_width // halves)
+       if halves and coop_width % halves == 0 else 0 %}
+{% set kgroups = (call.local_k_capacity // lane) if lane else 0 %}
+{% set ksplit = lane >= chunk and lane % chunk == 0
        and call.weight_block_n and call.weight_block_k == lane
-       and (call.local_n_capacity * lane) % chunk == 0
-       and call.local_n_capacity * lane <= block_threads * chunk
-       and ((call.local_k_capacity // lane) % streams == 0) %}
-{% set step = chunk if tiled else 1 %}
-{% set coop = (lane // chunk) if tiled else lane %}
-{% if lane > 1 %}
+       and kslice > 0 and coop_width >= halves
+       and call.local_n_capacity * coop_width == block_threads
+       and kgroups % kslice == 0
+       and ((kgroups // kslice) % streams == 0) %}
+{% set step = 1 %}
+{% set coop = lane %}
+{% if ksplit %}
+{# K-split walk: `coop_width` adjacent threads share one N, each owning an
+   interleaved slice of the K groups and reading its run as one 16-byte load.
+   Only `coop_id == 0` stores and contributes to the statistic, so each output
+   element is still counted exactly once. #}
+    for (ftt::dim_t dense_element_base = 0;
+         dense_element_base < {{ call.local_n_capacity }}LL;
+         dense_element_base += {{ block_threads // coop_width }}LL) {
+        const ftt::dim_t dense_coop_id = ftt_thread % {{ coop_width }}LL;
+        const ftt::dim_t dense_local_n_offsets =
+            dense_element_base + ftt_thread / {{ coop_width }}LL;
+        const ftt::dim_t dense_k_half = dense_coop_id % {{ halves }}LL;
+        const ftt::dim_t dense_k_slice = dense_coop_id / {{ halves }}LL;
+        const ftt::dim_t dense_k_in_lane = dense_k_half * {{ chunk }}LL;
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+        float dense_partial[{{ streams }}] = {};
+        for (ftt::dim_t dense_group_base = 0;
+             dense_group_base < {{ kgroups // kslice }}LL;
+             dense_group_base += {{ streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0;
+                 dense_stream < {{ streams }}LL; ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    (((dense_group_base + dense_stream) * {{ kslice }}LL
+                      + dense_k_slice) * {{ lane }}LL) + dense_k_in_lane;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                const auto dense_weight_run = ftt::{{ run_load }}<{{ chunk }}>(
+                    &ftt_weight[{{ call.weight_offset | cppexpr }}]);
+                const auto dense_source_run = ftt::{{ run_load }}<{{ chunk }}>(
+                    &ftt_source[{{ call.source_offset | cppexpr }}]);
+                float dense_step = 0.0f;
+                FTT_UNROLL
+                for (int dense_element = 0; dense_element < {{ chunk }};
+                     ++dense_element) {
+                    dense_step += dense_weight_run.at(dense_element)
+                        * dense_source_run.at(dense_element);
+                }
+                dense_partial[(int)dense_stream] += dense_step;
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ streams }};
+             ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+        dense_accumulator =
+            ftt::arch::lane_group_reduce_sum<{{ coop_width }}>(
+                dense_accumulator);
+        if (dense_coop_id != 0) {
+            continue;
+        }
+{% elif lane > 1 %}
 {# Physical-order payload walk; see the note in
    dense_matmul/_function.cpp.jinja. This is the heaviest per-layer GEMV in the
    Qwen3 decode path (K=6144), so the access pattern matters most here.
@@ -80,24 +175,9 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     continue;
                 }
 {% endif %}
-{% if tiled %}
-                const auto dense_weight_run = ftt::load_run<{{ chunk }}>(
-                    &ftt_weight[{{ call.weight_offset | cppexpr }}]);
-                const auto dense_source_run = ftt::load_run<{{ chunk }}>(
-                    &ftt_source[{{ call.source_offset | cppexpr }}]);
-                float dense_step = 0.0f;
-                FTT_UNROLL
-                for (int dense_element = 0; dense_element < {{ chunk }};
-                     ++dense_element) {
-                    dense_step += dense_weight_run.at(dense_element)
-                        * dense_source_run.at(dense_element);
-                }
-                dense_partial[(int)dense_stream] += dense_step;
-{% else %}
                 dense_partial[(int)dense_stream] +=
                     ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
                     * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
-{% endif %}
             }
         }
         float dense_accumulator = 0.0f;
@@ -178,16 +258,16 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {# Two-stage tree reduction; see kernels/norm_stats/_function.cpp.jinja for the
    measurement. Thread 0 walking all `ftt_threads` shared slots serially is
    1023 dependent shared reads per statistic; folding inside each warp first
-   leaves only `ftt_threads / 64` slots to merge. #}
+   leaves only `ftt_threads / warp_size` slots to merge. #}
     dense_stats_square_sum =
         ftt::arch::warp_reduce_sum(dense_stats_square_sum);
-    if ((ftt_thread % 64LL) == 0) {
-        ftt_dense_stats_partial[ftt_thread / 64LL] = dense_stats_square_sum;
+    if ((ftt_thread % {{ warp_size }}LL) == 0) {
+        ftt_dense_stats_partial[ftt_thread / {{ warp_size }}LL] = dense_stats_square_sum;
     }
     ftt::arch::cta_sync();
     if (ftt_thread == 0) {
         for (ftt::dim_t warp_index = 1;
-             warp_index < (ftt_threads / 64LL); ++warp_index) {
+             warp_index < (ftt_threads / {{ warp_size }}LL); ++warp_index) {
             dense_stats_square_sum += ftt_dense_stats_partial[warp_index];
         }
         if ({{ call.stats_writer_active | cppexpr }}) {
