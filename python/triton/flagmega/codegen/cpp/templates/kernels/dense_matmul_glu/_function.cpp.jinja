@@ -90,51 +90,100 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    over `chunk`, so the strided loop covers every thread rather than leaving
    most of the block idle on one N each (measured 29.4 that way).
    `coop` threads share an N and fold through the lane group at the end. #}
+{# Reuse the activation run across the items one thread owns.
+
+   The strided item loop gives every thread `chunks * kslice / block_threads`
+   items, and all of them land on the *same* `(k_slice, k_in_lane)` pair --
+   the stride is a whole multiple of `kslice` and of `lane / chunk`. So they
+   read byte-identical activation runs and differ only in N.
+
+   That matters because this kernel is issue-bound, not latency-bound: with
+   the K-split in place GLU runs at 394 GB/s against the ~373 GB/s ceiling for
+   128-bit loads on this device, i.e. it is already at the one-load-per-cycle
+   -per-MP limit. The lever left is *fewer load instructions for the same
+   work*, and the activation is a third of them.
+
+   Hoisting it is what the earlier attempts could not do:
+     * Staging the activation in shared memory replaced a global load with a
+       shared load, which still costs an issue slot, and added `cta_sync` plus
+       bank conflicts -- measured 30.69 vs 19.91 ms/token.
+     * An N-direction register tile was rejected when the payload walk gave
+       only 0.75 chunks per thread; there was nothing to tile. The K-split
+       changed that geometry to 3 items per thread, which is what makes this
+       possible now.
+   Keeping the N axis in registers and the activation loaded once removes
+   2 of every 3 activation loads with no shared memory and no barrier. #}
+{% set items = (chunks * kslice) // block_threads %}
+{% if items > 1 and (chunks * kslice) % block_threads == 0 %}
+{% set ntile = items %}
+{% else %}
+{% set ntile = 1 %}
+{% endif %}
     for (ftt::dim_t dense_glu_item = ftt_thread;
          dense_glu_item < {{ chunks * kslice }}LL;
-         dense_glu_item += ftt_threads) {
+         dense_glu_item += ftt_threads * {{ ntile }}LL) {
 {% if kslice > 1 %}
 {# The K slice is the fastest axis so the `kslice` partners of one payload
-   chunk are adjacent lanes. #}
+   chunk are adjacent lanes. All `ntile` items of this thread share it. #}
         const ftt::dim_t dense_glu_k_slice = dense_glu_item % {{ kslice }}LL;
-        const ftt::dim_t dense_glu_chunk = dense_glu_item / {{ kslice }}LL;
-{% else %}
-        const ftt::dim_t dense_glu_chunk = dense_glu_item;
 {% endif %}
-        const ftt::dim_t dense_glu_local_n_offsets =
-            (dense_glu_chunk * {{ chunk }}LL) / {{ lane }}LL;
         const ftt::dim_t dense_glu_k_in_lane =
-            (dense_glu_chunk * {{ chunk }}LL) % {{ lane }}LL;
-        const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
-        (void)dense_glu_global_n;
-        if (!({{ call.result_active | cppexpr }})) {
-            continue;
+            ((dense_glu_item / {{ kslice }}LL) * {{ chunk }}LL) % {{ lane }}LL;
+{# One N position per tile slot. The stride is a whole multiple of `kslice`
+   and of `lane / chunk`, so these differ only in N. #}
+        ftt::dim_t dense_glu_tile_n[{{ ntile }}];
+        bool dense_glu_tile_live[{{ ntile }}];
+        FTT_UNROLL
+        for (int dense_glu_slot = 0; dense_glu_slot < {{ ntile }};
+             ++dense_glu_slot) {
+            const ftt::dim_t dense_glu_chunk =
+                (dense_glu_item + dense_glu_slot * ftt_threads)
+                / {{ kslice }}LL;
+            dense_glu_tile_n[dense_glu_slot] =
+                (dense_glu_chunk * {{ chunk }}LL) / {{ lane }}LL;
+            const ftt::dim_t dense_glu_local_n_offsets =
+                dense_glu_tile_n[dense_glu_slot];
+            const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+            (void)dense_glu_global_n;
+            dense_glu_tile_live[dense_glu_slot] =
+                (dense_glu_item + dense_glu_slot * ftt_threads
+                     < {{ chunks * kslice }}LL)
+                && ({{ call.result_active | cppexpr }});
         }
-        float dense_glu_gate_partial[{{ tdepth }}] = {};
-        float dense_glu_up_partial[{{ tdepth }}] = {};
-{# Issue every stream's loads before consuming any of them.
-   Writing this as one unrolled load-and-consume body does *not* give
-   `tdepth` loads in flight: the scheduler emits stream 0's three loads,
-   waits `vmcnt(0)` for them, and only then issues stream 1's, so the real
-   in-flight depth stays at 3 regardless of `tdepth` (confirmed in the
-   `BB0_253` SASS). Separating the phases is what makes the depth knob
-   actually control concurrency on this latency-bound device.
-   The arrays are indexed only by the unrolled induction variable, so they
-   stay in registers; a runtime index would force them to memory and
-   re-read the payload two bytes at a time. #}
+        float dense_glu_gate_partial[{{ ntile }}] = {};
+        float dense_glu_up_partial[{{ ntile }}] = {};
+{# Issue-then-consume over the K groups, with the activation run loaded ONCE
+   per group and reused across the N tile.
+
+   This kernel is issue-bound rather than latency-bound: with the K-split in
+   place GLU reaches 394 GB/s against the ~373 GB/s ceiling for 128-bit loads
+   on this device, i.e. it already sits at the one-load-per-cycle-per-MP
+   limit. So the lever is fewer load instructions for the same work, not more
+   loads in flight -- two forms of deeper pipelining measured neutral
+   (12.247 -> 12.226 for phase-split, 10.374 -> 10.352 for full double
+   buffering) precisely because there is no idle latency left to hide.
+
+   The activation was a third of the loads and was being re-read once per N
+   item. Two earlier attempts at that redundancy failed for reasons this form
+   avoids: staging it in shared memory swapped a global load for a shared one
+   (still an issue slot) and added `cta_sync` plus bank conflicts (30.69 vs
+   19.91 ms/token), and an N register tile had nothing to tile when the
+   payload walk gave 0.75 chunks per thread. The K-split changed that
+   geometry to `ntile` items per thread, which is what makes the reuse
+   available without shared memory or a barrier. #}
         for (ftt::dim_t dense_glu_group_base = 0;
              dense_glu_group_base < {{ groups // kslice }}LL;
              dense_glu_group_base += {{ tdepth }}LL) {
-            ftt::bf16_run_t<{{ chunk }}> dense_glu_gate_run[{{ tdepth }}];
-            ftt::bf16_run_t<{{ chunk }}> dense_glu_up_run[{{ tdepth }}];
             ftt::bf16_run_t<{{ chunk }}> dense_glu_source_run[{{ tdepth }}];
+            ftt::bf16_run_t<{{ chunk }}>
+                dense_glu_weight_run[{{ ntile * tdepth * 2 }}];
             FTT_UNROLL
             for (int dense_glu_stream = 0;
                  dense_glu_stream < {{ tdepth }}; ++dense_glu_stream) {
                 const ftt::dim_t dense_glu_local_k_offsets =
 {% if kslice > 1 %}
 {# Interleave the slices so the concurrently active K window stays narrow and
-   the shared activation vector is served from L2. #}
+   the activation vector is served from L2. #}
                     (((dense_glu_group_base + dense_glu_stream)
                       * {{ kslice }}LL + dense_glu_k_slice) * {{ lane }}LL)
                     + dense_glu_k_in_lane;
@@ -142,68 +191,103 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     (dense_glu_group_base + dense_glu_stream) * {{ lane }}LL
                     + dense_glu_k_in_lane;
 {% endif %}
-                const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
-                (void)dense_glu_global_k;
-                dense_glu_gate_run[dense_glu_stream] =
-                    ftt::{{ run_load }}<{{ chunk }}>(
-                        &ftt_gate_weight[{{ call.gate_weight_offset | cppexpr }}]);
-                dense_glu_up_run[dense_glu_stream] =
-                    ftt::{{ run_load }}<{{ chunk }}>(
-                        &ftt_up_weight[{{ call.up_weight_offset | cppexpr }}]);
                 dense_glu_source_run[dense_glu_stream] =
                     ftt::{{ run_load }}<{{ chunk }}>(
                         &ftt_source[{{ call.source_offset | cppexpr }}]);
             }
             FTT_UNROLL
-            for (int dense_glu_stream = 0;
-                 dense_glu_stream < {{ tdepth }}; ++dense_glu_stream) {
+            for (int dense_glu_slot = 0; dense_glu_slot < {{ ntile }};
+                 ++dense_glu_slot) {
+                const ftt::dim_t dense_glu_local_n_offsets =
+                    dense_glu_tile_n[dense_glu_slot];
+                const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+                (void)dense_glu_global_n;
+                FTT_UNROLL
+                for (int dense_glu_stream = 0;
+                     dense_glu_stream < {{ tdepth }}; ++dense_glu_stream) {
+                    const ftt::dim_t dense_glu_local_k_offsets =
+{% if kslice > 1 %}
+                        (((dense_glu_group_base + dense_glu_stream)
+                          * {{ kslice }}LL + dense_glu_k_slice) * {{ lane }}LL)
+                        + dense_glu_k_in_lane;
+{% else %}
+                        (dense_glu_group_base + dense_glu_stream)
+                            * {{ lane }}LL + dense_glu_k_in_lane;
+{% endif %}
+                    const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+                    (void)dense_glu_global_k;
+                    dense_glu_weight_run[dense_glu_slot * {{ tdepth * 2 }}
+                                         + dense_glu_stream * 2] =
+                        ftt::{{ run_load }}<{{ chunk }}>(
+                            &ftt_gate_weight[{{ call.gate_weight_offset | cppexpr }}]);
+                    dense_glu_weight_run[dense_glu_slot * {{ tdepth * 2 }}
+                                         + dense_glu_stream * 2 + 1] =
+                        ftt::{{ run_load }}<{{ chunk }}>(
+                            &ftt_up_weight[{{ call.up_weight_offset | cppexpr }}]);
+                }
+            }
+            FTT_UNROLL
+            for (int dense_glu_slot = 0; dense_glu_slot < {{ ntile }};
+                 ++dense_glu_slot) {
                 float dense_glu_gate_step = 0.0f;
                 float dense_glu_up_step = 0.0f;
                 FTT_UNROLL
-                for (int dense_glu_element = 0;
-                     dense_glu_element < {{ chunk }}; ++dense_glu_element) {
-                    const float dense_glu_source_value =
-                        dense_glu_source_run[dense_glu_stream]
-                            .at(dense_glu_element);
-                    dense_glu_gate_step +=
-                        dense_glu_gate_run[dense_glu_stream]
-                            .at(dense_glu_element)
-                        * dense_glu_source_value;
-                    dense_glu_up_step +=
-                        dense_glu_up_run[dense_glu_stream]
-                            .at(dense_glu_element)
-                        * dense_glu_source_value;
+                for (int dense_glu_stream = 0;
+                     dense_glu_stream < {{ tdepth }}; ++dense_glu_stream) {
+                    FTT_UNROLL
+                    for (int dense_glu_element = 0;
+                         dense_glu_element < {{ chunk }}; ++dense_glu_element) {
+                        const float dense_glu_source_value =
+                            dense_glu_source_run[dense_glu_stream]
+                                .at(dense_glu_element);
+                        dense_glu_gate_step +=
+                            dense_glu_weight_run[dense_glu_slot
+                                                     * {{ tdepth * 2 }}
+                                                 + dense_glu_stream * 2]
+                                .at(dense_glu_element)
+                            * dense_glu_source_value;
+                        dense_glu_up_step +=
+                            dense_glu_weight_run[dense_glu_slot
+                                                     * {{ tdepth * 2 }}
+                                                 + dense_glu_stream * 2 + 1]
+                                .at(dense_glu_element)
+                            * dense_glu_source_value;
+                    }
                 }
-                dense_glu_gate_partial[dense_glu_stream] +=
-                    dense_glu_gate_step;
-                dense_glu_up_partial[dense_glu_stream] +=
-                    dense_glu_up_step;
+                dense_glu_gate_partial[dense_glu_slot] += dense_glu_gate_step;
+                dense_glu_up_partial[dense_glu_slot] += dense_glu_up_step;
             }
         }
-        float dense_glu_gate_sum = 0.0f;
-        float dense_glu_up_sum = 0.0f;
+{# One epilogue per tile slot. The fold spans the cooperating lane group, so
+   every slot folds before any of them stores. #}
         FTT_UNROLL
-        for (int dense_glu_stream = 0; dense_glu_stream < {{ tdepth }};
-             ++dense_glu_stream) {
-            dense_glu_gate_sum += dense_glu_gate_partial[dense_glu_stream];
-            dense_glu_up_sum += dense_glu_up_partial[dense_glu_stream];
-        }
+        for (int dense_glu_slot = 0; dense_glu_slot < {{ ntile }};
+             ++dense_glu_slot) {
+            float dense_glu_gate_sum = dense_glu_gate_partial[dense_glu_slot];
+            float dense_glu_up_sum = dense_glu_up_partial[dense_glu_slot];
 {% if coop_width > 1 %}
 {# Fold the cooperating threads before the activation: the rounding boundary
    below applies to the complete projection, not a partial one.
    The group spans both the payload halves and the K slices, and the loop
    indexing puts all of them in one contiguous run of lanes, so a single lane
    group fold covers the whole set. #}
-        dense_glu_gate_sum =
-            ftt::arch::lane_group_reduce_sum<{{ coop_width }}>(
-                dense_glu_gate_sum);
-        dense_glu_up_sum =
-            ftt::arch::lane_group_reduce_sum<{{ coop_width }}>(
-                dense_glu_up_sum);
-        if (dense_glu_k_in_lane != 0{% if kslice > 1 %} || dense_glu_k_slice != 0{% endif %}) {
-            continue;
-        }
+            dense_glu_gate_sum =
+                ftt::arch::lane_group_reduce_sum<{{ coop_width }}>(
+                    dense_glu_gate_sum);
+            dense_glu_up_sum =
+                ftt::arch::lane_group_reduce_sum<{{ coop_width }}>(
+                    dense_glu_up_sum);
 {% endif %}
+            if (!dense_glu_tile_live[dense_glu_slot]) {
+                continue;
+            }
+{% if coop_width > 1 %}
+            if (dense_glu_k_in_lane != 0{% if kslice > 1 %} || dense_glu_k_slice != 0{% endif %}) {
+                continue;
+            }
+{% endif %}
+            const ftt::dim_t dense_glu_local_n_offsets =
+                dense_glu_tile_n[dense_glu_slot];
 {% elif lane > 1 %}
 {# Physical-order payload walk over both projections; see the note in
    dense_matmul/_function.cpp.jinja. Gate and up share the payload slot, so
@@ -347,6 +431,10 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% endif %}
         ftt_result[{{ call.result_offset | cppexpr }}] =
             ftt::store_as(ftt_result, dense_glu_activated * dense_glu_up);
+{% if tiled and ntile > 1 %}
+{# Close the per-slot epilogue loop as well as the item loop. #}
+        }
+{% endif %}
     }
 }
 
