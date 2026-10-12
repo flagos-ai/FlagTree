@@ -424,16 +424,22 @@ def _require_struct_type(instance) -> _struct_type:
     return st
 
 
-def to_device(instance, device=None) -> StructView:
-    """Upload a host ctypes struct instance to device memory.
+def to_device(instance, buffer=None, device=None) -> StructView:
+    """Upload a host ctypes struct instance to a device buffer.
 
-    The struct must have been declared with ``@tl.struct_type``.  Allocates a
-    byte buffer on ``device`` (default: the current device) and copies the
-    struct's bytes into it.
+    If ``buffer`` is omitted, a ``torch`` uint8 tensor is allocated on
+    ``device`` (default: the current device).  ``buffer`` may instead be any
+    writable byte buffer (e.g. a ``bytearray``) or a device tensor exposing
+    ``copy_``/``device``.
     """
-    import torch
     st = _require_struct_type(instance)
     raw = ctypes.string_at(ctypes.addressof(instance), ctypes.sizeof(type(instance)))
-    host = torch.frombuffer(bytearray(raw), dtype=torch.uint8)
-    buffer = host.to(device=device)
+    if buffer is None:
+        import torch
+        buffer = torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(device=device)
+    elif hasattr(buffer, "copy_"):
+        import torch
+        buffer.copy_(torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(buffer.device))
+    else:
+        buffer[:] = raw
     return StructView(st, buffer)

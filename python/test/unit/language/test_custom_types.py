@@ -165,3 +165,32 @@ def test_array_of_struct_type_model():
     assert arr_ty.count == 2
     from triton.language import str_to_ty
     assert str_to_ty("*" + st.signature(), None).element_ty == st
+
+
+class _FakeDeviceBuffer(bytearray):
+    """A writable byte buffer with a data_ptr(), mimicking a device tensor."""
+
+    def data_ptr(self):
+        return ctypes.addressof((ctypes.c_ubyte * len(self)).from_buffer(self))
+
+
+def test_to_device_uploads_struct_bytes():
+    tv = TensorView()
+    tv.ndim = 7
+    tv.base = 0xDEADBEEF
+    st = TensorView._triton_struct_type
+    buf = _FakeDeviceBuffer(st.size)
+    view = tl.to_device(tv, buffer=buf)
+    assert isinstance(view, tl.StructView)
+    assert view.nbytes == st.size
+    raw = ctypes.string_at(ctypes.addressof(tv), ctypes.sizeof(TensorView))
+    assert bytes(buf) == raw
+    assert view.data_ptr() == buf.data_ptr()
+
+
+def test_structview_signature():
+    from triton.runtime.jit import mangle_type
+    view = _view(TensorView)
+    sig = mangle_type(view)
+    assert sig.startswith("*struct<")
+    assert "ndim:u32@72" in sig
