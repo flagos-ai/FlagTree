@@ -62,3 +62,20 @@ tt.func public @array_element(%p: !tt.ptr<!tt.array<i64, 4>>, %i: i32) {
   %1 = tt.load %0 : !tt.ptr<i64>
   tt.return
 }
+
+// -----
+
+// Array of structs: the element stride is sizeof(struct), and a field of the
+// addressed element is reached with a further struct_gep.
+
+// CHECK-LABEL: tt.func public @array_of_struct
+tt.func public @array_of_struct(%p: !tt.ptr<!tt.array<!tt.struct<{a: i32:0, b: f64:8}, size = 16, align = 8>, 2>>, %i: i32) {
+  // CHECK: arith.constant 16 : i64
+  // CHECK: arith.muli
+  // CHECK: arith.constant 8 : i64
+  // CHECK: tt.int_to_ptr %{{.*}} : i64 -> !tt.ptr<f64>
+  %e = tt.array_gep %p, %i : !tt.ptr<!tt.array<!tt.struct<{a: i32:0, b: f64:8}, size = 16, align = 8>, 2>>, i32 -> !tt.ptr<!tt.struct<{a: i32:0, b: f64:8}, size = 16, align = 8>>
+  %f = tt.struct_gep %e, "b" : !tt.ptr<!tt.struct<{a: i32:0, b: f64:8}, size = 16, align = 8>> -> !tt.ptr<f64>
+  %v = tt.load %f : !tt.ptr<f64>
+  tt.return
+}
