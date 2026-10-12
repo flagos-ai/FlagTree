@@ -142,6 +142,37 @@ void rewriteAggregatePointerTypes(ModuleOp mod, MLIRContext *ctx) {
   });
 }
 
+// Removes the redundant pointer<->int round-trips that chained field/element
+// access can create during lowering:
+//   ptr_to_int(int_to_ptr(x)) -> x
+//   int_to_ptr(ptr_to_int(x)) -> x   (when the pointer types agree)
+void foldPointerRoundTrips(ModuleOp mod) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    SmallVector<Operation *> dead;
+    mod.walk([&](Operation *op) {
+      if (auto p2i = dyn_cast<PtrToIntOp>(op)) {
+        if (auto i2p = p2i.getSrc().getDefiningOp<IntToPtrOp>()) {
+          p2i.getResult().replaceAllUsesWith(i2p.getSrc());
+          dead.push_back(op);
+          changed = true;
+        }
+      } else if (auto i2p = dyn_cast<IntToPtrOp>(op)) {
+        if (auto p2i = i2p.getSrc().getDefiningOp<PtrToIntOp>()) {
+          if (p2i.getSrc().getType() == i2p.getType()) {
+            i2p.getResult().replaceAllUsesWith(p2i.getSrc());
+            dead.push_back(op);
+            changed = true;
+          }
+        }
+      }
+    });
+    for (Operation *op : dead)
+      op->erase();
+  }
+}
+
 struct LowerStructs : public triton::impl::TritonLowerStructsBase<LowerStructs> {
   using TritonLowerStructsBase::TritonLowerStructsBase;
 
@@ -169,7 +200,11 @@ struct LowerStructs : public triton::impl::TritonLowerStructsBase<LowerStructs> 
     // 2. Eliminate the aggregate pointer types.
     rewriteAggregatePointerTypes(mod, ctx);
 
-    // 3. Verify that no aggregate pointer type remains.
+    // 3. Fold the redundant pointer<->int round-trips created by chained
+    //    field/element access.
+    foldPointerRoundTrips(mod);
+
+    // 4. Verify that no aggregate pointer type remains.
     WalkResult walkResult = mod.walk([&](Operation *op) -> WalkResult {
       auto check = [&](Value v) -> bool {
         return v && isAggregatePointer(v.getType());
