@@ -99,8 +99,11 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     # Lower custom C-interoperable struct/array types to byte-offset pointer
-    # arithmetic (see docs/custom-types/RFC.md) before the Ascend passes run.
+    # arithmetic (see docs/custom-types/RFC.md) before the Ascend passes run,
+    # then clean up the address arithmetic (e.g. offset-0 adds).
     passes.ttir.add_lower_structs(pm)
+    passes.common.add_canonicalizer(pm)
+    passes.common.add_cse(pm)
     pm.run(mod)
     if opt.debug:
         dump_manager = get_dump_manager(metadata["hash"])
