@@ -7,11 +7,20 @@ Unlike the Gluon arena, Q/K/V/O use separate buffers: physical memory reuse
 is left to the compiler. Supports FP16/BF16, D64/D128 and bottom-right causal
 masking, including unequal or non-tile-aligned query/key lengths.
 
-    MACA_VISIBLE_DEVICES=6 python test/CommonIR/tle/10-maca-flash-fwd-fused-single-kernel.py
+    MACA_VISIBLE_DEVICES=7 python test/CommonIR/tle/10-maca-flash-fwd-fused-single-kernel.py
+
+Add --benchmark to compare this kernel with MetaX flash-attn and save a CSV.
+Benchmark defaults: FP16, B=1, H=32, D=128, dense, Sq=Sk=128..32768.
+Use --causal, --head-dim 64, --seq-len or --kv-len to select other cases.
+Both implementations share BSHD storage; GPU graph timing excludes compilation,
+layout tuning and input conversion. No L2 flush; this measures steady-state latency.
 """
 
 import argparse
+import csv
 import math
+from pathlib import Path
+import statistics
 
 import pytest
 import torch
@@ -142,9 +151,6 @@ def _flash_fwd_tile(
     acc_o = acc_o * alpha[:, None]
     m_i = tl.where(row_has_key, m_ij, m_i)
 
-    # QK-C is a semantic producer of PV-A. The compiler derives both physical
-    # dot contracts jointly and materializes only the required use-site
-    # register transfer; source code does not prescribe an MMA fragment.
     p0 = p0_qk.to(v_head.dtype.element_ty)
     p1 = p1_qk.to(v_head.dtype.element_ty)
     v00 = tle.gpu.metax.local_load(v_fragments.slot(0), intrinsic=True, is_constant_offs=True)
@@ -601,33 +607,112 @@ def test_flash_fwd_strided_batch_and_outputs():
     assert torch.isnan(out_storage[:, ::2, 1::2]).all()
 
 
+def _benchmark(args, dtype):
+    import flash_attn
+    from flash_attn.flash_attn_interface import _flash_attn_forward
+    from triton.testing import do_bench_cudagraph
+
+    columns = ("shape_BxHxSqxSkxD", "dtype", "causal", "tle_ms", "flash_attn_ms", "speedup", "output_max_abs_error",
+               "lse_max_abs_error")
+    print(f"GPU: {torch.cuda.get_device_name()}; flash-attn={flash_attn.__version__}", flush=True)
+    print("Speedup = flash_attn_ms / tle_ms (>1 means TLE is faster)", flush=True)
+    print("| " + " | ".join(columns) + " |", flush=True)
+    print("| " + " | ".join("---" for _ in columns) + " |", flush=True)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", newline="") as handle, torch.inference_mode():
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        for seq_q in args.seq_len:
+            seq_k = seq_q if args.kv_len is None else args.kv_len
+            generator = torch.Generator(device="cuda").manual_seed(0)
+            q, k, v = [
+                torch.randn((args.batch, length, args.heads, args.head_dim), device="cuda", dtype=dtype,
+                            generator=generator)
+                for length in (seq_q, seq_k, seq_k)
+            ]
+            # Same BSHD storage for both kernels; TLE takes BHSD views.
+            q_tle, k_tle, v_tle = (tensor.transpose(1, 2) for tensor in (q, k, v))
+            out = torch.empty_like(q).transpose(1, 2)
+            lse = torch.empty((args.batch, args.heads, seq_q), device="cuda", dtype=torch.float32)
+            scale = args.head_dim**-0.5
+
+            def tle_forward():
+                return launch_flash_fwd(q_tle, k_tle, v_tle, out=out, lse=lse, scale=scale, causal=args.causal)
+
+            def flash_forward():
+                return _flash_attn_forward(q, k, v, 0.0, scale, args.causal, (-1, -1))
+
+            # Finish compilation/tuning and validate O/LSE before timing.
+            tle_forward()
+            expected = flash_forward()
+            atol, rtol = (2e-3, 1e-2) if dtype == torch.float16 else (3e-2, 3e-2)
+            errors = []
+            for actual, reference in ((out, expected[0].transpose(1, 2)), (lse, expected[5])):
+                torch.testing.assert_close(actual, reference, atol=atol, rtol=rtol)
+                # Completely masked causal rows have infinite LSE.
+                finite = torch.isfinite(actual) & torch.isfinite(reference)
+                difference = (actual.float()[finite] - reference.float()[finite]).abs()
+                errors.append(difference.max().item() if difference.numel() else 0.0)
+            del expected
+            for _ in range(args.warmup):
+                tle_forward()
+                flash_forward()
+            torch.cuda.synchronize()
+
+            functions = (tle_forward, flash_forward)
+            samples = [[], []]
+            for trial in range(args.rounds):
+                for index in ((0, 1) if trial % 2 == 0 else (1, 0)):
+                    samples[index].append(do_bench_cudagraph(functions[index], rep=args.rep, return_mode="median"))
+            tle_ms, flash_ms = (statistics.median(values) for values in samples)
+            shape = f"{args.batch}x{args.heads}x{seq_q}x{seq_k}x{args.head_dim}"
+            row = (shape, args.dtype, args.causal, tle_ms, flash_ms, flash_ms / tle_ms, *errors)
+            writer.writerow(row)
+            handle.flush()
+            values = [f"{value:.6g}" if isinstance(value, float) else str(value) for value in row]
+            print("| " + " | ".join(values) + " |", flush=True)
+    print(f"Saved: {args.output}", flush=True)
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seq-len", nargs="+", type=int, default=[128, 257])
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--seq-len", nargs="+", type=int,
+        help="Q lengths; K matches unless --kv-len is set (default: 128/257; benchmark: powers of 2, 128..32768)")
     parser.add_argument("--kv-len", type=int, default=None)
     parser.add_argument("--head-dim", type=int, choices=SUPPORTED_HEAD_DIMS, default=128)
     parser.add_argument("--dtype", choices=["fp16", "bf16"], default="fp16")
     parser.add_argument("--causal", action="store_true")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--heads", type=int, default=2)
-    parser.add_argument("--benchmark", action="store_true")
-    parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--rep", type=int, default=30)
+    parser.add_argument("--heads", type=int, help="number of heads (default: 2; benchmark: 32)")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="compare GPU latency with MetaX flash-attn and write CSV")
+    parser.add_argument("--warmup", type=int, default=10, help="warmup calls per implementation")
+    parser.add_argument("--rounds", type=int, default=5, help="alternating timing rounds")
+    parser.add_argument("--rep", "--rep-ms", type=int, default=20, help="target GPU graph duration in milliseconds")
+    parser.add_argument("--output", type=Path, default=Path(__file__).with_name("fa_fwd_benchmark.csv"),
+                        help="benchmark CSV path (default: %(default)s)")
     args = parser.parse_args()
+    if args.seq_len is None:
+        args.seq_len = [2**i for i in range(7, 16)] if args.benchmark else [128, 257]
+    if args.heads is None:
+        args.heads = 32 if args.benchmark else 2
+    if min(args.batch, args.heads, *args.seq_len, args.rounds, args.rep) <= 0 or args.warmup < 0:
+        parser.error("shape sizes, rounds and rep must be positive; warmup must be nonnegative")
+    if args.kv_len is not None and args.kv_len <= 0:
+        parser.error("kv-len must be positive")
     dtype = torch.float16 if args.dtype == "fp16" else torch.bfloat16
-    print("| BxHxSQxSKxD | dtype | causal | tle_ms | max_abs | lse_max_abs | allclose |", flush=True)
-    print("| --- | --- | --- | --- | --- | --- | --- |", flush=True)
+    if args.benchmark:
+        _benchmark(args, dtype)
+        return
+    print("| BxHxSQxSKxD | dtype | causal | max_abs | lse_max_abs | allclose |", flush=True)
+    print("| --- | --- | --- | --- | --- | --- |", flush=True)
     for seq_q in args.seq_len:
         seq_k = seq_q if args.kv_len is None else args.kv_len
         q, k, v = _make_inputs(args.batch, args.heads, seq_q, seq_k, args.head_dim, dtype)
-        out, lse, errors = _check(q, k, v, args.causal)
-        ms = "-"
-        if args.benchmark:
-            elapsed = triton.testing.do_bench(lambda: launch_flash_fwd(q, k, v, out=out, lse=lse, causal=args.causal),
-                                              warmup=args.warmup, rep=args.rep)
-            ms = f"{elapsed:.6f}"
+        _, _, errors = _check(q, k, v, args.causal)
         shape = f"{args.batch}x{args.heads}x{seq_q}x{seq_k}x{args.head_dim}"
-        print(f"| {shape} | {args.dtype} | {args.causal} | {ms} | {errors[0]:.6g} | {errors[1]:.6g} | True |",
+        print(f"| {shape} | {args.dtype} | {args.causal} | {errors[0]:.6g} | {errors[1]:.6g} | True |",
               flush=True)
 
 
