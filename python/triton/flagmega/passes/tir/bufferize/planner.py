@@ -34,12 +34,12 @@ from triton.flagmega.ir.model import (
     Function,
     IRModule,
     IRType,
-    NoneType,
     RefType,
     TensorType,
     TupleType,
     logical_type,
 )
+from triton.flagmega.ir.bufferization.leaves import buffer_leaves
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
     is_fully_replicated,
@@ -52,6 +52,7 @@ from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, f
 from triton.flagmega.passes.tir.bufferize.alias_analysis import AliasAnalysis
 from triton.flagmega.passes.tir.bufferize.call_input_ownership import non_consumable_parameters
 from triton.flagmega.passes.tir.bufferize.alignment import (
+    effective_alignment,
     transfer_source_alignment_requirements,
 )
 from triton.flagmega.passes.tir.bufferize.allocation import BufferLifetime
@@ -319,7 +320,7 @@ class BufferPlanner:
             ids = []
             for buffer_id, value_type, field in leaves:
                 shape = _maximum_shape(value_type, self.module.stage, node.id)
-                required_alignment = self._required_alignment(node.id)
+                required_alignment = self._required_alignment(node.id, leaf=buffer_id)
                 identity = (
                     str(node.attrs.get("source", "")),
                     str(node.attrs.get("source_hash", "")),
@@ -375,7 +376,7 @@ class BufferPlanner:
                 ids = []
                 for buffer_id, value_type, field in _leaf_types(node.id, node.type):
                     shape = _maximum_shape(value_type, self.module.stage, node.id)
-                    required_alignment = self._required_alignment(node.id)
+                    required_alignment = self._required_alignment(node.id, leaf=buffer_id)
                     physical_id = self._new_physical("rdata")
                     self._allocate_rdata_physical(
                         physical_id,
@@ -439,7 +440,7 @@ class BufferPlanner:
                     buffer_id, value_type, shape, storage, node.id,
                     field=field, physical_id=f"external:{function.name}:{buffer_id}",
                     function=function.name, role="scalar_parameter" if scalar else "parameter",
-                    alignment=self._required_alignment(node.id),
+                    alignment=self._required_alignment(node.id, leaf=buffer_id),
                 ))
             self.bindings[node.id] = tuple(ids)
 
@@ -1216,7 +1217,10 @@ class BufferPlanner:
         owner_stride_bytes=None,
         memory_space: MemorySpace | None = None,
     ) -> tuple[str, ...]:
-        alignment = max(int(alignment or 1), self._required_alignment(source_node))
+        # Each leaf of an aggregate is its own buffer with its own declared
+        # contract. Resolving the requirement per leaf below keeps a strict
+        # field from padding the per-owner stride of its siblings.
+        requested_alignment = int(alignment or 1)
         leaves = _leaf_types(prefix, value_type)
         if alias is not None and len(leaves) != 1:
             # Ref aliases are already flattened by _ref_alias.
@@ -1226,7 +1230,7 @@ class BufferPlanner:
                     result.extend(self._plan_value(
                         function, source_node, leaf[1], live_start, live_end, output_leaf_ids,
                         prefix=leaf[0], field=leaf[2], alias=source,
-                        alignment=alignment, role=role,
+                        alignment=requested_alignment, role=role,
                         reinterpret=reinterpret, alias_kind=alias_kind,
                         distributed_storage_kind=distributed_storage_kind,
                         distributed_backing_type=distributed_backing_type,
@@ -1237,6 +1241,10 @@ class BufferPlanner:
             raise IRVerificationError(f"Alias arity mismatch for value {prefix!r}.")
         result = []
         for buffer_id, tensor_type, leaf_field in leaves:
+            alignment = max(
+                requested_alignment,
+                self._required_alignment(source_node, leaf=buffer_id),
+            )
             shape = _maximum_shape(tensor_type, self.module.stage, source_node)
             is_output = buffer_id in output_leaf_ids
             if alias is not None:
@@ -1882,8 +1890,9 @@ class BufferPlanner:
         self.physical_buffers[physical_id] = allocation
         self.rdata_offset += nbytes
 
-    def _required_alignment(self, node_id) -> int:
-        return int(self.required_alignments.get(str(node_id), 1))
+    def _required_alignment(self, node_id, *, leaf: str | None = None) -> int:
+        """Declared contract for a value, or for one of its buffer leaves."""
+        return effective_alignment(self.required_alignments, node_id, leaf)
 
     def _allocation(self, physical_id):
         return self.physical_buffers[physical_id]
@@ -2120,21 +2129,7 @@ def _metadata_only_structural_values(module, nodes, function):
 
 
 def _leaf_types(prefix: str, value_type: IRType):
-    if isinstance(value_type, NoneType):
-        return ()
-    if isinstance(value_type, (TensorType, DistributedType)):
-        return ((prefix, value_type, None),)
-    if isinstance(value_type, RefType):
-        result = []
-        for name, field_type in value_type.fields:
-            result.extend(_leaf_types(f"{prefix}.{name}", field_type))
-        return tuple(result)
-    if isinstance(value_type, TupleType):
-        result = []
-        for index, field_type in enumerate(value_type.fields):
-            result.extend(_leaf_types(f"{prefix}.{index}", field_type))
-        return tuple(result)
-    raise IRVerificationError(f"Cannot bufferize {type(value_type).__name__}.")
+    return buffer_leaves(prefix, value_type)
 
 
 def _field_binding(binding, value_type, field_index):
