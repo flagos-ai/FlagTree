@@ -64,7 +64,7 @@ def test_struct_scalar_and_array_field():
         x_view.ndim = x_view.ndim + 1  # scalar field write
         x_view.shape[0] = x_view.shape[0] + 10  # array element write
 
-    kernel[(1,)](view)
+    kernel[(1, )](view)
     torch.npu.synchronize()
 
     result = TensorView.from_buffer(_to_host(view))
@@ -81,7 +81,7 @@ def test_struct_nested_field():
     def kernel(o):
         o.inner.a = o.inner.a + 3
 
-    kernel[(1,)](view)
+    kernel[(1, )](view)
     torch.npu.synchronize()
 
     assert Outer.from_buffer(_to_host(view)).inner.a == 13
@@ -96,7 +96,7 @@ def test_struct_array_of_struct():
     def kernel(o, i):
         o.arr[i].b = o.arr[i].b + 1.5
 
-    kernel[(1,)](view, 1)
+    kernel[(1, )](view, 1)
     torch.npu.synchronize()
 
     result = WithArray.from_buffer(_to_host(view))
@@ -115,7 +115,7 @@ def test_struct_pointer_field():
         # Copy the raw pointer value into a uint64 field for comparison.
         x_view.shape[3] = x_view.base.to(tl.uint64)
 
-    kernel[(1,)](view)
+    kernel[(1, )](view)
     torch.npu.synchronize()
 
     result = TensorView.from_buffer(_to_host(view))

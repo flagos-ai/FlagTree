@@ -65,11 +65,12 @@ def test_struct_layout_and_signature():
 
 
 def test_read_scalar_field():
+
     @triton.jit
     def kernel(x_view):
         return x_view.ndim
 
-    module = run_parser(kernel, args=(_view(TensorView),))
+    module = run_parser(kernel, args=(_view(TensorView), ))
     text = module.str_nodebug()
     assert "tt.struct_gep" in text
     assert '"ndim"' in text
@@ -78,59 +79,65 @@ def test_read_scalar_field():
 
 
 def test_write_scalar_field():
+
     @triton.jit
     def kernel(x_view):
         n = x_view.ndim
         x_view.ndim = n + 1
         return n
 
-    text = run_parser(kernel, args=(_view(TensorView),)).str_nodebug()
+    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     # One gep for the read and one for the write.
     assert text.count("tt.struct_gep") == 2
     assert "tt.store" in text
 
 
 def test_nested_field():
+
     @triton.jit
     def kernel(o):
         return o.inner.a
 
-    text = run_parser(kernel, args=(_view(Outer),)).str_nodebug()
+    text = run_parser(kernel, args=(_view(Outer), )).str_nodebug()
     # A gep for the nested struct, then a gep into it.
     assert text.count("tt.struct_gep") == 2
 
 
 def test_pointer_field():
+
     @triton.jit
     def kernel(x_view):
         return x_view.base
 
-    text = run_parser(kernel, args=(_view(TensorView),)).str_nodebug()
+    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     assert "tt.struct_gep" in text
     assert '"base"' in text
 
 
 def test_unknown_field_raises():
+
     @triton.jit
     def kernel(x_view):
         return x_view.nope
 
     with pytest.raises(Exception):
-        run_parser(kernel, args=(_view(TensorView),))
+        run_parser(kernel, args=(_view(TensorView), ))
 
 
 def test_array_element_read():
+
     @triton.jit
     def kernel(x_view):
         return x_view.shape[0]
 
-    text = run_parser(kernel, args=(_view(TensorView),)).str_nodebug()
+    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     # struct_gep for the "shape" field, then array_gep for the element.
     assert "tt.struct_gep" in text
     assert "tt.array_gep" in text
 
 
 def test_array_element_dynamic_index():
+
     @triton.jit
     def kernel(x_view, i):
         return x_view.shape[i]
@@ -140,16 +147,18 @@ def test_array_element_dynamic_index():
 
 
 def test_array_element_write():
+
     @triton.jit
     def kernel(x_view):
         x_view.shape[0] = 7
 
-    text = run_parser(kernel, args=(_view(TensorView),)).str_nodebug()
+    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     assert "tt.array_gep" in text
     assert "tt.store" in text
 
 
 def test_array_of_struct_element():
+
     @triton.jit
     def kernel(o, i):
         return o.arr[i].b
@@ -238,8 +247,8 @@ def test_interpreter_scalar_and_array_field():
     tv.ndim = 41
     tv.shape[2] = 5
     view = tl.StructView(st, buf)
-    _interp(_k_write_ndim.fn).run(view, grid=(1,))
-    _interp(_k_write_shape.fn).run(view, 2, grid=(1,))
+    _interp(_k_write_ndim.fn).run(view, grid=(1, ))
+    _interp(_k_write_shape.fn).run(view, 2, grid=(1, ))
     assert tv.ndim == 42
     assert tv.shape[2] == 15
 
@@ -250,7 +259,7 @@ def test_interpreter_nested_struct():
     o = Outer.from_buffer(buf)
     o.inner.a = 10
     view = tl.StructView(st, buf)
-    _interp(_k_nested_write.fn).run(view, grid=(1,))
+    _interp(_k_nested_write.fn).run(view, grid=(1, ))
     assert o.inner.a == 13
 
 
@@ -260,7 +269,7 @@ def test_interpreter_array_of_struct():
     wa = WithArray.from_buffer(buf)
     wa.arr[1].b = 3.5
     view = tl.StructView(st, buf)
-    _interp(_k_array_of_struct.fn).run(view, 1, grid=(1,))
+    _interp(_k_array_of_struct.fn).run(view, 1, grid=(1, ))
     assert abs(wa.arr[1].b - 5.0) < 1e-9
 
 
@@ -270,7 +279,7 @@ def test_interpreter_pointer_field():
     tv = TensorView.from_buffer(buf)
     tv.base = 0x1234567890
     view = tl.StructView(st, buf)
-    _interp(_k_copy_base.fn).run(view, grid=(1,))
+    _interp(_k_copy_base.fn).run(view, grid=(1, ))
     # `base` (a pointer field) is copied verbatim into a uint64 field.
     assert tv.shape[3] == 0x1234567890
 
@@ -309,7 +318,7 @@ def test_hardware_struct_read_write():
         x_view.ndim = x_view.ndim + 1  # scalar field write
         x_view.shape[0] = x_view.shape[0] + 10  # array element write
 
-    kernel[(1,)](view)
+    kernel[(1, )](view)
     torch.npu.synchronize()
 
     # Copy the struct bytes back and decode them with ctypes: the kernel must
@@ -341,8 +350,8 @@ def test_hardware_nested_and_array_of_struct():
     def array_of_struct_kernel(o, i):
         o.arr[i].b = o.arr[i].b + 1.5
 
-    nested_kernel[(1,)](view_o)
-    array_of_struct_kernel[(1,)](view_a, 1)
+    nested_kernel[(1, )](view_o)
+    array_of_struct_kernel[(1, )](view_a, 1)
     torch.npu.synchronize()
 
     res_o = Outer.from_buffer(bytearray(view_o.buffer.cpu().numpy().tobytes()))

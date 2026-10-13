@@ -1057,9 +1057,8 @@ void init_triton_ir(py::module &&m) {
            })
       .def("get_struct_ty",
            [](TritonOpBuilder &self, std::vector<std::string> &fieldNames,
-              std::vector<Type> &fieldTypes,
-              std::vector<int64_t> &fieldOffsets, int64_t size,
-              int64_t align) -> Type {
+              std::vector<Type> &fieldTypes, std::vector<int64_t> &fieldOffsets,
+              int64_t size, int64_t align) -> Type {
              auto *ctx = self.getContext();
              SmallVector<StringAttr> names;
              names.reserve(fieldNames.size());

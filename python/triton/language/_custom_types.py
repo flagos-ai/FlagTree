@@ -130,10 +130,9 @@ def _classify_ctype(ct: Any, path: str) -> "_core.base_type":
             st = _struct_type(fields, size, align, name=getattr(ct, "__name__", None))
         return st
 
-    raise TypeError(
-        f"field {path}: unsupported ctypes type {getattr(ct, '__name__', ct)!r}. "
-        f"Only fixed-width C scalars, pointers, fixed-size arrays, and nested "
-        f"structures are supported.")
+    raise TypeError(f"field {path}: unsupported ctypes type {getattr(ct, '__name__', ct)!r}. "
+                    f"Only fixed-width C scalars, pointers, fixed-size arrays, and nested "
+                    f"structures are supported.")
 
 
 def _struct_layout(cls: Any, path: str):

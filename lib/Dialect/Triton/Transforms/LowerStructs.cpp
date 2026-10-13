@@ -62,8 +62,7 @@ bool isI64Pointer(Type type) {
 Type fieldStorageType(Type resultTy, MLIRContext *ctx) {
   auto ptrTy = dyn_cast<PointerType>(resultTy);
   if (ptrTy && isa<PointerType>(ptrTy.getPointeeType()))
-    return PointerType::get(IntegerType::get(ctx, 64),
-                            ptrTy.getAddressSpace());
+    return PointerType::get(IntegerType::get(ctx, 64), ptrTy.getAddressSpace());
   return resultTy;
 }
 
@@ -85,7 +84,8 @@ LogicalResult lowerStructGep(StructGepOp op, IRRewriter &rewriter) {
     return failure();
   }
   int64_t offset = structTy.getFieldOffsets()[index];
-  Type resultTy = fieldStorageType(op.getResult().getType(), rewriter.getContext());
+  Type resultTy =
+      fieldStorageType(op.getResult().getType(), rewriter.getContext());
 
   rewriter.setInsertionPoint(op);
   Location loc = op.getLoc();
@@ -117,7 +117,8 @@ LogicalResult lowerArrayGep(ArrayGepOp op, IRRewriter &rewriter) {
     return failure();
   }
   int64_t elemSize = sizeAlign->first;
-  Type resultTy = fieldStorageType(op.getResult().getType(), rewriter.getContext());
+  Type resultTy =
+      fieldStorageType(op.getResult().getType(), rewriter.getContext());
 
   rewriter.setInsertionPoint(op);
   Location loc = op.getLoc();
@@ -155,13 +156,17 @@ void lowerPointerMemory(ModuleOp mod, IRRewriter &rewriter) {
     rewriter.setInsertionPoint(op);
     Location loc = op->getLoc();
     if (auto load = dyn_cast<LoadOp>(op)) {
-      Value raw = rewriter.create<LoadOp>(loc, load.getPtr(), load.getCache(),
-                                          load.getEvict(), load.getIsVolatile());
-      Value res = rewriter.create<IntToPtrOp>(loc, load.getResult().getType(), raw);
+      Value raw =
+          rewriter.create<LoadOp>(loc, load.getPtr(), load.getCache(),
+                                  load.getEvict(), load.getIsVolatile());
+      Value res =
+          rewriter.create<IntToPtrOp>(loc, load.getResult().getType(), raw);
       rewriter.replaceOp(load, res);
     } else if (auto store = dyn_cast<StoreOp>(op)) {
-      Value raw = rewriter.create<PtrToIntOp>(loc, rewriter.getI64Type(), store.getValue());
-      rewriter.create<StoreOp>(loc, store.getPtr(), raw, store.getCache(), store.getEvict());
+      Value raw = rewriter.create<PtrToIntOp>(loc, rewriter.getI64Type(),
+                                              store.getValue());
+      rewriter.create<StoreOp>(loc, store.getPtr(), raw, store.getCache(),
+                               store.getEvict());
       rewriter.eraseOp(store);
     }
   }
@@ -227,7 +232,8 @@ void foldPointerRoundTrips(ModuleOp mod) {
   }
 }
 
-struct LowerStructs : public triton::impl::TritonLowerStructsBase<LowerStructs> {
+struct LowerStructs
+    : public triton::impl::TritonLowerStructsBase<LowerStructs> {
   using TritonLowerStructsBase::TritonLowerStructsBase;
 
   void runOnOperation() override {
