@@ -87,13 +87,31 @@ def create_target(*, glu_reduction_group=32):
             parameters["tile_n"] = 128
         if (implementation.family == "dense_matmul"
                 and implementation.variant == "packed_k_major_gemv"):
-            # (tile_n=64, block_k=128): 10.744 against the prior (128,256)
-            # 12.046, with (128,128) 11.317, (64,64) 12.298, (256,64) 12.727,
-            # (32,128) 13.986. The pre-existing tiles came from the
-            # address-amortization argument (Trials 27/30/63) with block_k
-            # never varied at all.
-            parameters["block_k"] = 128
-            parameters["tile_n"] = 64
+            # (tile_n=128, block_k=64). Exactly one site in this workload uses
+            # this variant -- the logits/lm_head GEMV (N=9496, K=2048) -- so
+            # this is a per-site tile, not a shared one.
+            #
+            # It was (64,128), carried over from a sweep where the same
+            # variant still served several sites. Re-attributing per site with
+            # MATCHED stubbing (the same keep pattern applied to both
+            # backends; see ITERATION.md 97b.8) showed logits was 1.37x behind
+            # the cpp backend and accounted for 61% of the whole remaining
+            # gap, while every other site was within 1.09x. Re-sweeping this
+            # site alone: (128,64) 9.674 ms/token, (256,64) 9.849,
+            # (64,128) 10.009, (256,128) 10.140, (128,32) 10.379,
+            # (128,128) 10.515, (64,256) 11.116, (128,16) 11.618.
+            # (192,64) is not expressible -- tiles must be powers of two.
+            #
+            # Hypothesis for why a wider N tile wins here and not elsewhere,
+            # NOT demonstrated: cpp's logits kernel runs a `dense_stream` loop
+            # with 4 concurrent streams per thread while this one is a single
+            # dependent chain, and this card is latency-bound on in-flight
+            # load count. N=9496 is 4.6x wider than any other site, so there
+            # is the most latency to hide. The probe that would have tested
+            # this directly was void by its own validity gate (276.7 GB/s
+            # against the real site's 343).
+            parameters["block_k"] = 64
+            parameters["tile_n"] = 128
         if implementation.variant == "packed_pointer_smem_pipeline":
             parameters["producer_registers"] = 24
             # The SME source encoding derives its second warp axis from this
