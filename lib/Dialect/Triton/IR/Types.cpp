@@ -121,9 +121,9 @@ Type StructType::parse(AsmParser &parser) {
   int64_t size = 0;
   int64_t align = 0;
   if (parser.parseComma() || parser.parseKeyword("size") ||
-      parser.parseEqual() || parser.parseInteger(size) ||
-      parser.parseComma() || parser.parseKeyword("align") ||
-      parser.parseEqual() || parser.parseInteger(align))
+      parser.parseEqual() || parser.parseInteger(size) || parser.parseComma() ||
+      parser.parseKeyword("align") || parser.parseEqual() ||
+      parser.parseInteger(align))
     return Type();
 
   if (parser.parseGreater())
@@ -174,9 +174,8 @@ LogicalResult StructType::verify(function_ref<InFlightDiagnostic()> emitError,
   for (unsigned i = 0; i < fieldNames.size(); ++i)
     for (unsigned j = i + 1; j < fieldNames.size(); ++j)
       if (fieldNames[i] == fieldNames[j])
-        return emitError()
-               << "duplicate struct field name '" << fieldNames[i].getValue()
-               << "'";
+        return emitError() << "duplicate struct field name '"
+                           << fieldNames[i].getValue() << "'";
 
   int64_t prevEnd = 0;
   for (unsigned i = 0; i < fieldNames.size(); ++i) {
@@ -186,13 +185,11 @@ LogicalResult StructType::verify(function_ref<InFlightDiagnostic()> emitError,
       return emitError() << "field '" << fieldNames[i].getValue()
                          << "' has unsupported type " << fieldTypes[i];
     if (offset < 0 || offset >= size)
-      return emitError() << "field '" << fieldNames[i].getValue()
-                         << "' offset " << offset << " is out of range [0, "
-                         << size << ")";
+      return emitError() << "field '" << fieldNames[i].getValue() << "' offset "
+                         << offset << " is out of range [0, " << size << ")";
     if (offset % sizeAlign->second != 0)
-      return emitError() << "field '" << fieldNames[i].getValue()
-                         << "' offset " << offset
-                         << " is not a multiple of its alignment "
+      return emitError() << "field '" << fieldNames[i].getValue() << "' offset "
+                         << offset << " is not a multiple of its alignment "
                          << sizeAlign->second;
     if (i > 0 && offset < prevEnd)
       return emitError() << "field '" << fieldNames[i].getValue()
