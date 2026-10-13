@@ -362,6 +362,30 @@ FTT_DEVICE_INLINE void sme_copy_block(void *destination, const void *source,
 #endif
 }
 
+// Why the swizzled and `_imm` variants are not used here, both measured:
+//
+//   * `_rowxfb*` / `_colxfb*` permute which source element lands in which
+//     shared slot. They cannot reduce bank conflicts for this consumer,
+//     because a conflict needs two lanes of a warp at different addresses in
+//     the same bank, and each lane here reads its own contiguous 16-byte run
+//     -- 64 lanes covering 1024 contiguous bytes, which is already the
+//     conflict-free shape. A swizzle only changes *which* data sits in those
+//     runs. Measured on an identical consumer: flat 0.0894 ms against
+//     swizzled 0.0896 ms. The swizzle exists for an MMA dot operand, whose
+//     required per-lane mapping is not contiguous; there it saves a shuffle.
+//   * The `_imm` family takes two plain pointers plus a stride and three
+//     immediate offsets, so it builds no descriptor at all. It is correct
+//     (verified exact at several `gidx_imm`, which must be compile-time --
+//     `ImmArg` on arguments 4-6, and passing a runtime value fails LLVM
+//     verification) and it measures the same: 663 against 660 GB/s. So
+//     descriptor construction was never costing bandwidth.
+//
+// Padding the staged tiles was also measured in the real kernel and is
+// neutral: 9.714 ms against 9.715 at a pad of 8 elements. A standalone probe
+// did show +53% from padding, but that probe reported shared bandwidth below
+// what the kernel itself demonstrably sustains, so it was measuring its own
+// artifact. `FLAGMEGA_CPP_SME_PAD` keeps the knob available.
+
 // A reusable SME source descriptor.
 //
 // `sme_copy_block` rebuilds the descriptor on every call, and in a staging

@@ -194,7 +194,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    garbage. The staging sites are separated by grid barriers, so they share
    one allocation sized for the largest of them. #}
     auto *const dense_glu_sme_buf =
-        reinterpret_cast<ftt::bfloat16_t (*)[{{ sme_slots }}][2][512]>(
+        reinterpret_cast<ftt::bfloat16_t (*)[{{ sme_slots }}][2][512 + {{ sme_pad }}]>(
             _ftt_sme_arena);
     const ftt::dim_t dense_glu_warp = ftt_thread / {{ warp_size }}LL;
     const ftt::dim_t dense_glu_lane = ftt_thread % {{ warp_size }}LL;

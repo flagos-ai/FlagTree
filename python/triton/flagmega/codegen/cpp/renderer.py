@@ -106,6 +106,12 @@ CPP_USE_SME = os.environ.get("FLAGMEGA_CPP_SME", "0") == "1"
 # up to 120 KB.
 CPP_SME_SLOTS = int(os.environ.get("FLAGMEGA_CPP_SME_SLOTS", "3"))
 
+# Padding elements appended to each staged tile, to shift its bank alignment.
+# A standalone probe showed +53% on this access pattern from padding, but that
+# probe disagreed with the kernel's own achieved bandwidth by 2x, so this is a
+# switch to be measured in the real kernel rather than a believed win.
+CPP_SME_PAD = int(os.environ.get("FLAGMEGA_CPP_SME_PAD", "0"))
+
 # Load the packed weight runs as 4-byte transactions instead of 16-byte ones.
 #
 # On BI-V150 a 128-bit load is issue-capped near one per cycle per MP (~46% of
@@ -189,6 +195,7 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
         "sme": CPP_USE_SME,
         "sme_slots": CPP_SME_SLOTS,
+        "sme_pad": CPP_SME_PAD,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
         "sme_arena_elems": _sme_arena_elems(
             descriptor, CPP_BLOCK_THREADS // _target_warp_size(architecture)),
@@ -230,7 +237,9 @@ def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
             continue
         # `CPP_SME_SLOTS` ring slots per projection the kernel stages.
         projections = 2 if family == "dense_matmul_glu" else 1
-        largest = max(largest, tiles * CPP_SME_SLOTS * projections * 512)
+        largest = max(
+            largest,
+            tiles * CPP_SME_SLOTS * projections * (512 + CPP_SME_PAD))
     return largest
 
 
