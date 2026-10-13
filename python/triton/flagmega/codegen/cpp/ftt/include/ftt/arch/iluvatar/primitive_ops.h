@@ -221,36 +221,45 @@ FTT_DEVICE_INLINE void grid_barrier(unsigned int *counter, int blocks) {
 //     "wait for the oldest N" form. So a classic double-buffer that issues the
 //     next tile and then waits on the current one gains nothing -- measured
 //     61 GB/s against 88 for plain scalar loads.
-//   * Only ONE transaction per CTA is in flight. Issuing N copies before a
-//     drain lands exactly one of them: the filled-slot count scales as 1/N,
-//     measured 6144/3072/1536/512 slots for 1/2/4/12 copies per drain. The
-//     others are silently dropped, with no fault and no partial write.
+//   * MANY transactions queue per thread. Issuing 12 tiles back to back from
+//     one thread and draining once with `__ivcorex_sl_waitcnt` lands all
+//     6144 elements, under both wait masks 8 and 12.
 //
-//     This caps the engine at one 512-element tile per drain, which measures
-//     ~1.6 GB/s per CTA and ~26 GB/s across 16 CTAs -- far below the 88 GB/s
-//     the ordinary scalar load path reaches. An earlier batched probe appeared
-//     to reach 816 GB/s; it only accumulated a checksum and never validated
-//     the staged bytes, so it was timing work that never happened. Validate
-//     staged data before believing any bandwidth number from this engine.
+//     An earlier note here claimed "only ONE transaction per CTA is in
+//     flight", from a probe whose filled-slot count scaled as 1/N. That was a
+//     defect in the probe, not the engine: it dispatched one tile per *thread*
+//     (`threadIdx.x < n`), and `sl_waitcnt` is per-thread, so the inspecting
+//     thread awaited only its own transaction and read the rest before they
+//     landed. Same tile count issued from a single thread lands completely;
+//     dispatched one-per-thread it reports 512/6144. Issue a batch from one
+//     thread, or have every issuing thread wait for its own tiles.
 //
-//     The one-transaction cap, not the bandwidth figure, is what rules this
-//     engine out, and the distinction matters because the GEMV path turned
-//     out to be bound by load-issue slots rather than bandwidth. Per issue
-//     slot SME looks excellent: one instruction stages 1 KB where a
-//     `load_run<8>` moves 16 B, a 64x advantage in exactly the resource that
-//     constrains those kernels. It still loses, because a drain is a CTA-wide
-//     sync point and only one transaction survives it. Staging the Qwen3 GLU
-//     weights needs 6144 tiles per CTA per layer, so 172032 drains per token;
-//     at the >=7.7 us a CTA-wide sync costs in this megakernel (0.395 ms for
-//     the 51 barriers of an empty shell) that is ~1332 ms/token against 10.2
-//     for the scalar path. Even the 4 KB activation vector, 4 tiles per
-//     layer, costs ~0.87 ms/token to save at most ~0.02. Both are net
-//     negative by one to three orders of magnitude.
+//     An even earlier claim of 816 GB/s was also wrong, for a different
+//     reason: that probe only accumulated a checksum and never validated the
+//     staged bytes. Validate staged data before believing any number here.
+//   * Cross-warp staging works: a producer warp can stage tiles that other
+//     warps consume, with the producer's `waitcnt` making the data visible and
+//     a CTA barrier making the producer's issue visible (measured 0 unfilled
+//     slots of 6144 from the consumer side). A CTA barrier alone does NOT
+//     drain the queue -- the wait is required.
 //
-//     So the useful precondition to re-test is not bandwidth but *queue
-//     depth*: SME becomes interesting here only if hardware or driver gains
-//     multi-transaction queueing, which divides those drain counts by the
-//     number that land per drain.
+//     Even so, SME producer staging does not pay for the GEMV path here, and
+//     the reason is not the engine: those kernels are bound by load-issue
+//     slots, and staging does not reduce the consumer's load count, it only
+//     moves the reads from global to shared. A 16-byte shared read measures
+//     0.95x the cost of a 16-byte global one -- the same issue port -- so the
+//     consumer saves ~5%, worth ~0.15 ms/token on the measured 3.58 ms GLU
+//     cost, while dedicating 2 of 16 warps to production costs ~0.45 ms of
+//     consumer issue throughput. Net negative before counting the per-k-group
+//     producer/consumer handshake. This is the same reason round 10.3's
+//     shared-memory activation staging lost 30.69 vs 19.91 ms/token.
+//
+//     SME is the right tool when the consumer is an MMA that reads its
+//     operands from shared anyway, which is how the Triton backend uses it
+//     (`emitIluvatarSmeTileLoads`, predicated on `smeWarpsPerCTA`): there the
+//     shared read is not an added cost because it was already required. A
+//     batch-1 GEMV reads its weights exactly once, so there is no reuse to
+//     amortize the extra hop.
 //   * The descriptor's third lane must be -1 and its fourth the source row
 //     stride in *bytes*.
 //   * The row stride has a 64-byte minimum. Below it the instruction silently
@@ -301,6 +310,14 @@ FTT_DEVICE_INLINE void sme_copy_tile(void *destination, const void *source,
 // Drain the G2S queue and rendezvous the CTA, so every thread may read any
 // tile the batch just published. Both halves are required: the wait makes the
 // data visible, the barrier makes the *producer's* issue visible to consumers.
+//
+// The wait is per-thread and only covers transactions this thread issued, so
+// a caller that spreads tile issue across threads must have each of them call
+// this, not just one. Verified both ways: 12 tiles issued from one thread land
+// completely, while one-tile-per-thread with a single waiter reports 512 of
+// 6144. The Triton backend uses mask 8 (G2S only) where this uses 12 (G2S plus
+// shared stores); both land the data, and 12 is the safer default when the
+// caller may also have written the same buffer with ordinary shared stores.
 FTT_DEVICE_INLINE void sme_wait() {
 #if defined(FTT_DEVICE_PASS)
     __ivcorex_sl_waitcnt(12);  // bit2 = shared stores, bit3 = G2S
