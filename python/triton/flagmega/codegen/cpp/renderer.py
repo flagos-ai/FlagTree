@@ -58,7 +58,16 @@ CPP_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.cpp-package-descriptor/v1"
 # 4096 max threads/block is not launchable for a kernel with this register
 # footprint. Decode at batch 1 is memory-bound, which is why the curve is flat
 # between 512 and 1024 rather than scaling.
-CPP_BLOCK_THREADS = 1024
+#
+# Re-confirmed 2026-10-13 with the SME staging path enabled: 2048 still fails
+# the launch outright (backend error 1), so this is not a limit the SME work
+# relaxed. Wider CTAs would help the staging engine -- at 16 CTAs it measures
+# 628 GB/s with 12 warps of a 1024-thread block against 669 with 32 warps of a
+# 4096-thread block -- but the register footprint, not the thread count, is
+# what the driver rejects, and cutting registers means giving up the in-flight
+# depth the vector path depends on. `FLAGMEGA_CPP_BLOCK_THREADS` overrides it
+# for re-measurement if that footprint ever shrinks.
+CPP_BLOCK_THREADS = int(os.environ.get("FLAGMEGA_CPP_BLOCK_THREADS", "1024"))
 
 # Independent K-walk depth for the vectorized (tiled) GEMV path: how many K
 # groups one thread keeps in flight at once.
