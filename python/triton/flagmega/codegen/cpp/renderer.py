@@ -112,6 +112,19 @@ CPP_SME_SLOTS = int(os.environ.get("FLAGMEGA_CPP_SME_SLOTS", "3"))
 # switch to be measured in the real kernel rather than a believed win.
 CPP_SME_PAD = int(os.environ.get("FLAGMEGA_CPP_SME_PAD", "0"))
 
+# Chunked payload walk in the fused QKV GEMV. Off because it loses, and the
+# reason has now been checked twice. First measured at 20.30 against 20.04
+# ms/token: the kernel writes three outputs from one K loop, so a chunk of 8
+# triples its live register count. Re-measured after the packed bf16 dot
+# halved the inner loop's register needs, in case that was the binding
+# constraint -- still slower, 9.391 against 9.245. Register pressure from the
+# three fused outputs is the cause, not the arithmetic form.
+#
+# This leaves QKV the least utilized GEMV site (405 GB/s, 49.5% of peak
+# against GLU's 65.4%), so it is where the headroom is -- but it needs fewer
+# live outputs per loop, not a wider payload walk.
+CPP_QKV_TILED = os.environ.get("FLAGMEGA_CPP_QKV_TILED", "0") == "1"
+
 # Load the packed weight runs as 4-byte transactions instead of 16-byte ones.
 #
 # On BI-V150 a 128-bit load is issue-capped near one per cycle per MP (~46% of
@@ -196,6 +209,7 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "sme": CPP_USE_SME,
         "sme_slots": CPP_SME_SLOTS,
         "sme_pad": CPP_SME_PAD,
+        "qkv_tiled": CPP_QKV_TILED,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
         "sme_arena_elems": _sme_arena_elems(
             descriptor, CPP_BLOCK_THREADS // _target_warp_size(architecture)),

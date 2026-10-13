@@ -48,7 +48,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    8x oversubscribed on slots -- residency was never this kernel's constraint.
    The machinery is kept because it is the same contract the dense families
    use; flip this to re-measure if the kernel's shape changes. #}
-{% set tiled = false and call.k_lane >= chunk and call.k_lane % chunk == 0
+{% set tiled = qkv_tiled and call.k_lane >= chunk and call.k_lane % chunk == 0
        and call.weight_n_group_stride == call.n_lane * call.k_lane
        and (output.local_n_capacity * call.k_lane) % chunk == 0
        and output.local_n_capacity * call.k_lane < block_threads * chunk %}
