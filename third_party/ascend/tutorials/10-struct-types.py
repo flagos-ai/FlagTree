@@ -26,9 +26,9 @@ User-Defined Struct Types
 In this tutorial, you will pass a C struct to a Triton kernel by reference.
 
 A ``ctypes.Structure`` decorated with ``tl.struct_type`` is uploaded to device
-memory with ``tl.to_device`` and handed to the kernel as a pointer.  The host
-and the kernel share the *same* C definition, so the bytes line up exactly: no
-manual packing, no offset arithmetic on the host side.
+memory with its ``to_device`` method and handed to the kernel as a pointer.  The
+host and the kernel share the *same* C definition, so the bytes line up exactly:
+no manual packing, no offset arithmetic on the host side.
 
 This is handy whenever a kernel needs a small bundle of related arguments -- a
 data pointer together with its metadata, a descriptor, a workspace, a set of
@@ -137,7 +137,7 @@ def main():
     meta = TensorMeta(input_tensor)
 
     # 2. Upload the struct and pass it to the kernel by reference.
-    meta_dev = tl.to_device(meta, device=DEVICE)
+    meta_dev = meta.to_device(DEVICE)
     scale_kernel[(1, )](meta_dev, output_tensor, alpha, BLOCK=n)
     torch.npu.synchronize()
 

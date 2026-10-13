@@ -389,11 +389,18 @@ def struct_type(cls):
         @tl.struct_type
         class TensorView(ctypes.Structure):
             _fields_ = [...]
+
+    Besides recording the layout, the decorator binds a ``to_device`` method on
+    the class, so a host instance can upload itself::
+
+        view_dev = view.to_device("npu")   # -> StructView
     """
     if not _is_structure(cls):
         raise TypeError("@struct_type can only be applied to a ctypes.Structure subclass")
     fields, size, align = _struct_layout(cls, cls.__name__)
     cls._triton_struct_type = _struct_type(fields, size, align, name=cls.__name__)
+    # Bound on the class, so every instance can upload itself to a device.
+    cls.to_device = _struct_to_device
     return cls
 
 
@@ -481,16 +488,17 @@ def _require_struct_type(instance) -> _struct_type:
     return st
 
 
-def to_device(instance, buffer=None, device=None) -> StructView:
-    """Upload a host ctypes struct instance to a device buffer.
+def _struct_to_device(self, device=None, buffer=None) -> "StructView":
+    """Upload this struct to device memory and return a :class:`StructView`.
 
-    If ``buffer`` is omitted, a ``torch`` uint8 tensor is allocated on
-    ``device`` (default: the current device).  ``buffer`` may instead be any
-    writable byte buffer (e.g. a ``bytearray``) or a device tensor exposing
-    ``copy_``/``device``.
+    ``device`` names the target (e.g. ``"npu"``, or an integer index); it is
+    used when a fresh ``torch`` uint8 buffer has to be allocated.  Pass
+    ``buffer`` to copy into an existing writable byte buffer (e.g. a
+    ``bytearray``) or device tensor exposing ``copy_``/``device`` instead of
+    allocating -- handy to avoid churn when launching in a loop.
     """
-    st = _require_struct_type(instance)
-    raw = ctypes.string_at(ctypes.addressof(instance), ctypes.sizeof(type(instance)))
+    st = _require_struct_type(self)
+    raw = ctypes.string_at(ctypes.addressof(self), ctypes.sizeof(type(self)))
     if buffer is None:
         import torch
         buffer = torch.frombuffer(bytearray(raw), dtype=torch.uint8).to(device=device)

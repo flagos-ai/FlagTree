@@ -3426,5 +3426,4 @@ def extern(fn):
 from . import _custom_types  # noqa: E402
 
 struct_type = _custom_types.struct_type
-to_device = _custom_types.to_device
 StructView = _custom_types.StructView
