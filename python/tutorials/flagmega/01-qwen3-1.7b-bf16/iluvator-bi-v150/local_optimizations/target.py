@@ -42,14 +42,24 @@ def create_target(*, glu_reduction_group=32):
             parameters["block_k"] = 64
             parameters["compute_num_warps"] = 32
         # The selected GLU variant has no `reduction_group`, so it never
-        # reached the branch above and kept the catalog's block_k=128. On a
-        # tn128 base, block_k 64 measured 12.038 ms/token against 128's
-        # 12.985, with 32 at 12.152 and 16 at 13.886. Token-exact at ctx
-        # 1/40/300/600. See the dense_matmul note below: measured, not
-        # explained.
+        # reached the branch above and kept the catalog's block_k=128. Exactly
+        # one site uses this variant (mlp_gate_up), so this is a per-site tile.
+        #
+        # block_k=32, re-swept on the current base: 9.502 ms/token, against
+        # (256,32) 9.521, (128,64) 9.703, (256,64) 9.889, (64,64) 9.976,
+        # (512,32) 10.477, (128,128) 10.523, (128,16) 11.113, (64,32) 11.542.
+        # An interior optimum -- every direction degrades.
+        #
+        # NOTE this is not where the first sweep landed. On the original base
+        # block_k=64 won (12.038 vs 32's 12.152); after the dense_matmul,
+        # template and logits changes, 32 wins by 0.200. Tile optima here are
+        # NOT independent of the surrounding sites -- the same non-additivity
+        # that makes keep-only deltas shift when neighbours change. Re-sweep
+        # after any structural change rather than trusting a settled number.
+        # Measured, not explained; see the dense_matmul note below.
         if (implementation.family == "dense_matmul_glu"
                 and implementation.variant == "packed_k_major_gemv"):
-            parameters["block_k"] = 64
+            parameters["block_k"] = 32
         if implementation.family == "elementwise" and "elements_per_program" in parameters:
             parameters["elements_per_program"] = 256
         # One packed K group keeps the final GEMV reduction within a warp.
