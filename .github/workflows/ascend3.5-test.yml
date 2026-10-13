@@ -103,6 +103,7 @@ jobs:
           python3 07-extern-functions.py
           python3 08-grouped-gemm.py
           python3 09-persistent-matmul.py
+          python3 10-struct-types.py
           popd
           ## pytest_ut
           pushd third_party/ascend/unittest/pytest_ut
