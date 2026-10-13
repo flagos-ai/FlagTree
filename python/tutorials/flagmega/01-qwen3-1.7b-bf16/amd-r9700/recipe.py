@@ -38,7 +38,7 @@ from triton.flagmega.passes.auto_distributed import (
 from triton.flagmega.passes.auto_distributed.materializer import distribution_selection_state
 from triton.flagmega.selection import override_plan
 from triton.flagmega.targets.amd_gfx1201 import AmdGfx1201Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 from local_optimizations.distribution_recipe import (  # noqa: E402  (sibling tutorial)
     CHOICES,
@@ -56,7 +56,7 @@ def create_target(*, glu_reduction_group: int = 32) -> AmdGfx1201Target:
     """
     if glu_reduction_group not in {32, 64, 128}:
         raise ValueError("The reviewed GLU reduction experiments use 32/64/128 elements")
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
 
     def configure(implementation):
         parameters = dict(implementation.parameters)

@@ -14,6 +14,8 @@ remaining Target work.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from triton.flagmega.ir import IRModule, Placement
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.targets.ntt_options import NttTargetOptions
@@ -31,8 +33,8 @@ from triton.flagmega.passes.auto_distributed.reshard_cost import (
 )
 
 # T0 placeholders — reused from the NVIDIA machine until RDNA policies land.
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model as _placeholder_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model as _placeholder_implementation_model,
 )
 from triton.flagmega.targets.nvidia.memory import (
     sm90_bufferization_options as _placeholder_bufferization_options,
@@ -75,8 +77,33 @@ class _AmdRdnaMachine:
             packing_k_pack=2,
         )
 
+    # RDNA runs the whole model as ONE cooperative megakernel: every workgroup
+    # in the launch grid must be co-resident for the grid barriers to make
+    # progress. Upstream's portable kernels are tuned for NVIDIA's independent
+    # (non-cooperative) launch and use compute_num_warps=16; on RDNA that many
+    # warps raises per-block register residency so high that the grid's blocks
+    # cannot all co-reside on the available WGPs, and the grid barrier
+    # deadlocks. Cap the warp count so the cooperative launch fits. (Perf tuning
+    # of RDNA-native tiles is later Target work; correctness first.)
+    _COOPERATIVE_MAX_WARPS = 4
+
     def triton_implementation_model(self):
-        return self._implementation_model or _placeholder_implementation_model()
+        if self._implementation_model is not None:
+            return self._implementation_model
+        model = _placeholder_implementation_model()
+
+        def _cap_cooperative_warps(impl):
+            params = dict(impl.parameters)
+            warps = params.get("compute_num_warps")
+            if warps is not None and warps > self._COOPERATIVE_MAX_WARPS:
+                params["compute_num_warps"] = self._COOPERATIVE_MAX_WARPS
+                return replace(impl, parameters=params)
+            return impl
+
+        return replace(
+            model,
+            implementations=tuple(_cap_cooperative_warps(i) for i in model.implementations),
+        )
 
     def bufferization_options(self):
         return _placeholder_bufferization_options(self.capability)

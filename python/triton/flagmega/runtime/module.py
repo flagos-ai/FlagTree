@@ -95,6 +95,9 @@ def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False
             requires_grid_wide_sync=requires_grid_wide_sync,
             forbid_spills=False,
             reports_ptxas_resource_fields=False,
+            # RDNA wave32 architecturally allows 256 VGPRs/lane; the 255 default
+            # is ptxas' NVIDIA limit, not RDNA's.
+            registers_per_thread_limit=256,
         )
     return ResourceContract(
         compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
