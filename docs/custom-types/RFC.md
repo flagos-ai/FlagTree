@@ -451,6 +451,13 @@ Deferred (per §2.2/§12): value semantics and by-value kernel arguments.
   index / write, array-of-struct, host `to_device`/`StructView`/`mangle_type`,
   and (CPU) interpreter execution of scalar, array, nested, array-of-struct, and
   pointer-field kernels.
+- `third_party/ascend/tutorials/10-struct-types.py` — runnable Ascend tutorial
+  (also executed by the 910B and 910C CI workflows): describes an input tensor
+  with a `ctypes` struct, passes it by reference, loads a block through the
+  struct's pointer field, and reads the updated fields back on the host.
+- `third_party/ascend/unittest/pytest_ut/test_custom_struct.py` — on-hardware
+  pytest: scalar + array fields, nested struct, array of struct, and pointer
+  field.
 
 ### Build
 
@@ -515,7 +522,8 @@ nix develop --command bash -c 'source .venv/bin/activate && \
    `!tt.ptr<i8>`. Block loads through a loaded pointer field
    (`tl.load(view.base + offs)`) work after the `TritonToLinalgIncubated` layout
    fix described in §8.1; verified up to the external `bishengir-opt` stage,
-   and exercised on hardware by `demo_custom_types.py`.
+   and exercised on hardware by
+   `third_party/ascend/tutorials/10-struct-types.py`.
 2. **Ascend C++ spec copies** — `TritonOps.td`, `Ops.cpp`, and `python/src/ir.cc`
    are spec-copied (§3.3); new ops/bindings must be mirrored. Done for this
    feature.
