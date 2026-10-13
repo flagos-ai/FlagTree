@@ -40,6 +40,8 @@ In doing so, you will learn about:
 
 * Defining a ``@tl.struct_type`` from a ``ctypes.Structure``.
 
+* Giving it an ordinary ``__init__`` so the host can build one from a tensor.
+
 * Reading scalar fields and fixed-size array fields.
 
 * Dereferencing a pointer field to load a whole block of data.
@@ -52,7 +54,9 @@ In doing so, you will learn about:
 # ----------
 #
 # The kernel receives a device pointer to this struct.  ``ctypes`` describes the
-# layout once; ``@tl.struct_type`` teaches Triton the same layout.
+# layout once; ``@tl.struct_type`` teaches Triton the same layout.  The
+# ``__init__`` is ordinary Python that fills the fields in, so the host can
+# build one straight from a tensor instead of poking at raw C fields.
 
 import ctypes
 
@@ -75,6 +79,21 @@ class TensorMeta(ctypes.Structure):
         # [elements processed, number of launches] -- updated by the kernel.
         ("stats", ctypes.c_int32 * 2),
     ]
+
+    def __init__(self, tensor=None, size=None):
+        """Describe ``tensor``: anything with ``data_ptr()`` and ``numel()``.
+
+        Called with no arguments the fields are left zeroed for manual filling;
+        ``size`` overrides the element count taken from ``tensor``.
+        """
+        super().__init__()
+        if tensor is not None:
+            self.data = ctypes.cast(tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
+            self.size = tensor.numel() if size is None else size
+        elif size is not None:
+            self.size = size
+        self.stats[0] = 0
+        self.stats[1] = 0
 
 
 # %%
@@ -114,12 +133,8 @@ def main():
     input_tensor = torch.arange(1, n + 1, dtype=torch.float32, device=DEVICE)
     output_tensor = torch.empty_like(input_tensor)
 
-    # 1. Describe the input tensor and fill the struct in place.
-    meta = TensorMeta()
-    meta.data = ctypes.cast(input_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
-    meta.size = n
-    meta.stats[0] = 0
-    meta.stats[1] = 0
+    # 1. Describe the input tensor (the constructor fills in the fields).
+    meta = TensorMeta(input_tensor)
 
     # 2. Upload the struct and pass it to the kernel by reference.
     meta_dev = tl.to_device(meta, device=DEVICE)
