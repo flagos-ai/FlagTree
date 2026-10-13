@@ -318,6 +318,66 @@ FTT_DEVICE_INLINE void sme_copy_tile(void *destination, const void *source,
 // 6144. The Triton backend uses mask 8 (G2S only) where this uses 12 (G2S plus
 // shared stores); both land the data, and 12 is the safer default when the
 // caller may also have written the same buffer with ordinary shared stores.
+// Stage one contiguous 1 KB block global->shared, warp granularity.
+//
+// `sme_load_1x16b64` is the flat form: 1024 bytes (512 bf16) laid out in
+// shared exactly as in global. A whole 6144-element weight group stages as an
+// exact copy, verified element by element.
+//
+// Preferred over the 2-D forms for two reasons:
+//   * It is stride-independent. Verified correct at row strides 0, 32, 64 and
+//     1024, because a flat copy never consults the stride. `16x1b64` is a
+//     16 x 32 tile and silently corrupts 480 of 512 elements at a sub-64-byte
+//     stride, which is a standing trap for any caller that computes one.
+//   * Same bandwidth: 513 vs 509 GB/s at 4 issuing warps, 593 vs 585 at 12.
+//
+// The `rowxfb`/`colxfb` variants permute through a swizzle and exist for MMA
+// dot operands; the Triton backend emits those because its SME path is bound
+// to `dot`. FTT consumes staged weights with ordinary `load_run`, so it wants
+// the natural layout and needs no permutation table.
+//
+// The stride argument is retained for descriptor shape only; it is not read
+// by this form.
+FTT_DEVICE_INLINE void sme_copy_block(void *destination, const void *source,
+                                      int source_row_stride_bytes,
+                                      int source_byte_offset = 0) {
+#if defined(FTT_DEVICE_PASS)
+    using descriptor_t = int __attribute__((__vector_size__(16)));
+    const unsigned long long address =
+        reinterpret_cast<unsigned long long>(source);
+    const descriptor_t base = {
+        static_cast<int>(address & 0xffffffffu),
+        static_cast<int>(address >> 32),
+        -1,
+        source_row_stride_bytes,
+    };
+    __ivcorex_sme_load_1x16b64(
+        static_cast<int>(reinterpret_cast<unsigned long long>(destination)),
+        base, source_byte_offset, 0);
+#else
+    (void)destination;
+    (void)source;
+    (void)source_row_stride_bytes;
+    (void)source_byte_offset;
+#endif
+}
+
+// Drain only this thread's G2S transactions, without a CTA rendezvous.
+//
+// Separate from `sme_wait` because a producer/consumer kernel wants the two
+// halves at different points: the producer drains its own tiles, and the
+// rendezvous that publishes them to consumers is the loop's existing barrier.
+// Folding a `cta_sync` in here would add a second block-wide barrier per
+// stage, which is exactly the cost the prefetch is trying to avoid.
+//
+// The wait is per-thread and covers only transactions this thread issued, so
+// every issuing thread must call it.
+FTT_DEVICE_INLINE void sme_drain() {
+#if defined(FTT_DEVICE_PASS)
+    __ivcorex_sl_waitcnt(12);  // bit2 = shared stores, bit3 = G2S
+#endif
+}
+
 FTT_DEVICE_INLINE void sme_wait() {
 #if defined(FTT_DEVICE_PASS)
     __ivcorex_sl_waitcnt(12);  // bit2 = shared stores, bit3 = G2S

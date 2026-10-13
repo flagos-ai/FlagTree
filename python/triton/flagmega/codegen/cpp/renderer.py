@@ -294,6 +294,9 @@ def _gemv_k_streams(descriptor: Mapping[str, object]) -> None:
         block = _weight_block(call, prefix, lane, capacity)
         if block:
             call["weight_block_n"], call["weight_block_k"] = block
+            stride = _weight_group_stride(call, prefix, lane)
+            if stride:
+                call["weight_group_stride"] = stride
 
 
 def _weight_block(
@@ -360,6 +363,48 @@ def _weight_block(
                         if offset(k0 + kl, n0 + ni) != base + ni * lane + kl:
                             return None
         return block_n, lane
+    except Exception:
+        return None
+
+
+def _weight_group_stride(
+    call: Mapping[str, object],
+    prefix: str,
+    lane: int,
+) -> int | None:
+    """Elements between consecutive K groups of the packed weight, or None.
+
+    An SME producer stages a whole K group per transaction batch, so it needs
+    the distance from one group to the next. Derived from the call's own
+    address formula (the offset at `k = lane` minus the offset at `k = 0`)
+    rather than from the layout name, and only accepted when the step is
+    uniform across several groups -- a layout that interleaves differently
+    falls back to the non-staged path instead of staging wrong bytes.
+    """
+
+    import re
+
+    expression = call.get("weight_offset") or call.get("gate_weight_offset")
+    if not isinstance(expression, str) or not expression:
+        return None
+    flat = re.sub(r"\[\s*(?:None\s*,\s*:|:\s*,\s*None)\s*\]", "", expression)
+
+    def offset(k: int, n: int) -> int:
+        return eval(  # noqa: S307 - renderer-generated integer algebra
+            flat,
+            {"__builtins__": {}, "tl": None},
+            {f"{prefix}_global_k": k, f"{prefix}_global_n": n, "one": 1},
+        )
+
+    try:
+        base = offset(0, 0)
+        step = offset(lane, 0) - base
+        if step <= 0:
+            return None
+        for group in range(1, 4):
+            if offset(group * lane, 0) - base != group * step:
+                return None
+        return int(step)
     except Exception:
         return None
 

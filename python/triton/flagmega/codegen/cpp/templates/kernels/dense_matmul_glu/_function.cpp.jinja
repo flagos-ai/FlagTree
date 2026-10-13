@@ -37,6 +37,44 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% set chunks = (call.local_n_capacity * lane) // chunk %}
 {% set groups = (call.local_k_capacity // lane) %}
 {% set coop = lane // chunk %}
+{# SME weight prefetch: producer warps stage the next K group global->shared
+   with the G2S engine while the other warps reduce the current one.
+
+   Two measured effects pay for this, neither of which is "shared reads are
+   cheap" -- that framing is wrong and an earlier attempt of mine died on it.
+
+     * SME crosses a ceiling the consumer path cannot. A 128-bit `load_run`
+       is capped near 373 GB/s (one load instruction per cycle per MP) and
+       this kernel already sits at it, measured 394 GB/s. The G2S engine moves
+       1 KB per instruction and reaches 511-552 GB/s.
+     * The transfer is free, because it overlaps synchronization already paid
+       for. A grid barrier is a spin loop where thread 0 polls an atomic while
+       the other 1023 threads idle; issuing 12 tiles before one and draining
+       after costs +0.36 us against +0.32 us serialized.
+
+   Issue throughput is per-WARP, not per-CTA, so this cannot be driven
+   TMA-style from one thread. Holding in-flight tiles and shared bytes
+   constant at 24 tiles / 48 KB and varying only the issuer count measured
+   198 / 177 / 467 / 511 / 548 GB/s for 1 / 2 / 3 / 4 / 8 issuing warps: the
+   knee is 3-4 warps each contributing one lane. Producers are dedicated
+   rather than part-time because issue capacity, not arithmetic, is scarce
+   (+13.8% dedicated against +11.1% when producers also consume).
+
+   Requires one K group to be a single contiguous run, which `k_major_n8_k16`
+   gives: `local_n_capacity * lane` consecutive elements. #}
+{% set sme_producers = 4 %}
+{% set sme_group = call.local_n_capacity * lane %}
+{% set sme_tiles = sme_group // 512 %}
+{% set sme_runs_total = sme_group // chunk %}
+{% set sme_consumers = block_threads - sme_producers * warp_size %}
+{% set sme_stage = sme and chunk == 8 and lane
+       and call.weight_group_stride
+       and sme_group % 512 == 0
+       and sme_tiles % sme_producers == 0
+       and call.weight_block_n and call.weight_block_k == lane
+       and sme_runs_total == sme_consumers
+       and (sme_group * 2 * 2 * 2) <= 49152
+       and groups > 1 %}
 {# Depth of the tiled K walk, independent of `k_streams`.
 
    `k_streams` is tuned for the scalar walk, where one stream is one 2-byte
@@ -119,6 +157,148 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% else %}
 {% set ntile = 1 %}
 {% endif %}
+{% if sme_stage %}
+{# Software-pipelined SME staging: every warp stages the tile it will itself
+   consume, double buffered, and the only wait is its own `sl_waitcnt`.
+
+   Warp specialization was the wrong shape here and the measurement says so
+   plainly. Dedicating producer warps requires a `cta_sync` per stage to
+   publish their tiles to the consumers, and that barrier costs 0.193 us x
+   {{ groups }} groups x 28 layers = 0.69 ms/token -- more than the bandwidth
+   gain. Measured on an isolated k-group walk: warp-specialized **-12.1%**
+   against the vector-load baseline, software-pipelined **+22.2%**. Shared
+   memory cannot hold more than one K group per buffer (48 KB of the 64 KB
+   budget), so the handshake cannot be amortized away either.
+
+   Keeping producer and consumer in the same warp removes the barrier
+   entirely: a warp's staged tile is read only by its own lanes, and a warp is
+   synchronous with itself.
+
+   The tile geometry is exact. One SME instruction stages 512 elements = 64
+   runs of `chunk`, one per lane, spanning 512 / lane N values. A K group is
+   {{ sme_tiles }} tiles, so {{ sme_tiles }} of the {{ block_threads //
+   warp_size }} warps each own one tile per group and the rest sit out; every
+   (n, k) pair is covered exactly once, and the `coop` lanes sharing an N stay
+   adjacent so the final fold is still one shuffle.
+
+   `sme_copy_block` wraps `sme_load_1x16b64`, the flat warp-granularity form:
+   1 KB contiguous, laid out in shared exactly as in global, and independent of
+   the row stride that the 2-D forms silently corrupt below 64 bytes. The
+   swizzled variants exist for MMA dot operands, which is why the Triton
+   backend only exposes those. #}
+    __shared__ ftt::bfloat16_t
+        dense_glu_sme_buf[{{ sme_tiles }}][2][2][512];
+    const ftt::dim_t dense_glu_warp = ftt_thread / {{ warp_size }}LL;
+    const ftt::dim_t dense_glu_lane = ftt_thread % {{ warp_size }}LL;
+    const bool dense_glu_active = dense_glu_warp < {{ sme_tiles }}LL;
+{# Group base and stride from the call's own address formula, not the layout
+   name: a differently interleaved layout fails the `weight_group_stride`
+   check above and never reaches here. #}
+    const ftt::dim_t dense_glu_group_stride =
+        {{ call.weight_group_stride }}LL;
+    ftt::dim_t dense_glu_shard_base = 0;
+    {
+        const ftt::dim_t dense_glu_local_n_offsets = 0LL;
+        const ftt::dim_t dense_glu_local_k_offsets = 0LL;
+        const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+        const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+        (void)dense_glu_global_k;
+        (void)dense_glu_global_n;
+        dense_glu_shard_base = {{ call.gate_weight_offset | cppexpr }};
+    }
+{# This warp's tile offset inside a group, and this lane's run inside it. #}
+    const ftt::dim_t dense_glu_tile_off = dense_glu_warp * 512LL;
+    const ftt::dim_t dense_glu_run_off = dense_glu_lane * {{ chunk }}LL;
+    const ftt::dim_t dense_glu_elem =
+        dense_glu_tile_off + dense_glu_run_off;
+    const ftt::dim_t dense_glu_run_n = dense_glu_elem / {{ lane }}LL;
+    const ftt::dim_t dense_glu_k_in_lane = dense_glu_elem % {{ lane }}LL;
+    float dense_glu_gate_acc = 0.0f;
+    float dense_glu_up_acc = 0.0f;
+{% macro sme_issue(group_expr, slot) -%}
+            ftt::arch::sme_copy_block(
+                &dense_glu_sme_buf[dense_glu_warp][{{ slot }}][0][0],
+                &ftt_gate_weight[dense_glu_shard_base
+                                 + ({{ group_expr }}) * dense_glu_group_stride
+                                 + dense_glu_tile_off],
+                64);
+            ftt::arch::sme_copy_block(
+                &dense_glu_sme_buf[dense_glu_warp][{{ slot }}][1][0],
+                &ftt_up_weight[dense_glu_shard_base
+                               + ({{ group_expr }}) * dense_glu_group_stride
+                               + dense_glu_tile_off],
+                64);
+{%- endmacro %}
+    if (dense_glu_active) {
+        if (dense_glu_lane == 0) {
+{{ sme_issue("0LL", "0") }}
+            ftt::arch::sme_drain();
+        }
+{# A warp is synchronous with itself, so lane 0's drain orders the tile for
+   the whole warp without a block-wide barrier. #}
+        for (ftt::dim_t dense_glu_group = 0;
+             dense_glu_group < {{ groups }}LL; ++dense_glu_group) {
+            const ftt::dim_t dense_glu_cur = dense_glu_group % 2LL;
+            if (dense_glu_lane == 0
+                    && dense_glu_group + 1LL < {{ groups }}LL) {
+{{ sme_issue("dense_glu_group + 1LL", "1LL - dense_glu_cur") }}
+            }
+            const ftt::dim_t dense_glu_local_k_offsets =
+                dense_glu_group * {{ lane }}LL + dense_glu_k_in_lane;
+            const auto dense_glu_source_run =
+                ftt::{{ run_load }}<{{ chunk }}>(
+                    &ftt_source[{{ call.source_offset | cppexpr }}]);
+            const auto dense_glu_gate_run =
+                ftt::load_run<{{ chunk }}>(
+                    &dense_glu_sme_buf[dense_glu_warp][dense_glu_cur][0]
+                                      [dense_glu_run_off]);
+            const auto dense_glu_up_run =
+                ftt::load_run<{{ chunk }}>(
+                    &dense_glu_sme_buf[dense_glu_warp][dense_glu_cur][1]
+                                      [dense_glu_run_off]);
+            FTT_UNROLL
+            for (int dense_glu_element = 0;
+                 dense_glu_element < {{ chunk }}; ++dense_glu_element) {
+                const float dense_glu_source_value =
+                    dense_glu_source_run.at(dense_glu_element);
+                dense_glu_gate_acc +=
+                    dense_glu_gate_run.at(dense_glu_element)
+                    * dense_glu_source_value;
+                dense_glu_up_acc +=
+                    dense_glu_up_run.at(dense_glu_element)
+                    * dense_glu_source_value;
+            }
+            if (dense_glu_lane == 0
+                    && dense_glu_group + 1LL < {{ groups }}LL) {
+                ftt::arch::sme_drain();
+            }
+        }
+        float dense_glu_gate_sum =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_gate_acc);
+        float dense_glu_up_sum =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_up_acc);
+        if (dense_glu_k_in_lane == 0) {
+            const ftt::dim_t dense_glu_local_n_offsets = dense_glu_run_n;
+            const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+            (void)dense_glu_global_n;
+            if ({{ call.result_active | cppexpr }}) {
+                const float dense_glu_gate =
+                    ftt::to_float(ftt::store_as(ftt_result, dense_glu_gate_sum));
+                const float dense_glu_up =
+                    ftt::to_float(ftt::store_as(ftt_result, dense_glu_up_sum));
+                float dense_glu_activated =
+                    dense_glu_gate * ftt::sigmoid(dense_glu_gate);
+{% if call.round_activation | default(true) %}
+                dense_glu_activated = ftt::to_float(
+                    ftt::store_as(ftt_result, dense_glu_activated));
+{% endif %}
+                ftt_result[{{ call.result_offset | cppexpr }}] =
+                    ftt::store_as(ftt_result,
+                                  dense_glu_activated * dense_glu_up);
+            }
+        }
+    }
+{% else %}
     for (ftt::dim_t dense_glu_item = ftt_thread;
          dense_glu_item < {{ chunks * kslice }}LL;
          dense_glu_item += ftt_threads * {{ ntile }}LL) {
@@ -288,6 +468,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% endif %}
             const ftt::dim_t dense_glu_local_n_offsets =
                 dense_glu_tile_n[dense_glu_slot];
+{% endif %}{# sme_stage #}
 {% elif lane > 1 %}
 {# Physical-order payload walk over both projections; see the note in
    dense_matmul/_function.cpp.jinja. Gate and up share the payload slot, so
@@ -419,6 +600,9 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
 {% endif %}
 {% endif %}
+{% if not (tiled and sme_stage) %}
+{# The SME producer/consumer form writes its result inside its own branch,
+   where the accumulators and the owning-thread predicate live. #}
         const float dense_glu_gate =
             ftt::to_float(ftt::store_as(ftt_result, dense_glu_gate_sum));
         const float dense_glu_up =
@@ -436,6 +620,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
 {% endif %}
     }
+{% endif %}
 }
 
 
