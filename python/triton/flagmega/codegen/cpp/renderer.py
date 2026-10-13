@@ -125,6 +125,13 @@ CPP_SME_PAD = int(os.environ.get("FLAGMEGA_CPP_SME_PAD", "0"))
 # live outputs per loop, not a wider payload walk.
 CPP_QKV_TILED = os.environ.get("FLAGMEGA_CPP_QKV_TILED", "0") == "1"
 
+# Group-loop unroll in the SME consumer, which sets how many activation runs
+# a lane holds in registers at once. In the SME path the activation is the
+# only global read left in the consumer (weights arrive via shared), and it is
+# about half its cost. Measured on an isolated consumer: 1 run 0.0337 ms,
+# 2 runs 0.0180, saturating at 2.
+CPP_SME_UNROLL = int(os.environ.get("FLAGMEGA_CPP_SME_UNROLL", "2"))
+
 # Load the packed weight runs as 4-byte transactions instead of 16-byte ones.
 #
 # On BI-V150 a 128-bit load is issue-capped near one per cycle per MP (~46% of
@@ -208,6 +215,7 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
         "sme": CPP_USE_SME,
         "sme_slots": CPP_SME_SLOTS,
+        "sme_unroll": CPP_SME_UNROLL,
         "sme_pad": CPP_SME_PAD,
         "qkv_tiled": CPP_QKV_TILED,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",

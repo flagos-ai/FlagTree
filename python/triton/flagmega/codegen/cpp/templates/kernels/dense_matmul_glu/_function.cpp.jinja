@@ -254,26 +254,49 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
 {# A warp is synchronous with itself, so lane 0's drain orders the tile for
    the whole warp without a block-wide barrier. #}
+{# Unroll the group walk by `sme_unroll` and load that many activation runs
+   up front. A lane's activation run depends only on (group, k_in_lane), and
+   `k_in_lane` is fixed per lane, so the runs are independent loads that can
+   all be in flight before any is consumed. Measured on an isolated consumer:
+   1 run held 0.0337 ms, 2 runs 0.0180, and it saturates there -- the
+   activation is about half the consumer's cost in the SME path, because the
+   weights already come from shared and this is the only global read left.
+   Staging the activation in shared instead loses 6x (0.138 ms), the same way
+   it lost before the SME work; the win is register reuse, not a closer
+   cache. #}
         for (ftt::dim_t dense_glu_group = 0;
-             dense_glu_group < {{ groups }}LL; ++dense_glu_group) {
+             dense_glu_group < {{ groups }}LL;
+             dense_glu_group += {{ sme_unroll }}LL) {
+            ftt::bf16_run_t<{{ chunk }}> dense_glu_act[{{ sme_unroll }}];
+            FTT_UNROLL
+            for (int dense_glu_u = 0; dense_glu_u < {{ sme_unroll }};
+                 ++dense_glu_u) {
+                const ftt::dim_t dense_glu_local_k_offsets =
+                    (dense_glu_group + dense_glu_u) * {{ lane }}LL
+                    + dense_glu_k_in_lane;
+                dense_glu_act[dense_glu_u] =
+                    ftt::{{ run_load }}<{{ chunk }}>(
+                        &ftt_source[{{ call.source_offset | cppexpr }}]);
+            }
+            FTT_UNROLL
+            for (int dense_glu_u = 0; dense_glu_u < {{ sme_unroll }};
+                 ++dense_glu_u) {
+            const ftt::dim_t dense_glu_step_group =
+                dense_glu_group + dense_glu_u;
             const ftt::dim_t dense_glu_cur =
-                dense_glu_group % {{ sme_slots }}LL;
+                dense_glu_step_group % {{ sme_slots }}LL;
 {# Issue the group `sme_slots - 1` ahead. That keeps `2 * (sme_slots - 1)`
    transactions in flight per warp -- the knob the engine actually responds
    to: measured 619 GB/s at depth 2 against 662 at depth 4 and 667 at depth 8
    (16 CTAs, 1024 threads). The ring is conflict-free because
    `(i + sme_slots - 1) % sme_slots != i % sme_slots`. #}
             if (dense_glu_lane == 0
-                    && dense_glu_group + {{ sme_slots - 1 }}LL
+                    && dense_glu_step_group + {{ sme_slots - 1 }}LL
                            < {{ groups }}LL) {
-{{ sme_issue("dense_glu_group + %dLL" % (sme_slots - 1),
-             "(dense_glu_group + %dLL) %% %dLL" % (sme_slots - 1, sme_slots)) }}
+{{ sme_issue("dense_glu_step_group + %dLL" % (sme_slots - 1),
+             "(dense_glu_step_group + %dLL) %% %dLL" % (sme_slots - 1, sme_slots)) }}
             }
-            const ftt::dim_t dense_glu_local_k_offsets =
-                dense_glu_group * {{ lane }}LL + dense_glu_k_in_lane;
-            const auto dense_glu_source_run =
-                ftt::{{ run_load }}<{{ chunk }}>(
-                    &ftt_source[{{ call.source_offset | cppexpr }}]);
+            const auto &dense_glu_source_run = dense_glu_act[dense_glu_u];
             const auto dense_glu_gate_run =
                 ftt::load_run<{{ chunk }}>(
                     &dense_glu_sme_buf[dense_glu_warp][dense_glu_cur][0]
@@ -299,9 +322,10 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     dense_glu_pair, dense_glu_up_acc);
             }
             if (dense_glu_lane == 0
-                    && dense_glu_group + {{ sme_slots - 1 }}LL
+                    && dense_glu_step_group + {{ sme_slots - 1 }}LL
                            < {{ groups }}LL) {
                 ftt::arch::sme_drain();
+            }
             }
         }
         float dense_glu_gate_sum =
