@@ -62,19 +62,20 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 
    Requires one K group to be a single contiguous run, which `k_major_n8_k16`
    gives: `local_n_capacity * lane` consecutive elements. #}
-{% set sme_producers = 4 %}
+{# Ring depth comes from the renderer so the arena sizer and the template
+   cannot disagree. #}
 {% set sme_group = call.local_n_capacity * lane %}
 {% set sme_tiles = sme_group // 512 %}
-{% set sme_runs_total = sme_group // chunk %}
-{% set sme_consumers = block_threads - sme_producers * warp_size %}
+{# One instruction stages 512 elements = 64 runs = one run per lane, so a K
+   group of `sme_tiles` tiles is owned by `sme_tiles` warps: each stages and
+   consumes only its own tile, which is why no `cta_sync` is needed. #}
 {% set sme_stage = sme and chunk == 8 and lane
        and call.weight_group_stride
        and sme_group % 512 == 0
-       and sme_tiles % sme_producers == 0
+       and sme_tiles <= (block_threads // warp_size)
        and call.weight_block_n and call.weight_block_k == lane
-       and sme_runs_total == sme_consumers
-       and (sme_group * 2 * 2 * 2) <= 49152
-       and groups > 1 %}
+       and (sme_group * 2 * sme_slots * 2) <= 114688
+       and groups > sme_slots %}
 {# Depth of the tiled K walk, independent of `k_streams`.
 
    `k_streams` is tuned for the scalar walk, where one stream is one 2-byte
@@ -193,7 +194,8 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    garbage. The staging sites are separated by grid barriers, so they share
    one allocation sized for the largest of them. #}
     auto *const dense_glu_sme_buf =
-        reinterpret_cast<ftt::bfloat16_t (*)[2][2][512]>(_ftt_sme_arena);
+        reinterpret_cast<ftt::bfloat16_t (*)[{{ sme_slots }}][2][512]>(
+            _ftt_sme_arena);
     const ftt::dim_t dense_glu_warp = ftt_thread / {{ warp_size }}LL;
     const ftt::dim_t dense_glu_lane = ftt_thread % {{ warp_size }}LL;
     const bool dense_glu_active = dense_glu_warp < {{ sme_tiles }}LL;
@@ -214,6 +216,12 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
     }
 {# This warp's tile offset inside a group, and this lane's run inside it. #}
     const ftt::dim_t dense_glu_tile_off = dense_glu_warp * 512LL;
+{# Descriptors built once per kernel call. The base folds in the shard offset
+   and this warp's tile, so the loop varies only the K-group byte offset. #}
+    const auto dense_glu_gate_source = ftt::arch::sme_source_for(
+        &ftt_gate_weight[dense_glu_shard_base + dense_glu_tile_off], 64);
+    const auto dense_glu_up_source = ftt::arch::sme_source_for(
+        &ftt_up_weight[dense_glu_shard_base + dense_glu_tile_off], 64);
     const ftt::dim_t dense_glu_run_off = dense_glu_lane * {{ chunk }}LL;
     const ftt::dim_t dense_glu_elem =
         dense_glu_tile_off + dense_glu_run_off;
@@ -221,33 +229,45 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
     const ftt::dim_t dense_glu_k_in_lane = dense_glu_elem % {{ lane }}LL;
     float dense_glu_gate_acc = 0.0f;
     float dense_glu_up_acc = 0.0f;
+{# One stage issue from the hoisted descriptors: only the byte offset varies,
+   which keeps the per-group cost to one add instead of rebuilding a 4-lane
+   descriptor and moving it to scalar registers. #}
 {% macro sme_issue(group_expr, slot) -%}
-            ftt::arch::sme_copy_block(
+            ftt::arch::sme_copy_block_from(
                 &dense_glu_sme_buf[dense_glu_warp][{{ slot }}][0][0],
-                &ftt_gate_weight[dense_glu_shard_base
-                                 + ({{ group_expr }}) * dense_glu_group_stride
-                                 + dense_glu_tile_off],
-                64);
-            ftt::arch::sme_copy_block(
+                dense_glu_gate_source,
+                ({{ group_expr }}) * dense_glu_group_stride * 2LL);
+            ftt::arch::sme_copy_block_from(
                 &dense_glu_sme_buf[dense_glu_warp][{{ slot }}][1][0],
-                &ftt_up_weight[dense_glu_shard_base
-                               + ({{ group_expr }}) * dense_glu_group_stride
-                               + dense_glu_tile_off],
-                64);
+                dense_glu_up_source,
+                ({{ group_expr }}) * dense_glu_group_stride * 2LL);
 {%- endmacro %}
     if (dense_glu_active) {
         if (dense_glu_lane == 0) {
-{{ sme_issue("0LL", "0") }}
+{# Fill the first `sme_slots - 1` groups so the steady-state loop always has
+   that many transactions outstanding. One drain covers them all: the wait is
+   per-thread and counts every transaction this thread issued. #}
+{% for slot in range(sme_slots - 1) %}
+{{ sme_issue("%dLL" % slot, "%dLL" % slot) }}
+{% endfor %}
             ftt::arch::sme_drain();
         }
 {# A warp is synchronous with itself, so lane 0's drain orders the tile for
    the whole warp without a block-wide barrier. #}
         for (ftt::dim_t dense_glu_group = 0;
              dense_glu_group < {{ groups }}LL; ++dense_glu_group) {
-            const ftt::dim_t dense_glu_cur = dense_glu_group % 2LL;
+            const ftt::dim_t dense_glu_cur =
+                dense_glu_group % {{ sme_slots }}LL;
+{# Issue the group `sme_slots - 1` ahead. That keeps `2 * (sme_slots - 1)`
+   transactions in flight per warp -- the knob the engine actually responds
+   to: measured 619 GB/s at depth 2 against 662 at depth 4 and 667 at depth 8
+   (16 CTAs, 1024 threads). The ring is conflict-free because
+   `(i + sme_slots - 1) % sme_slots != i % sme_slots`. #}
             if (dense_glu_lane == 0
-                    && dense_glu_group + 1LL < {{ groups }}LL) {
-{{ sme_issue("dense_glu_group + 1LL", "1LL - dense_glu_cur") }}
+                    && dense_glu_group + {{ sme_slots - 1 }}LL
+                           < {{ groups }}LL) {
+{{ sme_issue("dense_glu_group + %dLL" % (sme_slots - 1),
+             "(dense_glu_group + %dLL) %% %dLL" % (sme_slots - 1, sme_slots)) }}
             }
             const ftt::dim_t dense_glu_local_k_offsets =
                 dense_glu_group * {{ lane }}LL + dense_glu_k_in_lane;
@@ -275,7 +295,8 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     * dense_glu_source_value;
             }
             if (dense_glu_lane == 0
-                    && dense_glu_group + 1LL < {{ groups }}LL) {
+                    && dense_glu_group + {{ sme_slots - 1 }}LL
+                           < {{ groups }}LL) {
                 ftt::arch::sme_drain();
             }
         }

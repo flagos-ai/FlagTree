@@ -362,6 +362,59 @@ FTT_DEVICE_INLINE void sme_copy_block(void *destination, const void *source,
 #endif
 }
 
+// A reusable SME source descriptor.
+//
+// `sme_copy_block` rebuilds the descriptor on every call, and in a staging
+// loop that dominates the issuing lane's instruction stream: the `v4i32` has
+// to be moved into scalar registers because `sl_sme_load` takes scalar
+// operands, which showed up as 56 `ml_mov_v2s_b32` in a 281-instruction
+// window of the GLU loop -- more than the loads, the unpacking and the FMAs
+// combined.
+//
+// Only the base pointer varies across a staging loop; the stride and the
+// sentinel lane are loop-invariant, and the instruction already takes a byte
+// offset. So build the descriptor once and vary the offset.
+struct sme_source {
+    // Stored as plain words so the struct has one layout in both passes; the
+    // native vector type is reconstructed at the call.
+    int word[4];
+};
+
+FTT_DEVICE_INLINE sme_source sme_source_for(const void *base,
+                                            int source_row_stride_bytes) {
+    sme_source source{};
+#if defined(FTT_DEVICE_PASS)
+    const unsigned long long address =
+        reinterpret_cast<unsigned long long>(base);
+    source.word[0] = static_cast<int>(address & 0xffffffffu);
+    source.word[1] = static_cast<int>(address >> 32);
+    source.word[2] = -1;
+    source.word[3] = source_row_stride_bytes;
+#else
+    (void)base;
+    (void)source_row_stride_bytes;
+#endif
+    return source;
+}
+
+// Stage one contiguous 1 KB block from a prebuilt descriptor at a byte offset.
+FTT_DEVICE_INLINE void sme_copy_block_from(void *destination,
+                                           const sme_source &source,
+                                           long long source_byte_offset) {
+#if defined(FTT_DEVICE_PASS)
+    using descriptor_t = int __attribute__((__vector_size__(16)));
+    const descriptor_t value = {source.word[0], source.word[1],
+                                source.word[2], source.word[3]};
+    __ivcorex_sme_load_1x16b64(
+        static_cast<int>(reinterpret_cast<unsigned long long>(destination)),
+        value, static_cast<int>(source_byte_offset), 0);
+#else
+    (void)destination;
+    (void)source;
+    (void)source_byte_offset;
+#endif
+}
+
 // Drain only this thread's G2S transactions, without a CTA rendezvous.
 //
 // Separate from `sme_wait` because a producer/consumer kernel wants the two

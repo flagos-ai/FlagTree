@@ -97,6 +97,15 @@ CPP_TILED_DEPTH = int(os.environ.get("FLAGMEGA_CPP_TILED_DEPTH", "2"))
 # kernels. Off by default until it beats the vectorized scalar path end to end.
 CPP_USE_SME = os.environ.get("FLAGMEGA_CPP_SME", "0") == "1"
 
+# Staging slots per tile in the SME pipeline. `slots - 1` groups stay in
+# flight, and the engine responds strongly to that depth: measured 619 GB/s at
+# depth 2 (2 slots) against 662 at depth 4 (3 slots) and 667 at depth 8, on a
+# 16-CTA 1024-thread launch. 3 slots costs 72 KB of the ~112 KB of static
+# shared the device actually allows -- `sharedMemPerBlock` is 128 KB, not the
+# 64 KB an earlier comment here assumed, verified by launching static arrays
+# up to 120 KB.
+CPP_SME_SLOTS = int(os.environ.get("FLAGMEGA_CPP_SME_SLOTS", "3"))
+
 # Load the packed weight runs as 4-byte transactions instead of 16-byte ones.
 #
 # On BI-V150 a 128-bit load is issue-capped near one per cycle per MP (~46% of
@@ -179,6 +188,7 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "warp_size": _target_warp_size(architecture),
         "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
         "sme": CPP_USE_SME,
+        "sme_slots": CPP_SME_SLOTS,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
         "sme_arena_elems": _sme_arena_elems(
             descriptor, CPP_BLOCK_THREADS // _target_warp_size(architecture)),
@@ -218,9 +228,9 @@ def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
         tiles = group // 512
         if tiles > warps:
             continue
-        # One slot per projection the kernel stages, double buffered.
+        # `CPP_SME_SLOTS` ring slots per projection the kernel stages.
         projections = 2 if family == "dense_matmul_glu" else 1
-        largest = max(largest, tiles * 2 * projections * 512)
+        largest = max(largest, tiles * CPP_SME_SLOTS * projections * 512)
     return largest
 
 
