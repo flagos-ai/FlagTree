@@ -30,7 +30,10 @@ def create_target(*, glu_reduction_group=32):
             if implementation.variant == "packed_k_major_gemv_norm_stats":
                 # The down projection covers K=6144. A 16-element K tile
                 # leaves most BI-V150 lanes idle and serializes 384 reductions.
-                parameters["block_k"] = 256
+                # block_k=128 rather than 256: measured, see the dense_matmul
+                # note below for the numbers and for why the obvious
+                # register-spill explanation does not hold.
+                parameters["block_k"] = 128
                 parameters["tile_n"] = 64
         if implementation.family == "gather_reduce_norm_apply":
             parameters["reduction_width"] = 128
@@ -38,6 +41,15 @@ def create_target(*, glu_reduction_group=32):
             parameters["reduction_group"] = glu_reduction_group
             parameters["block_k"] = 64
             parameters["compute_num_warps"] = 32
+        # The selected GLU variant has no `reduction_group`, so it never
+        # reached the branch above and kept the catalog's block_k=128. On a
+        # tn128 base, block_k 64 measured 12.038 ms/token against 128's
+        # 12.985, with 32 at 12.152 and 16 at 13.886. Token-exact at ctx
+        # 1/40/300/600. See the dense_matmul note below: measured, not
+        # explained.
+        if (implementation.family == "dense_matmul_glu"
+                and implementation.variant == "packed_k_major_gemv"):
+            parameters["block_k"] = 64
         if implementation.family == "elementwise" and "elements_per_program" in parameters:
             parameters["elements_per_program"] = 256
         # One packed K group keeps the final GEMV reduction within a warp.
@@ -49,8 +61,22 @@ def create_target(*, glu_reduction_group=32):
             parameters["tile_n"] = 512
         if (implementation.family == "dense_matmul"
                 and implementation.variant in {"packed_k_major_gemv", "split_k_n_packed_k_major_gemv"}):
-            parameters["block_k"] = 256
-            parameters["tile_n"] = 128
+            # (block_k=128, tile_n=64), measured at ctx-1 against the prior
+            # (256, 128) on a GLU-tn128 base: 10.744 ms/token vs 12.046, with
+            # (128,128) 11.317, (64,64) 12.298, (256,64) 12.727 and (128,32)
+            # 13.986. The earlier tiles came from the address-amortization
+            # argument (Trials 27/30/63) with block_k never varied.
+            #
+            # These are empirical: the mechanism is NOT established, and
+            # four candidates are already eliminated by measurement (see
+            # ITERATION.md Trial 95.5). Notably the tuned build executes
+            # 3.58x MORE inner loop steps than the old one and is still 18%
+            # faster, so the win is in per-step cost, not step count --
+            # register footprint, block_k==warpSize, fewer steps, and load
+            # vectorization width have each been ruled out. Do not re-derive
+            # these numbers from any of those models; re-measure.
+            parameters["block_k"] = 128
+            parameters["tile_n"] = 64
         if implementation.variant == "packed_pointer_smem_pipeline":
             parameters["producer_registers"] = 24
             # The SME source encoding derives its second warp axis from this

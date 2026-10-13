@@ -19,7 +19,17 @@ def select_tir(module, *, residual_kernel="direct"):
     # over 4x more work per address computed. See perf-iteration/
     # ITERATION.md Trial 27 (225x-slower-than-vLLM baseline) and the trial
     # documenting this change for the measured effect.
-    glu = "tir.dense_matmul_glu.packed_k_major_gemv_tn64"
+    # tn128 now, not tn64: Trial 64 rejected tn128 on a *correctness* failure
+    # (top-5 tokens changed), and that gate was right at the time. The
+    # miscompile it caught was the div/mod address split since root-caused in
+    # Trial 94; with that fixed, tn128 is token-exact at ctx 1/40/300/600 and
+    # 0.094 ms/token faster (13.083 -> 12.989, interleaved rounds). N=384 per
+    # owner means 3 exact tiles instead of 6, halving the per-tile epilogue
+    # (two tl.sum reductions, sigmoid, bf16 round-trip) for the same bytes.
+    # tn256 is not selectable: its block needs 2048 threads against this
+    # megakernel's 1024-thread driver limit, and block_k=256 measured worse
+    # (14.316) at either tile.
+    glu = "tir.dense_matmul_glu.packed_k_major_gemv_tn128"
     base = "tir.dense_matmul.packed_k_major_gemv_norm_stats"
     attention_variant = os.environ.get("FLAGMEGA_ATTENTION_LAYOUT")
     attention_layout = (
