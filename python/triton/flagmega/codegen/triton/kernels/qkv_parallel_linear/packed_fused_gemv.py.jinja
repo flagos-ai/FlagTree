@@ -9,18 +9,30 @@ def {{ call.symbol }}({{ call.signature }}):
     for qkv_local_m in range({{ call.rows | default(1) }}):
 {% filter indent(4, true) %}
 {% for output in call.outputs %}
+{# Clamp the output tile to what this output actually owns. The three fused
+   outputs have different `local_n_capacity` (for GQA, Q is wider than K/V),
+   but all three used to inherit one `call.tile_n`, so a narrow output
+   computed a full tile and masked most of it off. On BI-V150 Qwen3-1.7B
+   (Q 128, K 64, V 64) that was 384 n-lanes computed to produce 256 -- 33%
+   of the output-tile work discarded. Measured per output at the real shape,
+   28 layers x 16 CTAs: shared tile 1.769 ms vs clamped 1.634 ms (-7.6%);
+   the narrow outputs go 0.526 -> 0.458 and 0.514 -> 0.447.
+
+   Capacities are not always tile multiples, so the existing masks stay:
+   this removes whole wasted tiles, not the tail predicate. #}
+{% set qkv_tile_n = [call.tile_n, output.local_n_capacity] | min %}
     for qkv_local_n_start in tl.range(
-        0, {{ output.local_n_capacity }}, {{ call.tile_n }}
+        0, {{ output.local_n_capacity }}, {{ qkv_tile_n }}
     ):
         {# A packed K group stores N rows of k_lane contiguous elements.
            Keep that physical order through the multiply and accumulate;
            reducing the two K axes at loop exit avoids converting each load
            to a logical (N, K) layout, which needs shared-memory exchanges. #}
-        qkv_payload = tl.arange(0, {{ call.tile_n * call.k_lane }})
+        qkv_payload = tl.arange(0, {{ qkv_tile_n * call.k_lane }})
         qkv_n = qkv_local_n_start + qkv_payload // {{ call.k_lane }}
         qkv_k_groups = tl.arange(0, {{ call.block_k // call.k_lane }})
         qkv_accumulator = tl.zeros(
-            ({{ call.block_k // call.k_lane }}, {{ call.tile_n * call.k_lane }}),
+            ({{ call.block_k // call.k_lane }}, {{ qkv_tile_n * call.k_lane }}),
             tl.float32,
         )
         for qkv_local_k_start in tl.range(
@@ -55,9 +67,9 @@ def {{ call.symbol }}({{ call.signature }}):
             qkv_accumulator += qkv_weight.to(tl.float32) * qkv_source.to(tl.float32)
         qkv_result = tl.sum(tl.sum(tl.reshape(
             qkv_accumulator,
-            ({{ call.block_k // call.k_lane }}, {{ call.tile_n }}, {{ call.k_lane }}),
+            ({{ call.block_k // call.k_lane }}, {{ qkv_tile_n }}, {{ call.k_lane }}),
         ), axis=2), axis=0)
-        qkv_local_n_offsets = qkv_local_n_start + tl.arange(0, {{ call.tile_n }})
+        qkv_local_n_offsets = qkv_local_n_start + tl.arange(0, {{ qkv_tile_n }})
         tl.store(
             {{ output.result }} + ({{ output.result_offset }}),
             qkv_result.to({{ call.output_type }}),

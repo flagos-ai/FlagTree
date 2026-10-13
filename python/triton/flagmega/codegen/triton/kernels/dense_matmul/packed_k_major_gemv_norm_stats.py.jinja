@@ -27,7 +27,27 @@ def {{ call.symbol }}({{ call.signature }}):
             (dense_local_n_offsets < {{ call.local_n_capacity }})
             & ({{ call.result_active }})
         )
-        dense_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+        {# 2D accumulator with the k-axis reduce deferred to loop exit, and
+           the accumulate body inlined rather than called.
+
+           This variant carries its own copy of the kernel body, so it never
+           picked up the two transformations its `packed_k_major_gemv` sibling
+           got through the shared `_function.py.jinja`:
+
+           - Trial 60: the per-iteration `tl.sum` + `accumulator +=` is a
+             reduce->add->reload serial chain; deferring the reduce measured
+             -25.7% on BI-V150.
+           - Trials 13-15: this backend does not carry the deferred-upcast
+             micro-optimization across a `noinline` call boundary, so the
+             accumulate must live in the function body.
+
+           Measured together at the down-projection shape (N=128 local,
+           K=6144, tile_n=64, block_k=128, 28 layers x 16 CTAs, 705 MB of
+           real weight traffic): 1.577 -> 1.345 ms, 447 -> 524 GB/s
+           (54.5% -> 64.0% of peak), output bit-exact. #}
+        dense_accumulator_tile = tl.zeros(
+            ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
+        )
         for dense_local_k_start in tl.range(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
@@ -39,11 +59,20 @@ def {{ call.symbol }}({{ call.signature }}):
                 (dense_local_k_offsets < {{ call.local_k_capacity }})
                 & ({{ call.source_active }})
             )
-            dense_accumulator += {{ call.accumulate_helper }}(
-                {{ call.source }}, {{ call.weight }},
-                {{ call.source_offset }}, {{ call.weight_offset }},
-                dense_k_mask, dense_n_mask,
+            dense_source_value = tl.load(
+                {{ call.source }} + ({{ call.source_offset }}),
+                mask=dense_k_mask, other=0.0,
             )
+            dense_weight_value = tl.load(
+                {{ call.weight }} + ({{ call.weight_offset }}),
+                mask=dense_n_mask[:, None] & dense_k_mask[None, :],
+                other=0.0,
+            )
+            dense_accumulator_tile += (
+                dense_weight_value.to(tl.float32)
+                * dense_source_value[None, :].to(tl.float32)
+            )
+        dense_accumulator = tl.sum(dense_accumulator_tile, axis=1)
         dense_residual = tl.load(
             {{ call.residual }} + ({{ call.residual_offset }}),
             mask=dense_n_mask,
