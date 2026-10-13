@@ -45,7 +45,6 @@ from .core import (
     store_tensor_descriptor,
     StructView,
     struct_type,
-    to_device,
     make_tensor_descriptor,
     tensor_descriptor,
     tensor_descriptor_type,
@@ -294,7 +293,6 @@ __all__ = [
     "zeros_like",
     "StructView",
     "struct_type",
-    "to_device",
 ]
 
 

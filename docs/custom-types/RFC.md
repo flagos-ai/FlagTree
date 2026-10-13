@@ -30,8 +30,8 @@ This RFC proposes:
 - **A small shared lowering pass** that rewrites those two operations into
   ordinary byte-offset address arithmetic and removes the new types before any
   backend-specific lowering.
-- **A host wrapper** (`StructView`, created by `tl.to_device`) that pairs a
-  `ctypes` type with a device buffer.
+- **A host wrapper** (`StructView`, created by the struct's `to_device` method)
+  that pairs a `ctypes` type with a device buffer.
 
 The design is **reference-only**: a struct is always accessed through a pointer
 and never exists as a value. This covers the motivating use case and avoids the
@@ -201,7 +201,7 @@ Two consequences:
 | Lowering | A **small shared pass** rewrites the two ops and removes the types | Backend-agnostic; Ascend's HIVM/`bishengir` pipeline stays untouched. |
 | Code placement | A **shared frontend module** for both `core.py` copies | Prevents divergence between the main and Ascend frontends. |
 | Kernel boundary | Structs pass **by reference** | Matches the use case; avoids a by-value C-struct launch ABI. |
-| Host API | `StructView` + `tl.to_device` | The kernel needs the struct type, which a bare pointer would not convey. |
+| Host API | `StructView` + a bound `to_device` method | The kernel needs the struct type, which a bare pointer would not convey. |
 | Layout correctness | Address fields by **explicit byte offsets** | The kernel layout exactly matches the host layout, independent of backend. |
 | Existing `_aggregate` | Left **unchanged** | Different purpose (its fields may be Triton tensors). |
 
@@ -313,7 +313,7 @@ the struct type alongside the device buffer:
 
 ```python
 tv   = TensorView(...)            # ctypes instance, host layout
-view = tl.to_device(tv)           # allocate device memory, upload the bytes
+view = tv.to_device("npu")         # allocate device memory, upload the bytes
 example[(1,)](view)               # specialize_impl sees "*struct<TensorView>{...}"
 ```
 
@@ -321,7 +321,8 @@ example[(1,)](view)               # specialize_impl sees "*struct<TensorView>{..
 On Ascend the launcher already accepts any object with `data_ptr()`, so no
 launcher change is needed for by-reference passing.
 
-**Public surface:** `tl.struct_type`, `tl.to_device`, `StructView`. Array fields
+**Public surface:** `tl.struct_type`, `StructView`, and the `to_device` method
+that `@struct_type` binds onto every decorated class. Array fields
 use ordinary `ctypes` syntax (`T * N`), so no separate array helper is required.
 
 ---
@@ -421,7 +422,7 @@ All of the design is implemented and committed on the `custom-types` branch.
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Shared frontend module (`_custom_types.py`): ctypes mapping, layout, types, `@struct_type`, signature (de)serialization, `StructView`/`to_device` | done |
+| 0 | Shared frontend module (`_custom_types.py`): ctypes mapping, layout, types, `@struct_type`, signature (de)serialization, `StructView`/bound `to_device` | done |
 | 1 | Python plumbing: `pointer_type` accepts aggregate pointees; `str_to_ty`; `specialize_impl` handles `StructView` | done |
 | 2 | C++ `!tt.struct`/`!tt.array` types, `tt.struct_gep`/`tt.array_gep`, verifiers, pybind bindings | done (mirrored into the Ascend spec copies, §3.3) |
 | 3 | `tt-lower-structs` pass, registration, Ascend `make_ttir` wiring | done |
@@ -448,7 +449,7 @@ Deferred (per §2.2/§12): value semantics and by-value kernel arguments.
   of struct; asserts that no `!tt.struct`/`!tt.array` remains.
 - `python/test/unit/language/test_custom_types.py` — pytest: layout and
   signature, field read/write/nested/pointer, array element read / dynamic
-  index / write, array-of-struct, host `to_device`/`StructView`/`mangle_type`,
+  index / write, array-of-struct, host `to_device()`/`StructView`/`mangle_type`,
   and (CPU) interpreter execution of scalar, array, nested, array-of-struct, and
   pointer-field kernels.
 - `third_party/ascend/tutorials/10-struct-types.py` — runnable Ascend tutorial
@@ -510,8 +511,8 @@ nix develop --command bash -c 'source .venv/bin/activate && \
    host buffer to an `InterpretedFunction` and check the buffer (this is what
    the interpreter tests do).
 3. **Run it on an NPU** (requires CANN): source the toolkit's `set_env.sh`,
-   build the `tl.to_device(struct_instance)` view, and launch normally with
-   `kernel[grid](view)`.
+   call `struct_instance.to_device("npu")` to build the view, and launch normally
+   with `kernel[grid](view)`.
 
 ---
 
