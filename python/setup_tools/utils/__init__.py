@@ -10,9 +10,12 @@ flagtree_submodules = {
                  commit_id="5842469a16b261e45a2c67fbfc308057622b03ee",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "triton_shared")),
     "flir":
-    tools.Module(name="flir", url="https://github.com/flagos-ai/flir.git",
-                 commit_id="1da2a383f12151ab9921f51819e47927b3fc0f91",
-                 dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
+    tools.Module(
+        name="flir", url="https://github.com/zhongsanming/flir.git",
+        # branch: custom-types -- carries the TritonToLinalgIncubated
+        # reinterpret_cast layout fix required by custom struct types.
+        commit_id="1fddaf42743d6e73bcfe50530d8c2cc206eddbbf",
+        dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
     "flagprism":
     tools.Module(name="FlagPrism", url="https://github.com/flagos-ai/FlagPrism.git",
                  commit_id="8541d6761805bd9d3c54d1bc53da4a1939ffd6c2",
