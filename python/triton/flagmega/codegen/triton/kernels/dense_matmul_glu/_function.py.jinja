@@ -1,7 +1,8 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul_glu" and call.variant == dense_matmul_glu_variant %}
-{{ entry.kernel_decorator(call) }}  {#- prefer_inline=true re-tested in Trial 55; see dense_matmul/_function.py.jinja's matching note -- kept reverted, no net performance win under current conditions even though Trial 15's stability mystery is now explained (Trial 49). #}
+{{ entry.kernel_decorator(call, prefer_inline=true) }}  {#- prefer_inline=true; see dense_matmul/_function.py.jinja for the
+   measurement and for why Trial 55's reversal no longer applies. #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     for dense_glu_local_n_start in tl.range(
