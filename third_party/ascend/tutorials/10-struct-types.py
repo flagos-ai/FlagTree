@@ -103,6 +103,13 @@ class TensorMeta(ctypes.Structure):
 # Fields are read like attributes (``meta.size``) and array fields are indexed
 # like arrays (``meta.stats[0]``).  ``meta.data`` is a pointer field: adding the
 # offsets to it and loading yields the input block.
+#
+# Note the parameter is deliberately left unannotated: ``meta: TensorMeta`` does
+# not work.  Triton evaluates an annotation as an expression, and a bare class
+# name is a global variable, which kernels are not allowed to read.  Quoting it
+# (``meta: "TensorMeta"``) is accepted but inert -- the parameter type comes
+# from the value passed in (the ``StructView``), never from the annotation, so
+# it would be documentation only.
 
 
 @triton.jit
