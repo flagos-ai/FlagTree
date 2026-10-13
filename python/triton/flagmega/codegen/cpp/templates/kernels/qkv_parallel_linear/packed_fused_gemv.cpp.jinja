@@ -96,11 +96,13 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                         ftt::load_run<{{ chunk }}>(
                             &ftt_source[{{ call.source_offset | cppexpr }}]);
                     float qkv_step = 0.0f;
+{# Two elements per instruction; see `dot2_step` in ftt/primitive_ops.h. #}
                     FTT_UNROLL
-                    for (int qkv_element = 0; qkv_element < {{ chunk }};
-                         ++qkv_element) {
-                        qkv_step += qkv_weight_run.at(qkv_element)
-                            * qkv_source_run.at(qkv_element);
+                    for (int qkv_pair = 0; qkv_pair < {{ chunk // 2 }};
+                         ++qkv_pair) {
+                        qkv_step = ftt::dot2_step(
+                            qkv_weight_run, qkv_source_run,
+                            qkv_pair, qkv_step);
                     }
                     qkv_partial[(int)qkv_stream] += qkv_step;
 {% else %}
