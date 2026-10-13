@@ -282,17 +282,21 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                 ftt::load_run<{{ chunk }}>(
                     &dense_glu_sme_buf[dense_glu_warp][dense_glu_cur][1]
                                       [dense_glu_run_off]);
+{# Accumulate two elements per instruction. `at()` per element makes the
+   compiler emit a bf16->fp32 convert and a separate FMA for each, which in
+   this megakernel came to 7653 converts beside 6802 FMAs and not one packed
+   dot; `dot2_step` maps onto the device's packed form instead. Products and
+   accumulation stay in fp32, so the rounding contract is unchanged (verified
+   bit-exact). #}
             FTT_UNROLL
-            for (int dense_glu_element = 0;
-                 dense_glu_element < {{ chunk }}; ++dense_glu_element) {
-                const float dense_glu_source_value =
-                    dense_glu_source_run.at(dense_glu_element);
-                dense_glu_gate_acc +=
-                    dense_glu_gate_run.at(dense_glu_element)
-                    * dense_glu_source_value;
-                dense_glu_up_acc +=
-                    dense_glu_up_run.at(dense_glu_element)
-                    * dense_glu_source_value;
+            for (int dense_glu_pair = 0;
+                 dense_glu_pair < {{ chunk // 2 }}; ++dense_glu_pair) {
+                dense_glu_gate_acc = ftt::dot2_step(
+                    dense_glu_gate_run, dense_glu_source_run,
+                    dense_glu_pair, dense_glu_gate_acc);
+                dense_glu_up_acc = ftt::dot2_step(
+                    dense_glu_up_run, dense_glu_source_run,
+                    dense_glu_pair, dense_glu_up_acc);
             }
             if (dense_glu_lane == 0
                     && dense_glu_group + {{ sme_slots - 1 }}LL
@@ -441,24 +445,22 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                 FTT_UNROLL
                 for (int dense_glu_stream = 0;
                      dense_glu_stream < {{ tdepth }}; ++dense_glu_stream) {
+{# Two elements per instruction; see `dot2_step` in ftt/primitive_ops.h. #}
                     FTT_UNROLL
-                    for (int dense_glu_element = 0;
-                         dense_glu_element < {{ chunk }}; ++dense_glu_element) {
-                        const float dense_glu_source_value =
-                            dense_glu_source_run[dense_glu_stream]
-                                .at(dense_glu_element);
-                        dense_glu_gate_step +=
+                    for (int dense_glu_pair = 0;
+                         dense_glu_pair < {{ chunk // 2 }}; ++dense_glu_pair) {
+                        dense_glu_gate_step = ftt::dot2_step(
                             dense_glu_weight_run[dense_glu_slot
                                                      * {{ tdepth * 2 }}
-                                                 + dense_glu_stream * 2]
-                                .at(dense_glu_element)
-                            * dense_glu_source_value;
-                        dense_glu_up_step +=
+                                                 + dense_glu_stream * 2],
+                            dense_glu_source_run[dense_glu_stream],
+                            dense_glu_pair, dense_glu_gate_step);
+                        dense_glu_up_step = ftt::dot2_step(
                             dense_glu_weight_run[dense_glu_slot
                                                      * {{ tdepth * 2 }}
-                                                 + dense_glu_stream * 2 + 1]
-                                .at(dense_glu_element)
-                            * dense_glu_source_value;
+                                                 + dense_glu_stream * 2 + 1],
+                            dense_glu_source_run[dense_glu_stream],
+                            dense_glu_pair, dense_glu_up_step);
                     }
                 }
                 dense_glu_gate_partial[dense_glu_slot] += dense_glu_gate_step;

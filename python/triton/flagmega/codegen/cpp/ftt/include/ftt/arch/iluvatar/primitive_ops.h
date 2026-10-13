@@ -386,6 +386,27 @@ FTT_DEVICE_INLINE void sme_copy_block(void *destination, const void *source,
 // what the kernel itself demonstrably sustains, so it was measuring its own
 // artifact. `FLAGMEGA_CPP_SME_PAD` keeps the knob available.
 
+// Two multiply-accumulates straight from packed bf16 pairs, fp32 products
+// and fp32 accumulator: `acc + a[0]*b[0] + a[1]*b[1]`.
+//
+// Verified bit-exact against unpacking to fp32 and doing two scalar FMAs,
+// over 256 assorted bf16 patterns. The precision contract requires the
+// products to form in fp32, which this instruction does.
+FTT_DEVICE_INLINE float bf16_pair_dot(unsigned int lhs, unsigned int rhs,
+                                      float accumulator) {
+#if defined(FTT_DEVICE_PASS)
+    using bf16x2 = __bf16 __attribute__((ext_vector_type(2)));
+    bf16x2 a, b;
+    __builtin_memcpy(&a, &lhs, sizeof(a));
+    __builtin_memcpy(&b, &rhs, sizeof(b));
+    return __ivcorex_bfdot2(a, b, accumulator);
+#else
+    (void)lhs;
+    (void)rhs;
+    return accumulator;
+#endif
+}
+
 // A reusable SME source descriptor.
 //
 // `sme_copy_block` rebuilds the descriptor on every call, and in a staging

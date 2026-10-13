@@ -94,11 +94,13 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     ftt::load_run<{{ chunk }}>(
                         &ftt_source[{{ call.source_offset | cppexpr }}]);
                 float dense_step = 0.0f;
+{# Two elements per instruction; see `dot2_step` in ftt/primitive_ops.h. #}
                 FTT_UNROLL
-                for (int dense_element = 0; dense_element < {{ chunk }};
-                     ++dense_element) {
-                    dense_step += dense_weight_run.at(dense_element)
-                        * dense_source_run.at(dense_element);
+                for (int dense_pair = 0; dense_pair < {{ chunk // 2 }};
+                     ++dense_pair) {
+                    dense_step = ftt::dot2_step(
+                        dense_weight_run, dense_source_run,
+                        dense_pair, dense_step);
                 }
                 dense_partial[(int)dense_stream] += dense_step;
             }

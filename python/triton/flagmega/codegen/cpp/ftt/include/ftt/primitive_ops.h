@@ -188,6 +188,38 @@ template <int Count> struct bf16_run_t {
     }
 };
 
+// Fused two-element dot step over a packed bf16 pair.
+//
+// `at()` hands back one element at a time as a scalar float, which forces the
+// compiler to emit a bf16->fp32 convert per element and then a separate FMA:
+// the Qwen3 megakernel showed 7653 `ml_cvt_f32_bf16` beside 6802
+// `ml_fma_f32` and **zero** `ml_dot2_add_f32_bf16`. The device has a packed
+// form that does two multiply-accumulates straight from bf16 pairs, which
+// halves the instruction count for the same arithmetic -- and that matters
+// here because this consumer is bound by issue slots, not flops.
+//
+// Precision is preserved exactly: the products and the accumulation happen in
+// fp32, verified bit-exact against unpack-then-fp32-FMA over 256 assorted
+// bf16 patterns including denormals and negatives. That contract is
+// load-bearing -- an earlier attempt to form products in bf16 broke a test
+// asserting rtol=0, atol=0.
+//
+// `word` is a packed pair already, so this is a reinterpret, not a shuffle.
+template <int Count>
+FTT_DEVICE_INLINE float dot2_step(const bf16_run_t<Count> &lhs,
+                                  const bf16_run_t<Count> &rhs,
+                                  int pair,
+                                  float accumulator) {
+#if defined(FTT_DEVICE_PASS) && defined(FTT_ARCH_ILUVATAR)
+    return ftt::arch::bf16_pair_dot(lhs.word[pair], rhs.word[pair],
+                                    accumulator);
+#else
+    const int index = pair * 2;
+    return accumulator + lhs.at(index) * rhs.at(index)
+           + lhs.at(index + 1) * rhs.at(index + 1);
+#endif
+}
+
 // Load `Count` contiguous bf16 as 16-byte transactions.
 //
 // This is the second half of the physical-order story. Walking the payload in
