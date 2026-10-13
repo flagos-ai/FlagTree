@@ -152,6 +152,9 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
             stage=module.stage,
         )
     _reject_unsupported_constructs(descriptor, module)
+    # Derive the per-call GEMV knobs first: the arena size below reads the
+    # weight group stride this fills in.
+    _gemv_k_streams(descriptor)
     descriptor.update({
         "schema": CPP_PACKAGE_DESCRIPTOR_SCHEMA,
         "kernel_templates": tuple(registry.resolve(spec) for spec in specs),
@@ -168,13 +171,48 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
         "sme": CPP_USE_SME,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
+        "sme_arena_elems": _sme_arena_elems(
+            descriptor, CPP_BLOCK_THREADS // _target_warp_size(architecture)),
         "grid_total_blocks": _grid_total_blocks(descriptor),
         "grid_barrier_counter_slots": _grid_barrier_counter_slots(descriptor),
         "grid_barrier_group_bases": _barrier_group_bases(descriptor),
         "argument_types": _argument_types(descriptor, module),
     })
-    _gemv_k_streams(descriptor)
     return descriptor
+
+
+def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
+    """Elements the shared SME staging arena needs, or 0 if unused.
+
+    Sized for the largest single staging site rather than the sum: the sites
+    are separated by grid barriers, so they never hold staged data at the same
+    time and can share one allocation. Summing them instead reached 96.8 KB of
+    a 64 KB budget, which does not fail the launch -- it silently reads
+    garbage, and the oversized kernel also pushed `llc` into a multi-minute
+    compile.
+    """
+
+    if not CPP_USE_SME:
+        return 0
+    largest = 0
+    for call in descriptor.get("render_calls", ()):
+        family = call.get("family")
+        if family not in {"dense_matmul", "dense_matmul_glu"}:
+            continue
+        lane = int(call.get("weight_k_lane") or 0)
+        capacity = int(call.get("local_n_capacity") or 0)
+        if not lane or not capacity or not call.get("weight_group_stride"):
+            continue
+        group = capacity * lane
+        if group % 512:
+            continue
+        tiles = group // 512
+        if tiles > warps:
+            continue
+        # One slot per projection the kernel stages, double buffered.
+        projections = 2 if family == "dense_matmul_glu" else 1
+        largest = max(largest, tiles * 2 * projections * 512)
+    return largest
 
 
 def _grid_barrier_counter_slots(descriptor: Mapping[str, object]) -> int:

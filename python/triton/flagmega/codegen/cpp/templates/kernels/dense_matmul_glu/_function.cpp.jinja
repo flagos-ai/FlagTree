@@ -186,8 +186,14 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    the row stride that the 2-D forms silently corrupt below 64 bytes. The
    swizzled variants exist for MMA dot operands, which is why the Triton
    backend only exposes those. #}
-    __shared__ ftt::bfloat16_t
-        dense_glu_sme_buf[{{ sme_tiles }}][2][2][512];
+{# Views into the module-scope arena rather than a private buffer: every
+   device function is inlined into one megakernel, so each `__shared__`
+   declaration is co-resident and the 64 KB budget is global. Per-site buffers
+   summed to 96.8 KB, which does not fail the launch -- it silently reads
+   garbage. The staging sites are separated by grid barriers, so they share
+   one allocation sized for the largest of them. #}
+    auto *const dense_glu_sme_buf =
+        reinterpret_cast<ftt::bfloat16_t (*)[2][2][512]>(_ftt_sme_arena);
     const ftt::dim_t dense_glu_warp = ftt_thread / {{ warp_size }}LL;
     const ftt::dim_t dense_glu_lane = ftt_thread % {{ warp_size }}LL;
     const bool dense_glu_active = dense_glu_warp < {{ sme_tiles }}LL;

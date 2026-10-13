@@ -20,6 +20,22 @@
 // instance, indexed by FTT_BARRIER_GROUP_*_SLOT.
 __device__ unsigned int _ftt_grid_barrier_counters[{{ grid_barrier_counter_slots }}];
 {% endif %}
+{% if sme_arena_elems %}
+
+// Shared staging arena for SME weight prefetch.
+//
+// One arena rather than a buffer per kernel. Every device function is inlined
+// into a single megakernel, so every `__shared__` declaration is co-resident
+// and the 64 KB budget is global, not per site: the three stageable GEMV sites
+// declaring their own buffers came to 96.8 KB, which does not fail the launch
+// -- it silently reads garbage, and the oversized kernel also sent `llc` into
+// a multi-minute compile.
+//
+// The sites run in sequence separated by grid barriers, so they can share
+// storage. Sized for the largest single consumer and indexed by each kernel's
+// own tile/slot arithmetic.
+__shared__ ftt::bfloat16_t _ftt_sme_arena[{{ sme_arena_elems }}];
+{% endif %}
 {% for kernel_template in kernel_templates %}
 {% include kernel_template %}
 {% endfor %}
