@@ -383,6 +383,15 @@ registered as `triton-lower-structs`) does:
    into an integer round-trip (`tt.load : ptr<i64>` + `int_to_ptr`;
    `ptr_to_int` + `tt.store : ptr<i64>`). A memref element type may not be a
    pointer, so Ascend cannot represent pointer-typed memory otherwise.
+5. **(Ascend) Block loads through a pointer field.** A pointer field read from
+   memory is a *dynamic* address, so `tl.load(view.base + offs)` becomes a block
+   load whose base is an `int_to_ptr`. In Ascend's `TritonToLinalgIncubated`
+   pass the `hivm.hir.pointer_cast` rewrite rebuilt the memref's strided layout
+   with a **dynamic** offset while passing a **static** offset operand (`0`) — a
+   malformed `memref.reinterpret_cast` whose derived `memref.subview` then
+   failed the memref verifier (`mismatch of result layout`). The pointer offset
+   is already folded into the address, so the layout offset is now `0`
+   (`third_party/flir/lib/Conversion/TritonToLinalgIncubated/TritonToLinalgPass.cpp`).
 
 Because structs and arrays are never values, the pass does **not** scalarize
 values, rewrite calls, or touch `scf` loop-carried values or returns — those
@@ -503,7 +512,10 @@ nix develop --command bash -c 'source .venv/bin/activate && \
 
 1. **Ascend pointer lowering for `ptr<struct>`** — mitigated: the pass removes
    the aggregate types before the backend passes, so the backend only sees
-   `!tt.ptr<i8>`. Verified up to the external `bishengir-opt` stage.
+   `!tt.ptr<i8>`. Block loads through a loaded pointer field
+   (`tl.load(view.base + offs)`) work after the `TritonToLinalgIncubated` layout
+   fix described in §8.1; verified up to the external `bishengir-opt` stage,
+   and exercised on hardware by `demo_custom_types.py`.
 2. **Ascend C++ spec copies** — `TritonOps.td`, `Ops.cpp`, and `python/src/ir.cc`
    are spec-copied (§3.3); new ops/bindings must be mirrored. Done for this
    feature.

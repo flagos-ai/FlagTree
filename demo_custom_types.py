@@ -53,10 +53,10 @@ class TensorView(ctypes.Structure):
 @triton.jit
 def bias_kernel(view, out_ptr, BLOCK: tl.constexpr):
     n = view.size  # scalar field read
-    bias = tl.load(view.base)  # pointer field, dereferenced (base[0])
     offs = tl.arange(0, BLOCK)
     mask = offs < n
-    tl.store(out_ptr + offs, offs.to(tl.float32) + bias, mask=mask)
+    vals = tl.load(view.base + offs, mask=mask, other=0.0)  # block deref of pointer field
+    tl.store(out_ptr + offs, vals, mask=mask)
     view.counter = view.counter + 1  # scalar field write
     view.shape[0] = n + 100  # array element write
 
@@ -81,12 +81,12 @@ def main():
     # 3. Copy the struct back and decode it with the same ctypes type.
     view_back = TensorView.from_buffer(bytearray(view_dev.buffer.cpu().numpy().tobytes()))
 
-    print("bias (base[0]) :", x[0].item())
-    print("output         :", out.cpu().tolist(), "  (offs + bias)")
+    print("input          :", x.cpu().tolist())
+    print("output         :", out.cpu().tolist(), "  (copied through view.base)")
     print("counter        :", view_back.counter, "  (kernel incremented it)")
     print("shape[0]       :", view_back.shape[0], "  (kernel wrote size + 100)")
 
-    assert out.cpu().tolist() == [float(i) + x[0].item() for i in range(n)]
+    assert out.cpu().tolist() == x.cpu().tolist()
     assert view_back.counter == 1
     assert view_back.shape[0] == n + 100
     print("OK")
