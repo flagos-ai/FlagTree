@@ -57,6 +57,56 @@ companions, not substitutes for edit/resume. `Before` and `After` are
 function-named dump directories. Resume a whole module or complete directory,
 including callees and local extension imports.
 
+## Import at the right granularity
+
+When onboarding a new model, or a familiar model's unfamiliar component, import
+each component through the coarsest operation that expresses its semantics.
+Prefer an existing fused operation; define a new fused operation when none
+covers the semantics. Do not express a component as a wide expansion of small
+generic ops (per-head slices, unrolled iteration counts, hand-built reductions)
+when a single operation can carry it.
+
+A small-op expansion is not a neutral starting point. It multiplies node count
+and compile time, hides the numerical contract across dozens of nodes so there
+is nothing to validate against a reference, and constrains distribution: an op
+whose legality rules reject split axes forces the whole region to stay
+replicated, so every chip recomputes it. A fused operation keeps the contract in
+one place, gives passes something to match, and lets iteration constructs live
+inside a kernel where the IR has no loop of its own.
+
+Check how the latest upstream serving runtimes express the component before
+choosing a decomposition; they have usually already found the coarse form and
+the layout it assumes. Confirm the checkout is current upstream rather than a
+local fork or an old branch — a stale tree supports confident wrong conclusions
+about what exists. Read the reference implementation as well as the kernel: it
+defines the numerical contract to validate the new operation against, which a
+local expansion cannot provide.
+
+Reuse before defining, but do not stretch an existing operation past its
+semantics to avoid a new one. A new fused operation follows the usual ownership
+rule: the operation and its contracts belong in FlagMega core with regression
+tests, while model-specific parameter choices stay in the local package.
+
+## Fuse indexing into consumers
+
+When Slice, Gather, Reshape or layout adapters materialize a tensor only to
+feed another operation, read [Consumer indexing fusion](references/consumer-indexing-fusion.md).
+Keep the semantic selection, but implement its proven coordinate map in the
+consumer's loads. For related state updates sharing a source and an epoch,
+consider one operation that owns the complete update and its synchronization.
+Choose between an existing consumer extension, a proven storage view and a new
+semantic operation according to the actual contract. Verify removed buffers
+and data movement; fewer IR nodes alone do not establish an optimization.
+
+## Add or extend IR
+
+Before adding a graph/TIR operation or changing an existing operation's
+attributes, result types, or supported layouts, follow the
+[IR extension SOP](references/ir-extension-sop.md). Define the per-result
+numerical, representation, distribution, and storage contracts, then audit
+their path through construction, edit/resume, transformations, lowering, and
+device execution. An op definition and a renderer alone do not complete support.
+
 ## Agent control surface
 
 Choose the level that expresses the hypothesis; new TIR and kernels do not
@@ -102,6 +152,22 @@ or registered override through normal codegen, verification, and runtime setup.
 Do not bypass legality checks or silently fall back when a requested choice
 or override cannot satisfy its contract.
 
+## IR acceptance
+
+Before accepting an imported component, IR extension, or representation
+optimization, apply [IR acceptance and repair](references/ir-acceptance.md)
+to the complete affected module after packing/layout propagation and again
+after distribution. **Compute bodies must contain no `tensors.pack` / `Pack`,
+including in reachable callees.** A later zero-copy lowering does not waive
+this requirement. Compile-time weight/constant packing must have proven
+constant provenance and offline materialization, not just a `weights` label.
+
+Check producer output layouts, numerical boundaries, function ABI, constant
+handling, distribution, effects, and physical lowering together. Diagnose a
+remaining Pack as an incomplete producer contract, propagation path, or layout
+choice; repair its owner before acceptance. Record the inspected checkpoint
+identity and structural/numerical/device evidence, including any failed items.
+
 ## Iteration and acceptance
 
 For performance tuning, regression recovery, changes to numerical/storage
@@ -137,6 +203,10 @@ required one-line workaround, not a compiler or kernel defect. Add a new
 file under `references/hardware/<target>/` when a future investigation roots
 out another hardware- or driver-level issue or performance characteristic on
 any target.
+For repeated layers and indexed checkpoint parameters, read
+[Structured repetition and parameter banks](references/structured-repetition.md).
+It defines the closed `control.for`/`Yield` contract, bank schema, loop
+distribution, and buffer/codegen acceptance rules.
 
 Use an immutable trial per hypothesis: inspect the costly boundary, make a
 scoped change, resume from the earliest affected stage, verify, and measure.

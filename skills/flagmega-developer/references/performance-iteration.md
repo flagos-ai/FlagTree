@@ -74,6 +74,29 @@ extension reloading, and repeated resume without duplicate transformations.
 
 ## Check three contracts together
 
+### Compiler time: reuse proofs rather than weaken the workload
+
+For a complete compilation target, measure imported IR loading, all compiler
+stages, source emission and fresh readonly-data publication together. Record
+checkpoint byte auditing and GPU JIT separately. An audited source identity is
+different from an rdata cache; state which one was reused.
+
+First look for graph-size work repeated per local edit or per immutable stage:
+index rebuilding, inverse-user scans, rule dispatch on impossible roots,
+type-tree hashing/encoding, recipe lookup and repeated ABI construction. Retain
+unchanged object identities and reuse bounded analysis/encoding working sets.
+Invalidate proofs on changed local inputs, inference/verifier signatures and
+ambient contracts; always retain global topology, function, recipe and TIR
+checks. Derived caches must not enter IR equality, serialization or semantic
+visitor traversal. Preserve canonical content digests exactly.
+
+Factor solver relations only when complete legality, cost and shared-resource
+dependencies are equivalent. Keep original candidate/hard-selection decisions
+and objective priorities, and test extraction against the actual chosen types.
+Try static capacity, affine owner-origin and uniform interval proofs before
+symbolic tail algebra; undecided cases still need the full ownership proof.
+Keep fail-before/pass-after reproducers and before/after end-to-end timings.
+
 **Numerical semantics.** Separate storage dtype, computation dtype, reduction
 ordering, intermediate rounding, and result dtype. Removing a materialized Cast
 is not by itself permission to remove its rounding: under an exact numerical

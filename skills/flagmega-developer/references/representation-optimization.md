@@ -1,8 +1,12 @@
 # Representation optimization
 
-Use this reference when Pack/Unpack, Cast, output precision, or layout adapters
+Use this reference when Pack/Unpack, Cast, Slice, output precision, or layout adapters
 obscure compute or interrupt fusion. Diagnose the representation contract before
 choosing a rewrite; a cleaner dump alone is not a performance result.
+
+For final IR review, apply [IR acceptance and repair](ir-acceptance.md).
+Compute-body Pack must be eliminated through correct producer/layout support;
+a zero-copy lowering alone does not satisfy the structural acceptance gate.
 
 ## Identify the boundary and its owner
 
@@ -14,6 +18,7 @@ all users of an unwanted node. Classify it before editing:
 | --- | --- |
 | Constant/weight transformation | Fold the ordinary pure expression into the readonly-data recipe; preserve source identity and evaluate once. |
 | Activation Pack/Unpack | Propagate the demanded layout to the producer and compatible consumers; verify coordinates and function ABI. |
+| Pure activation indexing | Compose the selection with consumer loads when its semantics and ABI permit; prove source coordinates, masks and memory access. |
 | Storage view | Prove identical byte order, offsets, owner mapping and lifetime; a view must not allocate/copy at bufferization. |
 | Numeric Cast | Decide whether rounding is required by the acceptance contract or may be removed. |
 | Reshard/publication/reduction | Preserve distributed ownership and synchronization; this is not just a local representation change. |
@@ -60,6 +65,40 @@ even when that callee's input signature is unchanged. Resolve substitutions for
 every argument, preserve topological order, and test sequential and tuple-return
 calls. Check that boundary propagation reaches a semantic fixed point rather
 than repeatedly moving inverse views between caller and callee.
+
+## Move indexing into consumer loads
+
+A producer may already use the right packed layout while a Slice/Gather still
+copies its result into a dense consumer input. Inspect the selected TIR and
+buffer plan: a logical slice, reshape, or a test asserting direct graph use
+does not prove absence of a runtime copy. For a private pure indexing chain,
+compose its coordinate map with the consumer's reads, preserving the source
+rounding and full physical stride/owner contract.
+
+Use [Consumer indexing fusion](consumer-indexing-fusion.md) to choose an input
+fusion, a first-class storage view, or a semantic operation for coordinated
+updates. Related writes may share source indexing, metadata and an epoch, but
+combining them requires effect and synchronization proofs. This is a separate
+repair from producer output packing; keep required collectives and shared users.
+
+## Make packed representations strictly cheaper
+
+In the representation-selection objective, a packed result must be strictly
+cheaper than the same operation with a scalar result. Apply this factor after
+every operation category, including Reshape, Permute, Pack/Unpack, structural
+nodes and zero-copy Bitcast. Handle DistributedType tensor leaves and each
+Tuple tensor field; a reference's persistent cache fields are not operation
+result representations. Keep physical traffic/latency estimates separate.
+
+Inspect egraph matches and cost/pick evidence before adding a propagation
+mechanism. An existing `FoldPackReshape` may generate the right equality while
+equal view costs make extraction retain `Pack(Reshape(x))`. That hides the
+demand from a later producer pass. Fix the representation objective so
+`Reshape(Pack(x))` wins, then let existing producer packing remove the Pack;
+do not add duplicate reshape traversal or a forced normalization pass to
+compensate for a cost tie. Preserve legality proofs and shared/effectful
+producer handling. Version the objective when its ordering changes and test
+both strict type preference and numerical equivalence of extracted graphs.
 
 ## Remove conversions at the semantic stage that owns them
 
@@ -118,5 +157,6 @@ stateful acceptance and end-to-end timing under the agreed workload scenarios.
 Retain fail-before/pass-after evidence and compare fresh immutable artifacts on
 the same device and measurement boundary. Inspect generated source, buffer
 plans and resource reports to verify that the intended materialization or
-rounding actually disappeared. Report remaining conversions and their reasons,
-not an unqualified promise that every Pack/Cast should be eliminated.
+rounding actually disappeared. Report retained semantic conversions and their
+reasons; preserve required Cast rounding. Any remaining compute-body Pack is
+a failed IR acceptance item, even when runtime materialization is absent.
