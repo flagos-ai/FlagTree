@@ -1,7 +1,7 @@
 """Real-hardware tests for C-interoperable custom struct types on Ascend NPU.
 
 A ``ctypes.Structure`` declared with ``@tl.struct_type`` is uploaded to device
-memory with ``tl.to_device`` and passed to the kernel by reference; the kernel
+memory with its ``to_device`` method and passed to the kernel by reference; the kernel
 reads and writes its fields.  The struct is copied back and decoded with ctypes
 to confirm the bytes match the host/C layout.
 
@@ -57,7 +57,7 @@ def test_struct_scalar_and_array_field():
     tv = TensorView()
     tv.ndim = 7
     tv.shape[0] = 3
-    view = tl.to_device(tv, device=DEVICE)
+    view = tv.to_device(DEVICE)
 
     @triton.jit
     def kernel(x_view):
@@ -75,7 +75,7 @@ def test_struct_scalar_and_array_field():
 def test_struct_nested_field():
     outer = Outer()
     outer.inner.a = 10
-    view = tl.to_device(outer, device=DEVICE)
+    view = outer.to_device(DEVICE)
 
     @triton.jit
     def kernel(o):
@@ -90,7 +90,7 @@ def test_struct_nested_field():
 def test_struct_array_of_struct():
     arr = WithArray()
     arr.arr[1].b = 3.5
-    view = tl.to_device(arr, device=DEVICE)
+    view = arr.to_device(DEVICE)
 
     @triton.jit
     def kernel(o, i):
@@ -108,7 +108,7 @@ def test_struct_pointer_field():
     data = torch.arange(8, dtype=torch.int32, device=DEVICE)
     tv = TensorView()
     tv.base = data.data_ptr()
-    view = tl.to_device(tv, device=DEVICE)
+    view = tv.to_device(DEVICE)
 
     @triton.jit
     def kernel(x_view):

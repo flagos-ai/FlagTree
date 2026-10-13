@@ -182,7 +182,7 @@ def test_to_device_uploads_struct_bytes():
     tv.base = 0xDEADBEEF
     st = TensorView._triton_struct_type
     buf = _FakeDeviceBuffer(st.size)
-    view = tl.to_device(tv, buffer=buf)
+    view = tv.to_device(buffer=buf)
     assert isinstance(view, tl.StructView)
     assert view.nbytes == st.size
     raw = ctypes.string_at(ctypes.addressof(tv), ctypes.sizeof(TensorView))
@@ -302,7 +302,7 @@ def test_hardware_struct_read_write():
     tv = TensorView()
     tv.ndim = 7
     tv.shape[0] = 3
-    view = tl.to_device(tv, device=device)
+    view = tv.to_device(device)
 
     @triton.jit
     def kernel(x_view):
@@ -327,11 +327,11 @@ def test_hardware_nested_and_array_of_struct():
 
     outer = Outer()
     outer.inner.a = 10
-    view_o = tl.to_device(outer, device=device)
+    view_o = outer.to_device(device)
 
     arr = WithArray()
     arr.arr[1].b = 3.5
-    view_a = tl.to_device(arr, device=device)
+    view_a = arr.to_device(device)
 
     @triton.jit
     def nested_kernel(o):
