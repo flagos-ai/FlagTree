@@ -229,6 +229,29 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
     const ftt::dim_t dense_glu_k_in_lane = dense_glu_elem % {{ lane }}LL;
     float dense_glu_gate_acc = 0.0f;
     float dense_glu_up_acc = 0.0f;
+{# Strength-reduce the two per-step index computations the compiler does not.
+   Both are pure rewrites of the same arithmetic, so results are unchanged.
+
+     * The activation offset is `(group + u) * lane + k_in_lane`, which the
+       compiler re-multiplies every step (`ml_mad_u32_u16` beside each global
+       load in the SASS -- 12 multiplies for 4 loads). `k_in_lane` is fixed
+       per lane, so the address is a pure induction variable: walk a pointer
+       by `lane` elements per group instead. An isolated consumer put this at
+       1.18 ms of the GLU phase -- 393 GB/s with a recomputed address against
+       573 with a fixed one.
+     * The ring slot is `step % sme_slots`, and `sme_slots` is 3, so it is a
+       real division rather than a mask -- paid three times per step (the
+       read slot plus two inside the issue). Rotate a counter instead. #}
+{# The base address at group 0: the call's own offset formula evaluated with
+   `local_k_offsets = k_in_lane`, which is what group 0 reduces to. #}
+    const ftt::bfloat16_t *dense_glu_act_ptr;
+    {
+        const ftt::dim_t dense_glu_local_k_offsets = dense_glu_k_in_lane;
+        dense_glu_act_ptr =
+            &ftt_source[{{ call.source_offset | cppexpr }}];
+    }
+    ftt::dim_t dense_glu_slot = 0;
+    ftt::dim_t dense_glu_issue_slot = {{ (sme_slots - 1) % sme_slots }}LL;
 {# One stage issue from the hoisted descriptors: only the byte offset varies,
    which keeps the per-group cost to one add instead of rebuilding a 4-lane
    descriptor and moving it to scalar registers. #}
@@ -271,20 +294,19 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
             FTT_UNROLL
             for (int dense_glu_u = 0; dense_glu_u < {{ sme_unroll }};
                  ++dense_glu_u) {
-                const ftt::dim_t dense_glu_local_k_offsets =
-                    (dense_glu_group + dense_glu_u) * {{ lane }}LL
-                    + dense_glu_k_in_lane;
                 dense_glu_act[dense_glu_u] =
                     ftt::{{ run_load }}<{{ chunk }}>(
-                        &ftt_source[{{ call.source_offset | cppexpr }}]);
+                        dense_glu_act_ptr + dense_glu_u * {{ lane }}LL);
             }
+            dense_glu_act_ptr += {{ sme_unroll * lane }}LL;
             FTT_UNROLL
             for (int dense_glu_u = 0; dense_glu_u < {{ sme_unroll }};
                  ++dense_glu_u) {
             const ftt::dim_t dense_glu_step_group =
                 dense_glu_group + dense_glu_u;
-            const ftt::dim_t dense_glu_cur =
-                dense_glu_step_group % {{ sme_slots }}LL;
+            const ftt::dim_t dense_glu_cur = dense_glu_slot;
+            dense_glu_slot = (dense_glu_slot + 1LL == {{ sme_slots }}LL)
+                                 ? 0LL : dense_glu_slot + 1LL;
 {# Issue the group `sme_slots - 1` ahead. That keeps `2 * (sme_slots - 1)`
    transactions in flight per warp -- the knob the engine actually responds
    to: measured 619 GB/s at depth 2 against 662 at depth 4 and 667 at depth 8
@@ -294,7 +316,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     && dense_glu_step_group + {{ sme_slots - 1 }}LL
                            < {{ groups }}LL) {
 {{ sme_issue("dense_glu_step_group + %dLL" % (sme_slots - 1),
-             "(dense_glu_step_group + %dLL) %% %dLL" % (sme_slots - 1, sme_slots)) }}
+             "dense_glu_issue_slot") }}
             }
             const auto &dense_glu_source_run = dense_glu_act[dense_glu_u];
             const auto dense_glu_gate_run =
@@ -326,6 +348,9 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                            < {{ groups }}LL) {
                 ftt::arch::sme_drain();
             }
+            dense_glu_issue_slot =
+                (dense_glu_issue_slot + 1LL == {{ sme_slots }}LL)
+                    ? 0LL : dense_glu_issue_slot + 1LL;
             }
         }
         float dense_glu_gate_sum =
