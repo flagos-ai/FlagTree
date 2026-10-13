@@ -31,8 +31,8 @@ def create_target(*, glu_reduction_group=32):
                 # The down projection covers K=6144. A 16-element K tile
                 # leaves most BI-V150 lanes idle and serializes 384 reductions.
                 # block_k=128 rather than 256: measured, see the dense_matmul
-                # note below for the numbers and for why the obvious
-                # register-spill explanation does not hold.
+                # note below for the numbers and for the five mechanisms
+                # ruled out (including both register-spill variants).
                 parameters["block_k"] = 128
                 parameters["tile_n"] = 64
         if implementation.family == "gather_reduce_norm_apply":
@@ -65,13 +65,18 @@ def create_target(*, glu_reduction_group=32):
         # dense_matmul sites at 1.5-1.7x behind the cpp backend's per-site
         # bandwidth while the separately-tuned GLU reached 1.13x.
         #
-        # The tiles are empirical and the mechanism is NOT established; four
-        # candidates are eliminated by measurement (ITERATION.md Trial 95.5).
-        # Notably the tuned build executes 3.58x MORE inner loop steps than
+        # The tiles are empirical and the mechanism is NOT established; five
+        # candidates are eliminated by measurement (ITERATION.md Trial 95.5,
+        # 97b.6). The tuned build executes 3.58x MORE inner loop steps than
         # the old one and is still faster, so the win is in per-step cost,
-        # not step count -- register footprint, block_k==warpSize, fewer
-        # steps, and load vectorization width have each been ruled out. Do
-        # not re-derive these from any of those models; re-measure.
+        # not step count. Ruled out: vector-register footprint
+        # (vgpr_spill_count is 0 in every build measured), block_k ==
+        # warpSize, fewer steps, load vectorization width, and scalar spill
+        # count -- sgpr spills really do fall 292 -> 159 across this retune,
+        # but the 2nd-fastest build carries the MOST at 335 while a build
+        # 1.5 ms slower carries 162, so they co-vary with the tile rather
+        # than driving the time. Do not re-derive these numbers from any of
+        # those models; re-measure.
         if (implementation.family == "dense_matmul"
                 and implementation.variant == "split_k_n_packed_k_major_gemv"):
             # (tile_n=128, block_k=256): 10.514 ms/token, against (64,128)
