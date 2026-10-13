@@ -59,22 +59,34 @@ def create_target(*, glu_reduction_group=32):
             parameters["block_k"] = 64
             parameters["compute_num_warps"] = 32
             parameters["tile_n"] = 512
+        # These two dense_matmul variants want OPPOSITE tiles, so they must be
+        # set per variant. Tuning them jointly (one tile for both) averages
+        # two different optima: it cost 0.18 ms and left the three
+        # dense_matmul sites at 1.5-1.7x behind the cpp backend's per-site
+        # bandwidth while the separately-tuned GLU reached 1.13x.
+        #
+        # The tiles are empirical and the mechanism is NOT established; four
+        # candidates are eliminated by measurement (ITERATION.md Trial 95.5).
+        # Notably the tuned build executes 3.58x MORE inner loop steps than
+        # the old one and is still faster, so the win is in per-step cost,
+        # not step count -- register footprint, block_k==warpSize, fewer
+        # steps, and load vectorization width have each been ruled out. Do
+        # not re-derive these from any of those models; re-measure.
         if (implementation.family == "dense_matmul"
-                and implementation.variant in {"packed_k_major_gemv", "split_k_n_packed_k_major_gemv"}):
-            # (block_k=128, tile_n=64), measured at ctx-1 against the prior
-            # (256, 128) on a GLU-tn128 base: 10.744 ms/token vs 12.046, with
-            # (128,128) 11.317, (64,64) 12.298, (256,64) 12.727 and (128,32)
-            # 13.986. The earlier tiles came from the address-amortization
-            # argument (Trials 27/30/63) with block_k never varied.
-            #
-            # These are empirical: the mechanism is NOT established, and
-            # four candidates are already eliminated by measurement (see
-            # ITERATION.md Trial 95.5). Notably the tuned build executes
-            # 3.58x MORE inner loop steps than the old one and is still 18%
-            # faster, so the win is in per-step cost, not step count --
-            # register footprint, block_k==warpSize, fewer steps, and load
-            # vectorization width have each been ruled out. Do not re-derive
-            # these numbers from any of those models; re-measure.
+                and implementation.variant == "split_k_n_packed_k_major_gemv"):
+            # (tile_n=128, block_k=256): 10.514 ms/token, against (64,128)
+            # 10.693, (128,128) 10.526, (128,512) 10.514 (tie), (256,256)
+            # 10.625, (256,128) 10.832, (64,256) 10.713. tile_n is the live
+            # knob here; block_k is flat from 256 up.
+            parameters["block_k"] = 256
+            parameters["tile_n"] = 128
+        if (implementation.family == "dense_matmul"
+                and implementation.variant == "packed_k_major_gemv"):
+            # (tile_n=64, block_k=128): 10.744 against the prior (128,256)
+            # 12.046, with (128,128) 11.317, (64,64) 12.298, (256,64) 12.727,
+            # (32,128) 13.986. The pre-existing tiles came from the
+            # address-amortization argument (Trials 27/30/63) with block_k
+            # never varied at all.
             parameters["block_k"] = 128
             parameters["tile_n"] = 64
         if implementation.variant == "packed_pointer_smem_pipeline":
