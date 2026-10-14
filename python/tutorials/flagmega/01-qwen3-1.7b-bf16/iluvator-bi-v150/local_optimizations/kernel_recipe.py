@@ -42,11 +42,16 @@ def select_tir(module, *, residual_kernel="direct"):
     # this trial added `..._tn64`; measure its effect the same way before
     # relying on it further.
     qkv = "tir.qkv_parallel_linear.packed_fused_gemv_tn64"
-    # The async warp-specialized QKV pipeline deadlocks on this build
-    # (ITERATION.md Trials 80-82: the `tle.pipe` + `warp_specialize`
-    # rendezvous is a primitive-level runtime deadlock, not a megakernel
-    # interaction). Selecting it unconditionally makes this profile
-    # uncompilable, so keep it opt-in until that defect is fixed.
+    # The async warp-specialized QKV pipeline stays opt-in. Trials 80-82
+    # recorded it as a `tle.pipe` + `warp_specialize` runtime deadlock, but
+    # re-testing with FLAGMEGA_QKV_ASYNC=1 after Trial 85's CSE-merge fix
+    # shows it now fails *earlier* and for a more basic reason: the
+    # `packed_pointer_smem_pipeline` variant has no local-shard template ABI
+    # (kernel_call_renderers.py `_qkv_parallel_linear_call` accepts only
+    # packed_mma_smem_pipeline / packed_gemv_smem_pipeline), so it is not
+    # selectable on this distributed workload at all -- the deadlock is not
+    # even reached. Making it usable means writing that ABI, not fixing a
+    # synchronization bug.
     async_qkv = ("tir.qkv_parallel_linear.packed_gemv_async_smem_pipeline"
                  if os.environ.get("FLAGMEGA_QKV_ASYNC") == "1" else None)
     # projection_wide (Trial 63): the site was de facto on the small
