@@ -20,16 +20,4 @@ def Gluon_CoalescedEncodingAttr : AttrDef<Gluon_Dialect, "CoalescedEncoding"> {
   }];
 }
 
-def Gluon_NoVerifyEncodingAttr : AttrDef<Gluon_Dialect, "NoVerifyEncoding"> {
-  let mnemonic = "no_verify_encoding";
-  let attrName = "gluon.no_verify_encoding";
-  let summary = "internal wrapper for deferred layout verification";
-  let description = [{
-    Internal wrapper for a concrete layout that should skip early layout
-    verification until the backend layout pipeline has resolved placeholders.
-  }];
-  let parameters = (ins "Attribute":$layout);
-  let assemblyFormat = "`<` $layout `>`";
-}
-
 #endif
