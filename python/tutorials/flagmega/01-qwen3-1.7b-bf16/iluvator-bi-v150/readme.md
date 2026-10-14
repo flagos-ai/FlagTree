@@ -140,34 +140,32 @@ python -m triton.flagmega.serving.chat_cli \
 
 ## 图表
 
-与其他 tutorial 同口径的三张图在 [figures/](figures/)，由 `render_chat_cli_results.py`
-从 `benchmark_chat_cli.py` 的原始数据生成（3 轮 × 5 次 × 4 个 prompt 长度，共 15 次
-测量/场景，GPU 9，CUDA graph）。
+[figures/](figures/) 由 `render_flagos_results.py` 从 `reproduce_flagos.py`
+的原始数据生成(3 轮交替 × 每场景 3 次测量 × 4 个 prompt 长度,GPU 13)。
+出图前通过完整正确性闸门:每一次 warmup 和测量的 greedy token 序列都与原生
+vLLM 参考逐 token 一致,`accepted: true`;任何不一致都会阻止出图。
 
-![独立 chat CLI 的 decode 延迟](figures/decode_latency.svg)
+![FlagOS vLLM 与 FlagMega 的 decode 延迟](figures/decode_latency.svg)
 
-![独立 chat CLI 的 decode 吞吐（不含 prefill）](figures/decode_throughput.svg)
+![原生 prefill + 64 个生成 token 的完整请求延迟](figures/request_latency.svg)
 
-![完整请求吞吐（含 prefill）](figures/request_throughput.svg)
+| prompt tokens | FlagOS vLLM decode | FlagMega decode | decode 加速 | 请求加速 |
+|---:|---:|---:|---:|---:|
+| 32 | 69.53 ms | 14.42 ms | 4.82× | 4.84× |
+| 128 | 69.36 ms | 15.41 ms | 4.50× | 4.54× |
+| 1024 | 69.32 ms | 22.88 ms | 3.03× | 3.04× |
+| 2048 | 69.40 ms | 26.68 ms | 2.60× | 2.33× |
 
-| prompt tokens | decode 中位数 | decode 吞吐 | 完整请求吞吐 |
-|---:|---:|---:|---:|
-| 32 | 10.63 ms | 93.5 tok/s | 63.9 tok/s |
-| 128 | 11.24 ms | 89.0 tok/s | 31.2 tok/s |
-| 1024 | 18.76 ms | 53.3 tok/s | 4.1 tok/s |
-| 2048 | 27.34 ms | 36.6 tok/s | 1.6 tok/s |
+原生基线为 eager 模式;`VLLM_FL_FLAGOS_BLACKLIST_APPEND=sort,sort_stable`
+保留 COREX 排序,与[环境前提](#环境与正确性前提)一致。原生 vLLM 的 decode
+延迟与 prompt 长度基本无关(69.3–69.5 ms),FlagMega 随上下文增长,所以加速比
+在长 prompt 下收窄。完整 JSON 与逐轮日志见
+`.local/flagos-figure-summary.json`。
 
-**这三张图只含 FlagMega 自身口径，没有 vLLM 对比柱。** h800 tutorial 的同名图是
-`native_vllm` 与 FlagMega 各 profile 的并排对比，这里做不到：`render_results.py`
-硬性要求 `native_vllm` 分组并与其 token 逐个一致，而当前环境下原生 vLLM
-（vllm 0.24.0 + vllm-plugin-FL）对任意 prompt 都输出全零 token（`'!!!!'`）。该现象已
-隔离到 vLLM/plugin 层——关闭 FlagGems（`VLLM_FL_USE_FLAGOS=0`）仍然全零，而同一张
-GPU 上纯 HuggingFace + COREX torch 生成正常文本，故与 FlagGems、torch、硬件无关。
-详见 memory 记录。基线修复后，用 `reproduce_flagos.py` 重跑即可产出带对比柱的版本。
-
-注意 prefill 口径：独立 CLI 是逐 token 扫描，TTFT 随 prompt 长度快速增长
-（2048 token 时 37.7 s），所以"完整请求吞吐"一列在长 prompt 下由 prefill 主导，
-不能与 vLLM 的 batched prefill 直接比较。decode 列才是可比的。
+这些数字对应本分支修复 SME descriptor 缺陷(`8e1c66efb`)之后的状态。在该修复
+之前原生 vLLM 对任意 prompt 都输出全零 token,无法作为基线 —— 且
+`benchmark_flagos.py` 的 token 闸门会在 prompt32/128 上**通过**(全零对全零天然
+一致),反而把产出真实 token 的 FlagMega 判成不匹配。
 
 ## 结果与原始证据
 
