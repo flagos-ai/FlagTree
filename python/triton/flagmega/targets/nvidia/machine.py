@@ -60,8 +60,16 @@ class NvidiaSm90Machine:
             packing_k_pack=2,
         )
 
-    def triton_implementation_model(self):
-        return self._implementation_model or portable_triton_implementation_model()
+    def triton_implementation_model(self, supplied=None):
+        # A caller-supplied model (e.g. passed directly to PyNttTarget) takes
+        # precedence over the machine's own, then the portable default. This
+        # machine imposes no extra invariants, so the chosen model is returned
+        # as-is -- preserving explicit injection.
+        return (
+            supplied
+            or self._implementation_model
+            or portable_triton_implementation_model()
+        )
 
     def bufferization_options(self):
         return sm90_bufferization_options(self.capability)

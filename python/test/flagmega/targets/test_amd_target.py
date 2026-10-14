@@ -118,3 +118,63 @@ def test_amd_target_resolves_a_capped_model_from_a_supplied_one(target_cls_name)
     for impl in resolved.implementations:
         warps = dict(impl.parameters).get("compute_num_warps")
         assert warps is None or warps <= cap
+
+
+def _model_with_injected_impl():
+    """A portable model whose first implementation carries an explicitly chosen
+    non-cap knob (tile_n=32) alongside an over-cap compute_num_warps, so a test
+    can tell whether a directly-supplied model is preserved and/or capped."""
+    from dataclasses import replace
+
+    from triton.flagmega.targets.portable_triton_implementations import (
+        portable_triton_implementation_model,
+    )
+
+    model = portable_triton_implementation_model()
+    first = model.implementations[0]
+    injected = replace(
+        first,
+        parameters={**dict(first.parameters), "compute_num_warps": 16, "tile_n": 32},
+    )
+    model = replace(model, implementations=(injected,) + model.implementations[1:])
+    return model, injected.id
+
+
+def _resolved_impl(target, candidate_id):
+    resolved = target.triton_implementation_model
+    if callable(resolved):
+        resolved = resolved()
+    (impl,) = [i for i in resolved.implementations if i.id == candidate_id]
+    return dict(impl.parameters)
+
+
+def test_pyntt_target_preserves_a_directly_supplied_model():
+    """A model handed straight to the PyNttTarget constructor (not through the
+    machine) must be used, not silently replaced by the machine default. On a
+    machine with no extra invariants (NVIDIA) it passes through untouched --
+    both the injected tile_n and the compute_num_warps survive verbatim."""
+    from triton.flagmega.targets.nvidia.machine import NvidiaSm90Machine
+    from triton.flagmega.targets.pyntt import PyNttTarget
+
+    model, cid = _model_with_injected_impl()
+    target = PyNttTarget(NvidiaSm90Machine(), triton_implementation_model=model)
+
+    params = _resolved_impl(target, cid)
+    assert params.get("tile_n") == 32          # explicit injection preserved
+    assert params.get("compute_num_warps") == 16  # no cap on this machine
+
+
+def test_pyntt_target_caps_but_preserves_a_directly_supplied_model():
+    """On AMD the cooperative warp cap must apply to a directly-supplied model
+    (correctness invariant), while every other explicitly injected knob -- here
+    tile_n=32 -- is preserved rather than discarded."""
+    from triton.flagmega.targets.amd.machine import AmdGfx1100Machine
+    from triton.flagmega.targets.pyntt import PyNttTarget
+
+    cap = AmdGfx1100Machine._COOPERATIVE_MAX_WARPS
+    model, cid = _model_with_injected_impl()
+    target = PyNttTarget(AmdGfx1100Machine(), triton_implementation_model=model)
+
+    params = _resolved_impl(target, cid)
+    assert params.get("tile_n") == 32              # explicit injection preserved
+    assert params.get("compute_num_warps") == cap  # invariant applied

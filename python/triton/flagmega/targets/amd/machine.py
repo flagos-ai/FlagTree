@@ -87,15 +87,19 @@ class _AmdRdnaMachine:
     # of RDNA-native tiles is later Target work; correctness first.)
     _COOPERATIVE_MAX_WARPS = 4
 
-    def triton_implementation_model(self):
+    def triton_implementation_model(self, supplied=None):
         # The cooperative warp cap is a correctness invariant for the grid-wide
         # launch, so it must apply to ANY implementation model -- including one
         # supplied by a recipe/tutorial via the target. Returning a caller's
         # model uncapped let its compute_num_warps=16 kernels blow the RDNA
         # register budget (needs ~127K regs, SM capacity 65536) and deadlock the
-        # grid barrier.
+        # grid barrier. A caller-supplied model is preserved (its other params
+        # survive) -- only the cap is applied -- taking precedence over the
+        # machine's own model, then the placeholder default.
         model = (
-            self._implementation_model
+            supplied
+            if supplied is not None
+            else self._implementation_model
             if self._implementation_model is not None
             else _placeholder_implementation_model()
         )

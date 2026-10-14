@@ -73,11 +73,14 @@ class PyNttTarget(NttTarget):
             vector_bytes=options.packing_vector_bytes,
             k_pack=options.packing_k_pack,
         )
-        # Always resolve the implementation model through the machine so backend
-        # invariants (e.g. the RDNA cooperative compute_num_warps cap) apply even
-        # to a caller-supplied model. Every target forwards that model to its
-        # machine, so machine.triton_implementation_model() still returns it.
-        implementation_model = machine.triton_implementation_model()
+        # Resolve the implementation model through the machine so backend
+        # invariants (e.g. the RDNA cooperative compute_num_warps cap) apply --
+        # but hand the machine any caller-supplied model so explicit injection is
+        # preserved (the machine applies its constraints to it) rather than
+        # silently replaced by the machine default.
+        implementation_model = machine.triton_implementation_model(
+            triton_implementation_model
+        )
         split_candidate_provider = PyNttDistributedSplitCandidateProvider(
             options.block_cyclic_block_bytes
         )
