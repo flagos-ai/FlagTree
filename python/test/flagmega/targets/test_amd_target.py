@@ -92,3 +92,29 @@ def test_cooperative_warp_cap_applies_to_a_supplied_implementation_model():
     for impl in capped.implementations:
         warps = dict(impl.parameters).get("compute_num_warps")
         assert warps is None or warps <= cap
+
+
+@pytest.mark.parametrize("target_cls_name", ("AmdGfx1100Target", "AmdGfx1201Target"))
+def test_amd_target_resolves_a_capped_model_from_a_supplied_one(target_cls_name):
+    """The recipe path supplies an implementation model THROUGH the target, not
+    the machine. Verify the resolved model is still capped end-to-end -- this
+    exercises the PyNttTarget -> machine resolution, so it fails if either the
+    target routing or the machine cap regresses (the machine-only test above
+    would not catch a PyNttTarget that uses the supplied model directly)."""
+    from triton.flagmega.targets.amd.machine import AmdGfx1100Machine
+    from triton.flagmega.targets.amd_gfx1100 import AmdGfx1100Target
+    from triton.flagmega.targets.amd_gfx1201 import AmdGfx1201Target
+    from triton.flagmega.targets.portable_triton_implementations import (
+        portable_triton_implementation_model,
+    )
+
+    cap = AmdGfx1100Machine._COOPERATIVE_MAX_WARPS
+    target_cls = {"AmdGfx1100Target": AmdGfx1100Target, "AmdGfx1201Target": AmdGfx1201Target}[target_cls_name]
+    target = target_cls(triton_implementation_model=portable_triton_implementation_model())
+
+    resolved = target.triton_implementation_model
+    if callable(resolved):
+        resolved = resolved()
+    for impl in resolved.implementations:
+        warps = dict(impl.parameters).get("compute_num_warps")
+        assert warps is None or warps <= cap
