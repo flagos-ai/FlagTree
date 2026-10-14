@@ -1,9 +1,9 @@
-"""TLE/CommonIR port of the basic MACA fused FlashAttention forward.
+"""TLE/CommonIR fused FlashAttention forward.
 
-Matches gluon/10-maca-flash-fwd-fused-single-kernel.py's descending KV loop,
-register K prefetch, two N32 score fragments, online softmax and output/LSE.
+Uses a descending KV loop, register K prefetch, two N32 score fragments,
+online softmax and output/LSE.
 Register and shared-memory layouts are inferred; no source layout is fixed.
-Unlike the Gluon arena, Q/K/V/O use separate buffers: physical memory reuse
+Q/K/V/O use separate buffers; physical memory reuse
 is left to the compiler. Supports FP16/BF16, D64/D128 and bottom-right causal
 masking, including unequal or non-tile-aligned query/key lengths.
 
