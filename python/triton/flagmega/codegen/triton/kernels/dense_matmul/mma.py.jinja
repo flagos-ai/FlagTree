@@ -7,7 +7,7 @@
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
-    dense_m_offsets = tl.arange(0, {{ call.local_m_capacity }})
+    dense_m_offsets = tl.arange(0, {{ call.local_m_padded }})
     m_mask = dense_m_offsets < ({{ call.m_active_extent }})
     for dense_local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
         dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
@@ -16,7 +16,7 @@ def {{ call.symbol }}({{ call.signature }}):
             (dense_local_n_offsets < {{ call.local_n_capacity }})
             & (dense_local_n_offsets < ({{ call.n_active_extent }}))
         )
-        dense_accumulator = tl.zeros(({{ call.local_m_capacity }}, {{ call.tile_n }}), tl.float32)
+        dense_accumulator = tl.zeros(({{ call.local_m_padded }}, {{ call.tile_n }}), tl.float32)
         for dense_local_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
             dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
             dense_global_k = {{ call.global_k }}

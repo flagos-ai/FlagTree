@@ -1498,8 +1498,13 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
     # global index -- not reuse the partial's row count (which would wrap).
     stats_local_shape = _static_shape(stats_abi, "local_capacity_shape")
     stats_local_m = prod(stats_local_shape[:-1], start=1)
+    # The finalize reads the partial for each OUTPUT token at its global index.
+    # With multiple output rows the token comes from the gather_stats_row loop;
+    # with a single-row (token-sharded) output there is no loop, so the one row
+    # is local row 0 -- its logical coordinate still names the owned token.
+    stats_finalize_row = "gather_stats_row" if stats_local_m != 1 else "0"
     stats_finalize_domain = _scalar_local_domain(
-        stats_abi, "0", row_coordinate="gather_stats_row"
+        stats_abi, "0", row_coordinate=stats_finalize_row
     )
     stats_partial_token = _flatten_leading_logical_row(
         _static_shape(stats_abi, "logical_shape"),
@@ -2828,6 +2833,11 @@ def _dense_matmul_mma_call(raw) -> dict[str, object]:
         "weight": weight_pointer,
         "result": _pointer(result),
         "local_m_capacity": local_m,
+        # tl.arange / the accumulator shape must be a power of two, but M (prefill
+        # token rows, or a standalone matmul's M=3/M=17) need not be. Round the M
+        # tile up to the next power of two; m_mask (< m_active_extent) drops the
+        # padding rows on load and store, so results are unaffected.
+        "local_m_padded": 1 << (local_m - 1).bit_length(),
         "local_k_capacity": local_k,
         "local_n_capacity": local_n,
         "tile_n": tile_n,

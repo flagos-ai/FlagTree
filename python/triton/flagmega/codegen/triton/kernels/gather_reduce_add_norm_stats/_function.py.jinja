@@ -123,7 +123,7 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
             gather_stats_owner = {{ call.stats_partial_owner }}
             gather_stats += tl.sum(
                 tl.load(
-                    {{ call.stats_partials }} + gather_stats_owner{% if call.stats_local_m != 1 %} * {{ call.stats_partials_owner_stride }} + ({{ call.stats_partial_token }}){% endif %},
+                    {{ call.stats_partials }} + gather_stats_owner{% if call.local_m != 1 %} * {{ call.stats_partials_owner_stride }} + ({{ call.stats_partial_token }}){% endif %},
                     mask=gather_stats_mask,
                     other=0.0,
                 ),

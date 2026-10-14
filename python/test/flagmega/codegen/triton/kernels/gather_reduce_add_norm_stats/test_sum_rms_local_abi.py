@@ -208,6 +208,61 @@ def test_all_axis_partial_group_has_one_representative_and_full_owner_range():
     assert call["stats_reduction_count"] == 128
 
 
+def test_token_sharded_single_row_stats_index_partials_per_token():
+    # Prefill: the partial input carries several token rows per owner, but the
+    # statistics OUTPUT is token-sharded to ONE row per owner (stats_local_m==1).
+    # The partials workspace is laid out (owner, partial-row), and the finalize
+    # must index partials[owner * local_m + token] for each token -- gating that
+    # stride on the OUTPUT row count made a single-row output read partials[owner]
+    # for every token, giving each token the same (wrong) statistic.
+    partial = _abi(
+        (4, 2048),
+        local_shape=(4, 2048),
+        storage_kind="compact_per_owner",
+        coordinate_space="local",
+        partial_axes=(0, 1),
+        owner_stride=2048,
+    )
+    call = _gather_reduce_add_norm_stats_call(
+        _raw(partial, partial_axes=(0, 1), partial_owner_count=128)
+    )
+
+    # The partials layout follows the PARTIAL input's local row count (4), not the
+    # single-row output's.
+    assert call["local_m"] == 4
+    assert call["stats_local_m"] == 1
+    assert call["stats_partials_owner_stride"] == 4
+    assert call["stats_partials_store_offset"] == "shard_index * 4 + gather_row"
+    # The finalize token for a single-row output shard comes from local row 0, not
+    # a gather_stats_row loop variable that does not exist in that branch.
+    assert "gather_stats_row" not in call["stats_partial_token"]
+
+    rendered = {
+        **call,
+        "symbol": "_flagmega_test_gather_norm_token_sharded",
+        "signature": (
+            "input, addend, result_0, result_1, collective, norm_stats_partials"
+        ),
+        "execution_kind": "collective",
+        "family": "gather_reduce_add_norm_stats",
+        "variant": "sum_rms",
+        "internal_grid_barriers": 1,
+    }
+    source = TritonTemplateRegistry().render(
+        "kernels/gather_reduce_add_norm_stats/sum_rms.py.jinja",
+        {
+            "render_calls": (rendered,),
+            "distributed_entry": True,
+            "mesh_axis_names": ("y", "x"),
+            "mesh_hierarchy": (8, 16),
+        },
+    )
+    compile(source, "gather_norm_token_sharded.py", "exec")
+    # Regression: the owner stride (local_m == 4) is applied in the finalize read
+    # even though the output is a single row (stats_local_m == 1).
+    assert "gather_stats_owner * 4 +" in source
+
+
 def test_partial_value_without_per_owner_storage_is_rejected():
     partial = _abi((1, 2048), partial_axes=(0, 1))
 
