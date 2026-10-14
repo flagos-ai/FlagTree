@@ -109,6 +109,17 @@ static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
           "a CTA-wide barrier (gpu.barrier) inside a warp_specialize partition "
           "would deadlock on RDNA; use pipe/mbarrier for intra-partition sync");
   }
+  // The default region also runs on only the default wave group, so a CTA-wide
+  // barrier there mis-pairs with the workers at the rejoin barrier -- releasing
+  // them before the default region has published its warp_yield values -- or
+  // deadlocks. Reject it too.
+  if (ws.getDefaultRegion()
+          .walk([&](gpu::BarrierOp) { return WalkResult::interrupt(); })
+          .wasInterrupted())
+    return ws.emitOpError(
+        "a CTA-wide barrier (gpu.barrier) inside the warp_specialize default "
+        "region would mis-pair with workers at the rejoin barrier on RDNA; use "
+        "pipe/mbarrier for intra-region sync");
 
   // Wave id + entry barrier, emitted before the op.
   OpBuilder b(ws);

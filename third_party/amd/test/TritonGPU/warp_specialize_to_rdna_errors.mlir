@@ -36,3 +36,24 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// A CTA-wide barrier in the DEFAULT region is just as broken as one in a
+// partition: on RDNA the worker warps are parked at the rejoin barrier, so a
+// gpu.barrier the default group executes alone pairs its arrivals with the
+// workers' rejoin arrivals and desynchronizes the group.
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @ws_barrier_in_default(%arg0: i32) {
+    // expected-error @below {{would mis-pair with workers at the rejoin barrier on RDNA}}
+    ttg.warp_specialize(%arg0) attributes {warpGroupStartIds = array<i32: 4>}
+    default {
+      gpu.barrier
+      ttg.warp_yield
+    }
+    partition0(%a: i32) num_warps(4) {
+      ttg.warp_return
+    } : (i32) -> ()
+    tt.return
+  }
+}

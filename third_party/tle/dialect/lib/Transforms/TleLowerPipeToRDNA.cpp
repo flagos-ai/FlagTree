@@ -541,28 +541,64 @@ struct TritonTleLowerPipeToRDNA
     if (ops.empty())
       return;
 
-    // Pre-scan: size each pipe's barriers by the partition each endpoint runs
-    // in. The producer/consumer may be different warp_specialize partitions, so
-    // `full` is sized by a writer op's thread count and `empty` by a reader
-    // op's; a drain adds its own rendezvous barrier.
+    // Pre-scan: size each pipe's barriers by the partitions its endpoints run
+    // in. `full` is sized by the total writer thread count and `empty` by the
+    // total reader thread count; a drain adds its own rendezvous barrier. With
+    // warp specialization a pipe can have several distinct writer/reader
+    // partitions (e.g. named readers), and EVERY one must arrive before the
+    // barrier flips -- so accumulate once per distinct endpoint partition
+    // instead of overwriting (a 128- and a 32-thread reader need 160 arrivals,
+    // not 32). Two ops of one endpoint (a reader's wait and release) must agree
+    // on the thread count.
     std::map<std::string, PipeCounts> countsByKey;
-    for (Operation *op : ops) {
-      PipeCounts &c = countsByKey[getPipeKey(op)];
-      int32_t *slot = nullptr;
-      if (isa<PipeWriterCommitOp, PipeWriterAcquireOp, PipeWriterCloseOp>(op))
-        slot = &c.producerCnt;
-      else if (isa<PipeReaderWaitOp, PipeReaderReleaseOp>(op))
-        slot = &c.consumerCnt;
-      else if (isa<PipeDrainOp>(op)) {
-        slot = &c.drainCnt;
-        c.hasDrain = true;
-      } else {
-        continue; // create: fallback filled below
-      }
+    std::map<std::string, std::map<Region *, int32_t>> writerEndpoints;
+    std::map<std::string, std::map<Region *, int32_t>> readerEndpoints;
+    auto endpointRegion = [](Operation *op) -> Region * {
+      auto partition = getEnclosingWarpSpecializePartition(op);
+      return partition ? partition->second : nullptr; // nullptr: default/outer
+    };
+    auto recordEndpoint = [&](std::map<Region *, int32_t> &endpoints,
+                              Operation *op) -> LogicalResult {
       FailureOr<int32_t> cnt = getThreadCount(op);
       if (failed(cnt))
-        return signalPassFailure();
-      *slot = *cnt;
+        return failure();
+      auto inserted = endpoints.try_emplace(endpointRegion(op), *cnt);
+      if (!inserted.second && inserted.first->second != *cnt)
+        return op->emitError("pipe endpoint reports inconsistent thread count ")
+               << *cnt << " (already counted " << inserted.first->second << ")";
+      return success();
+    };
+    for (Operation *op : ops) {
+      std::string key = getPipeKey(op);
+      PipeCounts &c = countsByKey[key];
+      if (isa<PipeWriterCommitOp, PipeWriterAcquireOp, PipeWriterCloseOp>(op)) {
+        if (failed(recordEndpoint(writerEndpoints[key], op)))
+          return signalPassFailure();
+      } else if (isa<PipeReaderWaitOp, PipeReaderReleaseOp>(op)) {
+        if (failed(recordEndpoint(readerEndpoints[key], op)))
+          return signalPassFailure();
+      } else if (isa<PipeDrainOp>(op)) {
+        FailureOr<int32_t> cnt = getThreadCount(op);
+        if (failed(cnt))
+          return signalPassFailure();
+        c.drainCnt = *cnt;
+        c.hasDrain = true;
+      }
+      // create: fallback filled below.
+    }
+    // Every distinct writer/reader partition arrives on the barrier, so sum
+    // their thread counts.
+    for (auto &entry : writerEndpoints) {
+      int32_t sum = 0;
+      for (auto &endpoint : entry.second)
+        sum += endpoint.second;
+      countsByKey[entry.first].producerCnt = sum;
+    }
+    for (auto &entry : readerEndpoints) {
+      int32_t sum = 0;
+      for (auto &endpoint : entry.second)
+        sum += endpoint.second;
+      countsByKey[entry.first].consumerCnt = sum;
     }
     // Degenerate pipes (missing a writer or reader) fall back to the create op's
     // own thread count.
