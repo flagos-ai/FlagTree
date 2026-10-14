@@ -141,6 +141,12 @@ def {{ call.symbol }}({{ call.signature }}):
             qkv_v_value,
             mask=qkv_v_mask & ({{ call.v.writer_active }}),
         )
+    # Every block read qkv_cache_position (the current sequence length) and wrote
+    # its K/V slot relative to it. Only one block advances the position below, so
+    # barrier first: the advance must not run until all blocks have read the old
+    # position and published their cache writes, or a late block would read the
+    # advanced position and write to the wrong slot.
+{{ entry.stage_barrier() }}
     if shard_index == 0:
         tl.store({{ call.slot_mapping }}, qkv_cache_position)
         if {{ call.advance_sequence }}:
