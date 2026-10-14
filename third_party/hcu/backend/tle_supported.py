@@ -4,4 +4,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.copy",
     "gpu.local_ptr",
     "extract_tile",
+    "raw.call",
+    "raw.call_smem",
 ]

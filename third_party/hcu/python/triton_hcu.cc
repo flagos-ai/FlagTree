@@ -39,6 +39,11 @@
 #include <sstream>
 #include <stdexcept>
 
+#ifdef __TLE__
+#include "hcu/tle_raw/include/DeferredRawSourceRegistry.h"
+#include "hcu/tle_raw/include/Passes.h"
+#endif
+
 namespace py = pybind11;
 
 namespace {
@@ -126,6 +131,39 @@ void init_triton_hcu_passes_ttgpuir(py::module &&m) {
       mlir::triton::HCU::createTritonHCUGPUSetFuncInlineAttrsPass,
       const std::string &);
 }
+
+#ifdef __TLE__
+static void setDeferredRawPendingSources(py::dict sources) {
+  mlir::triton::HCU::tle_raw::clearDeferredRawSourceRegistry();
+  for (auto item : sources) {
+    std::string key = py::cast<std::string>(item.first);
+    py::dict entry = py::cast<py::dict>(item.second);
+
+    mlir::triton::HCU::tle_raw::DeferredRawSourceEntry rawEntry;
+    rawEntry.sourceId = key;
+    rawEntry.regionDialect = entry["region_dialect"].cast<std::string>();
+    if (entry.contains("extern_func_name") &&
+        !entry["extern_func_name"].is_none()) {
+      rawEntry.externFuncName = entry["extern_func_name"].cast<std::string>();
+    }
+    rawEntry.source = entry["source"].cast<std::string>();
+    if (entry.contains("llvm_ir"))
+      rawEntry.llvmIr = entry["llvm_ir"].cast<std::string>();
+    if (entry.contains("hint"))
+      rawEntry.hint = entry["hint"].cast<std::string>();
+    mlir::triton::HCU::tle_raw::getDeferredRawSourceRegistry()[key] =
+        std::move(rawEntry);
+  }
+}
+
+void init_hcu_tle_raw_passes(py::module &&m) {
+  m.def("deferred_raw_materialize",
+        [](py::dict sources, mlir::PassManager &pm) {
+          setDeferredRawPendingSources(sources);
+          pm.addPass(mlir::createHCUMaterializeDeferredRaw());
+        });
+}
+#endif
 
 void addControlConstant(llvm::Module *module, const char *name,
                         uint32_t bitwidth, uint32_t value) {
@@ -339,6 +377,10 @@ void init_triton_hcu(py::module &&m) {
 
   auto passes = m.def_submodule("passes");
   init_triton_hcu_passes_ttgpuir(passes.def_submodule("ttgpuir"));
+
+#ifdef __TLE__
+  init_hcu_tle_raw_passes(passes.def_submodule("tle_raw"));
+#endif
 
   m.attr("TARGET_TRIPLE") = hcuTargetTriple;
   m.attr("CALLING_CONV_AMDGPU_KERNEL") =

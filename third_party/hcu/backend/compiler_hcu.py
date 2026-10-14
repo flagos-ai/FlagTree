@@ -30,6 +30,17 @@ def is_in_thread_transpose_enabled(arch):
     return (arch == "gfx942") if knobs.hcu.use_in_thread_transpose is None else knobs.hcu.use_in_thread_transpose
 
 
+_AMDGCN_TARGET_RE = re.compile(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa-[^-"]*-(gfx[0-9a-z]+(?::[a-z0-9]+[+-])*)"')
+
+
+def _retarget_clang_args(clang_args, asm_text):
+    m = _AMDGCN_TARGET_RE.search(asm_text)
+    args = [a for a in clang_args if a != ""]
+    if not m:
+        return args
+    return [f"-mcpu={m.group(1)}" if str(a).startswith("-mcpu=") else a for a in args]
+
+
 @dataclass(frozen=True)
 class HIPOptions:
     num_warps: int = 4
@@ -230,6 +241,7 @@ class HIPBackend(BaseBackend):
     def load_dialects(self, ctx):
         distributed.ir.load_dialects(ctx)
         hcu.load_dialects(ctx)
+        tle.load_dialects(ctx)
         if HIPBackend.instrumentation:
             HIPBackend.instrumentation.load_dialects(ctx)
 
@@ -385,6 +397,10 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, options):
+        # flagtree tle raw: dushmemx_cumodule_init runs after the hsaco is loaded.
+        kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
+        metadata["kernel_init_hooks"] = kernel_init_hooks.split(",") if kernel_init_hooks else []
+
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -406,6 +422,8 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
                                            options.num_ctas)
+        tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
+        tle.raw_passes.add_tle_remove_redundant_copy(pm)
         # flagtree tle: lower tle.extract_tile
         tle.passes.add_lower_extract_tile(pm)
         # flagtree tle: lower tle.insert_tile
@@ -551,6 +569,10 @@ class HIPBackend(BaseBackend):
         passes.convert.add_index_to_llvmir(pm)
 
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
+        from .deferred_raw import (deferred_raw_materialize, finish_deferred_raw_materialize)
+        deferred_raw_materialize(mod, pm)
+        tle.raw_passes.add_tle_dsl_region_inline(pm)
+        kernel_name = mod.get_entry_func_name()
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if HIPBackend.instrumentation:
             HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
@@ -601,6 +623,8 @@ class HIPBackend(BaseBackend):
         distributed.passes.ttgpuir.hcu.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod, 'make_llir')
 
+        finish_deferred_raw_materialize()
+
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it
             if not knobs.compilation.disable_line_info:
@@ -643,7 +667,8 @@ class HIPBackend(BaseBackend):
         total_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
 
         # Set kernel attributes first given this may affect later optimizations.
-        fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
+        fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration() and fn.name == kernel_name]
+
         # If wdra is enabled, this attribute is required by the LLVM backend.
         if options.wdra_enabled:
             fns[0].add_fn_attr("hcu-wdra-waves-per-tg", str(total_num_warps))
@@ -679,6 +704,12 @@ class HIPBackend(BaseBackend):
         for k in llvm_mod.get_functions():
             if "nvshmem" in k.name and k.is_declaration():
                 metadata['use_nvshmem'] = True
+                break
+
+        metadata['use_dushmem'] = False
+        for k in llvm_mod.get_functions():
+            if "dushmem" in k.name and k.is_declaration():
+                metadata['use_dushmem'] = True
                 break
 
         if knobs.compilation.enable_asan:
@@ -754,6 +785,22 @@ class HIPBackend(BaseBackend):
             clang_path = HIPBackend.path_to_rocm_clang()
             clang_args = HIPBackend._get_clang_args(metadata, options) + flags
 
+            # Fixme: link it before run llvm.optimize_module()
+            if metadata['use_dushmem']:
+                from triton.experimental.tle.raw.hcu.dushmem import resolve_dushmem_device_bitcode
+                linked_file = tempfile.mktemp(suffix="_linked.bc")
+                bitcode = resolve_dushmem_device_bitcode(arch=options.arch)
+                llvm_link = str(HIPBackend.path_to_rocm_llvm() / "bin" / "llvm-link")
+                link_command = [
+                    llvm_link,
+                    llir_file,
+                    bitcode,
+                    "-o",
+                    linked_file,
+                ]
+                subprocess.run(link_command, check=True, capture_output=True, text=True)
+                llir_file = linked_file
+
             # Compile to ASM
             asm_command = [clang_path] + clang_args + [llir_file, "-S", "-o", asm_file]
             result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
@@ -795,6 +842,7 @@ class HIPBackend(BaseBackend):
 
             clang_path = HIPBackend.path_to_rocm_clang()
             clang_args = HIPBackend._get_clang_args(metadata, options)
+            clang_args = _retarget_clang_args(clang_args, str(src))
 
             # Compile to HSACO
             hsaco_command = [clang_path] + clang_args + [asm_file, "-x", "assembler", "-o", hsaco_file]
