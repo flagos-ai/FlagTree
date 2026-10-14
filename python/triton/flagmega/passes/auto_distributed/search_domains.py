@@ -37,6 +37,19 @@ def propagate_domains(graph, fixed_selections, site_map):
                                                        index) in site_map
             }
 
+    # Index reshard-site adapter pairs by edge once. The per-edge adapter set
+    # below is otherwise a quadratic scan over every (producer, consumer)
+    # candidate pair testing site_map membership -- the dominant cost when a
+    # node carries many distribution candidates (coarse block grids, multi-token
+    # prefill). Boundary sites (consumer candidate is None) are not edge adapters.
+    adapters_by_edge: dict[tuple[object, object, int], set[tuple[int, int]]] = {}
+    for producer_id, producer_index, consumer_id, consumer_index, input_index in site_map:
+        if consumer_index is None:
+            continue
+        adapters_by_edge.setdefault(
+            (producer_id, consumer_id, input_index), set()
+        ).add((producer_index, consumer_index))
+
     # Identical physical relations share a support template, never a decision
     # variable: distinct weights and distinct graph uses stay independently selectable.
     templates = {}
@@ -45,10 +58,11 @@ def propagate_domains(graph, fixed_selections, site_map):
         for input_index, producer in enumerate(consumer.inputs):
             source_types = tuple(value.return_type for value in buckets[producer].candidates)
             target_types = tuple(value.input_types[input_index] for value in buckets[consumer.id].candidates)
-            adapters = frozenset((p, c)
-                                 for p in range(len(source_types))
-                                 for c in range(len(target_types))
-                                 if (producer, p, consumer.id, c, input_index) in site_map)
+            adapters = frozenset(
+                (p, c)
+                for p, c in adapters_by_edge.get((producer, consumer.id, input_index), ())
+                if p < len(source_types) and c < len(target_types)
+            )
             key = (source_types, target_types, adapters)
             supports = templates.get(key)
             if supports is None:

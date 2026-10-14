@@ -489,6 +489,27 @@ def solve_search_graph(
             )
             simplicity_weights.append(0 if member in member_fusions else _candidate_distribution_complexity(candidate))
 
+    # Index producer candidates by return type, and by reshard-site edge, once.
+    # The producer/consumer compatibility constraints below otherwise re-scan
+    # every producer candidate for every consumer-candidate/input edge, which is
+    # quadratic in a node's candidate count -- the dominant cost for graphs with
+    # many distribution candidates (e.g. multi-token prefill). The lookups below
+    # reproduce the exact same compatible sets, in the same ascending order.
+    producers_by_return_type: dict[str, dict[object, list[int]]] = {}
+    for bucket in graph.buckets:
+        by_type: dict[object, list[int]] = {}
+        for producer_index in sorted(domains[bucket.node_id]):
+            by_type.setdefault(
+                bucket.candidates[producer_index].return_type, []
+            ).append(producer_index)
+        producers_by_return_type[bucket.node_id] = by_type
+    reshard_producers: dict[tuple[object, object, int, int], list[int]] = {}
+    for producer_id, producer_index, consumer_id, consumer_index, input_index in site_map:
+        if producer_index in domains[producer_id]:
+            reshard_producers.setdefault(
+                (producer_id, consumer_id, consumer_index, input_index), []
+            ).append(producer_index)
+
     for consumer in graph.module.nodes:
         consumer_bucket = bucket_map[consumer.id]
         for consumer_index, candidate in enumerate(consumer_bucket.candidates):
@@ -497,19 +518,14 @@ def solve_search_graph(
             consumer_var = variables[(consumer.id, consumer_index)]
             for input_index, producer_id in enumerate(consumer.inputs):
                 required = candidate.input_types[input_index]
-                producer_bucket = bucket_map[producer_id]
-                compatible = []
-                for producer_index, producer in enumerate(producer_bucket.candidates):
-                    if producer_index not in domains[producer_id]:
-                        continue
-                    if producer.return_type == required or (
-                        producer_id,
-                        producer_index,
-                        consumer.id,
-                        consumer_index,
-                        input_index,
-                    ) in site_map:
-                        compatible.append(producer_index)
+                type_matches = producers_by_return_type[producer_id].get(required, ())
+                site_matches = reshard_producers.get(
+                    (producer_id, consumer.id, consumer_index, input_index), ()
+                )
+                if site_matches:
+                    compatible = sorted(set(type_matches).union(site_matches))
+                else:
+                    compatible = list(type_matches)
                 if not compatible:
                     model.Add(consumer_var == 0)
                     continue
