@@ -1,0 +1,70 @@
+{% macro quantize(call) -%}
+{% set packed = call.facts.activation_storage | default('') == 'cta_global_interleaved' %}
+{% set global = packed or call.facts.activation_storage | default('') == 'cta_global' %}
+{% set dual = call.facts.activation_parts | default(1) == 2 %}
+{% set ws = call.pipeline_consumer_workspaces %}
+{% set split = call.parameters.q8_split_groups %}
+{% if global %}
+    _pc_qword = {{ call.global_qword }}
+    _pc_qscale = {{ call.global_qscale }}
+    _pc_residual_word = {{ call.global_qword if packed else call.global_residual_word }}
+    _pc_residual_scale = {{ call.global_qscale if packed else call.global_residual_scale }}
+    _flagmega_iq4_q8_global_dual({{ call.value }}, _pc_qword, _pc_qscale, _pc_residual_word, _pc_residual_scale, {{ call.k }}, {{ 'True' if packed else 'False' }})
+{% elif dual %}
+    _flagmega_iq4_q8_shared_dual({{ call.value }}, {{ ws[0].parameter }}, {{ ws[1].parameter }}, {{ ws[4 if split else 2].parameter }}, {{ ws[5 if split else 3].parameter }}, {{ ws[2 if split else 0].parameter }}, {{ ws[3 if split else 1].parameter }}, {{ ws[6 if split else 2].parameter }}, {{ ws[7 if split else 3].parameter }}, {{ call.k }}, {{ split }})
+{% else %}
+    _flagmega_iq4_q8_shared({{ call.value }}, {{ ws[0].parameter }}, {{ ws[1].parameter }}, {{ ws[2 if split else 0].parameter }}, {{ ws[3 if split else 1].parameter }}, {{ call.k }}, {{ split }})
+{% endif %}
+{%- endmacro %}
+
+{% macro loads(call) -%}
+{% set packed = call.facts.activation_storage | default('') == 'cta_global_interleaved' %}
+{% set global = packed or call.facts.activation_storage | default('') == 'cta_global' %}
+{% set dual = call.facts.activation_parts | default(1) == 2 %}
+{% set ws = call.pipeline_consumer_workspaces %}
+{% set split = call.parameters.q8_split_groups %}
+{% if global %}
+{% if packed %}
+            _pc_lo_both = tl.load(_pc_qword + _pc_qindex, mask=_pc_k_mask, other=0, cache_modifier='.ca').to(tl.uint64)
+            _pc_hi_both = tl.load(_pc_qword + _pc_qindex + {{ 1 if q8_nibble_pair | default(false) else 4 }}, mask=_pc_k_mask, other=0, cache_modifier='.ca').to(tl.uint64)
+            _pc_scale_both = tl.load(_pc_qscale + _pc_index // 4, mask=_pc_k_mask, other=0, cache_modifier='.ca').to(tl.uint32)
+            _pc_lo = _pc_lo_both.to(tl.int32)
+            _pc_hi = _pc_hi_both.to(tl.int32)
+            _pc_lo1 = (_pc_lo_both >> 32).to(tl.int32)
+            _pc_hi1 = (_pc_hi_both >> 32).to(tl.int32)
+            _pc_scale = _pc_scale_both.to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+            _pc_scale1 = (_pc_scale_both >> 16).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+{% else %}
+            _pc_lo = tl.load(_pc_qword + _pc_qindex, mask=_pc_k_mask, other=0, cache_modifier='.ca')
+            _pc_hi = tl.load(_pc_qword + _pc_qindex + {{ 1 if q8_nibble_pair | default(false) else 4 }}, mask=_pc_k_mask, other=0, cache_modifier='.ca')
+            _pc_scale = tl.load(_pc_qscale + _pc_index // 4, mask=_pc_k_mask, other=0, cache_modifier='.ca').to(tl.float32)
+            _pc_lo1 = tl.load(_pc_residual_word + _pc_qindex, mask=_pc_k_mask, other=0, cache_modifier='.ca')
+            _pc_hi1 = tl.load(_pc_residual_word + _pc_qindex + {{ 1 if q8_nibble_pair | default(false) else 4 }}, mask=_pc_k_mask, other=0, cache_modifier='.ca')
+            _pc_scale1 = tl.load(_pc_residual_scale + _pc_index // 4, mask=_pc_k_mask, other=0, cache_modifier='.ca').to(tl.float32)
+{% endif %}
+{% else %}
+{% if split %}
+            if _pc_k_start < {{ split * 4 }}:
+{% set spaces = '                ' %}
+{% else %}
+{% set spaces = '            ' %}
+{% endif %}
+{% for part in range(2 if dual else 1) %}
+{% set iw = 0 if part == 0 else 4 if split else 2 %}
+{% set suffix = '' if part == 0 else '1' %}
+{{ spaces }}_pc_lo{{ suffix }} = tl.load(tle.gpu.local_ptr({{ ws[iw].parameter }}, (_pc_qindex,)), mask=_pc_k_mask, other=0)
+{{ spaces }}_pc_hi{{ suffix }} = tl.load(tle.gpu.local_ptr({{ ws[iw].parameter }}, (_pc_qindex + {{ 1 if q8_nibble_pair | default(false) else 4 }},)), mask=_pc_k_mask, other=0)
+{{ spaces }}_pc_scale{{ suffix }} = tl.load(tle.gpu.local_ptr({{ ws[iw + 1].parameter }}, (_pc_index // 4,)), mask=_pc_k_mask, other=0).to(tl.float32)
+{% endfor %}
+{% if split %}
+            else:
+{% for part in range(2 if dual else 1) %}
+{% set iw = 2 if part == 0 else 6 %}
+{% set suffix = '' if part == 0 else '1' %}
+                _pc_lo{{ suffix }} = tl.load(tle.gpu.local_ptr({{ ws[iw].parameter }}, (_pc_qindex - {{ split * 8 }},)), mask=_pc_k_mask, other=0)
+                _pc_hi{{ suffix }} = tl.load(tle.gpu.local_ptr({{ ws[iw].parameter }}, (_pc_qindex + {{ 1 if q8_nibble_pair | default(false) else 4 }} - {{ split * 8 }},)), mask=_pc_k_mask, other=0)
+                _pc_scale{{ suffix }} = tl.load(tle.gpu.local_ptr({{ ws[iw + 1].parameter }}, (_pc_index // 4 - {{ split }},)), mask=_pc_k_mask, other=0).to(tl.float32)
+{% endfor %}
+{% endif %}
+{% endif %}
+{%- endmacro %}

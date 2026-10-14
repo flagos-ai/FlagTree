@@ -1,0 +1,238 @@
+{
+  "checkpoint": {
+    "filename": "qwen3.8-27b-IQ4_XS-pure.gguf",
+    "repo_id": "jpetrina/Qwen3.8-27B-IQ4_XS-pure-GGUF",
+    "revision": "5a285a6217024a96be7064d6caf0a06121630ee1",
+    "sha256": "ea5a3c45d407f9b9e5d2c0d647f0ea600f486f6b86b92b56d0823ba073dae675"
+  },
+  "environment": {
+    "compute_capability": [
+      12,
+      0
+    ],
+    "gpu": "NVIDIA GeForce RTX 5060 Ti",
+    "torch": "2.8.0+cu128",
+    "triton": "3.6.0"
+  },
+  "scope": "complete 64-layer text decoder, decode-1",
+  "excluded_entries": [
+    "speculative MTP decoding",
+    "batched prefill"
+  ],
+  "target": "nvidia-sm120",
+  "workflow": {
+    "skill": "skills/flagmega-developer/SKILL.md",
+    "trial": ".local/trials/20261013-pc-tma-fresh-v35-grid32-q8-vector256",
+    "steps": [
+      "import",
+      "verify-ir",
+      "inspect-ir",
+      "compile-from-python-ir",
+      "verify-artifact",
+      "independent-llama-golden",
+      "matched-host-token-timing",
+      "rotated-backend-order"
+    ],
+    "dump_flags": "compile,pass-ir,egraph-cost",
+    "raw_evidence": ".local/evidence/20261013-native-pc-tma-vector-quant"
+  },
+  "build": {
+    "semantic_hash": "6bf63f0a599adb83fdd767fc879f9b8571ed9e93e8580ab18d46d593af56bd1c",
+    "input_semantic_hash": "3495e345143a236a3c514dca79626552901fd3731964e70295e5159c1e96b710",
+    "compiler_source_sha256": "3b955e4b3c9aad6118fcedf0944c28883fd5e7cd1b3425192728af3e1b34c0fc",
+    "generated_source_sha256": "ee8a7aae97fdd63ece00a4112a80aeed35c9f67c5b8805b83b40e7d0da9da0c4",
+    "build_seconds": 215.24693169398233,
+    "original_checkpoint_fresh_import": true
+  },
+  "execution": {
+    "finite": true,
+    "layers": 64,
+    "steps": 64,
+    "repeats": 6,
+    "mean_ms": 35.384047541811015,
+    "median_ms": 35.37938202498481,
+    "p95_ms": 35.45600884244777,
+    "p99_ms": 35.47932805959135,
+    "tokens_per_second": 28.26132309534022,
+    "model_bandwidth_gb_s": 384.68369295276307,
+    "model_bandwidth_utilization": 0.8586689574838461,
+    "packed_model_bytes_per_token": 13611666080,
+    "resource_report": {
+      "name": "flagmega_main",
+      "num_warps": 12,
+      "registers_per_thread": 149,
+      "shared_memory_bytes": 97516,
+      "stack_frame_bytes": 0,
+      "spill_store_bytes": 0,
+      "spill_load_bytes": 0,
+      "local_memory_bytes": 0,
+      "spill_bytes": 0,
+      "required_resident_blocks_per_sm": 1,
+      "resident_registers": 57216,
+      "resident_shared_memory_bytes": 97516,
+      "global_scratch_bytes": 94592,
+      "cooperative_grid": true,
+      "grid": [
+        32,
+        1,
+        1
+      ]
+    },
+    "peak_allocated_bytes": 15148045312,
+    "measurement_boundary": "Host wall clock around graph replay, GPU greedy and one CPU token return",
+    "theoretical_memory_bandwidth_gb_s": 448,
+    "output_shape": [
+      1,
+      248320
+    ]
+  },
+  "verification": {
+    "artifact_valid": true,
+    "host_dequantization": false,
+    "quantized_weight_count": 498,
+    "exact_packed_allocation": true,
+    "packed_weights_match_source_verified_reference": true,
+    "rdata_bytes": 14298102272,
+    "packed_audit": ".local/pc-tma-fresh-v35-packed-audit.json",
+    "single_q8_layout_cases": 18,
+    "dual_q8_layout_cases": 15,
+    "scratch_reuse_phases": 3,
+    "gdn_state_steps": 3,
+    "gdn_rounding_profiles": 2,
+    "focused_native_gpu_tests_last_run": 14,
+    "gguf_importer_tests_last_run": 4
+  },
+  "optimization": {
+    "optimization": "pc_tma",
+    "grid": 32,
+    "gdn_value_tile": 32,
+    "gdn_fast_head": true,
+    "gdn_uniform_norm": true,
+    "gdn_cache_heads": true,
+    "pc_segments": true,
+    "q8_group_tile": 256,
+    "q8_vector_quant": true,
+    "pc_precision_scope": "glu",
+    "package": "agent_optimizations",
+    "producer_consumer": true,
+    "tma": true,
+    "consumer_warps": 8,
+    "producer_warps": 1,
+    "device_evidence": [
+      {
+        "name": "flagmega_main",
+        "ptx_sha256": "308197f821c03afe63f7ecaa61f46d52ee632e46b00e9f28efe3134005d56662",
+        "bulk_tma_instruction_count": 44,
+        "dp4a_instruction_count": 36,
+        "ws_register_instruction_count": 0,
+        "resources": {
+          "name": "flagmega_main",
+          "num_warps": 12,
+          "registers_per_thread": 149,
+          "shared_memory_bytes": 97516,
+          "stack_frame_bytes": 0,
+          "spill_store_bytes": 0,
+          "spill_load_bytes": 0,
+          "local_memory_bytes": 0,
+          "spill_bytes": 0,
+          "required_resident_blocks_per_sm": 1,
+          "resident_registers": 57216,
+          "resident_shared_memory_bytes": 97516,
+          "global_scratch_bytes": 94592,
+          "cooperative_grid": true,
+          "grid": [
+            32,
+            1,
+            1
+          ]
+        }
+      }
+    ]
+  },
+  "golden": {
+    "llama_commit": "4413a192410fad1f054e9216114087a3e01527a0",
+    "required_generated_prefix": 8,
+    "prefix_start_step": 16,
+    "prefix_match": true,
+    "actual_prefix": [
+      271,
+      248068,
+      198,
+      97237,
+      96094,
+      96876,
+      4960,
+      98832
+    ],
+    "token_agreement": 1.0,
+    "independent_generation": true,
+    "backend": "official llama.cpp CUDA",
+    "checkpoint_sha256": "ea5a3c45d407f9b9e5d2c0d647f0ea600f486f6b86b92b56d0823ba073dae675",
+    "logits_bitwise_required": false,
+    "prompt": "\u8bf7\u7528\u4e2d\u6587\u89e3\u91ca\u4e3a\u4ec0\u4e48\u91cf\u5316\u6a21\u578b\u7684\u5355 token decode \u901a\u5e38\u53d7\u663e\u5b58\u5e26\u5bbd\u9650\u5236\u3002",
+    "prompt_token_count": 17,
+    "max_absolute_logit_error": 0.4948376417160034,
+    "max_relative_l2_logit_error": 0.035398487001657486,
+    "raw_evidence": ".local/llama-golden-chinese64-cuda-v2"
+  },
+  "log": ".local/\u4f18\u5316\u8fed\u4ee3.md",
+  "additional_synthetic_32_step_validation": {
+    "mean_ms": 35.345034117805575,
+    "median_ms": 35.33710946794599,
+    "p95_ms": 35.39910239051096,
+    "tokens_per_second": 28.292517604226486,
+    "model_bandwidth_utilization": 0.8596167459626172,
+    "repeats": 6,
+    "prefix_match": true,
+    "required_generated_prefix": 8,
+    "llama_mean_ms": 36.23751998958333,
+    "speedup_vs_llama_cpp": 1.0252506722387957,
+    "raw_evidence": ".local/accepted-pc-tma-synthetic32.json"
+  },
+  "performance_reference": {
+    "mean_ms": 36.11684046875,
+    "median_ms": 35.993194,
+    "p95_ms": 36.190302949999996,
+    "tokens_per_second": 27.687914751713883,
+    "llama_commit": "4413a192410fad1f054e9216114087a3e01527a0",
+    "checkpoint_sha256": "ea5a3c45d407f9b9e5d2c0d647f0ea600f486f6b86b92b56d0823ba073dae675",
+    "measurement": "Host steady_clock around decode, GPU greedy and one CPU token return",
+    "flash_attention": true,
+    "sampling": "Context backend greedy sampler; one CPU token returned, no full-vocabulary download",
+    "kv_dtype": "BF16",
+    "intermediate_dtype": "llama.cpp native F32",
+    "steps": 64,
+    "repeats": 6,
+    "speedup_vs_llama_cpp": 1.0207096976702026,
+    "raw_evidence": ".local/accepted-llama-chinese64.json"
+  },
+  "current_compiler_baseline": {
+    "mean_ms": 448.88721519661584,
+    "tokens_per_second": 2.2277310784224333,
+    "source_sha256": "4b9f3eaf4558f32d9ff90c5f3eb90333b57b1775ba85eeaefc5504daa01206e2",
+    "measurement": "Host wall clock around graph replay, GPU greedy and one CPU token return",
+    "resource_report": {
+      "name": "flagmega_main",
+      "num_warps": 4,
+      "registers_per_thread": 136,
+      "shared_memory_bytes": 4096,
+      "stack_frame_bytes": 0,
+      "spill_store_bytes": 0,
+      "spill_load_bytes": 0,
+      "local_memory_bytes": 0,
+      "spill_bytes": 0,
+      "required_resident_blocks_per_sm": 1,
+      "resident_registers": 17408,
+      "resident_shared_memory_bytes": 4096,
+      "global_scratch_bytes": 80256,
+      "cooperative_grid": true,
+      "grid": [
+        32,
+        1,
+        1
+      ]
+    },
+    "speedup": 12.686146622039075,
+    "raw_evidence": ".local/current-compiler-baseline-v25-independent-chinese64.json"
+  }
+}

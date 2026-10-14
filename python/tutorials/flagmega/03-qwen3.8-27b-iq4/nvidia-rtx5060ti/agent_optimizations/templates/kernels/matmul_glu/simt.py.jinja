@@ -1,0 +1,108 @@
+# flagmega-kernel: matmul_glu/simt platform=generic
+{% if iq4_mode in ('pc_tma', 'pc_tma_inline') %}
+{% set pc_family = 'matmul_glu' %}
+{% include "kernels/iq4_pc_calls.py.jinja" %}
+{% endif %}
+{% set matmul_glu_variant = "simt" %}
+@triton.jit
+def _flagmega_iq4_xs_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    return _flagmega_iq4_fast_dot(source, weight, row_offsets, n_mask, K)
+
+@triton.jit
+def _flagmega_q4_k_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+    weight_f16 = weight.to(tl.pointer_type(tl.float16))
+    result = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, 128):
+        k = k_start + tl.arange(0, 128)
+        km = k < K
+        block = k // 256
+        inside = k % 256
+        group = inside // 32
+        lane = inside % 32
+        base = row_offsets[:, None] + block[None, :] * 144
+        active = n_mask[:, None] & km[None, :]
+        d = tl.load(weight_f16 + base // 2, mask=active, other=0.0).to(tl.float32)
+        dmin = tl.load(weight_f16 + (base + 2) // 2, mask=active, other=0.0).to(tl.float32)
+        scales = weight_u8 + base + 4
+        s0 = tl.load(scales + group[None, :] % 4, mask=active, other=0)
+        s1 = tl.load(scales + 4 + group[None, :] % 4, mask=active, other=0)
+        s2 = tl.load(scales + 8 + group[None, :] % 4, mask=active, other=0)
+        low_group = group[None, :] < 4
+        sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+        mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+        packed = tl.load(
+            weight_u8 + base + 16 + (group[None, :] // 2) * 32 + lane[None, :],
+            mask=active,
+            other=0,
+        )
+        q = tl.where(group[None, :] % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+        source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+        result += tl.sum((d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)) * source_value[None, :], axis=1)
+    return result
+
+@triton.jit
+def _flagmega_block_glu_local_tile(
+    source, gate_weight, up_weight, gate_scale, up_scale, destination,
+    weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,
+    K: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    """Block-scaled gated GEMV without a target matrix instruction."""
+    gate_accumulator = tl.zeros(({{ tn }},), tl.float32)
+    up_accumulator = tl.zeros(({{ tn }},), tl.float32)
+    gate_compensation = tl.zeros(({{ tn }},), tl.float32)
+    up_compensation = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, BLOCK_K):
+        k_offsets = k_start + tl.arange(0, BLOCK_K)
+        k_mask = k_offsets < K
+        source_value = tl.load(
+            source + k_offsets, mask=k_mask, other=0.0,
+        ).to(tl.float32)
+        maximum = tl.max(tl.abs(source_value), axis=0)
+        activation_scale = tl.where(maximum == 0.0, 1.0, maximum / 448.0)
+        quantized = tl.maximum(
+            tl.minimum(source_value / activation_scale, 448.0), -448.0,
+        ).to(tl.float8e4nv)
+        scale_offsets = scale_row_offsets + (k_start // BLOCK_K)
+        gate_block_scale = tl.load(
+            gate_scale + scale_offsets, mask=n_mask, other=0.0,
+        ).to(tl.float32)
+        up_block_scale = tl.load(
+            up_scale + scale_offsets, mask=n_mask, other=0.0,
+        ).to(tl.float32)
+        weight_offsets = weight_row_offsets[:, None] + k_offsets[None, :]
+        weight_mask = n_mask[:, None] & k_mask[None, :]
+        gate_value = tl.load(
+            gate_weight + weight_offsets, mask=weight_mask, other=0.0,
+        ).to(tl.float32)
+        up_value = tl.load(
+            up_weight + weight_offsets, mask=weight_mask, other=0.0,
+        ).to(tl.float32)
+        dequantized = quantized.to(tl.float32) * activation_scale
+        gate_partial = (
+            tl.sum(gate_value * dequantized[None, :], axis=1)
+            * gate_block_scale
+        )
+        up_partial = (
+            tl.sum(up_value * dequantized[None, :], axis=1)
+            * up_block_scale
+        )
+        gate_corrected = gate_partial - gate_compensation
+        gate_updated = gate_accumulator + gate_corrected
+        gate_compensation = (gate_updated - gate_accumulator) - gate_corrected
+        gate_accumulator = gate_updated
+        up_corrected = up_partial - up_compensation
+        up_updated = up_accumulator + up_corrected
+        up_compensation = (up_updated - up_accumulator) - up_corrected
+        up_accumulator = up_updated
+    gate_bf16 = gate_accumulator.to(tl.bfloat16).to(tl.float32)
+    up_bf16 = up_accumulator.to(tl.bfloat16).to(tl.float32)
+    tl.store(
+        destination + destination_offsets,
+        (_flagmega_silu(gate_bf16).to(tl.bfloat16).to(tl.float32) * up_bf16).to(tl.bfloat16),
+        mask=n_mask,
+    )
+
+{% if render_calls is defined %}
+{% include "kernels/matmul_glu/_function.py.jinja" %}
+{% endif %}

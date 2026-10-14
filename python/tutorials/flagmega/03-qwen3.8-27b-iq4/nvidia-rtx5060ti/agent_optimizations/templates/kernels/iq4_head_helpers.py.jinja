@@ -1,0 +1,48 @@
+{% include "kernels/iq4_lookup.py.jinja" %}
+@triton.jit
+def _flagmega_iq4_head_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    ROWS: tl.constexpr = row_offsets.shape[0]
+    weight_u32 = weight.to(tl.pointer_type(tl.uint32))
+    layout: tl.constexpr = tle.gpu.BlockEncoding([1, 1], [1, 32], [1, {{ iq4_warps }}], [1, 0])
+    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, layout)
+    k_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, layout)
+    row_offsets = tle.gpu.set_layout(row_offsets, row_layout)
+    n_mask = tle.gpu.set_layout(n_mask, row_layout)
+    if len(weight_u32.shape) > 0:
+        weight_u32 = tle.gpu.set_layout(weight_u32, row_layout)[:, None]
+    word = tle.gpu.set_layout(tl.arange(0, 256), k_layout)
+    block = word // 32
+    group = word % 32 // 4
+    lane = word % 4 * 4
+    acc = tle.gpu.set_layout(tl.zeros((ROWS, 256), tl.float32), layout)
+    for k_start in tl.range(0, K, 2048):
+        k_low = k_start + block * 256 + group * 32 + lane
+        active = n_mask[:, None] & (k_low[None, :] < K)
+        base = row_offsets[:, None] + (k_start // 256 + block[None, :]) * 136
+        header = tl.load(weight_u32 + base // 4, mask=active, other=0)
+        scales = tl.load(weight_u32 + base // 4 + 1, mask=active, other=0)
+        delta = (header & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+        sc = ((scales >> (group[None, :] * 4)) & 15) | (((header >> (16 + group[None, :] * 2)) & 3) << 4)
+        factor = delta * (sc.to(tl.float32) - 32.)
+        packed = tl.load(weight_u32 + base // 4 + 2 + group[None, :] * 4 + lane[None, :] // 4, mask=active, other=0)
+        for i in tl.static_range(4):
+            low = _flagmega_iq4_lookup((packed >> (i * 8)) & 15)
+            high = _flagmega_iq4_lookup((packed >> (i * 8 + 4)) & 15)
+            x_low = tl.load(source + k_low + i, mask=k_low + i < K, other=0).to(tl.float32)
+            x_high = tl.load(source + k_low + i + 16, mask=k_low + i + 16 < K, other=0).to(tl.float32)
+            acc += factor * low * x_low[None, :] + factor * high * x_high[None, :]
+    return tl.sum(acc, axis=1)
+
+
+@triton.jit
+def _flagmega_gdn_iq4_head_pairs(source, beta_weight, alpha_weight, base_head, active,
+                                K: tl.constexpr, HEADS: tl.constexpr = 1, VALUE_HEADS: tl.constexpr = 48):
+    row = tl.arange(0, HEADS * 2)
+    pointers = tl.where(row % 2 == 0, beta_weight, alpha_weight)
+    heads = base_head + row // 2
+    dots = _flagmega_iq4_head_dot(source, pointers, heads * (K // 256) * 136,
+                                 active & (heads < VALUE_HEADS), K).to(tl.bfloat16).to(tl.float32)
+    heads_out = tl.arange(0, HEADS)
+    beta = tl.sum(tl.where(row[None, :] == heads_out[:, None] * 2, dots[None, :], 0.), 1)
+    alpha = tl.sum(tl.where(row[None, :] == heads_out[:, None] * 2 + 1, dots[None, :], 0.), 1)
+    return beta, alpha

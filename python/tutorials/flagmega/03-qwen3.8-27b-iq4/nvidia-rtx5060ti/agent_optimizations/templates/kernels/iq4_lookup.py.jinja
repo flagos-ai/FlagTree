@@ -1,0 +1,18 @@
+@triton.jit
+def _flagmega_iq4_lookup(code):
+    # GGML IQ4's nonlinear table is 16 signed bytes. Two PRMT operations
+    # replace fifteen dependent compare/select operations per decoded value.
+    return tl.inline_asm_elementwise(
+        """{
+        .reg .b32 lo, hi, sel, val;
+        .reg .pred upper;
+        and.b32 sel, $1, 7;
+        or.b32 sel, sel, 0x4440;
+        prmt.b32 lo, 0xbfad9881, 0xf6eaddcf, sel;
+        prmt.b32 hi, 0x26190d01, 0x71594535, sel;
+        setp.ge.u32 upper, $1, 8;
+        selp.b32 val, hi, lo, upper;
+        bfe.s32 $0, val, 0, 8;
+        }""", constraints='=r,r', args=[code.to(tl.int32)],
+        dtype=tl.int32, is_pure=True, pack=1,
+    ).to(tl.float32)

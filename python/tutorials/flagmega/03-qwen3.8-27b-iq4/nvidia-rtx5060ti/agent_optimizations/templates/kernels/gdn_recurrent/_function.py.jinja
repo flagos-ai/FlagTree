@@ -1,0 +1,139 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "gdn_recurrent" and call.variant == "persistent" %}
+{% set cache_pairs = gdn_cache_heads | default(false) and call.uniform_projection_rows | default(false) and call.b_weight_encoding | default('') == 'IQ4_XS' and call.a_weight_encoding | default('') == 'IQ4_XS' %}
+{% set cache_vectors = gdn_uniform_norm | default(false) and call.uniform_projection_rows | default(false) %}
+{% set proven_pairs = cache_pairs and call.two_head_cache_proven | default(false) %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if cache_pairs %}
+    base_cached_head = (({{ call.global_projection_value | replace('recurrent_start', '0') }}) // {{ call.value_dim }}).to(tl.int64)
+    pair_heads = base_cached_head + tl.arange(0, 2)
+    pair_active = (pair_heads < {{ call.value_heads }}) & (({{ call.active_values }}) > 0) & ({{ call.writer_active }})
+    pair_b, pair_a = _flagmega_gdn_iq4_head_pairs({{ call.projection_input }}, {{ call.b_weight }}, {{ call.a_weight }},
+        base_cached_head, (({{ call.active_values }}) > 0) & ({{ call.writer_active }}), {{ call.projection_dim }}, 2, {{ call.value_heads }})
+    pair_beta, pair_decay = _flagmega_gdn_head_gates(pair_b, pair_a, pair_heads, pair_active,
+        {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }})
+{% endif %}
+    # Read-only projections and gates depend on the head, not the value
+    # coordinate. Their cache is reset on every invocation (including tokens).
+{% if call.uniform_projection_rows | default(false) %}
+    # A unit-step, tile-aligned shard map proves that every active value in
+    # this tile has the same head. The active prefix starts at recurrent_start.
+    cached_heads = tl.full((), -1, tl.int64)
+    beta = tl.zeros((), tl.float32)
+    decay = tl.zeros((), tl.float32)
+{% if cache_vectors %}
+    head_parent: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }} , 1], [1, 0])
+    head_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, head_parent)
+    cached_key = tle.gpu.set_layout(tl.zeros(({{ call.key_dim }},), tl.{{ 'bfloat16' if call.round_normalized_qk else 'float32' }}), head_layout)
+    cached_query = tle.gpu.set_layout(tl.zeros(({{ call.key_dim }},), tl.{{ 'bfloat16' if call.round_normalized_qk else 'float32' }}), head_layout)
+{% endif %}
+{% else %}
+    # Unproved maps retain the complete lane-wise key. An inactive lane must
+    # never validate a later active lane's value.
+    cached_heads = tl.full(({{ call.value_tile }},), -1, tl.int64)
+    beta = tl.zeros(({{ call.value_tile }},), tl.float32)
+    decay = tl.zeros(({{ call.value_tile }},), tl.float32)
+{% endif %}
+    for recurrent_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.value_tile }}
+    ):
+        local_values = recurrent_start + tl.arange(0, {{ call.value_tile }})
+        recurrent_mask = (
+            (local_values < ({{ call.active_values }}))
+            & ({{ call.writer_active }})
+        )
+        global_values = {{ call.global_value }}
+{% if call.uniform_projection_rows | default(false) %}
+        value_heads = (({{ call.global_projection_value }}) // {{ call.value_dim }}).to(tl.int64)
+        projection_active = (recurrent_start < ({{ call.active_values }})) & ({{ call.writer_active }})
+        if projection_active & (value_heads != cached_heads):
+{% else %}
+        value_heads = (global_values // {{ call.value_dim }}).to(tl.int64)
+        if tl.sum((recurrent_mask & (value_heads != cached_heads)).to(tl.int32), 0) > 0:
+{% endif %}
+{% if cache_vectors %}
+            cached_key, cached_query = _flagmega_gdn_cached_head_vectors({{ call.qkv }}, value_heads, projection_active,
+                {{ call.key_heads }}, {{ call.key_dim }}, {{ call.repeats }}, {{ call.tiled_value_heads | default(false) }},
+                {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }}, {{ call.round_normalized_qk }})
+{% endif %}
+{% if cache_pairs %}
+            head_delta = value_heads - base_cached_head
+{% if proven_pairs %}
+            beta = tl.sum(tl.where(tl.arange(0, 2) == head_delta, pair_beta, 0.), 0)
+            decay = tl.sum(tl.where(tl.arange(0, 2) == head_delta, pair_decay, 0.), 0)
+{% else %}
+            if (head_delta >= 0) & (head_delta < 2):
+                beta = tl.sum(tl.where(tl.arange(0, 2) == head_delta, pair_beta, 0.), 0)
+                decay = tl.sum(tl.where(tl.arange(0, 2) == head_delta, pair_decay, 0.), 0)
+            else:
+{% endif %}
+{% endif %}
+{% if not proven_pairs %}
+{{ '    ' if cache_pairs else '' }}            beta_projection = _flagmega_dense_rows(
+{{ '    ' if cache_pairs else '' }}                {{ call.projection_input }}, {{ call.b_weight }}, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
+{{ '    ' if cache_pairs else '' }}                {{ call.projection_dim }}, {{ call.projection_tile }},
+{{ '    ' if cache_pairs else '' }}                False, "{{ call.b_weight_encoding | default('') }}",
+{{ '    ' if cache_pairs else '' }}            )
+{{ '    ' if cache_pairs else '' }}            a_projection = _flagmega_dense_rows(
+{{ '    ' if cache_pairs else '' }}                {{ call.projection_input }}, {{ call.a_weight }}, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
+{{ '    ' if cache_pairs else '' }}                {{ call.projection_dim }}, {{ call.projection_tile }},
+{{ '    ' if cache_pairs else '' }}                False, "{{ call.a_weight_encoding | default('') }}",
+{{ '    ' if cache_pairs else '' }}            )
+{{ '    ' if cache_pairs else '' }}            beta, decay = _flagmega_gdn_head_gates(
+{{ '    ' if cache_pairs else '' }}                beta_projection, a_projection, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
+{{ '    ' if cache_pairs else '' }}                {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }},
+{{ '    ' if cache_pairs else '' }}            )
+{% endif %}
+            cached_heads = tl.where({% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %}, value_heads, -1)
+        _flagmega_gdn_recurrent_local_core_tile(
+            {{ call.qkv }}, beta, decay, {{ call.state }},
+            {{ call.core_scratch }}, local_values, global_values,
+            recurrent_mask, {{ call.value_heads }}, {{ call.key_heads }},
+            {{ call.key_dim }}, {{ call.value_dim }},
+            {{ call.repeats }}, {{ call.head_block }},
+            {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }},
+            {{ call.round_normalized_qk }}, {{ call.round_core }},
+            TILED_VALUE_HEADS={{ call.tiled_value_heads | default(false) }},
+{% if gdn_uniform_norm | default(false) and call.uniform_projection_rows | default(false) %}
+            uniform_value_head=value_heads,
+            cached_key=cached_key, cached_query=cached_query,
+{% endif %}
+        )
+{{ entry.stage_barrier() }}
+{% if cache_vectors %}
+    cached_norm_head = tl.full((), -1, tl.int64)
+    cached_inverse = tl.zeros((), tl.float32)
+{% endif %}
+    for recurrent_norm_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.value_tile }}
+    ):
+        local_values = recurrent_norm_start + tl.arange(0, {{ call.value_tile }})
+        recurrent_norm_mask = (
+            (local_values < ({{ call.active_values }}))
+            & ({{ call.writer_active }})
+        )
+        global_values = {{ call.global_value }}
+{% if cache_vectors %}
+        norm_head = (({{ call.global_projection_value | replace('recurrent_start', 'recurrent_norm_start') }}) // {{ call.value_dim }}).to(tl.int64)
+        norm_active = (recurrent_norm_start < ({{ call.active_values }})) & ({{ call.writer_active }})
+        if norm_active & (norm_head != cached_norm_head):
+            cached_inverse = _flagmega_gdn_cached_head_inverse({{ call.core_scratch }}, norm_head, norm_active,
+                {{ call.value_dim }}, {{ call.epsilon }})
+            cached_norm_head = norm_head
+{% endif %}
+        _flagmega_gdn_recurrent_local_norm_tile(
+            {{ call.z }}, {{ call.result }}, {{ call.norm_weight }},
+            {{ call.core_scratch }}, {{ call.z_offset }}, {{ call.result_offset }}, global_values,
+            recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }},
+{% if gdn_uniform_norm | default(false) and call.uniform_projection_rows | default(false) %}
+            uniform_value_head=((( {{ call.global_projection_value | replace('recurrent_start', 'recurrent_norm_start') }} )) // {{ call.value_dim }}).to(tl.int64),
+            cached_inverse=cached_inverse,
+{% endif %}
+        )
+
+
+{% endif %}
+{% endfor %}

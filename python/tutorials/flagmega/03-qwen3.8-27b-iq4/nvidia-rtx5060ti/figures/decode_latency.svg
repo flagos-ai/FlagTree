@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="650" viewBox="0 0 1120 650" role="img">
+<title>Decode latency (lower is better)</title>
+<desc>Qwen3.8-27B IQ4_XS, full 64-layer decoder, RTX 5060 Ti, batch 1. Host timing: graph execution + GPU greedy sampling + one CPU token return.</desc>
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" fill="#243343">
+<text x="85" y="36" font-size="24">Decode latency (lower is better)</text>
+<text x="85" y="63" font-size="14">Qwen3.8-27B IQ4_XS / RTX 5060 Ti / batch 1 / 64 decode-1 calls</text>
+<text x="85" y="86" font-size="14">Host timing: graph execution + GPU greedy sampling + one CPU token return</text>
+<text x="85" y="108" font-size="14">Loading, JIT, warmup and state reset excluded.</text>
+<path d="M 85 490.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="495.0" text-anchor="end" font-size="13">0.0</text>
+<path d="M 85 419.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="424.0" text-anchor="end" font-size="13">107.7</text>
+<path d="M 85 348.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="353.0" text-anchor="end" font-size="13">215.5</text>
+<path d="M 85 277.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="282.0" text-anchor="end" font-size="13">323.2</text>
+<path d="M 85 206.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="211.0" text-anchor="end" font-size="13">430.9</text>
+<path d="M 85 135.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="140.0" text-anchor="end" font-size="13">538.7</text>
+<rect x="205.0" y="466.3" width="220.0" height="23.7" fill="#556579"/>
+<text x="315.0" y="458.3" text-anchor="middle" font-size="13">35.993</text>
+<rect x="458.0" y="194.2" width="220.0" height="295.8" fill="#c47725"/>
+<text x="568.0" y="186.2" text-anchor="middle" font-size="13">448.884</text>
+<rect x="711.0" y="466.7" width="220.0" height="23.3" fill="#198269"/>
+<text x="821.0" y="458.7" text-anchor="middle" font-size="13">35.379</text>
+<text x="585.0" y="519" text-anchor="middle" font-size="14">64 decode-1 calls</text>
+<text x="15" y="123" font-size="13">ms/token</text>
+<rect x="85" y="555" width="15" height="15" fill="#556579"/>
+<text x="108" y="568" font-size="14">llama.cpp</text>
+<rect x="395" y="555" width="15" height="15" fill="#c47725"/>
+<text x="418" y="568" font-size="14">FlagMega Initial</text>
+<rect x="705" y="555" width="15" height="15" fill="#198269"/>
+<text x="728" y="568" font-size="14">FlagMega Agent</text>
+<text x="85" y="602" font-size="13">Median per-token latency.</text>
+<text x="85" y="626" font-size="13">First 8 generated tokens match llama.cpp; timed rounds reproduce the independent trajectory.</text>
+</g>
+</svg>

@@ -1,0 +1,44 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "matmul_glu" and call.variant == matmul_glu_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
+    for local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
+        local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
+        n_mask = local_n_offsets < ({{ call.active_n }})
+        weight_rows = {{ call.weight_row_offset }}
+        destination_offsets = {{ call.destination_offset }}
+{% if call.weight_encoding == "IQ4_XS" %}
+        gate = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
+        up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+{% else %}
+        gate = _flagmega_q4_k_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
+        up = _flagmega_q4_k_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+{% endif %}
+        result = _flagmega_silu(gate) * up
+{% if iq4_mode == 'refined' and call.weight_encoding == 'IQ4_XS' %}
+        result = _flagmega_iq4_refine_glu({{ call.value }}, {{ call.gate_weight }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }}, result)
+{% endif %}
+        tl.store({{ call.result }} + destination_offsets, result.to(tl.bfloat16), mask=n_mask)
+{% else %}
+    for local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
+        n_mask = local_n_offsets < ({{ call.active_n }})
+        weight_rows = {{ call.weight_row_offset }}
+        scale_rows = {{ call.scale_row_offset }}
+        destination_offsets = {{ call.destination_offset }}
+        _flagmega_block_glu_local_tile(
+            {{ call.value }}, {{ call.gate_weight }}, {{ call.up_weight }},
+            {{ call.gate_scale }}, {{ call.up_scale }}, {{ call.result }},
+            weight_rows, scale_rows, destination_offsets, n_mask,
+            {{ call.k }}, {{ call.block_k }},
+        )
+{% endif %}
+
+
+{% endif %}
+{% endfor %}

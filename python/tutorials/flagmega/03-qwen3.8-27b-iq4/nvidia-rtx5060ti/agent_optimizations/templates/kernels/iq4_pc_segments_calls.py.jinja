@@ -1,0 +1,101 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == pc_family and call.facts.transport | default('') == 'bulk_tma' and (call.facts.weight_segments | default(false)) %}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% set glu = call.family == 'matmul_glu' %}
+{% set fields = call.pipeline_channels[0].fields %}
+{% set parts = call.parameters.weight_segments %}
+{% set count = 2 if glu else 1 %}
+{% set groups = range(count) %}
+{% set chunk = call.parameters.iq4_chunk %}
+{% set tn = call.tile_n %}
+{% set rows = [tn, 8] | min %}
+{% import "kernels/iq4_pc_activation_calls.py.jinja" as activation with context %}
+{% set dual = call.facts.activation_parts | default(1) == 2 %}
+
+@triton.jit(noinline={{ 'False' if call.facts.leaf_inline | default(false) else 'True' }})
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,)) | join(', ') }}):
+{{ entry.mesh_coordinates() }}
+    _pc_bars = tle.gpu.alloc_barriers({{ count }}, expect_bytes={{ tn * (call.k // 256) * 136 }})
+    for _pc_tile in tl.range(0, triton.cdiv({{ call.local_n_capacity }}, {{ tn }})):
+        _pc_slot = {{ writer }}.acquire(_pc_tile)
+        local_n_offsets = _pc_tile * {{ tn }}
+        _pc_global_n = {{ call.global_n }}
+        _pc_rows = tl.maximum(0, tl.minimum({{ tn }}, {{ call.active_n }} - local_n_offsets))
+        _pc_bytes = _pc_rows * {{ (call.k // 256) * 136 }}
+        if _pc_bytes > 0:
+{% for group in groups %}
+            _pc_bar{{ group }} = _flagmega_iq4_barrier_address(_pc_bars[{{ group }}])
+            _flagmega_iq4_bulk_expect(_pc_bar{{ group }}, _pc_bytes)
+{% for part in parts %}
+{% set offset = parts[:loop.index0] | sum %}
+{% set field = fields[group * (parts | length) + loop.index0] %}
+            _pc_part_size = tl.minimum(tl.maximum(_pc_bytes - {{ offset * 4 }}, 0), {{ part * 4 }})
+            if _pc_part_size > 0:
+                _pc_target = tle.gpu.local_ptr(_pc_slot.{{ field.name }}, (0,))
+                _flagmega_iq4_bulk_transfer(
+                    {{ call.gate_weight if glu and group == 0 else call.up_weight if glu else call.weight }} + _pc_global_n * {{ (call.k // 256) * 136 }} + {{ offset * 4 }},
+                    _pc_target, _pc_bar{{ group }}, _pc_part_size)
+{% endfor %}
+{% endfor %}
+{% for group in groups %}
+            tle.gpu.barrier_wait(_pc_bars[{{ group }}], phaseIdx=_pc_tile)
+{% endfor %}
+        {{ writer }}.commit(_pc_tile)
+    {{ writer }}.close(triton.cdiv({{ call.local_n_capacity }}, {{ tn }}))
+
+
+@triton.jit(noinline={{ 'False' if call.facts.leaf_inline | default(false) else 'True' }})
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(', ') }}):
+{{ entry.mesh_coordinates() }}
+{{ activation.quantize(call) }}
+    _pc_layout: tl.constexpr = tle.gpu.BlockEncoding([1, 1], [1, 32], [{{ rows }}, {{ 8 // rows }}], [1, 0])
+    _pc_row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, _pc_layout)
+    _pc_word_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, _pc_layout)
+    _pc_row = tle.gpu.set_layout(tl.arange(0, {{ tn }}), _pc_row_layout)
+    _pc_word = tle.gpu.set_layout(tl.arange(0, {{ chunk // 8 }}), _pc_word_layout)
+    for _pc_tile in tl.range(0, triton.cdiv({{ call.local_n_capacity }}, {{ tn }})):
+        _pc_ready = {{ reader }}.wait(_pc_tile)
+        local_n_offsets = _pc_tile * {{ tn }} + _pc_row
+        _pc_n_mask = local_n_offsets < ({{ call.active_n }})
+{% for group in groups %}
+        _pc_acc{{ group }} = tle.gpu.set_layout(tl.zeros(({{ tn }}, {{ chunk // 8 }}), tl.float32), _pc_layout)
+{% endfor %}
+        for _pc_k_start in tl.range(0, {{ call.k // 8 }}, {{ chunk // 8 }}):
+            _pc_index = _pc_k_start + _pc_word
+            _pc_k_mask = _pc_index < {{ call.k // 8 }}
+            _pc_valid = _pc_n_mask[:, None] & _pc_k_mask[None, :]
+            _pc_base = _pc_row[:, None] * {{ (call.k // 256) * 34 }} + (_pc_index // 32)[None, :] * 34
+            _pc_group = _pc_index % 32 // 4
+            _pc_qindex = (_pc_index // 4) * 8 + (_pc_index % 4) * {{ 2 if q8_nibble_pair | default(false) else 1 }}
+{{ activation.loads(call) }}
+{% for group in groups %}
+{% for value_name, index in [('header', '_pc_base'), ('meta', '_pc_base + 1'), ('packed', '_pc_base + 2 + (_pc_index % 32)[None, :]')] %}
+            _pc_{{ value_name }} = _flagmega_iq4_fragment{{ parts | length }}(
+{% for part in parts %}
+                _pc_ready.slot.{{ fields[group * (parts | length) + loop.index0].name }},
+{% endfor %}
+                {{ index }}, _pc_valid, {{ tn }}, {{ chunk // 8 }})
+{% endfor %}
+            _pc_delta = (_pc_header & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+            _pc_sc = (((_pc_meta >> (_pc_group[None, :] * 4)) & 15) | (((_pc_header >> (16 + _pc_group[None, :] * 2)) & 3) << 4)).to(tl.int32) - 32
+{% if dual %}
+            _pc_dot0, _pc_dot1 = _flagmega_iq4_dp8_dual(_pc_packed, _pc_lo[None, :], _pc_hi[None, :], _pc_lo1[None, :], _pc_hi1[None, :])
+            _pc_acc{{ group }} += (_pc_dot0 * _pc_sc).to(tl.float32) * (_pc_delta * _pc_scale[None, :]) + (_pc_dot1 * _pc_sc).to(tl.float32) * (_pc_delta * _pc_scale1[None, :])
+{% else %}
+            _pc_dot = _flagmega_iq4_dp8(_pc_packed, _pc_lo[None, :], _pc_hi[None, :]) * _pc_sc
+            _pc_acc{{ group }} += _pc_dot.to(tl.float32) * (_pc_delta * _pc_scale[None, :])
+{% endif %}
+{% endfor %}
+{% if glu %}
+        _pc_gate = tl.sum(_pc_acc0, 1)
+        _pc_up = tl.sum(_pc_acc1, 1)
+        _pc_result = _flagmega_silu(_pc_gate) * _pc_up
+{% else %}
+        _pc_result = tl.sum(_pc_acc0, 1)
+{% endif %}
+        tl.store({{ call.result }} + ({{ call.destination_offset }}), _pc_result.to({{ call.result }}.dtype.element_ty), mask=_pc_n_mask)
+        {{ reader }}.release(_pc_tile)
+{% endif %}
+{% endfor %}

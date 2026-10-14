@@ -1,0 +1,112 @@
+{
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "steps": 64,
+  "repeats": 6,
+  "mean_ms": 35.384047541811015,
+  "tokens_per_second": 28.26132309534022,
+  "packed_model_bytes_per_token": 13611666080,
+  "model_bandwidth_gb_s": 384.68369295276307,
+  "model_bandwidth_utilization": 0.8586689574838461,
+  "resource_report": {
+    "name": "flagmega_main",
+    "num_warps": 12,
+    "registers_per_thread": 149,
+    "shared_memory_bytes": 97516,
+    "stack_frame_bytes": 0,
+    "spill_store_bytes": 0,
+    "spill_load_bytes": 0,
+    "local_memory_bytes": 0,
+    "spill_bytes": 0,
+    "required_resident_blocks_per_sm": 1,
+    "resident_registers": 57216,
+    "resident_shared_memory_bytes": 97516,
+    "global_scratch_bytes": 94592,
+    "cooperative_grid": true,
+    "grid": [
+      32,
+      1,
+      1
+    ]
+  },
+  "generated_source_sha256": "ee8a7aae97fdd63ece00a4112a80aeed35c9f67c5b8805b83b40e7d0da9da0c4",
+  "artifact_semantic_hash": "6bf63f0a599adb83fdd767fc879f9b8571ed9e93e8580ab18d46d593af56bd1c",
+  "measurement_boundary": "Host wall clock around graph replay, GPU greedy and one CPU token return",
+  "llama_commit": "4413a192410fad1f054e9216114087a3e01527a0",
+  "llama_token_agreement": 1.0,
+  "golden_prefix": [
+    271,
+    248068,
+    198,
+    97237,
+    96094,
+    96876,
+    4960,
+    98832
+  ],
+  "required_generated_prefix": 8,
+  "prefix_match": true,
+  "llama_performance": {
+    "mean_ms": 36.11684046875,
+    "median_ms": 35.993194,
+    "tokens_per_second": 27.687914751713883,
+    "measurement": "Host steady_clock around decode, GPU greedy and one CPU token return",
+    "llama_commit": "4413a192410fad1f054e9216114087a3e01527a0",
+    "checkpoint_sha256": "ea5a3c45d407f9b9e5d2c0d647f0ea600f486f6b86b92b56d0823ba073dae675",
+    "flash_attention": true,
+    "sampling": "Context backend greedy sampler; one CPU token returned, no full-vocabulary download",
+    "kv_dtype": "BF16",
+    "intermediate_dtype": "llama.cpp native F32",
+    "steps": 64,
+    "repeats": 6,
+    "prompt_token_count": 17
+  },
+  "speedup_vs_llama_cpp": 1.0207096976702026,
+  "current_compiler_baseline": {
+    "mean_ms": 448.88721519661584,
+    "tokens_per_second": 2.2277310784224333,
+    "measurement": "Host wall clock around graph replay, GPU greedy and one CPU token return",
+    "source_sha256": "4b9f3eaf4558f32d9ff90c5f3eb90333b57b1775ba85eeaefc5504daa01206e2",
+    "resource_report": {
+      "name": "flagmega_main",
+      "num_warps": 4,
+      "registers_per_thread": 136,
+      "shared_memory_bytes": 4096,
+      "stack_frame_bytes": 0,
+      "spill_store_bytes": 0,
+      "spill_load_bytes": 0,
+      "local_memory_bytes": 0,
+      "spill_bytes": 0,
+      "required_resident_blocks_per_sm": 1,
+      "resident_registers": 17408,
+      "resident_shared_memory_bytes": 4096,
+      "global_scratch_bytes": 80256,
+      "cooperative_grid": true,
+      "grid": [
+        32,
+        1,
+        1
+      ]
+    }
+  },
+  "speedup_vs_current_compiler_baseline": 12.686146622039075,
+  "compiler_core_source_sha256": "0f6f92c536fdd4c100e5999905d5a4effd23c365f48c05daf0eadb5128d9717a",
+  "median_ms": 35.37938202498481,
+  "chart_variants": {
+    "native": {
+      "median_ms": 35.993194,
+      "tokens_per_second": 27.687914751713883
+    },
+    "baseline": {
+      "median_ms": 448.88374698348343,
+      "tokens_per_second": 2.2277310784224333
+    },
+    "agent": {
+      "median_ms": 35.37938202498481,
+      "tokens_per_second": 28.26132309534022
+    }
+  },
+  "chart_statistics": {
+    "decode_latency": "Pooled median per-token latency",
+    "decode_throughput": "1000 / mean per-token latency"
+  }
+}

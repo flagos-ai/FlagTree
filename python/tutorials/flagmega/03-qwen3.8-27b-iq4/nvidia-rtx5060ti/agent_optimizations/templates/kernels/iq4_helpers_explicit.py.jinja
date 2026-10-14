@@ -1,0 +1,32 @@
+{% include "kernels/iq4_lookup.py.jinja" %}
+@triton.jit
+def _flagmega_iq4_fast_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    ROWS: tl.constexpr = row_offsets.shape[0]
+    weight_u32 = weight.to(tl.pointer_type(tl.uint32))
+    layout: tl.constexpr = tle.gpu.BlockEncoding([1, 1], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, layout)
+    k_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, layout)
+    row_offsets = tle.gpu.set_layout(row_offsets, row_layout)
+    n_mask = tle.gpu.set_layout(n_mask, row_layout)
+    word = tle.gpu.set_layout(tl.arange(0, {{ iq4_chunk // 8 }}), k_layout)
+    block = word // 32
+    group = word % 32 // 4
+    lane = word % 4 * 4
+    acc = tle.gpu.set_layout(tl.zeros((ROWS, {{ iq4_chunk // 8 }}), tl.float32), layout)
+    for k_start in tl.range(0, K, {{ iq4_chunk }}):
+        k_low = k_start + block * 256 + group * 32 + lane
+        active = n_mask[:, None] & (k_low[None, :] < K)
+        base = row_offsets[:, None] + (k_start // 256 + block[None, :]) * 136
+        header = tl.load(weight_u32 + base // 4, mask=active, other=0)
+        scales = tl.load(weight_u32 + base // 4 + 1, mask=active, other=0)
+        delta = (header & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+        sc = ((scales >> (group[None, :] * 4)) & 15) | (((header >> (16 + group[None, :] * 2)) & 3) << 4)
+        factor = delta * (sc.to(tl.float32) - 32.)
+        packed = tl.load(weight_u32 + base // 4 + 2 + group[None, :] * 4 + lane[None, :] // 4, mask=active, other=0)
+        for i in tl.static_range(4):
+            low = _flagmega_iq4_lookup((packed >> (i * 8)) & 15)
+            high = _flagmega_iq4_lookup((packed >> (i * 8 + 4)) & 15)
+            x_low = tl.load(source + k_low + i, mask=k_low + i < K, other=0).to(tl.float32)
+            x_high = tl.load(source + k_low + i + 16, mask=k_low + i + 16 < K, other=0).to(tl.float32)
+            acc += factor * low * x_low[None, :] + factor * high * x_high[None, :]
+    return tl.sum(acc, axis=1)

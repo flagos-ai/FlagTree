@@ -1,0 +1,304 @@
+{% if gdn_fast_head | default(false) %}
+{% include "kernels/iq4_head_helpers.py.jinja" %}
+{% endif %}
+# Preserve the current baseline's per-row reduction geometry when the
+# enclosing megakernel has eight compute warps instead of four.
+@triton.jit
+def _flagmega_gdn_fixed_sum(value, axis: tl.constexpr):
+    if value.dtype.is_floating():
+        if len(value.shape) == 2 and value.shape[1] == 128 and axis == 1:
+            layout: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+            value = tle.gpu.set_layout(value, layout)
+        elif len(value.shape) == 1 and value.shape[0] == 128 and axis == 0:
+            layout: tl.constexpr = tle.gpu.BlockEncoding([1], [32], [{{ iq4_warps }}], [0])
+            value = tle.gpu.set_layout(value, layout)
+    return tl.sum(value, axis)
+
+# flagmega-kernel: gdn_recurrent/persistent
+@triton.jit
+def _flagmega_dense_rows(
+    source, weight, rows, active,
+    K: tl.constexpr, TILE_K: tl.constexpr,
+    UNIFORM_ROWS: tl.constexpr = False,
+    ENCODING: tl.constexpr = "",
+):
+    """Dense projections for the value heads touched by one local tile."""
+    lane_active = active
+    if UNIFORM_ROWS:
+        # The logical shard map proves that active lanes name the same row.
+        # Inactive lanes need not carry that row; an empty tile reads none.
+        rows = tl.min(tl.where(active, rows.to(tl.int64), 0x7fffffffffffffff), 0)
+        active = _flagmega_gdn_fixed_sum(active.to(tl.int32), 0) > 0
+        rows = tl.where(active, rows, 0)
+    REDUCE_AXIS: tl.constexpr = len(rows.shape)
+{% if gdn_fast_head | default(false) %}
+    if ENCODING == "IQ4_XS" and REDUCE_AXIS == 0:
+        packed_rows = rows * (K // 256) * 136 + tl.arange(0, 1)
+        row_active = active & tl.full((1,), True, tl.int1)
+        value = tl.sum(_flagmega_iq4_head_dot(source, weight, packed_rows, row_active, K), 0)
+        return tl.where(lane_active, value.to(tl.bfloat16).to(tl.float32), 0.0)
+{% endif %}
+    if ENCODING == "IQ4_XS" or ENCODING == "Q4_K":
+        weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+        weight_f16 = weight.to(tl.pointer_type(tl.float16))
+        if ENCODING == "IQ4_XS":
+            weight_u16 = weight.to(tl.pointer_type(tl.uint16))
+            block_bytes: tl.constexpr = 136
+        else:
+            block_bytes: tl.constexpr = 144
+        packed_rows = rows * (K // 256) * block_bytes
+        accumulator = tl.full(rows.shape, 0, tl.float32)
+        for k_start in tl.range(0, K, 128):
+            k = k_start + tl.arange(0, 128)
+            km = k < K
+            block = k // 256
+            inside = k % 256
+            group = inside // 32
+            lane = inside % 32
+            base = tl.expand_dims(packed_rows, REDUCE_AXIS) + block * block_bytes
+            active_matrix = tl.expand_dims(active, REDUCE_AXIS) & km
+            d = tl.load(weight_f16 + base // 2, mask=active_matrix, other=0.0).to(tl.float32)
+            if ENCODING == "IQ4_XS":
+                sl = tl.load(weight_u8 + base + 4 + group // 2, mask=active_matrix, other=0)
+                sh = tl.load(weight_u16 + (base + 2) // 2, mask=active_matrix, other=0)
+                sc = ((sl >> ((group % 2) * 4)) & 0xF) | (((sh >> (group * 2)) & 0x3) * 16)
+                packed = tl.load(weight_u8 + base + 8 + group * 16 + (lane % 16), mask=active_matrix, other=0)
+                code = tl.where((lane // 16) == 0, packed & 0xF, packed >> 4)
+                cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+                decoded = d * (sc.to(tl.float32) - 32.0) * cv
+            else:
+                dmin = tl.load(weight_f16 + (base + 2) // 2, mask=active_matrix, other=0.0).to(tl.float32)
+                scales = weight_u8 + base + 4
+                s0 = tl.load(scales + group % 4, mask=active_matrix, other=0)
+                s1 = tl.load(scales + 4 + group % 4, mask=active_matrix, other=0)
+                s2 = tl.load(scales + 8 + group % 4, mask=active_matrix, other=0)
+                low_group = group < 4
+                sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+                mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+                packed = tl.load(weight_u8 + base + 16 + (group // 2) * 32 + lane, mask=active_matrix, other=0)
+                q = tl.where(group % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+                decoded = d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)
+            source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+            accumulator += _flagmega_gdn_fixed_sum(decoded * source_value, axis=REDUCE_AXIS)
+        return tl.where(lane_active, accumulator.to(tl.bfloat16).to(tl.float32), 0.0)
+    accumulator = tl.full(rows.shape, 0, tl.float32)
+    compensation = tl.full(rows.shape, 0, tl.float32)
+    for k_start in tl.range(0, K, TILE_K):
+        k_offsets = k_start + tl.arange(0, TILE_K)
+        source_value = tl.load(
+            source + k_offsets, mask=k_offsets < K, other=0.0,
+        ).to(tl.float32)
+        weight_value = tl.load(
+            weight + tl.expand_dims(rows, REDUCE_AXIS) * K + k_offsets,
+            mask=tl.expand_dims(active, REDUCE_AXIS) & (k_offsets < K),
+            other=0.0,
+        ).to(tl.float32)
+        partial = _flagmega_gdn_fixed_sum(weight_value * source_value, axis=REDUCE_AXIS)
+        corrected = partial - compensation
+        updated = accumulator + corrected
+        compensation = (updated - accumulator) - corrected
+        accumulator = updated
+    return tl.where(lane_active, accumulator.to(tl.bfloat16).to(tl.float32), 0.0)
+
+
+@triton.jit
+def _flagmega_gdn_head_gates(
+    beta_projection, a_projection, value_head, active,
+    a_log, dt_bias, ROUND_BETA: tl.constexpr,
+):
+    """Head-only gates, valid while this invocation's projection key matches."""
+    beta = tl.sigmoid(beta_projection)
+    if ROUND_BETA:
+        beta = beta.to(tl.bfloat16).to(tl.float32)
+    decay_input = a_projection + tl.load(
+        dt_bias + value_head, mask=active, other=0.0,
+    ).to(tl.float32)
+    softplus = tl.where(
+        decay_input > 20.0,
+        decay_input,
+        libdevice.log1p(libdevice.exp(decay_input)),
+    )
+    decay_log = -libdevice.exp(
+        tl.load(a_log + value_head, mask=active, other=0.0).to(tl.float32)
+    ) * softplus
+    decay = libdevice.exp(decay_log)
+    return beta, decay
+
+
+@triton.jit
+def _flagmega_gdn_uniform_head_sum(value):
+    # Match the original per-row 128-element reduction, including its four
+    # adjacent values per lane. Removed row warps replicate the same head.
+    parent: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+    layout: tl.constexpr = tle.gpu.SlicedEncoding(0, parent)
+    return tl.sum(tle.gpu.set_layout(value, layout), 0)
+
+
+@triton.jit
+def _flagmega_gdn_cached_head_vectors(qkv, head, active, KEY_HEADS: tl.constexpr,
+    KEY_DIM: tl.constexpr, REPEATS: tl.constexpr, TILED: tl.constexpr,
+    ADD: tl.constexpr, EPS: tl.constexpr, ROUND: tl.constexpr):
+    parent: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+    k = tle.gpu.set_layout(tl.arange(0, KEY_DIM), tle.gpu.SlicedEncoding(0, parent))
+    key_head = head % KEY_HEADS if TILED else head // REPEATS
+    q = tl.load(qkv + key_head * KEY_DIM + k, mask=active, other=0.).to(tl.float32)
+    v = tl.load(qkv + KEY_HEADS * KEY_DIM + key_head * KEY_DIM + k, mask=active, other=0.).to(tl.float32)
+    qs = _flagmega_gdn_uniform_head_sum(q * q)
+    vs = _flagmega_gdn_uniform_head_sum(v * v)
+    if ADD:
+        qn = tl.sqrt(qs + EPS); vn = tl.sqrt(vs + EPS)
+    else:
+        qn = tl.maximum(tl.sqrt(qs), EPS); vn = tl.maximum(tl.sqrt(vs), EPS)
+    q = q / qn; v = v / vn
+    if ROUND:
+        # These normalized values already have a BF16 rounding contract.
+        # Keep that representation in the loop cache; apply the FP32 query
+        # scale when reading it, with the original operation order.
+        return v.to(tl.bfloat16), q.to(tl.bfloat16)
+    else:
+        return v, q * (1.0 / (KEY_DIM ** 0.5))
+
+
+@triton.jit
+def _flagmega_gdn_cached_head_inverse(scratch, head, active, DIM: tl.constexpr, EPS: tl.constexpr):
+    parent: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+    k = tle.gpu.set_layout(tl.arange(0, triton.next_power_of_2(DIM)), tle.gpu.SlicedEncoding(0, parent))
+    core = tl.load(scratch + head * DIM + k, mask=active & (k < DIM), other=0.).to(tl.float32)
+    return tl.rsqrt(_flagmega_gdn_uniform_head_sum(core * core) / DIM + EPS)
+
+
+@triton.jit
+def _flagmega_gdn_recurrent_local_core_tile(
+    qkv, beta, decay, recurrent_state, core_scratch,
+    local_values, global_values, active,
+    VALUE_HEADS: tl.constexpr, KEY_HEADS: tl.constexpr,
+    KEY_DIM: tl.constexpr, VALUE_DIM: tl.constexpr,
+    REPEATS: tl.constexpr, TILE_K: tl.constexpr,
+    QK_NORM_ADD: tl.constexpr, QK_NORM_EPS: tl.constexpr,
+    ROUND_NORMALIZED_QK: tl.constexpr, ROUND_CORE: tl.constexpr,
+    old_state=None,
+    TILED_VALUE_HEADS: tl.constexpr = False,
+    uniform_value_head=None,
+    cached_key=None, cached_query=None,
+):
+    """Update exactly the state/value coordinates owned by this shard."""
+    KEY_TOTAL: tl.constexpr = KEY_HEADS * KEY_DIM
+    value_head = global_values // VALUE_DIM
+    value_coordinate = global_values % VALUE_DIM
+    if TILED_VALUE_HEADS:
+        key_head = value_head % KEY_HEADS
+    else:
+        key_head = value_head // REPEATS
+    # Proven uniform heads use a scalar gate. Other maps use one per value
+    # lane; both broadcast over the key dimension without a reduction.
+    decay_columns = tl.expand_dims(decay, len(decay.shape))
+
+    key_offsets = tl.arange(0, TILE_K)
+    key_mask = key_offsets < KEY_DIM
+    if cached_key is not None:
+        normalized_key = cached_key[None, :].to(tl.float32)
+        normalized_query = cached_query[None, :].to(tl.float32)
+        if ROUND_NORMALIZED_QK:
+            normalized_query = normalized_query * (1.0 / (KEY_DIM ** 0.5))
+    elif uniform_value_head is not None:
+        parent: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+        head_key_offsets = tle.gpu.set_layout(key_offsets, tle.gpu.SlicedEncoding(0, parent))
+        head_key_mask = head_key_offsets < KEY_DIM
+        head = uniform_value_head % KEY_HEADS if TILED_VALUE_HEADS else uniform_value_head // REPEATS
+        head_active = uniform_value_head < VALUE_HEADS
+        query_vector = tl.load(qkv + head * KEY_DIM + head_key_offsets, mask=head_active & head_key_mask, other=0.0).to(tl.float32)
+        key_vector = tl.load(qkv + KEY_TOTAL + head * KEY_DIM + head_key_offsets, mask=head_active & head_key_mask, other=0.0).to(tl.float32)
+        query_square_sum = _flagmega_gdn_uniform_head_sum(query_vector * query_vector)
+        key_square_sum = _flagmega_gdn_uniform_head_sum(key_vector * key_vector)
+        if QK_NORM_ADD:
+            query_norm_scalar = tl.sqrt(query_square_sum + QK_NORM_EPS)
+            key_norm_scalar = tl.sqrt(key_square_sum + QK_NORM_EPS)
+        else:
+            query_norm_scalar = tl.maximum(tl.sqrt(query_square_sum), QK_NORM_EPS)
+            key_norm_scalar = tl.maximum(tl.sqrt(key_square_sum), QK_NORM_EPS)
+        normalized_key = (key_vector / key_norm_scalar)[None, :]
+        normalized_query = (query_vector / query_norm_scalar)[None, :]
+    else:
+        query_raw = tl.load(qkv + key_head[:, None] * KEY_DIM + key_offsets[None, :],
+            mask=active[:, None] & key_mask[None, :], other=0.0).to(tl.float32)
+        key_raw = tl.load(qkv + KEY_TOTAL + key_head[:, None] * KEY_DIM + key_offsets[None, :],
+            mask=active[:, None] & key_mask[None, :], other=0.0).to(tl.float32)
+        if QK_NORM_ADD:
+            query_norm = tl.sqrt(_flagmega_gdn_fixed_sum(query_raw * query_raw, axis=1) + QK_NORM_EPS)
+            key_norm = tl.sqrt(_flagmega_gdn_fixed_sum(key_raw * key_raw, axis=1) + QK_NORM_EPS)
+        else:
+            query_norm = tl.maximum(tl.sqrt(_flagmega_gdn_fixed_sum(query_raw * query_raw, axis=1)), QK_NORM_EPS)
+            key_norm = tl.maximum(tl.sqrt(_flagmega_gdn_fixed_sum(key_raw * key_raw, axis=1)), QK_NORM_EPS)
+        normalized_key = key_raw / key_norm[:, None]
+        normalized_query = query_raw / query_norm[:, None]
+    state_offsets = (
+        (
+            (value_head[:, None] * VALUE_DIM + value_coordinate[:, None])
+            * (KEY_DIM // 4)
+            + key_offsets[None, :] // 4
+        ) * 4
+        + key_offsets[None, :] % 4
+    )
+    state_mask = active[:, None] & key_mask[None, :]
+    if old_state is None:
+        old_state = tl.load(
+            recurrent_state + state_offsets, mask=state_mask, other=0.0,
+        ).to(tl.float32)
+    if ROUND_NORMALIZED_QK and cached_key is None:
+        normalized_key = normalized_key.to(tl.bfloat16).to(tl.float32)
+    recalled = _flagmega_gdn_fixed_sum(
+        old_state * decay_columns * normalized_key, axis=1,
+    )
+    target = tl.load(
+        qkv + 2 * KEY_TOTAL + global_values,
+        mask=active,
+        other=0.0,
+    ).to(tl.float32)
+    delta = (target - recalled) * beta
+    new_state = (
+        old_state * decay_columns
+        + normalized_key * delta[:, None]
+    )
+    tl.store(recurrent_state + state_offsets, new_state, mask=state_mask)
+    if ROUND_NORMALIZED_QK and cached_query is None:
+        normalized_query = normalized_query.to(tl.bfloat16).to(tl.float32)
+    if cached_query is None:
+        normalized_query *= 1.0 / (KEY_DIM ** 0.5)
+    core = _flagmega_gdn_fixed_sum(new_state * normalized_query, axis=1)
+    if ROUND_CORE:
+        core = core.to(tl.bfloat16).to(tl.float32)
+    tl.store(core_scratch + global_values, core, mask=active)
+
+
+@triton.jit
+def _flagmega_gdn_recurrent_local_norm_tile(
+    z, destination, norm_weight, core_scratch,
+    source_offsets, result_offsets, global_values, active,
+    VALUE_DIM: tl.constexpr, EPS: tl.constexpr,
+    uniform_value_head=None,
+    cached_inverse=None,
+):
+    """Normalize complete heads after every owner has published core values."""
+    value_head = global_values // VALUE_DIM
+    value_coordinate = global_values % VALUE_DIM
+    head_offsets = tl.arange(0, triton.next_power_of_2(VALUE_DIM))
+    head_mask = head_offsets < VALUE_DIM
+    if cached_inverse is not None:
+        inverse_rms = cached_inverse
+    elif uniform_value_head is not None:
+        parent: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ iq4_warps }}, 1], [1, 0])
+        uniform_offsets = tle.gpu.set_layout(head_offsets, tle.gpu.SlicedEncoding(0, parent))
+        head_core_vector = tl.load(core_scratch + uniform_value_head * VALUE_DIM + uniform_offsets,
+            mask=(tl.sum(active.to(tl.int32), 0) > 0) & (uniform_offsets < VALUE_DIM), other=0.0).to(tl.float32)
+        inverse_rms = tl.rsqrt(_flagmega_gdn_uniform_head_sum(head_core_vector * head_core_vector) / VALUE_DIM + EPS)
+    else:
+        head_core = tl.load(core_scratch + value_head[:, None] * VALUE_DIM + head_offsets[None, :],
+            mask=active[:, None] & head_mask[None, :], other=0.0).to(tl.float32)
+        inverse_rms = tl.rsqrt(_flagmega_gdn_fixed_sum(head_core * head_core, axis=1) / VALUE_DIM + EPS)
+    core = tl.load(core_scratch + global_values, mask=active, other=0.0)
+    norm = tl.load(
+        norm_weight + value_coordinate, mask=active, other=0.0,
+    ).to(tl.float32)
+    gate = tl.load(z + source_offsets, mask=active, other=0.0).to(tl.float32)
+    result = core * inverse_rms * norm * _flagmega_silu(gate)
+    tl.store(destination + result_offsets, result.to(tl.bfloat16), mask=active)

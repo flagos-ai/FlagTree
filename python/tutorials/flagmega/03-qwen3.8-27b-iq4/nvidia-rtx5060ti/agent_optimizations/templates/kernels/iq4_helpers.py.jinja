@@ -1,0 +1,29 @@
+{% include "kernels/iq4_lookup.py.jinja" %}
+@triton.jit
+def _flagmega_iq4_fast_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    ROWS: tl.constexpr = row_offsets.shape[0]
+    weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+    weight_f16 = weight.to(tl.pointer_type(tl.float16))
+    weight_u16 = weight.to(tl.pointer_type(tl.uint16))
+    byte = tl.arange(0, {{ iq4_chunk // 2 }})
+    # Each packed byte supplies two values 16 logical columns apart.
+    block = byte // 128
+    group = (byte % 128) // 16
+    lane = byte % 16
+    acc = tl.zeros((ROWS, {{ iq4_chunk // 2 }}), tl.float32)
+    for k_start in tl.range(0, K, {{ iq4_chunk }}):
+        k_low = k_start + block * 256 + group * 32 + lane
+        active = n_mask[:, None] & (k_low[None, :] < K)
+        base = row_offsets[:, None] + (k_start // 256 + block[None, :]) * 136
+        scale_l = tl.load(weight_u8 + base + 4 + group[None, :] // 2, mask=active, other=0)
+        scale_h = tl.load(weight_u16 + (base + 2) // 2, mask=active, other=0)
+        sc = ((scale_l >> ((group[None, :] % 2) * 4)) & 15) | (((scale_h >> (group[None, :] * 2)) & 3) << 4)
+        delta = tl.load(weight_f16 + base // 2, mask=active, other=0).to(tl.float32)
+        factor = delta * (sc.to(tl.float32) - 32.)
+        packed = tl.load(weight_u8 + base + 8 + group[None, :] * 16 + lane[None, :], mask=active, other=0)
+        low = _flagmega_iq4_lookup(packed & 15)
+        high = _flagmega_iq4_lookup(packed >> 4)
+        x_low = tl.load(source + k_low, mask=k_low < K, other=0).to(tl.float32)
+        x_high = tl.load(source + k_low + 16, mask=k_low + 16 < K, other=0).to(tl.float32)
+        acc += factor * low * x_low[None, :] + factor * high * x_high[None, :]
+    return tl.sum(acc, axis=1)

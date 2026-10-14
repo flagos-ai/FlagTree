@@ -1,0 +1,216 @@
+from agent_optimizations.transport import barrier_address as _flagmega_iq4_barrier_address
+
+@triton.jit
+def _flagmega_iq4_bulk_expect(bar, size):
+    tl.inline_asm_elementwise(
+        """{ .reg .pred leader; .reg .u32 lane; .reg .b64 state;
+        mov.u32 lane, %laneid; setp.eq.u32 leader, lane, 0;
+        @leader mbarrier.arrive.expect_tx.shared::cta.b64 state, [$1], $2;
+        mov.u32 $0, 0; }""", '=r,r,r',
+        [bar.to(tl.uint64).to(tl.uint32), size], tl.int32, is_pure=False, pack=1)
+
+
+@triton.jit
+def _flagmega_iq4_bulk_transfer(source, destination, bar, size):
+    tl.inline_asm_elementwise(
+        """{ .reg .pred leader; .reg .u32 lane;
+        mov.u32 lane, %laneid; setp.eq.u32 leader, lane, 0;
+        @leader cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$2], [$1], $4, [$3];
+        mov.u32 $0, 0; }""", '=r,l,r,r,r',
+        [source.to(tl.uint64), destination.to(tl.uint64).to(tl.uint32),
+         bar.to(tl.uint64).to(tl.uint32), size], tl.int32, is_pure=False, pack=1)
+
+
+@triton.jit
+def _flagmega_iq4_fragment2(main, tail, index, mask, ROWS: tl.constexpr, WORDS: tl.constexpr):
+    p0 = tle.gpu.local_ptr(main, (index,), [ROWS, WORDS])
+    p1 = tle.gpu.local_ptr(tail, (index - 2048,), [ROWS, WORDS])
+    return tl.load(tl.where(index < 2048, p0, p1), mask=mask, other=0)
+
+
+@triton.jit
+def _flagmega_iq4_fragment3(main, tail, tail2, index, mask, ROWS: tl.constexpr, WORDS: tl.constexpr):
+    p0 = tle.gpu.local_ptr(main, (index,), [ROWS, WORDS])
+    p1 = tle.gpu.local_ptr(tail, (index - 4096,), [ROWS, WORDS])
+    p2 = tle.gpu.local_ptr(tail2, (index - 4608,), [ROWS, WORDS])
+    return tl.load(tl.where(index < 4096, p0, tl.where(index < 4608, p1, p2)), mask=mask, other=0)
+
+
+@triton.jit
+def _flagmega_iq4_fragment4(main, tail, tail2, tail3, index, mask, ROWS: tl.constexpr, WORDS: tl.constexpr):
+    p0 = tle.gpu.local_ptr(main, (index,), [ROWS, WORDS])
+    p1 = tle.gpu.local_ptr(tail, (index - 2048,), [ROWS, WORDS])
+    p2 = tle.gpu.local_ptr(tail2, (index - 2560,), [ROWS, WORDS])
+    p3 = tle.gpu.local_ptr(tail3, (index - 2688,), [ROWS, WORDS])
+    return tl.load(tl.where(index < 2048, p0, tl.where(index < 2560, p1, tl.where(index < 2688, p2, p3))), mask=mask, other=0)
+
+
+@triton.jit
+def _flagmega_iq4_bulk_tma_copy(source, destination, bar, size):
+    tl.inline_asm_elementwise(
+        """{
+        .reg .pred leader;
+        .reg .u32 lane;
+        .reg .b64 state;
+        mov.u32 lane, %laneid;
+        setp.eq.u32 leader, lane, 0;
+        @leader mbarrier.arrive.expect_tx.shared::cta.b64 state, [$3], $4;
+        @leader cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [$2], [$1], $4, [$3];
+        mov.u32 $0, 0;
+        }""", constraints='=r,l,r,r,r', args=[source.to(tl.uint64), destination.to(tl.uint64).to(tl.uint32),
+                                              bar.to(tl.uint64).to(tl.uint32), size],
+        dtype=tl.int32, is_pure=False, pack=1)
+
+
+@triton.jit
+def _flagmega_iq4_dp8(packed, lo, hi):
+    return tl.inline_asm_elementwise(
+        """{
+        .reg .b32 selector0, selector1, choose, qhi;
+        .reg .b32 l0, h0, l1, h1, v0, v1, a, b;
+        and.b32 selector0, $1, 0x7777;
+        shr.u32 qhi, $1, 16;
+        and.b32 selector1, qhi, 0x7777;
+        and.b32 choose, $1, 0x88888888;
+        shr.u32 choose, choose, 1;
+        or.b32 choose, choose, 0x32103210;
+        prmt.b32 l0, 0xbfad9881, 0xf6eaddcf, selector0;
+        prmt.b32 h0, 0x26190d01, 0x71594535, selector0;
+        prmt.b32 v0, l0, h0, choose;
+        shr.u32 choose, choose, 16;
+        prmt.b32 l1, 0xbfad9881, 0xf6eaddcf, selector1;
+        prmt.b32 h1, 0x26190d01, 0x71594535, selector1;
+        prmt.b32 v1, l1, h1, choose;
+{% if q8_nibble_pair | default(false) %}
+        dp4a.s32.s32 $0, v0, $2, 0;
+        dp4a.s32.s32 $0, v1, $3, $0;
+{% else %}
+        prmt.b32 a, v0, v1, 0x6420;
+        prmt.b32 b, v0, v1, 0x7531;
+        dp4a.s32.s32 $0, a, $2, 0;
+        dp4a.s32.s32 $0, b, $3, $0;
+{% endif %}
+        }""", constraints='=r,r,r,r', args=[packed.to(tl.int32), lo, hi],
+        dtype=tl.int32, is_pure=True, pack=1)
+
+
+@triton.jit(noinline=True)
+def _flagmega_iq4_q8_shared(source, words, scales, tail_words, tail_scales, K: tl.constexpr,
+                           SPLIT_GROUPS: tl.constexpr):
+    layout: tl.constexpr = tle.gpu.BlockEncoding({{ '[1, 4], [4, 8]' if q8_vector_quant | default(false) else '[1, 1], [1, 32]' }}, [8, 1], [1, 0])
+    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, layout)
+    col_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, layout)
+    group = tle.gpu.set_layout(tl.arange(0, {{ q8_group_tile | default(8) }}), row_layout)
+    lane = tle.gpu.set_layout(tl.arange(0, 32), col_layout)
+    for group_start in tl.range(0, K // 32, {{ q8_group_tile | default(8) }}):
+        g = group_start + group
+        value = tl.load(source + g[:, None] * 32 + {{ '(lane // 2 + (lane % 2) * 16)' if q8_nibble_pair | default(false) else 'lane' }}[None, :], mask=g[:, None] < K // 32, other=0).to(tl.float32)
+        maximum = tl.max(tl.abs(value), 1)
+        scale = maximum / 127.0
+        inverse = tl.where(maximum > 0, 127.0 / maximum, 0.0)
+        q = tl.inline_asm_elementwise('cvt.rni.s32.f32 $0, $1;', '=r,f',
+             [value * inverse[:, None]], dtype=tl.int32, is_pure=True, pack=1)
+        q = (q & 255).to(tl.uint32).reshape(({{ q8_group_tile | default(8) }}, 8, 4))
+        packed = tl.sum(q << (tl.arange(0, 4)[None, None, :] * 8), 2)
+        ids = g[:, None] * 8 + tl.arange(0, 8)[None, :]
+        if SPLIT_GROUPS > 0:
+            if group_start < SPLIT_GROUPS:
+                tl.store(tle.gpu.local_ptr(words, (ids,), [{{ q8_group_tile | default(8) }}, 8]), packed, mask=g[:, None] < K // 32)
+                tl.store(tle.gpu.local_ptr(scales, (g,)), scale.to(tl.float16), mask=g < K // 32)
+            else:
+                tl.store(tle.gpu.local_ptr(tail_words, (ids - SPLIT_GROUPS * 8,), [{{ q8_group_tile | default(8) }}, 8]), packed, mask=g[:, None] < K // 32)
+                tl.store(tle.gpu.local_ptr(tail_scales, (g - SPLIT_GROUPS,)), scale.to(tl.float16), mask=g < K // 32)
+        else:
+            tl.store(tle.gpu.local_ptr(words, (ids,), [{{ q8_group_tile | default(8) }}, 8]), packed, mask=g[:, None] < K // 32)
+            tl.store(tle.gpu.local_ptr(scales, (g,)), scale.to(tl.float16), mask=g < K // 32)
+    tl.debug_barrier()
+
+
+@triton.jit(noinline=True)
+def _flagmega_iq4_q8_shared_dual(source, words, scales, residual_words, residual_scales,
+                               tail_words, tail_scales, residual_tail_words, residual_tail_scales,
+                               K: tl.constexpr, SPLIT_GROUPS: tl.constexpr):
+    layout: tl.constexpr = tle.gpu.BlockEncoding({{ '[1, 4], [4, 8]' if q8_vector_quant | default(false) else '[1, 1], [1, 32]' }}, [8, 1], [1, 0])
+    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, layout)
+    col_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, layout)
+    group = tle.gpu.set_layout(tl.arange(0, {{ q8_group_tile | default(8) }}), row_layout)
+    lane = tle.gpu.set_layout(tl.arange(0, 32), col_layout)
+    for group_start in tl.range(0, K // 32, {{ q8_group_tile | default(8) }}):
+        g = group_start + group
+        value = tl.load(source + g[:, None] * 32 + {{ '(lane // 2 + (lane % 2) * 16)' if q8_nibble_pair | default(false) else 'lane' }}[None, :], mask=g[:, None] < K // 32, other=0).to(tl.float32)
+        maximum = tl.max(tl.abs(value), 1)
+        scale = (maximum / 127.0).to(tl.float16)
+        inverse = tl.where(maximum > 0, 127.0 / maximum, 0.0)
+        q0 = tl.inline_asm_elementwise('cvt.rni.s32.f32 $0, $1;', '=r,f',
+             [value * inverse[:, None]], dtype=tl.int32, is_pure=True, pack=1)
+        residual = value - q0.to(tl.float32) * scale.to(tl.float32)[:, None]
+        maximum1 = tl.max(tl.abs(residual), 1)
+        scale1 = (maximum1 / 127.0).to(tl.float16)
+        inverse1 = tl.where(maximum1 > 0, 127.0 / maximum1, 0.0)
+        q1 = tl.inline_asm_elementwise('cvt.rni.s32.f32 $0, $1;', '=r,f',
+             [residual * inverse1[:, None]], dtype=tl.int32, is_pure=True, pack=1)
+        shift = tl.arange(0, 4)[None, None, :] * 8
+        packed0 = tl.sum(((q0 & 255).to(tl.uint32).reshape(({{ q8_group_tile | default(8) }}, 8, 4))) << shift, 2)
+        packed1 = tl.sum(((q1 & 255).to(tl.uint32).reshape(({{ q8_group_tile | default(8) }}, 8, 4))) << shift, 2)
+        ids = g[:, None] * 8 + tl.arange(0, 8)[None, :]
+        if SPLIT_GROUPS > 0 and group_start >= SPLIT_GROUPS:
+            tl.store(tle.gpu.local_ptr(tail_words, (ids - SPLIT_GROUPS * 8,), [{{ q8_group_tile | default(8) }}, 8]), packed0, mask=g[:, None] < K // 32)
+            tl.store(tle.gpu.local_ptr(residual_tail_words, (ids - SPLIT_GROUPS * 8,), [{{ q8_group_tile | default(8) }}, 8]), packed1, mask=g[:, None] < K // 32)
+            tl.store(tle.gpu.local_ptr(tail_scales, (g - SPLIT_GROUPS,)), scale, mask=g < K // 32)
+            tl.store(tle.gpu.local_ptr(residual_tail_scales, (g - SPLIT_GROUPS,)), scale1, mask=g < K // 32)
+        else:
+            tl.store(tle.gpu.local_ptr(words, (ids,), [{{ q8_group_tile | default(8) }}, 8]), packed0, mask=g[:, None] < K // 32)
+            tl.store(tle.gpu.local_ptr(residual_words, (ids,), [{{ q8_group_tile | default(8) }}, 8]), packed1, mask=g[:, None] < K // 32)
+            tl.store(tle.gpu.local_ptr(scales, (g,)), scale, mask=g < K // 32)
+            tl.store(tle.gpu.local_ptr(residual_scales, (g,)), scale1, mask=g < K // 32)
+    tl.debug_barrier()
+
+
+@triton.jit
+def _flagmega_iq4_q8_global_dual(source, words, scales, residual_words, residual_scales, K: tl.constexpr,
+                               PACKED: tl.constexpr = False):
+    layout: tl.constexpr = tle.gpu.BlockEncoding({{ '[1, 4], [4, 8]' if q8_vector_quant | default(false) else '[1, 1], [1, 32]' }}, [8, 1], [1, 0])
+    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, layout)
+    col_layout: tl.constexpr = tle.gpu.SlicedEncoding(0, layout)
+    group = tle.gpu.set_layout(tl.arange(0, {{ q8_group_tile | default(8) }}), row_layout)
+    lane = tle.gpu.set_layout(tl.arange(0, 32), col_layout)
+    for group_start in tl.range(0, K // 32, {{ q8_group_tile | default(8) }}):
+        g = group_start + group
+        value = tl.load(source + g[:, None] * 32 + {{ '(lane // 2 + (lane % 2) * 16)' if q8_nibble_pair | default(false) else 'lane' }}[None, :], mask=g[:, None] < K // 32, other=0).to(tl.float32)
+        maximum = tl.max(tl.abs(value), 1)
+        scale = (maximum / 127.0).to(tl.float16)
+        inverse = tl.where(maximum > 0, 127.0 / maximum, 0.0)
+        q0 = tl.inline_asm_elementwise('cvt.rni.s32.f32 $0, $1;', '=r,f',
+             [value * inverse[:, None]], dtype=tl.int32, is_pure=True, pack=1)
+        residual = value - q0.to(tl.float32) * scale.to(tl.float32)[:, None]
+        maximum1 = tl.max(tl.abs(residual), 1)
+        scale1 = (maximum1 / 127.0).to(tl.float16)
+        inverse1 = tl.where(maximum1 > 0, 127.0 / maximum1, 0.0)
+        q1 = tl.inline_asm_elementwise('cvt.rni.s32.f32 $0, $1;', '=r,f',
+             [residual * inverse1[:, None]], dtype=tl.int32, is_pure=True, pack=1)
+        shift = tl.arange(0, 4)[None, None, :] * 8
+        packed0 = tl.sum(((q0 & 255).to(tl.uint32).reshape(({{ q8_group_tile | default(8) }}, 8, 4))) << shift, 2)
+        packed1 = tl.sum(((q1 & 255).to(tl.uint32).reshape(({{ q8_group_tile | default(8) }}, 8, 4))) << shift, 2)
+        ids = g[:, None] * 8 + tl.arange(0, 8)[None, :]
+        if PACKED:
+            both_words = packed0.to(tl.uint64) | (packed1.to(tl.uint64) << 32)
+            both_scales = scale.to(tl.uint16, bitcast=True).to(tl.uint32) | (scale1.to(tl.uint16, bitcast=True).to(tl.uint32) << 16)
+            tl.store(words + ids, both_words, mask=g[:, None] < K // 32)
+            tl.store(scales + g, both_scales, mask=g < K // 32)
+        else:
+            tl.store(words + ids, packed0, mask=g[:, None] < K // 32)
+            tl.store(residual_words + ids, packed1, mask=g[:, None] < K // 32)
+            tl.store(scales + g, scale, mask=g < K // 32)
+            tl.store(residual_scales + g, scale1, mask=g < K // 32)
+    tl.debug_barrier()
+
+
+{% if q8_nibble_pair | default(false) %}
+@triton.jit
+def _flagmega_iq4_dp8_dual(packed,lo,hi,lo1,hi1):
+    return tl.inline_asm_elementwise('{\n        .reg .b32 selector0, selector1, choose, qhi;\n        .reg .b32 l0, h0, l1, h1, v0, v1, a, b;\n        and.b32 selector0, $2, 0x7777;\n        shr.u32 qhi, $2, 16;\n        and.b32 selector1, qhi, 0x7777;\n        and.b32 choose, $2, 0x88888888;\n        shr.u32 choose, choose, 1;\n        or.b32 choose, choose, 0x32103210;\n        prmt.b32 l0, 0xbfad9881, 0xf6eaddcf, selector0;\n        prmt.b32 h0, 0x26190d01, 0x71594535, selector0;\n        prmt.b32 v0, l0, h0, choose;\n        shr.u32 choose, choose, 16;\n        prmt.b32 l1, 0xbfad9881, 0xf6eaddcf, selector1;\n        prmt.b32 h1, 0x26190d01, 0x71594535, selector1;\n        prmt.b32 v1, l1, h1, choose;\n\n\n        dp4a.s32.s32 $0, v0, $3, 0;\n        dp4a.s32.s32 $0, v1, $4, $0;\n        dp4a.s32.s32 $1, v0, $5, 0;\n        dp4a.s32.s32 $1, v1, $6, $1;\n        }', '=r,=r,r,r,r,r,r', [packed.to(tl.int32),lo,hi,lo1,hi1], dtype=(tl.int32,tl.int32),is_pure=True,pack=1)
+{% else %}
+@triton.jit
+def _flagmega_iq4_dp8_dual(packed,lo,hi,lo1,hi1):
+    return tl.inline_asm_elementwise('{\n        .reg .b32 selector0, selector1, choose, qhi;\n        .reg .b32 l0, h0, l1, h1, v0, v1, a, b;\n        and.b32 selector0, $2, 0x7777;\n        shr.u32 qhi, $2, 16;\n        and.b32 selector1, qhi, 0x7777;\n        and.b32 choose, $2, 0x88888888;\n        shr.u32 choose, choose, 1;\n        or.b32 choose, choose, 0x32103210;\n        prmt.b32 l0, 0xbfad9881, 0xf6eaddcf, selector0;\n        prmt.b32 h0, 0x26190d01, 0x71594535, selector0;\n        prmt.b32 v0, l0, h0, choose;\n        shr.u32 choose, choose, 16;\n        prmt.b32 l1, 0xbfad9881, 0xf6eaddcf, selector1;\n        prmt.b32 h1, 0x26190d01, 0x71594535, selector1;\n        prmt.b32 v1, l1, h1, choose;\n        prmt.b32 a, v0, v1, 0x6420;\n        prmt.b32 b, v0, v1, 0x7531;\n        dp4a.s32.s32 $0, a, $3, 0;\n        dp4a.s32.s32 $0, b, $4, $0;\n        dp4a.s32.s32 $1, a, $5, 0;\n        dp4a.s32.s32 $1, b, $6, $1;\n        }', '=r,=r,r,r,r,r,r', [packed.to(tl.int32),lo,hi,lo1,hi1], dtype=(tl.int32,tl.int32),is_pure=True,pack=1)
+{% endif %}
