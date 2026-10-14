@@ -67,3 +67,28 @@ def test_amd_bf16_matmul_reaches_propose_tir(target_name):
             f"{target_name}: selection point {point.id!r} has no "
             f"capability-supported candidate"
         )
+
+
+def test_cooperative_warp_cap_applies_to_a_supplied_implementation_model():
+    """A recipe/tutorial may pass its own implementation model to the target;
+    the cooperative warp cap must still apply, otherwise compute_num_warps=16
+    kernels blow the RDNA register budget (~127K regs vs 65536) and deadlock the
+    grid barrier."""
+    from triton.flagmega.targets.amd.machine import AmdGfx1100Machine
+    from triton.flagmega.targets.portable_triton_implementations import (
+        portable_triton_implementation_model,
+    )
+
+    cap = AmdGfx1100Machine._COOPERATIVE_MAX_WARPS
+    supplied = portable_triton_implementation_model()
+    # Sanity: the portable model carries kernels above the cap, so the cap is
+    # actually exercised below.
+    assert any(
+        (dict(impl.parameters).get("compute_num_warps") or 0) > cap
+        for impl in supplied.implementations
+    )
+
+    capped = AmdGfx1100Machine(implementation_model=supplied).triton_implementation_model()
+    for impl in capped.implementations:
+        warps = dict(impl.parameters).get("compute_num_warps")
+        assert warps is None or warps <= cap
