@@ -609,22 +609,40 @@ emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
   abaseVal = b.insert_element(i32x4Ty, abaseVal, b.i32_val(-1), b.i32_val(2));
   abaseVal = b.insert_element(i32x4Ty, abaseVal, strideBytes, b.i32_val(3));
 
-  // The pointer tensor and the destination SME tensor can have different
-  // layouts after warp specialization.  Normalize the descriptor from the
-  // pointer tensor's layout; using the SME destination layout here shifts the
-  // producer's source base when the worker partition has a different
-  // register distribution.
-  auto srcIndices = emitIndices(loc, rewriter, targetInfo, gPtrLayout, tensorTy,
-                                /*withCTAOffset=*/false);
-  if (srcIndices.empty() || srcIndices[0].size() != 2)
-    return failure();
-  Value logicalRow = srcIndices[0][0];
-  Value logicalCol = srcIndices[0][1];
-  Value logicalOffset = isRowMajor
-                            ? b.add(b.mul(logicalRow, stride), logicalCol)
-                            : b.add(logicalRow, b.mul(logicalCol, stride));
-  Value baseOffset = b.sub(b.i32_val(0), logicalOffset);
-  Value basePtr = b.gep(elemPtrTy, elemTy, gPtr, baseOffset);
+  // The SME descriptor needs the tile's *common* base address, but `gPtr` is
+  // a per-lane pointer. Whether it already is the tile base depends on the
+  // pointer tensor's layout:
+  //
+  //  - When the pointer tensor carries the SME destination layout, every lane
+  //    already holds the tile base (the SME encoding distributes no per-lane
+  //    element offset), so `gPtr` is used as-is.
+  //  - After warp specialization the producer's pointer tensor can carry a
+  //    *different* layout, whose lanes do hold distinct element offsets. Those
+  //    must be subtracted back out, or the descriptor is shifted by one lane's
+  //    offset.
+  //
+  // Rebasing unconditionally was a correctness bug: for an ordinary
+  // `tl.dot` operand load -- e.g. FlagGems' `mm_kernel` -- the subtraction
+  // moved the descriptor off the tile and the kernel read shifted data,
+  // silently producing wrong finite results (bf16 4x2048 @ 2048x6144 max
+  // error 283.9 against 0.50 for a correct build) at every shape, and
+  // all-zero logits in native vLLM. FlagMega's megakernel was unaffected
+  // because its warp-specialized producers are exactly the case the rebase
+  // was written for. Gate on the layouts actually differing so both hold.
+  Value basePtr = gPtr;
+  if (gPtrLayout && gPtrLayout != tensorTy.getEncoding()) {
+    auto srcIndices = emitIndices(loc, rewriter, targetInfo, gPtrLayout,
+                                  tensorTy, /*withCTAOffset=*/false);
+    if (srcIndices.empty() || srcIndices[0].size() != 2)
+      return failure();
+    Value logicalRow = srcIndices[0][0];
+    Value logicalCol = srcIndices[0][1];
+    Value logicalOffset = isRowMajor
+                              ? b.add(b.mul(logicalRow, stride), logicalCol)
+                              : b.add(logicalRow, b.mul(logicalCol, stride));
+    Value baseOffset = b.sub(b.i32_val(0), logicalOffset);
+    basePtr = b.gep(elemPtrTy, elemTy, gPtr, baseOffset);
+  }
   gPtrAsInt = b.ptrtoint(i64_ty, basePtr);
   abaseVal = b.insert_element(i32x4Ty, abaseVal,
                               b.trunc(i32_ty, gPtrAsInt), b.i32_val(0));
