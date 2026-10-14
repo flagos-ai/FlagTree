@@ -544,6 +544,24 @@ struct TritonExpandDimsPattern
     Attribute _argEncoding = argType.getEncoding();
     if (!_argEncoding)
       return failure();
+#ifdef __TLE__
+    Value source = adaptor.getSrc();
+    if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(_argEncoding)) {
+      if (slice.getDim() == op.getAxis()) {
+        addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
+                          op, source, adaptor.getAxis()),
+                      adaptor.getAttributes());
+        return success();
+      }
+      auto converter = getTypeConverter<TritonGPUTypeConverter>();
+      _argEncoding = getDefaultBlockedEncoding(
+          getContext(), argType.getShape(), converter->getNumWarps(),
+          converter->getThreadsPerWarp(), converter->getNumCTAs());
+      argType = argType.cloneWithEncoding(_argEncoding);
+      source = triton::gpu::ConvertLayoutOp::create(rewriter, op.getLoc(),
+                                                    argType, source);
+    }
+#endif
     auto argEncoding = cast<triton::gpu::BlockedEncodingAttr>(_argEncoding);
     // return shape
     auto retShape = argType.getShape().vec();
@@ -580,8 +598,13 @@ struct TritonExpandDimsPattern
         getContext(), op.getAxis(), retEncoding);
     RankedTensorType newArgType = argType.cloneWithEncoding(newArgEncoding);
     // construct new op
+#ifdef __TLE__
+    auto newSrc = triton::gpu::ConvertLayoutOp::create(rewriter, op.getLoc(),
+                                                       newArgType, source);
+#else
     auto newSrc = triton::gpu::ConvertLayoutOp::create(
         rewriter, op.getLoc(), newArgType, adaptor.getSrc());
+#endif
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
                       op, newSrc, adaptor.getAxis()),
                   adaptor.getAttributes());

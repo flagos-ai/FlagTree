@@ -1,4 +1,5 @@
 // RUN: triton-opt %s --nvgpu-test-ws-lower-token | FileCheck %s
+// RUN: triton-opt %s --nvgpu-lower-ws-tokens | FileCheck %s
 
 // Creation/traversal order is not the callee parameter order. This exercises
 // two token arguments whose concrete instances are declared in opposite order.

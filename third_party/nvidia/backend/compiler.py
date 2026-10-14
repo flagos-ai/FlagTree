@@ -391,6 +391,11 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
             passes.ttir.add_triton_licm(pm)
+            # Lower explicit pipes without running Hopper's automatic warp
+            # partitioning. These passes are no-ops when their IR is absent.
+            tle.passes.add_lower_pipe_to_nvws(pm)
+            tle.passes.add_restore_pipe_function_calls(pm)
+            nvidia.passes.hopper.add_lower_ws_tokens(pm)
             passes.ttgpuir.add_optimize_accumulator_init(pm)
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
             nvidia.passes.ttnvgpuir.add_promote_lhs_to_tmem(pm)
