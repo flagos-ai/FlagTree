@@ -1,4 +1,4 @@
-"""TLE/CommonIR port of gluon/09-maca-matmul_tn_1.py.
+"""TLE/CommonIR tiled matmul with explicit MetaX scheduling.
 
 Keeps the four shared slots, sixteen 32x32 dot accumulators and explicit
 MetaX copy/wait/scheduling sequence. Inputs use complete 128x128x128 tiles;
