@@ -5,7 +5,6 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/MapVector.h"
@@ -20,19 +19,6 @@
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::triton::gluon {
-
-bool hasSameTensorEncodingRelation(Operation *op) {
-  return op &&
-         (op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
-          op->hasTrait<mlir::OpTrait::Elementwise>());
-}
-
-bool hasSameLoadStoreTensorEncodingRelation(Operation *op) {
-  return op &&
-         (op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsEncoding>() ||
-          op->hasTrait<
-              mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>());
-}
 
 namespace {
 struct LayoutInfo {
@@ -91,33 +77,15 @@ LayoutInfo combineInfo(LayoutInfo lhs, LayoutInfo rhs, Operation *op,
 
 bool encodingsMayVary(Operation *op) {
   return isa<triton::JoinOp, triton::SplitOp, triton::ReshapeOp, triton::CatOp,
-             triton::TransOp, triton::AddPtrOp>(op);
-}
-
-SmallVector<Value> collectSameEncodingAutoTensors(
-    Operation *op, llvm::function_ref<bool(Type)> typeCheck) {
-  SmallVector<Value> values;
-  for (Value operand : op->getOperands())
-    if (typeCheck(operand.getType()))
-      values.push_back(operand);
-  for (Value result : op->getResults())
-    if (typeCheck(result.getType()))
-      values.push_back(result);
-  return values;
+             triton::TransOp>(op);
 }
 
 LogicalResult
 updateEncoding(ArrayRef<Value> values, LayoutInfo info, FuncOp *func,
-               llvm::function_ref<bool(Type)> typeCheck,
                llvm::MapVector<Value, LayoutInfo> &valueToEncoding,
                llvm::PriorityWorklist<Value> &worklist,
                llvm::MapVector<Attribute, uint64_t> &hashMemo) {
   for (auto value : values) {
-    // The caller's type predicate defines the placeholder family being
-    // resolved. Concrete values and other placeholder families are explicit
-    // propagation boundaries.
-    if (!typeCheck(value.getType()))
-      continue;
     auto [it, inserted] = valueToEncoding.insert({value, info});
     if (!inserted) {
       auto defOp = value.getDefiningOp();
@@ -161,7 +129,7 @@ LogicalResult inferLayout(
   llvm::MapVector<Attribute, uint64_t> hashMemo;
   for (auto &[value, encoding] : seedEncodings) {
     if (failed(updateEncoding({value}, LayoutInfo{encoding, false}, &func,
-                              typeCheck, valueToEncoding, worklist, hashMemo)))
+                              valueToEncoding, worklist, hashMemo)))
       return failure();
   }
 
@@ -177,44 +145,22 @@ LogicalResult inferLayout(
       if (isa<scf::ForOp, scf::WhileOp>(op)) {
         auto offset = 3 * isa<scf::ForOp>(op);
         auto tiedArgs = getTiedArgs(op, use.getOperandNumber() - offset);
-        if (failed(updateEncoding(tiedArgs, info, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
+        if (failed(updateEncoding(tiedArgs, info, &func, valueToEncoding,
+                                  worklist, hashMemo)))
           return failure();
       } else if (isa<scf::YieldOp>(op)) {
         auto tiedArgs = getTiedArgs(op, use.getOperandNumber());
-        if (failed(updateEncoding(tiedArgs, info, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
-          return failure();
-      } else if (auto dot = dyn_cast<triton::DotOpInterface>(op);
-                 dot && use.getOperandNumber() == 2) {
-        // Dot A/B have independent dot-operand layouts. ODS ties only the
-        // accumulator C and result D, so propagate exactly that local
-        // relation instead of treating the whole op as same-encoding.
-        if (failed(updateEncoding({dot.getD()}, info, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
-          return failure();
-      } else if (hasSameTensorEncodingRelation(op) ||
-                 hasSameLoadStoreTensorEncodingRelation(op)) {
-        bool mayVary = info.mayVary || encodingsMayVary(op);
-        LayoutInfo tiedInfo{info.encoding, mayVary};
-        auto tiedValues = collectSameEncodingAutoTensors(op, typeCheck);
-        if (failed(updateEncoding(tiedValues, tiedInfo, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
+        if (failed(updateEncoding(tiedArgs, info, &func, valueToEncoding,
+                                  worklist, hashMemo)))
           return failure();
       } else {
-        llvm::SmallVector<Value> tensorResults;
-        for (Value result : op->getResults())
-          if (typeCheck(result.getType()))
-            tensorResults.push_back(result);
-        if (tensorResults.empty())
-          continue;
-
         auto dstEnc = inferDstEncoding(op, info.encoding);
         if (dstEnc) {
           bool mayVary = info.mayVary || encodingsMayVary(op);
           LayoutInfo dstInfo{dstEnc, mayVary};
-          if (failed(updateEncoding(tensorResults, dstInfo, &func, typeCheck,
-                                    valueToEncoding, worklist, hashMemo)))
+          if (failed(updateEncoding(llvm::to_vector_of<Value>(op->getResults()),
+                                    dstInfo, &func, valueToEncoding, worklist,
+                                    hashMemo)))
             return failure();
         }
       }
@@ -225,12 +171,8 @@ LogicalResult inferLayout(
       auto definingOp = opResult.getOwner();
       if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
         auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
-        if (failed(updateEncoding(tiedArgs, info, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
-          return failure();
-      } else if (auto dot = dyn_cast<triton::DotOpInterface>(definingOp)) {
-        if (failed(updateEncoding({dot->getOperand(2)}, info, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
+        if (failed(updateEncoding(tiedArgs, info, &func, valueToEncoding,
+                                  worklist, hashMemo)))
           return failure();
       } else {
         auto srcEncoding = inferSrcEncoding(definingOp, info.encoding);
@@ -242,7 +184,7 @@ LogicalResult inferLayout(
             if (isa<RankedTensorType>(operand.getType()))
               tensorOperands.push_back(operand);
 
-          if (failed(updateEncoding(tensorOperands, srcInfo, &func, typeCheck,
+          if (failed(updateEncoding(tensorOperands, srcInfo, &func,
                                     valueToEncoding, worklist, hashMemo)))
             return failure();
         }
@@ -252,8 +194,8 @@ LogicalResult inferLayout(
       if (isa<scf::ForOp, scf::WhileOp>(parentOp)) {
         auto offset = isa<scf::ForOp>(parentOp);
         auto tiedArgs = getTiedArgs(parentOp, blockArg.getArgNumber() - offset);
-        if (failed(updateEncoding(tiedArgs, info, &func, typeCheck,
-                                  valueToEncoding, worklist, hashMemo)))
+        if (failed(updateEncoding(tiedArgs, info, &func, valueToEncoding,
+                                  worklist, hashMemo)))
           return failure();
       }
     }
