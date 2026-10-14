@@ -121,6 +121,14 @@ def apply_qwen3_vllm_profile(module):
                              type=TupleType((wide_hidden, source.type.fields[1])))
         elif source.op == "builtin.get_item":
             result = replace(source, inputs=tuple(value.id for value in inputs), type=inputs[0].type.fields[source.attrs["index"]])
+        elif source.op == "tensors.slice":
+            # A slice follows its input's dtype (it only selects a sub-range).
+            # When the profile widens that input to FP32, re-infer the result
+            # dtype from the input and keep the slice's own shape; otherwise the
+            # stored BF16 type disagrees with the inferred FP32 type and fails
+            # verification (hit by the prefill last-token slice under M>1).
+            result = replace(source, inputs=tuple(value.id for value in inputs),
+                             type=tensor_type(inputs[0].type.dtype, source.type.shape))
         else:
             result = replace(source, inputs=tuple(value.id for value in inputs))
         if not nodes or nodes[-1] is not result:
