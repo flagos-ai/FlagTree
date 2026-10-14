@@ -12,11 +12,23 @@ def {{ call.symbol }}({{ call.signature }}):
     for local_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
         local_offsets = local_start + tl.arange(0, {{ call.tile }})
         local_mask = local_offsets < ({{ call.active }})
+{% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
+{% if call.weight_encoding == "IQ4_XS" %}
+        value = _flagmega_iq4_xs_embedding(
+            {{ call.weight }}, token_id, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+        )
+{% else %}
+        value = _flagmega_q4_k_embedding(
+            {{ call.weight }}, token_id, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+        )
+{% endif %}
+{% else %}
         value = tl.load(
             {{ call.weight }} + ({{ call.weight_offset }}),
             mask=local_mask,
             other=0.0,
         ).to(tl.bfloat16)
+{% endif %}
         if {{ call.padding_idx }} >= 0:
             value = tl.where(
                 token_id == {{ call.padding_idx }}, 0.0, value,

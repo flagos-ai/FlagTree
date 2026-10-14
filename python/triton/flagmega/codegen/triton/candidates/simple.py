@@ -73,11 +73,11 @@ class BlockFp8CandidateProvider:
     })
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
-        del node
+        native_quant = node.attrs.get("weight_encoding")
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations("block_fp8")
-        )
+            if native_quant is None or implementation.variant == "simt")
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("block_fp8", candidates))
@@ -87,11 +87,11 @@ class MatmulGluCandidateProvider:
     op_names = frozenset({"nn.matmul_glu", "nn.packed_matmul_glu"})
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
-        del node
+        native_quant = node.attrs.get("gate_weight_encoding") or node.attrs.get("up_weight_encoding")
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations("matmul_glu")
-        )
+            if native_quant is None or implementation.variant == "simt")
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("matmul_glu", candidates))
@@ -196,6 +196,11 @@ class GdnCandidateProvider:
 
 
 def _gdn_applicable(node, context, implementation):
+    if node.op == "nn.gdn_recurrent_core" and node.attrs.get("b_weight_encoding") is not None:
+        # The native packed projection helper is implemented by the persistent
+        # recurrent kernel; the state-pipeline variant still assumes dense rows.
+        if implementation.variant != "persistent":
+            return False
     if (node.op == "nn.gdn_recurrent_core"
             and int(node.attrs["key_head_dim"]) > implementation.parameters["tile_state"][0]):
         return False
@@ -203,8 +208,7 @@ def _gdn_applicable(node, context, implementation):
         return True
     output = node.type.fields[0]
     if (not isinstance(output, DistributedType) or output.partial is not None or output.exclusive is not None
-            or not is_fully_sharded_across_placement(output)
-            or not isinstance(output.tensor.dtype, DType)
+            or not is_fully_sharded_across_placement(output) or not isinstance(output.tensor.dtype, DType)
             or output.tensor.dtype.value != implementation.contract["required_activation_dtype"]
             or not output.tensor.shape[0].is_fixed or output.tensor.shape[0].fixed_value != 1):
         return False
@@ -222,11 +226,9 @@ def _gdn_applicable(node, context, implementation):
     partition = implementation.transfer_pipeline.channels[0].inplace_partition
     _, leaf = partition.source_leaf(state)
     shape = leaf.shape
-    return (isinstance(leaf, TensorType) and leaf.dtype == VectorType(DType.FLOAT32, (4,))
-            and len(shape) == 4 and all(value.is_fixed for value in shape)
-            and tuple(value.fixed_value for value in shape) == (
-                1, int(node.attrs["num_value_heads"]), int(node.attrs["value_head_dim"]),
-                key_dim // 4))
+    return (isinstance(leaf, TensorType) and leaf.dtype == VectorType(DType.FLOAT32, (4, )) and len(shape) == 4
+            and all(value.is_fixed for value in shape) and tuple(value.fixed_value for value in shape)
+            == (1, int(node.attrs["num_value_heads"]), int(node.attrs["value_head_dim"]), key_dim // 4))
 
 
 __all__ = [

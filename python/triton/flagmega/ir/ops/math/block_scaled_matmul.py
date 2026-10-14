@@ -9,6 +9,8 @@ from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of
 from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, SBPPartial, tensor_type
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
+from triton.flagmega.ir.ops.math._quantized import matrix_width
+from triton.flagmega.ir.types import DType
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -32,16 +34,27 @@ class BlockScaledMatMul(OpDefinition):
     weight_scale = input_parameter(is_tensor() & has_rank(2))
     weight_block_n = attribute_parameter()
     weight_block_k = attribute_parameter()
+    weight_encoding = attribute_parameter(default=None)
+    output_data_type = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
-        if set(attributes) != {"weight_block_n", "weight_block_k"}:
-            raise IRSchemaError("BlockScaledMatMul requires weight_block_n and weight_block_k.")
+        allowed = {"weight_block_n", "weight_block_k", "weight_encoding", "output_data_type"}
+        if set(attributes) - allowed:
+            raise IRSchemaError("BlockScaledMatMul has unknown attributes.")
         block_n = int(attributes["weight_block_n"])
         block_k = int(attributes["weight_block_k"])
         if block_n <= 0 or block_k <= 0:
             raise IRSchemaError("BlockScaledMatMul block sizes must be positive.")
-        return {"weight_block_n": block_n, "weight_block_k": block_k}
+        encoding = attributes.get("weight_encoding")
+        if encoding is not None and not isinstance(encoding, str):
+            raise IRSchemaError("BlockScaledMatMul weight_encoding must be a string or None.")
+        result = {"weight_block_n": block_n, "weight_block_k": block_k}
+        if encoding is not None:
+            result["weight_encoding"] = encoding
+        if attributes.get("output_data_type") is not None:
+            result["output_data_type"] = DType(attributes["output_data_type"]).value
+        return result
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -50,9 +63,9 @@ class BlockScaledMatMul(OpDefinition):
         scale_type = cls.weight_scale.type_of(inputs)
         value = tensor_of(value_type)
         weight = tensor_of(weight_type)
-        if value.shape[1] != weight.shape[1]:
+        if value.shape[1] != matrix_width(weight, attrs.get("weight_encoding")):
             raise IRSchemaError("BlockScaledMatMul value/weight K dimensions must match.")
-        output = tensor_type(value.dtype, (value.shape[0], weight.shape[0]))
+        output = tensor_type(attrs.get("output_data_type", value.dtype), (value.shape[0], weight.shape[0]))
         placement = placement_of(value_type, weight_type, scale_type)
         if placement is None:
             return output
@@ -65,11 +78,8 @@ class BlockScaledMatMul(OpDefinition):
         if output_split is not None and all_broadcast(value_type) and all_broadcast(scale_type):
             return DistributedType(output, (SBP.broadcast(), output_split), placement)
         reduction_split = split_policy(weight_type, 1)
-        if (
-            reduction_split is not None
-            and reduction_split == split_policy(value_type, 1)
-            and all_broadcast(scale_type)
-        ):
+        if (attrs.get("weight_encoding") is None and reduction_split is not None
+                and reduction_split == split_policy(value_type, 1) and all_broadcast(scale_type)):
             return DistributedType(
                 output,
                 (SBP.broadcast(), SBP.broadcast()),

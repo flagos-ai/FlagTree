@@ -26,7 +26,7 @@ def sm90_codegen_package_plan(
     from architecture names, graph node names, or weight roles.
     """
 
-    del capability, options
+    del options
     if not kernel_nodes:
         raise IRVerificationError(
             "SM90 package planning requires at least one selected TIR call.",
@@ -65,9 +65,7 @@ def sm90_codegen_package_plan(
             "implementation": str(node.attrs.get("candidate", "")),
             "family": family,
             "variant": variant,
-            "execution_kind": kernel_execution_kind(
-                semantic_op, facts
-            ).value,
+            "execution_kind": kernel_execution_kind(semantic_op, facts).value,
             "requires": tuple(str(value) for value in facts.get("requires", ())),
         })
         identity = (family, variant)
@@ -104,7 +102,7 @@ def sm90_codegen_package_plan(
     return {
         "schema": PACKAGE_PLAN_SCHEMA,
         "kind": "tir_call_graph",
-        "profile": "nvidia_sm90",
+        "profile": "nvidia_sm" + "".join(str(value) for value in capability.compute_capability),
         "calls": tuple(calls),
         "kernel_templates": tuple(templates),
         "launch": {

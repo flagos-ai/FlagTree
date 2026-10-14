@@ -1,5 +1,50 @@
 # flagmega-kernel: embedding/decode
 @triton.jit
+def _flagmega_iq4_xs_embedding(weight, token_id, feature, mask, H: tl.constexpr):
+    u8 = weight.to(tl.pointer_type(tl.uint8))
+    f16 = weight.to(tl.pointer_type(tl.float16))
+    u16 = weight.to(tl.pointer_type(tl.uint16))
+    block = feature // 256
+    inside = feature % 256
+    group = inside // 32
+    lane = inside % 32
+    base = token_id * (H // 256) * 136 + block * 136
+    sl = tl.load(u8 + base + 4 + group // 2, mask=mask, other=0)
+    sh = tl.load(u16 + (base + 2) // 2, mask=mask, other=0)
+    sc = ((sl >> ((group % 2) * 4)) & 0xF) | (((sh >> (group * 2)) & 0x3) * 16)
+    d = tl.load(f16 + base // 2, mask=mask, other=0.0).to(tl.float32)
+    packed = tl.load(u8 + base + 8 + group * 16 + lane % 16, mask=mask, other=0)
+    code = tl.where(lane // 16 == 0, packed & 0xF, packed >> 4)
+    cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+    return (d * (sc.to(tl.float32) - 32.0) * cv).to(tl.bfloat16)
+
+@triton.jit
+def _flagmega_q4_k_embedding(weight, token_id, feature, mask, H: tl.constexpr):
+    u8 = weight.to(tl.pointer_type(tl.uint8))
+    f16 = weight.to(tl.pointer_type(tl.float16))
+    block = feature // 256
+    inside = feature % 256
+    group = inside // 32
+    lane = inside % 32
+    base = token_id * (H // 256) * 144 + block * 144
+    d = tl.load(f16 + base // 2, mask=mask, other=0.0).to(tl.float32)
+    dmin = tl.load(f16 + (base + 2) // 2, mask=mask, other=0.0).to(tl.float32)
+    scales = u8 + base + 4
+    s0 = tl.load(scales + group % 4, mask=mask, other=0)
+    s1 = tl.load(scales + 4 + group % 4, mask=mask, other=0)
+    s2 = tl.load(scales + 8 + group % 4, mask=mask, other=0)
+    low_group = group < 4
+    sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+    mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+    packed = tl.load(
+        u8 + base + 16 + (group // 2) * 32 + lane,
+        mask=mask,
+        other=0,
+    )
+    q = tl.where(group % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+    return (d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)).to(tl.bfloat16)
+
+@triton.jit
 def _flagmega_embedding(input_ids, embedding, destination, shard_index,
                         VOCAB_SIZE: tl.constexpr, SIZE: tl.constexpr,
                         PADDING_IDX: tl.constexpr):

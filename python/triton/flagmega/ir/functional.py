@@ -10,7 +10,7 @@ type/effect inference and verification.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from triton.flagmega.ir.model import DType, Effect, IRType, Node, PURE
 from triton.flagmega.ir.types import DataType
@@ -25,8 +25,7 @@ from triton.flagmega.ir.ops.core import construction_scope
 from triton.flagmega.ir.ops.distributed.boxing import Boxing
 from triton.flagmega.ir.ops.distributed.force_boxing import ForceBoxing
 from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
-    MaterializeLocalShards,
-)
+    MaterializeLocalShards, )
 from triton.flagmega.ir.ops.distributed.sharded_view import ShardedView
 from triton.flagmega.ir.ops.math.add import Add
 from triton.flagmega.ir.ops.math.div import Div
@@ -80,23 +79,19 @@ from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
-    UpdatePagedAttentionKVCache,
-)
+    UpdatePagedAttentionKVCache, )
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
-    GatherReduceNormApply,
-)
+    GatherReduceNormApply, )
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
-    GatherReduceAddNormApply,
-)
+    GatherReduceAddNormApply, )
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear import PackedQKVParallelLinear
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
-    PackedQKVParallelLinearCombine,
-)
+    PackedQKVParallelLinearCombine, )
 from triton.flagmega.ir.ops.ntt.paged_attention_combine import PagedAttentionCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttentionGatedCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import PagedAttentionPartial
@@ -117,7 +112,6 @@ from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.kernel import Kernel
 from triton.flagmega.ir.ops.tir.call import Call
 from triton.flagmega.ir.ops.tir.scalar_const import ScalarConst
-
 
 Metadata = Mapping[str, Any] | None
 
@@ -302,10 +296,12 @@ class _math:
         *,
         weight_block_n: int,
         weight_block_k: int,
+        weight_encoding: str | None = None,
+        output_data_type: str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
-        """Construct a block-scaled FP8 matrix multiplication."""
+        """Construct block-scaled FP8 or native packed GGUF matrix multiplication."""
 
         return BlockScaledMatMul.construct(
             value,
@@ -313,6 +309,8 @@ class _math:
             weight_scale,
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
+            weight_encoding=weight_encoding,
+            output_data_type=output_data_type,
             name=name,
             metadata=metadata,
         )
@@ -329,6 +327,7 @@ class _math:
         k_pack: int,
         k_vector: int,
         packed_layout: str = "n_major_k_packed",
+        weight_encoding: str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -343,6 +342,7 @@ class _math:
             k_pack=k_pack,
             k_vector=k_vector,
             packed_layout=packed_layout,
+            weight_encoding=weight_encoding,
             name=name,
             metadata=metadata,
         )
@@ -670,6 +670,7 @@ class _nn:
         weight: Node,
         *,
         padding_idx: int | None = None,
+        weight_encoding: str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -679,6 +680,7 @@ class _nn:
             indices,
             weight,
             padding_idx=padding_idx,
+            weight_encoding=weight_encoding,
             name=name,
             metadata=metadata,
         )
@@ -771,6 +773,8 @@ class _nn:
         activation: str,
         weight_block_n: int,
         weight_block_k: int,
+        gate_weight_encoding: str | None = None,
+        up_weight_encoding: str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -785,6 +789,8 @@ class _nn:
             activation=activation,
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
+            gate_weight_encoding=gate_weight_encoding,
+            up_weight_encoding=up_weight_encoding,
             name=name,
             metadata=metadata,
         )
@@ -804,6 +810,8 @@ class _nn:
         k_pack: int,
         k_vector: int,
         packed_layout: str = "n_major_k_packed",
+        gate_weight_encoding: str | None = None,
+        up_weight_encoding: str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -821,6 +829,8 @@ class _nn:
             k_pack=k_pack,
             k_vector=k_vector,
             packed_layout=packed_layout,
+            gate_weight_encoding=gate_weight_encoding,
+            up_weight_encoding=up_weight_encoding,
             name=name,
             metadata=metadata,
         )
@@ -851,6 +861,12 @@ class _nn:
         epsilon: float,
         weight_block_n: int,
         weight_block_k: int,
+        qkv_weight_encoding: str | None = None,
+        z_weight_encoding: str | None = None,
+        output_weight_encoding: str | None = None,
+        b_weight_encoding: str | None = None,
+        a_weight_encoding: str | None = None,
+        value_head_order: str = "grouped",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -879,6 +895,12 @@ class _nn:
             epsilon=epsilon,
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
+            qkv_weight_encoding=qkv_weight_encoding,
+            z_weight_encoding=z_weight_encoding,
+            output_weight_encoding=output_weight_encoding,
+            b_weight_encoding=b_weight_encoding,
+            a_weight_encoding=a_weight_encoding,
+            value_head_order=value_head_order,
             name=name,
             metadata=metadata,
         )
@@ -1229,6 +1251,9 @@ class _nn:
         round_normalized_qk: bool = False,
         round_beta: bool = True,
         round_core: bool = False,
+        b_weight_encoding: str | None = None,
+        a_weight_encoding: str | None = None,
+        value_head_order: str = "grouped",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1254,6 +1279,9 @@ class _nn:
             round_normalized_qk=round_normalized_qk,
             round_beta=round_beta,
             round_core=round_core,
+            b_weight_encoding=b_weight_encoding,
+            a_weight_encoding=a_weight_encoding,
+            value_head_order=value_head_order,
             name=name,
             metadata=metadata,
         )

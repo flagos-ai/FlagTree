@@ -42,6 +42,8 @@ class PackedMatMulGlu(OpDefinition):
     k_pack = attribute_parameter()
     k_vector = attribute_parameter()
     packed_layout = attribute_parameter(default="n_major_k_packed")
+    gate_weight_encoding = attribute_parameter(default=None)
+    up_weight_encoding = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -54,12 +56,18 @@ class PackedMatMulGlu(OpDefinition):
             "k_vector": int(attrs["k_vector"]),
             "packed_layout": str(attrs["packed_layout"]),
         }
+        for name in ("gate_weight_encoding", "up_weight_encoding"):
+            if attrs.get(name) is not None:
+                result[name] = attrs[name]
         if result["activation"] != "silu":
             raise IRSchemaError("PackedMatMulGlu currently supports only SiLU.")
         if any(result[name] <= 0 for name in ("weight_block_n", "weight_block_k", "k_pack", "k_vector")):
             raise IRSchemaError("PackedMatMulGlu block/vector sizes must be positive.")
         if result["packed_layout"] != "n_major_k_packed":
             raise IRSchemaError("PackedMatMulGlu requires n_major_k_packed layout.")
+        for name in ("gate_weight_encoding", "up_weight_encoding"):
+            if result.get(name) is not None and not isinstance(result[name], str):
+                raise IRSchemaError(f"PackedMatMulGlu {name} must be a string or None.")
         return result
 
     @classmethod

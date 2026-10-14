@@ -21,12 +21,10 @@ from triton.flagmega.ir import (
     try_div_exactly,
 )
 from triton.flagmega.passes.functions import (
-    lift_parameter_constant_transforms,
-)
+    lift_parameter_constant_transforms, )
 from triton.flagmega.rules import DataflowRewriter, RewriteResult, RewriteRule
 from triton.flagmega.ir.ops.tensors._k_major import (
-    k_major_layout_name,
-)
+    k_major_layout_name, )
 
 
 class NttPackingPolicy:
@@ -624,7 +622,6 @@ class NttPackingPolicy:
         )
         return RewriteResult(replacement, tuple(helpers))
 
-
     def _pack_dense_matmul(
         self,
         node: Node,
@@ -969,21 +966,23 @@ class NttPackingPolicy:
         return True
 
     def _can_pack(self, node: Node, module: IRModule) -> bool:
-        weight_ids = (node.inputs[1],) if node.op == "math.block_scaled_matmul" else (node.inputs[1], node.inputs[2])
+        # GGUF IQ/Q weights are already physically packed.  Treating their
+        # logical FLOAT8 view as an offline FP8 vector layout would invoke
+        # tensors.pack/unpack and destroy the byte-preserving representation;
+        # native quantized kernels consume the ordinary row-major byte range.
+        if node.attrs.get("weight_encoding") is not None or (node.attrs.get("gate_weight_encoding") is not None
+                                                             or node.attrs.get("up_weight_encoding") is not None):
+            return False
+        weight_ids = (node.inputs[1], ) if node.op == "math.block_scaled_matmul" else (node.inputs[1], node.inputs[2])
         for input_id in weight_ids:
             value_type = module.node_map[input_id].type
-            if (
-                not isinstance(value_type, TensorType)
-                or value_type.rank != 2
-                or value_type.dtype != DType.FLOAT8_E4M3FN
-            ):
+            if (not isinstance(value_type, TensorType) or value_type.rank != 2
+                    or value_type.dtype != DType.FLOAT8_E4M3FN):
                 return False
             if self.vector_bytes % value_type.dtype.itemsize:
                 return False
             k_vector = self.vector_bytes // value_type.dtype.itemsize
-            if try_div_exactly(
-                value_type.shape[1], self.k_pack * k_vector
-            ) is None:
+            if try_div_exactly(value_type.shape[1], self.k_pack * k_vector) is None:
                 return False
         return True
 

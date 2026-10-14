@@ -13,7 +13,9 @@ aggregate (a ``Ref`` kernel operand, say) still applies to all of its leaves;
 from __future__ import annotations
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import DistributedType, IRModule, kernel_dispatch_of
+from triton.flagmega.ir import DistributedType, IRModule, kernel_dispatch_of, logical_type
+from triton.flagmega.ir.model import TensorType
+from triton.flagmega.ir.types import VectorType
 from triton.flagmega.ir.bufferization.leaves import buffer_leaf_names
 
 
@@ -48,11 +50,29 @@ def _declared_requirements(module):
         # buffer to the value's alignment: that pads the per-owner stride of a
         # result whose own contract never asked for it, and the callee that
         # later receives it as a formal parameter computes the unpadded stride.
-        for leaf, parameter in zip(
-            _result_leaves(module, node), _output_parameter_leaves(function), strict=True
-        ):
+        for leaf, parameter in zip(_result_leaves(module, node), _output_parameter_leaves(function), strict=True):
             if parameter.alignment_bytes is not None:
                 _add(requirements, leaf, parameter.alignment_bytes)
+    # A layout transform may be represented as a zero-copy alias while
+    # exposing a fixed-width vector element.  Propagate that element's
+    # alignment to both sides of the view so a vectorized alias cannot start
+    # at an under-aligned scalar base address.
+    for node in module.nodes:
+        if node.op not in {
+                "tensors.pack",
+                "tensors.unpack",
+                "tensors.permute",
+                "tensors.reshape",
+                "tensors.bitcast",
+                "distributed.sharded_view",
+                "tir.buffer_view",
+                "tir.buffer_subspan",
+        }:
+            continue
+        for value_id in (node.id, node.inputs[0]):
+            value_type = logical_type(module.node_map[value_id].type)
+            if isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType):
+                _add(requirements, value_id, value_type.dtype.itemsize)
     return requirements
 
 
@@ -109,11 +129,20 @@ def _propagate(module, requirements):
         changed = False
         for node in module.nodes:
             if node.op in {
-                "builtin.get_item",
-                "builtin.tuple",
-                "distributed.sharded_view",
-                "tir.buffer_view",
-                "tir.buffer_subspan",
+                    "builtin.get_item",
+                    "builtin.tuple",
+                    "distributed.sharded_view",
+                    "tir.buffer_view",
+                    "tir.buffer_subspan",
+                    # Layout transforms may be represented as zero-copy aliases
+                    # by the buffer planner.  Propagate the stricter alignment
+                    # across them so a vectorized view cannot alias a scalar
+                    # allocation with an under-aligned base address.
+                    "tensors.pack",
+                    "tensors.unpack",
+                    "tensors.permute",
+                    "tensors.reshape",
+                    "tensors.bitcast",
             }:
                 for source, target in _view_leaf_pairs(module, node):
                     changed |= _unify(requirements, source, target)
@@ -126,9 +155,7 @@ def _propagate(module, requirements):
                 for formal, actual in _value_leaf_pairs(module, formal_id, actual_id):
                     changed |= _unify(requirements, formal, actual)
             # A call result is the storage the callee returned, leaf for leaf.
-            returned = [
-                leaf for value in callee.outputs for leaf in _leaves(module, value)
-            ]
+            returned = [leaf for value in callee.outputs for leaf in _leaves(module, value)]
             results = _result_leaves(module, node)
             if len(returned) != len(results):
                 raise IRVerificationError(

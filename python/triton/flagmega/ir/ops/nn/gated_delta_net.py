@@ -48,6 +48,12 @@ class GatedDeltaNet(OpDefinition):
     epsilon = attribute_parameter()
     weight_block_n = attribute_parameter()
     weight_block_k = attribute_parameter()
+    qkv_weight_encoding = attribute_parameter(default=None)
+    z_weight_encoding = attribute_parameter(default=None)
+    output_weight_encoding = attribute_parameter(default=None)
+    b_weight_encoding = attribute_parameter(default=None)
+    a_weight_encoding = attribute_parameter(default=None)
+    value_head_order = attribute_parameter(default="grouped")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:

@@ -14,11 +14,9 @@ from typing import Any, Sequence
 
 from triton.flagmega.artifacts import load_artifact, write_artifact
 from triton.flagmega.codegen.triton.function_schedule import (
-    describe_function_schedule,
-)
+    describe_function_schedule, )
 from triton.flagmega.codegen.triton.runtime_binding import (
-    describe_function_runtime_binding,
-)
+    describe_function_runtime_binding, )
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.diagnostics import DumpFlags, dump_flags_text, parse_dump_flags
 from triton.flagmega.errors import (
@@ -33,13 +31,12 @@ from triton.flagmega.errors import (
     UnsupportedSelectionError,
 )
 from triton.flagmega.ir import IRModule, companion_suffix, emit_module, load_module
-from triton.flagmega.importer import DirectoryCheckpoint, import_model, import_model_layer
+from triton.flagmega.importer import Checkpoint, checkpoint_from_path, import_model, import_model_layer
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.selection import emit_plan, load_plan, override_plan
 from triton.flagmega.stages import stage_names
 from triton.flagmega.targets import target_names
 from triton.flagmega.runtime import load as load_runtime
-
 
 CLI_SCHEMA = "flagmega.cli/v1"
 
@@ -264,16 +261,12 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         rhs = load_module(args.rhs)
         lhs_nodes = {node.id: node.to_data() for node in lhs.nodes}
         rhs_nodes = {node.id: node.to_data() for node in rhs.nodes}
-        changed = sorted(
-            node_id for node_id in lhs_nodes.keys() & rhs_nodes.keys()
-            if lhs_nodes[node_id] != rhs_nodes[node_id]
-        )
+        changed = sorted(node_id for node_id in lhs_nodes.keys() & rhs_nodes.keys()
+                         if lhs_nodes[node_id] != rhs_nodes[node_id])
         lhs_recipes = {recipe.id: recipe.to_data() for recipe in lhs.constant_recipes}
         rhs_recipes = {recipe.id: recipe.to_data() for recipe in rhs.constant_recipes}
-        changed_recipes = sorted(
-            recipe_id for recipe_id in lhs_recipes.keys() & rhs_recipes.keys()
-            if lhs_recipes[recipe_id] != rhs_recipes[recipe_id]
-        )
+        changed_recipes = sorted(recipe_id for recipe_id in lhs_recipes.keys() & rhs_recipes.keys()
+                                 if lhs_recipes[recipe_id] != rhs_recipes[recipe_id])
         return _ok(
             args.command,
             input_semantic_hash=lhs.semantic_hash,
@@ -305,13 +298,11 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             selection_records=[record.to_data() for record in plan.records],
         )
     if args.command == "import":
-        module = (
-            import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile,
-                         mode=args.mode, num_tokens=args.num_tokens)
-            if args.full_model
-            else import_model_layer(args.model, layer=args.layer, revision=args.revision,
-                                    numerical_profile=args.numerical_profile, mode=args.mode, num_tokens=args.num_tokens)
-        )
+        module = (import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile,
+                               mode=args.mode, num_tokens=args.num_tokens) if args.full_model else import_model_layer(
+                                   args.model, layer=args.layer, revision=args.revision,
+                                   numerical_profile=args.numerical_profile, mode=args.mode,
+                                   num_tokens=args.num_tokens))
         output = emit_module(module, args.output)
         return _ok(
             args.command,
@@ -337,18 +328,13 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             dump_flags=dump_flags_text(compiler.options.effective_dump_flags),
         )
     if args.command in {"compile", "resume", "replay"}:
-        source = (
-            (
-                import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile or "nncase",
-                             mode=args.mode or "decode-1", num_tokens=1 if args.num_tokens is None else args.num_tokens)
-                if args.full_model
-                else import_model_layer(args.model, layer=args.layer, revision=args.revision,
-                                        numerical_profile=args.numerical_profile or "nncase", mode=args.mode or "decode-1",
-                                        num_tokens=1 if args.num_tokens is None else args.num_tokens)
-            )
-            if args.command == "compile" and args.model is not None
-            else load_module(args.input)
-        )
+        source = ((import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile
+                                or "nncase", mode=args.mode or "decode-1",
+                                num_tokens=1 if args.num_tokens is None else args.num_tokens) if args.full_model else
+                   import_model_layer(args.model, layer=args.layer, revision=args.revision,
+                                      numerical_profile=args.numerical_profile or "nncase", mode=args.mode
+                                      or "decode-1", num_tokens=1 if args.num_tokens is None else args.num_tokens))
+                  if args.command == "compile" and args.model is not None else load_module(args.input))
         compiler = Compiler(_options(args))
         if args.command == "compile" and args.input is not None:
             if args.mode is not None and args.mode != source.metadata.get("mode", "decode-1"):
@@ -359,12 +345,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
                 and args.numerical_profile != source.metadata.get("numerical_contract", "nncase")):
             raise IRSchemaError("--numerical-profile does not match the saved IR; select the contract at import.")
         result = compiler.compile(source, stop_after=args.stop_after)
-        checkpoint_path = (
-            args.model
-            if args.command == "compile" and args.model is not None
-            else getattr(args, "checkpoint", None)
-        )
-        checkpoint = None if checkpoint_path is None else DirectoryCheckpoint(checkpoint_path)
+        checkpoint_path = (args.model if args.command == "compile" and args.model is not None else getattr(
+            args, "checkpoint", None))
+        checkpoint = None if checkpoint_path is None else checkpoint_from_path(checkpoint_path)
         rdata_cache_dir = _rdata_cache_dir(args, checkpoint)
         artifact = write_artifact(
             result.module,
@@ -383,9 +366,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             module=_summary(result.module),
             reports=[report.to_data() for report in result.reports],
             dump_flags=dump_flags_text(compiler.options.effective_dump_flags),
-            rdata_cache_dir=(
-                None if rdata_cache_dir is None else str(rdata_cache_dir)
-            ),
+            rdata_cache_dir=(None if rdata_cache_dir is None else str(rdata_cache_dir)),
         )
     if args.command == "artifact" and args.artifact_command == "verify":
         manifest, module = load_artifact(args.path)
@@ -406,16 +387,14 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         runtime = load_runtime(args.path, device=args.device)
         if hasattr(runtime, "create_state"):
             if len(inputs) not in {1, args.steps}:
-                raise RuntimeContractError(
-                    "Stateful artifact expects one reusable input tensor or exactly "
-                    f"--steps tensors, got {len(inputs)} inputs for {args.steps} steps.")
+                raise RuntimeContractError("Stateful artifact expects one reusable input tensor or exactly "
+                                           f"--steps tensors, got {len(inputs)} inputs for {args.steps} steps.")
             step_inputs = inputs * args.steps if len(inputs) == 1 else inputs
             state = runtime.create_state()
             result_kind = getattr(runtime, "result_kind", None)
             if result_kind == "logits_token_state":
                 output, next_token = runtime.create_outputs()
-                runtime.prepare(
-                    step_inputs[0], state, logits=output, next_token=next_token)
+                runtime.prepare(step_inputs[0], state, logits=output, next_token=next_token)
                 for input_ids in step_inputs:
                     runtime.run_into(output, next_token, input_ids, state)
             elif result_kind == "tensor_state":
@@ -424,17 +403,11 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
                 for input_ids in step_inputs:
                     runtime.run_into(output, input_ids, state)
             else:
-                raise RuntimeContractError(
-                    f"Stateful runtime has unsupported result contract {result_kind!r}."
-                )
+                raise RuntimeContractError(f"Stateful runtime has unsupported result contract {result_kind!r}.")
             torch.cuda.synchronize(torch.device(args.device))
             if hasattr(state, "kv_caches"):
                 serialized_output = {
-                    (
-                        "logits"
-                        if result_kind == "logits_token_state"
-                        else "hidden"
-                    ): output.detach().cpu(),
+                    ("logits" if result_kind == "logits_token_state" else "hidden"): output.detach().cpu(),
                     "kv_caches": state.kv_caches.detach().cpu(),
                     "query_start_loc": state.query_start_loc.detach().cpu(),
                     "seq_lens": state.seq_lens.detach().cpu(),
@@ -450,9 +423,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
                     "recurrent_state": state.recurrent.detach().cpu(),
                 }
             else:
-                raise RuntimeContractError(
-                    "Stateful runtime returned an unsupported state ABI."
-                )
+                raise RuntimeContractError("Stateful runtime returned an unsupported state ABI.")
         else:
             if args.steps != 1:
                 raise RuntimeContractError("Stateless artifacts only support --steps 1.")
@@ -475,7 +446,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
 def _rdata_cache_dir(
     args: argparse.Namespace,
-    checkpoint: DirectoryCheckpoint | None,
+    checkpoint: Checkpoint | None,
 ) -> Path | None:
     """Keep CLI cache entries beside artifacts so Linux FICLONE can apply."""
 

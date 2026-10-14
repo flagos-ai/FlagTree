@@ -39,12 +39,12 @@ def {{ call.symbol }}({{ call.signature }}):
             beta_projection = _flagmega_dense_rows(
                 {{ call.projection_input }}, {{ call.b_weight }}, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
                 {{ call.projection_dim }}, {{ call.projection_tile }},
-                False,
+                False, "{{ call.b_weight_encoding | default('') }}",
             )
             a_projection = _flagmega_dense_rows(
                 {{ call.projection_input }}, {{ call.a_weight }}, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
                 {{ call.projection_dim }}, {{ call.projection_tile }},
-                False,
+                False, "{{ call.a_weight_encoding | default('') }}",
             )
             beta, decay = _flagmega_gdn_head_gates(
                 beta_projection, a_projection, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
@@ -59,6 +59,7 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ call.repeats }}, {{ call.head_block }},
             {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }},
             {{ call.round_normalized_qk }}, {{ call.round_core }},
+            TILED_VALUE_HEADS={{ call.tiled_value_heads | default(false) }},
         )
 {{ entry.stage_barrier() }}
     for recurrent_norm_start in tl.range(

@@ -14,6 +14,7 @@ from triton.flagmega.errors import IRSchemaError
 
 class DType(str, Enum):
     BOOL = "bool"
+    UINT8 = "uint8"
     INT32 = "int32"
     INT64 = "int64"
     BFLOAT16 = "bfloat16"
@@ -25,6 +26,7 @@ class DType(str, Enum):
     def itemsize(self) -> int:
         return {
             DType.BOOL: 1,
+            DType.UINT8: 1,
             DType.INT32: 4,
             DType.INT64: 8,
             DType.BFLOAT16: 2,

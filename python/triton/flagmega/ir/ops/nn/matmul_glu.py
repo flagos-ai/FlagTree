@@ -9,6 +9,7 @@ from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of
 from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, tensor_type
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
+from triton.flagmega.ir.ops.math._quantized import matrix_width
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -34,19 +35,28 @@ class MatMulGlu(OpDefinition):
     activation = attribute_parameter()
     weight_block_n = attribute_parameter()
     weight_block_k = attribute_parameter()
+    gate_weight_encoding = attribute_parameter(default=None)
+    up_weight_encoding = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         required = {"activation", "weight_block_n", "weight_block_k"}
-        if set(attributes) != required:
-            raise IRSchemaError(f"MatMulGlu requires attributes {sorted(required)}.")
+        if set(attributes) - required - {"gate_weight_encoding", "up_weight_encoding"}:
+            raise IRSchemaError("MatMulGlu has unknown attributes.")
         if str(attributes["activation"]) != "silu":
             raise IRSchemaError("P0 MatMulGlu only supports SiLU activation.")
         block_n = int(attributes["weight_block_n"])
         block_k = int(attributes["weight_block_k"])
         if block_n <= 0 or block_k <= 0:
             raise IRSchemaError("MatMulGlu block sizes must be positive.")
-        return {"activation": "silu", "weight_block_n": block_n, "weight_block_k": block_k}
+        values = {"activation": "silu", "weight_block_n": block_n, "weight_block_k": block_k}
+        for name in ("gate_weight_encoding", "up_weight_encoding"):
+            value = attributes.get(name)
+            if value is not None and not isinstance(value, str):
+                raise IRSchemaError(f"MatMulGlu {name} must be a string or None.")
+            if value is not None:
+                values[name] = value
+        return values
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -55,9 +65,10 @@ class MatMulGlu(OpDefinition):
         value = tensor_of(value_type)
         gate = tensor_of(gate_type)
         up = tensor_of(up_type)
-        if up != gate:
+        if up.shape[0] != gate.shape[0] or matrix_width(up, attrs.get("up_weight_encoding")) != matrix_width(
+                gate, attrs.get("gate_weight_encoding")):
             raise IRSchemaError("MatMulGlu gate/up weight types must match.")
-        if value.shape[1] != gate.shape[1]:
+        if value.shape[1] != matrix_width(gate, attrs.get("gate_weight_encoding")):
             raise IRSchemaError("MatMulGlu value/weight K dimensions must match.")
         output = tensor_type(value.dtype, (value.shape[0], gate.shape[0]))
         placement = placement_of(*input_types)
@@ -68,13 +79,8 @@ class MatMulGlu(OpDefinition):
         if all(all_broadcast(item) for item in input_types):
             return DistributedType(output, (SBP.broadcast(), SBP.broadcast()), placement)
         gate_split = split_policy(gate_type, 0)
-        if (
-            gate_split is not None
-            and gate_split == split_policy(up_type, 0)
-            and all_broadcast(value_type)
-            and all_broadcast(gate_scale_type)
-            and all_broadcast(up_scale_type)
-        ):
+        if (gate_split is not None and gate_split == split_policy(up_type, 0) and all_broadcast(value_type)
+                and all_broadcast(gate_scale_type) and all_broadcast(up_scale_type)):
             return DistributedType(output, (SBP.broadcast(), gate_split), placement)
         raise IRSchemaError("MatMulGlu distributed inputs do not describe replicated or output sharding.")
 

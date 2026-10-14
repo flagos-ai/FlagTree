@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega import ir as fm
+import pytest
 from triton.flagmega.passes.auto_distributed import (
     DistributedCandidateContext,
     DistributedOperationCostModel,
@@ -25,6 +26,27 @@ class _Module(fm.Module):
             name="combine",
         )
         self.function("main", (partial, residual), (combine,))
+
+
+@pytest.mark.parametrize('dtype', ['bfloat16', fm.VectorType(fm.DType.FLOAT32, (4, ))])
+def test_materialized_function_parameter_in_first_operand_has_legal_views(dtype):
+
+    class Graph(fm.Module):
+
+        def forward(self):
+            a = self.input('a', fm.tensor_type(dtype, (15, 15)))
+            b = self.input('b', a.type)
+            c = fm.F.ntt.add_norm_stats(a, b, axis=-1, use_mean=False)
+            self.function('main', (a, b), (c, ))
+
+    module = Graph(dialect='ntt', stage='stats_threaded', entry='main').build()
+    node = next(n for n in module.nodes if n.op == 'ntt.add_norm_stats')
+    value = module.node_map[node.inputs[0]].type
+    placement = fm.Placement((3, 5), 'ab', 'bb')
+    broadcast = fm.DistributedType(value, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement)
+    context = DistributedCandidateContext(module, node, placement, ((value, ), (broadcast, )))
+    candidates = AddNormStatsCandidateProvider().get_candidates(context)
+    assert any(c.input_types == (broadcast, broadcast) and c.return_type.fields[0] == broadcast for c in candidates)
 
 
 def test_combine_can_request_broadcast_addend_in_the_projections_cyclic_layout():

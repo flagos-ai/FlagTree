@@ -5,13 +5,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import ClassVar, Iterable, Mapping
 
 from triton.flagmega.errors import IRSchemaError
 
 
 @dataclass(frozen=True)
 class Sm90Capability:
+    compute_major: ClassVar[int] = 9
+    schema: ClassVar[str] = "flagmega.nvidia-sm90-capability/v1"
     compute_capability: tuple[int, int] = (9, 0)
     warp_size: int = 32
     max_threads_per_block: int = 1024
@@ -28,39 +30,34 @@ class Sm90Capability:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "compute_capability", tuple(self.compute_capability))
-        if (
-            len(self.compute_capability) != 2
-            or any(not isinstance(value, int) or isinstance(value, bool) for value in self.compute_capability)
-            or self.compute_capability[0] != 9
-        ):
+        if (len(self.compute_capability) != 2
+                or any(not isinstance(value, int) or isinstance(value, bool) for value in self.compute_capability)
+                or self.compute_capability[0] != self.compute_major):
             raise IRSchemaError(
-                "Sm90Capability requires a compute capability in the 9.x family."
-            )
+                f"{type(self).__name__} requires a compute capability in the {self.compute_major}.x family.")
         for name in (
-            "warp_size",
-            "max_threads_per_block",
-            "max_threads_per_sm",
-            "max_registers_per_sm",
-            "max_shared_memory_bytes",
+                "warp_size",
+                "max_threads_per_block",
+                "max_threads_per_sm",
+                "max_registers_per_sm",
+                "max_shared_memory_bytes",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise IRSchemaError(f"Sm90Capability {name} must be positive.")
         for name in (
-            "supports_fp8_mma",
-            "supports_async_copy",
-            "supports_cooperative_grid",
-            "supports_tma",
-            "supports_warp_specialize",
-            "supports_grid_sync",
-            "supports_mma_v3",
+                "supports_fp8_mma",
+                "supports_async_copy",
+                "supports_cooperative_grid",
+                "supports_tma",
+                "supports_warp_specialize",
+                "supports_grid_sync",
+                "supports_mma_v3",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise IRSchemaError(f"Sm90Capability {name} must be bool.")
         if self.max_threads_per_block > self.max_threads_per_sm:
-            raise IRSchemaError(
-                "SM90 max_threads_per_block cannot exceed max_threads_per_sm."
-            )
+            raise IRSchemaError("SM90 max_threads_per_block cannot exceed max_threads_per_sm.")
 
     @property
     def features(self) -> frozenset[str]:
@@ -90,7 +87,7 @@ class Sm90Capability:
 
     def to_data(self) -> dict[str, object]:
         return {
-            "schema": "flagmega.nvidia-sm90-capability/v1",
+            "schema": self.schema,
             "compute_capability": list(self.compute_capability),
             "warp_size": self.warp_size,
             "max_threads_per_block": self.max_threads_per_block,
@@ -108,10 +105,8 @@ class Sm90Capability:
 
     @classmethod
     def from_data(cls, data: Mapping[str, object]) -> Sm90Capability:
-        if data.get("schema") != "flagmega.nvidia-sm90-capability/v1":
-            raise IRSchemaError(
-                f"Unsupported SM90 capability schema {data.get('schema')!r}."
-            )
+        if data.get("schema") != cls.schema:
+            raise IRSchemaError(f"Unsupported SM90 capability schema {data.get('schema')!r}.")
         return cls(
             compute_capability=tuple(data["compute_capability"]),
             warp_size=data["warp_size"],

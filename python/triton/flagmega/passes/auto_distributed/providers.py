@@ -35,10 +35,10 @@ from triton.flagmega.ir.distributed_inference import (
     split_type,
     tensor_of,
 )
+from triton.flagmega.ir.ops.math._quantized import matrix_width
 from triton.flagmega.ir.ops.tensors._k_major import parse_k_major_layout
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
-    can_materialize_packed_qkv,
-)
+    can_materialize_packed_qkv, )
 from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidate,
     DistributedCandidateContext,
@@ -46,8 +46,7 @@ from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidateTuple,
 )
 from triton.flagmega.passes.auto_distributed.candidate_identity import (
-    distributed_candidate_id,
-)
+    distributed_candidate_id, )
 from triton.flagmega.passes.auto_distributed.inference_providers import TypeInferenceCandidateProvider
 
 
@@ -126,31 +125,28 @@ class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
         indices = tensor_of(module.node_map[node.inputs[0]].type)
         weight = tensor_of(module.node_map[node.inputs[1]].type)
         output = tensor_of(node.type)
-        if (
-            weight.rank != 2
-            or output.rank != indices.rank + 1
-            or output.shape[:-1] != indices.shape
-            or output.shape[-1] != weight.shape[1]
-        ):
+        if (weight.rank != 2 or output.rank != indices.rank + 1 or output.shape[:-1] != indices.shape
+                or output.shape[-1] != matrix_width(weight, node.attrs.get("weight_encoding"))):
             return ()
 
         work = max(_tensor_bytes(output), 1)
         replicated = _replicated(context, work)
         values = [replace(replicated, reason="embedding-replicated")]
+        if node.attrs.get("weight_encoding") is not None:
+            # Packed rows have a different byte extent from decoded features.
+            # Keep the immutable table canonical; consumers may shard activations.
+            return tuple(values)
         placement = context.placement
         for hierarchy_axes in _mesh_axis_combinations(placement):
             for output_index, feature_policy in enumerate(
-                context.split_candidates(
-                    output,
-                    output.rank - 1,
-                    hierarchy_axes,
-                    purpose="output",
-                )
-            ):
+                    context.split_candidates(
+                        output,
+                        output.rank - 1,
+                        hierarchy_axes,
+                        purpose="output",
+                    )):
                 weight_policies = [SBP.broadcast(), feature_policy]
-                output_policies = [
-                    SBP.broadcast() for _ in range(output.rank - 1)
-                ]
+                output_policies = [SBP.broadcast() for _ in range(output.rank - 1)]
                 output_policies.append(feature_policy)
                 weight_type = DistributedType(
                     weight,
@@ -162,9 +158,7 @@ class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
                     tuple(output_policies),
                     placement,
                 )
-                if not is_distributable(
-                    weight, tuple(weight_policies), placement
-                ):
+                if not is_distributable(weight, tuple(weight_policies), placement):
                     continue
                 values.append(
                     DistributedCandidate(
@@ -191,8 +185,7 @@ class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
                             "feature-local-bytes",
                             "vocabulary-axis-broadcast",
                         ),
-                    )
-                )
+                    ))
         return tuple(values)
 
 
@@ -270,8 +263,10 @@ def _packed_qkv_local_shape_cost(
 
 
 _PACKED_QKV_OBJECTIVE = {
-    "objective_kind": "heuristic",
-    "objective_model": "flagmega.packed-qkv-local-shape-balance/v1",
+    "objective_kind":
+    "heuristic",
+    "objective_model":
+    "flagmega.packed-qkv-local-shape-balance/v1",
     "objective_evidence": (
         "local-scalar-macs",
         "local-k-n-imbalance",
@@ -1248,42 +1243,56 @@ class GdnConvolutionCandidateProvider(DistributedCandidateProviderBase):
         hierarchy_axes = tuple(range(placement.rank))
         divisor = _shard_count(placement, hierarchy_axes)
         if _can_split(
-            hierarchy_axes,
-            placement,
+                hierarchy_axes,
+                placement,
             (qkv, 1),
             (conv_weight, 0),
             (output, 1),
         ):
-            values.append(DistributedCandidate(
-                _candidate_id(node.id, "channel_split", hierarchy_axes, placement),
-                TupleType((
-                    split_type(output, 1, placement, hierarchy_axes),
-                    node.type.fields[1],
-                )),
-                (
-                    split_type(qkv, 1, placement, hierarchy_axes),
-                    logical_inputs[1],
-                    split_type(conv_weight, 0, placement, hierarchy_axes),
-                ),
-                max(work // divisor, 1),
-                "gdn-convolution-channel-sbp",
-            ))
-            values.extend(_gdn_direct_partial_candidates(
-                context,
-                tensor_axis=1,
-                materialized_return=TupleType((
-                    split_type(output, 1, placement, hierarchy_axes),
-                    node.type.fields[1],
-                )),
-                base_inputs=(
-                    split_type(qkv, 1, placement, hierarchy_axes),
-                    logical_inputs[1],
-                    split_type(conv_weight, 0, placement, hierarchy_axes),
-                ),
-                source_input_index=0,
-                work=work,
-                reason="gdn-convolution-direct-sum-partial",
-            ))
+            values.append(
+                DistributedCandidate(
+                    _candidate_id(node.id, "channel_split", hierarchy_axes, placement),
+                    TupleType((
+                        split_type(output, 1, placement, hierarchy_axes),
+                        node.type.fields[1],
+                    )),
+                    (
+                        split_type(qkv, 1, placement, hierarchy_axes),
+                        logical_inputs[1],
+                        split_type(conv_weight, 0, placement, hierarchy_axes),
+                    ),
+                    max(work // divisor, 1),
+                    "gdn-convolution-channel-sbp",
+                ))
+            values.extend(
+                _gdn_direct_partial_candidates(
+                    context,
+                    tensor_axis=1,
+                    materialized_return=TupleType((
+                        split_type(output, 1, placement, hierarchy_axes),
+                        node.type.fields[1],
+                    )),
+                    base_inputs=(
+                        split_type(qkv, 1, placement, hierarchy_axes),
+                        logical_inputs[1],
+                        split_type(conv_weight, 0, placement, hierarchy_axes),
+                    ),
+                    source_input_index=0,
+                    work=work,
+                    reason="gdn-convolution-direct-sum-partial",
+                ))
+        else:
+            for qkv_type, weight_type, output_type in _gdn_ragged_split_types(context,
+                                                                              ((qkv, 1), (conv_weight, 0), (output, 1)),
+                                                                              hierarchy_axes):
+                values.append(
+                    DistributedCandidate(
+                        _candidate_id(node.id, "channel_split", hierarchy_axes, placement),
+                        TupleType((output_type, node.type.fields[1])),
+                        (qkv_type, logical_inputs[1], weight_type),
+                        max(work // divisor, 1),
+                        "gdn-convolution-channel-sbp",
+                    ))
         return tuple(values)
 
 
@@ -1310,31 +1319,66 @@ class GdnRecurrentCandidateProvider(DistributedCandidateProviderBase):
             for index, value in enumerate(logical_inputs[1:], start=1):
                 tensor = tensor_of(value)
                 inputs.append(
-                    split_type(tensor, 1, placement, hierarchy_axes)
-                    if index == 2
-                    else broadcast_type(tensor, placement)
-                )
+                    split_type(tensor, 1, placement, hierarchy_axes) if index ==
+                    2 else broadcast_type(tensor, placement))
             return_type = TupleType((
                 split_type(output, 1, placement, hierarchy_axes),
                 node.type.fields[1],
             ))
-            values.append(DistributedCandidate(
-                _candidate_id(node.id, "head_split", hierarchy_axes, placement),
-                return_type,
-                tuple(inputs),
-                max(work // divisor, 1),
-                "gdn-recurrent-head-sbp",
-            ))
-            values.extend(_gdn_direct_partial_candidates(
-                context,
-                tensor_axis=1,
-                materialized_return=return_type,
-                base_inputs=tuple(inputs),
-                source_input_index=2,
-                work=work,
-                reason="gdn-recurrent-direct-sum-partial",
-            ))
+            values.append(
+                DistributedCandidate(
+                    _candidate_id(node.id, "head_split", hierarchy_axes, placement),
+                    return_type,
+                    tuple(inputs),
+                    max(work // divisor, 1),
+                    "gdn-recurrent-head-sbp",
+                ))
+            values.extend(
+                _gdn_direct_partial_candidates(
+                    context,
+                    tensor_axis=1,
+                    materialized_return=return_type,
+                    base_inputs=tuple(inputs),
+                    source_input_index=2,
+                    work=work,
+                    reason="gdn-recurrent-direct-sum-partial",
+                ))
+        else:
+            for z_type, output_type in _gdn_ragged_split_types(context, ((z, 1), (output, 1)), hierarchy_axes):
+                inputs = tuple(
+                    value if index == 0 else z_type if index == 2 else broadcast_type(tensor_of(value), placement)
+                    for index, value in enumerate(logical_inputs))
+                values.append(
+                    DistributedCandidate(
+                        _candidate_id(node.id, "head_split", hierarchy_axes, placement),
+                        TupleType((output_type, node.type.fields[1])),
+                        inputs,
+                        max(work // divisor, 1),
+                        "gdn-recurrent-head-sbp",
+                    ))
         return tuple(values)
+
+
+def _gdn_ragged_split_types(context, tensor_axes, hierarchy_axes):
+    """Use only target-owned maps accepted by every channel-coupled tensor.
+
+    Equal splits retain their existing relation. For a ragged extent, generic
+    GDN must not suppress a legal physical policy before the target can offer
+    it. The common map also gives each state channel exactly one owner.
+    """
+    alternatives = tuple(
+        context.split_candidates(tensor, axis, hierarchy_axes, purpose="output") for tensor, axis in tensor_axes)
+    result = []
+    for policy in alternatives[0]:
+        if not all(policy in values for values in alternatives[1:]):
+            continue
+        types = []
+        for tensor, axis in tensor_axes:
+            policies = [SBP.broadcast() for _ in tensor.shape]
+            policies[axis] = policy
+            types.append(DistributedType(tensor, tuple(policies), context.placement))
+        result.append(tuple(types))
+    return tuple(result)
 
 
 def _gdn_direct_partial_candidates(

@@ -288,15 +288,14 @@ def _torch_dtype(torch, dtype: DType):
             DType.BOOL: torch.bool,
             DType.INT32: torch.int32,
             DType.INT64: torch.int64,
+            DType.UINT8: torch.uint8,
             DType.BFLOAT16: torch.bfloat16,
             DType.FLOAT16: torch.float16,
             DType.FLOAT32: torch.float32,
             DType.FLOAT8_E4M3FN: torch.float8_e4m3fn,
         }[dtype]
     except (AttributeError, KeyError) as error:
-        raise RuntimeContractError(
-            f"Workspace diagnostics cannot materialize dtype {dtype.value!r}."
-        ) from error
+        raise RuntimeContractError(f"Workspace diagnostics cannot materialize dtype {dtype.value!r}.") from error
 
 
 __all__ = [

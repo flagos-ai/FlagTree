@@ -8,10 +8,9 @@ from dataclasses import replace
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir.model import Function, IRModule, Node
+from triton.flagmega.ir.model import IRModule, Node
 from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.ir.verify import verify_module
-
 
 _GDN_OP = "nn.gated_delta_net"
 _GET_ITEM_OP = "builtin.get_item"
@@ -74,15 +73,16 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
             "decomposed_from": source.id,
             "decomposition_rule": "DecomposeGatedDeltaNet",
         }
-        return append(Node(
-            id=node_id,
-            op=op,
-            inputs=tuple(value.id for value in prepared.inputs),
-            type=prepared.result_type,
-            effect=prepared.effect,
-            attrs=prepared.attrs,
-            metadata=metadata,
-        ))
+        return append(
+            Node(
+                id=node_id,
+                op=op,
+                inputs=tuple(value.id for value in prepared.inputs),
+                type=prepared.result_type,
+                effect=prepared.effect,
+                attrs=prepared.attrs,
+                metadata=metadata,
+            ))
 
     for original in module.nodes:
         if original.op == _GDN_OP:
@@ -90,10 +90,7 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
             source_inputs = tuple(node_map[value] for value in source.inputs)
             _verify_gdn_source(source, source_inputs, module.stage)
             definition = get_definition(_GDN_OP)
-            values = {
-                parameter.name: parameter.read(source_inputs)
-                for parameter in definition.input_parameters
-            }
+            values = {parameter.name: parameter.read(source_inputs) for parameter in definition.input_parameters}
             prefix = f"{source.id}.decomposed"
             projection_attrs = {
                 "weight_block_n": int(source.attrs["weight_block_n"]),
@@ -103,14 +100,14 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
                 "math.block_scaled_matmul",
                 f"{prefix}.qkv",
                 (values["value"].id, values["qkv_weight"].id, values["qkv_scale"].id),
-                projection_attrs,
+                {**projection_attrs, "weight_encoding": source.attrs.get("qkv_weight_encoding")},
                 source,
             )
             z = make(
                 "math.block_scaled_matmul",
                 f"{prefix}.z",
                 (values["value"].id, values["z_weight"].id, values["z_scale"].id),
-                projection_attrs,
+                {**projection_attrs, "weight_encoding": source.attrs.get("z_weight_encoding")},
                 source,
             )
             convolution = make(
@@ -123,14 +120,14 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
             convolved = make(
                 _GET_ITEM_OP,
                 f"{prefix}.convolved",
-                (convolution.id,),
+                (convolution.id, ),
                 {"index": 0},
                 source,
             )
             convolution_state = make(
                 _GET_ITEM_OP,
                 f"{prefix}.convolution_state",
-                (convolution.id,),
+                (convolution.id, ),
                 {"index": 1},
                 source,
             )
@@ -154,20 +151,23 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
                     "key_head_dim": int(source.attrs["key_head_dim"]),
                     "value_head_dim": int(source.attrs["value_head_dim"]),
                     "epsilon": float(source.attrs["epsilon"]),
+                    "b_weight_encoding": source.attrs.get("b_weight_encoding"),
+                    "a_weight_encoding": source.attrs.get("a_weight_encoding"),
+                    "value_head_order": source.attrs.get("value_head_order", "grouped"),
                 },
                 source,
             )
             gated = make(
                 _GET_ITEM_OP,
                 f"{prefix}.gated",
-                (recurrent.id,),
+                (recurrent.id, ),
                 {"index": 0},
                 source,
             )
             recurrent_state = make(
                 _GET_ITEM_OP,
                 projection_ids[source.id][1][0],
-                (recurrent.id,),
+                (recurrent.id, ),
                 {"index": 1},
                 source,
             )
@@ -175,7 +175,7 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
                 "math.block_scaled_matmul",
                 projection_ids[source.id][0][0],
                 (gated.id, values["output_weight"].id, values["output_scale"].id),
-                projection_attrs,
+                {**projection_attrs, "weight_encoding": source.attrs.get("output_weight_encoding")},
                 source,
             )
             expanded[source.id] = (output.id, recurrent_state.id)
@@ -197,13 +197,10 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
             function,
             parameters=tuple(resolve(value) for value in function.parameters),
             outputs=tuple(resolve(value) for value in function.outputs),
-        )
-        for function in module.functions
-    )
+        ) for function in module.functions)
     points = tuple(
         replace(point, owner=resolve(point.owner)) if point.owner is not None else point
-        for point in module.selection_points
-    )
+        for point in module.selection_points)
     result = replace(module, nodes=tuple(nodes), functions=functions, selection_points=points)
     return verify_module(result)
 

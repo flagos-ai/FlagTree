@@ -10,8 +10,7 @@ from triton.flagmega.ir import DType, DistributedType, IRModule, Node, Placement
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidateProviderRegistry
 from triton.flagmega.passes.auto_distributed.inference_providers import (
-    TypeInferenceCandidateProvider,
-)
+    TypeInferenceCandidateProvider, )
 from triton.flagmega.passes.auto_distributed.greedy_sample_provider import GreedySampleCandidateProvider
 from triton.flagmega.passes.auto_distributed.providers import (
     BinaryCandidateProvider,
@@ -42,16 +41,14 @@ from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
     PagedAttentionPartialCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.qkv_rope_with_cache_provider import (
-    QKVRoPEWithCacheCandidateProvider,
-)
+    QKVRoPEWithCacheCandidateProvider, )
 from triton.flagmega.passes.auto_distributed.rope_provider import RoPECandidateProvider
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealizationPolicy,
     NttDistributedReshardRealizationPolicy,
 )
 from triton.flagmega.passes.auto_distributed.split_candidates import (
-    ContiguousDistributedSplitCandidateProvider,
-)
+    ContiguousDistributedSplitCandidateProvider, )
 from triton.flagmega.passes.vector_contracts import (
     NATIVE_VECTOR_COMPUTE_OPS,
     retained_vectorization_roots,
@@ -59,9 +56,10 @@ from triton.flagmega.passes.vector_contracts import (
 )
 from triton.flagmega.passes.constants import ConstnessAnalysis
 
-
 _DISTRIBUTION_ADAPTER_OPS = frozenset({
-    "distributed.boxing", "distributed.force_boxing", "distributed.sharded_view",
+    "distributed.boxing",
+    "distributed.force_boxing",
+    "distributed.sharded_view",
 })
 
 
@@ -194,7 +192,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
     # hide a vector Reshape from the ordinary internal-dependency walk below.
     view_ops = {"tensors.bitcast", "tensors.reshape", *distribution_adapters}
     for consumer in module.nodes:
-        if consumer.op not in native_vector_ops:
+        if consumer.op not in native_vector_ops and consumer.op != "tensors.bitcast":
             continue
         for input_id in consumer.inputs:
             current = node_map[input_id]
@@ -206,6 +204,10 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                 current = node_map[current.inputs[0]]
             if current.op in native_vector_ops:
                 native_dependencies.update(chain)
+                if consumer.op == "tensors.bitcast":
+                    # A scalar byte view is an authoritative boundary even
+                    # when its consumer is a native quantized GEMV.
+                    native_dependencies.add(consumer.id)
     dependency_bridges = frozenset({
         "builtin.get_item",
         "builtin.identity",
@@ -213,9 +215,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         *_DISTRIBUTION_ADAPTER_OPS,
     })
     pending = [
-        node.id
-        for node in module.nodes
-        if vectorization_root(node) in native_vector_roots
+        node.id for node in module.nodes if vectorization_root(node) in native_vector_roots
         or node.id in native_vector_roots and node.metadata.get("vectorized_from") is not None
     ]
     # Retained result/layout boundaries (e.g. Concat of a native result and
@@ -226,9 +226,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         current = node_map[pending.pop()]
         for input_id in current.inputs:
             dependency = node_map[input_id]
-            is_internal = (
-                dependency.metadata.get("vectorization_internal") is True
-            )
+            is_internal = (dependency.metadata.get("vectorization_internal") is True)
             if is_internal:
                 native_dependencies.add(input_id)
             # AutoDistribution is allowed to insert zero-copy views, tuple
@@ -236,10 +234,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             # typed-vector producer and its native consumer.  Those nodes are
             # physical and survive this pass, but must be transparent to the
             # liveness walk so they cannot hide an internal Pack/Reshape.
-            if (
-                (is_internal or dependency.op in dependency_bridges)
-                and input_id not in visited_dependencies
-            ):
+            if ((is_internal or dependency.op in dependency_bridges) and input_id not in visited_dependencies):
                 visited_dependencies.add(input_id)
                 pending.append(input_id)
     compute_roots: dict[str, str] = {}
@@ -263,18 +258,13 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         if semantic_id is not None and str(semantic_id) not in node_ids:
             compute_roots[node.id] = str(semantic_id)
             continue
-        if (
-            node.metadata.get("vectorization_role") == "compute"
-            and str(node.metadata.get("vectorization_root")) not in node_ids
-        ):
+        if (node.metadata.get("vectorization_role") == "compute"
+                and str(node.metadata.get("vectorization_root")) not in node_ids):
             compute_roots[node.id] = str(node.metadata["vectorization_root"])
     specialized_boundary_computes: dict[str, str] = {}
     specialized_vector_inputs: set[str] = set()
     for node in module.nodes:
-        if (
-            node.metadata.get("vectorized_from") is None
-            or node.metadata.get("cloned_for_function_variant") is None
-        ):
+        if (node.metadata.get("vectorized_from") is None or node.metadata.get("cloned_for_function_variant") is None):
             continue
         compute = _referenced_vector_expression(node, module)
         if compute is None:
@@ -284,31 +274,24 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         while pending_inputs:
             input_id = pending_inputs.pop()
             value = node_map[input_id]
-            if (
-                value.metadata.get("vectorization_internal") is not True
-                or value.metadata.get("vectorization_role") == "compute"
-                or value.op not in {
-                    "distributed.sharded_view",
-                    "tensors.bitcast",
-                    "tensors.pack",
-                    "tensors.pad",
-                    "tensors.slice_to_shape",
-                    "tensors.unpack",
-                }
-                or input_id in specialized_vector_inputs
-            ):
+            if (value.metadata.get("vectorization_internal") is not True
+                    or value.metadata.get("vectorization_role") == "compute" or value.op not in {
+                        "distributed.sharded_view",
+                        "tensors.bitcast",
+                        "tensors.pack",
+                        "tensors.pad",
+                        "tensors.slice_to_shape",
+                        "tensors.unpack",
+                    } or input_id in specialized_vector_inputs):
                 continue
             specialized_vector_inputs.add(input_id)
             pending_inputs.extend(value.inputs)
     internal = {
         node.id
         for node in module.nodes
-        if node.metadata.get("vectorization_internal") is True
-        and node.op not in distribution_adapters
-        and node.id not in compute_roots
-        and node.id not in specialized_boundary_computes.values()
-        and node.id not in specialized_vector_inputs
-        and vectorization_root(node) not in native_vector_roots
+        if node.metadata.get("vectorization_internal") is True and node.op not in distribution_adapters
+        and node.id not in compute_roots and node.id not in specialized_boundary_computes.values()
+        and node.id not in specialized_vector_inputs and vectorization_root(node) not in native_vector_roots
         and node.id not in native_dependencies
     }
     nodes: list[Node] = []
@@ -330,22 +313,18 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             return module.node_map[value]
         producer = prepared_by_id[producer_id]
         axes = tuple(
-            int(axis)
-            for axis in producer.metadata.get(
+            int(axis) for axis in producer.metadata.get(
                 "selected_vector_axes",
                 producer.metadata.get("vector_axes", ()),
-            )
-        )
+            ))
         if not axes:
-            raise ValueError(
-                f"Native vector producer {producer.id!r} has no unpack axes."
-            )
+            raise ValueError(f"Native vector producer {producer.id!r} has no unpack axes.")
         definition = get_definition("tensors.unpack")
-        prepared_call = definition.prepare((producer,), {"axes": axes})
+        prepared_call = definition.prepare((producer, ), {"axes": axes})
         boundary = Node(
             id=value,
             op="tensors.unpack",
-            inputs=(producer.id,),
+            inputs=(producer.id, ),
             type=prepared_call.result_type,
             effect=prepared_call.effect,
             attrs=prepared_call.attrs,
@@ -384,11 +363,13 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             # A retained physical Pack (including an offline constant) has
             # authoritative axes of its own. Scalar schedule consumers need
             # its logical value just as they do for a native vector compute.
-            axes = tuple(producer.attrs.get("axes", (producer.attrs.get("axis", -1),)
-                                            * len(tensor_of(producer.type).dtype.lanes)))
+            axes = tuple(
+                producer.attrs.get("axes",
+                                   (producer.attrs.get("axis", -1), ) * len(tensor_of(producer.type).dtype.lanes)))
         elif producer.op in native_vector_ops and vectorization_root(producer) in native_vector_roots:
-            axes = tuple(int(axis) for axis in producer.metadata.get(
-                "selected_vector_axes", producer.metadata.get("vector_axes", ())))
+            axes = tuple(
+                int(axis)
+                for axis in producer.metadata.get("selected_vector_axes", producer.metadata.get("vector_axes", ())))
         else:
             return actual
         if not axes:
@@ -428,15 +409,14 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             source_id = node.inputs[0] if len(node.inputs) == 1 else None
             while source_id in internal and node_map[source_id].op == "tensors.pack":
                 pack = node_map[source_id]
-                axes = pack.attrs.get("axes", (pack.attrs.get("axis", -1),))
-                target_type = get_definition("tensors.unpack").infer_type(
-                    (prepared,), {"axes": axes})
+                axes = pack.attrs.get("axes", (pack.attrs.get("axis", -1), ))
+                target_type = get_definition("tensors.unpack").infer_type((prepared, ), {"axes": axes})
                 source_id = pack.inputs[0]
                 actual = prepared_input(compute_roots.get(source_id, source_id))
                 definition = get_definition(node.op)
                 attrs = definition.normalize_attrs({**node.attrs, "new_type": target_type})
-                prepared = replace(prepared, inputs=(actual.id,),
-                                   type=definition.infer_type((actual,), attrs), attrs=attrs)
+                prepared = replace(prepared, inputs=(actual.id, ), type=definition.infer_type((actual, ), attrs),
+                                   attrs=attrs)
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
             continue
@@ -448,15 +428,9 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                 and key not in {"vectorized_from", "vector_axes", "vector_lanes"}
             }
             metadata.update({
-                "selected_vectorization": str(
-                    node.metadata["vectorization_candidate"]
-                ),
-                "selected_vector_axes": tuple(
-                    int(value) for value in node.metadata["vector_axes"]
-                ),
-                "selected_vector_lanes": tuple(
-                    int(value) for value in node.metadata["vector_lanes"]
-                ),
+                "selected_vectorization": str(node.metadata["vectorization_candidate"]),
+                "selected_vector_axes": tuple(int(value) for value in node.metadata["vector_axes"]),
+                "selected_vector_lanes": tuple(int(value) for value in node.metadata["vector_lanes"]),
                 "prepared_from_vectorization": True,
             })
             prepared = replace(node, metadata=metadata)
@@ -479,34 +453,22 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             prepared_by_id[prepared.id] = prepared
             continue
         current_vector_root = vectorization_root(node)
-        if (
-            current_vector_root in native_vector_roots
-            and node.op in native_vector_ops
-            and node.metadata.get("vectorization_candidate") is not None
-        ):
+        if (current_vector_root in native_vector_roots and node.op in native_vector_ops
+                and node.metadata.get("vectorization_candidate") is not None):
             prepared = replace(
                 node,
                 metadata={
                     **dict(node.metadata),
-                    "selected_vectorization": str(
-                        node.metadata["vectorization_candidate"]
-                    ),
-                    "selected_vector_axes": tuple(
-                        int(value) for value in node.metadata["vector_axes"]
-                    ),
-                    "selected_vector_lanes": tuple(
-                        int(value) for value in node.metadata["vector_lanes"]
-                    ),
+                    "selected_vectorization": str(node.metadata["vectorization_candidate"]),
+                    "selected_vector_axes": tuple(int(value) for value in node.metadata["vector_axes"]),
+                    "selected_vector_lanes": tuple(int(value) for value in node.metadata["vector_lanes"]),
                     "prepared_from_vectorization": True,
                 },
             )
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
             continue
-        if (
-            node.op == "builtin.get_item"
-            and len(node.inputs) == 1
-        ):
+        if (node.op == "builtin.get_item" and len(node.inputs) == 1):
             # Tuple projections are structural even when a function-boundary
             # or combine rewrite preserves the provenance of the semantic op
             # they replaced.  Never reinterpret a tuple input as that op.
@@ -516,24 +478,15 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             # remain ordinary structural projections.
             metadata = dict(node.metadata)
             parent = module.node_map[node.inputs[0]]
-            candidate = (
-                metadata.get("vectorization_candidate")
-                if parent.op in {
-                    "ntt.add_norm_stats",
-                    "ntt.matmul_norm_stats",
-                }
-                and int(node.attrs.get("index", -1)) == 0
-                else None
-            )
+            candidate = (metadata.get("vectorization_candidate") if parent.op in {
+                "ntt.add_norm_stats",
+                "ntt.matmul_norm_stats",
+            } and int(node.attrs.get("index", -1)) == 0 else None)
             if candidate is not None:
                 metadata.update({
                     "selected_vectorization": str(candidate),
-                    "selected_vector_axes": tuple(
-                        int(value) for value in metadata["vector_axes"]
-                    ),
-                    "selected_vector_lanes": tuple(
-                        int(value) for value in metadata["vector_lanes"]
-                    ),
+                    "selected_vector_axes": tuple(int(value) for value in metadata["vector_axes"]),
+                    "selected_vector_lanes": tuple(int(value) for value in metadata["vector_lanes"]),
                     "prepared_from_vectorization": True,
                 })
             prepared = replace(node, metadata=metadata)
@@ -548,10 +501,8 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             nodes.append(node)
             prepared_by_id[node.id] = node
             continue
-        if (
-            (node.id in native_vector_roots or current_vector_root in native_vector_roots)
-            and node.metadata.get("vectorized_from") is not None
-        ):
+        if ((node.id in native_vector_roots or current_vector_root in native_vector_roots)
+                and node.metadata.get("vectorized_from") is not None):
             # Keep the typed-vector result boundary (usually Unpack) as an
             # explicit zero-copy view.  Its native compute node above owns the
             # executable vector schedule.
@@ -574,19 +525,11 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             if not str(key).startswith("vectorization_")
             and key not in {"vectorized_from", "vector_axes", "vector_lanes"}
         }
-        metadata.update(
-            {
-                "selected_vectorization": str(
-                    node.metadata["vectorization_candidate"]
-                ),
-                "selected_vector_axes": tuple(
-                    int(value) for value in node.metadata["vector_axes"]
-                ),
-                "selected_vector_lanes": tuple(
-                    int(value) for value in node.metadata["vector_lanes"]
-                ),
-            }
-        )
+        metadata.update({
+            "selected_vectorization": str(node.metadata["vectorization_candidate"]),
+            "selected_vector_axes": tuple(int(value) for value in node.metadata["vector_axes"]),
+            "selected_vector_lanes": tuple(int(value) for value in node.metadata["vector_lanes"]),
+        })
         semantic_op = str(vectorized_from)
         semantic_inputs = _recover_semantic_inputs(
             node,
@@ -611,13 +554,10 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         prepared_by_id[prepared.id] = prepared
     live = {node.id for node in nodes}
     points = tuple(
-        replace(point, owner=compute_roots.get(point.owner, point.owner))
-        if point.owner is not None
-        and compute_roots.get(point.owner, point.owner) in live
-        else point
+        replace(point, owner=compute_roots.get(point.owner, point.owner)
+                ) if point.owner is not None and compute_roots.get(point.owner, point.owner) in live else point
         for point in module.selection_points
-        if point.owner is None or compute_roots.get(point.owner, point.owner) in live
-    )
+        if point.owner is None or compute_roots.get(point.owner, point.owner) in live)
     point_ids = {point.id for point in points}
     selections = tuple(record for record in module.selections if record.point_id in point_ids)
     return replace(module, nodes=tuple(nodes), selection_points=points, selections=selections)

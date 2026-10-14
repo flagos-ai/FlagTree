@@ -41,7 +41,6 @@ from triton.flagmega.ir.print_symbols import GraphPrintSymbols, function_node_sc
 from triton.flagmega.ir.print_weights import WeightPrintAnalysis
 from triton.flagmega.ir.types import DType, MaskVectorType, PointerType, VectorType
 
-
 _DTYPE_DISPLAY_NAMES = {
     DType.BOOL: "bool",
     DType.INT32: "i32",
@@ -50,6 +49,7 @@ _DTYPE_DISPLAY_NAMES = {
     DType.FLOAT16: "f16",
     DType.FLOAT32: "f32",
     DType.FLOAT8_E4M3FN: "F8_E4M3",
+    DType.UINT8: "U8",
 }
 
 

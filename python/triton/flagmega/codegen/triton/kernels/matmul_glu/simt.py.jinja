@@ -1,6 +1,65 @@
 # flagmega-kernel: matmul_glu/simt platform=generic
 {% set matmul_glu_variant = "simt" %}
 @triton.jit
+def _flagmega_iq4_xs_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+    weight_f16 = weight.to(tl.pointer_type(tl.float16))
+    weight_u16 = weight.to(tl.pointer_type(tl.uint16))
+    result = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, 128):
+        k = k_start + tl.arange(0, 128)
+        km = k < K
+        block = k // 256
+        inside = k % 256
+        group = inside // 32
+        lane = inside % 32
+        base = row_offsets[:, None] + block[None, :] * 136
+        active = n_mask[:, None] & km[None, :]
+        sl = tl.load(weight_u8 + base + 4 + group[None, :] // 2, mask=active, other=0)
+        sh = tl.load(weight_u16 + (base + 2) // 2, mask=active, other=0)
+        sc = ((sl >> ((group[None, :] % 2) * 4)) & 0xF) | (((sh >> (group[None, :] * 2)) & 0x3) * 16)
+        d = tl.load(weight_f16 + base // 2, mask=active, other=0.0).to(tl.float32)
+        packed = tl.load(weight_u8 + base + 8 + group[None, :] * 16 + (lane % 16)[None, :], mask=active, other=0)
+        code = tl.where((lane // 16)[None, :] == 0, packed & 0xF, packed >> 4)
+        cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+        source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+        result += tl.sum(d * (sc.to(tl.float32) - 32.0) * cv * source_value[None, :], axis=1)
+    return result
+
+@triton.jit
+def _flagmega_q4_k_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+    weight_f16 = weight.to(tl.pointer_type(tl.float16))
+    result = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, 128):
+        k = k_start + tl.arange(0, 128)
+        km = k < K
+        block = k // 256
+        inside = k % 256
+        group = inside // 32
+        lane = inside % 32
+        base = row_offsets[:, None] + block[None, :] * 144
+        active = n_mask[:, None] & km[None, :]
+        d = tl.load(weight_f16 + base // 2, mask=active, other=0.0).to(tl.float32)
+        dmin = tl.load(weight_f16 + (base + 2) // 2, mask=active, other=0.0).to(tl.float32)
+        scales = weight_u8 + base + 4
+        s0 = tl.load(scales + group[None, :] % 4, mask=active, other=0)
+        s1 = tl.load(scales + 4 + group[None, :] % 4, mask=active, other=0)
+        s2 = tl.load(scales + 8 + group[None, :] % 4, mask=active, other=0)
+        low_group = group[None, :] < 4
+        sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+        mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+        packed = tl.load(
+            weight_u8 + base + 16 + (group[None, :] // 2) * 32 + lane[None, :],
+            mask=active,
+            other=0,
+        )
+        q = tl.where(group[None, :] % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+        source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+        result += tl.sum((d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)) * source_value[None, :], axis=1)
+    return result
+
+@triton.jit
 def _flagmega_block_glu_local_tile(
     source, gate_weight, up_weight, gate_scale, up_scale, destination,
     weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,

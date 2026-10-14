@@ -66,3 +66,18 @@ def test_every_accepted_proof_agrees_with_complete_small_coordinate_domains(poli
                 groups = {axis.map_local_to_global(index).fixed_value // group
                           for index in range(start, min(start + tile, axis.active_extent.fixed_value))}
                 assert len(groups) == 1
+
+
+@pytest.mark.parametrize('mesh', [(2, 4), (6, 6)])
+def test_complete_cyclic_tiles_preserve_scalar_head_groups(mesh):
+    value = distributed(6144, fm.SBP.split_block_cyclic((0, 1), 64), mesh)
+    assert tiles_stay_within_groups(value, -1, 64, 128)
+    # Check every active coordinate, including the ragged final owner blocks.
+    for owner in product(*(range(n) for n in mesh)):
+        axis = fm.local_shard_descriptor(value, owner).axes[-1]
+        for start in range(0, axis.active_extent.fixed_value, 64):
+            heads = {
+                axis.map_local_to_global(i).fixed_value // 128
+                for i in range(start, min(start + 64, axis.active_extent.fixed_value))
+            }
+            assert len(heads) == 1

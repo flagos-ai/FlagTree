@@ -40,6 +40,7 @@ class PackedBlockScaledMatMul(OpDefinition):
     k_pack = attribute_parameter()
     k_vector = attribute_parameter()
     packed_layout = attribute_parameter(default="n_major_k_packed")
+    weight_encoding = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -51,10 +52,14 @@ class PackedBlockScaledMatMul(OpDefinition):
             "k_vector": int(attrs["k_vector"]),
             "packed_layout": str(attrs["packed_layout"]),
         }
+        if attrs.get("weight_encoding") is not None:
+            result["weight_encoding"] = attrs["weight_encoding"]
         if any(result[name] <= 0 for name in ("weight_block_n", "weight_block_k", "k_pack", "k_vector")):
             raise IRSchemaError("PackedBlockScaledMatMul block/vector sizes must be positive.")
         if result["packed_layout"] != "n_major_k_packed":
             raise IRSchemaError("PackedBlockScaledMatMul requires n_major_k_packed layout.")
+        if result.get("weight_encoding") is not None and not isinstance(result["weight_encoding"], str):
+            raise IRSchemaError("PackedBlockScaledMatMul weight_encoding must be a string or None.")
         return result
 
     @classmethod

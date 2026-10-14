@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from triton.flagmega.errors import ImporterError
-from triton.flagmega.importer.checkpoint import Checkpoint, DirectoryCheckpoint, TensorInfo
+from triton.flagmega.importer.checkpoint import Checkpoint, checkpoint_from_path, TensorInfo
 from triton.flagmega.importer.source import attach_import_source_locations
 from triton.flagmega.ir import (
     DType,
@@ -55,7 +56,7 @@ class Qwen35Layer0Importer:
     """Import only the first Qwen3.5/Qwen3.8 linear-attention decoder block."""
 
     def __init__(self, checkpoint: Checkpoint | str, *, revision: str | None = None) -> None:
-        self.checkpoint = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
+        self.checkpoint = checkpoint_from_path(checkpoint) if isinstance(checkpoint, (str, Path)) else checkpoint
         self.revision = revision
         self.config = self._parse_config(self.checkpoint.config)
         self.layer_prefix = self._discover_layer_prefix(self.checkpoint.keys)
@@ -96,8 +97,14 @@ class Qwen35Layer0Importer:
             expected_dtype: DType | tuple[DType, ...] | None = None,
         ):
             info = self._require_tensor(key, expected_shape, expected_dtype)
-            value_type = tensor_type(info.dtype, info.shape)
+            value_type = info.storage_type
             return builder.weight(name, value_type, source=info.source, key=key, id=_weight_id(name))
+
+        def encoding_attrs(**keys: str) -> dict[str, str]:
+            quantization_of = getattr(self.checkpoint, "quantization_of", None)
+            if quantization_of is None:
+                return {}
+            return {name: encoding for name, key in keys.items() if (encoding := quantization_of(key)) is not None}
 
         def weight(
             relative_name: str,
@@ -116,17 +123,21 @@ class Qwen35Layer0Importer:
             "embed_tokens.weight",
             f"{self.model_prefix}embed_tokens.weight",
             (config.vocab_size, config.hidden_size),
-            expected_dtype=DType.BFLOAT16,
+            expected_dtype=(DType.BFLOAT16, DType.FLOAT8_E4M3FN, DType.UINT8),
         )
         hidden = builder.call(
             "nn.embedding",
             [input_ids, embedding_weight],
             hidden_type,
             id="token_embedding",
-            attrs={"padding_idx": config.padding_idx},
+            attrs={
+                "padding_idx": config.padding_idx,
+                **encoding_attrs(weight_encoding=f"{self.model_prefix}embed_tokens.weight")
+            },
         )
 
-        input_norm_weight = weight("input_layernorm.weight", (config.hidden_size, ), expected_dtype=DType.BFLOAT16)
+        input_norm_weight = weight("input_layernorm.weight", (config.hidden_size, ),
+                                   expected_dtype=(DType.BFLOAT16, DType.FLOAT32))
         normalized = builder.call(
             "nn.rms_norm",
             [hidden, input_norm_weight],
@@ -138,7 +149,7 @@ class Qwen35Layer0Importer:
         qkv_weight = weight(
             "linear_attn.in_proj_qkv.weight",
             (config.conv_dim, config.hidden_size),
-            expected_dtype=DType.FLOAT8_E4M3FN,
+            expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8),
         )
         qkv_scale = weight(
             "linear_attn.in_proj_qkv.weight_scale_inv",
@@ -148,7 +159,7 @@ class Qwen35Layer0Importer:
         z_weight = weight(
             "linear_attn.in_proj_z.weight",
             (config.value_dim, config.hidden_size),
-            expected_dtype=DType.FLOAT8_E4M3FN,
+            expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8),
         )
         z_scale = weight(
             "linear_attn.in_proj_z.weight_scale_inv",
@@ -158,17 +169,17 @@ class Qwen35Layer0Importer:
         b_weight = weight(
             "linear_attn.in_proj_b.weight",
             (config.num_value_heads, config.hidden_size),
-            expected_dtype=DType.BFLOAT16,
+            expected_dtype=(DType.BFLOAT16, DType.FLOAT32, DType.FLOAT8_E4M3FN, DType.UINT8),
         )
         a_weight = weight(
             "linear_attn.in_proj_a.weight",
             (config.num_value_heads, config.hidden_size),
-            expected_dtype=DType.BFLOAT16,
+            expected_dtype=(DType.BFLOAT16, DType.FLOAT32, DType.FLOAT8_E4M3FN, DType.UINT8),
         )
         conv_weight = weight(
             "linear_attn.conv1d.weight",
             (config.conv_dim, 1, config.conv_kernel_size),
-            expected_dtype=DType.BFLOAT16,
+            expected_dtype=(DType.BFLOAT16, DType.FLOAT32),
         )
         a_log = weight("linear_attn.A_log", (config.num_value_heads, ))
         dt_bias = weight("linear_attn.dt_bias", (config.num_value_heads, ))
@@ -176,7 +187,7 @@ class Qwen35Layer0Importer:
         out_weight = weight(
             "linear_attn.out_proj.weight",
             (config.hidden_size, config.value_dim),
-            expected_dtype=DType.FLOAT8_E4M3FN,
+            expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8),
         )
         out_scale = weight(
             "linear_attn.out_proj.weight_scale_inv",
@@ -206,21 +217,40 @@ class Qwen35Layer0Importer:
             id="gated_delta_net",
             effect=effect("read_write", "gated_delta_net_state"),
             attrs={
-                "num_key_heads": config.num_key_heads,
-                "num_value_heads": config.num_value_heads,
-                "key_head_dim": config.key_head_dim,
-                "value_head_dim": config.value_head_dim,
-                "conv_kernel_size": config.conv_kernel_size,
-                "epsilon": config.epsilon,
-                "weight_block_n": config.weight_block_n,
-                "weight_block_k": config.weight_block_k,
+                "num_key_heads":
+                config.num_key_heads,
+                "num_value_heads":
+                config.num_value_heads,
+                "key_head_dim":
+                config.key_head_dim,
+                "value_head_dim":
+                config.value_head_dim,
+                "conv_kernel_size":
+                config.conv_kernel_size,
+                "epsilon":
+                config.epsilon,
+                "weight_block_n":
+                config.weight_block_n,
+                "weight_block_k":
+                config.weight_block_k,
+                **({
+                    "value_head_order": "tiled"
+                } if self.checkpoint.config.get("gguf", {}).get("value_head_order") == "tiled" else {}),
+                **encoding_attrs(
+                    qkv_weight_encoding=f"{self.layer_prefix}linear_attn.in_proj_qkv.weight",
+                    z_weight_encoding=f"{self.layer_prefix}linear_attn.in_proj_z.weight",
+                    output_weight_encoding=f"{self.layer_prefix}linear_attn.out_proj.weight",
+                    b_weight_encoding=f"{self.layer_prefix}linear_attn.in_proj_b.weight",
+                    a_weight_encoding=f"{self.layer_prefix}linear_attn.in_proj_a.weight",
+                ),
             },
         )
         gdn_output = builder.call("builtin.get_item", [gdn], hidden_type, id="gdn_output", attrs={"index": 0})
         updated_state = builder.call("builtin.get_item", [gdn], state_type, id="updated_state", attrs={"index": 1})
         after_gdn = builder.call("math.add", [hidden, gdn_output], hidden_type, id="after_gdn")
 
-        post_norm_weight = weight("post_attention_layernorm.weight", (config.hidden_size, ), expected_dtype=DType.BFLOAT16)
+        post_norm_weight = weight("post_attention_layernorm.weight", (config.hidden_size, ),
+                                  expected_dtype=(DType.BFLOAT16, DType.FLOAT32))
         mlp_input = builder.call(
             "nn.rms_norm",
             [after_gdn, post_norm_weight],
@@ -229,18 +259,20 @@ class Qwen35Layer0Importer:
             attrs={"epsilon": config.epsilon, "weight_bias": 1.0},
         )
         intermediate_type = tensor_type(DType.BFLOAT16, [1, config.intermediate_size])
-        gate_weight = weight(
-            "mlp.gate_proj.weight", (config.intermediate_size, config.hidden_size), expected_dtype=DType.FLOAT8_E4M3FN)
+        gate_weight = weight("mlp.gate_proj.weight", (config.intermediate_size, config.hidden_size),
+                             expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8))
         gate_scale = weight(
             "mlp.gate_proj.weight_scale_inv",
-            (_ceil_div(config.intermediate_size, config.weight_block_n), _ceil_div(config.hidden_size, config.weight_block_k)),
+            (_ceil_div(config.intermediate_size,
+                       config.weight_block_n), _ceil_div(config.hidden_size, config.weight_block_k)),
             expected_dtype=(DType.BFLOAT16, DType.FLOAT32),
         )
-        up_weight = weight(
-            "mlp.up_proj.weight", (config.intermediate_size, config.hidden_size), expected_dtype=DType.FLOAT8_E4M3FN)
+        up_weight = weight("mlp.up_proj.weight", (config.intermediate_size, config.hidden_size),
+                           expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8))
         up_scale = weight(
             "mlp.up_proj.weight_scale_inv",
-            (_ceil_div(config.intermediate_size, config.weight_block_n), _ceil_div(config.hidden_size, config.weight_block_k)),
+            (_ceil_div(config.intermediate_size,
+                       config.weight_block_n), _ceil_div(config.hidden_size, config.weight_block_k)),
             expected_dtype=(DType.BFLOAT16, DType.FLOAT32),
         )
         gated_mlp = builder.call(
@@ -249,16 +281,24 @@ class Qwen35Layer0Importer:
             intermediate_type,
             id="mlp_gate_up",
             attrs={
-                "activation": "silu",
-                "weight_block_n": config.weight_block_n,
-                "weight_block_k": config.weight_block_k,
+                "activation":
+                "silu",
+                "weight_block_n":
+                config.weight_block_n,
+                "weight_block_k":
+                config.weight_block_k,
+                **encoding_attrs(
+                    gate_weight_encoding=f"{self.layer_prefix}mlp.gate_proj.weight",
+                    up_weight_encoding=f"{self.layer_prefix}mlp.up_proj.weight",
+                ),
             },
         )
-        down_weight = weight(
-            "mlp.down_proj.weight", (config.hidden_size, config.intermediate_size), expected_dtype=DType.FLOAT8_E4M3FN)
+        down_weight = weight("mlp.down_proj.weight", (config.hidden_size, config.intermediate_size),
+                             expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8))
         down_scale = weight(
             "mlp.down_proj.weight_scale_inv",
-            (_ceil_div(config.hidden_size, config.weight_block_n), _ceil_div(config.intermediate_size, config.weight_block_k)),
+            (_ceil_div(config.hidden_size,
+                       config.weight_block_n), _ceil_div(config.intermediate_size, config.weight_block_k)),
             expected_dtype=(DType.BFLOAT16, DType.FLOAT32),
         )
         mlp_output = builder.call(
@@ -266,15 +306,19 @@ class Qwen35Layer0Importer:
             [gated_mlp, down_weight, down_scale],
             hidden_type,
             id="mlp_down",
-            attrs={"weight_block_n": config.weight_block_n, "weight_block_k": config.weight_block_k},
+            attrs={
+                "weight_block_n": config.weight_block_n, "weight_block_k": config.weight_block_k,
+                **encoding_attrs(weight_encoding=f"{self.layer_prefix}mlp.down_proj.weight")
+            },
         )
         output = builder.call("math.add", [after_gdn, mlp_output], hidden_type, id="output")
         builder.function("main", [input_ids, state], [output, updated_state])
-        return verify_module(attach_import_source_locations(
-            builder.build(entry="main"),
-            architecture="Qwen3_5ForConditionalGeneration",
-            revision=self.revision,
-        ))
+        return verify_module(
+            attach_import_source_locations(
+                builder.build(entry="main"),
+                architecture="Qwen3_5ForConditionalGeneration",
+                revision=self.revision,
+            ))
 
     def _require_tensor(
         self,
@@ -346,13 +390,15 @@ class Qwen35Layer0Importer:
         quantization = text_config.get("quantization_config", config.get("quantization_config"))
         if not isinstance(quantization, Mapping):
             raise ImporterError("Qwen3.8 FP8 import requires quantization_config.")
-        if str(quantization.get("quant_method", "")).lower() != "fp8":
-            raise ImporterError("Qwen3.8 layer import currently requires quant_method='fp8'.")
-        if str(quantization.get("activation_scheme", "")).lower() != "dynamic":
-            raise ImporterError("Qwen3.8 layer import currently requires dynamic FP8 activations.")
-        fmt = str(quantization.get("fmt", "e4m3")).lower()
-        if fmt != "e4m3":
-            raise ImporterError(f"Qwen3.8 layer import requires E4M3 FP8, got {fmt!r}.")
+        quant_method = str(quantization.get("quant_method", "")).lower()
+        if quant_method not in {"fp8", "gguf"}:
+            raise ImporterError("Qwen3.8 layer import requires quant_method='fp8' or 'gguf'.")
+        if quant_method == "fp8":
+            if str(quantization.get("activation_scheme", "")).lower() != "dynamic":
+                raise ImporterError("Qwen3.8 layer import requires dynamic FP8 activations.")
+            fmt = str(quantization.get("fmt", "e4m3")).lower()
+            if fmt != "e4m3":
+                raise ImporterError(f"Qwen3.8 layer import requires E4M3 FP8, got {fmt!r}.")
         block = quantization.get("weight_block_size")
         if not isinstance(block, list) or len(block) != 2:
             raise ImporterError("quantization_config.weight_block_size must be [N, K].")

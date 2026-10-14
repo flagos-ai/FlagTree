@@ -5,9 +5,11 @@
 from triton.flagmega.importer.checkpoint import (
     Checkpoint,
     DirectoryCheckpoint,
+    GGUFCheckpoint,
     MemoryCheckpoint,
     TensorByteRange,
     TensorInfo,
+    checkpoint_from_path,
 )
 from triton.flagmega.importer.source import (
     ImportSourceLocation,
@@ -31,6 +33,7 @@ from triton.flagmega.importer.qwen3_5_moe import Qwen35MoeConfig, Qwen35MoeImpor
 __all__ = [
     "Checkpoint",
     "DirectoryCheckpoint",
+    "GGUFCheckpoint",
     "MemoryCheckpoint",
     "ModelImporterRegistry",
     "ModelImporterSpec",
@@ -45,6 +48,7 @@ __all__ = [
     "Qwen35MoeImporter",
     "TensorInfo",
     "TensorByteRange",
+    "checkpoint_from_path",
     "attach_import_source_locations",
     "apply_numerical_profile",
     "VLLM_INDUCTOR_LEVEL3",

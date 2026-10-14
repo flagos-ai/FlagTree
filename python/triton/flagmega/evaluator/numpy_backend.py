@@ -26,6 +26,7 @@ from triton.flagmega.ir.ops.core import get_definition
 
 
 class NumpyMaterializationContext:
+
     def __init__(self, module: IRModule, checkpoint: Checkpoint) -> None:
         try:
             import numpy
@@ -49,6 +50,7 @@ class NumpyMaterializationContext:
             DType.BFLOAT16: self.numpy.uint16,
             DType.FLOAT16: self.numpy.float16,
             DType.FLOAT32: self.numpy.float32,
+            DType.UINT8: self.numpy.uint8,
             DType.FLOAT8_E4M3FN: self.numpy.uint8,
         }
         try:

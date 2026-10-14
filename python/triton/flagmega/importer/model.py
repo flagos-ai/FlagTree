@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
-from triton.flagmega.importer.checkpoint import Checkpoint, DirectoryCheckpoint
+from pathlib import Path
+
+from triton.flagmega.importer.checkpoint import Checkpoint, checkpoint_from_path
 from triton.flagmega.importer.qwen3 import Qwen3LayerImporter, Qwen3ModelImporter
 from triton.flagmega.importer.qwen3_5 import Qwen35Layer0Importer
+from triton.flagmega.importer.qwen3_5_dense import Qwen35DenseImporter
 from triton.flagmega.importer.qwen3_5_moe import Qwen35MoeImporter
 from triton.flagmega.importer.registry import ModelImporterRegistry, ModelImporterSpec
 from triton.flagmega.importer.numerics import VLLM_INDUCTOR_LEVEL3, VLLM_AE10_INDUCTOR_LEVEL3
@@ -15,33 +18,34 @@ from triton.flagmega.importer.numerics.qwen3_5_moe import apply_qwen35_moe_vllm_
 from triton.flagmega.ir import IRModule, verify_module
 from triton.flagmega.errors import ImporterError
 
-
 importer_registry = ModelImporterRegistry()
 
 
 def _register_builtin_importers() -> None:
-    importer_registry.register(ModelImporterSpec(
-        "qwen3",
-        frozenset({"Qwen3ForCausalLM"}),
-        frozenset({"qwen3"}),
-        lambda source, layer, revision: Qwen3LayerImporter(
-            source, layer=layer, revision=revision
-        ).import_module(),
-        lambda source, revision: Qwen3ModelImporter(source, revision=revision).import_module(),
-        numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_qwen3_vllm_profile},
-    ))
-    importer_registry.register(ModelImporterSpec(
-        "qwen3.5",
-        frozenset({"Qwen3_5ForConditionalGeneration"}),
-        frozenset({"qwen3_5"}),
-        _import_qwen35_layer,
-    ))
+    importer_registry.register(
+        ModelImporterSpec(
+            "qwen3",
+            frozenset({"Qwen3ForCausalLM"}),
+            frozenset({"qwen3"}),
+            lambda source, layer, revision: Qwen3LayerImporter(source, layer=layer, revision=revision).import_module(),
+            lambda source, revision: Qwen3ModelImporter(source, revision=revision).import_module(),
+            numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_qwen3_vllm_profile},
+        ))
+    importer_registry.register(
+        ModelImporterSpec(
+            "qwen3.5",
+            frozenset({"Qwen3_5ForConditionalGeneration"}),
+            frozenset({"qwen3_5"}),
+            _import_qwen35_layer,
+            lambda source, revision: Qwen35DenseImporter(source, revision=revision).import_module(),
+        ))
     importer_registry.register(
         ModelImporterSpec(
             "qwen3.5_moe",
             frozenset({"Qwen3_5MoeForConditionalGeneration", "Qwen3_5MoeForCausalLM"}),
             frozenset({"qwen3_5_moe", "qwen3_5_moe_text"}),
-            lambda source, layer, revision, **options: Qwen35MoeImporter(source, layer=layer, revision=revision, **options).import_module(),
+            lambda source, layer, revision, **options: Qwen35MoeImporter(source, layer=layer, revision=revision, **
+                                                                         options).import_module(),
             lambda source, revision, **options: Qwen35MoeImporter(source, revision=revision, **options).import_module(),
             execution_modes=frozenset({"decode-1", "prefill"}),
             numerical_profiles={VLLM_AE10_INDUCTOR_LEVEL3: apply_qwen35_moe_vllm_profile},
@@ -70,7 +74,7 @@ def import_model_layer(
 ) -> IRModule:
     """Import one layer after resolving the architecture from ``config.json``."""
 
-    source = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
+    source = checkpoint_from_path(checkpoint) if isinstance(checkpoint, (str, Path)) else checkpoint
     spec = importer_registry.resolve(source.config, full_model=False)
     transform = spec.numerical_transform(numerical_profile)
     return transform(spec.import_layer(source, layer, revision, **_execution_options(spec, mode, num_tokens)))
@@ -86,7 +90,7 @@ def import_model(
 ) -> IRModule:
     """Import a complete supported model after architecture dispatch."""
 
-    source = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
+    source = checkpoint_from_path(checkpoint) if isinstance(checkpoint, (str, Path)) else checkpoint
     spec = importer_registry.resolve(source.config, full_model=True)
     assert spec.import_model is not None
     transform = spec.numerical_transform(numerical_profile)

@@ -39,6 +39,7 @@ from triton.flagmega.ir.model import (
     TupleType,
     logical_type,
 )
+from triton.flagmega.ir.types import VectorType
 from triton.flagmega.ir.bufferization.leaves import buffer_leaves
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
@@ -60,8 +61,7 @@ from triton.flagmega.passes.tir.bufferize.allocation_session import AllocationSe
 from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
 from triton.flagmega.passes.tir.bufferize.readonly_groups import ReadonlyGroupResolver
 from triton.flagmega.passes.tir.shared_workspace import (
-    shared_workspace_buffer_id,
-)
+    shared_workspace_buffer_id, )
 
 
 @dataclass(frozen=True)
@@ -1210,10 +1210,23 @@ class BufferPlanner:
             )
 
     def _plan_value(
-        self, function, source_node, value_type, live_start, live_end, output_leaf_ids,
-        *, prefix, field=None, alias=None, alignment=None, role=None,
-        reinterpret=False, alias_kind=None,
-        distributed_storage_kind=None, distributed_backing_type=None,
+        self,
+        function,
+        source_node,
+        value_type,
+        live_start,
+        live_end,
+        output_leaf_ids,
+        *,
+        prefix,
+        field=None,
+        alias=None,
+        alignment=None,
+        role=None,
+        reinterpret=False,
+        alias_kind=None,
+        distributed_storage_kind=None,
+        distributed_backing_type=None,
         owner_stride_bytes=None,
         memory_space: MemorySpace | None = None,
     ) -> tuple[str, ...]:
@@ -1227,16 +1240,26 @@ class BufferPlanner:
             if isinstance(alias, tuple) and len(alias) == len(leaves):
                 result = []
                 for leaf, source in zip(leaves, alias):
-                    result.extend(self._plan_value(
-                        function, source_node, leaf[1], live_start, live_end, output_leaf_ids,
-                        prefix=leaf[0], field=leaf[2], alias=source,
-                        alignment=requested_alignment, role=role,
-                        reinterpret=reinterpret, alias_kind=alias_kind,
-                        distributed_storage_kind=distributed_storage_kind,
-                        distributed_backing_type=distributed_backing_type,
-                        owner_stride_bytes=owner_stride_bytes,
-                        memory_space=memory_space,
-                    ))
+                    result.extend(
+                        self._plan_value(
+                            function,
+                            source_node,
+                            leaf[1],
+                            live_start,
+                            live_end,
+                            output_leaf_ids,
+                            prefix=leaf[0],
+                            field=leaf[2],
+                            alias=source,
+                            alignment=requested_alignment,
+                            role=role,
+                            reinterpret=reinterpret,
+                            alias_kind=alias_kind,
+                            distributed_storage_kind=distributed_storage_kind,
+                            distributed_backing_type=distributed_backing_type,
+                            owner_stride_bytes=owner_stride_bytes,
+                            memory_space=memory_space,
+                        ))
                 return tuple(result)
             raise IRVerificationError(f"Alias arity mismatch for value {prefix!r}.")
         result = []
@@ -1258,28 +1281,27 @@ class BufferPlanner:
                         node_id=source_node,
                     )
                 if is_output and self._is_function_pool_storage(source.storage):
-                    self._promote_workspace_alias_group_to_result(
-                        function, source, buffer_id
-                    )
+                    self._promote_workspace_alias_group_to_result(function, source, buffer_id)
                     source = self.descriptors[str(alias)]
                 target_tensor = _tensor_type(tensor_type)
+                if reinterpret and source.distributed_backing_type is not None:
+                    # A coarser shard backing names axes of the source type.
+                    # Reshape/Bitcast may change those axes and element bytes;
+                    # expose canonical coordinates for the whole alias group
+                    # rather than dropping the backing and shrinking the span.
+                    self._promote_alias_group_to_canonical(source.id, source_node)
+                    source = self.descriptors[str(alias)]
+                    distributed_storage_kind = DistributedBufferStorageKind.CANONICAL_GLOBAL
+                    distributed_backing_type = None
                 # A view never changes physical storage. In particular, a
                 # sharded coordinate view over a canonical parameter/rdata
                 # buffer remains canonical-global; compact-per-owner storage
                 # is created only by an allocating producer.
-                target_kind = (
-                    source.distributed_storage_kind
-                    if distributed_storage_kind is None
-                    else DistributedBufferStorageKind(distributed_storage_kind)
-                )
+                target_kind = (source.distributed_storage_kind if distributed_storage_kind is None else
+                               DistributedBufferStorageKind(distributed_storage_kind))
                 target_backing_type = distributed_backing_type
-                if (
-                    target_backing_type is None
-                    and not reinterpret
-                    and isinstance(tensor_type, DistributedType)
-                    and tensor_type == source.distributed_type
-                    and not target_kind.exposes_logical_coordinates
-                ):
+                if (target_backing_type is None and not reinterpret and isinstance(tensor_type, DistributedType)
+                        and tensor_type == source.distributed_type and not target_kind.exposes_logical_coordinates):
                     target_backing_type = source.distributed_backing_type
                 target_component_shape = _component_shape(
                     tensor_type,
@@ -1293,63 +1315,62 @@ class BufferPlanner:
                     target_kind,
                     distributed_backing_type=target_backing_type,
                 )
-                if (
-                    source.nbytes != target_nbytes
-                    or (
-                        not reinterpret
-                        and (
-                            source.dtype != target_tensor.dtype
-                            or source.shape != shape
-                            or source.strides != _dense_strides(target_component_shape)
-                        )
-                    )
-                    or (
-                        target_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
-                        and source.distributed_storage_kind
-                        is not DistributedBufferStorageKind.COMPACT_PER_OWNER
-                    )
-                ):
+                if (source.nbytes != target_nbytes
+                        or (not reinterpret and (source.dtype != target_tensor.dtype or source.shape != shape
+                                                 or source.strides != _dense_strides(target_component_shape)))
+                        or (target_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                            and source.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER)):
                     raise IRVerificationError(
                         f"Alias {buffer_id!r} is physically incompatible with {source.id!r}.",
                         stage=self.module.stage,
                         node_id=source_node,
                     )
-                result.append(self._add_descriptor(
-                    buffer_id, tensor_type, shape, source.storage, source_node,
-                    field=leaf_field if leaf_field is not None else field,
-                    alias_of=source.id, physical_id=source.physical_id,
-                    byte_offset=source.byte_offset, offset=source.offset,
-                    live_start=live_start if self._is_function_pool_storage(source.storage) else None,
-                    live_end=live_end if self._is_function_pool_storage(source.storage) else None,
-                    function=function.name, role=role or "alias",
-                    alignment=alignment,
-                    distributed_storage_kind=target_kind,
-                    distributed_backing_type=target_backing_type,
-                    owner_stride_bytes=source.owner_stride_bytes,
-                    alias_kind=alias_kind,
-                ))
+                result.append(
+                    self._add_descriptor(
+                        buffer_id,
+                        tensor_type,
+                        shape,
+                        source.storage,
+                        source_node,
+                        field=leaf_field if leaf_field is not None else field,
+                        alias_of=source.id,
+                        physical_id=source.physical_id,
+                        byte_offset=source.byte_offset,
+                        offset=source.offset,
+                        live_start=live_start if self._is_function_pool_storage(source.storage) else None,
+                        live_end=live_end if self._is_function_pool_storage(source.storage) else None,
+                        function=function.name,
+                        role=role or "alias",
+                        alignment=alignment,
+                        distributed_storage_kind=target_kind,
+                        distributed_backing_type=target_backing_type,
+                        owner_stride_bytes=source.owner_stride_bytes,
+                        alias_kind=alias_kind,
+                    ))
                 continue
             selected_space = memory_space or self.workspace_space
             storage = "output" if is_output and function.name == self.module.entry else (
-                "return" if is_output else selected_space.name
-            )
-            physical_id = (
-                f"external:{function.name}:result:{buffer_id}"
-                if storage in {"output", "return"} else self._new_physical(selected_space.name)
-            )
-            result.append(self._add_descriptor(
-                buffer_id, tensor_type, shape, storage, source_node,
-                field=leaf_field if leaf_field is not None else field,
-                physical_id=physical_id,
-                live_start=live_start if self._is_function_pool_storage(storage) else None,
-                live_end=live_end if self._is_function_pool_storage(storage) else None,
-                function=function.name,
-                role=role or ("function_result" if is_output else "temporary"),
-                alignment=alignment,
-                distributed_storage_kind=distributed_storage_kind,
-                distributed_backing_type=distributed_backing_type,
-                owner_stride_bytes=owner_stride_bytes,
-            ))
+                "return" if is_output else selected_space.name)
+            physical_id = (f"external:{function.name}:result:{buffer_id}"
+                           if storage in {"output", "return"} else self._new_physical(selected_space.name))
+            result.append(
+                self._add_descriptor(
+                    buffer_id,
+                    tensor_type,
+                    shape,
+                    storage,
+                    source_node,
+                    field=leaf_field if leaf_field is not None else field,
+                    physical_id=physical_id,
+                    live_start=live_start if self._is_function_pool_storage(storage) else None,
+                    live_end=live_end if self._is_function_pool_storage(storage) else None,
+                    function=function.name,
+                    role=role or ("function_result" if is_output else "temporary"),
+                    alignment=alignment,
+                    distributed_storage_kind=distributed_storage_kind,
+                    distributed_backing_type=distributed_backing_type,
+                    owner_stride_bytes=owner_stride_bytes,
+                ))
         return tuple(result)
 
     def _promote_workspace_alias_group_to_result(
@@ -1892,7 +1913,16 @@ class BufferPlanner:
 
     def _required_alignment(self, node_id, *, leaf: str | None = None) -> int:
         """Declared contract for a value, or for one of its buffer leaves."""
-        return effective_alignment(self.required_alignments, node_id, leaf)
+        result = effective_alignment(self.required_alignments, node_id, leaf)
+        # A vector tensor is passed to Triton as one fixed-width element.  Its
+        # physical allocation must honor that element width even when the
+        # selected kernel has no transfer-pipeline alignment declaration.  The
+        # formal ABI binder already applies this rule; applying it here keeps
+        # caller allocations compatible with the formal vector view.
+        value_type = logical_type(self.module.node_map[node_id].type)
+        if isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType):
+            result = max(result, value_type.dtype.itemsize)
+        return result
 
     def _allocation(self, physical_id):
         return self.physical_buffers[physical_id]

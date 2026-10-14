@@ -76,3 +76,43 @@ def test_native_vector_reshard_can_feed_scalar_reshape_without_losing_shared_vec
     after = TorchEvaluator(DictWeightResolver({})).run(lowered, inputs)
     for actual, expected in zip(after, before):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_scalar_bitcast_retains_native_reshape_through_distributed_view():
+    placement = fm.Placement((2, ), 'x', 'b')
+    vector = fm.tensor_type(fm.vector_type('bfloat16', 8), (1, 2, 4))
+    source_type = fm.DistributedType(vector, (fm.SBP.broadcast(), ) * 3, placement)
+    reshaped_type = fm.DistributedType(fm.tensor_type(fm.vector_type('bfloat16', 8), (1, 8)),
+                                       (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ))), placement)
+
+    class Graph(fm.Module):
+
+        def forward(self):
+            source = self.input('source', source_type, id='source')
+            metadata = {
+                'vectorization_root': 'native', 'vectorization_role': 'compute', 'vectorization_internal': True,
+                'vectorization_candidate': 'vectorization.unary', 'vector_axes': (2, ), 'vector_lanes': (8, ),
+                'vectorization_attrs': {}, 'vectorized_from': 'math.silu'
+            }
+            native = fm.F.math.vectorized_unary(source, unary_op='silu', name='native.compute', metadata=metadata)
+            metadata = {
+                **metadata, 'vectorization_semantic_id': 'scalar', 'vectorization_role': 'propagated-reshape',
+                'vector_axes': (1, ), 'vectorization_attrs': {'shape': (1, 64)}, 'vectorized_from': 'tensors.reshape'
+            }
+            reshaped = fm.F.tensors.reshape(native, (1, 8), name='physical.reshape', metadata=metadata)
+            view = fm.F.distributed.sharded_view(reshaped, new_type=reshaped_type, name='view')
+            scalar = fm.F.tensors.bitcast(view, dtype='bfloat16', name='scalar',
+                                          metadata={k: v
+                                                    for k, v in metadata.items()
+                                                    if k != 'vectorization_internal'})
+            self.function('main', (source, ), (scalar, ))
+
+    module = Graph(dialect='ntt', stage='add_norm_stats_lowered', entry='main').build()
+    lowered = lower_vectorization_contracts(module)
+    fm.verify_module(lowered)
+    assert lowered.node_map['physical.reshape'].op == 'tensors.reshape'
+    assert lowered.node_map['view'].inputs == ('physical.reshape', )
+    assert lowered.node_map['scalar'].op == 'tensors.bitcast'
+    inputs = {'source': torch.linspace(-3, 3, 64).reshape(1, 2, 4, 8).bfloat16()}
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    torch.testing.assert_close(evaluator.run(module, inputs)[0], evaluator.run(lowered, inputs)[0], rtol=0, atol=0)

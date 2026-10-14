@@ -402,6 +402,7 @@ def torch_dtype(dtype: DataType):
         DType.BOOL: torch.bool,
         DType.INT32: torch.int32,
         DType.INT64: torch.int64,
+        DType.UINT8: torch.uint8,
         DType.BFLOAT16: torch.bfloat16,
         DType.FLOAT16: torch.float16,
         DType.FLOAT32: torch.float32,

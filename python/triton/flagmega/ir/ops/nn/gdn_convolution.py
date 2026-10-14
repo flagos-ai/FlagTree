@@ -66,28 +66,24 @@ class GatedDeltaNetConvolution(OpDefinition):
         if conv_weight.rank not in (2, 3):
             raise IRSchemaError("GatedDeltaNetConvolution weight must be rank 2 or checkpoint rank 3.")
         if qkv.shape[1] != conv_weight.shape[0] or conv_weight.shape[-1].fixed_value != kernel:
-            raise IRSchemaError(
-                "GatedDeltaNetConvolution QKV channels and convolution weight shape do not match."
-            )
+            raise IRSchemaError("GatedDeltaNetConvolution QKV channels and convolution weight shape do not match.")
         placement = placement_of(qkv_type, conv_weight_type)
         if placement is None:
             return TupleType((qkv_type, state_type))
         if not isinstance(qkv_type, DistributedType) or not isinstance(conv_weight_type, DistributedType):
-            raise IRSchemaError(
-                "Distributed GatedDeltaNetConvolution requires QKV and convolution weight "
-                "to name the same placement."
-            )
+            raise IRSchemaError("Distributed GatedDeltaNetConvolution requires QKV and convolution weight "
+                                "to name the same placement.")
         channel_axes = _materialized_or_partial_axes(qkv_type, 1)
-        expected_qkv = _split_on(qkv, 1, placement, channel_axes)
-        if qkv_type.partial is None and qkv_type != expected_qkv:
-            raise IRSchemaError(
-                "GatedDeltaNetConvolution QKV must be broadcast on tokens and channel-split."
-            )
-        expected_weight = _split_on(conv_weight, 0, placement, channel_axes)
+        if qkv_type.partial is None:
+            expected_qkv = qkv_type
+            weight_policies = [SBP.broadcast() for _ in conv_weight.shape]
+            weight_policies[0] = qkv_type.axis_policies[1]
+            expected_weight = DistributedType(conv_weight, tuple(weight_policies), placement)
+        else:
+            expected_qkv = _split_on(qkv, 1, placement, channel_axes)
+            expected_weight = _split_on(conv_weight, 0, placement, channel_axes)
         if conv_weight_type != expected_weight:
-            raise IRSchemaError(
-                "GatedDeltaNetConvolution weight channel ownership must match QKV channels."
-            )
+            raise IRSchemaError("GatedDeltaNetConvolution weight channel ownership must match QKV channels.")
         return TupleType((expected_qkv, state_type))
 
     @classmethod

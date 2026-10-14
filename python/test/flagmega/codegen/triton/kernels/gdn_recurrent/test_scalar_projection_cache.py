@@ -79,4 +79,4 @@ def test_cache_key_shape_and_vote_follow_uniformity_proof(uniform):
         ]
         assert len(projections) == 2
         # Scalar rows are already one row: no subsequent min/any reduction.
-        assert all(ast.literal_eval(call.args[-1]) is False for call in projections)
+        assert all(ast.literal_eval(call.args[6]) is False for call in projections)

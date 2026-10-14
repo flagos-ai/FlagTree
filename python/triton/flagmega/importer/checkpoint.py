@@ -1,6 +1,11 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Lazy Hugging Face config/index/safetensors checkpoint access."""
+"""Lazy safetensors and GGUF checkpoint access.
+
+The GGUF reader deliberately exposes quantized tensors as their packed byte
+range.  Quantized weights are never dequantized on the host; consumers can
+use :meth:`quantization_of` to select a device-side quantized kernel.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol
 
 from triton.flagmega.errors import ImporterError
-from triton.flagmega.ir import DType
-
+from triton.flagmega.ir import DType, tensor_type
 
 _SAFETENSORS_DTYPES = {
     "BOOL": DType.BOOL,
@@ -34,31 +38,39 @@ class TensorInfo:
     shape: tuple[int, ...]
     source: str
     data_offsets: tuple[int, int] | None = None
+    quant_type: str | None = None
+    physical_shape: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shape", tuple(self.shape))
+        if self.physical_shape is not None:
+            object.__setattr__(self, "physical_shape", tuple(self.physical_shape))
         if not self.key or not self.source:
             raise ImporterError("TensorInfo requires non-empty key and source.")
         if not isinstance(self.dtype, DType):
             raise ImporterError(f"Tensor {self.key!r} has an invalid dtype descriptor.")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
-            for value in self.shape
-        ):
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in self.shape):
             raise ImporterError(f"Tensor {self.key!r} has invalid shape {self.shape!r}.")
         if self.data_offsets is not None:
             object.__setattr__(self, "data_offsets", tuple(self.data_offsets))
-            if (
-                len(self.data_offsets) != 2
-                or any(
-                    not isinstance(value, int) or isinstance(value, bool)
-                    for value in self.data_offsets
-                )
-                or not 0 <= self.data_offsets[0] <= self.data_offsets[1]
-            ):
-                raise ImporterError(
-                    f"Tensor {self.key!r} has invalid data offsets {self.data_offsets!r}."
-                )
+            if (len(self.data_offsets) != 2
+                    or any(not isinstance(value, int) or isinstance(value, bool) for value in self.data_offsets)
+                    or not 0 <= self.data_offsets[0] <= self.data_offsets[1]):
+                raise ImporterError(f"Tensor {self.key!r} has invalid data offsets {self.data_offsets!r}.")
+        if self.quant_type is not None and not str(self.quant_type):
+            raise ImporterError(f"Tensor {self.key!r} has an empty quantization type.")
+        if self.physical_shape is not None and any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+                                                   for value in self.physical_shape):
+            raise ImporterError(f"Tensor {self.key!r} has invalid physical shape {self.physical_shape!r}.")
+
+    @property
+    def storage_type(self):
+        """Exact packed storage type; logical dimensions remain in TensorInfo."""
+        if self.quant_type is not None:
+            if self.physical_shape is None:
+                raise ImporterError(f"Quantized tensor {self.key!r} requires a physical shape.")
+            return tensor_type(DType.UINT8, self.physical_shape)
+        return tensor_type(self.dtype, self.shape)
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,7 @@ class TensorByteRange:
     path: Path
     offset: int
     nbytes: int
+    quant_type: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path).resolve())
@@ -89,6 +102,7 @@ class TensorByteRange:
 
 
 class Checkpoint(Protocol):
+
     @property
     def config(self) -> Mapping[str, Any]: ...
 
@@ -102,6 +116,9 @@ class Checkpoint(Protocol):
     def tensor_byte_range(self, key: str) -> TensorByteRange | None: ...
 
     def cache_identity(self, keys: Iterable[str]) -> Mapping[str, Any] | None: ...
+
+    def quantization_of(self, key: str) -> str | None:
+        ...
 
 
 class DirectoryCheckpoint:
@@ -232,6 +249,16 @@ class DirectoryCheckpoint:
             "tensors": tensors,
             "sources": [sources[key] for key in sorted(sources)],
         }
+
+    def quantization_of(self, key: str) -> str | None:
+        """Return the device-side encoding for a tensor, if any.
+
+        Safetensors checkpoints are represented by ordinary scalar dtypes and
+        therefore do not need a quantized kernel selector.
+        """
+
+        self.tensor_info(key)
+        return None
 
     def _load_weight_map(self) -> dict[str, str]:
         index_candidates = sorted(self.root.glob("*.safetensors.index.json"))
@@ -376,6 +403,380 @@ class MemoryCheckpoint:
         for key in keys:
             self.tensor_info(str(key))
         return None
+
+    def quantization_of(self, key: str) -> str | None:
+        self.tensor_info(key)
+        return None
+
+
+class GGUFCheckpoint:
+    """Metadata-first GGUF checkpoint with packed quantized tensor ranges.
+
+    ``gguf`` is an optional dependency because ordinary FlagMega users only
+    need safetensors.  The package's ``GGUFReader`` uses a read-only memmap;
+    quantized tensor values are never copied or dequantized by this class. Quantized
+    tensor names are also exposed under the Qwen3.8 Hugging Face namespace so
+    the existing layer importer can consume the same semantic graph.
+    """
+
+    _QWEN_PREFIX = "model.language_model."
+    _QUANTIZED = frozenset({
+        "Q4_0",
+        "Q4_1",
+        "Q5_0",
+        "Q5_1",
+        "Q8_0",
+        "Q8_1",
+        "Q2_K",
+        "Q3_K",
+        "Q4_K",
+        "Q5_K",
+        "Q6_K",
+        "Q8_K",
+        "IQ2_XXS",
+        "IQ2_XS",
+        "IQ3_XXS",
+        "IQ1_S",
+        "IQ4_NL",
+        "IQ3_S",
+        "IQ2_S",
+        "IQ4_XS",
+        "IQ1_M",
+        "TQ1_0",
+        "TQ2_0",
+        "MXFP4",
+        "NVFP4",
+        "Q1_0",
+    })
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).resolve()
+        if not self.path.is_file() or self.path.suffix.lower() != ".gguf":
+            raise ImporterError(f"GGUF checkpoint must be an existing .gguf file: {self.path}")
+        try:
+            from gguf import GGUFEndian, GGUFReader
+        except ImportError as error:
+            raise ImporterError("GGUF checkpoints require the optional 'gguf' package; "
+                                "install it with `python -m pip install gguf`.") from error
+        try:
+            self._reader = GGUFReader(self.path)
+        except Exception as error:
+            raise ImporterError(f"Failed to read GGUF checkpoint {self.path}: {error}") from error
+        if self._reader.endianess != GGUFEndian.LITTLE:
+            raise ImporterError("Native GGUF kernels require a little-endian checkpoint.")
+        self._raw = {tensor.name: tensor for tensor in self._reader.tensors}
+        if not self._raw:
+            raise ImporterError(f"GGUF checkpoint {self.path} contains no tensors.")
+        self._aliases = self._build_aliases()
+        self._virtual_scales: dict[str, str] = {}
+        for canonical, raw in self._aliases.items():
+            if not canonical.endswith(".weight") or canonical.endswith("embed_tokens.weight"):
+                continue
+            raw_tensor = self._raw.get(raw)
+            if raw_tensor is not None and str(raw_tensor.tensor_type.name) in self._QUANTIZED:
+                self._virtual_scales[canonical[:-len("weight")] + "weight_scale_inv"] = canonical
+        self._infos: dict[str, TensorInfo] = {}
+        self._config = self._build_config()
+
+    @property
+    def config(self) -> Mapping[str, Any]:
+        return self._config
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        return tuple(sorted((*self._raw.keys(), *self._aliases.keys(), *self._virtual_scales.keys())))
+
+    def tensor_info(self, key: str) -> TensorInfo:
+        if key in self._infos:
+            return self._infos[key]
+        virtual_base = self._virtual_scales.get(key)
+        if virtual_base is not None:
+            base = self.tensor_info(virtual_base)
+            if len(base.shape) != 2:
+                raise ImporterError(f"GGUF virtual scale source {virtual_base!r} is not a matrix.")
+            shape = tuple((int(value) + 127) // 128 for value in base.shape)
+            info = TensorInfo(key, DType.FLOAT32, shape, self.path.name)
+            self._infos[key] = info
+            return info
+        raw_key = self._aliases.get(key, key)
+        tensor = self._raw.get(raw_key)
+        if tensor is None:
+            raise ImporterError(f"GGUF tensor {key!r} is missing.")
+        raw_type = str(tensor.tensor_type.name)
+        shape = tuple(int(value) for value in reversed(tuple(tensor.shape)))
+        if key.endswith("linear_attn.conv1d.weight") and len(shape) == 2:
+            # GGUF writes this [out_channels, kernel] tensor with reversed
+            # dimensions.  The importer contract is HF's [out, 1, kernel].
+            shape = (shape[0], 1, shape[1])
+        physical_shape = tuple(int(value) for value in tensor.data.shape)
+        if raw_type in self._QUANTIZED:
+            # Logical dimensions describe decoded matrix elements; storage
+            # is explicitly packed UINT8, never an FP8 or dense weight tensor.
+            dtype = DType.UINT8
+        else:
+            dtype = {
+                "F32": DType.FLOAT32,
+                "F16": DType.FLOAT16,
+                "BF16": DType.BFLOAT16,
+                "F64": DType.FLOAT32,
+                "I8": DType.INT32,
+                "I16": DType.INT32,
+                "I32": DType.INT32,
+                "I64": DType.INT64,
+            }.get(raw_type)
+            if dtype is None:
+                raise ImporterError(f"GGUF tensor {key!r} uses unsupported storage type {raw_type!r}.")
+        info = TensorInfo(
+            key,
+            dtype,
+            shape,
+            self.path.name,
+            quant_type=raw_type if raw_type in self._QUANTIZED else None,
+            physical_shape=physical_shape,
+        )
+        self._infos[key] = info
+        return info
+
+    def quantization_of(self, key: str) -> str | None:
+        return self.tensor_info(key).quant_type
+
+    def load_tensor(self, key: str, *, device: str = "cpu"):
+        info = self.tensor_info(key)
+        if key in self._virtual_scales:
+            try:
+                import torch
+            except ImportError as error:
+                raise ImporterError("Loading GGUF virtual scales requires PyTorch.") from error
+            return torch.ones(info.shape, dtype=torch.float32, device=device)
+        if info.quant_type is not None:
+            raise ImporterError(f"GGUF tensor {key!r} is packed as {info.quant_type}; "
+                                "use a native quantized FlagMega kernel instead of loading a dequantized tensor.")
+        tensor = self._raw[self._aliases.get(key, key)]
+        try:
+            import torch
+        except ImportError as error:
+            raise ImporterError("Loading scalar GGUF tensors requires PyTorch.") from error
+        # gguf stores dimensions in reverse order.  Scalar tensors are the
+        # only values currently materialized by the compiler-side loader.
+        import numpy as np
+        values = np.asarray(tensor.data)
+        if str(tensor.tensor_type.name) == "BF16":
+            values = (values.astype(np.uint32) << 16).view(np.float32)
+        if key in self._aliases:
+            # GGML stores the actual decay coefficient and RMS multiplier;
+            # HF's semantic graph expects A_log and a zero-centred norm weight.
+            # These tiny F32 parameters are unrelated to quantized matrices.
+            if key.endswith("linear_attn.A_log"):
+                if not np.all(values < 0):
+                    raise ImporterError(f"GGUF SSM decay {key!r} must be strictly negative.")
+                values = np.log(-values)
+            elif key.endswith("norm.weight") and not key.endswith("linear_attn.norm.weight"):
+                values = values - 1.0
+        # Scalar metadata is the only GGUF payload materialized by the loader;
+        # copy the read-only memmap before handing it to PyTorch so callers do
+        # not receive a tensor whose writes have undefined behavior.
+        result = torch.from_numpy(np.array(values, copy=True, order="C")).reshape(info.shape)
+        dtype = {
+            DType.FLOAT32: torch.float32,
+            DType.FLOAT16: torch.float16,
+            DType.BFLOAT16: torch.bfloat16,
+            DType.INT32: torch.int32,
+            DType.INT64: torch.int64,
+        }[info.dtype]
+        return result.to(device=device, dtype=dtype)
+
+    def tensor_byte_range(self, key: str) -> TensorByteRange | None:
+        info = self.tensor_info(key)
+        if info.quant_type is None:
+            return None
+        tensor = self._raw[self._aliases.get(key, key)]
+        return TensorByteRange(self.path, int(tensor.data_offset), int(tensor.n_bytes), info.quant_type)
+
+    def cache_identity(self, keys: Iterable[str]) -> Mapping[str, Any]:
+        stat = self.path.stat()
+        tensors = []
+        for key in sorted(set(str(value) for value in keys)):
+            info = self.tensor_info(key)
+            tensors.append({
+                "key": key,
+                "dtype": info.dtype.value,
+                "shape": list(info.shape),
+                "quant_type": info.quant_type,
+                "physical_shape": None if info.physical_shape is None else list(info.physical_shape),
+            })
+        return {
+            "schema": "flagmega.gguf-checkpoint-cache-identity/v2",
+            "path": str(self.path),
+            "device": stat.st_dev,
+            "inode": stat.st_ino,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "tensors": tensors,
+        }
+
+    def _metadata(self, key: str, default: Any = None) -> Any:
+        field = self._reader.get_field(key)
+        if field is None:
+            return default
+        try:
+            return field.contents()
+        except Exception as error:
+            raise ImporterError(f"Failed to decode GGUF metadata {key!r}: {error}") from error
+
+    def _build_config(self) -> dict[str, Any]:
+        arch = str(self._metadata("general.architecture", ""))
+        if arch not in {"qwen35", "qwen3next"}:
+            raise ImporterError(f"GGUF checkpoint architecture {arch!r} is not Qwen3.8/qwen35.")
+        hidden = _gguf_positive_int(self._metadata(f"{arch}.embedding_length"), "embedding_length")
+        intermediate = _gguf_positive_int(self._metadata(f"{arch}.feed_forward_length"), "feed_forward_length")
+        layers = _gguf_positive_int(self._metadata(f"{arch}.block_count"), "block_count")
+        inner = _gguf_positive_int(self._metadata(f"{arch}.ssm.inner_size"), "ssm.inner_size")
+        key_heads = _gguf_positive_int(self._metadata(f"{arch}.ssm.group_count"), "ssm.group_count")
+        value_dim = inner
+        # Qwen3.8 stores [2 * key_dim + value_dim, hidden] in GGUF's logical
+        # (reversed) shape.  Derive the remaining head geometry from layer 0
+        # instead of hard-coding a model revision.
+        qkv = self._raw.get("blk.0.attn_qkv.weight")
+        if qkv is None:
+            raise ImporterError("GGUF checkpoint is missing blk.0.attn_qkv.weight.")
+        qkv_out = int(qkv.shape[1])
+        if (qkv_out - value_dim) % 2:
+            raise ImporterError("GGUF QKV output must contain equally sized query and key projections.")
+        key_dim = (qkv_out - value_dim) // 2
+        if key_dim <= 0 or key_dim % key_heads:
+            raise ImporterError("GGUF Qwen3.8 QKV shape is incompatible with ssm.group_count.")
+        key_head_dim = key_dim // key_heads
+        value_heads = _gguf_positive_int(
+            self._metadata(f"{arch}.ssm.time_step_rank", value_dim // key_head_dim),
+            "ssm.time_step_rank",
+        )
+        if value_dim % value_heads:
+            raise ImporterError("GGUF SSM inner size must divide into complete value heads.")
+        layers -= int(self._metadata(f"{arch}.nextn_predict_layers", 0))
+        if layers <= 0:
+            raise ImporterError("GGUF checkpoint must contain at least one decoder layer beyond MTP.")
+        interval = _gguf_positive_int(self._metadata(f"{arch}.full_attention_interval", 4), "full_attention_interval")
+        vocab = self._metadata("tokenizer.ggml.tokens")
+        vocab_size = len(vocab) if isinstance(vocab, list) else int(self._raw["token_embd.weight"].shape[1])
+        text = {
+            "layer_types": ["full_attention" if (i + 1) % interval == 0 else "linear_attention" for i in range(layers)],
+            "vocab_size":
+            vocab_size,
+            "num_hidden_layers":
+            layers,
+            "hidden_size":
+            hidden,
+            "intermediate_size":
+            intermediate,
+            "linear_num_key_heads":
+            key_heads,
+            "linear_num_value_heads":
+            value_heads,
+            "linear_key_head_dim":
+            key_head_dim,
+            "linear_value_head_dim":
+            value_dim // value_heads,
+            "linear_conv_kernel_dim":
+            _gguf_positive_int(self._metadata(f"{arch}.ssm.conv_kernel"), "ssm.conv_kernel"),
+            "rms_norm_eps":
+            float(self._metadata(f"{arch}.attention.layer_norm_rms_epsilon", 1e-6)),
+            "pad_token_id":
+            self._metadata("tokenizer.ggml.padding_token_id"),
+            "num_attention_heads":
+            self._metadata(f"{arch}.attention.head_count"),
+            "num_key_value_heads":
+            self._metadata(f"{arch}.attention.head_count_kv"),
+            "head_dim":
+            self._metadata(f"{arch}.attention.key_length"),
+            "rope_theta":
+            self._metadata(f"{arch}.rope.freq_base", 10000000.0),
+            "partial_rotary_factor":
+            float(self._metadata(f"{arch}.rope.dimension_count", 64)) /
+            int(self._metadata(f"{arch}.attention.key_length", 256)),
+        }
+        return {
+            "model_type": "qwen3_5",
+            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "text_config": text,
+            "quantization_config": {
+                "quant_method": "gguf",
+                "activation_scheme": "native",
+                "fmt": "IQ4_XS/Q4_K",
+                "weight_block_size": [128, 128],
+            },
+            "gguf": {
+                "path": self.path.name, "architecture": arch, "value_head_order":
+                "tiled" if arch == "qwen35" else "grouped"
+            },
+        }
+
+    def _build_aliases(self) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for raw in self._raw:
+            if raw == "output.weight":
+                aliases["lm_head.weight"] = raw
+                continue
+            if raw == "output_norm.weight":
+                aliases[self._QWEN_PREFIX + "norm.weight"] = raw
+                continue
+            if raw == "token_embd.weight":
+                aliases[self._QWEN_PREFIX + "embed_tokens.weight"] = raw
+                continue
+            if not raw.startswith("blk."):
+                continue
+            parts = raw.split(".")
+            if len(parts) < 3:
+                continue
+            try:
+                layer = int(parts[1])
+            except ValueError:
+                continue
+            tail = ".".join(parts[2:])
+            names = {
+                "attn_norm.weight": "input_layernorm.weight",
+                "attn_qkv.weight": "linear_attn.in_proj_qkv.weight",
+                "attn_gate.weight": "linear_attn.in_proj_z.weight",
+                "attn_q.weight": "self_attn.q_proj.weight",
+                "attn_k.weight": "self_attn.k_proj.weight",
+                "attn_v.weight": "self_attn.v_proj.weight",
+                "attn_q_norm.weight": "self_attn.q_norm.weight",
+                "attn_k_norm.weight": "self_attn.k_norm.weight",
+                "attn_output.weight": "self_attn.o_proj.weight",
+                "ssm_beta.weight": "linear_attn.in_proj_b.weight",
+                "ssm_alpha.weight": "linear_attn.in_proj_a.weight",
+                "ssm_conv1d.weight": "linear_attn.conv1d.weight",
+                "ssm_a": "linear_attn.A_log",
+                "ssm_dt.bias": "linear_attn.dt_bias",
+                "ssm_norm.weight": "linear_attn.norm.weight",
+                "ssm_out.weight": "linear_attn.out_proj.weight",
+                "post_attention_norm.weight": "post_attention_layernorm.weight",
+                "ffn_gate.weight": "mlp.gate_proj.weight",
+                "ffn_up.weight": "mlp.up_proj.weight",
+                "ffn_down.weight": "mlp.down_proj.weight",
+            }
+            mapped = names.get(tail)
+            if mapped is not None:
+                aliases[f"{self._QWEN_PREFIX}layers.{layer}.{mapped}"] = raw
+        return aliases
+
+
+def checkpoint_from_path(path: str | Path) -> Checkpoint:
+    """Open either a safetensors directory or a single GGUF file."""
+
+    value = Path(path)
+    if value.is_file() and value.suffix.lower() == ".gguf":
+        return GGUFCheckpoint(value)
+    return DirectoryCheckpoint(value)
+
+
+def _gguf_positive_int(value: Any, name: str) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as error:
+        raise ImporterError(f"GGUF metadata {name!r} must be a positive integer.") from error
+    if result <= 0:
+        raise ImporterError(f"GGUF metadata {name!r} must be positive, got {result}.")
+    return result
 
 
 def _read_safetensors_header(path: Path) -> dict[str, Any]:

@@ -30,7 +30,15 @@ def embedding_producer_rule():
         assert restored.type == node.type
         return RewriteResult(restored, (packed_weight, packed))
 
-    return RewriteRule("VectorizeEmbeddingPropagation", lambda node, _: node.op == "nn.embedding", rewrite)
+    # A native GGUF embedding decodes the packed row directly and returns a
+    # scalar BF16 result.  Packing its weight to a VectorType would make the
+    # producer result look vectorized and the restoring unpack would violate
+    # the op's scalar output contract.
+    return RewriteRule(
+        "VectorizeEmbeddingPropagation",
+        lambda node, _: node.op == "nn.embedding" and node.attrs.get("weight_encoding") is None,
+        rewrite,
+    )
 
 
 __all__ = ["embedding_producer_rule"]

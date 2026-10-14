@@ -98,6 +98,7 @@ def _requires_grid_wide_sync(ir_module) -> bool:
 
 
 class GeneratedElementwiseModule(RuntimeModule):
+
     def __init__(self, artifact: Path, manifest: dict[str, object], ir_module, kernel) -> None:
         super().__init__()
         self.artifact = artifact
@@ -188,6 +189,7 @@ class GeneratedElementwiseModule(RuntimeModule):
             raise RuntimeContractError("Elementwise output must have a TensorType ABI.")
         shape = tuple(int(dimension.value) for dimension in self._output_type.shape)
         dtype = {
+            "uint8": torch.uint8,
             "bfloat16": torch.bfloat16,
             "float16": torch.float16,
             "float32": torch.float32,
@@ -1329,6 +1331,7 @@ def _torch_dtype(torch, dtype):
     scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
     try:
         return {
+            DType.UINT8: torch.uint8,
             DType.BFLOAT16: torch.bfloat16,
             DType.FLOAT16: torch.float16,
             DType.FLOAT32: torch.float32,
@@ -1337,9 +1340,7 @@ def _torch_dtype(torch, dtype):
             DType.FLOAT8_E4M3FN: torch.float8_e4m3fn,
         }[scalar]
     except KeyError as error:
-        raise ArtifactError(
-            f"Runtime cannot materialize dtype {scalar!r}."
-        ) from error
+        raise ArtifactError(f"Runtime cannot materialize dtype {scalar!r}.") from error
 
 
 def _validate_artifact_device(torch, device: str, target: object) -> None:
@@ -1347,7 +1348,7 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
-    expected = {"nvidia-sm90": (9, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
+    expected = {"nvidia-sm90": (9, 0), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
     if expected is None:
         raise RuntimeContractError(f"Unsupported executable FlagMega target {target!r}.")
     if capability != expected:
@@ -1364,6 +1365,7 @@ def _typed_byte_view(storage, offset: int, nbytes: int, dtype: object, shape: tu
         raise ArtifactError(f"Generated runtime cannot decode rdata/workspace dtype {dtype!r}.") from error
     scalar_type = data_type.elem_type if isinstance(data_type, VectorType) else data_type
     dtype_value = {
+        "uint8": torch.uint8,
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
         "float32": torch.float32,

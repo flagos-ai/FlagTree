@@ -10,7 +10,6 @@ from dataclasses import dataclass, replace
 from triton.flagmega.errors import ImporterError
 from triton.flagmega.ir import IRModule, Node
 
-
 SOURCE_LOCATION_SCHEMA = "flagmega.import-source/v1"
 
 
@@ -61,13 +60,13 @@ def attach_import_source_locations(
         existing = node.metadata.get("source_location")
         if existing is not None:
             if not isinstance(existing, Mapping):
-                raise ImporterError(
-                    f"Node {node.id!r} has a malformed import source location."
-                )
+                raise ImporterError(f"Node {node.id!r} has a malformed import source location.")
             location = ImportSourceLocation.from_data(existing)
         elif node.op == "builtin.weight":
+            source = str(node.attrs["source"])
+            scheme = "gguf" if source.lower().endswith(".gguf") else "safetensors"
             location = ImportSourceLocation(
-                f"safetensors://{node.attrs['source']}",
+                f"{scheme}://{source}",
                 str(node.attrs["key"]),
                 revision,
             )

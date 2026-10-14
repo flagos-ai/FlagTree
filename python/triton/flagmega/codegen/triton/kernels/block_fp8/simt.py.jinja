@@ -1,6 +1,72 @@
 # flagmega-kernel: block_fp8/simt platform=generic
 {% set block_fp8_variant = "simt" %}
 @triton.jit
+def _flagmega_iq4_xs_linear_local_tile(
+    source, weight, destination, weight_row_offsets, destination_offsets,
+    n_mask, K: tl.constexpr,
+):
+    """IQ4_XS GEMV over packed GGML bytes; storage stays quantized."""
+    weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+    weight_f16 = weight.to(tl.pointer_type(tl.float16))
+    weight_u16 = weight.to(tl.pointer_type(tl.uint16))
+    accumulator = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, 128):
+        k = k_start + tl.arange(0, 128)
+        k_mask = k < K
+        block = k // 256
+        inside = k % 256
+        group = inside // 32
+        lane = inside % 32
+        byte_index = lane % 16
+        nibble = lane // 16
+        block_base = weight_row_offsets[:, None] + block[None, :] * 136
+        active = n_mask[:, None] & k_mask[None, :]
+        scale_l = tl.load(weight_u8 + block_base + 4 + group[None, :] // 2, mask=active, other=0)
+        scale_h = tl.load(weight_u16 + (block_base + 2) // 2, mask=active, other=0)
+        scale_code = ((scale_l >> ((group[None, :] % 2) * 4)) & 0xF) | (((scale_h >> (group[None, :] * 2)) & 0x3) * 16)
+        scale = scale_code.to(tl.float32) - 32.0
+        delta = tl.load(weight_f16 + block_base // 2, mask=active, other=0.0).to(tl.float32)
+        packed = tl.load(weight_u8 + block_base + 8 + group[None, :] * 16 + byte_index[None, :], mask=active, other=0)
+        code = tl.where(nibble[None, :] == 0, packed & 0xF, packed >> 4)
+        code_value = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+        source_value = tl.load(source + k, mask=k_mask, other=0.0).to(tl.float32)
+        accumulator += tl.sum(delta * scale * code_value * source_value[None, :], axis=1)
+    tl.store(destination + destination_offsets, accumulator.to(destination.dtype.element_ty), mask=n_mask)
+
+@triton.jit
+def _flagmega_q4_k_linear_local_tile(
+    source, weight, destination, weight_row_offsets, destination_offsets,
+    n_mask, K: tl.constexpr,
+):
+    """Q4_K GEMV over 144-byte GGML super-blocks."""
+    weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+    weight_f16 = weight.to(tl.pointer_type(tl.float16))
+    accumulator = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, 128):
+        k = k_start + tl.arange(0, 128)
+        km = k < K
+        block = k // 256
+        inside = k % 256
+        group = inside // 32
+        lane = inside % 32
+        base = weight_row_offsets[:, None] + block[None, :] * 144
+        active = n_mask[:, None] & km[None, :]
+        d = tl.load(weight_f16 + base // 2, mask=active, other=0.0).to(tl.float32)
+        dmin = tl.load(weight_f16 + (base + 2) // 2, mask=active, other=0.0).to(tl.float32)
+        scales = weight_u8 + base + 4
+        s0 = tl.load(scales + group[None, :] % 4, mask=active, other=0)
+        s1 = tl.load(scales + 4 + group[None, :] % 4, mask=active, other=0)
+        s2 = tl.load(scales + 8 + group[None, :] % 4, mask=active, other=0)
+        lo = group[None, :] < 4
+        sc = tl.where(lo, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30)).to(tl.float32)
+        mn = tl.where(lo, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30)).to(tl.float32)
+        packed = tl.load(weight_u8 + base + 16 + (group[None, :] // 2) * 32 + lane[None, :], mask=active, other=0)
+        q = tl.where(group[None, :] % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+        source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+        accumulator += tl.sum((d * sc * q - dmin * mn) * source_value[None, :], axis=1)
+    tl.store(destination + destination_offsets, accumulator.to(destination.dtype.element_ty), mask=n_mask)
+
+@triton.jit
 def _flagmega_block_linear_local_tile(
     source, weight, weight_scale, destination,
     weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,
@@ -43,7 +109,7 @@ def _flagmega_block_linear_local_tile(
         accumulator = updated
     tl.store(
         destination + destination_offsets,
-        accumulator.to(tl.bfloat16),
+        accumulator.to(destination.dtype.element_ty),
         mask=n_mask,
     )
 

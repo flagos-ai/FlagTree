@@ -49,6 +49,9 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
     round_normalized_qk = attribute_parameter(default=False)
     round_beta = attribute_parameter(default=True)
     round_core = attribute_parameter(default=False)
+    b_weight_encoding = attribute_parameter(default=None)
+    a_weight_encoding = attribute_parameter(default=None)
+    value_head_order = attribute_parameter(default="grouped")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -65,9 +68,7 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
             "round_beta": attrs["round_beta"],
             "round_core": attrs["round_core"],
         }
-        if any(values[name] <= 0 for name in (
-            "num_key_heads", "num_value_heads", "key_head_dim", "value_head_dim"
-        )):
+        if any(values[name] <= 0 for name in ("num_key_heads", "num_value_heads", "key_head_dim", "value_head_dim")):
             raise IRSchemaError("GatedDeltaNetRecurrentCore dimensions must be positive.")
         if values["num_value_heads"] % values["num_key_heads"]:
             raise IRSchemaError("GatedDeltaNetRecurrentCore value heads must divide by key heads.")
@@ -80,6 +81,17 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
         for name in ("round_normalized_qk", "round_beta", "round_core"):
             if not isinstance(values[name], bool):
                 raise IRSchemaError(f"GatedDeltaNetRecurrentCore {name} must be boolean.")
+        for name in ("b_weight_encoding", "a_weight_encoding"):
+            value = attrs.get(name)
+            if value is not None and not isinstance(value, str):
+                raise IRSchemaError(f"GatedDeltaNetRecurrentCore {name} must be a string or None.")
+            if value is not None:
+                values[name] = value
+        head_order = attrs.get("value_head_order", "grouped")
+        if head_order not in ("grouped", "tiled"):
+            raise IRSchemaError("GatedDeltaNetRecurrentCore value_head_order must be grouped or tiled.")
+        if head_order != "grouped":
+            values["value_head_order"] = head_order
         return values
 
     @classmethod
@@ -170,9 +182,7 @@ def gated_delta_net_recurrent_core(
 ):
     torch = torch or _torch()
     if not isinstance(state, GatedDeltaNetState):
-        raise EvaluationError(
-            f"GatedDeltaNet state must be GatedDeltaNetState, got {type(state).__name__}."
-        )
+        raise EvaluationError(f"GatedDeltaNet state must be GatedDeltaNetState, got {type(state).__name__}.")
     num_key_heads = int(attrs["num_key_heads"])
     num_value_heads = int(attrs["num_value_heads"])
     key_head_dim = int(attrs["key_head_dim"])
@@ -199,8 +209,12 @@ def gated_delta_net_recurrent_core(
         query = current[:key_dim].reshape(num_key_heads, key_head_dim)
         key = current[key_dim:2 * key_dim].reshape(num_key_heads, key_head_dim)
         value = current[2 * key_dim:].reshape(num_value_heads, value_head_dim)
-        query = query.repeat_interleave(repeats, dim=0).float()
-        key = key.repeat_interleave(repeats, dim=0).float()
+        if attrs.get("value_head_order", "grouped") == "tiled":
+            query = query.repeat(repeats, 1).float()
+            key = key.repeat(repeats, 1).float()
+        else:
+            query = query.repeat_interleave(repeats, dim=0).float()
+            key = key.repeat_interleave(repeats, dim=0).float()
         norm_epsilon = float(attrs.get("qk_norm_epsilon", 1e-12))
         if attrs.get("qk_norm_mode", "clamp") == "add":
             query = query / torch.sqrt(query.square().sum(dim=-1, keepdim=True) + norm_epsilon)
@@ -213,9 +227,8 @@ def gated_delta_net_recurrent_core(
         beta = torch.sigmoid(b_projection[token].float())
         if attrs.get("round_beta", True):
             beta = beta.to(b_projection.dtype).float()
-        decay_log = -torch.exp(a_log.float()) * torch.nn.functional.softplus(
-            a_projection[token].float() + dt_bias.float()
-        )
+        decay_log = -torch.exp(a_log.float()) * torch.nn.functional.softplus(a_projection[token].float() +
+                                                                             dt_bias.float())
         decayed_state = recurrent_state * torch.exp(decay_log).reshape(num_value_heads, 1, 1)
         recalled = (decayed_state * key.unsqueeze(-1)).sum(dim=1)
         delta = (value.float() - recalled) * beta.unsqueeze(-1)

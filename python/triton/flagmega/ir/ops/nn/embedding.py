@@ -21,6 +21,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_tensor
 from triton.flagmega.ir.types import DType
+from triton.flagmega.ir.ops.math._quantized import matrix_width
 
 
 @op_definition("nn.embedding", namespace="nn", functional_name="embedding", display_name="NN.Embedding")
@@ -28,6 +29,7 @@ class Embedding(OpDefinition):
     indices = input_parameter(is_tensor() & (has_dtype(DType.INT32) | has_dtype(DType.INT64)))
     weight = input_parameter(is_tensor() & has_rank(2))
     padding_idx = attribute_parameter(default=None)
+    weight_encoding = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -35,7 +37,13 @@ class Embedding(OpDefinition):
         padding_idx = attrs["padding_idx"]
         if padding_idx is not None and (isinstance(padding_idx, bool) or not isinstance(padding_idx, int)):
             raise IRSchemaError("F.nn.embedding padding_idx must be an integer or None.")
-        return {"padding_idx": padding_idx}
+        encoding = attrs.get("weight_encoding")
+        if encoding is not None and not isinstance(encoding, str):
+            raise IRSchemaError("F.nn.embedding weight_encoding must be a string or None.")
+        result = {"padding_idx": padding_idx}
+        if encoding is not None:
+            result["weight_encoding"] = encoding
+        return result
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -50,11 +58,9 @@ class Embedding(OpDefinition):
             if normalized < 0 or normalized >= vocabulary.fixed_value:
                 raise IRSchemaError(
                     f"F.nn.embedding padding_idx {padding_idx} is outside vocabulary size {vocabulary.fixed_value}.")
-        output = tensor_type(weight.dtype, (*indices.shape, weight.shape[1]))
-        distributed_inputs = tuple(
-            isinstance(value, DistributedType)
-            for value in (indices_type, weight_type)
-        )
+        output_dtype = DType.BFLOAT16 if attrs.get("weight_encoding") is not None else weight.dtype
+        output = tensor_type(output_dtype, (*indices.shape, matrix_width(weight, attrs.get("weight_encoding"))))
+        distributed_inputs = tuple(isinstance(value, DistributedType) for value in (indices_type, weight_type))
         if not any(distributed_inputs):
             return output
         if not all(distributed_inputs):
@@ -66,10 +72,9 @@ class Embedding(OpDefinition):
         if indices_type.partial is not None or weight_type.partial is not None:
             raise IRSchemaError("F.nn.embedding distributed inputs must not be partial.")
         if any(
-            isinstance(policy, SBPPartial)
-            for value in (indices_type, weight_type)
-            for policy in value.axis_policies
-        ):
+                isinstance(policy, SBPPartial)
+                for value in (indices_type, weight_type)
+                for policy in value.axis_policies):
             raise IRSchemaError("F.nn.embedding distributed inputs must not be partial.")
         if not all(isinstance(policy, SBPBroadCast) for policy in indices_type.axis_policies):
             raise IRSchemaError("F.nn.embedding distributed indices must be broadcast.")

@@ -4,8 +4,12 @@ def _flagmega_dense_rows(
     source, weight, rows, active,
     K: tl.constexpr, TILE_K: tl.constexpr,
     UNIFORM_ROWS: tl.constexpr = False,
+    ENCODING: tl.constexpr = None,
 ):
     """Dense projections for the value heads touched by one local tile."""
+    # Bind a local constexpr: omitted string defaults are raw Python values
+    # in the JIT caller, whereas annotated body constants support comparison.
+    FORMAT: tl.constexpr = "" if ENCODING is None else ENCODING
     lane_active = active
     if UNIFORM_ROWS:
         # The logical shard map proves that active lanes name the same row.
@@ -14,6 +18,49 @@ def _flagmega_dense_rows(
         active = tl.sum(active.to(tl.int32), 0) > 0
         rows = tl.where(active, rows, 0)
     REDUCE_AXIS: tl.constexpr = len(rows.shape)
+    if FORMAT == "IQ4_XS" or FORMAT == "Q4_K":
+        weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+        weight_f16 = weight.to(tl.pointer_type(tl.float16))
+        if FORMAT == "IQ4_XS":
+            weight_u16 = weight.to(tl.pointer_type(tl.uint16))
+            block_bytes: tl.constexpr = 136
+        else:
+            block_bytes: tl.constexpr = 144
+        packed_rows = rows * (K // 256) * block_bytes
+        accumulator = tl.full(rows.shape, 0, tl.float32)
+        for k_start in tl.range(0, K, 128):
+            k = k_start + tl.arange(0, 128)
+            km = k < K
+            block = k // 256
+            inside = k % 256
+            group = inside // 32
+            lane = inside % 32
+            base = tl.expand_dims(packed_rows, REDUCE_AXIS) + block * block_bytes
+            active_matrix = tl.expand_dims(active, REDUCE_AXIS) & km
+            d = tl.load(weight_f16 + base // 2, mask=active_matrix, other=0.0).to(tl.float32)
+            if FORMAT == "IQ4_XS":
+                sl = tl.load(weight_u8 + base + 4 + group // 2, mask=active_matrix, other=0)
+                sh = tl.load(weight_u16 + (base + 2) // 2, mask=active_matrix, other=0)
+                sc = ((sl >> ((group % 2) * 4)) & 0xF) | (((sh >> (group * 2)) & 0x3) * 16)
+                packed = tl.load(weight_u8 + base + 8 + group * 16 + (lane % 16), mask=active_matrix, other=0)
+                code = tl.where((lane // 16) == 0, packed & 0xF, packed >> 4)
+                cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+                decoded = d * (sc.to(tl.float32) - 32.0) * cv
+            else:
+                dmin = tl.load(weight_f16 + (base + 2) // 2, mask=active_matrix, other=0.0).to(tl.float32)
+                scales = weight_u8 + base + 4
+                s0 = tl.load(scales + group % 4, mask=active_matrix, other=0)
+                s1 = tl.load(scales + 4 + group % 4, mask=active_matrix, other=0)
+                s2 = tl.load(scales + 8 + group % 4, mask=active_matrix, other=0)
+                low_group = group < 4
+                sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+                mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+                packed = tl.load(weight_u8 + base + 16 + (group // 2) * 32 + lane, mask=active_matrix, other=0)
+                q = tl.where(group % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+                decoded = d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)
+            source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+            accumulator += tl.sum(decoded * source_value, axis=REDUCE_AXIS)
+        return tl.where(lane_active, accumulator.to(tl.bfloat16).to(tl.float32), 0.0)
     accumulator = tl.full(rows.shape, 0, tl.float32)
     compensation = tl.full(rows.shape, 0, tl.float32)
     for k_start in tl.range(0, K, TILE_K):
@@ -68,12 +115,16 @@ def _flagmega_gdn_recurrent_local_core_tile(
     QK_NORM_ADD: tl.constexpr, QK_NORM_EPS: tl.constexpr,
     ROUND_NORMALIZED_QK: tl.constexpr, ROUND_CORE: tl.constexpr,
     old_state=None,
+    TILED_VALUE_HEADS: tl.constexpr = False,
 ):
     """Update exactly the state/value coordinates owned by this shard."""
     KEY_TOTAL: tl.constexpr = KEY_HEADS * KEY_DIM
     value_head = global_values // VALUE_DIM
     value_coordinate = global_values % VALUE_DIM
-    key_head = value_head // REPEATS
+    if TILED_VALUE_HEADS:
+        key_head = value_head % KEY_HEADS
+    else:
+        key_head = value_head // REPEATS
     # Proven uniform heads use a scalar gate. Other maps use one per value
     # lane; both broadcast over the key dimension without a reduction.
     decay_columns = tl.expand_dims(decay, len(decay.shape))

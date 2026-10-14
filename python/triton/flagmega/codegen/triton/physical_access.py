@@ -14,7 +14,6 @@ from collections.abc import Mapping, Sequence
 
 from triton.flagmega.errors import CodegenError
 
-
 _TRITON_SCALAR_TYPES = {
     "bool": "tl.int1",
     "int8": "tl.int8",

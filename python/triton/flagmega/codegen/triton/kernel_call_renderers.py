@@ -16,7 +16,6 @@ from triton.flagmega.codegen.triton.physical_access import (
     emit_local_scalar_offset,
     emit_logical_coordinate,
     emit_storage_pointer,
-    emit_triton_scalar_type,
 )
 from triton.flagmega.codegen.triton.dimension_expression import emit_dimension
 from triton.flagmega.codegen.triton.grouped_coordinates import tiles_stay_within_groups
@@ -42,8 +41,6 @@ from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import (
     DistributedType,
-    TupleType,
-    VectorType,
     is_fully_replicated,
     is_local_shard_subview,
     local_shard_descriptor,
@@ -185,9 +182,7 @@ def _bind_host_tensor_descriptor_parameters(call: dict[str, object]) -> None:
     call["signature"] = ", ".join(call["arguments"])
 
 
-def _bind_transfer_pipeline_parameters(
-    call: dict[str, object], raw: Mapping[str, object]
-) -> None:
+def _bind_transfer_pipeline_parameters(call: dict[str, object], raw: Mapping[str, object]) -> None:
     """Describe role-local formals from the typed transfer contract.
 
     Pipe endpoints and consumer-owned Shared buffers are device-function
@@ -204,20 +199,20 @@ def _bind_transfer_pipeline_parameters(
         call["pipeline_consumer_parameters"] = ()
         call["pipeline_producer_parameters"] = ()
         return
-    if not isinstance(pipeline, Mapping) or not isinstance(
-        workspaces, (tuple, list)
-    ):
-        raise CodegenError(
-            "A transfer-pipelined TIR call requires typed Shared workspace ABI."
-        )
+    if not isinstance(pipeline, Mapping) or not isinstance(workspaces, (tuple, list)):
+        raise CodegenError("A transfer-pipelined TIR call requires typed Shared workspace ABI.")
     channels = pipeline.get("channels")
     consumer_indices = pipeline.get("consumer_shared_workspace_indices", ())
     if not isinstance(channels, (tuple, list)) or not channels:
         raise CodegenError("A transfer pipeline must expose at least one channel.")
     if not isinstance(consumer_indices, (tuple, list)):
-        raise CodegenError(
-            "Transfer-pipeline consumer Shared workspace indices must be a sequence."
-        )
+        raise CodegenError("Transfer-pipeline consumer Shared workspace indices must be a sequence.")
+    parameters = raw.get("parameters", {})
+    for name in ("num_stages", "producer_warps", "producer_registers"):
+        value = parameters.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise CodegenError(f"Transfer-pipeline parameter {name!r} must be a positive integer.")
+        call[name] = value
 
     def workspace(index: object, owner: str) -> Mapping[str, object]:
         if isinstance(index, bool) or not isinstance(index, int):
@@ -225,9 +220,7 @@ def _bind_transfer_pipeline_parameters(
         try:
             value = workspaces[index]
         except IndexError as error:
-            raise CodegenError(
-                f"{owner} workspace index {index} is outside the Shared ABI."
-            ) from error
+            raise CodegenError(f"{owner} workspace index {index} is outside the Shared ABI.") from error
         if not isinstance(value, Mapping):
             raise CodegenError(f"{owner} Shared workspace must be a mapping.")
         name = str(value.get("name", ""))
@@ -239,9 +232,7 @@ def _bind_transfer_pipeline_parameters(
     producer_parameters = []
     field_overrides = call.get("pipeline_channel_field_names", {})
     if not isinstance(field_overrides, Mapping):
-        raise CodegenError(
-            "pipeline_channel_field_names must map channel names to field names."
-        )
+        raise CodegenError("pipeline_channel_field_names must map channel names to field names.")
     for channel in channels:
         if not isinstance(channel, Mapping):
             raise CodegenError("Transfer-pipeline channel must be a mapping.")
@@ -249,44 +240,35 @@ def _bind_transfer_pipeline_parameters(
         _require_pipeline_identifier(name, "Transfer-pipeline channel")
         indices = channel.get("shared_workspace_indices")
         if not isinstance(indices, (tuple, list)) or not indices:
-            raise CodegenError(
-                f"Transfer-pipeline channel {name!r} owns no Shared workspace."
-            )
+            raise CodegenError(f"Transfer-pipeline channel {name!r} owns no Shared workspace.")
         owned = tuple(workspace(index, f"Channel {name!r}") for index in indices)
         raw_fields = field_overrides.get(name)
         if raw_fields is None:
-            field_names = (
-                (name,)
-                if len(owned) == 1
-                else tuple(str(value["name"]) for value in owned)
-            )
+            field_names = ((name, ) if len(owned) == 1 else tuple(str(value["name"]) for value in owned))
         elif isinstance(raw_fields, (tuple, list)):
             field_names = tuple(str(value) for value in raw_fields)
         else:
-            raise CodegenError(
-                f"Transfer-pipeline channel {name!r} field override must be a sequence."
-            )
+            raise CodegenError(f"Transfer-pipeline channel {name!r} field override must be a sequence.")
         if len(field_names) != len(owned):
-            raise CodegenError(
-                f"Transfer-pipeline channel {name!r} has {len(owned)} workspaces "
-                f"but {len(field_names)} pipe field names."
-            )
+            raise CodegenError(f"Transfer-pipeline channel {name!r} has {len(owned)} workspaces "
+                               f"but {len(field_names)} pipe field names.")
         for field_name in field_names:
-            _require_pipeline_identifier(
-                field_name, f"Transfer-pipeline channel {name!r} field"
-            )
+            _require_pipeline_identifier(field_name, f"Transfer-pipeline channel {name!r} field")
         if len(set(field_names)) != len(field_names):
-            raise CodegenError(
-                f"Transfer-pipeline channel {name!r} has duplicate pipe fields."
-            )
+            raise CodegenError(f"Transfer-pipeline channel {name!r} has duplicate pipe fields.")
         reader = f"pipeline_{name}_reader"
         writer = f"pipeline_{name}_writer"
         encoded_channels.append({
-            "name": name,
-            "reader_parameter": reader,
-            "writer_parameter": writer,
-            "workspace_names": tuple(str(value["name"]) for value in owned),
-            "fields": tuple({
+            "name":
+            name,
+            "reader_parameter":
+            reader,
+            "writer_parameter":
+            writer,
+            "workspace_names":
+            tuple(str(value["name"]) for value in owned),
+            "fields":
+            tuple({
                 "name": field_name,
                 "workspace_name": str(value["name"]),
             } for field_name, value in zip(field_names, owned, strict=True)),
@@ -309,42 +291,25 @@ def _bind_transfer_pipeline_parameters(
     encoded_auxiliary = None
     if auxiliary is not None:
         if not isinstance(auxiliary, Mapping):
-            raise CodegenError(
-                "Transfer-pipeline auxiliary consumer must be a mapping."
-            )
+            raise CodegenError("Transfer-pipeline auxiliary consumer must be a mapping.")
         channel_indices = auxiliary.get("channel_indices")
-        workspace_indices = auxiliary.get(
-            "consumer_shared_workspace_indices", ()
-        )
-        if (
-            not isinstance(channel_indices, (tuple, list))
-            or not channel_indices
-            or not isinstance(workspace_indices, (tuple, list))
-        ):
-            raise CodegenError(
-                "Auxiliary consumer channel/workspace indices must be sequences."
-            )
+        workspace_indices = auxiliary.get("consumer_shared_workspace_indices", ())
+        if (not isinstance(channel_indices, (tuple, list)) or not channel_indices
+                or not isinstance(workspace_indices, (tuple, list))):
+            raise CodegenError("Auxiliary consumer channel/workspace indices must be sequences.")
         try:
-            selected_channels = tuple(
-                encoded_channels[int(index)] for index in channel_indices
-            )
+            selected_channels = tuple(encoded_channels[int(index)] for index in channel_indices)
         except (IndexError, TypeError, ValueError) as error:
-            raise CodegenError(
-                "Auxiliary consumer references an invalid transfer channel."
-            ) from error
-        consumer_by_name = {
-            value["name"]: value for value in encoded_consumer_workspaces
-        }
+            raise CodegenError("Auxiliary consumer references an invalid transfer channel.") from error
+        consumer_by_name = {value["name"]: value for value in encoded_consumer_workspaces}
         selected_workspaces = []
         for index in workspace_indices:
             value = workspace(index, "Auxiliary consumer")
             try:
                 selected_workspaces.append(consumer_by_name[value["name"]])
             except KeyError as error:
-                raise CodegenError(
-                    "Auxiliary consumer references a Shared workspace not "
-                    "owned by the primary consumer."
-                ) from error
+                raise CodegenError("Auxiliary consumer references a Shared workspace not "
+                                   "owned by the primary consumer.") from error
         primary_parameters = (
             "pipeline_auxiliary_start_writer",
             "pipeline_auxiliary_done_reader",
@@ -357,9 +322,7 @@ def _bind_transfer_pipeline_parameters(
         )
         encoded_auxiliary = {
             "channel_indices": tuple(int(value) for value in channel_indices),
-            "consumer_shared_workspace_indices": tuple(
-                int(value) for value in workspace_indices
-            ),
+            "consumer_shared_workspace_indices": tuple(int(value) for value in workspace_indices),
             "start_writer_parameter": primary_parameters[0],
             "done_reader_parameter": primary_parameters[1],
             "start_reader_parameter": "pipeline_auxiliary_start_reader",
@@ -372,9 +335,7 @@ def _bind_transfer_pipeline_parameters(
     call["pipeline_contract"] = dict(pipeline)
     call["shared_workspaces"] = tuple(workspaces)
     call["pipeline_channels"] = tuple(encoded_channels)
-    call["pipeline_consumer_workspaces"] = tuple(
-        encoded_consumer_workspaces
-    )
+    call["pipeline_consumer_workspaces"] = tuple(encoded_consumer_workspaces)
     call["pipeline_consumer_parameters"] = tuple(consumer_parameters)
     call["pipeline_producer_parameters"] = tuple(producer_parameters)
     call["pipeline_auxiliary_consumer"] = encoded_auxiliary
@@ -563,40 +524,67 @@ def _embedding_call(raw) -> dict[str, object]:
     result_abi = result["abi"]
     local_shape = _static_shape(result_abi, "local_capacity_shape")
     if len(local_shape) != 2 or local_shape[0] != 1:
-        raise CodegenError(
-            "TIR decode embedding requires one local token row; batching is "
-            "lowered by a separate schedule."
-        )
+        raise CodegenError("TIR decode embedding requires one local token row; batching is "
+                           "lowered by a separate schedule.")
     lanes = int(result_abi.get("scalar_lane_count", 1))
     if (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
         raise CodegenError("Embedding weight and output must have identical vector element lanes.")
     local_feature = "local_offsets" if lanes == 1 else f"(local_offsets // {lanes})"
     lane_coordinate = None if lanes == 1 else f"(local_offsets % {lanes})"
-    global_feature = emit_logical_coordinate(
-        result_abi, 1, ("0", local_feature)
-    )
+    global_feature = emit_logical_coordinate(result_abi, 1, ("0", local_feature))
     weight_abi = weight["abi"]
     if str(weight_abi["coordinate_space"]) != "canonical_global":
-        raise CodegenError(
-            "Embedding lookup requires a canonical vocabulary table or an "
-            "explicit lookup-table Boxing implementation."
-        )
+        raise CodegenError("Embedding lookup requires a canonical vocabulary table or an "
+                           "explicit lookup-table Boxing implementation.")
     padding_idx = raw.get("semantic_attrs", {}).get("padding_idx")
+    encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
+    if encoding not in (None, "IQ4_XS", "Q4_K"):
+        raise CodegenError(f"Unsupported native GGUF embedding encoding {encoding!r}.")
+    hidden = _static_shape(weight_abi, "logical_shape")[1]
+    if encoding is not None:
+        block_bytes = 136 if encoding == "IQ4_XS" else 144
+        if hidden % block_bytes:
+            raise CodegenError("Native GGUF embedding has an incomplete packed row.")
+        hidden = hidden // block_bytes * 256
+    if encoding is not None and hidden % 256:
+        raise CodegenError("Native GGUF quantized embedding requires hidden size divisible by 256.")
     return {
-        "indices": _pointer(indices),
-        "weight": _pointer(weight),
-        "result": _pointer(result),
-        "local_capacity": local_shape[-1] * lanes,
-        "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
-        "weight_offset": emit_global_scalar_offset(
-            weight_abi, ("token_id", global_feature), lane_coordinate=lane_coordinate,
+        "indices":
+        _pointer(indices),
+        "weight":
+        _pointer(weight),
+        "result":
+        _pointer(result),
+        "local_capacity":
+        local_shape[-1] * lanes,
+        "active":
+        f"({emit_active_extent(result_abi, 1)}) * {lanes}",
+        "weight_offset":
+        emit_global_scalar_offset(
+            weight_abi,
+            ("token_id", global_feature),
+            lane_coordinate=lane_coordinate,
         ),
-        "result_offset": emit_local_scalar_offset(
-            result_abi, ("0", local_feature), lane_coordinate=lane_coordinate,
+        "global_feature":
+        global_feature,
+        "result_offset":
+        emit_local_scalar_offset(
+            result_abi,
+            ("0", local_feature),
+            lane_coordinate=lane_coordinate,
         ),
-        "tile": int(raw["parameters"]["elements_per_program"]),
-        "vocab_size": _static_shape(weight_abi, "logical_shape")[0],
-        "padding_idx": -1 if padding_idx is None else int(padding_idx),
+        "tile":
+        int(raw["parameters"]["elements_per_program"]),
+        "vocab_size":
+        _static_shape(weight_abi, "logical_shape")[0],
+        "padding_idx":
+        -1 if padding_idx is None else int(padding_idx),
+        "weight_encoding":
+        encoding,
+        "weight_block_bytes":
+        136 if encoding == "IQ4_XS" else 144 if encoding == "Q4_K" else 0,
+        "weight_hidden":
+        hidden,
     }
 
 
@@ -734,14 +722,21 @@ def _block_fp8_call(raw) -> dict[str, object]:
     global_n_size = _scalar_logical_axis_extent(result_abi, -1)
     block_n, block_k = _semantic_weight_block_shape(
         raw,
-        scales=(scale_abi,),
+        scales=(scale_abi, ),
         global_n=global_n_size,
         global_k=global_k_size,
         owner="TIR block-FP8",
     )
-    # The K-major packed outer row starts at the same scalar address; K is
-    # represented by its outer vector coordinate plus flattened lane.
-    weight_row = f"({global_n}) * {global_k_size}"
+    encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
+    if encoding not in (None, "IQ4_XS", "Q4_K"):
+        raise CodegenError(f"Unsupported native GGUF weight encoding {encoding!r}.")
+    if encoding is None:
+        weight_row = f"({global_n}) * {global_k_size}"
+    else:
+        bytes_per_block = 136 if encoding == "IQ4_XS" else 144
+        if global_k_size % 256:
+            raise CodegenError("Native GGUF quantized GEMV requires K divisible by 256.")
+        weight_row = f"({global_n}) * ({global_k_size} // 256) * {bytes_per_block}"
     scale_row = emit_global_scalar_offset(
         scale_abi,
         (f"({global_n}) // {block_n}", "0"),
@@ -756,12 +751,11 @@ def _block_fp8_call(raw) -> dict[str, object]:
         "global_n": global_n,
         "weight_row_offset": weight_row,
         "scale_row_offset": scale_row,
-        "destination_offset": emit_local_scalar_offset(
-            result_abi, ("0", local_n)
-        ),
+        "destination_offset": emit_local_scalar_offset(result_abi, ("0", local_n)),
         "k": global_k_size,
         "block_k": block_k,
         "tile_n": int(raw["parameters"]["tile_n"]),
+        "weight_encoding": encoding,
     }
 
 
@@ -788,6 +782,19 @@ def _matmul_glu_call(raw) -> dict[str, object]:
         global_k=global_k_size,
         owner="TIR MatMulGlu",
     )
+    gate_encoding = raw.get("semantic_attrs", {}).get("gate_weight_encoding")
+    up_encoding = raw.get("semantic_attrs", {}).get("up_weight_encoding")
+    if gate_encoding != up_encoding:
+        raise CodegenError("Native GGUF MatMulGlu requires matching gate/up encodings.")
+    if gate_encoding not in (None, "IQ4_XS", "Q4_K"):
+        raise CodegenError(f"Unsupported native GGUF MatMulGlu encoding {gate_encoding!r}.")
+    if gate_encoding is None:
+        weight_row_offset = f"({global_n}) * {global_k_size}"
+    else:
+        bytes_per_block = 136 if gate_encoding == "IQ4_XS" else 144
+        if global_k_size % 256:
+            raise CodegenError("Native GGUF quantized MatMulGlu requires K divisible by 256.")
+        weight_row_offset = f"({global_n}) * ({global_k_size} // 256) * {bytes_per_block}"
     return {
         "value": _pointer(value),
         "gate_weight": _pointer(gate_weight),
@@ -798,17 +805,16 @@ def _matmul_glu_call(raw) -> dict[str, object]:
         "local_n_capacity": result_local[-1],
         "active_n": emit_active_extent(result_abi, 1),
         "global_n": global_n,
-        "weight_row_offset": f"({global_n}) * {global_k_size}",
+        "weight_row_offset": weight_row_offset,
         "scale_row_offset": emit_global_scalar_offset(
             gate_scale["abi"],
             (f"({global_n}) // {block_n}", "0"),
         ),
-        "destination_offset": emit_local_scalar_offset(
-            result_abi, ("0", local_n)
-        ),
+        "destination_offset": emit_local_scalar_offset(result_abi, ("0", local_n)),
         "k": global_k_size,
         "block_k": block_k,
         "tile_n": int(raw["parameters"]["tile_n"]),
+        "weight_encoding": gate_encoding,
     }
 
 
@@ -1232,9 +1238,16 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
     local_value = "local_values"
     global_value = emit_logical_coordinate(result_abi, 1, ("0", local_value))
     attrs = raw.get("semantic_attrs", {})
+    b_encoding = attrs.get("b_weight_encoding")
+    a_encoding = attrs.get("a_weight_encoding")
+    for encoding in (b_encoding, a_encoding):
+        if encoding not in (None, "IQ4_XS", "Q4_K"):
+            raise CodegenError(f"Unsupported native GGUF recurrent encoding {encoding!r}.")
     distributed_data = result_abi.get("distributed_type")
     uniform_projection_rows = distributed_data is not None and tiles_stay_within_groups(
-        type_from_data(distributed_data), 1, int(raw["parameters"]["tile_state"][1]),
+        type_from_data(distributed_data),
+        1,
+        int(raw["parameters"]["tile_state"][1]),
         int(attrs["value_head_dim"]),
     )
     result_context = {
@@ -1259,33 +1272,36 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
         "key_heads": int(attrs["num_key_heads"]),
         "key_dim": int(attrs["key_head_dim"]),
         "value_dim": int(attrs["value_head_dim"]),
-        "projection_dim": _static_shape(
-            projection_input["abi"], "logical_shape"
-        )[-1],
+        "projection_dim": _static_shape(projection_input["abi"], "logical_shape")[-1],
         "repeats": int(attrs["num_value_heads"]) // int(attrs["num_key_heads"]),
         "epsilon": repr(float(attrs["epsilon"])),
         "value_tile": int(raw["parameters"]["tile_state"][1]),
         "head_block": int(raw["parameters"]["tile_state"][0]),
         "projection_tile": int(raw["parameters"]["projection_tile"]),
         "uniform_projection_rows": uniform_projection_rows,
-        "query_scale": repr(1.0 / (int(attrs["key_head_dim"]) ** 0.5)),
+        "query_scale": repr(1.0 / (int(attrs["key_head_dim"])**0.5)),
         "qk_norm_add": attrs.get("qk_norm_mode", "clamp") == "add",
         "qk_norm_epsilon": repr(float(attrs.get("qk_norm_epsilon", 1e-12))),
         "round_normalized_qk": bool(attrs.get("round_normalized_qk", False)),
         "round_beta": bool(attrs.get("round_beta", True)),
         "round_core": bool(attrs.get("round_core", False)),
         "writer_active": _distributed_unique_writer_active(result_abi),
+        "b_weight_encoding": b_encoding,
+        "a_weight_encoding": a_encoding,
+        "tiled_value_heads": attrs.get("value_head_order", "grouped") == "tiled",
     }
     if raw.get("variant") == "state_smem_pipeline":
         from triton.flagmega.ir.tir import tir_from_data
         partition = raw["transfer_pipeline"]["channels"][0].get("inplace_partition")
         partition = None if partition is None else tir_from_data(partition)
-        if (partition is None or partition.source_field_path != ("recurrent",)
-                or partition.source_row_rank != 3 or partition.output_index != 0
-                or partition.output_axis != 1 or partition.tile_rows != result_context["value_tile"]):
+        if (partition is None or partition.source_field_path != ("recurrent", ) or partition.source_row_rank != 3
+                or partition.output_index != 0 or partition.output_axis != 1
+                or partition.tile_rows != result_context["value_tile"]):
             raise CodegenError("GDN state pipeline requires the verified recurrent row partition.")
-        result_context.update({name: raw["parameters"][name]
-                               for name in ("num_stages", "producer_warps", "producer_registers", "consumer_warps")})
+        result_context.update({
+            name: raw["parameters"][name]
+            for name in ("num_stages", "producer_warps", "producer_registers", "consumer_warps")
+        })
     return result_context
 
 
@@ -6116,6 +6132,7 @@ def _access_in_result_domain(
         lane_coordinate=lane_coordinate,
     )
 
+
 _FAMILY_ENCODERS = {
     "delta_rule_coefficients": delta_rule_coefficients_call,
     "delta_rule_log_prefix": delta_rule_log_prefix_call,
@@ -6161,6 +6178,5 @@ _FAMILY_ENCODERS = {
     "paged_attention_gated_combine": _paged_attention_gated_combine_call,
     "greedy_sample": _greedy_sample_call,
 }
-
 
 __all__ = ["prepare_kernel_calls"]

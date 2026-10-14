@@ -96,7 +96,8 @@ def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.si
             local_values, global_values, recurrent_mask, {{ call.value_heads }}, {{ call.key_heads }},
             {{ call.key_dim }}, {{ call.value_dim }}, {{ call.repeats }}, {{ call.head_block }},
             {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }}, {{ call.round_normalized_qk }},
-            {{ call.round_core }}, _fm_old_state)
+            {{ call.round_core }}, _fm_old_state,
+            TILED_VALUE_HEADS={{ call.tiled_value_heads | default(false) }})
         {{ reader }}.release(_fm_step)
         _fm_step += 1
 {{ entry.stage_barrier() }}

@@ -25,12 +25,13 @@ def _register_builtin_packages() -> None:
     package_registry.register("elementwise_add/v1", "nvidia-sm90", GeneratedAddModule)
     package_registry.register("elementwise/v2", "nvidia-sm90", GeneratedElementwiseModule)
     package_registry.register("tir_call_graph/v1", "nvidia-sm90", create_tir_runtime)
+    package_registry.register("elementwise_add/v1", "nvidia-sm120", GeneratedAddModule)
+    package_registry.register("elementwise/v2", "nvidia-sm120", GeneratedElementwiseModule)
+    package_registry.register("tir_call_graph/v1", "nvidia-sm120", create_tir_runtime)
     package_registry.register("elementwise_add/v1", "iluvatar-bi-v150", GeneratedAddModule)
     package_registry.register("elementwise/v2", "iluvatar-bi-v150", GeneratedElementwiseModule)
     package_registry.register("tir_call_graph/v1", "iluvatar-bi-v150", create_tir_runtime)
-    package_registry.register(
-        "tir_call_graph_cpp/v1", "iluvatar-bi-v150", create_cpp_tir_runtime
-    )
+    package_registry.register("tir_call_graph_cpp/v1", "iluvatar-bi-v150", create_cpp_tir_runtime)
 
 
 _register_builtin_packages()
