@@ -23,6 +23,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: llvm.func @grid_axis_barrier
+  // The declared group_domain_shape (8 x 16 = 128) is checked against the actual
+  // launch grid at runtime; a mismatch traps instead of grouping CTAs wrongly.
+  // CHECK: llvm.mlir.constant(128 : i32)
+  // CHECK: llvm.call_intrinsic "llvm.trap"
+  // CHECK: llvm.unreachable
   // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent")
   // CHECK-NOT: tle.distributed_barrier
   tt.func public @grid_axis_barrier() {

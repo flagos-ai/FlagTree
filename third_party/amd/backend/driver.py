@@ -806,6 +806,37 @@ def wrap_handle_tensordesc(launcher, signature, tensordesc_metadata):
     return inner
 
 
+def _clear_cooperative_grid_scratch(global_scratch):
+    """Zero-initialize the global scratch before a cooperative grid launch.
+
+    The grid ``distributed_barrier`` is a sense-reversing counter that assumes a
+    zero initial state; an uninitialized allocation can release a subset of CTAs
+    before every owner has published its workspace writes. Clear the buffer via
+    ``zero_``/``fill_`` when it exposes them. A buffer that exposes neither must
+    explicitly declare it is already zero-initialized via a truthy ``pre_zeroed``
+    attribute (e.g. FlagMega's prepared scratch view, which zeros once at prepare
+    time and keeps the counter phase-safe across launches, and deliberately hides
+    ``zero_``/``fill_`` to skip the redundant per-launch clear). Otherwise refuse
+    the launch rather than run the barrier against a possibly-garbage counter.
+    """
+    zero_ = getattr(global_scratch, "zero_", None)
+    if callable(zero_):
+        zero_()
+        return
+    fill_ = getattr(global_scratch, "fill_", None)
+    if callable(fill_):
+        fill_(0)
+        return
+    if getattr(global_scratch, "pre_zeroed", False):
+        return
+    raise RuntimeError(
+        "Cooperative grid launch requires a zero-initialized global scratch "
+        "(the distributed_barrier counter assumes a zero start), but the scratch "
+        "allocator returned a buffer exposing neither zero_()/fill_() nor a "
+        "truthy pre_zeroed marker."
+    )
+
+
 class HIPLauncher(object):
 
     def __init__(self, src, metadata):
@@ -839,13 +870,7 @@ class HIPLauncher(object):
         # a zero initial state; allocators may return uninitialized storage, so
         # clear it before a cooperative launch.
         if self.launch_cooperative_grid and global_scratch is not None:
-            zero_ = getattr(global_scratch, "zero_", None)
-            if callable(zero_):
-                zero_()
-            else:
-                fill_ = getattr(global_scratch, "fill_", None)
-                if callable(fill_):
-                    fill_(0)
+            _clear_cooperative_grid_scratch(global_scratch)
 
         profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
                                            _allocation._profile_allocator)

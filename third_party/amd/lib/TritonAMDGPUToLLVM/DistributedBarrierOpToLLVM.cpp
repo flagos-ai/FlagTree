@@ -109,6 +109,29 @@ struct DistributedBarrierOpConversion
     Value gridDimY = gridDim(mlir::gpu::Dimension::y);
     Value gridDimZ = gridDim(mlir::gpu::Dimension::z);
 
+    // A grid_axis barrier decomposes the linear block id using the declared
+    // group_domain_shape. If that product disagrees with the actual launch grid
+    // the CTAs are grouped wrongly and a per-group wait can never complete, so
+    // trap at runtime on the mismatch instead of deadlocking.
+    if (isAxisGroup) {
+      int64_t domainProduct = 1;
+      for (int32_t extent : domainShape)
+        domainProduct *= extent;
+      Value expectedTotal = b.i32_val((int32_t)domainProduct);
+      Value actualTotal = b.mul(b.mul(gridDimX, gridDimY), gridDimZ);
+      Value shapeOk = b.icmp_eq(expectedTotal, actualTotal);
+      Block *checkBlock = rewriter.getInsertionBlock();
+      Block *contBlock = checkBlock->splitBlock(rewriter.getInsertionPoint());
+      Block *trapBlock = rewriter.createBlock(contBlock);
+      rewriter.setInsertionPointToEnd(trapBlock);
+      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.trap", {}, {});
+      LLVM::UnreachableOp::create(rewriter, loc);
+      rewriter.setInsertionPointToEnd(checkBlock);
+      LLVM::CondBrOp::create(rewriter, loc, shapeOk, contBlock, ValueRange{},
+                             trapBlock, ValueRange{});
+      rewriter.setInsertionPointToStart(contBlock);
+    }
+
     Value linearBlockId = b.add(b.mul(blockIdZ, gridDimY), blockIdY);
     linearBlockId = b.add(b.mul(linearBlockId, gridDimX), blockIdX);
 
