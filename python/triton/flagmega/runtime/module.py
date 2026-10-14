@@ -84,6 +84,21 @@ def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False
             # a future kernel change) will still raise.
             spill_tolerance_bytes=128,
         )
+    if target.startswith("amd-"):
+        # RDNA register allocation differs from ptxas; a small spill does not
+        # affect correctness, so the no-spill residency gate is NVIDIA-only for
+        # this bring-up (occupancy tuning is a later performance pass). The
+        # RDNA assembler also reports only the aggregate n_spills count, not
+        # ptxas' per-function stack/spill breakdown.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            forbid_spills=False,
+            reports_ptxas_resource_fields=False,
+            # RDNA wave32 architecturally allows 256 VGPRs/lane; the 255 default
+            # is ptxas' NVIDIA limit, not RDNA's.
+            registers_per_thread_limit=256,
+        )
     return ResourceContract(
         compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
         requires_grid_wide_sync=requires_grid_wide_sync,
@@ -1347,6 +1362,24 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     target = str(target or "")
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
+    # ROCm/HIP GPUs report through the "cuda" device namespace. An RDNA artifact
+    # is built for a specific gfx arch (gfx1100 vs gfx1201 differ in ISA / WMMA),
+    # so a HIP-build check alone is not enough: verify the device's gcnArchName
+    # matches the target, otherwise a mismatched artifact fails later at JIT /
+    # launch with an error that is hard to trace back to the wrong GPU.
+    if target.startswith("amd-"):
+        if getattr(torch.version, "hip", None) is None:
+            raise RuntimeContractError(f"Artifact target {target!r} requires a ROCm/HIP torch build.")
+        expected_arch = target[len("amd-"):]
+        properties = torch.cuda.get_device_properties(torch.device(device))
+        # gcnArchName may carry feature suffixes, e.g. "gfx1100:sramecc+:xnack-".
+        actual_arch = str(getattr(properties, "gcnArchName", "") or "").split(":")[0]
+        if actual_arch != expected_arch:
+            raise RuntimeContractError(
+                f"Artifact target {target!r} requires a {expected_arch} GPU, "
+                f"got {actual_arch or 'unknown'!r}."
+            )
+        return
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
     expected = {"nvidia-sm90": (9, 0), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
     if expected is None:

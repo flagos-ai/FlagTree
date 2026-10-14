@@ -186,8 +186,8 @@ def test_decode_encoder_uses_only_local_buffer_abi_and_paged_state_contract():
     assert call["block_size"] == 256
     assert call["layer_id"] == "3"
     assert call["advance_sequence"] == "True"
-    assert "qkv_cache_physical_block" in call["k"]["cache_offset"]
-    assert "qkv_cache_physical_block" in call["v"]["cache_offset"]
+    assert "qkv_k_cache_physical_block" in call["k"]["cache_offset"]
+    assert "qkv_v_cache_physical_block" in call["v"]["cache_offset"]
     assert not any(
         name in repr(call).lower()
         for name in ("qwen", "sm90", "nvidia")

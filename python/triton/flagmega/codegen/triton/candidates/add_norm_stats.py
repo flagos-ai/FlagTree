@@ -51,14 +51,9 @@ class AddNormStatsCandidateProvider:
         value = value_type.tensor
         if any(not dimension.is_fixed for dimension in value.shape[:-1]):
             return None
-        if prod(
-            (dimension.fixed_value for dimension in value.shape[:-1]),
-            start=1,
-        ) != 1:
-            # The current sum_rms implementation materializes one decode row.
-            # A multi-row variant needs row-indexed statistics workspaces and
-            # is a different reviewed implementation, not an implicit mode.
-            return None
+        # M==1 (decode) reduces a single row; M>1 (prefill) reduces each leading
+        # row independently with per-row RMS statistics (the local_partial_rms
+        # template iterates an explicit add_stats_row loop).
         placement = value_type.placement
         if isinstance(source_type, DistributedType) and source_type.partial is not None:
             if source_type.partial.reduce_op is not ReduceOp.SUM:

@@ -4,7 +4,11 @@
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
-    token_id = tl.load({{ call.indices }}).to(tl.int32)
+{% if call.local_m != 1 %}
+    for embedding_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
+    token_id = tl.load({{ call.indices }} + ({{ call.indices_offset }})).to(tl.int32)
     tl.device_assert(
         (token_id >= 0) & (token_id < {{ call.vocab_size }}),
         "input id outside vocabulary",
@@ -38,6 +42,7 @@ def {{ call.symbol }}({{ call.signature }}):
             value,
             mask=local_mask,
         )
+{% endfilter %}
 
 
 {% endif %}

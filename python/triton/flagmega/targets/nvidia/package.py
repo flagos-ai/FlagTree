@@ -12,6 +12,16 @@ from triton.flagmega.codegen.triton.package_plan import PACKAGE_PLAN_SCHEMA
 from triton.flagmega.errors import IRVerificationError
 
 
+def _package_profile(capability) -> str:
+    # A capability may name its own package profile (e.g. RDNA, which has no SM
+    # compute capability). Fall back to the NVIDIA "nvidia_sm<major><minor>"
+    # form for capabilities that only expose a compute_capability.
+    profile = getattr(capability, "package_profile", None)
+    if profile is not None:
+        return profile
+    return "nvidia_sm" + "".join(str(value) for value in capability.compute_capability)
+
+
 def sm90_codegen_package_plan(
     module,
     kernel_nodes,
@@ -102,7 +112,7 @@ def sm90_codegen_package_plan(
     return {
         "schema": PACKAGE_PLAN_SCHEMA,
         "kind": "tir_call_graph",
-        "profile": "nvidia_sm" + "".join(str(value) for value in capability.compute_capability),
+        "profile": _package_profile(capability),
         "calls": tuple(calls),
         "kernel_templates": tuple(templates),
         "launch": {

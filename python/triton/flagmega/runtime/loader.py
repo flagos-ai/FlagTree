@@ -32,6 +32,10 @@ def _register_builtin_packages() -> None:
     package_registry.register("elementwise/v2", "iluvatar-bi-v150", GeneratedElementwiseModule)
     package_registry.register("tir_call_graph/v1", "iluvatar-bi-v150", create_tir_runtime)
     package_registry.register("tir_call_graph_cpp/v1", "iluvatar-bi-v150", create_cpp_tir_runtime)
+    # The TIR call-graph runtime is model- and platform-neutral; the RDNA path
+    # differs only in device validation (HIP vs CUDA capability).
+    package_registry.register("tir_call_graph/v1", "amd-gfx1100", create_tir_runtime)
+    package_registry.register("tir_call_graph/v1", "amd-gfx1201", create_tir_runtime)
 
 
 _register_builtin_packages()

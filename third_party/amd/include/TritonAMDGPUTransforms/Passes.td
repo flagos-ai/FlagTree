@@ -291,4 +291,23 @@ def TritonAMDGPUOptimizeDotOperands : Pass<"tritonamdgpu-optimize-dot-operands",
   ];
 }
 
+def TritonAMDGPUConvertWarpSpecialize : Pass<"tritonamdgpu-convert-warp-specialize", "mlir::ModuleOp"> {
+  let summary = "Lower ttg.warp_specialize to a static wave-id partition (RDNA)";
+
+  let description = [{
+    FlagMega-on-Radeon correctness-first lowering of ttg.warp_specialize: split
+    the CTA into the default warp group and the partition wave ranges by
+    branching on the hardware wave id, inline the regions, and rejoin with a
+    CTA-wide barrier. No setmaxnreg / persistent switch loop; captures are passed
+    as dominating SSA values. warp_yield that returns values, and a CTA-wide
+    barrier inside a partition, are diagnosed as unsupported.
+  }];
+
+  let dependentDialects = ["mlir::ROCDL::ROCDLDialect",
+                           "mlir::gpu::GPUDialect",
+                           "mlir::cf::ControlFlowDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
+
 #endif

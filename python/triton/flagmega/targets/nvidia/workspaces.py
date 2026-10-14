@@ -84,7 +84,22 @@ def _requirements(node, candidate, module, mesh_hierarchy):
             return ()
         value = tensor_of(node.type.fields[0])
         workspace("collective", value.dtype, value.shape)
-        workspace("norm_stats_partials", DType.FLOAT32, (mesh_size,), 128)
+        # One RMS partial per (mesh owner, owner-local PARTIAL-input row). The
+        # partials kernel writes `shard_index * local_rows + row`, where local_rows
+        # is the partial INPUT's local row count (token-replicated, so it spans
+        # the token axis). The statistics OUTPUT may be token-sharded to a single
+        # row per owner, so sizing by the output would undersize the workspace --
+        # size by the input. M==1 (decode) keeps the flat (mesh_size,) layout.
+        partial_type = module.node_map[node.inputs[0]].type
+        local_partial = (
+            local_tensor_type(partial_type)
+            if isinstance(partial_type, DistributedType)
+            else partial_type
+        )
+        from math import prod as _prod
+        local_rows = _prod(dim.fixed_value for dim in local_partial.shape[:-1]) if local_partial.shape[:-1] else 1
+        partials_shape = (mesh_size,) if local_rows == 1 else (mesh_size, local_rows)
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
 
     if family == "gather_reduce_add_norm_apply":
         components = 2 if bool(node.attrs.get("use_mean", False)) else 1

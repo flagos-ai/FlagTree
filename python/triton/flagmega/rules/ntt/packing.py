@@ -27,6 +27,16 @@ from triton.flagmega.ir.ops.tensors._k_major import (
     k_major_layout_name, )
 
 
+def _matmul_leading_rows(node: Node, module: IRModule) -> int | None:
+    """Product of the matmul LHS non-reduction extents (the GEMM M), or None."""
+
+    lhs = module.node_map[node.inputs[0]].type
+    shape = getattr(getattr(lhs, "tensor", lhs), "shape", None)
+    if not shape or any(not dimension.is_fixed for dimension in shape[:-1]):
+        return None
+    return prod(dimension.fixed_value for dimension in shape[:-1])
+
+
 class NttPackingPolicy:
     op_names = frozenset({
         "math.block_scaled_matmul",
@@ -59,7 +69,13 @@ class NttPackingPolicy:
         )
 
     def propose(self, module: IRModule, target) -> IRModule:
-        points = self.candidate_points(module)
+        capability = getattr(target, "capability", None)
+        prefer_logical_matmul = (
+            capability is not None and capability.supports(("wmma",))
+        )
+        points = self.candidate_points(
+            module, prefer_logical_matmul=prefer_logical_matmul
+        )
         return target.add_default_selections(
             module,
             points,
@@ -67,8 +83,50 @@ class NttPackingPolicy:
             policy_version=self.identity,
         )
 
-    def candidate_points(self, module: IRModule) -> tuple[SelectionPoint, ...]:
+    def candidate_points(
+        self, module: IRModule, *, prefer_logical_matmul: bool = False,
+    ) -> tuple[SelectionPoint, ...]:
         """Enumerate only the candidates registered by portable PyNTT rules."""
+
+        users: dict[str, list[Node]] = {}
+        for consumer in module.nodes:
+            for input_id in consumer.inputs:
+                users.setdefault(input_id, []).append(consumer)
+
+        def feeds_norm(node: Node) -> bool:
+            # A projection feeding a residual add + RMS-norm epilogue keeps its
+            # packed layout: it either fuses into the packed matmul_norm_stats
+            # microkernel or stays a packed gemv whose residual add is loop
+            # carried to a later norm (that add may be a function output with no
+            # in-function consumer, so treat a residual math.add as norm-bound).
+            # A logical (tensor-core) layout cannot satisfy that partial. Walk a
+            # few hops through boxing/reshard adapters; lm_head feeds a cast (no
+            # residual add) and still flips to the WMMA path.
+            frontier = [node.id]
+            for _ in range(4):
+                nxt: list[str] = []
+                for value_id in frontier:
+                    for consumer in users.get(value_id, ()):
+                        if (
+                            "norm" in consumer.op
+                            or consumer.op in {"math.add", "math.vectorized_binary"}
+                        ):
+                            return True
+                        nxt.append(consumer.id)
+                frontier = nxt
+            return False
+
+        def matmul_default(node: Node, packed_layout: str) -> str:
+            # M==1 is gemv (packed k-major floods CUs via split-K); M>1 is GEMM,
+            # where a logical layout exposes a tensor-core tl.dot kernel. Only
+            # prefer logical when the target can do WMMA and the matmul does not
+            # feed a norm-stats fused epilogue (which needs the packed layout).
+            if not prefer_logical_matmul:
+                return packed_layout
+            rows = _matmul_leading_rows(node, module)
+            if rows is None or rows <= 1 or feeds_norm(node):
+                return packed_layout
+            return "packing.logical"
 
         existing = {point.id for point in module.selection_points}
         points: list[SelectionPoint] = []
@@ -118,7 +176,7 @@ class NttPackingPolicy:
                             },
                         ),
                     ),
-                    default_candidate=f"packing.{layout}",
+                    default_candidate=matmul_default(node, f"packing.{layout}"),
                     owner=node.id,
                 ))
                 continue
@@ -203,7 +261,7 @@ class NttPackingPolicy:
                             },
                         ),
                     ),
-                    default_candidate=f"packing.{layout}",
+                    default_candidate=matmul_default(node, f"packing.{layout}"),
                     owner=node.id,
                 ))
                 continue

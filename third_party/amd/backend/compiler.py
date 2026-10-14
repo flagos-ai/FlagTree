@@ -227,8 +227,18 @@ class HIPBackend(BaseBackend):
             tle.passes.add_early_assign_memory_space(pm)
             tle.passes.add_select_encodings(pm)
             tle.passes.add_insert_local_pointer_barriers(pm)
+            # Lower tle.pipe.* to AMD mbarrier ops, then outline the pipe helper
+            # calls again (mirrors the NVWS path). Runs before allocate-shared-
+            # memory (which happens later, in make_llir) so the fresh barrier
+            # local_allocs get LDS offsets.
+            tle.passes.add_lower_pipe_to_rdna(pm)
+            tle.passes.add_restore_pipe_function_calls(pm)
             tle.passes.add_optimize_local_pointer_loads(pm)
             tle.passes.add_optimize_local_pointer_stores(pm)
+        # Lower ttg.warp_specialize (wave-id partition) after the TLE pipe block,
+        # so any tle.pipe inside partitions is already an mbarrier. No-op when no
+        # warp_specialize is present.
+        amd.passes.ttgpuir.add_convert_warp_specialize(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         amd.passes.ttgpuir.add_optimize_epilogue(pm)
@@ -313,6 +323,10 @@ class HIPBackend(BaseBackend):
         passes.gluon.add_inliner(pm)
         passes.convert.add_index_to_llvmir(pm)
 
+        # Assign global (device-memory) scratch offsets before the function
+        # conversion adds the global_scratch argument; the grid distributed_barrier
+        # counter lives in this scratch.
+        passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         amd.passes.ttgpuir.add_allocate_shared_memory(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if HIPBackend.instrumentation:
@@ -389,7 +403,11 @@ class HIPBackend(BaseBackend):
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(amd.CALLING_CONV_AMDGPU_KERNEL)
-        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{options.num_warps*options.warp_size}")
+        # warp_specialize launches worker waves above the default group; the flat
+        # work-group size must admit them (ttg.total-num-warps, else num_warps).
+        _ws_total_num_warps = src.get_int_attr("ttg.total-num-warps")
+        _launch_num_warps = _ws_total_num_warps if _ws_total_num_warps is not None else options.num_warps
+        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{_launch_num_warps*options.warp_size}")
         if "memory-bound-attention" in options.schedule_hint.split(','):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
         fns[0].add_fn_attr("uniform-work-group-size", "true")
@@ -443,8 +461,16 @@ class HIPBackend(BaseBackend):
 
         # Get some metadata
         metadata["shared"] = src.get_int_attr("ttg.shared")
+        metadata["global_scratch_size"] = src.get_int_attr("ttg.global_scratch_memory_size") or 0
+        metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment") or 1
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
+        # warp_specialize carves worker waves above the default group, so the CTA
+        # must launch (default + workers) waves. add_convert_warp_specialize
+        # records that total here (mirrors the NVIDIA backend).
+        total_num_warps = src.get_int_attr("ttg.total-num-warps")
+        if total_num_warps is not None:
+            metadata["num_warps"] = total_num_warps
 
         amd.cleanup_bitcode_metadata(llvm_mod)
         # Disable inlining of print related functions,
