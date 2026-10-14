@@ -1347,7 +1347,11 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
-    expected = {"nvidia-sm90": (9, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
+    # Each target pins an exact compute capability. nvidia-sm89 is Ada (8, 9)
+    # specifically: the Sm89Capability resource model (99 KB opt-in smem, Ada
+    # register file) does not describe other 8.x parts (e.g. A100 sm_80), so a
+    # loose 8.x match would admit a device the artifact was not built for.
+    expected = {"nvidia-sm90": (9, 0), "nvidia-sm89": (8, 9), "iluvatar-bi-v150": (7, 1)}.get(target)
     if expected is None:
         raise RuntimeContractError(f"Unsupported executable FlagMega target {target!r}.")
     if capability != expected:

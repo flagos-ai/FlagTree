@@ -11,7 +11,7 @@ from __future__ import annotations
 from triton.flagmega.ir import IRModule, Placement
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.targets.ntt_options import NttTargetOptions
-from triton.flagmega.targets.nvidia.capability import Sm90Capability
+from triton.flagmega.targets.nvidia.capability import Sm90Capability, Sm89Capability
 from triton.flagmega.targets.portable_triton_implementations import (
     portable_triton_implementation_model,
 )
@@ -165,4 +165,17 @@ class NvidiaSm90Machine:
         )
 
 
-__all__ = ["NvidiaSm90Machine"]
+class NvidiaSm89Machine(NvidiaSm90Machine):
+    """Ada (sm_89) physical services -- reuses every SM90 graph service with an
+    Ada capability (no TMA/wgmma), so selection picks portable GEMV kernels."""
+
+    name = "nvidia-sm89"
+    policy_version = "nvidia-sm89-machine/v4"
+    codegen_platform = "nvidia"
+    codegen_architecture = "sm89"
+
+    def __init__(self, capability=None, *, implementation_model=None) -> None:
+        super().__init__(capability or Sm89Capability(), implementation_model=implementation_model)
+
+
+__all__ = ["NvidiaSm90Machine", "NvidiaSm89Machine"]

@@ -129,4 +129,93 @@ class Sm90Capability:
         )
 
 
-__all__ = ["Sm90Capability"]
+@dataclass(frozen=True)
+class Sm89Capability:
+    """Ada (sm_89, e.g. RTX 4090) machine capability.
+
+    Ada has no Hopper TMA or wgmma (mma_v3), so those are off -- the candidate
+    filter then selects the portable packed_k_major_gemv kernels, exactly as on
+    RDNA. fp8 scalar + async copy + cooperative grid are available.
+    """
+    compute_capability: tuple[int, int] = (8, 9)
+    warp_size: int = 32
+    max_threads_per_block: int = 1024
+    max_threads_per_sm: int = 1536
+    max_registers_per_sm: int = 65536
+    max_shared_memory_bytes: int = 101376  # 99 KB opt-in smem on Ada
+    supports_fp8_mma: bool = False  # Ada has fp8 storage/convert, no fp8 wgmma
+    supports_async_copy: bool = True
+    supports_cooperative_grid: bool = True
+    supports_tma: bool = False  # Hopper-only
+    supports_warp_specialize: bool = True
+    supports_grid_sync: bool = True
+    supports_mma_v3: bool = False  # wgmma is Hopper-only
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "compute_capability", tuple(self.compute_capability))
+        if (
+            len(self.compute_capability) != 2
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in self.compute_capability)
+            or self.compute_capability[0] != 8
+        ):
+            raise IRSchemaError("Sm89Capability requires a compute capability in the 8.x family.")
+        for name in ("warp_size", "max_threads_per_block", "max_threads_per_sm",
+                     "max_registers_per_sm", "max_shared_memory_bytes"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise IRSchemaError(f"Sm89Capability {name} must be positive.")
+        for name in ("supports_fp8_mma", "supports_async_copy", "supports_cooperative_grid",
+                     "supports_tma", "supports_warp_specialize", "supports_grid_sync", "supports_mma_v3"):
+            if not isinstance(getattr(self, name), bool):
+                raise IRSchemaError(f"Sm89Capability {name} must be bool.")
+
+    @property
+    def features(self) -> frozenset[str]:
+        values = {"fp8"}
+        for enabled, name in (
+            (self.supports_fp8_mma, "fp8_mma"),
+            (self.supports_async_copy, "async_copy"),
+            (self.supports_cooperative_grid, "cooperative_grid"),
+            (self.supports_tma, "tma"),
+            (self.supports_warp_specialize, "warp_specialize"),
+            (self.supports_grid_sync, "grid_sync"),
+            (self.supports_mma_v3, "mma_v3"),
+        ):
+            if enabled:
+                values.add(name)
+        return frozenset(values)
+
+    def missing(self, requirements: Iterable[object]) -> tuple[str, ...]:
+        return tuple(sorted({str(value) for value in requirements} - self.features))
+
+    def supports(self, requirements: Iterable[object]) -> bool:
+        return not self.missing(requirements)
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "schema": "flagmega.nvidia-sm89-capability/v1",
+            "compute_capability": list(self.compute_capability),
+            "warp_size": self.warp_size,
+            "max_threads_per_block": self.max_threads_per_block,
+            "max_threads_per_sm": self.max_threads_per_sm,
+            "max_registers_per_sm": self.max_registers_per_sm,
+            "max_shared_memory_bytes": self.max_shared_memory_bytes,
+            "supports_fp8_mma": self.supports_fp8_mma,
+            "supports_async_copy": self.supports_async_copy,
+            "supports_cooperative_grid": self.supports_cooperative_grid,
+            "supports_tma": self.supports_tma,
+            "supports_warp_specialize": self.supports_warp_specialize,
+            "supports_grid_sync": self.supports_grid_sync,
+            "supports_mma_v3": self.supports_mma_v3,
+        }
+
+    @classmethod
+    def from_data(cls, data: Mapping[str, object]) -> "Sm89Capability":
+        if data.get("schema") != "flagmega.nvidia-sm89-capability/v1":
+            raise IRSchemaError(f"Unsupported SM89 capability schema {data.get('schema')!r}.")
+        fields = {k: v for k, v in data.items() if k != "schema"}
+        fields["compute_capability"] = tuple(fields["compute_capability"])
+        return cls(**fields)
+
+
+__all__ = ["Sm90Capability", "Sm89Capability"]
