@@ -1362,11 +1362,23 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     target = str(target or "")
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
-    # ROCm/HIP GPUs report through the "cuda" device namespace; the capability
-    # contract for RDNA is a HIP-build check, not a fixed compute capability.
+    # ROCm/HIP GPUs report through the "cuda" device namespace. An RDNA artifact
+    # is built for a specific gfx arch (gfx1100 vs gfx1201 differ in ISA / WMMA),
+    # so a HIP-build check alone is not enough: verify the device's gcnArchName
+    # matches the target, otherwise a mismatched artifact fails later at JIT /
+    # launch with an error that is hard to trace back to the wrong GPU.
     if target.startswith("amd-"):
         if getattr(torch.version, "hip", None) is None:
             raise RuntimeContractError(f"Artifact target {target!r} requires a ROCm/HIP torch build.")
+        expected_arch = target[len("amd-"):]
+        properties = torch.cuda.get_device_properties(torch.device(device))
+        # gcnArchName may carry feature suffixes, e.g. "gfx1100:sramecc+:xnack-".
+        actual_arch = str(getattr(properties, "gcnArchName", "") or "").split(":")[0]
+        if actual_arch != expected_arch:
+            raise RuntimeContractError(
+                f"Artifact target {target!r} requires a {expected_arch} GPU, "
+                f"got {actual_arch or 'unknown'!r}."
+            )
         return
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
     expected = {"nvidia-sm90": (9, 0), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)

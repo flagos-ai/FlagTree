@@ -25,12 +25,12 @@ torch = pytest.importorskip("torch")
 def _amd_rdna_target():
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None) is None:
         return None
-    name = torch.cuda.get_device_name(0)
-    if "gfx1201" in name or "R9700" in name:
-        return "amd-gfx1201"
-    if "gfx1100" in name or "W7900" in name:
-        return "amd-gfx1100"
-    return "amd-gfx1201"
+    # Read the real gfx arch; gcnArchName may carry feature suffixes, e.g.
+    # "gfx1100:sramecc+:xnack-". Map only known RDNA parts -- an unknown arch
+    # returns None so the test skips rather than silently compiling for the
+    # wrong target.
+    arch = str(getattr(torch.cuda.get_device_properties(0), "gcnArchName", "") or "").split(":")[0]
+    return {"gfx1100": "amd-gfx1100", "gfx1201": "amd-gfx1201"}.get(arch)
 
 
 def test_two_layer_qwen3_runs_on_amd_rdna(tmp_path):
