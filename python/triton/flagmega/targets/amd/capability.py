@@ -68,6 +68,13 @@ class AmdCapability:
             )
 
     @property
+    def package_profile(self) -> str:
+        # Codegen package profile tag for the artifact. RDNA has no SM compute
+        # capability, so it is keyed by gfx arch instead of the NVIDIA
+        # "nvidia_sm<major><minor>" form.
+        return f"amd-{self.gfx_arch}"
+
+    @property
     def features(self) -> frozenset[str]:
         values = set()
         for enabled, name in (
