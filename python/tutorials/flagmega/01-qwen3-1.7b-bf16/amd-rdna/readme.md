@@ -1,14 +1,21 @@
-# Qwen3-1.7B BF16 on AMD RDNA (Radeon AI PRO R9700 / gfx1201)
+# Qwen3-1.7B BF16 on AMD RDNA (R9700 / gfx1201 and W7900 / gfx1100)
 
 Runs the same Qwen3-1.7B decode megakernel as the H800 tutorial, retargeted to
-RDNA4 through the `amd-gfx1201` FlagMega target.
+RDNA through the `amd-gfx1201` / `amd-gfx1100` FlagMega targets. One recipe
+serves both RDNA4 (R9700) and RDNA3 (W7900) — pick the gfx target with `--arch`.
 
 ## Run
 
 ```bash
 TUTORIAL=python/tutorials/flagmega/01-qwen3-1.7b-bf16
-PYTHONPATH="$TUTORIAL/amd-r9700" python "$TUTORIAL/amd-r9700/run.py" \
-    --checkpoint /models/Qwen3-1.7B --benchmark
+
+# R9700 / RDNA4 (default)
+PYTHONPATH="$TUTORIAL/amd-rdna" python "$TUTORIAL/amd-rdna/run.py" \
+    --checkpoint /models/Qwen3-1.7B --arch gfx1201 --benchmark
+
+# W7900 / RDNA3
+PYTHONPATH="$TUTORIAL/amd-rdna" python "$TUTORIAL/amd-rdna/run.py" \
+    --checkpoint /models/Qwen3-1.7B --arch gfx1100 --benchmark
 ```
 
 The generated megakernel compiles and runs against a ROCm/HIP device (torch maps
@@ -17,12 +24,14 @@ HIP GPUs through the `cuda` device namespace).
 ## What is AMD-specific
 
 The FlagMega distribution recipe is **mesh-topology based** (an 8×16 `bb` block
-grid), so it is vendor-agnostic — `recipe.py` reuses the measured distribution
-`CHOICES` and the residual/norm layout helpers from `../nvidia-h800`. Only three
-things differ (see `recipe.py`):
+grid), so it is vendor- and gfx-agnostic — `recipe.py` reuses the measured
+distribution `CHOICES` and the residual/norm layout helpers from `../nvidia-h800`,
+and the same recipe serves gfx1100 and gfx1201. Only three things differ (see
+`recipe.py`):
 
-1. `create_target` wraps `AmdGfx1201Target` (the batch-1 kernel-parameter tweaks
-   — reduction/tile sizes — are software, not NV hardware features).
+1. `create_target(arch=...)` wraps `AmdGfx1100Target` / `AmdGfx1201Target` (the
+   batch-1 kernel-parameter tweaks — reduction/tile sizes — are software, not NV
+   hardware features); the gfx target machine is the only per-arch difference.
 2. `residual_layout="sharded-casts"` + `norm_layout="replicated-residual"` keep
    the residual/norm shards full-mesh contiguous, avoiding the gather-reduce
    owner-group codegen path the default auto-distribution hits at hidden=2048.

@@ -1,11 +1,15 @@
-"""Compile and run Qwen3-1.7B BF16 on an AMD RDNA GPU (R9700 / gfx1201).
+"""Compile and run Qwen3-1.7B BF16 on an AMD RDNA GPU.
+
+One tutorial for both RDNA parts -- pick the gfx target with ``--arch``:
+``gfx1201`` (R9700 / RDNA4, default) or ``gfx1100`` (W7900 / RDNA3).
 
 Example:
 
-    PYTHONPATH="$TUTORIAL/amd-r9700" python "$TUTORIAL/amd-r9700/run.py" \
-        --checkpoint /models/Qwen3-1.7B --benchmark
+    TUT=python/tutorials/flagmega/01-qwen3-1.7b-bf16
+    PYTHONPATH="$TUT/amd-rdna" python "$TUT/amd-rdna/run.py" \
+        --checkpoint /models/Qwen3-1.7B --arch gfx1100 --benchmark
 
-Compiles through the amd-gfx1201 FlagMega target with the RDNA distribution
+Compiles through the amd-<arch> FlagMega target with the RDNA distribution
 recipe (see recipe.py), renders the megakernel, loads it on cuda:0 (ROCm maps
 HIP devices through the cuda namespace), and runs a single-token decode.
 """
@@ -35,13 +39,15 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True, help="Qwen3-1.7B HF directory")
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/qwen3-1.7b-amd"))
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--arch", choices=("gfx1201", "gfx1100"), default="gfx1201",
+                        help="RDNA gfx target: gfx1201 (R9700) or gfx1100 (W7900)")
     parser.add_argument("--glu-reduction-group", type=int, choices=(32, 64, 128), default=32)
     parser.add_argument("--benchmark", action="store_true", help="Time steady-state decode latency")
     parser.add_argument("--iters", type=int, default=200)
     args = parser.parse_args()
 
-    target = create_target(glu_reduction_group=args.glu_reduction_group)
-    compiler = Compiler(CompileOptions(target="amd-gfx1201"))
+    target = create_target(arch=args.arch, glu_reduction_group=args.glu_reduction_group)
+    compiler = Compiler(CompileOptions(target=f"amd-{args.arch}"))
     compiler.target = target
 
     checkpoint = DirectoryCheckpoint(args.checkpoint)

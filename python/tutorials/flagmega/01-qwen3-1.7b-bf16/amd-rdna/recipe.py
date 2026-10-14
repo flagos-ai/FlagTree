@@ -1,13 +1,15 @@
-"""AMD RDNA (Radeon AI PRO R9700 / gfx1201) recipe for Qwen3-1.7B decode.
+"""AMD RDNA recipe for Qwen3-1.7B decode (gfx1201 / R9700 and gfx1100 / W7900).
 
 The FlagMega distribution recipe is mesh-topology based (an 8x16 "bb" block
-grid), so it is vendor-agnostic: this module reuses the measured distribution
-CHOICES and the residual/norm layout helpers from the sibling nvidia-h800
-tutorial. Only three things are AMD-specific:
+grid), so it is vendor- AND gfx-agnostic: this module reuses the measured
+distribution CHOICES and the residual/norm layout helpers from the sibling
+nvidia-h800 tutorial, and the one recipe serves both RDNA3 (gfx1100) and RDNA4
+(gfx1201). Only three things are AMD-specific:
 
-  1. ``create_target`` wraps ``AmdGfx1201Target`` instead of ``NvidiaSm90Target``
-     (same batch-1 kernel-parameter tweaks -- tile/reduction sizes, not NV
-     hardware features).
+  1. ``create_target(arch=...)`` wraps ``AmdGfx1100Target`` / ``AmdGfx1201Target``
+     instead of ``NvidiaSm90Target`` (same batch-1 kernel-parameter tweaks --
+     tile/reduction sizes, not NV hardware features). The gfx target machine is
+     the only difference between the two RDNA parts.
   2. ``residual_layout="sharded-casts"`` + ``norm_layout="replicated-residual"``
      keep the residual/norm shards full-mesh contiguous, which avoids the
      gather-reduce owner-group codegen path that the default auto-distribution
@@ -37,8 +39,13 @@ from triton.flagmega.passes.auto_distributed import (
 )
 from triton.flagmega.passes.auto_distributed.materializer import distribution_selection_state
 from triton.flagmega.selection import override_plan
+from triton.flagmega.targets.amd_gfx1100 import AmdGfx1100Target
 from triton.flagmega.targets.amd_gfx1201 import AmdGfx1201Target
 from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
+
+# The distribution recipe below is mesh-topology based, so one tutorial serves
+# both RDNA parts; only the gfx target machine differs.
+_TARGETS = {"gfx1100": AmdGfx1100Target, "gfx1201": AmdGfx1201Target}
 
 from local_optimizations.distribution_recipe import (  # noqa: E402  (sibling tutorial)
     CHOICES,
@@ -47,13 +54,17 @@ from local_optimizations.distribution_recipe import (  # noqa: E402  (sibling tu
 )
 
 
-def create_target(*, glu_reduction_group: int = 32) -> AmdGfx1201Target:
-    """An R9700/gfx1201 target with the reviewed batch-1 kernel-parameter tweaks.
+def create_target(*, arch: str = "gfx1201", glu_reduction_group: int = 32):
+    """An RDNA target (``gfx1201``/R9700 or ``gfx1100``/W7900) with the reviewed
+    batch-1 kernel-parameter tweaks.
 
-    The implementation model is reused from NVIDIA (bf16 kernels are portable);
-    only the reduction/tile parameters are specialized, exactly as the H800
-    tutorial does -- these are software tile sizes, not NV hardware features.
+    The distribution recipe and the tile/reduction tweaks are mesh-topology and
+    software choices shared across RDNA3 and RDNA4; only the gfx target machine
+    differs. The implementation model is reused from NVIDIA (bf16 kernels are
+    portable).
     """
+    if arch not in _TARGETS:
+        raise ValueError(f"arch must be one of {sorted(_TARGETS)}, got {arch!r}")
     if glu_reduction_group not in {32, 64, 128}:
         raise ValueError("The reviewed GLU reduction experiments use 32/64/128 elements")
     model = portable_triton_implementation_model()
@@ -70,7 +81,7 @@ def create_target(*, glu_reduction_group: int = 32) -> AmdGfx1201Target:
             parameters["elements_per_program"] = 256
         return replace(implementation, parameters=parameters)
 
-    return AmdGfx1201Target(triton_implementation_model=replace(
+    return _TARGETS[arch](triton_implementation_model=replace(
         model, implementations=tuple(configure(value) for value in model.implementations)))
 
 
@@ -141,7 +152,7 @@ def select_distribution(module, target, *, residual_layout="sharded-casts",
     return override_plan(
         module,
         [(record.point_id, record.candidate_id) for record in records],
-        rationale=("R9700 batch-1 Qwen3-1.7B; sharded-casts residual + replicated-residual norm; "
+        rationale=("RDNA batch-1 Qwen3-1.7B; sharded-casts residual + replicated-residual norm; "
                    "RDNA portable GEMV (no TMA)"),
     )
 
