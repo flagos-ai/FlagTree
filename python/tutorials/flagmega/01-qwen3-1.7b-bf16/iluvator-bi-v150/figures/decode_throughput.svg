@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img">
+<title>Decode throughput (higher is better)</title>
+<desc>Qwen3-1.7B BF16, one Iluvatar BI-V150, batch one. Bars are measured medians. CLI and vLLM runtime/prefill paths differ; decode latency is not an end-to-end speedup.</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<g font-family="sans-serif" fill="#243343">
+<text x="85" y="37" font-size="24">Decode throughput (higher is better)</text>
+<text x="85" y="64" font-size="14">BF16 / BI-V150 / batch 1 / 64 output tokens / host-visible timing</text>
+<text x="85" y="89" font-size="14">Median per-request decode tokens / decode time; excludes prefill and the first output token.</text>
+<text x="85" y="113" font-size="14">CLI: compiled token-scan prefill. CLI terminal I/O excluded.</text>
+<path d="M 85 540.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="545.0" text-anchor="end" font-size="13">0.0</text>
+<path d="M 85 461.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="466.0" text-anchor="end" font-size="13">22.1</text>
+<path d="M 85 382.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="387.0" text-anchor="end" font-size="13">44.1</text>
+<path d="M 85 303.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="308.0" text-anchor="end" font-size="13">66.2</text>
+<path d="M 85 224.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="229.0" text-anchor="end" font-size="13">88.3</text>
+<path d="M 85 145.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="150.0" text-anchor="end" font-size="13">110.4</text>
+<rect x="109.4" y="205.3" width="222.4" height="334.7" fill="#8252b3"/>
+<text x="220.6" y="197.3" text-anchor="middle" font-size="12">93.53</text>
+<text x="220.6" y="568" text-anchor="middle" font-size="14">Prompt 32</text>
+<rect x="380.7" y="221.4" width="222.4" height="318.6" fill="#8252b3"/>
+<text x="491.9" y="213.4" text-anchor="middle" font-size="12">89.03</text>
+<text x="491.9" y="568" text-anchor="middle" font-size="14">Prompt 128</text>
+<rect x="651.9" y="349.4" width="222.4" height="190.6" fill="#8252b3"/>
+<text x="763.1" y="341.4" text-anchor="middle" font-size="12">53.26</text>
+<text x="763.1" y="568" text-anchor="middle" font-size="14">Prompt 1024</text>
+<rect x="923.2" y="409.2" width="222.4" height="130.8" fill="#8252b3"/>
+<text x="1034.4" y="401.2" text-anchor="middle" font-size="12">36.56</text>
+<text x="1034.4" y="568" text-anchor="middle" font-size="14">Prompt 2048</text>
+<text x="16" y="129" font-size="13">tokens/s</text>
+<rect x="85" y="588" width="14" height="14" fill="#8252b3"/>
+<text x="107" y="600" font-size="13">FlagMega chat CLI (no vLLM)</text>
+</g>
+</svg>

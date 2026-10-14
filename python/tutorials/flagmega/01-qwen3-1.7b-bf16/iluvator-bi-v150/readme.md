@@ -138,6 +138,37 @@ python -m triton.flagmega.serving.chat_cli \
 独立CLI不依赖vLLM forward。它的prefill仍是逐token扫描，与上面的原生batched prefill
 有不同的TTFT和完整请求边界；本次vLLM集成性能表不代表该路径的prefill速度。
 
+## 图表
+
+与其他 tutorial 同口径的三张图在 [figures/](figures/)，由 `render_chat_cli_results.py`
+从 `benchmark_chat_cli.py` 的原始数据生成（3 轮 × 5 次 × 4 个 prompt 长度，共 15 次
+测量/场景，GPU 9，CUDA graph）。
+
+![独立 chat CLI 的 decode 延迟](figures/decode_latency.svg)
+
+![独立 chat CLI 的 decode 吞吐（不含 prefill）](figures/decode_throughput.svg)
+
+![完整请求吞吐（含 prefill）](figures/request_throughput.svg)
+
+| prompt tokens | decode 中位数 | decode 吞吐 | 完整请求吞吐 |
+|---:|---:|---:|---:|
+| 32 | 10.63 ms | 93.5 tok/s | 63.9 tok/s |
+| 128 | 11.24 ms | 89.0 tok/s | 31.2 tok/s |
+| 1024 | 18.76 ms | 53.3 tok/s | 4.1 tok/s |
+| 2048 | 27.34 ms | 36.6 tok/s | 1.6 tok/s |
+
+**这三张图只含 FlagMega 自身口径，没有 vLLM 对比柱。** h800 tutorial 的同名图是
+`native_vllm` 与 FlagMega 各 profile 的并排对比，这里做不到：`render_results.py`
+硬性要求 `native_vllm` 分组并与其 token 逐个一致，而当前环境下原生 vLLM
+（vllm 0.24.0 + vllm-plugin-FL）对任意 prompt 都输出全零 token（`'!!!!'`）。该现象已
+隔离到 vLLM/plugin 层——关闭 FlagGems（`VLLM_FL_USE_FLAGOS=0`）仍然全零，而同一张
+GPU 上纯 HuggingFace + COREX torch 生成正常文本，故与 FlagGems、torch、硬件无关。
+详见 memory 记录。基线修复后，用 `reproduce_flagos.py` 重跑即可产出带对比柱的版本。
+
+注意 prefill 口径：独立 CLI 是逐 token 扫描，TTFT 随 prompt 长度快速增长
+（2048 token 时 37.7 s），所以"完整请求吞吐"一列在长 prompt 下由 prefill 主导，
+不能与 vLLM 的 batched prefill 直接比较。decode 列才是可比的。
+
 ## 结果与原始证据
 
 最终表格与图由 `render_flagos_results.py` 从通过完整token检查的原始数据生成。
