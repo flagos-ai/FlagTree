@@ -172,12 +172,22 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
             facts=portable,
         ),
         TritonImplementation(
+            "tir.gather_reduce_qkv_rope_with_cache.decode",
+            "gather_reduce_qkv_rope_with_cache",
+            "decode",
+            {"elements_per_program": 128},
+            {"mode": "decode"},
+            requires=("cooperative_grid", "grid_sync"),
+            facts={**portable, "internal_grid_barriers": 1},
+        ),
+        TritonImplementation(
             "tir.qkv_rope_with_cache.decode",
             "qkv_rope_with_cache",
             "decode",
             {"elements_per_program": 128},
             {"mode": "decode"},
-            facts=portable,
+            requires=("cooperative_grid", "grid_sync"),
+            facts={**portable, "internal_grid_barriers": 1},
         ),
         TritonImplementation(
             "tir.paged_attention_gated_combine.decode",
@@ -225,6 +235,7 @@ def portable_attention_preferences() -> Mapping[str, tuple[str, ...]]:
             "tir.paged_attention_gated_combine.decode_t32",
         ),
         "qkv_rope_with_cache": ("tir.qkv_rope_with_cache.decode",),
+        "gather_reduce_qkv_rope_with_cache": ("tir.gather_reduce_qkv_rope_with_cache.decode",),
     }
 
 

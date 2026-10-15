@@ -9,6 +9,7 @@ from triton.flagmega.ir.ops.ntt.add_norm_stats import (
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
     GatherReduceNormApply,
 )
+from triton.flagmega.ir.ops.ntt.gather_reduce_qkv_rope_with_cache import GatherReduceQKVRoPEWithCache
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
     GatherReduceAddNormApply,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "SparseExpertsDownCombine",
     "GatherReduceAddNormApply",
     "GatherReduceNormApply",
+    "GatherReduceQKVRoPEWithCache",
     "AddNormStats",
     "MatMulNormStats",
     "PackedMatMul",

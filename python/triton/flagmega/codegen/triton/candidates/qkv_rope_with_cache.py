@@ -12,7 +12,7 @@ from .core import TritonCandidateContext, TritonCandidateProposal
 class QKVRoPEWithCacheSemanticTIRCandidateProvider:
     """Preserve the fused operator until target microkernel selection."""
 
-    op_names = frozenset({"nn.qkv_rope_with_cache"})
+    op_names = frozenset({"nn.qkv_rope_with_cache", "ntt.gather_reduce_qkv_rope_with_cache"})
 
     def propose(
         self,
@@ -22,7 +22,7 @@ class QKVRoPEWithCacheSemanticTIRCandidateProvider:
         del context
         if node.op not in self.op_names:
             return None
-        candidate = Candidate("semantic.nn.qkv_rope_with_cache", {}, {})
+        candidate = Candidate(f"semantic.{node.op}", {}, {})
         return TritonCandidateProposal(
             (candidate,), candidate.id, selection_kind="semantic_tir"
         )

@@ -15,7 +15,7 @@ from .core import TIRMicroKernelContext, TIRMicroKernelProposal
 class QKVRoPEWithCacheMicroKernelProvider:
     """Map target-neutral fused semantics through an injected target catalog."""
 
-    op_names = frozenset({"nn.qkv_rope_with_cache"})
+    op_names = frozenset({"nn.qkv_rope_with_cache", "ntt.gather_reduce_qkv_rope_with_cache"})
     family = "qkv_rope_with_cache"
 
     def propose(
@@ -24,14 +24,17 @@ class QKVRoPEWithCacheMicroKernelProvider:
         dispatch = context.dispatch
         if dispatch.semantic_op not in self.op_names:
             return None
-        if len(dispatch.arguments) != 12 or len(dispatch.outputs) != 2:
+        fused_stats = dispatch.semantic_op == "ntt.gather_reduce_qkv_rope_with_cache"
+        argument_count = 10 if fused_stats else 12
+        if len(dispatch.arguments) != argument_count or len(dispatch.outputs) != 2:
             raise CodegenError(
-                "QKVRoPEWithCache semantic TIR requires 12 arguments and 2 "
+                f"QKVRoPEWithCache semantic TIR requires {argument_count} arguments and 2 "
                 f"outputs, got {len(dispatch.arguments)} and "
                 f"{len(dispatch.outputs)}."
             )
         _validate_contract(dispatch.semantic_attrs)
-        implementations = context.implementations(self.family, mode="decode")
+        family = "gather_reduce_qkv_rope_with_cache" if fused_stats else self.family
+        implementations = context.implementations(family, mode="decode")
         if not implementations:
             raise CodegenError(
                 f"Implementation model {context.implementation_model.name!r} has "
@@ -40,7 +43,7 @@ class QKVRoPEWithCacheMicroKernelProvider:
         candidates = tuple(context.candidate(value) for value in implementations)
         return TIRMicroKernelProposal(
             candidates,
-            context.choose_default(self.family, candidates),
+            context.choose_default(family, candidates),
         )
 
 

@@ -1,8 +1,10 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/gather_reduce_qkv_rope_with_cache/_headwise_partial.py.jinja" as headwise with context %}
+{% set qkv_rope_family = qkv_rope_family | default("qkv_rope_with_cache") %}
 {% for call in render_calls %}
-{% if call.family == "qkv_rope_with_cache" and call.variant == "decode" %}
-{{ entry.kernel_decorator(call) }}
-def {{ call.symbol }}({{ call.signature }}):
+{% if call.family == qkv_rope_family and call.variant == "decode" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__write({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     qkv_cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
     qkv_cache_logical_block = qkv_cache_position // {{ call.block_size }}
@@ -10,10 +12,14 @@ def {{ call.symbol }}({{ call.signature }}):
     qkv_cache_physical_block = tl.load(
         {{ call.block_table }} + qkv_cache_logical_block
     ).to(tl.int64)
+{% if call.headwise_partial %}
+{{ headwise.run(call) }}
+{% else %}
 {% for head in (call.q, call.k) %}
 {% set intermediate_type = head.intermediate_type | default(head.input_type) %}
 {% set prefix = "qkv_q" if loop.first else "qkv_k" %}
     for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
+{% if head.stats is defined %}
 {% if head.use_mean %}
         {{ prefix }}_mean_sum = tl.load(
             {{ head.stats }} + ({{ head.stats_sum_offset }}),
@@ -24,6 +30,46 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ head.stats }} + ({{ head.stats_square_sum_offset }}),
             mask=({{ head.compute_active }}) & ({{ head.stats_active }}), other=0.0,
         ).to(tl.float32)
+{% else %}
+{% if head.use_mean %}
+        {{ prefix }}_mean_sum = tl.full((), 0.0, tl.float32)
+{% endif %}
+        {{ prefix }}_square_sum = tl.full((), 0.0, tl.float32)
+        for {{ prefix }}_reduce_start in tl.range(
+            0, {{ head.reduction_capacity }}, {{ head.tile }}
+        ):
+            {{ prefix }}_reduce_offsets = (
+                {{ prefix }}_reduce_start + tl.arange(0, {{ head.tile }})
+            )
+            {{ prefix }}_reduce_mask = (
+                ({{ prefix }}_reduce_offsets < {{ head.reduction_capacity }})
+                & ({{ head.reduce_active }})
+                & ({{ head.compute_active }})
+            )
+{% if head.partial_reduce is defined %}
+{{ headwise.load_partial(head.partial_reduce, prefix ~ "_reduce", prefix ~ "_reduce_mask", "            ") }}
+{% else %}
+            {{ prefix }}_reduce_value = tl.load(
+                {{ head.input }} + ({{ head.reduce_input_offset }}),
+                mask={{ prefix }}_reduce_mask,
+                other=0.0,
+            ).to(tl.float32)
+{% endif %}
+{% if head.use_mean %}
+            {{ prefix }}_mean_sum += tl.sum(
+                tl.where(
+                    {{ prefix }}_reduce_mask, {{ prefix }}_reduce_value, 0.0,
+                ), axis=0,
+            )
+{% endif %}
+            {{ prefix }}_square_sum += tl.sum(
+                tl.where(
+                    {{ prefix }}_reduce_mask,
+                    {{ prefix }}_reduce_value * {{ prefix }}_reduce_value,
+                    0.0,
+                ), axis=0,
+            )
+{% endif %}
 {% if head.use_mean %}
         {{ prefix }}_mean = (
             {{ prefix }}_mean_sum / {{ head.normalization_size }}
@@ -42,16 +88,21 @@ def {{ call.symbol }}({{ call.signature }}):
             tl.maximum({{ prefix }}_variance, 0.0) + {{ head.epsilon }}
         )
         for {{ prefix }}_element_start in tl.range(
-            0, {{ head.apply_capacity }}, {{ head.tile }}
+            0, {{ head.reduction_capacity }}, {{ head.tile }}
         ):
             {{ prefix }}_element_offsets = (
                 {{ prefix }}_element_start + tl.arange(0, {{ head.tile }})
             )
             {{ prefix }}_mask = (
-                ({{ prefix }}_element_offsets < {{ head.apply_capacity }})
+                ({{ prefix }}_element_offsets < {{ head.reduction_capacity }})
                 & ({{ head.apply_active }})
                 & ({{ head.compute_active }})
             )
+{% if head.partial_input is defined %}
+{{ headwise.load_partial(head.partial_input, prefix, prefix ~ "_mask", "            ") }}
+{{ headwise.load_partial(head.partial_partner, prefix ~ "_partner", prefix ~ "_mask", "            ") }}
+            {{ prefix }}_partner = {{ prefix }}_partner_value
+{% else %}
             {{ prefix }}_value = tl.load(
                 {{ head.input }} + ({{ head.input_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
@@ -60,6 +111,7 @@ def {{ call.symbol }}({{ call.signature }}):
                 {{ head.input }} + ({{ head.partner_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
             ).to(tl.float32)
+{% endif %}
             {{ prefix }}_scale = tl.load(
                 {{ head.scale }} + ({{ head.scale_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
@@ -132,19 +184,41 @@ def {{ call.symbol }}({{ call.signature }}):
             (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
             & ({{ call.v.compute_active }})
         )
+{% if call.v.partial_input is defined %}
+{{ headwise.load_partial(call.v.partial_input, "qkv_v", "qkv_v_mask", "        ") }}
+{% else %}
         qkv_v_value = tl.load(
             {{ call.v.input }} + ({{ call.v.input_offset }}),
             mask=qkv_v_mask, other=0.0,
         )
+{% endif %}
         tl.store(
             {{ call.kv_cache }} + ({{ call.v.cache_offset }}),
             qkv_v_value,
             mask=qkv_v_mask & ({{ call.v.writer_active }}),
         )
+{% endif %}
     if shard_index == 0:
         tl.store({{ call.slot_mapping }}, qkv_cache_position)
-        if {{ call.advance_sequence }}:
-            tl.store({{ call.sequence_lengths }}, qkv_cache_position + 1)
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__advance({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    if shard_index == 0:
+        qkv_cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
+        tl.store({{ call.sequence_lengths }}, qkv_cache_position + 1)
+
+
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    {{ call.symbol }}__write({{ call.signature }})
+    if {{ call.advance_sequence }}:
+        # Keep the old cache-position epoch alive until every owner has read it.
+        # The arithmetic stays in a reusable device function; no values cross
+        # this entry-relative grid barrier in registers.
+{{ entry.stage_barrier() | indent(4, true) }}
+        {{ call.symbol }}__advance({{ call.signature }})
 
 
 {% endif %}

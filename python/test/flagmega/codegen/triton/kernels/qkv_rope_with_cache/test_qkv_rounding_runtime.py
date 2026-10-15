@@ -89,8 +89,9 @@ def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before
     runtime.prepare(*arguments)
     runtime.run_into(*arguments)
     torch.cuda.synchronize()
-    for kind in ("ttir", "llir", "ptx"):
-        (tmp_path / f"kernel.{kind}").write_text(runtime._prepared.compiled_kernel.asm[kind])
+    for index, prepared in enumerate(runtime._prepared):
+        for kind in ("ttir", "llir", "ptx"):
+            (tmp_path / f"kernel_{index}.{kind}").write_text(prepared.compiled_kernel.asm[kind])
 
     def expected(value):
         unit = value.float() * torch.rsqrt(value.float().square().mean(-1, keepdim=True) + 1e-6)

@@ -3988,6 +3988,11 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
     return result
 
 
+def _gather_reduce_qkv_statistics_call(raw):
+    from .qkv_statistics_renderer import gather_reduce_qkv_statistics_call
+    return gather_reduce_qkv_statistics_call(raw)
+
+
 def _qkv_rope_with_cache_call(raw) -> dict[str, object]:
     """Encode fused Q/K normalization, RoPE, and paged-cache writes.
 
@@ -4008,6 +4013,8 @@ def _encode_qkv_rope_with_cache(
     q,
     k,
     v,
+    *,
+    partial_sources=None,
 ) -> dict[str, object]:
     """Build the apply-only context for materialized QKV and statistics."""
 
@@ -4029,7 +4036,7 @@ def _encode_qkv_rope_with_cache(
     k_axis = _normalized_axis(attrs, "k_axis", len(qkv_layout))
     q_context = _qkv_norm_rope_context(
         q,
-        _buffer(raw, "inputs", "q_stats"),
+        _buffer(raw, "inputs", "q_stats") if partial_sources is None else None,
         q_scale,
         q_bias,
         cosine,
@@ -4047,7 +4054,7 @@ def _encode_qkv_rope_with_cache(
     )
     k_context = _qkv_norm_rope_context(
         k,
-        _buffer(raw, "inputs", "k_stats"),
+        _buffer(raw, "inputs", "k_stats") if partial_sources is None else None,
         k_scale,
         k_bias,
         cosine,
@@ -4068,6 +4075,15 @@ def _encode_qkv_rope_with_cache(
     for head in (q_context, k_context):
         head["intermediate_type"] = (head["input_type"] if attrs.get("round_qk_intermediates", True)
                                      else "tl.float32")
+
+    if partial_sources is not None:
+        from .qkv_statistics_renderer import partial_qkv_access
+        for source, head, prefix in zip(partial_sources, (q_context, k_context), ("qkv_q", "qkv_k")):
+            for name, domain in (("partial_reduce", "reduce_domain"), ("partial_input", "apply_domain"),
+                                 ("partial_partner", "partner_domain")):
+                head[name] = partial_qkv_access(source, head[domain], qkv_layout, f"{prefix}_partial_member")
+        v_context["partial_input"] = partial_qkv_access(
+            partial_sources[2], v_context, qkv_layout, "qkv_v_partial_member")
 
     cache_abi = state[0]["abi"]
     cache_shape = _static_shape(cache_abi, "logical_shape")
@@ -4135,6 +4151,12 @@ def _encode_qkv_rope_with_cache(
     v_context["compute_active"] = v_context["writer_active"]
 
     return {
+        "headwise_partial": (
+            partial_sources is not None and q_axis == k_axis == qkv_layout.index("dim") == 2
+            and all(head["tile"] == head["reduction_capacity"] == head["head_dim"]
+                    for head in (q_context, k_context))
+            and v_context["tile"] == v_context["capacity"]
+        ),
         "q": q_context,
         "k": k_context,
         "v": v_context,
@@ -4307,7 +4329,7 @@ def _qkv_norm_rope_context(
         input_layout,
         (*outer_coordinates, *apply_coordinates),
     )
-    stats_offsets = _norm_apply_stats_offsets(
+    stats_offsets = None if stats is None else _norm_apply_stats_offsets(
         stats["abi"], source_abi, axis,
         apply_domain["physical_local_coordinates"],
         tuple(apply_domain["global_by_kind"][kind] for kind in input_layout),
@@ -4368,9 +4390,9 @@ def _qkv_norm_rope_context(
         )
     context = {
         "input": _pointer(source),
-        "stats": _pointer(stats),
-        "stats_sum_offset": stats_offsets[0] if use_mean else None,
-        "stats_square_sum_offset": stats_offsets[-1],
+        **({"stats": _pointer(stats),
+            "stats_sum_offset": stats_offsets[0] if use_mean else None,
+            "stats_square_sum_offset": stats_offsets[-1]} if stats is not None else {}),
         "stats_active": " & ".join(
             f"(({coordinate}) < ({emit_active_extent(source_abi, index)}))"
             for index, coordinate in enumerate(outer_coordinates)
@@ -4381,6 +4403,7 @@ def _qkv_norm_rope_context(
         "sine": _pointer(sine),
         "outer_capacity": prod(outer_shape, start=1),
         "apply_capacity": capacity,
+        "reduction_capacity": capacity,
         "normalization_size": prod(
             apply_domain["global_extents"][input_layout[index]]
             for index in range(axis, len(input_layout))
@@ -4409,6 +4432,12 @@ def _qkv_norm_rope_context(
             name=f"QKVRoPEWithCache {prefix} apply tile",
         ),
     }
+    if stats is None:
+        reduce_coordinates = _unflattened_coordinates(reduction_shape, f"{prefix}_reduce_offsets")
+        reduce_domain = _attention_scalar_coordinates(
+            source_abi, input_layout, (*outer_coordinates, *reduce_coordinates))
+        context.update({"reduce_domain": reduce_domain, "reduce_active": reduce_domain["active"],
+                        "reduce_input_offset": reduce_domain["offset"]})
     if result is not None:
         output_offset, output_active = _attention_result_access(
             result["abi"], output_layout, apply_domain
@@ -6170,6 +6199,7 @@ _FAMILY_ENCODERS = {
     "dense_matmul_glu": _dense_matmul_glu_call,
     "qkv_parallel_linear": _qkv_parallel_linear_call,
     "qkv_rope_with_cache": _qkv_rope_with_cache_call,
+    "gather_reduce_qkv_rope_with_cache": _gather_reduce_qkv_statistics_call,
     "rotary_embedding": _rotary_embedding_call,
     "rope": _rope_call,
     "update_paged_attention_kv_cache": _cache_update_call,

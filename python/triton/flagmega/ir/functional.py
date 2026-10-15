@@ -82,6 +82,7 @@ from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
     UpdatePagedAttentionKVCache, )
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
+from triton.flagmega.ir.ops.ntt.gather_reduce_qkv_rope_with_cache import GatherReduceQKVRoPEWithCache
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
     GatherReduceNormApply, )
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
@@ -1519,6 +1520,68 @@ class _ntt:
             has_bias=has_bias,
             round_before_scale=round_before_scale,
             output_dtype=output_dtype,
+            name=name,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    @_op_function(GatherReduceQKVRoPEWithCache)
+    def gather_reduce_qkv_rope_with_cache(
+        qkv: Node,
+        q_scale: Node,
+        k_scale: Node,
+        q_bias: Node,
+        k_bias: Node,
+        cos: Node,
+        sin: Node,
+        state: Node,
+        layer_id: Node,
+        advance_sequence: Node,
+        *,
+        materialized_qkv_type: IRType,
+        logical_qkv_type: IRType,
+        q_axis: int,
+        q_epsilon: float,
+        q_use_mean: bool,
+        q_round_before_scale: bool = False,
+        k_axis: int,
+        k_epsilon: float,
+        k_use_mean: bool,
+        k_round_before_scale: bool = False,
+        round_qk_intermediates: bool = True,
+        rotary_dim: int | None = None,
+        qkv_layout: tuple[str, str, str],
+        attention_layout: tuple[str, str, str],
+        name: str | None = None,
+        metadata: Metadata = None,
+    ) -> Node:
+        """Reduce partial Q/K/V inside normalization, RoPE, and cache IO."""
+
+        return GatherReduceQKVRoPEWithCache.construct(
+            qkv,
+            q_scale,
+            k_scale,
+            q_bias,
+            k_bias,
+            cos,
+            sin,
+            state,
+            layer_id,
+            advance_sequence,
+            materialized_qkv_type=materialized_qkv_type,
+            logical_qkv_type=logical_qkv_type,
+            q_axis=q_axis,
+            q_epsilon=q_epsilon,
+            q_use_mean=q_use_mean,
+            k_axis=k_axis,
+            k_epsilon=k_epsilon,
+            k_use_mean=k_use_mean,
+            qkv_layout=qkv_layout,
+            attention_layout=attention_layout,
+            q_round_before_scale=q_round_before_scale,
+            k_round_before_scale=k_round_before_scale,
+            round_qk_intermediates=round_qk_intermediates,
+            rotary_dim=rotary_dim,
             name=name,
             metadata=metadata,
         )
