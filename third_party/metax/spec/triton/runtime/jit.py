@@ -712,12 +712,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         binder = create_function_from_signature(self.signature, self.params, backend)
         return {}, {}, target, backend, binder
 
-    def _prepare_kernel_for_launch(self, kernel, grid, stream, bound_args):
+    def _prepare_kernel_for_launch(self, kernel, grid, stream, bound_args, *, kernel_cache, key):
         """Return the compiled kernel that should service this launch.
 
         Subclasses may override this hook to select among already compiled
-        variants using the concrete launch parameters.  The default is an
-        identity operation, so ordinary Triton JIT execution is unchanged.
+        variants on the first launch and publish the selected kernel in the
+        existing per-device specialization cache. The default is an identity
+        operation, so ordinary Triton JIT execution is unchanged.
         """
         return kernel
 
@@ -794,7 +795,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
             grid_2 = grid[2] if grid_size > 2 else 1
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
-            kernel = self._prepare_kernel_for_launch(kernel, grid, stream, bound_args)
+            kernel = self._prepare_kernel_for_launch(kernel, grid, stream, bound_args, kernel_cache=kernel_cache,
+                                                     key=key)
             validate_node_launch_bindings(kernel, bound_args, specialization)
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
