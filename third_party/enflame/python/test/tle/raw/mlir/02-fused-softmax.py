@@ -113,7 +113,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n
 def softmax(x):
     n_rows, n_cols = x.shape
     y = torch.empty_like(x)
-    softmax_kernel[(n_rows, )](y, x, x.stride(0), y.stride(0), n_cols, num_warps=4)
+    softmax_kernel[(n_rows, )](y, x, x.stride(0), y.stride(0), n_cols, num_warps=1)
     return y
 
 

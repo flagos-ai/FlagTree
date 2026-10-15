@@ -20,7 +20,7 @@ version = tuple(map(int, triton.__version__.split('.')[:2]))
 if version >= (2, 0) and version < (3, 0):
     from triton.language.math import fast_dividef
 elif version >= (3, 0):
-    from triton.language.extra.cuda.libdevice import fast_dividef
+    from triton.language.extra.corex.libdevice import fast_dividef
 else:
     raise ValueError(f"不支持的 Triton 版本: {triton.__version__}")
 

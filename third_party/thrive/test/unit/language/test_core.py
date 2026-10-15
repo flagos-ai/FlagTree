@@ -6498,7 +6498,7 @@ def test_tl_range_fuse(device):
     out = torch.zeros((32, 32), dtype=torch.int32).to(device)
     compiled_kernel = kernel[(1, )](ub, out)
     assert "tt.flatten" in compiled_kernel.asm["ttir"]
-    assert compiled_kernel.asm["thrir"].count("scf.for") == 1
+    assert compiled_kernel.asm["tttir"].count("scf.for") == 1
 
     ref = torch.zeros((32, 32), dtype=torch.int32).to(device)
     k = 1
@@ -6528,7 +6528,7 @@ def test_tl_range_fuse_dependent(device):
     out_j = torch.zeros(1024, dtype=torch.int32).to(device)
     compiled_kernel = kernel[(1, )](ub, out_i, out_j)
     assert "tt.flatten" in compiled_kernel.asm["ttir"]
-    thrir = compiled_kernel.asm["thrir"]
+    thrir = compiled_kernel.asm["tttir"]
     thrir = thrir[thrir.find("scf.for"):]
     assert thrir[:thrir.find("}")].count("scf.for") == 1
     thrir = thrir[thrir.find("}"):]

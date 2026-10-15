@@ -3,4 +3,5 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
+    "extract_tile",
 ]

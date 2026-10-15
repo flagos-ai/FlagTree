@@ -1,5 +1,8 @@
-add_subdirectory(include)
-add_subdirectory(lib)
+# The shared Triton core targets are created by FlagTreeOptions.cmake. Keep
+# this backend CMake file focused on MetaX-only sources and plugins.
+target_sources(TritonTools PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/spec_cpp/lib/Tools/SwizzleDumpUtils.cpp
+)
 
 if(FLAGTREE_PLUGIN)
   set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
@@ -33,4 +36,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
     set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
+endif()
+
+if(BUILD_MCTLE)
+  add_dependencies(TritonAnalysis McTleTableGen)
+  target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
 endif()

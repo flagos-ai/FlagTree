@@ -12,7 +12,15 @@ def NVGPUWarpSpecialization : Pass<"nvgpu-warp-specialization", "mlir::ModuleOp"
     and improved utilization of hardware resources.
   }];
 
+#ifdef __TLE__
+  let dependentDialects = ["mlir::gpu::GPUDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::nvws::NVWSDialect"];
+#else
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
+#endif
   let options = [
     Option<"numStages", "num-stages",
            "int32_t", /*default*/"0",

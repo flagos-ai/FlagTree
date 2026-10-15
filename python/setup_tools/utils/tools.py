@@ -65,6 +65,10 @@ class FlagtreeConfigs:
         "sunrise": "sunrise",
     }))
 
+    def set_extend_backends(self, backend):
+        if backend not in self.default_backends:
+            self.extend_backends.append(backend)
+
     def __post_init__(self):
         backends = list(self.default_backends)
         _backends = [backend for backend in backends if os.environ.get(f"USE_{backend.upper()}", "ON").upper() != "OFF"]

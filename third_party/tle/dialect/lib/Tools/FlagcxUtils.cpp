@@ -173,7 +173,8 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter, Value comm,
                                Value peer, Value slotId, Value value,
                                uint32_t contextId, FlagCXTeamKind teamKind,
-                               FlagCXCoopKind coopKind, SignalOpKind signalOp) {
+                               FlagCXCoopKind coopKind, SignalOpKind signalOp,
+                               SyncScope scope) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -190,8 +191,8 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
       loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
   auto contextIdValue = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
-  // flagcxDevMemoryScopeDevice (=1), see flagcx_device_enums.h
-  auto scopeValue = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
+  auto scopeValue = rewriter.create<LLVM::ConstantOp>(
+      loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(scope)));
 
   // Unified: (comm, teamKind, peer, signal, contextId, coopKind, scope)
   SmallVector<Value> args{commPtr,        teamKindValue, peer,      slotId,
@@ -223,7 +224,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
 LLVM::CallOp getDevNetWaitFuncCallByKind(
     mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
     Value slot_id, SignalWaitKind wait_kind, std::optional<Value> target,
-    FlagCXCoopKind coop_kind, uint32_t contextId) {
+    FlagCXCoopKind coop_kind, uint32_t contextId, MemoryOrder order) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -238,9 +239,8 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
       loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coop_kind)));
   auto contextIdValue = rewriter.create<LLVM::ConstantOp>(
       loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
-  // TODO: actually use the named enum value flagcxDeviceMemoryOrderAcquire(=1)
-  // if possible
-  auto order = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 1);
+  auto orderValue = rewriter.create<LLVM::ConstantOp>(
+      loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(order)));
 
   LLVM::ConstantOp bits;
   LLVM::LLVMFuncOp func;
@@ -257,7 +257,7 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
         {PtrTy, I32Ty, I64Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
     bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 56);
     return make_call(ValueRange{commPtr, slot_id, target.value(), bits,
-                                contextIdValue, coop_kind_val, order});
+                                contextIdValue, coop_kind_val, orderValue});
   case SignalWaitKind::SIGNAL:
     // Unified: (comm, signal, least, bits, contextId, coopKind, order)
     func = createFuncInstance(
@@ -265,7 +265,7 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
         {PtrTy, I32Ty, I64Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
     bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
     return make_call(ValueRange{commPtr, slot_id, target.value(), bits,
-                                contextIdValue, coop_kind_val, order});
+                                contextIdValue, coop_kind_val, orderValue});
   case SignalWaitKind::SHADOW:
     // Unified: (comm, contextId, signal, bits, coopKind, order)
     func = createFuncInstance(
@@ -273,7 +273,7 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
         {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
     bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
     return make_call(ValueRange{commPtr, contextIdValue, slot_id, bits,
-                                coop_kind_val, order});
+                                coop_kind_val, orderValue});
   default:
     llvm_unreachable("unknown wait kind");
   }

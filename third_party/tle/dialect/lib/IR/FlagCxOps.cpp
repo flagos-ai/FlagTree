@@ -37,24 +37,6 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
-namespace {
-
-enum class MemoryOrder : int32_t {
-  Relaxed = 0,
-  Acquire = 1,
-  Release = 2,
-  AcqRel = 3,
-};
-
-enum class MemoryScope : int32_t {
-  System = 0,
-  Device = 1,
-  Block = 2,
-  Thread = 3,
-};
-
-} // namespace
-
 namespace mlir::triton::tle {
 
 LogicalResult GetLocalRankOp::verify() {
@@ -72,14 +54,6 @@ LogicalResult FlagCxBarrierOp::verify() {
   auto barrierTypeAttr = getBarrierTypeAttr();
   auto indexAttr = getIndexAttr();
   auto contextIdAttr = getContextIdAttr();
-  auto orderAttr = getOrderAttr();
-  auto scopeAttr = getScopeAttr();
-
-  auto emitInvalidIntAttr = [&](StringRef attrName, int64_t value,
-                                StringRef expected) -> LogicalResult {
-    return op->emitOpError() << "invalid " << attrName << " (" << value
-                             << "), expected one of: " << expected;
-  };
 
   auto emitInvalidStrAttr = [&](StringRef attrName, StringRef value,
                                 StringRef expected) -> LogicalResult {
@@ -102,39 +76,18 @@ LogicalResult FlagCxBarrierOp::verify() {
   if (contextIdAttr.getInt() < 0)
     return op->emitOpError() << "context_id must be non-negative";
 
-  switch (static_cast<MemoryOrder>(orderAttr.getInt())) {
-  case MemoryOrder::Relaxed:
-  case MemoryOrder::Acquire:
-  case MemoryOrder::Release:
-  case MemoryOrder::AcqRel:
-    break;
-  default:
-    return emitInvalidIntAttr("order", orderAttr.getInt(),
-                              "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
-  }
-
-  switch (static_cast<MemoryScope>(scopeAttr.getInt())) {
-  case MemoryScope::System:
-  case MemoryScope::Device:
-  case MemoryScope::Block:
-  case MemoryScope::Thread:
-    break;
-  default:
-    return emitInvalidIntAttr("scope", scopeAttr.getInt(),
-                              "System(0), Device(1), Block(2), Thread(3)");
-  }
-
   return success();
 }
 
 LogicalResult FlagCxSignalOp::verify() {
-  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue(), getScope()))
     return emitOpError() << *err;
   return success();
 }
 
 LogicalResult FlagCxSignalWaitOp::verify() {
-  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+  if (auto err =
+          Signal::verifySignalWaitOp(getWaitKind(), getTarget(), getOrder()))
     return emitOpError() << *err;
   return success();
 }

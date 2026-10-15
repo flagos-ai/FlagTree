@@ -92,6 +92,83 @@ Lowering paths:
 - TLE-Raw lowers to LLVM IR via language-specific pipelines (e.g., vendor private compilers).
 - All parts are finally linked into a complete kernel loaded/executed by runtime.
 
+#### 3.1.1 Optional GPU CommonIR lowering
+
+The default NVIDIA build keeps the native TLE GPU lowering path. An opt-in
+build can instead preserve the structured buffer operations as CommonIR TileIR
+before converting them to native TTGIR:
+
+```text
+tle.gpu.* -> tile.* / !tile.buf -> CommonIRToTTGIR -> native TTGIR
+```
+
+This path makes the frontend buffer semantics explicit without changing the
+final NVIDIA backend contract. The `CommonIRToTTGIR` pass must eliminate all
+`tile.*`, `!tile.buf`, and temporary buffer-to-memdesc bridges before the
+remaining TTGIR pipeline runs.
+
+The path is selected at build time and is disabled by default. It currently
+supports only the default NVIDIA backend. Place a compatible checkout of the
+official [FLIR](https://github.com/flagos-ai/flir) `main` branch at
+`third_party/flir`, then build FlagTree with:
+
+```bash
+git clone https://github.com/flagos-ai/flir.git third_party/flir
+FLAGTREE_COMMON_IR=1 python -m pip install -e . --no-build-isolation
+```
+
+The environment variable `FLAGTREE_COMMON_IR` sets the internal CMake variable
+`FLAGTREE_COMMON_IR_ENABLED`. When enabled, the C++ build defines
+`__FLAGTREE_COMMON_IR__`, exposes one capability query to Python, and registers
+the CommonIR dialect and conversion pass only for this build. Do not set
+`FLAGTREE_BACKEND` at the same time. Rebuild FlagTree when
+switching between the native and CommonIR paths; this is not a per-kernel
+runtime option.
+
+Supported GPU buffer forms are:
+
+| TLE/frontend form | CommonIR form | Native TTGIR result |
+| --- | --- | --- |
+| `tle.gpu.alloc` (SMEM, no alias) | `tile.alloc` / `!tile.buf<..., #shared>` | `ttg.local_alloc` / `!ttg.memdesc` |
+| `tle.gpu.copy` (full-buffer pointer copy) | `tile.copy` | synchronous or asynchronous TTGIR copy operations |
+| `buf.load()` | `tile.to_tensor` | `ttg.local_load` |
+| `buf.store(value)` | `tile.store_tensor` | `ttg.local_store` |
+| buffered-tensor slot/view | `tile.subview` | memdesc subview |
+| `tle.gpu.local_ptr` on a local buffer | temporary `!tile.buf` to `!ttg.memdesc` bridge | existing TLE local-pointer operations |
+| `tle.gpu.wgmma` shared operands, including transpose | buffer-to-memdesc bridge | existing descriptor views and WGMMA lowering |
+
+`buf` is a `tle.gpu.buffered_tensor`. Its `load()` / `store(value)` methods use
+the same spelling in native and CommonIR builds. Native builds lower them through
+`tle.gpu.local_ptr` and `tl.load` / `tl.store`; CommonIR builds preserve the
+full-buffer TileIR operations until conversion. The former experimental
+`tle.gpu.to_tensor(buf)` / `tle.gpu.store_tensor(value, buf)` entry points are
+replaced by these methods, not retained as aliases.
+
+TMA descriptor copies retain the existing TMA operation after the buffer-to-memdesc
+bridge. Global-to-shared TMA copies also preserve a user-provided completion
+barrier and its expected byte count; barrier validation follows the native path.
+
+The CommonIR build currently rejects the following forms with an explicit
+frontend diagnostic instead of silently bypassing CommonIR:
+
+- aliased `tle.gpu.alloc` buffers;
+- `tle.gpu.copy` with a mask, or a completion barrier outside global-to-shared TMA copy;
+- remote-buffer `tle.gpu.local_ptr`;
+- normal pointer copies with offsets (offset the pointer operands instead).
+
+After building, the focused checks are:
+
+```bash
+python -m pytest -q test/CommonIR/test_gpu_semantics.py
+python -m pytest -q test/CommonIR/test_gpu_wgmma_bridge.py python/test/tle/integration/test_tle_tma_copy.py
+python -m pytest -q python/test/tle/unit/test_tle_whitelist.py
+python -m pytest -q python/test/tle/unit/test_tle_gpu_buffer_access.py
+lit -sv --filter='gpu-tileir' build/cmake.*/test
+```
+
+The lit tests check both the intermediate TileIR contract and the absence of
+CommonIR operations or unresolved bridge casts in final TTGIR.
+
 ### 3.2 TLE-Lite
 
 - Design philosophy: write once, run anywhere.
@@ -299,18 +376,29 @@ All participants in one barrier instance must execute matching barrier calls in 
 
 ```python
 def distributed_barrier(
-    mesh=None,
-    device_dptr=None,
-    space=None,
-    group_kind="block",
-    barrier_kind="sync",
-    order="acqrel",
-    index=0,
-    context_id=0,
-    memory_scope="system",
+    mesh=None,                    # optional device_mesh; omitted -> full-cluster barrier;
+                                  # required with space; a sliced cluster mesh selects sub-mesh first
+    device_dptr=None,             # optional normally; required with space;
+                                  # DistributedRtContext returned by create_dist_tensor
+    space=None,                   # optional FlagCX team selector; None -> mesh/local barrier path;
+                                  # "device" | "inter" | "world" (aliases described below)
+    group_kind="block",           # optional; effective only on the cross-device/cross-node communicator path; "thread" | "warp" | "block"
+    barrier_kind="sync",          # optional; effective only on the cross-device/cross-node communicator path; "arrive" | "wait" | "sync"
+    order="acqrel",               # optional; effective only on the cross-device/cross-node communicator path;
+                                  # "relaxed" | "acquire" | "release" | "acqrel"
+    index=0,                      # optional; effective only on the cross-device/cross-node communicator path; non-negative barrier channel
+    context_id=0,                 # optional; effective only on the cross-device/cross-node communicator path; compile-time int32 context index
+    memory_scope="system",        # optional; effective only on the cross-device/cross-node communicator path;
+                                  # "system" | "device" | "block" | "thread"
 ):
     ...
 ```
+
+Every public argument has a default, so none is unconditionally required. The requirements depend on the selected path:
+
+- `tle.distributed_barrier()` is valid and emits the default full-cluster barrier.
+- `tle.distributed_barrier(mesh)` uses `mesh` to select/infer a cluster, cluster sub-mesh, or cooperative-grid barrier; no `device_dptr` is needed.
+- An explicit FlagCX communicator barrier requires all three of `space`, `mesh`, and `device_dptr`. The remaining arguments are optional and use the defaults shown above.
 
 `mesh` and `space` select the synchronization mode in the following order:
 
@@ -337,12 +425,29 @@ tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
 
 Because `row_mesh` is a sliced cluster mesh, this call follows the 'submesh' dispatch rule and emits a cluster sub-mesh barrier. `device_dptr` is accepted but is not consumed by this barrier path; adding `space=...` does not turn this call into a FlagCX communicator barrier.
 
-For the FlagCX communicator path:
+For the cross-device/cross-node communicator path (implemented with FlagCX):
 
+- `mesh` is required and validates the selected communicator topology. The `"device"` team requires a `device` launch axis; the `"inter"` and `"world"` teams require a `node` launch axis.
 - `device_dptr` is the distributed runtime context returned by `tle.create_dist_tensor(...)`.
+- `space` selects the participants: `"device"`/`"intra"`/`"intra_node"` for the intra-node team, `"inter"`/`"inter_node"` for the inter-node team, or `"world"` for the world team.
 - `group_kind` is the collective execution scope: `"thread"`, `"warp"`, or `"block"` (default).
 - `barrier_kind` is `"arrive"`, `"wait"`, or `"sync"` (default). `"arrive"` only reports arrival; `"wait"` waits for the matching arrivals; `"sync"` performs both.
-- `order` controls the memory order: `"relaxed"`, `"acquire"`, `"release"`, or `"acqrel"` (default). `memory_scope` controls its scope: `"system"` (default), `"device"`, `"block"`, or `"thread"`. These two parameters apply only to the FlagCX path.
+- `order` controls the memory ordering of accesses around the barrier and is effective only on the cross-device/cross-node communicator path. Its accepted values are:
+
+  - `"relaxed"`: performs the barrier operation without adding acquire/release ordering constraints to memory accesses around it.
+  - `"acquire"`: prevents memory accesses after the barrier from being reordered before it; it is typically used by a waiter so that it can observe data published before a matching release.
+  - `"release"`: prevents memory accesses before the barrier from being reordered after it; it is typically used by an arriver to publish completed writes before notifying other ranks.
+  - `"acqrel"`: provides both acquire and release semantics. This is the default and is typically paired with a full `"sync"` barrier.
+
+  Common pairings are `barrier_kind="arrive"` with `order="release"`, `barrier_kind="wait"` with `order="acquire"`, and `barrier_kind="sync"` with `order="acqrel"`. These are semantic recommendations, not parameter-combination restrictions.
+- `memory_scope` specifies the visibility scope of the memory-ordering guarantee and is effective only on the cross-device/cross-node communicator path. It does not select the participating ranks; `space` selects them. The API semantics of its accepted values are:
+
+  - `"system"`: system scope, visible to all threads in the system. This is the default and the usual choice for a distributed barrier.
+  - `"device"`: device scope, visible to all threads on the current device.
+  - `"block"`: thread-block (CTA) scope, visible only to threads in the current block.
+  - `"thread"`: thread scope, visible only to the current thread.
+
+  The bundled FlagCX unified-barrier API currently accepts this argument, but its `flagcxDevBarrierArrive`, `flagcxDevBarrierWait`, and `flagcxDevBarrierSync` implementations do not yet use it to change barrier behavior. Consequently, the four values currently have no behavioral difference for `distributed_barrier`; the definitions above describe the API semantics.
 - `index` selects a non-negative barrier channel. `context_id` selects a pre-created FlagCX context (notably the network context for `"inter"` and `"world"`) and must be a non-negative compile-time int32. Both values must match across all participants.
 
 Example: synchronize the FlagCX world team represented by a node/device mesh:
@@ -369,17 +474,161 @@ Cluster/sub-mesh and cooperative-grid modes currently use the NVIDIA lowering. T
 
 ##### 3.2.4.4 Remote Access
 
-`tle.remote` obtains a handle for tensor data located on other devices. This maps to point-to-point communication or direct memory access (RDMA/NVLink load).
+`tle.remote` obtains a handle for data shards located on other devices. This maps to point-to-point communication or direct memory access (RDMA/NVLink load). The current implementation distinguishes three target domains via `space`:
 
 ```python
-def remote(tensor, shard_id, scope):
+def remote(
+    tensor,                    # required; cluster path: shared-memory pointer or buffered_tensor;
+                               # device/node paths: DistributedRtContext from create_dist_tensor
+    shard_id,                  # required; compile-time int or runtime int32 scalar;
+                               # cluster path: target block id; device path: intra-node peer rank;
+                               # node path: world rank; a compile-time mesh coordinate requires scope
+    scope=None,                # device_mesh; required for a mesh-coordinate shard_id;
+                               # otherwise optional; also sets cluster/device launch dimensions
+    space="cluster",           # optional string; "cluster" | "device" | "node";
+                               # defaults to "cluster"
+    dtype=None,                # tl.dtype; optional on cluster path, inferred when omitted;
+                               # required on device/node paths
+    offset=None,               # Python int or scalar integer tensor; required on device path;
+                               # unsupported on cluster/node paths (omit)
+    coopkind=None,             # optional on node path: "thread" | "warp" | "block" or GroupKind;
+                               # default GroupKind.BLOCK; unsupported on cluster/device paths (omit)
+    context_id=0,              # optional on node path: compile-time int in [0, INT32_MAX], default 0;
+                               # unsupported on cluster/device paths (omit)
+):
     """
-    Get a RemoteTensor handle to a shard on a target device.
+    For cluster, a pointer input returns a cluster remote pointer and a buffered_tensor
+    returns a remote-marked buffer. Device/node paths return a global remote pointer.
+    Pointer results participate in tl.load / tl.store; materialize a cluster buffer
+    pointer first with tle.gpu.local_ptr.
+    """
+```
 
-    :param tensor: logically distributed tensor (already marked by tle.sharding)
-    :param shard_id: tuple coordinate in device mesh
-    :return: RemoteTensor, supporting load/store and related ops
-    """
+###### Cluster Path (intra-cluster communication, DSMEM)
+
+The cluster path targets shared-memory access across blocks within one thread block cluster (CTA cluster, DSMEM on Hopper and later); it is the default when `space` is omitted. Two input forms are supported:
+
+- A shared-memory pointer (scalar or tensor): returns a remote pointer in the cluster address space directly, usable in `tl.load` / `tl.store`; a block-tensor input keeps its shape.
+- A tle buffered_tensor: returns a remote-marked buffer; materialize remote pointer views with `tle.gpu.local_ptr(...)`.
+
+`shard_id` is the id of the target block inside the cluster; with `scope`, coordinates are linearized through the mesh, and launch cluster dimensions are inferred from that mesh (requiring `num_ctas=1`, one program per block). For pointers already in cluster-shared space, `shard_id=0` returns the local access as-is. The cluster / device paths do not support the node-only arguments `coopkind` / `context_id`.
+
+Example (read a SMEM tile from a neighbor block):
+
+```python
+# Here smem is a buffered_tensor, for example one returned by tle.gpu.alloc.
+remote_smem = tle.remote(smem, shard_id=(node_rank, next_device), scope=mesh)
+remote_ptr = tle.gpu.local_ptr(remote_smem, (rows, cols))
+vals = tl.load(remote_ptr)
+```
+
+###### Device Path (intra-node cross-GPU communication, NVLink P2P)
+
+The device path targets direct memory access between GPUs within one node through a FlagCX registered window (symmetric memory, NVLink P2P). Like the node path, `tensor` is the `DistributedRtContext` returned by `create_dist_tensor`, but the returned remote pointer lives in the ordinary global address space, and the `offset` argument is **required** — it fixes the element offset inside the remote window (Python int or scalar integer tensor, normalized to i64 internally).
+
+Key difference from the node path: the device-path remote pointer is an ordinary global pointer, so subsequent `tl.load` / `tl.store` support arbitrary tiled / multi-dimensional access with **no "contiguous transfer only" restriction**; the offset base is fixed once by `offset`, and further pointer arithmetic behaves like normal global-pointer math.
+
+Example (scatter a local input shard to a peer GPU in the same node):
+
+```python
+remote_base = tle.remote(scatter_ctx, space="device",
+                         dtype=input_ptr.dtype.element_ty,
+                         shard_id=target_rank,
+                         offset=SCATTER_NODE_SLICE_OFFSET_ELEMS + source_slot_offset_elems)
+scatter_ptrs = (remote_base +
+                (scatter_row + row_offs[:, None]) * N + input_col + col_offs[None, :])
+tl.store(scatter_ptrs, values, mask=scatter_row_mask & col_mask)
+```
+
+###### Node Path (inter-node communication, FlagCX/RDMA)
+
+The node path targets cross-node point-to-point transfers, using FlagCX registered memory (symmetric window) for the data plane.
+
+`context_id` has the same user-level meaning as
+`tle.distributed_barrier(..., context_id=...)`: it selects a pre-created
+FlagCX network context. It is neither a peer rank nor a transfer/barrier
+sequence number. The value is emitted as an `i32` operation attribute rather
+than a runtime operand. The compiler validates that it is a compile-time
+integer in `[0, INT32_MAX]`; the selected context must also exist in the
+runtime communicator, and corresponding peers must use compatible context
+assignments. The default is context `0`.
+
+The current version **only supports contiguous data transfer**. Caveats:
+
+- On the host, `tle.create_dist_tensor(comm_buf)` must register the communication buffer into a FlagCX symmetric memory window first; the returned `DistributedRtContext` is passed to the kernel as an argument. Device-side scatter and inter-node P2P may share one registered window. The local-side buffer must be the same buffer registered by that context and must be passed directly to the kernel as a global-pointer argument.
+- `dtype` is required. **`offset` is not accepted** — add offsets to the returned pointer instead.
+- Transfer shapes are restricted: a scalar copy moves one element; both sides of a tensor copy must reuse the same contiguous range value `tl.arange(0, N)`, with either no mask or the same shared prefix mask `offsets < valid_n` (`1 <= valid_n <= N`).
+- A single transfer is subject to the compiler's tensor size limit: the number of elements N transferred per load/store must be a power of two and no greater than `33554432` (2^25); exceeding it fails at compile time. To transfer more data, split it into chunks and call load/store multiple times in a loop, one chunk per iteration:
+
+```python
+for start in range(0, nelems, CHUNK_N):           # transfer one chunk per iteration
+    chunk_n = tl.minimum(nelems - start, CHUNK_N) # the last chunk may be shorter than CHUNK_N
+    offsets = tl.arange(0, CHUNK_N)               # CHUNK_N: power of two, <= 33554432
+    mask = offsets < chunk_n                      # must be written as arange result < scalar
+    vals = tl.load(comm_buf + src_offset + start + offsets, mask=mask)
+    tl.store(remote_dst + dst_offset + start + offsets, vals, mask=mask)
+```
+
+  When looping, note: the mask must be written as `offsets < scalar` — where `offsets` is the bare `tl.arange` result, not an expression like `start + offsets < nelems`, otherwise compilation fails. The scalar may be computed at runtime (e.g. the `tl.minimum` above handles the last, possibly shorter chunk).
+- The load result must be consumed directly and exclusively by its paired store. Both operations must be in the same basic block, with the load before the store and no intervening memory access, atomic operation, barrier, or other communication operation; exactly one side must use a node remote pointer.
+- Sparse access, multi-dimensional tiled load/store, strided access, non-zero-start ranges, and mismatched ranges on the two sides are rejected at compile time; dynamic violations trigger a device assertion.
+- `coopkind` supports `thread` / `warp` / `block` (default `block`: the whole CTA convergently issues one transfer). `context_id` follows the network-context rules above.
+- Since device code has no `rank()` / `num_ranks()`, topology is passed into the kernel as constexpr by the host. Pass `shard_id` as a host-precomputed world rank int (recommended), or as a mesh coordinate tuple with `scope` (resolved to a world rank via `physical_ids`). On the node path, `scope` does not affect launch configuration.
+
+Usage: first obtain a remote pointer to the peer node with `tle.remote`, then complete the transfer with a load/store pair — the transfer direction is determined by which side of the pair is remote:
+
+- **PUT (local → remote)**: load from the local buffer first, then store through the remote pointer; the data is written from this node to the remote node.
+- **GET (remote → local)**: the usage is exactly symmetric, with the direction reversed — load through the remote pointer, then store into the local buffer; the data is read back from the remote node.
+
+PUT example (local load + remote store):
+
+```python
+remote_dst = tle.remote(ctx, space="node", dtype=DTYPE,
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK,
+                        context_id=0)
+offsets = tl.arange(0, BLOCK_SIZE)
+mask = offsets < nelems
+vals = tl.load(comm_buf + src_offset + offsets, mask=mask)     # local load
+tl.store(remote_dst + dst_offset + offsets, vals, mask=mask)   # remote store = PUT: data written to the remote node
+```
+
+GET example (remote load + local store) — same usage as PUT, with the load/store sides swapped:
+
+```python
+remote_src = tle.remote(ctx, space="node", dtype=DTYPE,
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK,
+                        context_id=0)
+offsets = tl.arange(0, BLOCK_SIZE)
+mask = offsets < nelems
+vals = tl.load(remote_src + src_offset + offsets, mask=mask)   # remote load = GET: data read from the remote node
+tl.store(comm_buf + dst_offset + offsets, vals, mask=mask)     # local store
+```
+
+Common mistakes (do not write it this way):
+
+```python
+# Wrong: multi-dimensional / tiled access
+vals = tl.load(remote_dst + rows[:, None] * N + cols[None, :])  # rejected at compile time
+# Why: the node path lowers the load/store pair into a single RDMA put/get.
+# The interface only supports contiguous data (a 1D linear range) and cannot
+# express the scattered addresses of a 2D tile. To move 2D data, lay it out
+# contiguously in a local buffer first and transfer that.
+
+# Wrong: passing an offset to remote
+remote_dst = tle.remote(ctx, space="node", dtype=DTYPE, shard_id=r, offset=1024)  # error
+# Why: on the node path tle.remote only resolves the target peer and returns a
+# pointer to the base of the remote window; the source/destination offsets are
+# expressed as src_offset / dst_offset in the following load/store.
+# Correct: add the offset to the returned pointer
+tl.store(remote_dst + dst_offset + offsets, vals, mask=mask)
+
+# Wrong: mismatched ranges on the two sides, or a mask that is not a shared prefix
+vals = tl.load(local + tl.arange(0, N), mask=mask)             # arange(0, N)
+tl.store(remote + tl.arange(0, M), vals, mask=mask2)           # a different range -> rejected
+# Why: the transfer length and both offsets are jointly inferred from the
+# pointer expressions of the load/store; the arange range is the transfer size
+# (the mask gives the valid length). If the two sides disagree, how much to
+# transfer and from where to where are undefined, so the compiler rejects it.
 ```
 
 ##### 3.2.4.5 Resharding
@@ -428,6 +677,61 @@ def distributed_dot(a, b, c=None):
 ```
 
 Open question: what additional distributed primitives are needed?
+
+##### 3.2.4.7 `tle.signal`
+
+`tle.signal` atomically updates a synchronization slot on a remote peer. It only sends a signal; it neither transfers data nor waits for completion on the receiving peer.
+
+```python
+def signal(device_dptr, peer, slot_id, value=None, op="inc",
+          space="intra_node", group_kind="block", context_id=0,
+          scope="system"):
+    """
+    Atomically update a remote peer's synchronization slot.
+
+    :param device_dptr: distributed communicator handle (required)
+    :param peer: target peer rank (int32 scalar) (required)
+    :param slot_id: signal slot index (uint32 scalar) (required)
+    :param value: optional uint64 scalar; required when op="add", must be omitted otherwise
+    :param op: optional; "inc" to increment by one, "add" to add value; default "inc"
+    :param space: optional; "intra_node", "inter_node", or "world"; default "intra_node"
+    :param group_kind: optional; "thread", "warp", or "block"; default "block"
+    :param context_id: optional; compile-time int selecting a pre-allocated network context; default 0
+    :param scope: optional; visibility scope of the operation ("system" or "device"); default "system"
+    """
+    pass
+```
+
+`op="inc"` increments the selected signal slot by one. `op="add"` adds `value` to the selected signal slot; `value` is required in that case and must be omitted otherwise. `space` selects the communication scope (`intra_node`, `inter_node`, or `world`), and `peer` is a rank within that scope. `context_id` selects a pre-allocated network context.
+
+`scope` controls the visibility of the signal operation to the threads on the node: `"system"` means visible to all threads on all devices, and `"device"` means only visible to the threads on the current device. `"device"` may only be meaningful when working on a single node, and most of the time `"system"` is the correct choice.
+
+For `group_kind="block"` (the default), every thread in the CTA must execute this operation convergently; the group collectively emits one remote update.
+
+##### 3.2.4.8 `tle.signal_wait`
+
+`tle.signal_wait` waits until a local synchronization slot reaches its target value.
+
+```python
+def signal_wait(device_dptr, slot_id, wait_kind, target=None,
+               group_kind="block", context_id=0, order="acquire"):
+    """
+    Wait until a local synchronization slot reaches its target.
+
+    :param device_dptr: distributed communicator handle (required)
+    :param slot_id: signal slot index (int32 scalar) (required)
+    :param wait_kind: "signal", "counter", or "shadow" (required)
+    :param target: optional; required for "signal"/"counter", must be omitted for "shadow"
+    :param group_kind: optional; "thread", "warp", or "block"; default "block"
+    :param context_id: optional; compile-time int selecting a pre-allocated network context; default 0
+    :param order: optional; memory ordering constraint ("relaxed" or "acquire"); default "acquire"
+    """
+    pass
+```
+
+`wait_kind` selects the waiting mode: `"signal"` waits until the slot value reaches `target`; `"counter"` waits until a counter at the slot reaches `target`; `"shadow"` reads the target from the runtime's locally maintained shadow buffer, so `target` must be omitted. `slot_id` is interpreted in the same signal slot namespace as `tle.signal`. `group_kind` and `context_id` have the same semantics as in `tle.signal`.
+
+`order` constrains the memory order of the wait operation. As `tle.signal_wait` is a read operation, only `"relaxed"` and `"acquire"` are allowed, and most of the time the default value `"acquire"` is the correct choice.
 
 #### 3.2.5 API Reference and Practical Examples
 
@@ -481,7 +785,7 @@ x = x.insert_tile(sub, index=[1, 0])
   - `name`: optional pipe name for IR/diagnostics; if provided, it must be a string.
   - `readers`: optional reader-name list. Omit it for the default SPSC reader; pass values such as `("left", "right")` for SPMC.
   - `one_shot`: whether the pipe is a single ready/full edge, useful for one-time broadcast data. `one_shot=True` does not support `close`.
-  - `**fields`: one or more payload buffers. Each field must be a shared-memory buffered tensor returned by `tle.gpu.alloc(..., scope=tle.gpu.smem)`, with rank >= 2.
+  - `**fields`: one or more payload buffers. Each field must be a shared-memory buffered tensor returned by `tle.gpu.alloc(..., scope=tle.gpu.smem)` or a static `subslice` of one, with rank >= 2.
 - Endpoint API:
   - `pipe.writer() -> pipe_writer`
   - `pipe.reader(name=None, fields=None) -> pipe_reader`
@@ -496,6 +800,7 @@ x = x.insert_tile(sub, index=[1, 0])
   - `reader.wait` returns `{slot, is_closed}`. Normal reads use `wait.slot`; close-aware flows inspect `is_closed`.
   - `reader(..., fields=("kv_r",))` subscribes to only a subset of fields, reducing unnecessary dependencies.
   - Current lowering maps CTA-scoped SMEM pipes to GPU NVWS token/mbarrier synchronization.
+  - The NVIDIA lowering recognizes a restricted multi-writer form when each writer contributes pure-TMA copies to a disjoint field set and all writers follow the same acquire/commit cadence. The union must cover every field. Static non-overlapping field subslices may share one backing SMEM allocation; overlapping fields or aliases that cannot be proven disjoint are rejected.
 
 Example 1: SPSC double-buffered load/compute
 
@@ -673,6 +978,34 @@ next_device = (device_rank + 1) % mesh.shape[1]
 remote_x = tle.remote(x, shard_id=(node_rank, next_device), scope=mesh)
 tle.distributed_barrier(mesh)
 neighbor_vals = tl.load(remote_x)
+```
+
+##### 3.2.5.7 `tle.signal` + `tle.signal_wait`
+
+- `tle.signal`: atomically update a remote peer's synchronization slot without transferring data.
+- `tle.signal_wait`: block until a local slot reaches its target value.
+- Typical use: lightweight cross-device synchronization in pipelined producer/consumer kernels where the full cost of a collective barrier is unnecessary.
+- `wait_kind="signal"` waits for the signal in the slot to reach the target value. `wait_kind="shadow"` reads the target from the runtime's locally maintained shadow buffer, so no explicit `target` is needed.
+
+Example: cross-device one-shot synchronization
+
+```python
+@triton.jit
+def signal_kernel(device_dptr, peer: tl.constexpr):
+    # ... do work ...
+    tle.signal(
+        device_dptr, peer, slot_id=0,
+        op="inc", space="inter_node",
+    )
+
+
+@triton.jit
+def wait_kernel(device_dptr):
+    tle.signal_wait(
+        device_dptr, slot_id=0,
+        wait_kind="signal", target=1,
+    )
+    # ... safe to proceed ...
 ```
 
 ### 3.3 TLE-Struct

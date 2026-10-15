@@ -17,13 +17,18 @@ class TensorDescriptor:
         assert len(self.block_shape) == rank, f"rank mismatch: {self}"
         assert rank > 0, "rank must not be zero"
         assert rank <= 5, "rank cannot be more than 5"
-        ty = type(self.base)
-        if ty.__name__ not in ("FakeTensor", "FunctionalTensor"):
-            assert self.base.data_ptr() % 16 == 0, "base must be 16-byte aligned"
         validate_block_shape(self.block_shape)
-        elem_bytes = self.base.dtype.itemsize
-        for stride in self.strides[:-1]:
-            assert (stride * elem_bytes) % 16 == 0, "strides must be 16-byte aligned"
+        # Triton XPU has neither the 16-byte base-alignment nor the 16-byte
+        # stride-alignment requirement of NVIDIA TMA, so both checks are
+        # disabled: descriptors may start at any element offset (e.g. a
+        # `x[:, 1:]` view) and rows may have arbitrary length (e.g. N=513,
+        # whose fp32 row stride is not a multiple of 16 bytes).
+        # ty = type(self.base)
+        # if ty.__name__ not in ("FakeTensor", "FunctionalTensor"):
+        #     assert self.base.data_ptr() % 16 == 0, "base must be 16-byte aligned"
+        # elem_bytes = self.base.dtype.itemsize
+        # for stride in self.strides[:-1]:
+        #     assert (stride * elem_bytes) % 16 == 0, "strides must be 16-byte aligned"
         for shape_dim in self.shape:
             assert shape_dim > 0, "shape must be positive"
         assert self.strides[-1] == 1, "Last dimension must be contiguous"

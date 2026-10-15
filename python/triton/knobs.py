@@ -559,6 +559,9 @@ class runtime_knobs(base_knobs):
 class language_knobs(base_knobs):
     fp32_default: env_opt_str = env_opt_str("TRITON_F32_DEFAULT")
     default_fp_fusion: env_bool = env_bool("TRITON_DEFAULT_FP_FUSION", True)
+    # flagtree low-precision float (fp8/fp4) support; 0 falls back to the upstream
+    # interpreter float conversion and drops the backend opt-ins
+    low_precision_float: env_bool = env_bool("FLAGTREE_LOW_PRECISION_FLOAT", True)
 
 
 class nvidia_knobs(base_knobs):

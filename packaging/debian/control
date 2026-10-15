@@ -21,7 +21,7 @@ X-Build-Environment: This package wraps a pre-built FlagTree wheel into a .deb.
 
 Package: python3-flagtree-nvidia
 Architecture: amd64
-Depends: python3:any,
+Depends: ${python:Depends},
          ${shlibs:Depends},
          ${misc:Depends},
          python3-filelock,

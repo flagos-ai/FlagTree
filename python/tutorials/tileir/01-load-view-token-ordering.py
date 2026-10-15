@@ -100,7 +100,7 @@ def run_expected_native_failure():
         _copy_with_token_kernel[grid](x, y, n_elements, BLOCK_SIZE=block, num_warps=4)
     except CompilationError as exc:
         text = str(exc)
-        expected_message = "TileIR path" in text or "FLAGTREE_USE_TILEIR" in text
+        expected_message = "backend 'nvidia' does not support TLE primitive" in text
         if not expected_message:
             raise
         print("[OK] FLAGTREE_USE_TILEIR=0: native NVIDIA path reports the expected TileIR-only API error")

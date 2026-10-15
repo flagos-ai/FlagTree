@@ -19,6 +19,9 @@ def ConvertTritonMUSAGPUToLLVM : Pass<"convert-triton-musagpu-to-llvm", "mlir::M
         Option<"computeCapability", "compute-capability",
                "int32_t", /*default*/"31",
                "device compute capability">,
+        Option<"enableFp8Burst2", "enable-fp8-burst2",
+               "bool", /*default*/"false",
+               "use burst2 (vector) fp8 conversion intrinsics">,
     ];
 }
 

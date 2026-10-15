@@ -23,8 +23,14 @@ def is_interpreter():
 
 
 def is_cuda():
+    # "cuda" here means real NVIDIA hardware (PTX asm asserts, capability
+    # checks, nvidia-specific reference paths). On this stack the reported
+    # target backend string is configurable (TRITON_XPU_TARGET_BACKEND,
+    # default "cuda") while the hardware is Kunlunxin, so exclude the XPU
+    # stack to keep the historical (pre-"cuda"-target) behavior.
     return not is_interpreter() and \
-        triton.runtime.driver.active.get_current_target().backend == "cuda"
+        triton.runtime.driver.active.get_current_target().backend == "cuda" and \
+        not is_xpu()
 
 
 def is_hip():
@@ -33,8 +39,13 @@ def is_hip():
 
 
 def is_xpu():
+    # Match XPUBackend.supports_target / triton._internal_testing.is_xpu:
+    # the target backend string is configurable (TRITON_XPU_TARGET_BACKEND,
+    # default "cuda"), so the kunlunxin skip guards must not key on the
+    # literal "xpu" string only.
     return not is_interpreter() and \
-        triton.runtime.driver.active.get_current_target().backend == "xpu"
+        triton.runtime.driver.active.get_current_target().backend in \
+        ("cuda", "xpu", os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda"))
 
 
 int_dtypes = ['int8', 'int16', 'int32', 'int64']

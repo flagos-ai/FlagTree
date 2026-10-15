@@ -21,12 +21,37 @@ iluvatar_tle_enabled()
         *) return 1 ;;
     esac
 }
+device_count()
+{
+    ixsmi -L 2>/dev/null | grep -c "^GPU"
+}
+log_banner()
+{
+    echo "==================== $1 ====================" >> "${LOG_DIR}/$2.log"
+}
+run_distributed_test()
+{
+    local name=$1
+    shift
+    "$@" 2>&1 | tee "${LOG_DIR}/${name}.log"
+    if ((${PIPESTATUS[0]} != 0)); then
+        EXIT_STATUS=1
+        log_banner "1 failed" "${name}"
+    else
+        log_banner "1 passed" "${name}"
+    fi
+}
 export CUDA_VISIBLE_DEVICES=0
 
-for pkg in pytest hypothesis absl-py scipy lit filecheck pytest-forked expecttest; do
+for pkg in pytest hypothesis absl-py scipy lit pytest-forked expecttest; do
     pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
 done
-ln -sf "$(command -v filecheck)" "$PWD/bin/FileCheck"
+FC_DIR=$(python3 -c 'import os, triton; print(os.path.dirname(triton.__file__))' 2>/dev/null || true)
+if [[ -x "${FC_DIR}/FileCheck" ]] && "${FC_DIR}/FileCheck" --version >/dev/null 2>&1; then
+    export PATH="${FC_DIR}:${PATH}"
+else
+    echo "WARNING: usable FileCheck not found in triton package (${FC_DIR:-<import failed>}/FileCheck)" >&2
+fi
 
 # Preload libgomp.so on arm to prevent TLS allocation errors: "ImportError: /lib64/libgomp.so.1: cannot allocate memory in static TLS block"
 if [[ "$(uname -m)" == "aarch64" ]]; then
@@ -62,6 +87,7 @@ timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_blocksparse.py -o j
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_cross_entropy.py -o junit_suite_name="test_cross_entropy" --junitxml=${LOG_DIR}_xml/___test_cross_entropy.xml 2>&1 | tee ${LOG_DIR}/test_cross_entropy.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_dot_trans.py -o junit_suite_name="test_dot_trans" --junitxml=${LOG_DIR}_xml/___test_dot_trans.xml 2>&1 | tee ${LOG_DIR}/test_dot_trans.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_flash_attention.py -o junit_suite_name="test_flash_attention" --junitxml=${LOG_DIR}_xml/___test_flash_attention.xml 2>&1 | tee ${LOG_DIR}/test_flash_attention.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_flash_attention_forward.py -o junit_suite_name="test_flash_attention_forward" --junitxml=${LOG_DIR}_xml/___test_flash_attention_forward.xml 2>&1 | tee ${LOG_DIR}/test_flash_attention_forward.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_inductor.py -o junit_suite_name="test_inductor" --junitxml=${LOG_DIR}_xml/___test_inductor.xml 2>&1 | tee ${LOG_DIR}/test_inductor.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_matmul.py -o junit_suite_name="test_matmul" --junitxml=${LOG_DIR}_xml/___test_matmul.xml 2>&1 | tee ${LOG_DIR}/test_matmul.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_sme.py -o junit_suite_name="test_sme" --junitxml=${LOG_DIR}_xml/___test_sme.xml 2>&1 | tee ${LOG_DIR}/test_sme.log; check_status
@@ -72,7 +98,7 @@ timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_build.py -o junit_sui
 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_cache.py -o junit_suite_name="test_cache" --junitxml=${LOG_DIR}_xml/___test_cache.xml 2>&1 | tee ${LOG_DIR}/test_cache.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_compilation_listener.py -o junit_suite_name="test_compilation_listener" --junitxml=${LOG_DIR}_xml/___test_compilation_listener.xml 2>&1 | tee ${LOG_DIR}/test_compilation_listener.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_driver.py -o junit_suite_name="test_driver" --junitxml=${LOG_DIR}_xml/___test_driver.xml 2>&1 | tee ${LOG_DIR}/test_driver.log; check_status
-timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_launch.py -o junit_suite_name="test_launch" --junitxml=${LOG_DIR}_xml/___test_launch.xml 2>&1 | tee ${LOG_DIR}/test_launch.log; check_status
+USE_FLAGCX=0 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_launch.py -o junit_suite_name="test_launch" --junitxml=${LOG_DIR}_xml/___test_launch.xml 2>&1 | tee ${LOG_DIR}/test_launch.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_specialize.py -o junit_suite_name="test_specialize" --junitxml=${LOG_DIR}_xml/___test_specialize.xml 2>&1 | tee ${LOG_DIR}/test_specialize.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_subproc.py -o junit_suite_name="test_subproc" --junitxml=${LOG_DIR}_xml/___test_subproc.xml 2>&1 | tee ${LOG_DIR}/test_subproc.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/runtime/test_iluvatar_loop_unroll_warning.py -o junit_suite_name="test_iluvatar_loop_unroll_warning" --junitxml=${LOG_DIR}_xml/___test_iluvatar_loop_unroll_warning.xml 2>&1 | tee ${LOG_DIR}/test_iluvatar_loop_unroll_warning.log; check_status
@@ -99,6 +125,11 @@ PUNICA_TEST_LEVEL=quick timeout ${TIMEOUT} pytest -v python/test/unit/integratio
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py -o junit_suite_name="test_flash_mla" --junitxml=${LOG_DIR}_xml/___test_flash_mla.xml 2>&1 | tee ${LOG_DIR}/test_flash_mla.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_bucketize_matmul.py -o junit_suite_name="test_bucketize_matmul" --junitxml=${LOG_DIR}_xml/___test_bucketize_matmul.xml 2>&1 | tee ${LOG_DIR}/test_bucketize_matmul.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py -o junit_suite_name="test_swfw3103_flex_attention_precision" --junitxml=${LOG_DIR}_xml/___test_swfw3103_flex_attention_precision.xml 2>&1 | tee ${LOG_DIR}/test_swfw3103_flex_attention_precision.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_swfw3436_var_mean_reshape_reduce.py -o junit_suite_name="test_swfw3436_var_mean_reshape_reduce" --junitxml=${LOG_DIR}_xml/___test_swfw3436_var_mean_reshape_reduce.xml 2>&1 | tee ${LOG_DIR}/test_swfw3436_var_mean_reshape_reduce.log; check_status
+
+timeout ${TIMEOUT} pytest -v python/test/gluon/test_core.py -o junit_suite_name="test_gluon_core" --junitxml=${LOG_DIR}_xml/___test_gluon_core.xml 2>&1 | tee ${LOG_DIR}/test_gluon_core.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/gluon/test_lowerings.py -o junit_suite_name="test_gluon_lowerings" --junitxml=${LOG_DIR}_xml/___test_gluon_lowerings.xml 2>&1 | tee ${LOG_DIR}/test_gluon_lowerings.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/gluon/test_frontend.py -o junit_suite_name="test_gluon_frontend" --junitxml=${LOG_DIR}_xml/___test_gluon_frontend.xml 2>&1 | tee ${LOG_DIR}/test_gluon_frontend.log; check_status
 
 if iluvatar_tle_enabled; then
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/integration/test_tle_local_store.py -o junit_suite_name="test_tle_local_store" --junitxml=${LOG_DIR}_xml/___test_tle_local_store.xml 2>&1 | tee ${LOG_DIR}/test_tle_local_store.log; check_status
@@ -108,6 +139,12 @@ if iluvatar_tle_enabled; then
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_insert_tile_static_index.py -o junit_suite_name="test_insert_tile_static_index" --junitxml=${LOG_DIR}_xml/___test_insert_tile_static_index.xml 2>&1 | tee ${LOG_DIR}/test_insert_tile_static_index.log; check_status
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_insert_tile_dynamic_index.py -o junit_suite_name="test_insert_tile_dynamic_index" --junitxml=${LOG_DIR}_xml/___test_insert_tile_dynamic_index.xml 2>&1 | tee ${LOG_DIR}/test_insert_tile_dynamic_index.log; check_status
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle.py -o junit_suite_name="test_tle" --junitxml=${LOG_DIR}_xml/___test_tle.xml 2>&1 | tee ${LOG_DIR}/test_tle.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_distributed.py -o junit_suite_name="test_tle_distributed_shared" --junitxml=${LOG_DIR}_xml/___test_tle_distributed_shared.xml 2>&1 | tee ${LOG_DIR}/test_tle_distributed_shared.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_raw_cache_key.py --deselect python/test/tle/unit/test_tle_raw_cache_key.py::test_mlir_dialect_cache_key_changes_with_edsl_source -o junit_suite_name="test_tle_raw_cache_key" --junitxml=${LOG_DIR}_xml/___test_tle_raw_cache_key.xml 2>&1 | tee ${LOG_DIR}/test_tle_raw_cache_key.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_gpu_slot.py -o junit_suite_name="test_tle_gpu_slot" --junitxml=${LOG_DIR}_xml/___test_tle_gpu_slot.xml 2>&1 | tee ${LOG_DIR}/test_tle_gpu_slot.log; check_status
+    timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/integration/test_tle_gemm.py -o junit_suite_name="test_tle_gemm" --junitxml=${LOG_DIR}_xml/___test_tle_gemm.xml 2>&1 | tee ${LOG_DIR}/test_tle_gemm.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_gemm.py -o junit_suite_name="test_tle_gemm_sme" --junitxml=${LOG_DIR}_xml/___test_tle_gemm_sme.xml 2>&1 | tee ${LOG_DIR}/test_tle_gemm_sme.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_alloc.py -o junit_suite_name="test_tle_alloc" --junitxml=${LOG_DIR}_xml/___test_tle_alloc.xml 2>&1 | tee ${LOG_DIR}/test_tle_alloc.log; check_status
     timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_copy.py -o junit_suite_name="test_tle_copy" --junitxml=${LOG_DIR}_xml/___test_tle_copy.xml 2>&1 | tee ${LOG_DIR}/test_tle_copy.log; check_status
     timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_async_load.py -o junit_suite_name="test_tle_async_load" --junitxml=${LOG_DIR}_xml/___test_tle_async_load.xml 2>&1 | tee ${LOG_DIR}/test_tle_async_load.log; check_status
     timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_memory_space.py -o junit_suite_name="test_tle_memory_space" --junitxml=${LOG_DIR}_xml/___test_tle_memory_space.xml 2>&1 | tee ${LOG_DIR}/test_tle_memory_space.log; check_status
@@ -116,6 +153,51 @@ if iluvatar_tle_enabled; then
     timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_pipeline_e2e.py -o junit_suite_name="test_tle_pipeline_e2e" --junitxml=${LOG_DIR}_xml/___test_tle_pipeline_e2e.xml 2>&1 | tee ${LOG_DIR}/test_tle_pipeline_e2e.log; check_status
     timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_warp_specialize.py -o junit_suite_name="test_tle_warp_specialize" --junitxml=${LOG_DIR}_xml/___test_tle_warp_specialize.xml 2>&1 | tee ${LOG_DIR}/test_tle_warp_specialize.log; check_status
     timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_pipe.py -o junit_suite_name="test_tle_pipe" --junitxml=${LOG_DIR}_xml/___test_tle_pipe.xml 2>&1 | tee ${LOG_DIR}/test_tle_pipe.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_get_device_id.py -o junit_suite_name="test_tle_get_device_id" --junitxml=${LOG_DIR}_xml/___test_tle_get_device_id.xml 2>&1 | tee ${LOG_DIR}/test_tle_get_device_id.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_distributed.py -o junit_suite_name="test_tle_distributed_iluvatar" --junitxml=${LOG_DIR}_xml/___test_tle_distributed_iluvatar.xml 2>&1 | tee ${LOG_DIR}/test_tle_distributed_iluvatar.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_n_pes.py -o junit_suite_name="test_tle_n_pes" --junitxml=${LOG_DIR}_xml/___test_tle_n_pes.xml 2>&1 | tee ${LOG_DIR}/test_tle_n_pes.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_distributed_barrier.py -o junit_suite_name="test_tle_distributed_barrier" --junitxml=${LOG_DIR}_xml/___test_tle_distributed_barrier.xml 2>&1 | tee ${LOG_DIR}/test_tle_distributed_barrier.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_remote_pointers.py -o junit_suite_name="test_tle_remote_pointers" --junitxml=${LOG_DIR}_xml/___test_tle_remote_pointers.xml 2>&1 | tee ${LOG_DIR}/test_tle_remote_pointers.log; check_status
+    timeout ${TIMEOUT} pytest -v ./python/test/unit/tle/test_tle_raw.py -o junit_suite_name="test_tle_raw" --junitxml=${LOG_DIR}_xml/___test_tle_raw.xml 2>&1 | tee ${LOG_DIR}/test_tle_raw.log; check_status
+    if (( $(device_count) >= 2 )); then
+        DIST_ENV="CUDA_VISIBLE_DEVICES=0,1 UMD_CUDAMODULELOADING=0 FLAGCX_MEM_ENABLE=1 NCCL_CUMEM_ENABLE=0 FLAGCX_USE_HETERO_COMM=1"
+        run_distributed_test test_tle_get_local_pe \
+            env ${DIST_ENV} \
+            timeout ${TIMEOUT} torchrun --nproc_per_node=2 --master_port=29531 \
+            ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_get_local_pe.py
+        run_distributed_test test_tle_get_device_id_multi_gpu \
+            env ${DIST_ENV} \
+            timeout ${TIMEOUT} torchrun --nproc_per_node=2 --master_port=29532 \
+            ./python/test/unit/tle/test_tle_get_device_id_multi_gpu.py
+        run_distributed_test test_tle_n_pes_multi_gpu \
+            env ${DIST_ENV} \
+            timeout ${TIMEOUT} torchrun --nproc_per_node=2 --master_port=29533 \
+            ./python/test/unit/tle/test_tle_n_pes_multi_gpu.py
+        run_distributed_test test_tle_distributed_barrier_multi_gpu \
+            env ${DIST_ENV} \
+            timeout ${TIMEOUT} torchrun --nproc_per_node=2 --master_port=29534 \
+            ./python/test/unit/tle/test_tle_distributed_barrier_multi_gpu.py
+        run_distributed_test test_tle_remote_pointers_multi_gpu \
+            env ${DIST_ENV} \
+            timeout ${TIMEOUT} torchrun --nproc_per_node=2 --master_port=29535 \
+            ./python/test/unit/tle/test_tle_remote_pointers_multi_gpu.py
+        run_distributed_test test_tle_distributed_d2d \
+            env ${DIST_ENV} \
+            timeout ${TIMEOUT} torchrun --nproc_per_node=2 --master_port=29536 \
+            ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_distributed_d2d.py
+    else
+        echo "Skip TLE distributed tests: Need at least 2 GPUs."
+    fi
+
+    # tle tutorials
+    python3 ${FLAGTREE_ROOT}/python/tutorials/tle/raw/cuda/01-vector-add.py
+    python3 ./python/tutorials/tle/raw/cuda/02-fused-softmax.py
+    python3 ${FLAGTREE_ROOT}/python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
+    python3 ${FLAGTREE_ROOT}/python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+    python3 ${FLAGTREE_ROOT}/python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem-defered.py
+    python3 ./python/tutorials/tle/01-fft.py --only_unit_test
+    python3 ./python/tutorials/tle/02-moe_align_block_size.py
+    python3 ./python/tutorials/tle/03-topk.py --only_unit_test
 fi
 
 timeout ${TIMEOUT} python3 util_auto_analysis.py ${LOG_DIR}; check_status

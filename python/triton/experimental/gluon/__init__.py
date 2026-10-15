@@ -20,7 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from triton._flagtree_spec import spec_path
+from triton._flagtree_spec import spec_path, spec_call
 
 # flagtree backend path specialization
 spec_path(__path__)
@@ -33,5 +33,8 @@ if FLAGTREE_BACKEND == "hcu":  # flagtree hcu
     from . import hcu
 else:
     from . import amd
+
+# flagtree backend call specialization
+spec_call("gluon_extend_language")
 
 __all__ = ["constexpr_function", "jit", "must_use_result", "nvidia", "hcu" if FLAGTREE_BACKEND == "hcu" else "amd"]

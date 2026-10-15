@@ -19,7 +19,13 @@
 # SOFTWARE.
 
 try:
-    from triton.backends.nvidia.distributed import flagcx_rt_conf
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+except ImportError:
+    FLAGTREE_BACKEND = "nvidia"
+try:
+    import importlib
+    flagcx_rt_conf = importlib.import_module(
+        f"triton.backends.{FLAGTREE_BACKEND or 'nvidia'}.distributed").flagcx_rt_conf
     enabled = flagcx_rt_conf.is_available
 except Exception:
     enabled = False
@@ -97,7 +103,6 @@ def compile_flagcx_allocator():
         lib_path = os.path.join(out_dir, f"{lib_name}.so")
 
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-
         if local_rank == 0 and not os.path.isfile(lib_path):
             print(
                 f"[INFO] FlagCX allocator not found, compiling: {lib_path}",

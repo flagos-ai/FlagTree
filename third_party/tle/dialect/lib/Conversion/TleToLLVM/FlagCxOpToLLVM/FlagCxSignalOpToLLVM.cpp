@@ -43,15 +43,15 @@ struct FlagCxSignalOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    uint32_t contextIdx = op.getContextIdx();
+    uint32_t contextId = op.getContextId();
 
-    if (contextIdx > std::numeric_limits<int32_t>::max())
-      return rewriter.notifyMatchFailure(op, "invalid context_idx");
+    if (contextId > std::numeric_limits<int32_t>::max())
+      return rewriter.notifyMatchFailure(op, "invalid context_id");
 
     tle::getSignalFuncCall(loc, rewriter, adaptor.getComm(), adaptor.getPeer(),
-                           adaptor.getSlotId(), adaptor.getValue(), contextIdx,
+                           adaptor.getSlotId(), adaptor.getValue(), contextId,
                            adaptor.getTeamKind(), adaptor.getCoopKind(),
-                           adaptor.getSignalOp());
+                           adaptor.getSignalOp(), adaptor.getScope());
     rewriter.eraseOp(op);
     return success();
   }
@@ -73,10 +73,11 @@ struct FlagCxSignalWaitOpConversion
     auto coop_kind = adaptor.getCoopKind();
     auto slot_id = adaptor.getSlotId();
     auto target = adaptor.getTarget();
-    auto context_idx = adaptor.getContextIdx();
+    auto contextId = adaptor.getContextId();
 
     tle::getDevNetWaitFuncCallByKind(loc, rewriter, comm, slot_id, wait_kind,
-                                     target, coop_kind, context_idx);
+                                     target, coop_kind, contextId,
+                                     adaptor.getOrder());
 
     rewriter.eraseOp(op);
     return success();

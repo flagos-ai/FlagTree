@@ -7,7 +7,6 @@ import functools
 from typing import List
 from pathlib import Path
 
-# from third_party.xcn.backend.driver import library_dirs
 from triton.runtime.build import _build
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import GPUTarget
@@ -18,7 +17,8 @@ dirname = os.path.dirname(os.path.realpath(__file__))
 
 @functools.lru_cache(maxsize=None)
 def get_xpu_library_dirs(arch: int = -1):
-    # 因为这里是还没有进入到compile阶段的一个判定，然后xpu4及以上不走这个target，所以就暂时仍使用xpu3的头文件和链接库，之后会在compile阶段再次判定
+    # Runs before the compile stage pins the arch: xpu4+ never takes this target,
+    # so keep the xpu3 headers/libs here and re-check at compile time.
     if arch == -1:
         include_dir = [os.path.join(dirname, "xpu3", "include")]
         libdevice_dir = os.path.join(dirname, "xpu3", "lib")
@@ -586,11 +586,16 @@ def make_launcher(constants, signature, ids, metadata):
             rank = _tensordesc_rank(ty)
             expanded_signature[exp_idx] = ty  # base pointer (void*)
             exp_idx += 1
-            for _ in range(2 * rank):
-                expanded_signature[exp_idx] = "i64"  # handle shape, then strides
+            # Only SDNN keeps the tensor_descriptor_base_type handle group (no
+            # TensorDescType conversion in TritonSDNNToLLVM); the cluster path converts
+            # TensorDescType to a single ptr<1>, collapsing the handle group into the
+            # base pointer above -- unconditional expansion doubled the arg count (T-1).
+            if is_sdnn:
+                for _ in range(2 * rank):
+                    expanded_signature[exp_idx] = "i64"  # handle shape, then strides
+                    exp_idx += 1
+                expanded_signature[exp_idx] = "i1"  # padding == "nan"
                 exp_idx += 1
-            expanded_signature[exp_idx] = "i1"  # padding == "nan"
-            exp_idx += 1
             for _ in range(rank):
                 expanded_signature[exp_idx] = "i32"  # .shape
                 exp_idx += 1
@@ -768,6 +773,10 @@ typedef struct _DevicePtrInfo {{
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
+  // numel is only read for TE-scaled arguments (see generate_kernel_params),
+  // but both early returns below skip the tensor, so initialize it here rather
+  // than leaving the field indeterminate for them.
+  ptr_info.numel = 0;
   ptr_info.valid = true;
   if (PyLong_Check(obj)) {{
     ptr_info.dev_ptr = PyLong_AsVoidPtr(obj);
@@ -916,6 +925,11 @@ def _get_launcher_fn_name(src):
             or getattr(getattr(fn, 'fn', None), '__name__', None) or str(fn))
 
 
+# Read once: this sits on the launch path, where a `os.environ` lookup per call is
+# a measurable share of a small kernel's cost. Set it before the first launch.
+_PRINT_TRITON_FUNC = bool(int(os.environ.get("PRINT_TRITON_FUNC", 0)))
+
+
 def _print_triton_launcher_info(fn_name, signature, constants, args):
     """Print kernel launch info when PRINT_TRITON_FUNC env var is set.
     args layout: grid_0, grid_1, grid_2, stream, function, packed_metadata,
@@ -953,12 +967,17 @@ class XPULauncher(object):
 
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
+        # Must match make_launcher's descriptor expansion (T-1): the cluster (non-SDNN)
+        # path converts TensorDescType to a single ptr<1>, so only rank .shape (i32) +
+        # rank .strides (i64) follow the base pointer -- the old unconditional SDNN-style
+        # expansion doubled the args and zeroed the trailing grid params.
+        self._is_sdnn = bool(getattr(metadata, "is_sdnn", False))
         src = make_launcher(constants, signature, ids, metadata)
         mod = compile_module_from_src(src, "__triton_launcher_xpu", metadata.xpu_arch)
         self.launch = mod.launch
 
     def __call__(self, *args):
-        if int(os.environ.get("PRINT_TRITON_FUNC", 0)):
+        if _PRINT_TRITON_FUNC:
             _print_triton_launcher_info(self._fn_name, self._signature, self._constants, args)
         # args = (gridX, gridY, gridZ, stream, function, metadata,
         #         launch_metadata, enter_hook, exit_hook, *bound_args)
@@ -978,9 +997,13 @@ class XPULauncher(object):
         for arg in filtered:
             if isinstance(arg, TensorDescriptor):
                 expanded.append(arg.base)  # tensor with data_ptr/numel
-                expanded.extend(arg.shape)  # handle shape, i64
-                expanded.extend(arg.strides)  # handle strides, i64
-                expanded.append(arg.padding == "nan")
+                # Must match make_launcher's expansion: only SDNN adds the handle group
+                # (i64 shape/strides + padding flag); on the cluster path it is already
+                # folded into the base pointer.
+                if self._is_sdnn:
+                    expanded.extend(arg.shape)  # handle shape, i64
+                    expanded.extend(arg.strides)  # handle strides, i64
+                    expanded.append(arg.padding == "nan")
                 expanded.extend(arg.shape)  # .shape, i32
                 expanded.extend(arg.strides)  # .strides, i64
             else:
@@ -1011,10 +1034,31 @@ class XPUDriver(GPUDriver):
 
     @staticmethod
     def _get_current_xpu_device():
-        return int(os.environ.get("TRITON_XPU_DEVICE", os.environ.get("XPU_VISIBLE_DEVICE", "0")))
+        # torch (torch_xmlir) owns the device/stream state: every kernel launch
+        # and every CUDA-graph capture happens on torch's *current* device, and
+        # torch.cuda.set_device(n) does NOT touch TRITON_XPU_DEVICE.  Reading
+        # the env var here made triton submit to the wrong device/stream
+        # whenever the torch device != the env default (multi-GPU rank != 0:
+        # capture failed with xpuLaunchKernel err -900, or silently recorded an
+        # empty graph).  Device masking itself is done via CUDA_VISIBLE_DEVICES,
+        # so torch's index space IS the runtime's.  Query torch as the source
+        # of truth; keep the env var as a fallback for compile-only/smoke paths
+        # with no usable torch device (the original reason for this override).
+        try:
+            import torch
+            return int(torch.cuda.current_device())
+        except Exception:
+            return int(os.environ.get("TRITON_XPU_DEVICE", os.environ.get("XPU_VISIBLE_DEVICE", "0")))
 
     @staticmethod
     def _set_current_xpu_device(device):
+        # Mirror into torch so the runtime device state and the env marker
+        # cannot disagree; the env var stays for consumers reading it directly.
+        try:
+            import torch
+            torch.cuda.set_device(device)
+        except Exception:
+            pass
         os.environ["TRITON_XPU_DEVICE"] = str(device)
 
     @staticmethod
@@ -1031,14 +1075,34 @@ class XPUDriver(GPUDriver):
         device = self.get_current_device()
         arch = self.utils.get_device_properties(device)["device_model"]
         warp_size = 1  # we don't have warp
-        return GPUTarget("xpu", arch, warp_size)
+        # Backend string reported in GPUTarget, configurable for ecosystem
+        # compatibility:
+        #   default "cuda": this stack's torch presents the XPU under the
+        #       torch.cuda interface, and downstream projects (sglang / vLLM /
+        #       FlagGems-style kernels) key their device dispatch on
+        #       target.backend == "cuda".
+        #   TRITON_XPU_TARGET_BACKEND=xpu restores the pre-3.6-migration string
+        #       (Intel-xtriton heritage).
+        #   Any other string (e.g. "kunlun") is accepted too; XPUBackend
+        #       .supports_target accepts the configured string plus the
+        #       "cuda"/"xpu" aliases so kernels cached under any prior setting
+        #       still deserialize and route here.
+        backend_str = os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda")
+        return GPUTarget(backend_str, arch, warp_size)
 
     def map_python_to_cpp_type(self, ty: str) -> str:
         return ty_to_cpp(ty)
 
     def get_active_torch_device(self):
         import torch
-        return torch.device("xpu", self.get_current_device())
+        # Must agree with get_device_interface(): on this stack torch is
+        # torch_xmlir, which presents the XPU under the torch.cuda interface
+        # (native torch here is built without USE_XPU, so a torch.device("xpu")
+        # object would be rejected by every torch API).  Mirror native xtriton
+        # 3.0, which also has no "xpu" torch device: only the compilation
+        # GPUTarget is named "xpu".  If this stack ever moves to a torch build
+        # with native XPU support, flip this together with get_device_interface.
+        return torch.device("cuda", self.get_current_device())
 
     def get_device_interface(self):
         import torch

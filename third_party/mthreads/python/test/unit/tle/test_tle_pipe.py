@@ -5577,7 +5577,7 @@ def test_reader_mutation_tme_drain_and_partition_phase_reuse(stages, worker_read
         assert torch.equal(out, expected)
     llir = compiled.asm["llir"]
     assert "llvm.musa.barrier0" not in llir
-    assert "llvm.musa.async.arrive(" in llir
+    assert "llvm.musa.async.arrive.none.phaseid(" in llir
     assert "musa_tle.pipe_deferred_arrival" not in llir
 
 
@@ -5793,11 +5793,15 @@ def test_async_publication_elides_only_the_redundant_rendezvous(read_before_comm
     llir = compiled.asm["llir"]
     assert "call void @llvm.musa.memcpy.g2s.wait()" in llir
     assert "musa_tle.pipe_async_wait" not in llir
+    # The partition rendezvous now uses the same arrival intrinsic as the pipe's
+    # own barriers, so a name match no longer isolates it. The pipe emits two
+    # arrivals either way; the cross-warp read is what adds a third.
+    arrivals = llir.count("call void @llvm.musa.async.arrive.none.phaseid(")
     if read_before_commit:
         assert torch.equal(probe, src.flip(0))
-        assert "call i32 @llvm.musa.async.arrive(" in llir
+        assert arrivals == 3
     else:
-        assert "call i32 @llvm.musa.async.arrive(" not in llir
+        assert arrivals == 2
 
 
 @triton.jit

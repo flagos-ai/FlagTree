@@ -10,7 +10,14 @@ producer/consumer protocol:
 - TMA completion signals "full" barriers
 - worker partition waits on per-slot "full" barriers, computes WGMMA, stores C
 - worker arrives on "empty" barriers to release the smem buffers
+
+The pipe test additionally validates automatic multi-TMA-writer inference:
+two independent worker partitions contribute disjoint A/B fields to one pipe
+stage, while the default partition waits once and consumes both fields with
+WGMMA.  No process-level feature toggle is involved.
 """
+
+import re
 
 import pytest
 import torch
@@ -129,6 +136,74 @@ def _ws_tma_multi_slot_consumer(
 
 
 @triton.jit
+def _ws_pipe_tma_a_producer(
+    a_desc,
+    writer,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    K_TILES: tl.constexpr,
+):
+    for k_iter in range(0, K_TILES):
+        slot = writer.acquire(k_iter)
+        tle.gpu.copy(
+            a_desc,
+            slot.a,
+            [BLOCK_M, BLOCK_K],
+            [0, k_iter * BLOCK_K],
+        )
+        writer.commit(k_iter)
+
+
+@triton.jit
+def _ws_pipe_tma_b_producer(
+    b_desc,
+    writer,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    K_TILES: tl.constexpr,
+):
+    for k_iter in range(0, K_TILES):
+        slot = writer.acquire(k_iter)
+        tle.gpu.copy(
+            b_desc,
+            slot.b,
+            [BLOCK_K, BLOCK_N],
+            [k_iter * BLOCK_K, 0],
+        )
+        writer.commit(k_iter)
+
+
+@triton.jit
+def _ws_pipe_tma_consumer(
+    reader,
+    c_ptr,
+    stride_cm: tl.constexpr,
+    stride_cn: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    K_TILES: tl.constexpr,
+):
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    first = reader.wait(0)
+    acc = tle.gpu.wgmma(first.slot.a, first.slot.b, acc)
+
+    for k_iter in range(1, K_TILES):
+        current = reader.wait(k_iter)
+        acc = tle.gpu.wgmma(current.slot.a, current.slot.b, acc)
+        acc = tle.gpu.wgmma_wait(1, acc)
+        reader.release(k_iter - 1)
+
+    acc = tle.gpu.wgmma_wait(0, acc)
+    reader.release(K_TILES - 1)
+
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
+    tl.store(c_ptrs, acc)
+
+
+@triton.jit
 def ws_tma_multi_slot_gemm_kernel(
     a_desc,
     b_desc,
@@ -205,6 +280,82 @@ def ws_tma_multi_slot_gemm_kernel(
     )
 
 
+@triton.jit
+def ws_pipe_multi_tma_writer_gemm_kernel(
+    a_desc,
+    b_desc,
+    c_ptr,
+    stride_cm: tl.constexpr,
+    stride_cn: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    K_TILES: tl.constexpr,
+    NUM_SLOTS: tl.constexpr,
+):
+    a_smem = tle.gpu.alloc(
+        [NUM_SLOTS, BLOCK_M, BLOCK_K],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+    )
+    b_smem = tle.gpu.alloc(
+        [NUM_SLOTS, BLOCK_K, BLOCK_N],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+    )
+    pipe = tle.pipe(
+        capacity=NUM_SLOTS,
+        scope="cta",
+        name="ab_multi_writer",
+        a=a_smem,
+        b=b_smem,
+    )
+
+    # The WGMMA consumer stays in the 4-warp default partition.  Each TMA
+    # producer is an independent 1-warp worker partition, matching MegaMoE's
+    # A(+SFA)/B loader-role topology.
+    tle.gpu.warp_specialize(
+        [
+            (
+                _ws_pipe_tma_consumer,
+                (
+                    pipe.reader(),
+                    c_ptr,
+                    stride_cm,
+                    stride_cn,
+                    BLOCK_M,
+                    BLOCK_N,
+                    K_TILES,
+                ),
+            ),
+            (
+                _ws_pipe_tma_a_producer,
+                (
+                    a_desc,
+                    pipe.writer(),
+                    BLOCK_M,
+                    BLOCK_K,
+                    K_TILES,
+                ),
+            ),
+            (
+                _ws_pipe_tma_b_producer,
+                (
+                    b_desc,
+                    pipe.writer(),
+                    BLOCK_N,
+                    BLOCK_K,
+                    K_TILES,
+                ),
+            ),
+        ],
+        [1, 1],
+        [48, 48],
+    )
+
+
 def ws_tma_multi_slot_gemm(A, B, C, launch_num_warps, block_k, num_slots):
     assert A.ndim == 2 and B.ndim == 2 and C.ndim == 2
     assert A.shape[1] == B.shape[0]
@@ -239,6 +390,38 @@ def ws_tma_multi_slot_gemm(A, B, C, launch_num_warps, block_k, num_slots):
     )
 
 
+def ws_pipe_multi_tma_writer_gemm(A, B, C, launch_num_warps, block_k, num_slots):
+    assert A.ndim == 2 and B.ndim == 2 and C.ndim == 2
+    assert A.shape[1] == B.shape[0]
+    assert C.shape == (A.shape[0], B.shape[1])
+    assert A.dtype == torch.float16 and B.dtype == torch.float16 and C.dtype == torch.float32
+
+    block_m, total_k = A.shape
+    total_k_b, block_n = B.shape
+    assert total_k == total_k_b
+    assert total_k % block_k == 0
+    k_tiles = total_k // block_k
+    assert k_tiles >= num_slots
+
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    a_desc = TensorDescriptor.from_tensor(A, block_shape=[block_m, block_k])
+    b_desc = TensorDescriptor.from_tensor(B, block_shape=[block_k, block_n])
+    return ws_pipe_multi_tma_writer_gemm_kernel[(1, )](
+        a_desc,
+        b_desc,
+        C,
+        C.stride(0),
+        C.stride(1),
+        block_m,
+        block_n,
+        block_k,
+        k_tiles,
+        num_slots,
+        num_warps=launch_num_warps,
+    )
+
+
 class TestTLEWarpSpecializeTmaGemm:
 
     @pytest.mark.parametrize("launch_num_warps", [4])
@@ -264,6 +447,43 @@ class TestTLEWarpSpecializeTmaGemm:
 
         kernel = ws_tma_multi_slot_gemm(a, b, c, launch_num_warps, block_k, num_slots)
         assert "tt.call" not in kernel.asm["ttgir"]
+
+        expected = torch.matmul(a.float(), b.float())
+        torch.testing.assert_close(c, expected, atol=5e-2, rtol=5e-2)
+
+    @pytest.mark.parametrize("launch_num_warps", [4])
+    @pytest.mark.require_tle(
+        "gpu.alloc",
+        "gpu.copy",
+        "gpu.warp_specialize",
+        "gpu.wgmma",
+        "gpu.wgmma_wait",
+        "pipe",
+        "pipe.reader.release",
+        "pipe.reader.wait",
+        "pipe.writer.acquire",
+        "pipe.writer.commit",
+    )
+    def test_pipe_multi_tma_writers_are_auto_detected(self, launch_num_warps):
+        torch.manual_seed(2027 + launch_num_warps)
+        block_m, block_n, block_k = 64, 16, 16
+        k_tiles, num_slots = 4, 2
+
+        a = torch.randn(block_m, block_k * k_tiles, device="cuda", dtype=torch.float16).contiguous()
+        b = torch.randn(block_k * k_tiles, block_n, device="cuda", dtype=torch.float16).contiguous()
+        c = torch.empty((block_m, block_n), device="cuda", dtype=torch.float32).contiguous()
+
+        kernel = ws_pipe_multi_tma_writer_gemm(a, b, c, launch_num_warps, block_k, num_slots)
+        ttgir = kernel.asm["ttgir"]
+
+        # A full-barrier arrival count of two is the observable result of the
+        # pass inferring two distinct pure-TMA writer task IDs.  Each writer
+        # independently contributes one expect_tx/TMA operation per stage.
+        assert re.search(r"ttng\.init_barrier .*?, 2(?:\s*:|\s*$)", ttgir)
+        assert ttgir.count("ttng.barrier_expect") >= 2
+        assert ttgir.count("ttng.async_tma_copy_global_to_local") >= 2
+        assert "tle.pipe." not in ttgir
+        assert "tt.call" not in ttgir
 
         expected = torch.matmul(a.float(), b.float())
         torch.testing.assert_close(c, expected, atol=5e-2, rtol=5e-2)

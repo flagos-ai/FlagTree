@@ -1,5 +1,5 @@
 """
-Smoke example: FlagGems-style torch.randn via tle.dsa.randn (hardware randgen).
+Smoke example: FlagGems-style torch.randn via tle.dsa.tsingmicro.randn (hardware randgen).
 
 Requires a rebuilt triton with the DSA randgen pipeline wired
 (dsa.randgen → mk.randgen → tx.randgen → __RandGen).
@@ -25,7 +25,7 @@ def randn_dsa_kernel(
     BLOCK: tl.constexpr,
 ):
     """
-    BLOCK must be a multiple of 32 (tle.dsa.randn alignment).
+    BLOCK must be a multiple of 32 (tle.dsa.tsingmicro.randn alignment).
     seed0/seed1 are length-16 int64 seed vectors in global memory.
     Each program uses the same seed vector; use grid=1 or distinct seeds
     per block for independent streams.
@@ -36,7 +36,7 @@ def randn_dsa_kernel(
 
     seed0 = tl.load(seed0_ptr + tl.arange(0, 16))
     seed1 = tl.load(seed1_ptr + tl.arange(0, 16))
-    vals, seed0_out, seed1_out = tle.dsa.randn(seed0, seed1, BLOCK)
+    vals, seed0_out, seed1_out = tle.dsa.tsingmicro.randn(seed0, seed1, BLOCK)
     # Persist updated seeds (no-op on hardware until peri writes advanced state).
     tl.store(seed0_ptr + tl.arange(0, 16), seed0_out)
     tl.store(seed1_ptr + tl.arange(0, 16), seed1_out)

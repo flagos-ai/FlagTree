@@ -19,6 +19,7 @@
 # SOFTWARE.
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Callable, Sequence
 
@@ -32,37 +33,6 @@ def _timed_warmup(fn: Callable[[], Any], warmup_ms: float, device_interface: Any
         for _ in range(50):
             fn()
         device_interface.synchronize()
-
-
-def _calibrate_n_repeat(
-    fn: Callable[[], Any],
-    rep: float,
-    graph_type: Any,
-    device_interface: Any,
-    probe_iters: int = 256,
-    max_n_repeat: int = 20000,
-) -> int:
-    probe = graph_type()
-    with device_interface.graph(probe):
-        for _ in range(probe_iters):
-            fn()
-    device_interface.synchronize()
-    best = None
-    for _ in range(3):
-        start_event = device_interface.Event(enable_timing=True)
-        end_event = device_interface.Event(enable_timing=True)
-        start_event.record()
-        probe.replay()
-        end_event.record()
-        device_interface.synchronize()
-        sample = start_event.elapsed_time(end_event) / probe_iters
-        best = sample if best is None else min(best, sample)
-    if not best:
-        return 1000
-    # Cap the captured graph. A wedged muCtxSynchronize was observed on MTT
-    # S5000 while sweeping tiny shapes, and an unbounded unroll makes both the
-    # capture and every replay proportionally more exposed to it.
-    return max(1, min(max_n_repeat, int(rep / best)))
 
 
 def do_bench_musa_graph(
@@ -84,7 +54,21 @@ def do_bench_musa_graph(
     with device_interface.stream(device_interface.Stream()):
         fn()
         _timed_warmup(fn, warmup_ms, device_interface)
-        n_repeat = _calibrate_n_repeat(fn, rep, graph_type, device_interface)
+
+        # Match do_bench_cudagraph: calibrate with ordinary launches before
+        # capturing the one graph that is used for the actual measurement.
+        start_event = device_interface.Event(enable_timing=True)
+        end_event = device_interface.Event(enable_timing=True)
+        start_event.record()
+        for _ in range(5):
+            fn()
+        end_event.record()
+        device_interface.synchronize()
+        estimate_ms = start_event.elapsed_time(end_event) / 5
+        if not math.isfinite(estimate_ms) or estimate_ms <= 0:
+            n_repeat = 1000
+        else:
+            n_repeat = max(1, min(1000, int(rep / estimate_ms)))
 
         graph = graph_type()
         with device_interface.graph(graph):

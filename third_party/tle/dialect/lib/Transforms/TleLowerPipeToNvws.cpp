@@ -32,14 +32,18 @@
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 
@@ -74,7 +78,8 @@ struct PipeState {
   RankedTensorType closeTagTensorType;
   SmallVector<std::string> readerNames;
   bool oneShot;
-  std::optional<int32_t> writerTaskId;
+  bool multiTmaWriters;
+  SmallVector<int32_t> writerTaskIds;
   std::optional<int32_t> writerThreadCount;
   std::optional<int32_t> writerFullCount;
   std::map<std::string, std::pair<int32_t, int32_t>> readerTasks;
@@ -84,6 +89,7 @@ struct PipeState {
 struct PipeDefinition {
   PipeCreateOp create;
   bool oneShot = false;
+  bool multiTmaWriters = false;
 };
 
 enum class PipeProvenanceKind {
@@ -138,6 +144,14 @@ static bool containsPipeLifecycleOp(tt::FuncOp func) {
       found = true;
   });
   return found;
+}
+
+template <typename ExactView>
+static bool sameExactSMEMStage(const ExactView &view, Value stage) {
+  if (std::optional<int64_t> exactStage = view.getStaticStage())
+    if (std::optional<int64_t> otherStage = getExactSMEMConstant(stage))
+      return *exactStage == *otherStage;
+  return sameIndexValue(view.getStage(), stage);
 }
 
 static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
@@ -240,6 +254,20 @@ static Value canonicalizePipeField(Value field) {
 static Value getMemDescRoot(Value value) {
   Value current = canonicalizePipeField(value);
   while (true) {
+    if (auto result = dyn_cast<OpResult>(current)) {
+      if (auto wait = dyn_cast<triton::nvidia_gpu::WarpGroupDotWaitOp>(
+              result.getOwner())) {
+        unsigned resultNo = result.getResultNumber();
+        if (resultNo < wait.getNumOperands()) {
+          current = canonicalizePipeField(wait.getOperand(resultNo));
+          continue;
+        }
+      }
+    }
+    if (auto view = current.getDefiningOp<MemDescWGMMAViewOp>()) {
+      current = canonicalizePipeField(view.getSrc());
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = canonicalizePipeField(index.getSrc());
       continue;
@@ -252,9 +280,133 @@ static Value getMemDescRoot(Value value) {
       current = canonicalizePipeField(alias.getSrc());
       continue;
     }
+    if (auto reinterpret = current.getDefiningOp<ttg::MemDescReinterpretOp>();
+        reinterpret && reinterpret->hasAttr(kExactSMEMStageAttr)) {
+      current = canonicalizePipeField(reinterpret.getSrc());
+      continue;
+    }
     break;
   }
   return current;
+}
+
+// Resolve a payload target to its logical field in this commit.  Allocation
+// roots are deliberately insufficient here: two pipe fields may be disjoint
+// subslices of the same shared-memory allocation.
+static std::optional<unsigned>
+getCommitFieldIndexForTarget(Value target, PipeWriterCommitOp commit) {
+  SmallVector<Value> fields;
+  fields.reserve(commit.getFields().size());
+  for (Value field : commit.getFields())
+    fields.push_back(canonicalizePipeField(field));
+
+  Value current = canonicalizePipeField(target);
+  bool sawStageIndex = false;
+  while (true) {
+    for (auto [fieldIndex, field] : llvm::enumerate(fields)) {
+      if (current != field)
+        continue;
+      if (!sawStageIndex && getPipeCapacity(commit.getOperation()) != 1)
+        return std::nullopt;
+      return static_cast<unsigned>(fieldIndex);
+    }
+
+    // Tiled fields flatten a logical stage and its tile offset into one index.
+    if (ExactSMEMTile tile = getExactSMEMTile(current)) {
+      if (sawStageIndex || !sameExactSMEMStage(tile, commit.getStage()))
+        return std::nullopt;
+      sawStageIndex = true;
+      current = canonicalizePipeField(tile.getSrc());
+      continue;
+    }
+    if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
+      if (sawStageIndex || !sameIndexValue(index.getIndex(), commit.getStage()))
+        return std::nullopt;
+      sawStageIndex = true;
+      current = canonicalizePipeField(index.getSrc());
+      continue;
+    }
+    if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+      current = canonicalizePipeField(subslice.getSrc());
+      continue;
+    }
+    if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
+      current = canonicalizePipeField(alias.getSrc());
+      continue;
+    }
+    return std::nullopt;
+  }
+}
+
+struct StaticMemDescSubview {
+  Value root;
+  SmallVector<int64_t> offsets;
+  SmallVector<int64_t> shape;
+};
+
+// Resolve the axis-aligned logical region of a static subslice chain.  Alias,
+// reshape, transpose, and indexed views are intentionally not guessed: when
+// two writers share an allocation, failure to prove disjointness must reject
+// the pipe rather than permit a shared-memory data race.
+static std::optional<StaticMemDescSubview>
+getStaticMemDescSubview(Value value) {
+  Value current = canonicalizePipeField(value);
+  auto leafType = dyn_cast<ttg::MemDescType>(current.getType());
+  if (!leafType)
+    return std::nullopt;
+
+  StaticMemDescSubview view;
+  view.shape.assign(leafType.getShape().begin(), leafType.getShape().end());
+  view.offsets.assign(view.shape.size(), 0);
+
+  while (true) {
+    if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+      ArrayRef<int32_t> offsets = subslice.getOffsets();
+      if (offsets.size() != view.offsets.size())
+        return std::nullopt;
+      for (auto [dim, offset] : llvm::enumerate(offsets)) {
+        int64_t &accumulated = view.offsets[dim];
+        if (offset < 0 ||
+            accumulated > std::numeric_limits<int64_t>::max() - offset)
+          return std::nullopt;
+        accumulated += offset;
+      }
+      current = canonicalizePipeField(subslice.getSrc());
+      continue;
+    }
+    if (current.getDefiningOp<ttg::MemDescIndexOp>() ||
+        current.getDefiningOp<MemDescAliasOp>())
+      return std::nullopt;
+    view.root = current;
+    auto rootType = dyn_cast<ttg::MemDescType>(current.getType());
+    if (!rootType || rootType.getRank() != leafType.getRank())
+      return std::nullopt;
+    return view;
+  }
+}
+
+static bool arePipeFieldsProvablyDisjoint(Value lhs, Value rhs) {
+  if (getMemDescRoot(lhs) != getMemDescRoot(rhs))
+    return true;
+
+  std::optional<StaticMemDescSubview> lhsView = getStaticMemDescSubview(lhs);
+  std::optional<StaticMemDescSubview> rhsView = getStaticMemDescSubview(rhs);
+  if (!lhsView || !rhsView || lhsView->root != rhsView->root ||
+      lhsView->shape.size() != rhsView->shape.size())
+    return false;
+
+  for (size_t dim = 0; dim < lhsView->shape.size(); ++dim) {
+    int64_t lhsBegin = lhsView->offsets[dim];
+    int64_t rhsBegin = rhsView->offsets[dim];
+    if (lhsView->shape[dim] > std::numeric_limits<int64_t>::max() - lhsBegin ||
+        rhsView->shape[dim] > std::numeric_limits<int64_t>::max() - rhsBegin)
+      return false;
+    int64_t lhsEnd = lhsBegin + lhsView->shape[dim];
+    int64_t rhsEnd = rhsBegin + rhsView->shape[dim];
+    if (lhsEnd <= rhsBegin || rhsEnd <= lhsBegin)
+      return true;
+  }
+  return false;
 }
 
 static std::optional<std::pair<ttg::WarpSpecializeOp, Region *>>
@@ -312,6 +464,10 @@ static std::string getPipeKey(Operation *op) {
   os << "|";
   op->getAttr("field_names").print(os);
   os << "|";
+  if (Attribute tiled = op->getAttr("tiled_smem_fields")) {
+    tiled.print(os);
+    os << "|";
+  }
   for (Value field : getPipeFields(op))
     os << canonicalizePipeField(field).getAsOpaquePointer() << ",";
   return key;
@@ -392,15 +548,23 @@ static void setTokenCount(Value token, StringRef attrName, int32_t count) {
 
 static LogicalResult recordWriterTask(PipeState &state, Operation *op,
                                       int32_t taskId, int32_t threadCount) {
-  if (state.writerTaskId && *state.writerTaskId != taskId)
-    return op->emitOpError("uses writer async_task_id ")
-           << taskId << " but pipe already has writer async_task_id "
-           << *state.writerTaskId;
+  auto writerIt = llvm::find(state.writerTaskIds, taskId);
+  if (writerIt == state.writerTaskIds.end()) {
+    if (!state.writerTaskIds.empty() && !state.multiTmaWriters)
+      return op->emitOpError("uses writer async_task_id ")
+             << taskId << " but pipe already has writer async_task_id "
+             << state.writerTaskIds.front();
+    state.writerTaskIds.push_back(taskId);
+    // TMA completes the transaction bytes, while each independent producer
+    // contributes one arrival to the full barrier.
+    if (state.writerTaskIds.size() > 1)
+      setTokenCount(state.token, "full_count",
+                    static_cast<int32_t>(state.writerTaskIds.size()));
+  }
   if (state.writerThreadCount && *state.writerThreadCount != threadCount)
     return op->emitOpError("uses writer thread count ")
            << threadCount << " but pipe already has writer thread count "
            << *state.writerThreadCount;
-  state.writerTaskId = taskId;
   state.writerThreadCount = threadCount;
   return success();
 }
@@ -547,6 +711,17 @@ getCommitFieldRootForStore(Value memdesc, PipeWriterCommitOp commit) {
   Value current = canonicalizePipeField(memdesc);
   bool sawStageIndex = false;
   while (true) {
+    if (ExactSMEMTile tile = getExactSMEMTile(current)) {
+      if (!sameExactSMEMStage(tile, commit.getStage()))
+        return std::nullopt;
+      sawStageIndex = true;
+      current = canonicalizePipeField(tile.getSrc());
+      continue;
+    }
+    // A padded tiled stage is a read-only WGMMA carrier. Treating it as a
+    // producer target could write into an unallocated tail.
+    if (getExactSMEMStage(current))
+      return std::nullopt;
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       if (!sameIndexValue(index.getIndex(), commit.getStage()))
         return std::nullopt;
@@ -924,13 +1099,15 @@ static bool canInterleaveBeforeTmaPipeCommit(Operation *op) {
 
 struct TmaPipeCommitInfo {
   bool sawPipeTmaCopy = false;
+  llvm::DenseSet<unsigned> copiedFieldIndices;
   llvm::DenseSet<Value> copiedRoots;
+  llvm::DenseSet<Value> localStoreRoots;
 };
 
 struct PipeCommitAnalysis {
   TmaPipeCommitInfo tmaInfo;
-  SmallVector<Value> uniqueFieldRoots;
   SmallVector<Value> localStoreRoots;
+  SmallVector<unsigned> tmaFieldIndices;
   PipeCommitTransport transport = PipeCommitTransport::LocalStore;
   std::optional<int32_t> participantCount;
 };
@@ -938,10 +1115,6 @@ struct PipeCommitAnalysis {
 static FailureOr<TmaPipeCommitInfo>
 getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit,
                               Operation *windowBegin) {
-  llvm::DenseSet<Value> fieldRoots;
-  for (Value field : commit.getFields())
-    fieldRoots.insert(getMemDescRoot(field));
-
   TmaPipeCommitInfo info;
   llvm::DenseSet<Value> interleavedLocalRoots;
   for (Operation *op = windowBegin->getNextNode(); op && op != commit;
@@ -979,16 +1152,19 @@ getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit,
       if (failed(verifyTmaCopyTypes(tmaCopy)))
         return failure();
 
-      Value dstRoot = getMemDescRoot(tmaCopy.getDst());
-      if (!fieldRoots.contains(dstRoot)) {
+      std::optional<unsigned> fieldIndex =
+          getCommitFieldIndexForTarget(tmaCopy.getDst(), commit);
+      if (!fieldIndex) {
         if (info.sawPipeTmaCopy)
           return commit.emitOpError("has an unrelated ttg.tma_copy between "
                                     "pipe payload TMA copies and commit");
         return info;
       }
+      Value dstRoot = getMemDescRoot(tmaCopy.getDst());
       if (interleavedLocalRoots.contains(dstRoot))
         return commit.emitOpError("has a ttg.tma_copy and a local-store "
                                   "payload targeting the same memdesc root");
+      info.copiedFieldIndices.insert(*fieldIndex);
       info.copiedRoots.insert(dstRoot);
       info.sawPipeTmaCopy = true;
       continue;
@@ -1007,6 +1183,7 @@ getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit,
         return commit.emitOpError("has a ttg.tma_copy and a local-store "
                                   "payload targeting the same memdesc root");
       interleavedLocalRoots.insert(*root);
+      info.localStoreRoots.insert(*root);
       return success();
     };
 
@@ -1096,17 +1273,20 @@ analyzePipeCommit(PipeWriterCommitOp commit, PipeDefinition &definition) {
   PipeCommitAnalysis analysis;
   analysis.tmaInfo = std::move(*tmaInfo);
 
-  llvm::DenseSet<Value> seenFieldRoots;
-  for (Value field : commit.getFields()) {
-    Value root = getMemDescRoot(field);
-    if (seenFieldRoots.insert(root).second)
-      analysis.uniqueFieldRoots.push_back(root);
+  for (auto [fieldIndex, field] : llvm::enumerate(commit.getFields())) {
+    unsigned index = static_cast<unsigned>(fieldIndex);
+    if (analysis.tmaInfo.copiedFieldIndices.contains(index))
+      analysis.tmaFieldIndices.push_back(index);
+    else
+      analysis.localStoreRoots.push_back(field);
   }
 
-  for (Value root : analysis.uniqueFieldRoots) {
-    if (!analysis.tmaInfo.copiedRoots.contains(root))
-      analysis.localStoreRoots.push_back(root);
-  }
+  // Independent pure-TMA producers commit disjoint subsets of the pipe
+  // fields to one full barrier. Missing fields are supplied by another
+  // producer and must not be interpreted as local-store payloads.
+  if (definition.multiTmaWriters && analysis.tmaInfo.sawPipeTmaCopy &&
+      analysis.tmaInfo.localStoreRoots.empty())
+    analysis.localStoreRoots.clear();
 
   bool hasTmaPayload = analysis.tmaInfo.sawPipeTmaCopy;
   bool hasLocalPayload = !analysis.localStoreRoots.empty();
@@ -1163,14 +1343,35 @@ static LogicalResult
 analyzePipeCommits(ArrayRef<Operation *> ops,
                    std::map<std::string, PipeDefinition> &pipes,
                    std::map<Operation *, PipeCommitAnalysis> &commitAnalyses) {
-  std::map<std::string, std::optional<PipeCommitTransport>> transports;
+  struct MultiWriterPipeInfo {
+    llvm::DenseSet<int32_t> writerTaskIds;
+    llvm::DenseSet<int32_t> tmaCommitTaskIds;
+    std::map<int32_t, SmallVector<Operation *>> writerAcquires;
+    std::map<int32_t, SmallVector<Operation *>> writerCommits;
+    llvm::DenseSet<unsigned> coveredFieldIndices;
+    std::map<unsigned, int32_t> fieldWriterTaskIds;
+    std::map<int32_t, llvm::DenseSet<unsigned>> writerFieldIndices;
+    unsigned fieldCount = 0;
+    bool hasOverlappingTmaFields = false;
+    bool hasAliasingWriterFields = false;
+    bool hasInconsistentWriterFields = false;
+    bool allCommitsUseTma = true;
+    bool hasWriterClose = false;
+    Operation *diagnosticOp = nullptr;
+  };
 
+  std::map<std::string, MultiWriterPipeInfo> multiWriterPipes;
+
+  // Discover every writer task before classifying commits.
   for (Operation *op : ops) {
     std::string key = getPipeKey(op);
     if (auto create = dyn_cast<PipeCreateOp>(op)) {
       if (pipes.count(key))
         return create.emitOpError("duplicates an existing pipe.create");
-      pipes.emplace(key, PipeDefinition{create, isOneShotPipe(create)});
+      pipes.emplace(key, PipeDefinition{create, isOneShotPipe(create),
+                                        /*multiTmaWriters=*/false});
+      multiWriterPipes[key].fieldCount =
+          static_cast<unsigned>(create.getFields().size());
       continue;
     }
 
@@ -1178,14 +1379,175 @@ analyzePipeCommits(ArrayRef<Operation *> ops,
     if (it == pipes.end())
       return op->emitOpError("requires a preceding matching pipe.create");
 
-    if (auto commit = dyn_cast<PipeWriterCommitOp>(op)) {
-      FailureOr<PipeCommitAnalysis> analysis =
-          analyzePipeCommit(commit, it->second);
-      if (failed(analysis))
+    MultiWriterPipeInfo &multiWriter = multiWriterPipes[key];
+    if (isa<PipeWriterAcquireOp, PipeWriterCommitOp, PipeWriterCloseOp>(op)) {
+      auto taskId =
+          getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+      if (failed(taskId))
         return failure();
-      if (failed(recordDataTransport(transports[key], op, analysis->transport)))
+      multiWriter.writerTaskIds.insert(*taskId);
+      if (isa<PipeWriterAcquireOp>(op))
+        multiWriter.writerAcquires[*taskId].push_back(op);
+      if (isa<PipeWriterCommitOp>(op))
+        multiWriter.writerCommits[*taskId].push_back(op);
+      multiWriter.diagnosticOp = op;
+      multiWriter.hasWriterClose |= isa<PipeWriterCloseOp>(op);
+    }
+  }
+
+  // Detect multi-TMA-writer pipes from their payloads rather than a process
+  // environment toggle. This pre-scan must happen before commit
+  // classification: a partial TMA commit is a legacy mixed TMA/local-store
+  // commit for a single TMA writer, but is a pure-TMA field contribution when
+  // another TMA writer supplies the remaining fields.
+  for (Operation *op : ops) {
+    auto commit = dyn_cast<PipeWriterCommitOp>(op);
+    if (!commit)
+      continue;
+
+    std::string key = getPipeKey(op);
+    auto pipeIt = pipes.find(key);
+    assert(pipeIt != pipes.end() && "pipe existence checked above");
+    // Preserve the legacy single-writer path exactly, including its commit
+    // classification and diagnostic ordering.  The extra payload pre-scan is
+    // needed only when the pipe actually has multiple candidate writer tasks.
+    if (multiWriterPipes[key].writerTaskIds.size() <= 1)
+      continue;
+    FailureOr<Operation *> windowBegin =
+        getPipePayloadWindowBegin(commit, pipeIt->second);
+    if (failed(windowBegin))
+      return failure();
+    FailureOr<TmaPipeCommitInfo> tmaInfo =
+        getRootLevelTmaPipeCommitInfo(commit, *windowBegin);
+    if (failed(tmaInfo))
+      return failure();
+    if (!tmaInfo->sawPipeTmaCopy)
+      continue;
+
+    auto taskId =
+        getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+    if (failed(taskId))
+      return failure();
+    multiWriterPipes[key].tmaCommitTaskIds.insert(*taskId);
+  }
+
+  for (auto &entry : multiWriterPipes)
+    pipes.at(entry.first).multiTmaWriters =
+        entry.second.tmaCommitTaskIds.size() > 1;
+
+  std::map<std::string, std::optional<PipeCommitTransport>> transports;
+  for (Operation *op : ops) {
+    auto commit = dyn_cast<PipeWriterCommitOp>(op);
+    if (!commit)
+      continue;
+
+    std::string key = getPipeKey(op);
+    auto pipeIt = pipes.find(key);
+    assert(pipeIt != pipes.end() && "pipe existence checked above");
+    MultiWriterPipeInfo &multiWriter = multiWriterPipes[key];
+    FailureOr<PipeCommitAnalysis> analysis =
+        analyzePipeCommit(commit, pipeIt->second);
+    if (failed(analysis))
+      return failure();
+    if (failed(recordDataTransport(transports[key], op, analysis->transport)))
+      return failure();
+    multiWriter.allCommitsUseTma &=
+        analysis->transport == PipeCommitTransport::TmaCopy;
+    if (analysis->transport == PipeCommitTransport::TmaCopy) {
+      auto taskId =
+          getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+      if (failed(taskId))
         return failure();
-      commitAnalyses.emplace(op, std::move(*analysis));
+      multiWriter.tmaCommitTaskIds.insert(*taskId);
+      auto [writerFieldsIt, insertedWriterFields] =
+          multiWriter.writerFieldIndices.try_emplace(*taskId);
+      llvm::DenseSet<unsigned> &writerFields = writerFieldsIt->second;
+      if (insertedWriterFields) {
+        writerFields.insert(analysis->tmaFieldIndices.begin(),
+                            analysis->tmaFieldIndices.end());
+      } else if (writerFields.size() != analysis->tmaFieldIndices.size() ||
+                 llvm::any_of(analysis->tmaFieldIndices,
+                              [&](unsigned fieldIndex) {
+                                return !writerFields.contains(fieldIndex);
+                              })) {
+        // A task may have multiple static commit sites in mutually exclusive
+        // control-flow regions, but every site must represent the same logical
+        // contribution to a stage. Otherwise the task can contribute a
+        // different number of arrive.expect_tx operations on different paths.
+        multiWriter.hasInconsistentWriterFields = true;
+      }
+      for (unsigned fieldIndex : analysis->tmaFieldIndices) {
+        auto [fieldIt, inserted] =
+            multiWriter.fieldWriterTaskIds.emplace(fieldIndex, *taskId);
+        if (!inserted && fieldIt->second != *taskId)
+          multiWriter.hasOverlappingTmaFields = true;
+        multiWriter.coveredFieldIndices.insert(fieldIndex);
+      }
+    }
+    commitAnalyses.emplace(op, std::move(*analysis));
+  }
+
+  for (auto &entry : multiWriterPipes) {
+    MultiWriterPipeInfo &info = entry.second;
+    PipeDefinition &definition = pipes.at(entry.first);
+    if (!definition.multiTmaWriters)
+      continue;
+
+    // Logical field ownership is indexed independently of allocation
+    // identity.  When distinct writers' fields share an allocation, require
+    // their static subslice boxes to be provably disjoint.
+    for (auto lhs = info.fieldWriterTaskIds.begin();
+         lhs != info.fieldWriterTaskIds.end(); ++lhs) {
+      for (auto rhs = std::next(lhs); rhs != info.fieldWriterTaskIds.end();
+           ++rhs) {
+        if (lhs->second == rhs->second)
+          continue;
+        Value lhsField = definition.create.getFields()[lhs->first];
+        Value rhsField = definition.create.getFields()[rhs->first];
+        if (!arePipeFieldsProvablyDisjoint(lhsField, rhsField))
+          info.hasAliasingWriterFields = true;
+      }
+    }
+
+    if (info.hasWriterClose || !info.allCommitsUseTma)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple writer tasks but only pure-TMA pipe commits are "
+          "supported");
+    if (info.tmaCommitTaskIds.size() != info.writerTaskIds.size())
+      return info.diagnosticOp->emitOpError(
+          "uses multiple writer tasks but every writer task must provide a "
+          "pure-TMA pipe commit");
+    if (info.hasInconsistentWriterFields)
+      return info.diagnosticOp->emitOpError(
+          "uses a TMA writer task whose commit sites target different pipe "
+          "field sets");
+    if (info.coveredFieldIndices.size() != info.fieldCount)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple pure-TMA writers whose combined commits do not "
+          "cover every pipe field");
+    if (info.hasOverlappingTmaFields)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple pure-TMA writers that target the same pipe field");
+    if (info.hasAliasingWriterFields)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple pure-TMA writers whose fields share an allocation "
+          "but are overlapping or not statically provable as disjoint "
+          "subviews");
+
+    // Catch statically unbalanced writer protocols before lowering.  The
+    // number of dynamic executions and the stage/phase sequence cannot in
+    // general be proven here; the multi-writer pipe API requires each writer
+    // task to execute the same logical acquire/commit cadence.
+    std::optional<size_t> writerSiteCount;
+    for (int32_t taskId : info.writerTaskIds) {
+      ArrayRef<Operation *> acquires = info.writerAcquires[taskId];
+      ArrayRef<Operation *> commits = info.writerCommits[taskId];
+      if (acquires.empty() || acquires.size() != commits.size() ||
+          (writerSiteCount && acquires.size() != *writerSiteCount))
+        return info.diagnosticOp->emitOpError(
+            "uses multiple TMA writers with unbalanced static "
+            "acquire/commit sites");
+      writerSiteCount = acquires.size();
     }
   }
 
@@ -1223,7 +1585,7 @@ static RankedTensorType getCloseTagTensorType(Operation *op, OpBuilder &builder,
 static Value createCloseTagTensor(OpBuilder &builder, Location loc,
                                   RankedTensorType tensorType, bool value);
 
-static PipeState createPipeState(PipeCreateOp op) {
+static PipeState createPipeState(PipeCreateOp op, bool multiTmaWriters) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
   MLIRContext *context = op->getContext();
@@ -1245,14 +1607,29 @@ static PipeState createPipeState(PipeCreateOp op) {
         ttg::MemDescType::get({1}, builder.getI32Type(), closeTagSlotEncoding,
                               sharedMemorySpace, /*mutableMemory=*/true);
 
-    RankedTensorType closeTagArrayTensorType =
-        getCloseTagTensorType(op, builder, {capacity, 1});
-    Value initialCloseTags =
-        createCloseTagTensor(builder, loc, closeTagArrayTensorType,
-                             /*value=*/false);
-    closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
-                                          initialCloseTags);
     closeTagTensorType = getCloseTagTensorType(op, builder, {1});
+    if (llvm::isPowerOf2_64(capacity)) {
+      RankedTensorType closeTagArrayTensorType =
+          getCloseTagTensorType(op, builder, {capacity, 1});
+      Value initialCloseTags =
+          createCloseTagTensor(builder, loc, closeTagArrayTensorType,
+                               /*value=*/false);
+      closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
+                                            initialCloseTags);
+    } else {
+      // Keep the exact stage count in shared memory without constructing a
+      // non-power-of-two register tensor to initialize the close tags.
+      closeTags =
+          ttg::LocalAllocOp::create(builder, loc, closeTagArrayType, Value());
+      Value initialTag = createCloseTagTensor(builder, loc, closeTagTensorType,
+                                              /*value=*/false);
+      for (int64_t stage = 0; stage < capacity; ++stage) {
+        Value index = arith::ConstantIntOp::create(builder, loc, stage, 32);
+        Value slot = ttg::MemDescIndexOp::create(builder, loc, closeTagSlotType,
+                                                 closeTags, index);
+        ttg::LocalStoreOp::create(builder, loc, initialTag, slot);
+      }
+    }
   }
   Value token = ttnvws::CreateTokenOp::create(
       builder, loc, static_cast<uint32_t>(capacity),
@@ -1271,7 +1648,8 @@ static PipeState createPipeState(PipeCreateOp op) {
                   closeTagTensorType,
                   readerNames,
                   oneShot,
-                  /*writerTaskId=*/std::nullopt,
+                  multiTmaWriters,
+                  /*writerTaskIds=*/{},
                   /*writerThreadCount=*/std::nullopt,
                   /*writerFullCount=*/std::nullopt,
                   /*readerTasks=*/{},
@@ -1357,7 +1735,11 @@ public:
     for (Operation *op : ops) {
       std::string key = getPipeKey(op);
       if (auto create = dyn_cast<PipeCreateOp>(op)) {
-        pipes.emplace(key, createPipeState(create));
+        auto definition = pipeDefinitions.find(key);
+        assert(definition != pipeDefinitions.end() &&
+               "pipe definition analysis must cover every pipe.create");
+        pipes.emplace(
+            key, createPipeState(create, definition->second.multiTmaWriters));
         continue;
       }
 

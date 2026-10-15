@@ -174,7 +174,7 @@ def fma_ru(arg0, arg1, arg2, _semantic=None):
 @core.extern
 def fast_dividef(arg0, arg1, _semantic=None):
     return core.extern_elementwise("", "", [arg0, arg1], {
-        (core.dtype("fp32"), core.dtype("fp32")): ("Unsupported", core.dtype("fp32")),
+        (core.dtype("fp32"), core.dtype("fp32")): ("libdevice.fast_dividef", core.dtype("fp32")),
     }, is_pure=True, _semantic=_semantic)
 
 
@@ -904,7 +904,7 @@ def fast_logf(arg0, _semantic=None):
 @core.extern
 def fast_expf(arg0, _semantic=None):
     return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp32"), ): ("Unsupported", core.dtype("fp32")),
+        (core.dtype("fp32"), ): ("libdevice.fast_expf", core.dtype("fp32")),
     }, is_pure=True, _semantic=_semantic)
 
 

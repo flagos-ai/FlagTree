@@ -81,6 +81,8 @@ def run_parser(kernel_fn, args=(), kwargs={}, target=stub_target):
     if "sanitize_overflow" not in kwargs:
         kwargs = dict(kwargs)
         kwargs["sanitize_overflow"] = False
+    # flagtree backend call specialization
+    kwargs = spec_call("filecheck_default_kwargs", kwargs, target) or kwargs
     backend = make_backend(target)
     binder = create_function_from_signature(
         kernel_fn.signature,
@@ -112,7 +114,10 @@ def run_filecheck_test(kernel_fn):
         raise ValueError("kernel function must have a docstring with FileCheck template")
     mlir_module = run_parser(kernel_fn)
 
-    run_filecheck("placeholder", mlir_module.str_nodebug(), check_template)
+    module_str = mlir_module.str_nodebug()
+    # flagtree backend call specialization
+    module_str = spec_call("filecheck_anonymize_ir", module_str) or module_str
+    run_filecheck("placeholder", module_str, check_template)
 
 
 def filecheck_test(fn):

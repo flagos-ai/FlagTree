@@ -40,8 +40,10 @@ def test_assert_tensor(cond_list):
 
 
 def run_all_tests():
-    test_assert_scalar()
-    test_assert_tensor()
+    for cond in (True, False):
+        test_assert_scalar(cond)
+    for cond_list in ([True, True, True], [True, False, True], [False, False, False], [True], [False]):
+        test_assert_tensor(cond_list)
     print("Manually check that the printout is correct!")
 
 

@@ -2,6 +2,9 @@
 #include "triton/Tools/LLVMWarningFilter.h"
 #ifdef __ILUVATAR_TLE__
 #include "Dialect.h"
+#include "iluvatar/tle_raw/include/DeferredRawSourceRegistry.h"
+#include "iluvatar/tle_raw/include/Passes.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #endif
 // #include "cublas_instance.h"
 #include "TritonILUVATARGPUTransforms/Passes.h"
@@ -59,7 +62,11 @@ namespace py = pybind11;
 
 #ifdef __ILUVATAR_TLE__
 void init_triton_iluvatar_tle_ir(py::module m);
+void init_triton_iluvatar_tle_raw_ir(py::module m);
+void init_triton_iluvatar_tle_llvm(py::module m);
 void init_triton_iluvatar_tle_passes(py::module m);
+void init_triton_iluvatar_tle_raw_passes(py::module m);
+void init_iluvatar_tle_raw_passes(py::module &&m);
 #endif
 
 static std::unique_ptr<llvm::TargetMachine>
@@ -323,20 +330,64 @@ void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
                      mlir::createTritonILUVATARGPUOptimizeEpiloguePass);
   ADD_PASS_WRAPPER_0("add_mma_reduce_thread_locality",
                      mlir::createTritonILUVATARGPUMMAReduceThreadLocalityPass);
+  ADD_PASS_WRAPPER_0("add_chain_dot_krotate",
+                     mlir::createTritonILUVATARGPUChainDotKRotatePass);
+  ADD_PASS_WRAPPER_1("add_fa_pipeline",
+                     mlir::createTritonILUVATARGPUFAPipelinePass, int);
+  ADD_PASS_WRAPPER_0("add_update_async_wait_count",
+                     mlir::createTritonILUVATARGPUUpdateAsyncWaitCountPass);
   m.def("add_accelerate_matmul", [](mlir::PassManager &pm, unsigned useSme) {
     pm.addPass(createTritonGPUAccelerateMatmulWithSme(useSme));
   });
 }
 
+#ifdef __ILUVATAR_TLE__
+static void setDeferredRawPendingSources(py::dict sources) {
+  mlir::triton::iluvatar::tle_raw::clearDeferredRawSourceRegistry();
+  for (auto item : sources) {
+    std::string key = py::cast<std::string>(item.first);
+    py::dict entry = py::cast<py::dict>(item.second);
+
+    mlir::triton::iluvatar::tle_raw::DeferredRawSourceEntry rawEntry;
+    rawEntry.sourceId = key;
+    rawEntry.regionDialect = entry["region_dialect"].cast<std::string>();
+    if (entry.contains("extern_func_name") &&
+        !entry["extern_func_name"].is_none()) {
+      rawEntry.externFuncName = entry["extern_func_name"].cast<std::string>();
+    }
+    rawEntry.source = entry["source"].cast<std::string>();
+    if (entry.contains("llvm_ir"))
+      rawEntry.llvmIr = entry["llvm_ir"].cast<std::string>();
+    if (entry.contains("hint"))
+      rawEntry.hint = entry["hint"].cast<std::string>();
+    mlir::triton::iluvatar::tle_raw::getDeferredRawSourceRegistry()[key] =
+        std::move(rawEntry);
+  }
+}
+
+void init_iluvatar_tle_raw_passes(py::module &&m) {
+  m.def("deferred_raw_materialize",
+        [](py::dict sources, mlir::PassManager &pm) {
+          setDeferredRawPendingSources(sources);
+          pm.addPass(mlir::createIluvatarMaterializeDeferredRaw());
+        });
+}
+#endif
+
 void init_triton_iluvatar(py::module &&m) {
 #ifdef __ILUVATAR_TLE__
   init_triton_iluvatar_tle_ir(m.def_submodule("ir"));
+  init_triton_iluvatar_tle_raw_ir(m.def_submodule("raw_ir"));
+  init_triton_iluvatar_tle_llvm(m.def_submodule("llvm"));
 #endif
 
   auto passes = m.def_submodule("passes");
   init_triton_iluvatar_passes_ttgpuir(passes.def_submodule("ttgpuir"));
 #ifdef __ILUVATAR_TLE__
-  init_triton_iluvatar_tle_passes(passes.def_submodule("tle"));
+  init_iluvatar_tle_raw_passes(passes.def_submodule("tle_raw"));
+  auto tle = m.def_submodule("tle");
+  init_triton_iluvatar_tle_passes(tle.def_submodule("passes"));
+  init_triton_iluvatar_tle_raw_passes(tle.def_submodule("raw_passes"));
 #endif
 
   m.attr("TARGET_TRIPLE") = "bi-iluvatar-ilurt";
@@ -348,6 +399,7 @@ void init_triton_iluvatar(py::module &&m) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::triton::iluvatargpu::TritonILUVATARGPUDialect>();
 #ifdef __ILUVATAR_TLE__
+    registry.insert<mlir::DLTIDialect>();
     mlir::triton::iluvatar_tle::registerDialects(registry);
 #endif
     mlir::registerNVVMDialectTranslation(registry);

@@ -54,6 +54,10 @@ inputs:
     description: 'Pass --first-parameter-only to test runner'
     required: true
     default: 'true'
+  pre-command:
+    description: 'Multiline script to run before FlagGems tests (e.g. source env, set LD_LIBRARY_PATH)'
+    required: false
+    default: ''
 
 outputs:
   test-output-dir:
@@ -97,8 +101,16 @@ runs:
       id: run-tests
       shell: bash
       working-directory: ${{ inputs.flaggems-path }}
+      env:
+        PRE_COMMAND: ${{ inputs.pre-command }}
       run: |
         set -x
+
+        # Run user-provided pre-command if any (e.g. source env, set LD_LIBRARY_PATH)
+        if [ -n "$PRE_COMMAND" ]; then
+          echo "Running pre-command..."
+          eval "$PRE_COMMAND"
+        fi
 
         # Set PYTHONPATH to the FlagGems source directory so script can run without installing FlagGems
         export PYTHONPATH="${{ inputs.flaggems-path }}/src${PYTHONPATH:+:${PYTHONPATH}}"

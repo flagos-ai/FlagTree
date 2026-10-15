@@ -60,7 +60,8 @@ def test_tle_cumsum_builder_binding_is_backend_local():
 
     assert hasattr(builder, "create_exclusive_cumsum")
     assert hasattr(libtriton, "iluvatar")
-    assert not hasattr(libtriton, "tle")
+    assert not hasattr(libtriton.tle, "ir")
+    assert not hasattr(libtriton.tle, "passes")
 
 
 def test_tle_cumsum_ttir_uses_iluvatar_tle_op():
@@ -241,14 +242,14 @@ def _run_optimize_layouts_pass(ttgir_text):
 
     module.context = context
     pm = ir.pass_manager(context)
-    iluvatar.passes.tle.add_optimize_exclusive_cumsum_layouts(pm)
+    iluvatar.tle.passes.add_optimize_exclusive_cumsum_layouts(pm)
     pm.run(module, "optimize_exclusive_cumsum_layouts")
     return module.str_nodebug()
 
 
 def test_tle_cumsum_optimize_layouts_pass_is_exposed():
     from triton._C.libtriton import iluvatar
-    assert hasattr(iluvatar.passes.tle, "add_optimize_exclusive_cumsum_layouts")
+    assert hasattr(iluvatar.tle.passes, "add_optimize_exclusive_cumsum_layouts")
 
 
 def test_tle_cumsum_fold_cvt_cumsum_cvt():

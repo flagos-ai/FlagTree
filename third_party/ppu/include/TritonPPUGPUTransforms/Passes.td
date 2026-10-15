@@ -57,7 +57,8 @@ def TlePromoteAsyncLoadToAIUPass : Pass<"tle-promote-async-load-to-aiu", "mlir::
 
   let description = [{
     Finds tt.LoadOp with the tt.load.async attribute and tensor pointer operands,
-    and replaces them with tt.AIULoadOp. Must run before rewrite_tensor_pointer.
+    and replaces them with tt.AIULoadOp; only 1/2/4-byte element types are
+    promoted. Must run before rewrite_tensor_pointer.
   }];
 
   let dependentDialects = ["mlir::triton::TritonDialect"];

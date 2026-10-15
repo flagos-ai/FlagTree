@@ -1,17 +1,16 @@
 """Spacemit backend build and dependency-cache hooks."""
 
 import os
+from pathlib import Path
 
 
 def _get_backend_root() -> str:
     """Return the backend's third_party submodule path."""
-    from pathlib import Path
     return str(Path(__file__).resolve().parents[3] / "third_party" / "spacemit")
 
 
 def _collect_spacemit_package_data(backend):
     """Collect non-Python files the backend needs at runtime."""
-    from pathlib import Path
     backend_dir = Path(backend.backend_dir)
     files = []
     if not backend_dir.is_dir():
@@ -136,7 +135,6 @@ def precompile_hook(*args, **kargs):
 def post_install():
     """Create build-tree symlinks needed for generated include files."""
     try:
-        from pathlib import Path
         backend_root = _get_backend_root()
         build_dirs = list(Path(backend_root, "triton", "build").glob("cmake.*"))
         for build_dir in build_dirs:
@@ -151,25 +149,77 @@ def post_install():
 
 
 def install_extension(*args, **kargs):
-    """Copy spine-triton-opt from the CMake build directory."""
+    import glob
     import shutil
-    import sys
-    from pathlib import Path
+    from collections import defaultdict
+    from python.build_helpers import get_cmake_dir
+    from python.setup_tools.utils.tools import flagtree_configs
 
-    python_dir = Path(__file__).resolve().parents[2]
-    if str(python_dir) not in sys.path:
-        sys.path.insert(0, str(python_dir))
-    from build_helpers import get_cmake_dir
+    cmake_dir = get_cmake_dir()
+    backend_name = flagtree_configs.flagtree_backend
+    backend_src_dir = Path(__file__).resolve().parents[3] / "third_party" / backend_name
 
-    build_temp = Path(get_cmake_dir())
-    spine_triton_opt_src = (build_temp / "third_party" / "spacemit" / "tools" / "spine-triton-opt" / "spine-triton-opt")
-    if not spine_triton_opt_src.exists():
-        print(f"[spacemit] Warning: spine-triton-opt not found at {spine_triton_opt_src}")
-        return
+    backend_dir = os.path.join(backend_src_dir, "backend")
+    bin_dir = os.path.join(backend_dir, "bin")
+    print(f"[spacemit] Preparing bin_dir: {bin_dir}")
+    if os.path.isdir(bin_dir):
+        spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR")
+        if spine_mlir_install_dir:
+            for bin_file in ("llc", "spine-opt", "mlir-translate", "opt"):
+                src = os.path.join(spine_mlir_install_dir, "bin", bin_file)
+                if os.path.exists(src):
+                    shutil.copy(src, os.path.join(bin_dir, bin_file))
+                    print(f"[spacemit] Copied {bin_file} to backend/bin/")
 
-    backend_bin = Path(_get_backend_root()) / "backend" / "bin"
-    backend_bin.mkdir(parents=True, exist_ok=True)
-    spine_triton_opt_dst = backend_bin / "spine-triton-opt"
-    shutil.copy(spine_triton_opt_src, spine_triton_opt_dst)
-    spine_triton_opt_dst.chmod(0o755)
-    print(f"[spacemit] Copied spine-triton-opt to {spine_triton_opt_dst}")
+        # spine-triton-opt is built by this backend rather than shipped in
+        # SPINE_MLIR_INSTALL_DIR. Copy it when reusing an existing build tree.
+        spine_triton_opt_src = os.path.join(str(cmake_dir), "third_party", "spacemit", "tools", "spine-triton-opt",
+                                            "spine-triton-opt")
+        if os.path.exists(spine_triton_opt_src):
+            dst = os.path.join(bin_dir, "spine-triton-opt")
+            shutil.copy(spine_triton_opt_src, dst)
+            os.chmod(dst, 0o755)
+            print("[spacemit] Copied spine-triton-opt to backend/bin/")
+
+    lib_dir = os.path.join(backend_dir, "lib")
+    if os.path.isdir(lib_dir):
+        so_file_list = []
+        spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR")
+        if spine_mlir_install_dir:
+            for pattern in ("libSpeIR*.so*", "libspine_tcm.so*"):
+                so_file_list.extend(glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern)))
+
+        spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR")
+        if spine_runtime_install_dir:
+            so_file_list.extend(glob.glob(os.path.join(spine_runtime_install_dir, "lib", "libspert.so*")))
+
+        lib_groups = defaultdict(list)
+        for so_file in so_file_list:
+            basename = os.path.basename(so_file)
+            lib_groups[basename.split(".so")[0]].append(so_file)
+        for files in lib_groups.values():
+            real_file = max(files, key=lambda f: len(os.path.basename(f)))
+            real_base = os.path.basename(real_file)
+            shutil.copy(os.path.realpath(real_file), os.path.join(lib_dir, real_base))
+            print(f"[spacemit] Copied {real_base} to backend/lib/")
+            # Recreate the SONAME symlink chain so transitive dependencies
+            # such as libspert.so.0 resolve to the versioned real file.
+            for so_file in files:
+                link_base = os.path.basename(so_file)
+                if link_base == real_base:
+                    continue
+                link_path = os.path.join(lib_dir, link_base)
+                if os.path.islink(link_path) or os.path.exists(link_path):
+                    os.unlink(link_path)
+                os.symlink(real_base, link_path)
+                print(f"[spacemit] Symlink {link_base} -> {real_base}")
+
+    spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR")
+    if spine_runtime_install_dir:
+        include_dir = os.path.join(backend_dir, "include", "SpineRuntime")
+        os.makedirs(include_dir, exist_ok=True)
+        for header in ("spert.hpp", "spert_engine.hpp", "spert_abi.h"):
+            src = os.path.join(spine_runtime_install_dir, "include", header)
+            if os.path.exists(src):
+                shutil.copy(src, os.path.join(include_dir, header))
+                print(f"[spacemit] Vendored {header} from spine-runtime")

@@ -29,7 +29,7 @@ def _signal_kernel(
         op="inc",
         space=signal_space,
         group_kind="block",
-        context_idx=0,
+        context_id=0,
     )
     tle.signal(
         device_dptr,
@@ -39,7 +39,7 @@ def _signal_kernel(
         op="add",
         space=signal_space,
         group_kind="block",
-        context_idx=1,
+        context_id=1,
     )
     tle.signal(
         device_dptr,
@@ -48,7 +48,7 @@ def _signal_kernel(
         op="inc",
         space="world",
         group_kind="block",
-        context_idx=0,
+        context_id=0,
     )
     tl.store(result_ptr, local_rank + 1)
 
@@ -66,6 +66,7 @@ def _ir_verify(result, device_dptr, peer, world_peer):
         num_warps=4,
     )
     assert "tle.signal" in compiled.asm["ttgir"]
+    assert "context_id" in compiled.asm["ttgir"]
     assert "flagcxDevSignalInc" in compiled.asm["ptx"]
     assert "flagcxDevSignalAdd" in compiled.asm["ptx"]
 

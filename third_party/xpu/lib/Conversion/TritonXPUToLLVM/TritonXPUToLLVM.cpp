@@ -108,6 +108,8 @@ struct ConvertTritonXPUToLLVM
     // initSharedMemory is run before the conversion of call and ret ops,
     // because the call op has to know the shared memory base address of
     // each function
+    if (failed(stampSharedMemOffsets(mod)))
+      return signalPassFailure();
     initSharedMemory(typeConverter);
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
     OpBuilder::InsertPoint indexInsertPoint;
@@ -175,7 +177,8 @@ struct ConvertTritonXPUToLLVM
     mlir::triton::xpu::populateMakeRangeOpToLLVMPattern(
         typeConverter, targetInfo, patterns, benefit);
 
-    // tle.raw on the cluster path: splice the payload in and call it.
+    // tle.raw on the cluster path: declare the payload and call it; the body is
+    // merged into the module at the LLVM 19 stage (tle/raw/merge.py).
     mlir::triton::xpu::populateRawOpToLLVMPatterns(typeConverter, patterns,
                                                    benefit);
 
@@ -192,6 +195,44 @@ struct ConvertTritonXPUToLLVM
 
 private:
   Value smem;
+
+  /// Assign every `#triton_xpu.smem` `ttg.local_alloc` a byte offset inside the
+  /// cluster-wide shared block, stamped as `xpu.smem_offset`.
+  /// XPUTLELocalAllocOpConversion then lowers the alloc to
+  /// `gep(gep(global_smem, coreId * perCoreBytes), smem_offset)`, so a region
+  /// is `perCoreBytes * kCoresPerCluster` wide -- SM, unlike LM, is not
+  /// replicated per core.
+  ///
+  /// Regions are laid out top-down from the budget so that they stay clear of
+  /// the bottom of the block, where anything growing upwards would sit. Note
+  /// that `tritonxpu-loop-invariant-staging` also reserves SM top-down at
+  /// runtime (see third_party/xpu/docs/XPUTLEPipelineDesignDoc.md:601); the two
+  /// schemes would collide, and today only do not because a TLE kernel never
+  /// stages.
+  LogicalResult stampSharedMemOffsets(ModuleOp mod) {
+    unsigned groupSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    unsigned nextTop = triton::xpu::kSharedMemBudgetBytes;
+    LogicalResult res = success();
+    mod.walk([&](triton::gpu::LocalAllocOp alloc) {
+      if (!triton::xpu::isSharedMemDesc(alloc.getType()))
+        return;
+      unsigned bytes = triton::xpu::getSharedMemRegionBytes(alloc, groupSize);
+      if (bytes > nextTop) {
+        alloc.emitError("out of shared memory: this #triton_xpu.smem buffer "
+                        "needs ")
+            << bytes << " bytes but only " << nextTop << " of the "
+            << triton::xpu::kSharedMemBudgetBytes
+            << "-byte cluster block are left";
+        res = failure();
+        return;
+      }
+      nextTop -= bytes;
+      OpBuilder b(alloc);
+      alloc->setAttr(triton::xpu::kSharedMemOffsetAttrName,
+                     b.getI32IntegerAttr(static_cast<int32_t>(nextTop)));
+    });
+    return res;
+  }
 
   void initSharedMemory(LLVMTypeConverter &typeConverter) {
     ModuleOp mod = getOperation();

@@ -217,12 +217,55 @@ static const Fp8ConversionDesc Bf16_to_Fp8E5M2(bool hasNativeFP) {
   return ret;
 }
 
+// Software E4M3FN -> FP16 for capability < 89 (no e4m3 cvt instructions):
+// reads 4 e4m3 bytes from $2 and leaves 4 f16 values in v0/v1. Embedding
+// exp+mantissa at the fp16 position gives value * 2^-8 (linear for subnormals
+// too), one multiply by 256 rebiases; NaN codes (embedded as 480) get masked.
+static const char Fp8E4M3Nv_to_Fp16_SwCore[] =
+    ".reg .b32 a<2>, b<2>, t<2>, u<2>, w<2>, m<2>;\n"
+    ".reg .b32 v<2>, e256;                        \n"
+    "ppu.mov.u32 e256, 0x5c005c00;                \n" // 256.0 x f16x2
+    "ppu.prmt.b32 a0, 0, $2, 0x5140;              \n" // a0 = 0xf300f400
+    "ppu.prmt.b32 a1, 0, $2, 0x7362;              \n" // a1 = 0xf100f200
+    "ppu.lop3.b32 b0, a0, 0x7f007f00, 0, 0xc0;    \n" // strip sign
+    "ppu.lop3.b32 b1, a1, 0x7f007f00, 0, 0xc0;    \n"
+    "ppu.shr.b32  b0, b0, 1;                      \n" // em<<8 -> em<<7
+    "ppu.shr.b32  b1, b1, 1;                      \n"
+    "ppu.mul.rn.f16x2 b0, b0, e256;               \n" // rebias by 2^8
+    "ppu.mul.rn.f16x2 b1, b1, e256;               \n"
+    "ppu.lop3.b32 b0, b0, 0x80008000, a0, 0xf8;   \n" // restore sign
+    "ppu.lop3.b32 b1, b1, 0x80008000, a1, 0xf8;   \n"
+    "ppu.and.b32 t0, a0, 0x7f007f00;              \n" // NaN lanes have
+    "ppu.and.b32 t1, a1, 0x7f007f00;              \n" // em == 0x7f
+    "ppu.add.u32 u0, t0, 0x01000100;              \n"
+    "ppu.add.u32 u1, t1, 0x01000100;              \n"
+    "ppu.and.b32 w0, u0, 0x80008000;              \n"
+    "ppu.and.b32 w1, u1, 0x80008000;              \n"
+    "ppu.shr.b32 w0, w0, 15;                      \n"
+    "ppu.shr.b32 w1, w1, 15;                      \n"
+    "ppu.mul.lo.u32 m0, w0, 0xffff;               \n" // 0/1 -> lane mask
+    "ppu.mul.lo.u32 m1, w1, 0xffff;               \n"
+    "ppu.lop3.b32 v0, b0, m0, 0x7e007e00, 0xb8;   \n" // NaN -> 0x7e00
+    "ppu.lop3.b32 v1, b1, m1, 0x7e007e00, 0xb8;   \n";
+
 // Fp8E4M3 (x2) -> Fp16 (x2) (packed)
-static const Fp8ConversionDesc Fp8E4M3Nv_to_Fp16 = {
-    "{ \n"
-    "ppu.cvt.rn.f16x2.e4m3x2 $0, $1; \n"
-    "}",
-    16, 32, 2};
+static const Fp8ConversionDesc Fp8E4M3Nv_to_Fp16(bool hasNativeFP) {
+  Fp8ConversionDesc ret;
+  if (!hasNativeFP) {
+    ret = {std::string("{                                            \n") +
+               Fp8E4M3Nv_to_Fp16_SwCore +
+               "ppu.mov.b32 $0, v0;                          \n"
+               "ppu.mov.b32 $1, v1;                          \n"
+               "}",
+           32, 32, 4};
+  } else {
+    ret = {"{ \n"
+           "ppu.cvt.rn.f16x2.e4m3x2 $0, $1; \n"
+           "}",
+           16, 32, 2};
+  }
+  return ret;
+}
 
 // Fp16 (x2) -> Fp8E4M3 (x2) (packed)
 static const Fp8ConversionDesc Fp16_to_Fp8E4M3Nv = {
@@ -233,22 +276,26 @@ static const Fp8ConversionDesc Fp16_to_Fp8E4M3Nv = {
 
 static const Fp8ConversionDesc Fp8E4M3Nv_to_Bf16(bool hasNativeFP) {
   Fp8ConversionDesc ret;
-  // Fp8E4M3 (x2) -> Fp16 (x2) (packed)
   if (!hasNativeFP) {
-    ret = {"{                                       \n"
-           ".reg .b32 a;                            \n"
-           ".reg .f16 a<2>;                         \n"
-           ".reg .f32 b<2>;                         \n"
-           ".reg .b16 c<2>;                         \n"
-           "ppu.cvt.rn.f16x2.e4m3x2 a, $1;              \n"
-           "ppu.mov.b32 {a0, a1}, a;                    \n"
-           "ppu.cvt.f32.f16 b0, a0;                     \n"
-           "ppu.cvt.f32.f16 b1, a1;                     \n"
-           "ppu.cvt.rn.bf16.f32 c0, b0;                 \n"
-           "ppu.cvt.rn.bf16.f32 c1, b1;                 \n"
-           "ppu.mov.b32 $0, {c0, c1};                   \n"
-           "}",
-           16, 32, 2};
+    // software E4M3FN -> FP16 core plus exact f16 -> f32 -> bf16 cvt chains
+    ret = {std::string("{                                            \n") +
+               Fp8E4M3Nv_to_Fp16_SwCore +
+               ".reg .b16 h<4>, r<4>;                        \n"
+               ".reg .f32 f<4>;                              \n"
+               "ppu.mov.b32 {h0, h1}, v0;                    \n"
+               "ppu.mov.b32 {h2, h3}, v1;                    \n"
+               "ppu.cvt.f32.f16 f0, h0;                      \n"
+               "ppu.cvt.f32.f16 f1, h1;                      \n"
+               "ppu.cvt.f32.f16 f2, h2;                      \n"
+               "ppu.cvt.f32.f16 f3, h3;                      \n"
+               "ppu.cvt.rn.bf16.f32 r0, f0;                  \n"
+               "ppu.cvt.rn.bf16.f32 r1, f1;                  \n"
+               "ppu.cvt.rn.bf16.f32 r2, f2;                  \n"
+               "ppu.cvt.rn.bf16.f32 r3, f3;                  \n"
+               "ppu.mov.b32 $0, {r0, r1};                    \n"
+               "ppu.mov.b32 $1, {r2, r3};                    \n"
+               "}",
+           32, 32, 4};
   } else {
     ret = {"{                                       \n"
            ".reg .b32 a;                            \n"
@@ -461,10 +508,12 @@ struct FpToFpOpConversion
 
     auto undefRounding = static_cast<RoundingMode>(-1);
 
-    static DenseMap<std::tuple<TypeID, TypeID, RoundingMode>, Fp8ConversionDesc>
+    // entries depend on computeCapability, so the map must not be static
+    const DenseMap<std::tuple<TypeID, TypeID, RoundingMode>, Fp8ConversionDesc>
         srcMap = {
             // F8 -> F16
-            {{F8E4M3TyID, F16TyID, undefRounding}, Fp8E4M3Nv_to_Fp16},
+            {{F8E4M3TyID, F16TyID, undefRounding},
+             Fp8E4M3Nv_to_Fp16(computeCapability >= 89)},
             {{F8E5M2TyID, F16TyID, undefRounding},
              Fp8E5M2_to_Fp16(computeCapability >= 89)},
             {{F16TyID, F8E4M3TyID, RoundingMode::RTNE}, Fp16_to_Fp8E4M3Nv},
@@ -498,10 +547,12 @@ struct FpToFpOpConversion
       llvm::errs() << "\n";
       llvm::report_fatal_error("Unsupported rounding mode for conversion.");
     }
-    if (computeCapability < 89 && (llvm::isa<Float8E4M3FNType>(srcTy) ||
-                                   llvm::isa<Float8E4M3FNType>(dstTy))) {
-      llvm::report_fatal_error("Conversion from/to f8e4m3nv is only supported "
-                               "on compute capability >= 89\n");
+    if (computeCapability < 89 && llvm::isa<Float8E4M3FNType>(dstTy)) {
+      // downcasts to f8e4m3nv are implemented in the frontend
+      // (convert_custom_types) below capability 89
+      llvm::report_fatal_error(
+          "Conversion to f8e4m3nv is only supported on compute capability >= "
+          "89; on this target the frontend lowers such casts in software\n");
     }
     auto convDesc = srcMap.lookup(key);
     return {makeConverterFromTIX(

@@ -16,6 +16,7 @@ import signal
 import os
 import subprocess
 from pathlib import Path
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from .distributed import Distributed
 
 
@@ -264,6 +265,8 @@ class CUDABackend(BaseBackend):
 
     def load_dialects(self, ctx):
         nvidia.load_dialects(ctx)
+        if COMMON_IR_ENABLED:
+            tle.load_tile_dialects(ctx)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.load_dialects(ctx)
 
@@ -276,6 +279,8 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        if COMMON_IR_ENABLED:
+            nvidia.passes.commonir.add_to_ttgir(pm, capability >= 80)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         if capability // 10 < 9:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
@@ -285,6 +290,11 @@ class CUDABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
+        # flagtree: Plan logical roots after TTIR cleanup and before assigning register layouts.
+        if hasattr(tle.passes, "add_plan_logical_domains"):
+            # Logical copy planning needs the CTA warp count before TTGPU conversion.
+            mod.set_attr("ttg.num-warps", ir.builder(mod.context).get_int32_attr(opt.num_warps))
+            tle.passes.add_plan_logical_domains(pm)
         pm.run(mod, 'make_ttir')
         return mod
 

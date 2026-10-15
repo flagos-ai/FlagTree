@@ -23,6 +23,7 @@
 
 #include "TritonILUVATARGPUTransforms/Passes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -59,6 +60,44 @@ bool isOneOperandElementwiseOp(Operation *op) {
   return false;
 }
 
+// Bypassing shared memory only pays off if the mma tile can reach memory
+// coalesced, and the TCU tile puts its fast lane bits on the LAST tensor dim
+// (see iluvatarMmaTile: lane covers N first, then the low M offsets). So does
+// every tile chooseIluvatarStoreLayout derives from it, down to the register
+// bit it vectorizes on. A transposed epilogue -- e.g. col-major-S flash
+// attention, whose accumulator is O[d, m] but whose pointers are the row-major
+// O[m, d], making dim0 the contiguous one -- would therefore have adjacent
+// lanes writing addresses `rowStride` apart: one 2-byte transaction per
+// element.
+//
+// Coalescing dim0 instead is unreachable without shared memory. The layout that
+// does it disagrees with #mma about which warp owns which column, so
+// minimalCvtLayout keeps a `warp` out dimension and cvtNeedsWarpShuffle returns
+// false at its out-dim check, before it ever counts transpositions -- shuffles
+// cannot move data across warps, so no threshold would help. Nothing to win by
+// bypassing, then: leave the store on the generic #mma -> #blocked
+// shared-memory path, which does produce wide coalesced stores. Without this
+// guard the fp16 store degrades to per-element 2-byte writes.
+//
+// Ask getOrderForMemory, not getOrder: the latter reports register contiguity,
+// which says nothing about addresses once a thread holds a single element per
+// tile. A fully coalesced [128, 512] f32 store whose lanes and warps already
+// span all of dim1 has to spend its register bases repeating along dim0, so
+// getOrder answers [0, 1] and the guard would reject a store that is perfectly
+// contiguous. getOrderForMemory falls back to the thread order exactly in that
+// degenerate case.
+//
+// Only ask this of stores that really are the epilogue: see the caller.
+static bool storeMatchesMmaContiguity(RankedTensorType ptrType,
+                                      Attribute mmaEncoding) {
+  if (!isa<triton::gpu::IluvatarMmaEncodingAttr>(mmaEncoding))
+    return true;
+  auto order = triton::gpu::getOrderForMemory(ptrType);
+  if (order.empty())
+    return true;
+  return order.front() == ptrType.getRank() - 1;
+}
+
 // Tries to optimize oldStoreOp with v_permlane*_swap instruction when possible.
 // Returns null store op if not suitable.
 static triton::StoreOp
@@ -69,11 +108,16 @@ usePermlaneSwapToOptimizeStore(PatternRewriter &rewriter, Value ptr, Value val,
 
   // Build a store-friendly layout: each thread holds 2 consecutive columns
   // (-> 32-bit 2xfp16/bf16 global stores) AND adjacent lanes map to adjacent
-  // columns (coalesced). Relative to the TCU mma tile this needs 2 mixed
-  // register<->lane transpositions, lowered as a register-only multi-shuffle
-  // (prmt + slb.shfl, no shared-memory round-trip) thanks to the relaxed
-  // cvtNeedsWarpShuffle gate (<3) on Iluvatar. Coalescing is load-bearing:
-  // an uncoalesced 2-element layout regresses vs the blocked+SMEM baseline.
+  // columns (coalesced). The 16x32 tile differs from the TCU mma tile by
+  // exactly one mixed register<->lane transposition, so its convert clears the
+  // default cvtNeedsWarpShuffle gate (<2) and lowers to a register-only
+  // multi-shuffle (prmt + slb.shfl, no shared-memory round-trip). The
+  // single-16x16 fallback tile needs two and therefore does not clear that
+  // gate: it still gets the wide coalesced store, but pays a shared-memory
+  // round-trip for the convert. See the comments on iluvatarStoreTile2TCU.
+  // Coalescing is load-bearing: an uncoalesced 2-element layout regresses vs
+  // the blocked+SMEM baseline, and only reaching 32B instead of 64B per warp
+  // costs ~1.5% on fp16 matmul.
   std::optional<triton::LinearLayout> storeLL =
       triton::gpu::chooseIluvatarStoreLayout(valType);
   if (!storeLL)
@@ -161,6 +205,18 @@ public:
       return mlir::failure();
 
     if (!cvtOp.getResult().hasOneUse())
+      return mlir::failure();
+
+    // Trading the round trip for coalescing is only a good deal on the way out
+    // of the kernel. A store inside a loop pays that trip every iteration --
+    // including the barrier pair, which serializes against the pipelined loads
+    // it shares the loop with -- and its scratch stays allocated for the whole
+    // kernel. Col-major-S flash attention hits this with its debug softmax
+    // mask: a [BLOCK_N, BLOCK_M] f32 store in the KV loop, whose 128KB of
+    // scratch on top of the epilogue's own put the kernel over the
+    // shared-memory limit.
+    if (!stOp->getParentOfType<LoopLikeOpInterface>() &&
+        !storeMatchesMmaContiguity(ptrType, encoding))
       return mlir::failure();
 
     auto newEncoding =

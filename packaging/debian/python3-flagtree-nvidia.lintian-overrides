@@ -1,0 +1,6 @@
+# libtriton/libproton keep their symbol tables on purpose: Triton's JIT does
+# runtime symbol lookups in them. Only the DWARF sections are removed
+# (strip --strip-debug in debian/rules); lintian counts a present .symtab as
+# "unstripped".
+unstripped-binary-or-object [usr/lib/python3/dist-packages/triton/_C/libtriton.cpython-312-x86_64-linux-gnu.so]
+unstripped-binary-or-object [usr/lib/python3/dist-packages/triton/_C/libproton.cpython-312-x86_64-linux-gnu.so]

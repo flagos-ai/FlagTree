@@ -67,4 +67,27 @@ def Tle_FlagCXTeamKindAttr : I32EnumAttr<
   let cppNamespace = "::mlir::triton::tle";
 }
 
+
+def Tle_SyncScopeAttr : I32EnumAttr<
+  "SyncScope", "",
+  [
+    I32EnumAttrCase<"SYSTEM", 0, "system">,
+    I32EnumAttrCase<"DEVICE", 1, "device">,
+    I32EnumAttrCase<"BLOCK", 2, "block">,
+    I32EnumAttrCase<"THREAD", 3, "thread">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
+
+def Tle_MemoryOrderAttr : I32EnumAttr<"MemoryOrder", "",
+  [
+    I32EnumAttrCase<"RELAXED", 0, "relaxed">,
+    I32EnumAttrCase<"ACQUIRE", 1, "acquire">,
+    I32EnumAttrCase<"RELEASE", 2, "release">,
+    I32EnumAttrCase<"ACQ_REL", 3, "acq_rel">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
 #endif

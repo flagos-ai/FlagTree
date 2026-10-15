@@ -163,6 +163,8 @@ else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
 endif()
 
+flagtree_configure_backend_llvm_compat()
+
 include_directories(".")
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${LLVM_INCLUDE_DIRS})
@@ -333,6 +335,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   # Link triton with its dependencies
   target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})  # flagtree: PUBLIC
+  flagtree_configure_backend_triton_target(triton)
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
     set_target_properties(triton PROPERTIES SUFFIX ".pyd")

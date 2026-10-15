@@ -3700,7 +3700,11 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             w = to_numpy(convert_fp8_to_fp32(w, device, in_dtype))
         z_ref = np.matmul(z_ref, w)
     # compare
-    if in_dtype == 'float32':
+    if in_dtype == 'int8':
+        # int8 x int8 -> int32 runs on the native s8 matrix path and must be
+        # bit-exact; the f32 reference is exact at these sizes (|acc| < 2^24)
+        np.testing.assert_array_equal(z_ref, to_numpy(z_tri))
+    elif in_dtype == 'float32':
         # XXX: Somehow there's a larger difference when we use float32
         np.testing.assert_allclose(z_ref, to_numpy(z_tri), rtol=0.01, atol=1e-3)
     elif out_dtype == tl.float16 or in_dtype == 'bfloat16':
@@ -3708,6 +3712,16 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
     else:
         # added atol, to loose precision for float16xfloat16->float32 case
         np.testing.assert_allclose(z_ref, to_numpy(z_tri), rtol=0.01, atol=1e-3)
+
+    if is_musa() and in_dtype == 'int8':
+        # native-path acceptance: the s8 matrix instruction (SQMMA smma or WMMA
+        # imma) is emitted and the operands are not silently promoted to
+        # f16/bf16 or lowered to the FMA software path
+        llir = pgm.asm['llir']
+        assert re.search(r'llvm\.musa\.(sqmma\.smma|imma)\.m\d+n\d+k\d+\.mma', llir), \
+            'expected native s8 matrix instruction (sqmma.smma / imma)'
+        assert not re.search(r'llvm\.musa\.(ffmma|bfmma)\.', llir), 'int8 dot must not promote to f16/bf16'
+        assert 'fmuladd' not in llir, 'int8 dot must not fall back to FMA'
 
     if not (is_cuda() or is_hip_cdna() or is_hip_gfx1250()):
         return
@@ -3786,6 +3800,37 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                    r'(?:(?!st\.shared).)*'
                    r'cvt\.rn\.f16x2\.f32')
         assert re.search(pattern, ptx, flags=re.DOTALL)
+
+
+@pytest.mark.interpreter
+def test_dot_int8_explicit_acc(device):
+    # int8 x int8 dot returns int32 regardless of out_dtype, so an explicit
+    # accumulator is int32 as well: tl.dot(a_i8, b_i8, acc=acc_i32)
+    M = N = K = 64
+
+    @triton.jit
+    def kernel(a_ptr, b_ptr, init_ptr, c_ptr, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
+        offs_m = tl.arange(0, BM)
+        offs_n = tl.arange(0, BN)
+        offs_k = tl.arange(0, BK)
+        a = tl.load(a_ptr + offs_m[:, None] * BK + offs_k[None, :])
+        b = tl.load(b_ptr + offs_k[:, None] * BN + offs_n[None, :])
+        acc = tl.load(init_ptr + offs_m[:, None] * BN + offs_n[None, :])
+        c = tl.dot(a, b, acc=acc)
+        tl.store(c_ptr + offs_m[:, None] * BN + offs_n[None, :], c)
+
+    rs = RandomState(23)
+    a = numpy_random((M, K), dtype_str='int8', rs=rs)
+    b = numpy_random((K, N), dtype_str='int8', rs=rs)
+    # keep |init + a@b| < INT32_MAX: the s8 matrix instruction accumulates
+    # satfinite, so an overflowing reference would diverge (hardware clamps,
+    # numpy wraps)
+    init = (numpy_random((M, N), dtype_str='int32', rs=rs) % (1 << 20)).astype(np.int32)
+    a_tri, b_tri = to_triton(a, device=device), to_triton(b, device=device)
+    init_tri, c_tri = to_triton(init, device=device), to_triton(np.zeros((M, N), dtype=np.int32), device=device)
+    kernel[(1, )](a_tri, b_tri, init_tri, c_tri, BM=M, BN=N, BK=K)
+    ref = a.astype(np.int64) @ b.astype(np.int64) + init.astype(np.int64)
+    np.testing.assert_array_equal(to_numpy(c_tri).astype(np.int64), ref)
 
 
 @pytest.mark.parametrize('in_dtype', ['float32'])

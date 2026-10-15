@@ -30,9 +30,257 @@ import warnings
 from typing import List, Optional, Sequence, Tuple, Union
 
 from triton._C.libtriton import ir
-from triton import language as tl
+from triton.language.semantic import TritonSemantic
+import triton.language.core as tl
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from . import types as tle
+from .mthreads import copy as mthreads_copy
 from math import prod
+
+
+class TLEFrontendSemantic(TritonSemantic):
+    """Triton frontend with logical descriptor carriers for TLE lowering."""
+
+    @staticmethod
+    def _reject_logical_descriptor_use(desc):
+        """Reject only logical descriptors; ordinary descriptors keep Triton semantics."""
+        if not isinstance(desc, tle._logical_tensor_descriptor):
+            return
+        raise ValueError("logical TLE tensor descriptors must be used with tle.gpu.copy")
+
+    def make_tensor_descriptor(self, base, shape, strides, block_shape, padding_option="zero"):
+        block_shape = tl._unwrap_shape(block_shape)
+        logical_shape = None
+        if any(dim & (dim - 1) for dim in block_shape):
+            from triton._flagtree_backend import get_active_backend_name
+
+            try:
+                backend = get_active_backend_name()
+            except RuntimeError as exc:
+                raise ValueError(
+                    "TLE logical descriptors with non-power-of-two block shapes require the NVIDIA backend; "
+                    "the active backend could not be determined") from exc
+            if backend != "nvidia":
+                raise ValueError(
+                    "TLE logical descriptors with non-power-of-two block shapes require the NVIDIA backend; "
+                    f"got backend {backend!r}")
+            payload = block_shape[-2:]
+            if (len(block_shape) < 2 or any(dim != 1 for dim in block_shape[:-2])
+                    or sum(bool(dim & (dim - 1)) for dim in payload) != 1
+                    or any(dim <= 0 or dim % 16 for dim in payload)):
+                raise ValueError("TLE logical descriptors require unit leading dimensions and a rank-2 payload "
+                                 "with one non-power-of-two axis; payload dimensions must be multiples of 16")
+            logical_shape = block_shape
+            block_shape = [1 << (dim - 1).bit_length() for dim in block_shape]
+        desc = super().make_tensor_descriptor(base, shape, strides, block_shape, padding_option)
+        if logical_shape is not None:
+            # Keep the carrier descriptor ordinary until a TLE TMA copy
+            # consumes it.  This prevents unused descriptors from entering
+            # logical-domain planning.
+            self.builder.mark_logical_tensor_descriptor_pending(desc.handle, logical_shape)
+            desc = tle._logical_tensor_descriptor(desc, logical_shape)
+        return desc
+
+    def descriptor_load(self, desc, offsets, cache_modifier, eviction_policy):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_load(desc, offsets, cache_modifier, eviction_policy)
+
+    def descriptor_store(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_store(desc, value, offsets)
+
+    def descriptor_atomic_add(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_atomic_add(desc, value, offsets)
+
+    def descriptor_atomic_min(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_atomic_min(desc, value, offsets)
+
+    def descriptor_atomic_max(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_atomic_max(desc, value, offsets)
+
+    def descriptor_atomic_and(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_atomic_and(desc, value, offsets)
+
+    def descriptor_atomic_or(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_atomic_or(desc, value, offsets)
+
+    def descriptor_atomic_xor(self, desc, value, offsets):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_atomic_xor(desc, value, offsets)
+
+    def descriptor_gather(self, desc, x_offsets, y_offset, cache_modifier, eviction_policy):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_gather(desc, x_offsets, y_offset, cache_modifier, eviction_policy)
+
+    def descriptor_scatter(self, desc, value, x_offsets, y_offset):
+        self._reject_logical_descriptor_use(desc)
+        return super().descriptor_scatter(desc, value, x_offsets, y_offset)
+
+
+def _expand_index_to_shape(index, shape, axis, _semantic):
+    result = index
+    for _ in range(axis):
+        result = tl.expand_dims(result, 0, _semantic=_semantic)
+    for _ in range(len(shape) - axis - 1):
+        result = tl.expand_dims(result, len(result.shape), _semantic=_semantic)
+    return tl.broadcast_to(result, *shape, _semantic=_semantic)
+
+
+def _make_full_indices(buffer, _semantic):
+    shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in buffer.type.shape)
+    return tuple(
+        _expand_index_to_shape(tl.arange(0, dim, _semantic=_semantic), shape, axis, _semantic)
+        for axis, dim in enumerate(shape))
+
+
+def alloc(shape, dtype, storage, layout, layout_handle, init_value, _semantic):
+    builder = _semantic.builder
+    shape = [int(tl._unwrap_if_constexpr(dim)) for dim in shape]
+    element_type = dtype.to_ir(builder)
+    if COMMON_IR_ENABLED:
+        memory_space = builder.tile_get_string_attr(tle._storage_to_tile_space(storage))
+        tile_ty = builder.tile_get_buffer_type(shape, element_type, memory_space)
+        handle = builder.create_tile_alloc(tile_ty, layout_handle)
+        if init_value is not None:
+            builder.create_tile_store_tensor(init_value.handle, handle)
+    elif storage == tle.smem:
+        if init_value is None:
+            handle = builder.create_local_alloc(shape, element_type, layout_handle)
+        else:
+            result_type = builder.get_memdesc_type(shape, element_type, layout_handle, "smem")
+            handle = builder.create_local_alloc(result_type, init_value.handle)
+    else:
+        raise ValueError(f"Storage type {storage} not yet supported")
+
+    result = tle.buffered_tensor(handle, dtype, list(shape), storage, layout, _semantic)
+    return result
+
+
+def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None):
+    descriptor = src if isinstance(src,
+                                   tl.tensor_descriptor) else dst if isinstance(dst, tl.tensor_descriptor) else None
+
+    if COMMON_IR_ENABLED:
+        if descriptor is None:
+            buffer = dst if isinstance(dst, tle.buffered_tensor) else src
+            pointers = src if buffer is dst else dst
+            requested_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in shape)
+            buffer_shape = tuple(buffer.type.shape)
+            if requested_shape != buffer_shape or tuple(pointers.shape) != buffer_shape:
+                raise ValueError("GPU CommonIR copy requires shape and pointer tensor shape to match the full buffer")
+            if not pointers.dtype.is_ptr() or pointers.dtype.element_ty != buffer.dtype:
+                raise ValueError("GPU CommonIR copy requires pointers with the buffer element type")
+            _semantic.builder.create_tile_copy(src.handle, dst.handle, False)
+            return
+        indices = _semantic._convert_to_ir_values(offsets, require_i64=False)
+        buffer = dst if isinstance(dst, tle.buffered_tensor) else src
+        memdesc = get_memdesc(buffer, _semantic)
+        src_handle = src.handle if src is descriptor else memdesc
+        dst_handle = dst.handle if dst is descriptor else memdesc
+        if completion_barrier is None:
+            _semantic.builder.create_tma_copy(src_handle, dst_handle, indices)
+        else:
+            _semantic.builder.create_tma_copy(src_handle, dst_handle, indices, completion_barrier.handle,
+                                              completion_barrier.expect_bytes)
+        return
+
+    if descriptor is not None:
+        if mthreads_copy.enabled():
+            mthreads_copy.tmacopy(src, dst, direction, shape, offsets, _semantic)
+            return
+        indices = _semantic._convert_to_ir_values(offsets, require_i64=False)
+        _semantic.builder.create_tma_copy(src.handle, dst.handle, indices)
+        return
+
+    if mthreads_copy.enabled():
+        mthreads_copy.validate_normal_copy(src, dst, shape, direction)
+    if isinstance(_semantic, TLESemantic):
+        _semantic.analyze_copy_operation(src, dst, shape)
+
+    mask = None
+    boundary_check = ()
+    cache_modifier = ""
+    eviction_policy = ""
+    if direction.name == "GM_TO_LOCAL":
+        load_extra_args = () if mthreads_copy.enabled() else (None, )
+        value = _semantic.load(src, mask, None, boundary_check, "", cache_modifier, eviction_policy, False,
+                               *load_extra_args)
+        from .core import local_ptr
+        ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
+        _semantic.store(ptrs, value, mask, boundary_check, cache_modifier, eviction_policy)
+    else:
+        from .core import local_ptr
+        ptrs = local_ptr(src, _make_full_indices(src, _semantic), _semantic=_semantic)
+        value = tl.load(ptrs, _semantic=_semantic)
+        _semantic.store(dst, value, mask, boundary_check, cache_modifier, eviction_policy)
+
+
+def subview(src, offsets, shape, strides, layout, _semantic, alloc_shape=None):
+    builder = _semantic.builder
+    raw_offsets = list(offsets)
+    offsets = [_semantic.to_tensor(offset) for offset in raw_offsets]
+    alloc_shape = shape if alloc_shape is None else alloc_shape
+    if not COMMON_IR_ENABLED:
+        result_type = tle.buffered_tensor_type(src.dtype, shape, src.type.storage, layout, _semantic,
+                                               alloc_shape=alloc_shape).to_ir(builder)
+        if len(shape) == len(src.shape):
+            static_offsets = [tl._unwrap_if_constexpr(offset) for offset in raw_offsets]
+            if not all(isinstance(offset, int) for offset in static_offsets):
+                raise ValueError("same-rank buffered_tensor subviews require static offsets")
+            return builder.create_memdesc_subslice(result_type, src.handle, static_offsets)
+        if len(shape) == len(src.shape) - 1:
+            return builder.create_memdesc_index(result_type, src.handle, offsets[0].handle)
+        raise ValueError("buffered_tensor subviews must preserve rank or drop exactly one leading dimension")
+    return builder.create_tile_subview(
+        src.handle,
+        [offset.handle for offset in offsets],
+        shape,
+        strides,
+        layout.to_ir(builder),
+    )
+
+
+def to_tensor(buffer, writable, result_type, _semantic):
+    if COMMON_IR_ENABLED:
+        if tuple(result_type.shape) != tuple(buffer.type.shape):
+            raise ValueError("GPU CommonIR buffered_tensor.load requires the full buffer shape")
+        result = _semantic.builder.create_tile_to_tensor(buffer.handle, writable)
+        return tl.tensor(result, result_type)
+    from .core import local_ptr
+    ptrs = local_ptr(buffer, _make_full_indices(buffer, _semantic), _semantic=_semantic)
+    return tl.load(ptrs, _semantic=_semantic)
+
+
+def store_tensor(value, dst, _semantic):
+    if COMMON_IR_ENABLED:
+        if tuple(value.shape) != tuple(dst.type.shape) or value.dtype != dst.dtype:
+            raise ValueError("GPU CommonIR buffered_tensor.store requires the full buffer shape and element type")
+        _semantic.builder.create_tile_store_tensor(value.handle, dst.handle)
+        return
+    from .core import local_ptr
+    ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
+    _semantic.store(ptrs, value, None, (), "", "")
+
+
+def local_ptr(result_ir, buffer, indices, _semantic):
+    handles = [index.handle for index in indices]
+    if not COMMON_IR_ENABLED:
+        return _semantic.builder.create_local_pointers(result_ir, buffer.handle, *handles)
+    memdesc = get_memdesc(buffer, _semantic)
+    return _semantic.builder.create_local_pointers(result_ir, memdesc, *handles)
+
+
+def get_memdesc(buffer, _semantic):
+    """Bridge a CommonIR buffer to the descriptor type consumed by TLE pipe ops."""
+    if not COMMON_IR_ENABLED:
+        return buffer.handle
+    result_type = buffer.type.to_memdesc_ir(_semantic.builder)
+    return _semantic.builder.create_tile_get_memdesc(result_type, buffer.handle)
 
 
 class TLESemanticError(Exception):

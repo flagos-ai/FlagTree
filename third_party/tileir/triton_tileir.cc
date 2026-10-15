@@ -307,15 +307,14 @@ void init_triton_to_cudatile_passes(py::module &&m) {
     auto &mpm = pm.nest<cuda_tile::ModuleOp>();
     mpm.addPass(cuda_tile::createSynthesizeDebugInfoScopesPass());
   });
-  m.def("add_rewrite_tensor_pointers_to_ldst", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createTritonRewriteTensorPointer());
-  });
   m.def("add_assume_to_tileir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createRewriteAssumeWithCudaTilePass());
   });
   m.def("add_auto_gen_memtoken",
         [](mlir::PassManager &pm, bool enable_autogen_alias_mem_token) {
-          pm.addPass(mlir::triton::createAutoGenMemoryTokenPass(
+          auto &mpm = pm.nest<cuda_tile::ModuleOp>();
+          auto &epm = mpm.nest<cuda_tile::EntryOp>();
+          epm.addPass(mlir::triton::createAutoGenMemoryTokenPass(
               enable_autogen_alias_mem_token));
         });
 }
@@ -333,6 +332,23 @@ void init_triton_tileir(py::module &&m) {
 
     // Register cuda_tile passes to enable nested pass manager parsing
     cuda_tile::registerCudaTilePasses();
+  });
+  m.def("has_source_locations", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod->walk([&](mlir::Operation *op) {
+      op->getLoc()->walk([&](mlir::Location loc) {
+        if (auto fileLoc = llvm::dyn_cast<mlir::FileLineColLoc>(loc)) {
+          llvm::StringRef filename = fileLoc.getFilename().getValue();
+          if (fileLoc.getLine() > 0 && !filename.empty() &&
+              filename != "<unknown>") {
+            found = true;
+            return mlir::WalkResult::interrupt();
+          }
+        }
+        return mlir::WalkResult::advance();
+      });
+    });
+    return found;
   });
   m.def("only_contain_legal_dialects", [](mlir::ModuleOp mod) {
     bool only_contain_legal_dialects = true;
