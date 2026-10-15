@@ -10,11 +10,11 @@ the relationship between owners.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import product
 from math import prod
-from typing import Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.dim_expr import (
@@ -42,6 +42,85 @@ class ContiguousShardRegion:
 
     offset: tuple[Dimension, ...]
     shape: tuple[Dimension, ...]
+
+
+def uniform_contiguous_owner_regions(value_type):
+    """Return exact integer origin coefficients for fixed uniform shards.
+
+    Each row expresses the global origin as a linear combination of mesh
+    coordinates, followed by its owner-independent active extent. A ragged or
+    non-contiguous stage returns None and retains the general symbolic proof.
+    """
+    hierarchy = value_type.placement.hierarchy
+    rows = []
+    for extent, policy in zip(value_type.tensor.shape, value_type.axis_policies):
+        if not extent.is_fixed:
+            if isinstance(policy, SBPBroadCast):
+                rows.append(((0,) * len(hierarchy), extent))
+                continue
+            return None
+        active = extent.fixed_value
+        if active == 0:
+            return None
+        coefficients = [0] * len(hierarchy)
+        if isinstance(policy, SBPSplit):
+            for stage in policy.stages:
+                shards = _stage_shard_count(stage, hierarchy)
+                distribution = stage.distribution
+                if isinstance(distribution, ContiguousSplit):
+                    granularity = distribution.granularity
+                    if granularity is None:
+                        if active % shards:
+                            return None
+                        capacity = active // shards
+                    elif granularity.is_fixed:
+                        capacity = granularity.fixed_value
+                        if active < shards * capacity:
+                            return None
+                    else:
+                        return None
+                elif isinstance(distribution, BlockCyclicSplit):
+                    capacity = distribution.block_size
+                    if active != shards * capacity:
+                        return None
+                else:
+                    return None
+                stride = capacity
+                for axis in reversed(stage.hierarchy_axes):
+                    coefficients[axis] += stride
+                    stride *= hierarchy[axis]
+                active = capacity
+        elif not isinstance(policy, SBPBroadCast):
+            return None
+        rows.append((tuple(coefficients), active))
+    return tuple(rows)
+
+
+def single_stage_owner_origins(value_type):
+    """Exact linear origins without requiring uniform active tail extents."""
+    hierarchy = value_type.placement.hierarchy
+    rows = []
+    for extent, policy in zip(value_type.tensor.shape, value_type.axis_policies):
+        coefficients = [0] * len(hierarchy)
+        if isinstance(policy, SBPSplit):
+            if len(policy.stages) != 1:
+                return None
+            stage = policy.stages[0]
+            capacity = _local_capacity(extent, _stage_shard_count(stage, hierarchy), stage)
+            if not capacity.is_fixed:
+                return None
+            stride = capacity.fixed_value
+            if isinstance(stage.distribution, BlockCyclicSplit):
+                if stride > stage.distribution.block_size:
+                    return None
+                stride = stage.distribution.block_size
+            for axis in reversed(stage.hierarchy_axes):
+                coefficients[axis] = stride
+                stride *= hierarchy[axis]
+        elif not isinstance(policy, SBPBroadCast):
+            return None
+        rows.append(tuple(coefficients))
+    return tuple(rows)
 
 
 @dataclass(frozen=True)
@@ -138,6 +217,30 @@ class LocalShardAxisDescriptor:
             coordinate = stage.map_local_to_parent(coordinate)
         return coordinate.simplify()
 
+    @property
+    def local_slice(self) -> slice | None:
+        """Express the active local domain as one strided global ``slice``.
+
+        An affine axis selects ``origin + stride * i`` for every active ``i``,
+        which is exactly a ``slice``.  Materializers use this to take a view
+        instead of gathering a per-element index list, so a whole-axis
+        identity selection costs nothing.  ``None`` means the axis genuinely
+        needs an index list, or its extent/origin is not statically known.
+        """
+
+        stride = self.affine_stride
+        if stride is None or stride <= 0:
+            return None
+        extent = self.active_extent
+        origin = self.map_local_to_global(0)
+        if not extent.is_fixed or not origin.is_fixed:
+            return None
+        count = extent.fixed_value
+        start = origin.fixed_value
+        if count == 0:
+            return slice(0, 0, 1)
+        return slice(start, start + stride * (count - 1) + 1, stride)
+
 
 @dataclass(frozen=True)
 class LocalShardDescriptor:
@@ -199,7 +302,36 @@ class LocalShardDescriptor:
         return tuple(product(*ranges))
 
 
+@lru_cache(maxsize=16384)
+def _local_shard_descriptor_cached(
+    distributed_type: DistributedType,
+    coordinates: tuple[Dimension, ...],
+) -> LocalShardDescriptor:
+    return _local_shard_descriptor(distributed_type, coordinates)
+
+
 def local_shard_descriptor(
+    distributed_type: DistributedType,
+    coordinates: Sequence[int | str | Dimension],
+) -> LocalShardDescriptor:
+    """Bind staged SBP splits to one owner coordinate.
+
+    The descriptor is a pure function of the type and its owner coordinate, and
+    callers re-derive the same binding repeatedly: ``is_local_shard_subview``
+    builds one fixed symbolic coordinate per placement, so on the 45-layer
+    GLM-5.3 graph 52,500 calls cover 5,082 distinct bindings, a 90.3% repeat
+    rate.  Normalize the coordinate here so the cache key is hashable, then
+    delegate.
+    """
+
+    if not isinstance(distributed_type, DistributedType):
+        raise TypeError("local_shard_descriptor requires a DistributedType.")
+    return _local_shard_descriptor_cached(
+        distributed_type, tuple(dim(value) for value in coordinates)
+    )
+
+
+def _local_shard_descriptor(
     distributed_type: DistributedType,
     coordinates: Sequence[int | str | Dimension],
 ) -> LocalShardDescriptor:

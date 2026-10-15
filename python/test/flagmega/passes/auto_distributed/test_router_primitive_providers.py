@@ -52,6 +52,25 @@ def test_sum_provider_preserves_explicit_partial_result():
     assert any(candidate.return_type.partial is not None for candidate in candidates)
 
 
+@pytest.mark.parametrize("lanes", [(8,), (2, 4), (1,)])
+def test_sum_packed_output_provider_preserves_split_units_and_partial(lanes):
+    from math import prod
+    from triton.flagmega.ir import scale_split_units
+
+    candidates, _ = candidates_for("math.reduce_sum", (fm.tensor_type("float32", (4, 8, 64)),),
+                                   {"axes": (1,), "keep_dims": False, "output_lanes": lanes})
+    assert any(candidate.return_type.partial is not None for candidate in candidates)
+    assert any(isinstance(candidate.return_type.axis_policies[-1], fm.SBPSplit) for candidate in candidates)
+    for candidate in candidates:
+        source, = candidate.input_types
+        result = candidate.return_type
+        assert result.tensor.dtype == fm.vector_type("float32", lanes)
+        assert result.tensor.shape[-1].fixed_value == 64 // prod(lanes)
+        policy = source.axis_policies[-1]
+        assert result.axis_policies[-1] == (scale_split_units(policy, 1, prod(lanes))
+                                           if isinstance(policy, fm.SBPSplit) else policy)
+
+
 def test_div_provider_aligns_both_inputs_without_forcing_replication():
     tensor = fm.tensor_type("float32", (8, 8))
     candidates, _ = candidates_for("math.div", (tensor, tensor))

@@ -109,6 +109,56 @@ def emit_storage_pointer(
     return pointer
 
 
+def emit_remote_storage_pointer(
+    abi: Mapping[str, object],
+    *,
+    peer: str,
+    device_context: str = "device_dptr",
+) -> str:
+    """Return a peer chip's base pointer for one pooled buffer ABI.
+
+    Every chip owns a private instance of the pool at the same offsets, so the
+    peer's copy of this buffer is addressed by the identical element offset
+    inside the symmetric window.  Only the pool itself is registered with
+    FlagCX, so a buffer whose base depends on local state (a per-block
+    replication scope or a runtime-indexed view) has no peer-side equivalent.
+    """
+
+    storage = str(abi.get("storage"))
+    if storage not in {"rdata", "workspace"} and not bool(abi.get("pooled", False)):
+        raise CodegenError(
+            f"Remote reads require pooled storage registered as the device "
+            f"window, got storage {storage!r}."
+        )
+    scalar_dtype = _TRITON_SCALAR_TYPES.get(str(abi.get("scalar_dtype")))
+    if scalar_dtype is None:
+        raise CodegenError(
+            "Triton remote storage cannot cast scalar dtype "
+            f"{abi.get('scalar_dtype')!r}."
+        )
+    itemsize = int(abi["scalar_itemsize"])
+    byte_offset = int(abi["pool_byte_offset"])
+    if itemsize <= 0 or byte_offset % itemsize:
+        raise CodegenError(
+            f"Pooled buffer offset {byte_offset} is not aligned to "
+            f"{itemsize}-byte {abi.get('scalar_dtype')} elements."
+        )
+    if int(abi.get("pool_scope_stride_bytes") or 0):
+        raise CodegenError(
+            "A per-scope replicated pool has no single peer-side instance; "
+            "remote reads require a chip-scoped pool."
+        )
+    if "view_byte_offset" in abi:
+        raise CodegenError(
+            "A runtime-indexed view offset is local state; remote reads "
+            "require a statically addressed pool buffer."
+        )
+    return (
+        f'tle.remote({device_context}, space="device", dtype={scalar_dtype}, '
+        f"shard_id={peer}, offset={byte_offset // itemsize})"
+    )
+
+
 def emit_scalar_immediate(
     abi: Mapping[str, object],
     value: str,
@@ -141,10 +191,18 @@ def emit_owner_base(
     """Return the scalar-pointer base for the current owner's component."""
 
     stride = int(abi.get("component_stride_scalar_elements", 0))
-    if str(abi.get("storage_kind")) == "compact_per_owner":
+    if str(abi.get("storage_kind")) in {"compact_per_owner", "compact_per_chip"}:
         if stride <= 0:
             raise CodegenError("Compact-per-owner buffer has no scalar owner stride.")
-        return f"({argument} + ({owner_index}) * {stride})"
+        selected_owner = str(
+            abi.get("owner_index_expression", owner_index)
+            if owner_index == "shard_index"
+            else owner_index
+        )
+        selected_owner = _bind_coordinate_expression(
+            selected_owner, (), _shard_coordinates(abi, None)
+        )
+        return f"({argument} + ({selected_owner}) * {stride})"
     return str(argument)
 
 
@@ -322,6 +380,7 @@ __all__ = [
     "emit_local_scalar_offset",
     "emit_logical_coordinate",
     "emit_owner_base",
+    "emit_remote_storage_pointer",
     "emit_scalar_immediate",
     "emit_storage_pointer",
     "emit_triton_scalar_type",

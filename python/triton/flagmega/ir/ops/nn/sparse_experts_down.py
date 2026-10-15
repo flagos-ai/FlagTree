@@ -14,6 +14,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     check_routes,
     distributed_inputs,
     element_type,
+    expert_weight_tensor,
     floating_tensor,
     lanes,
     pack_result,
@@ -35,9 +36,11 @@ class SparseExpertsDown(OpDefinition):
     activations = input_parameter(floating_tensor(3, packed=True))
     router_expert_ids = input_parameter(ROUTER_IDS)
     down_input_scale = input_parameter(EXPERT_SCALE)
-    down_weight = input_parameter(floating_tensor(3))
+    down_weight = input_parameter(expert_weight_tensor())
     down_proj_scale = input_parameter(EXPERT_SCALE)
     round_projection = attribute_parameter(default=False)
+    weight_block_n = attribute_parameter(default=128)
+    weight_block_k = attribute_parameter(default=128)
 
     @classmethod
     def normalize_attrs(cls, attributes):
@@ -52,14 +55,21 @@ class SparseExpertsDown(OpDefinition):
         tensors = {name: tensor_of(value) for name, value in types.items()}
         activation, ids, down = (tensors[name] for name in ("activations", "router_expert_ids", "down_weight"))
         experts, hidden, intermediate = down.shape
-        if down.dtype != element_type(activation.dtype):
-            raise IRSchemaError("SparseExpertsDown weights and activation element dtypes must match.")
+        if down.dtype not in {element_type(activation.dtype), DType.FLOAT8_E4M3FN}:
+            raise IRSchemaError("SparseExpertsDown weights must be BF16/FP8 and match each other.")
         if activation.shape[2] * lanes(activation.dtype) != intermediate:
             raise IRSchemaError("SparseExpertsDown activation intermediate extent does not match weights.")
         check_routes(ids, activation.shape[0], experts)
         require_shape(ids, activation.shape[:2], "router_expert_ids")
+        block_n = int(attrs["weight_block_n"])
+        block_k = int(attrs["weight_block_k"])
         for name in ("down_input_scale", "down_proj_scale"):
-            require_shape(tensors[name], (experts, 1), name)
+            scale = tensors[name]
+            if scale.rank == 2:
+                require_shape(scale, (experts, 1), name)
+            else:
+                require_shape(scale, (experts, (hidden.fixed_value + block_n - 1) // block_n,
+                                      (intermediate.fixed_value + block_k - 1) // block_k), name)
         output = tensor_type(DType.FLOAT32, (activation.shape[0], ids.shape[1], hidden))
         placement = distributed_inputs(types)
         if placement is None:
@@ -74,8 +84,8 @@ class SparseExpertsDown(OpDefinition):
                 "activations": (token, route, intermediate_policy),
                 "router_expert_ids": (token, route),
                 "down_weight": (broadcast, scalar_output, scalar_intermediate),
-                "down_input_scale": (broadcast, broadcast),
-                "down_proj_scale": (broadcast, broadcast),
+                "down_input_scale": (broadcast,) * tensor_of(types["down_input_scale"]).rank,
+                "down_proj_scale": (broadcast,) * tensor_of(types["down_proj_scale"]).rank,
             })
         _, _, reduction_axes, _ = role_axes(token, route, intermediate_policy, output_policy)
         if reduction_axes and attrs["round_projection"]:
@@ -108,7 +118,9 @@ def evaluate_down(values, activation_type, output_type, attrs, context):
         for route in range(ids.shape[1]):
             expert = int(ids[token, route])
             projection = scaled_projection(activation[token, route], down[expert], values["down_input_scale"][expert],
-                                           values["down_proj_scale"][expert])
+                                           values["down_proj_scale"][expert],
+                                           block_n=int(attrs["weight_block_n"]),
+                                           block_k=int(attrs["weight_block_k"]))
             if attrs["round_projection"]:
                 projection = projection.to(dtype).float()
             output[token, route] = projection

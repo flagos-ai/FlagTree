@@ -44,6 +44,16 @@ from triton.flagmega.ir.model import (
 from triton.flagmega.ir.type_pattern import TypePattern, is_ir_type
 
 
+def context_independent_verifier(function):
+    """Declare verification dependent only on a node and its local inputs.
+
+    Ambient stage/dialect/entry may be used to report errors, but must not
+    affect validity. Overrides require their own declaration.
+    """
+    function._flagmega_context_independent = True
+    return function
+
+
 class ParameterKind(str, Enum):
     INPUT = "input"
     ATTRIBUTE = "attribute"
@@ -607,6 +617,7 @@ class OpDefinition:
         return attrs
 
     @classmethod
+    @context_independent_verifier
     def verify(cls, node: Node, module: IRModule) -> None:
         cls.verify_arity(node)
         inputs = tuple(module.node_map[value] for value in node.inputs)

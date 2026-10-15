@@ -22,6 +22,8 @@ from triton.flagmega.ir import (
     kernel_dispatch_for_call,
     local_shape as distributed_local_shape,
     placement_owner_count,
+    block_owner_count,
+    block_owner_axes,
     verify_buffer_plan,
 )
 from triton.flagmega.ir import VectorType
@@ -615,6 +617,11 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
             f"Buffer {buffer.id!r} has an unbounded storage component shape."
         )
     owner_count = placement_owner_count(distributed)
+    physical_owner_count = (
+        block_owner_count(storage_type)
+        if buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP
+        else owner_count
+    )
     coordinate_names = tuple(
         f"shard_coord_{axis}" for axis in range(distributed.placement.rank)
     )
@@ -622,10 +629,20 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
     storage_shard = local_shard_descriptor(storage_type, coordinate_names)
     component_stride = (
         buffer.component_stride_bytes // buffer.dtype.itemsize
-        if buffer.distributed_storage_kind
-        is DistributedBufferStorageKind.COMPACT_PER_OWNER
+        if buffer.distributed_storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
         else 0
     )
+    owner_index_expression = "shard_index"
+    if buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP:
+        owner_index_expression = "0"
+        for axis in block_owner_axes(storage_type):
+            owner_index_expression = (
+                f"({owner_index_expression} * {storage_type.placement.hierarchy[axis]}"
+                f" + shard_coord_{axis})"
+            )
     return {
         "schema":
         LOCAL_BUFFER_ABI_SCHEMA,
@@ -672,7 +689,9 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
         "component_stride_scalar_elements":
         component_stride * lane_count,
         "owner_count":
-        owner_count,
+        physical_owner_count,
+        "placement_owner_count": owner_count,
+        "owner_index_expression": owner_index_expression,
         "coordinate_space": ("canonical_global" if buffer.distributed_storage_kind.exposes_logical_coordinates else
                              "parent_shard_local" if backing_type is not None else "local"),
         # Complete staged SBP mapping. Renderers derive active extents and
@@ -705,8 +724,10 @@ def _with_memory_space_abi(abi, buffer, plan, pool_scope_count):
         abi["pooled"] = True
         if space.sharing_scope.value == "block" and pool_scope_count > 1:
             if (
-                buffer.distributed_storage_kind
-                is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                buffer.distributed_storage_kind in {
+                    DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                    DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                }
             ):
                 raise CodegenError(
                     f"Block-scoped buffer {buffer.id!r} cannot also contain "

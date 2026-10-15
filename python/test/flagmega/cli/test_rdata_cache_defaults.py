@@ -42,3 +42,7 @@ def test_cli_rdata_cache_can_be_relocated_or_disabled():
 
 def test_cli_does_not_create_an_unused_cache_without_checkpoint():
     assert cli._rdata_cache_dir(_args(), None) is None
+
+
+def test_cli_exposes_verified_input_report_for_artifact_generation():
+    assert _args("--checkpoint-integrity-report", "audit.json").checkpoint_integrity_report == "audit.json"

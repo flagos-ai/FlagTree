@@ -12,12 +12,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from triton.flagmega.ir.model import DType, Effect, IRType, Node, PURE
-from triton.flagmega.ir.types import DataType
+from triton.flagmega.ir.model import PURE, DType, Effect, IRType, Node
 from triton.flagmega.ir.ops.builtin.call import Call as BuiltinCall
+from triton.flagmega.ir.ops.builtin.const_asset import ConstAsset
 from triton.flagmega.ir.ops.builtin.get_item import GetItem
 from triton.flagmega.ir.ops.builtin.none import NoneValue
-from triton.flagmega.ir.ops.builtin.const_asset import ConstAsset
 from triton.flagmega.ir.ops.builtin.scalar_const import ScalarConst as BuiltinScalarConst
 from triton.flagmega.ir.ops.builtin.splat_const import SplatConst
 from triton.flagmega.ir.ops.builtin.tuple import TupleValue
@@ -28,66 +27,75 @@ from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
     MaterializeLocalShards, )
 from triton.flagmega.ir.ops.distributed.sharded_view import ShardedView
 from triton.flagmega.ir.ops.math.add import Add
-from triton.flagmega.ir.ops.math.div import Div
-from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
-from triton.flagmega.ir.ops.math.reduce_sum import ReduceSum
-from triton.flagmega.ir.ops.nn.softmax import Softmax
-from triton.flagmega.ir.ops.tensors.broadcast_to import BroadcastTo
-from triton.flagmega.ir.ops.tensors.slice import Slice
-from triton.flagmega.ir.ops.tensors.top_k import TopK
 from triton.flagmega.ir.ops.math.block_scaled_matmul import BlockScaledMatMul
+from triton.flagmega.ir.ops.math.div import Div
+from triton.flagmega.ir.ops.math.exp import Exp
 from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.ops.math.mul import Mul
 from triton.flagmega.ir.ops.math.packed_block_scaled_matmul import PackedBlockScaledMatMul
 from triton.flagmega.ir.ops.math.packed_dense_matmul import PackedDenseMatMul
+from triton.flagmega.ir.ops.math.reduce_sum import ReduceSum
+from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
 from triton.flagmega.ir.ops.math.silu import Silu
 from triton.flagmega.ir.ops.math.vectorized_binary import VectorizedBinary
 from triton.flagmega.ir.ops.math.vectorized_matmul import VectorizedMatMul
 from triton.flagmega.ir.ops.math.vectorized_unary import VectorizedUnary
-from triton.flagmega.ir.ops.nn.embedding import Embedding
+from triton.flagmega.ir.ops.nn.bind_norm_stats import BindNormStats
+from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
+from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
+from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
+from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
 from triton.flagmega.ir.ops.nn.dense_matmul_glu import DenseMatMulGlu
+from triton.flagmega.ir.ops.nn.dsa_indexer import DsaIndexer
+from triton.flagmega.ir.ops.nn.dsa_paged_attention import DsaPagedAttention
+from triton.flagmega.ir.ops.nn.embedding import Embedding
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
-from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
-from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
-from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
-from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
-from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
-from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
-from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
-from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
-from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
-from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
-from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp, SparseExpertsDownCombine
+from triton.flagmega.ir.ops.nn.kda import KdaConvolution, KdaRecurrentCore
+from triton.flagmega.ir.ops.nn.kda_gated_recurrent_core import KdaGatedRecurrentCore
+from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
+from triton.flagmega.ir.ops.nn.layer_norm import LayerNorm
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
-from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
+from triton.flagmega.ir.ops.nn.gated_norm_apply import GatedNormApply
+from triton.flagmega.ir.ops.nn.norm_apply import NormApply
+from triton.flagmega.ir.ops.nn.norm_stats import NormStats
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
+from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_qwen3_paged_attention import PackedQwen3PagedAttention
-from triton.flagmega.ir.ops.nn.rms_norm import RMSNorm
+from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
 from triton.flagmega.ir.ops.nn.qkv_parallel_linear import QKVParallelLinear
 from triton.flagmega.ir.ops.nn.qkv_rope_with_cache import QKVRoPEWithCache
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import Qwen3PagedAttention
-from triton.flagmega.ir.ops.nn.vectorized_rms_norm import VectorizedRMSNorm
-from triton.flagmega.ir.ops.nn.bind_norm_stats import BindNormStats
-from triton.flagmega.ir.ops.nn.layer_norm import LayerNorm
-from triton.flagmega.ir.ops.nn.norm_apply import NormApply
-from triton.flagmega.ir.ops.nn.norm_stats import NormStats
-from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
+from triton.flagmega.ir.ops.nn.rms_norm import RMSNorm
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
+from triton.flagmega.ir.ops.nn.softmax import Softmax
+from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
+from triton.flagmega.ir.ops.nn.mhc_post import MhcPost
+from triton.flagmega.ir.ops.nn.mhc_pre import MhcPre
+from triton.flagmega.ir.ops.nn.staged_routing import StagedRouting
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
-    UpdatePagedAttentionKVCache, )
+    UpdatePagedAttentionKVCache,
+)
+from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache_pair import UpdatePagedAttentionKVCachePair
+from triton.flagmega.ir.ops.nn.vectorized_rms_norm import VectorizedRMSNorm
+from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
+from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
+    GatherReduceAddNormApply,
+)
+from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
+    GatherReduceNormApply,
+)
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
 from triton.flagmega.ir.ops.ntt.gather_reduce_qkv_rope_with_cache import GatherReduceQKVRoPEWithCache
-from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
-    GatherReduceNormApply, )
-from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
-    GatherReduceAddNormApply, )
-from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear import PackedQKVParallelLinear
@@ -96,23 +104,33 @@ from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
 from triton.flagmega.ir.ops.ntt.paged_attention_combine import PagedAttentionCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttentionGatedCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import PagedAttentionPartial
+from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp, SparseExpertsDownCombine
+from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
+from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
 from triton.flagmega.ir.ops.tensors.bitcast import Bitcast
+from triton.flagmega.ir.ops.tensors.broadcast_to import BroadcastTo
 from triton.flagmega.ir.ops.tensors.cast import Cast
 from triton.flagmega.ir.ops.tensors.concat import Concat
+from triton.flagmega.ir.ops.tensors.gather import Gather
 from triton.flagmega.ir.ops.tensors.pack import Pack
 from triton.flagmega.ir.ops.tensors.pad import Pad
 from triton.flagmega.ir.ops.tensors.permute import Permute
 from triton.flagmega.ir.ops.tensors.reshape import Reshape
+from triton.flagmega.ir.ops.tensors.slice import Slice
 from triton.flagmega.ir.ops.tensors.slice_to_shape import SliceToShape
+from triton.flagmega.ir.ops.tensors.top_k import TopK
 from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.ir.ops.tir.barrier import Barrier
 from triton.flagmega.ir.ops.tir.buffer import Buffer
-from triton.flagmega.ir.ops.tir.buffer_view import BufferView
 from triton.flagmega.ir.ops.tir.buffer_subspan import BufferSubspan
-from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
-from triton.flagmega.ir.ops.tir.kernel import Kernel
+from triton.flagmega.ir.ops.tir.buffer_view import BufferView
 from triton.flagmega.ir.ops.tir.call import Call
+from triton.flagmega.ir.ops.tir.kernel import Kernel
+from triton.flagmega.ir.ops.shapes.dim_as_tensor import DimAsTensor
+from triton.flagmega.ir.ops.tir.parameter_bank import BankGet, ParameterBank
+from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.scalar_const import ScalarConst
+from triton.flagmega.ir.types import DataType
 
 Metadata = Mapping[str, Any] | None
 
@@ -141,10 +159,18 @@ class _math:
         return Sigmoid.construct(value, name=name, metadata=metadata)
 
     @staticmethod
+    @_op_function(Exp)
+    def exp(value: Node, *, name: str | None = None, metadata: Metadata = None) -> Node:
+        return Exp.construct(value, name=name, metadata=metadata)
+
+
+    @staticmethod
     @_op_function(ReduceSum)
-    def reduce_sum(value: Node, *, axes: tuple[int, ...] = (-1, ), keep_dims: bool = True, name: str | None = None,
+    def reduce_sum(value: Node, *, axes: tuple[int, ...] = (-1, ), keep_dims: bool = True,
+                   output_lanes: tuple[int, ...] = (), name: str | None = None,
                    metadata: Metadata = None) -> Node:
-        return ReduceSum.construct(value, axes=axes, keep_dims=keep_dims, name=name, metadata=metadata)
+        return ReduceSum.construct(value, axes=axes, keep_dims=keep_dims, output_lanes=output_lanes,
+                                   name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(Add)
@@ -299,6 +325,7 @@ class _math:
         weight_block_k: int,
         weight_encoding: str | None = None,
         output_data_type: str | None = None,
+        output_lanes: tuple[int, ...] = (),
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -312,6 +339,7 @@ class _math:
             weight_block_k=weight_block_k,
             weight_encoding=weight_encoding,
             output_data_type=output_data_type,
+            output_lanes=output_lanes,
             name=name,
             metadata=metadata,
         )
@@ -329,6 +357,7 @@ class _math:
         k_vector: int,
         packed_layout: str = "n_major_k_packed",
         weight_encoding: str | None = None,
+        output_lanes: tuple[int, ...] = (),
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -344,6 +373,7 @@ class _math:
             k_vector=k_vector,
             packed_layout=packed_layout,
             weight_encoding=weight_encoding,
+            output_lanes=output_lanes,
             name=name,
             metadata=metadata,
         )
@@ -407,6 +437,78 @@ class _nn:
         return Softmax.construct(value, axis=axis, name=name, metadata=metadata)
 
     @staticmethod
+    @_op_function(StagedRouting)
+    def staged_routing(value: Node, bias: Node | None, *, k: int, axis: int = -1,
+                       index_dtype: DType | str = "int64", scoring: str = "softmax", normalize: bool = True,
+                       scaling: float = 1.0, name: str | None = None, metadata: Metadata = None) -> Node:
+        """Score, select top-k with stable ties, and normalize in one stage."""
+        return StagedRouting.construct(value, bias, k=k, axis=axis, index_dtype=index_dtype, scoring=scoring,
+                                       normalize=normalize, scaling=scaling, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(MhcPre)
+    def mhc_pre(streams: Node, projection: Node, base: Node, scale: Node, *, epsilon: float,
+                sinkhorn_iterations: int, sinkhorn_epsilon: float, post_multiplier: float = 2.0,
+                output_lanes: tuple[int, ...] = (),
+                name: str | None = None, metadata: Metadata = None) -> Node:
+        """Collapse hyper-connection streams and emit the mixing coefficients."""
+        return MhcPre.construct(streams, projection, base, scale, epsilon=epsilon,
+                                sinkhorn_iterations=sinkhorn_iterations,
+                                sinkhorn_epsilon=sinkhorn_epsilon, post_multiplier=post_multiplier,
+                                output_lanes=output_lanes,
+                                name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(MhcPost)
+    def mhc_post(value: Node, residual: Node, post: Node, comb: Node, *,
+                 name: str | None = None, metadata: Metadata = None) -> Node:
+        """Mix residual streams and add the sublayer result's per-stream share."""
+        return MhcPost.construct(value, residual, post, comb, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(KdaConvolution)
+    def kda_convolution(query: Node, key: Node, value: Node, conv_state: Node, conv_weight: Node, *,
+                        kernel_size: int, activation: str = "silu", name: str | None = None,
+                        metadata: Metadata = None) -> Node:
+        """KDA causal depthwise short-convolution update (decode).
+
+        Head-major and part-separate: ``[1, heads, head_dim]`` projections
+        against a ``[3, heads, head_dim, kernel]`` weight, publishing
+        ``(q, k, v, new_state)``.
+        """
+        return KdaConvolution.construct(query, key, value, conv_state, conv_weight,
+                                        kernel_size=kernel_size, activation=activation,
+                                        name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(KdaRecurrentCore)
+    def kda_recurrent_core(query: Node, key: Node, value: Node, decay: Node, beta: Node, state: Node, *,
+                           epsilon: float = 1e-6, l2norm_in_kernel: bool = True,
+                           output_lanes: tuple[int, ...] = (),
+                           name: str | None = None, metadata: Metadata = None) -> Node:
+        """One KDA recurrent step with per-channel decay and a delta write."""
+        return KdaRecurrentCore.construct(query, key, value, decay, beta, state, epsilon=epsilon,
+                                          l2norm_in_kernel=l2norm_in_kernel, output_lanes=output_lanes,
+                                          name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(KdaGatedRecurrentCore)
+    def kda_gated_recurrent_core(query: Node, key: Node, value: Node, gate: Node, decay_rate: Node,
+                                gate_bias: Node, beta_logits: Node, state: Node, *,
+                                lower_bound: float, epsilon: float = 1e-6,
+                                l2norm_in_kernel: bool = True, output_lanes: tuple[int, ...] = (),
+                                name: str | None = None,
+                                metadata: Metadata = None) -> Node:
+        """One KDA recurrent step whose forget gate and beta sigmoid are in-kernel."""
+        return KdaGatedRecurrentCore.construct(
+            query, key, value, gate, decay_rate, gate_bias, beta_logits, state,
+            lower_bound=lower_bound, epsilon=epsilon, l2norm_in_kernel=l2norm_in_kernel,
+            output_lanes=output_lanes,
+            name=name, metadata=metadata)
+
+
+
+    @staticmethod
     @_op_function(SparseExperts)
     def sparse_experts(
         q: Node,
@@ -428,6 +530,10 @@ class _nn:
         round_activation: bool = False,
         round_down_projection: bool = False,
         round_weighted_output: bool = False,
+        gate_clamp_max: float | None = None,
+        up_clamp: float | None = None,
+        weight_block_n: int = 128,
+        weight_block_k: int = 128,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -436,6 +542,10 @@ class _nn:
         BF16 weights use unit FP32 per-expert input/projection scales. Shape
         and expert counts are inferred from operands; vector lanes pack the
         activation/result last axis. Defaults follow nncase's wide arithmetic.
+
+        ``gate_clamp_max``/``up_clamp`` implement the DeepSeek-lineage clamped
+        SwiGLU: gate is clamped to ``(-inf, gate_clamp_max]`` and up to
+        ``[-up_clamp, up_clamp]`` before the activation.
         """
         return SparseExperts.construct(
             q,
@@ -456,6 +566,10 @@ class _nn:
             round_activation=round_activation,
             round_down_projection=round_down_projection,
             round_weighted_output=round_weighted_output,
+            gate_clamp_max=gate_clamp_max,
+            up_clamp=up_clamp,
+            weight_block_n=weight_block_n,
+            weight_block_k=weight_block_k,
             name=name,
             metadata=metadata,
         )
@@ -475,6 +589,10 @@ class _nn:
         output_dtype: DataType | str | None = None,
         round_projections: bool = False,
         round_activation: bool = False,
+        gate_clamp_max: float | None = None,
+        up_clamp: float | None = None,
+        weight_block_n: int = 128,
+        weight_block_k: int = 128,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -491,6 +609,10 @@ class _nn:
             output_dtype=output_dtype,
             round_projections=round_projections,
             round_activation=round_activation,
+            gate_clamp_max=gate_clamp_max,
+            up_clamp=up_clamp,
+            weight_block_n=weight_block_n,
+            weight_block_k=weight_block_k,
             name=name,
             metadata=metadata,
         )
@@ -505,6 +627,8 @@ class _nn:
         down_proj_scale: Node,
         *,
         round_projection: bool = False,
+        weight_block_n: int = 128,
+        weight_block_k: int = 128,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -516,6 +640,8 @@ class _nn:
             down_weight,
             down_proj_scale,
             round_projection=round_projection,
+            weight_block_n=weight_block_n,
+            weight_block_k=weight_block_k,
             name=name,
             metadata=metadata,
         )
@@ -603,6 +729,42 @@ class _nn:
         )
 
     @staticmethod
+    @_op_function(GatedNormApply)
+    def gated_norm_apply(
+        input: Node,
+        stats: Node,
+        scale: Node,
+        bias: Node,
+        gate: Node,
+        *,
+        axis: int,
+        epsilon: float,
+        use_mean: bool,
+        activation: str = "sigmoid",
+        round_before_scale: bool = False,
+        output_dtype: DType | str | None = None,
+        name: str | None = None,
+        metadata: Metadata = None,
+    ) -> Node:
+        """Apply RMSNorm from explicit statistics and gate it in one FP32 interior."""
+
+        return GatedNormApply.construct(
+            input,
+            stats,
+            scale,
+            bias,
+            gate,
+            axis=axis,
+            epsilon=epsilon,
+            use_mean=use_mean,
+            activation=activation,
+            round_before_scale=round_before_scale,
+            output_dtype=output_dtype,
+            name=name,
+            metadata=metadata,
+        )
+
+    @staticmethod
     @_op_function(LayerNorm)
     def layer_norm(
         input: Node,
@@ -651,6 +813,8 @@ class _nn:
         *,
         activation: str = "silu",
         round_activation: bool = True,
+        gate_clamp_max: float | None = None,
+        up_clamp: float | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -662,7 +826,9 @@ class _nn:
 
         return DenseMatMulGlu.construct(
             value, gate_weight, up_weight,
-            activation=activation, round_activation=round_activation, name=name, metadata=metadata)
+            activation=activation, round_activation=round_activation,
+            gate_clamp_max=gate_clamp_max, up_clamp=up_clamp,
+            name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(Embedding)
@@ -695,6 +861,8 @@ class _nn:
         *,
         activation: str = "silu",
         round_activation: bool = True,
+        gate_clamp_max: float | None = None,
+        up_clamp: float | None = None,
         packed_layout: str = "k_major_n8_k16",
         name: str | None = None,
         metadata: Metadata = None,
@@ -707,6 +875,8 @@ class _nn:
             up_weight,
             activation=activation,
             round_activation=round_activation,
+            gate_clamp_max=gate_clamp_max,
+            up_clamp=up_clamp,
             packed_layout=packed_layout,
             name=name,
             metadata=metadata,
@@ -776,6 +946,8 @@ class _nn:
         weight_block_k: int,
         gate_weight_encoding: str | None = None,
         up_weight_encoding: str | None = None,
+        gate_clamp_max: float | None = None,
+        up_clamp: float | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -792,6 +964,8 @@ class _nn:
             weight_block_k=weight_block_k,
             gate_weight_encoding=gate_weight_encoding,
             up_weight_encoding=up_weight_encoding,
+            gate_clamp_max=gate_clamp_max,
+            up_clamp=up_clamp,
             name=name,
             metadata=metadata,
         )
@@ -813,6 +987,8 @@ class _nn:
         packed_layout: str = "n_major_k_packed",
         gate_weight_encoding: str | None = None,
         up_weight_encoding: str | None = None,
+        gate_clamp_max: float | None = None,
+        up_clamp: float | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -832,6 +1008,8 @@ class _nn:
             packed_layout=packed_layout,
             gate_weight_encoding=gate_weight_encoding,
             up_weight_encoding=up_weight_encoding,
+            gate_clamp_max=gate_clamp_max,
+            up_clamp=up_clamp,
             name=name,
             metadata=metadata,
         )
@@ -1088,6 +1266,40 @@ class _nn:
         )
 
     @staticmethod
+    @_op_function(UpdatePagedAttentionKVCachePair)
+    def update_paged_attention_kv_cache_pair(
+        slots: Node, state: Node, layer_id: Node, advance_sequence: Node, *,
+        layout: tuple[str, str, str], name: str | None = None, metadata: Metadata = None,
+    ) -> Node:
+        """Publish head-major [K | V] from one source, advancing at most once."""
+        return UpdatePagedAttentionKVCachePair.construct(
+            slots, state, layer_id, advance_sequence, layout=layout, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DsaPagedAttention)
+    def dsa_paged_attention(q: Node, topk: Node, state: Node, layer_id: Node, *, scale: float,
+                            layout: tuple[str, ...], hidden_size: int, lanes: int = 8,
+                            name: str | None = None, metadata: Metadata = None) -> Node:
+        return DsaPagedAttention.construct(q, topk, state, layer_id, scale=scale, layout=layout,
+                                           hidden_size=hidden_size, lanes=lanes,
+                                           name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DsaIndexer)
+    def dsa_indexer(
+        q: Node, key: Node, gate: Node, weights: Node, state: Node, layer_id: Node,
+        advance_sequence: Node, k_norm_weight: Node, k_norm_bias: Node, compress_ape: Node,
+        *, index_topk: int, index_head_dim: int, index_n_heads: int, index_kpool: int,
+        always_select_tail: bool = True, epsilon: float = 1e-6, name: str | None = None,
+        metadata: Metadata = None,
+    ) -> Node:
+        return DsaIndexer.construct(
+            q, key, gate, weights, state, layer_id, advance_sequence, k_norm_weight,
+            k_norm_bias, compress_ape, index_topk=index_topk, index_head_dim=index_head_dim,
+            index_n_heads=index_n_heads, index_kpool=index_kpool,
+            always_select_tail=always_select_tail, epsilon=epsilon, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(PagedAttention)
     def paged_attention(
         q: Node,
@@ -1314,6 +1526,13 @@ class _tensors:
                               metadata=metadata)
 
     @staticmethod
+    @_op_function(Gather)
+    def gather(value: Node, indices: Node, *, axis: int = -1, name: str | None = None,
+               metadata: Metadata = None) -> Node:
+        """Gather ``value`` elements along ``axis`` at per-row ``indices``."""
+        return Gather.construct(value, indices, axis=axis, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(Bitcast)
     def bitcast(
         value: Node,
@@ -1473,10 +1692,12 @@ class _ntt:
     def dispatched_experts_gate_up(q: Node, router_expert_ids: Node, gate_input_scale: Node, gate_weight: Node,
                                   gate_proj_scale: Node, up_input_scale: Node, up_weight: Node, up_proj_scale: Node,
                                   *, output_dtype=None, round_projections=False, round_activation=False,
+                                  gate_clamp_max: float | None = None, up_clamp: float | None = None,
                                   name=None, metadata: Metadata = None) -> Node:
         return DispatchedExpertsGateUp.construct(q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
                                                 up_input_scale, up_weight, up_proj_scale, output_dtype=output_dtype,
                                                 round_projections=round_projections, round_activation=round_activation,
+                                                gate_clamp_max=gate_clamp_max, up_clamp=up_clamp,
                                                 name=name, metadata=metadata)
 
     @staticmethod
@@ -1888,6 +2109,26 @@ class _ntt:
 
 class _tir:
     @staticmethod
+    @_op_function(ParameterBank)
+    def parameter_bank(*, schema, source, rows, result_type=None, name=None, metadata=None):
+        """Preserve a readonly parameter bank through the TIR boundary.
+
+        ``result_type`` carries a distributed element type chosen by
+        AutoDistributed; the schema alone describes only stored layout.
+        """
+
+        return ParameterBank.construct(schema=schema, source=source, rows=rows,
+                                       result_type=result_type,
+                                       name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(BankGet)
+    def bank_get(bank: Node, index: Node, *, name=None, metadata=None):
+        """Compute a typed row view from a readonly parameter bank."""
+
+        return BankGet.construct(bank, index, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(Call)
     def call(
         *arguments: Node,
@@ -2030,6 +2271,19 @@ class _tir:
 
 
 class _builtin:
+    @staticmethod
+    def parameter_bank(result_type=None, *, schema, source, rows, name=None, metadata=None):
+        """Declare a checkpoint-backed parameter bank.
+
+        ``result_type`` carries the distributed handle contract AutoDistributed
+        chose; the schema alone describes only the stored logical layout, so
+        omitting it would collapse a distributed bank back to that layout on
+        read-back.
+        """
+
+        from triton.flagmega.ir.ops.builtin.parameter_bank import ParameterBank
+        return ParameterBank.construct(result_type, schema=schema, source=source, rows=rows,
+                                       name=name, metadata=metadata)
     @staticmethod
     @_op_function(NoneValue)
     def none(
@@ -2187,6 +2441,41 @@ class _distributed:
         return ForceBoxing.construct(value, new_type, name=name, metadata=metadata)
 
 
+class _shapes:
+    """Dimension expressions used as ordinary values."""
+
+    @staticmethod
+    @_op_function(DimAsTensor)
+    def dim_as_tensor(result_type, expression, *, name=None, metadata=None):
+        """Expose a dimension expression as a rank-zero tensor value."""
+
+        return DimAsTensor.construct(result_type=result_type, expression=expression,
+                                     name=name, metadata=metadata)
+
+
+class _control:
+    @staticmethod
+    def bank_get(bank, index, *, name=None, metadata=None):
+        from triton.flagmega.ir.ops.builtin.parameter_bank import BankGet
+        return BankGet.construct(bank, index, name=name, metadata=metadata)
+    @staticmethod
+    def for_loop(lower, upper, step, *init_args, body, captures=(),
+                 effect_kind=None, effect_resource=None, name=None, metadata=None):
+        """Construct a structured loop without tracing or unrolling its iterations."""
+        from triton.flagmega.ir.ops.control.for_loop import ForLoop
+        from triton.flagmega.ir.region import Region
+        if isinstance(body, Region):
+            if effect_kind is None:
+                effect_kind = body.attrs["effect_kind"]
+                effect_resource = body.attrs["effect_resource"]
+            body = body.name
+        return ForLoop.construct(
+            lower, upper, step, *init_args, *captures, callee=body,
+            iter_count=len(init_args), effect_kind=effect_kind or "pure",
+            effect_resource=effect_resource, name=name, metadata=metadata,
+        )
+
+
 class F:
     """Static functional namespaces used by editable Python IR."""
 
@@ -2203,10 +2492,12 @@ class F:
         return definition.construct(*arguments, pre_ops=pre_ops or {}, post_ops=post_ops, **attributes)
 
     builtin = _builtin
+    control = _control
     distributed = _distributed
     math = _math
     nn = _nn
     ntt = _ntt
+    shapes = _shapes
     tensors = _tensors
     tir = _tir
 

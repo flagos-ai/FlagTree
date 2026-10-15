@@ -1,0 +1,5 @@
+# flagmega-kernel: dsa_paged_attention/decode
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% include "kernels/dsa_paged_attention/_function.py.jinja" %}
+{% endif %}

@@ -8,13 +8,12 @@ import math
 import os
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from typing import Callable, IO, Mapping
+from typing import IO, Callable, Mapping
 
 from triton.flagmega.diagnostics import DumpFlags, DumpScope
 from triton.flagmega.egraph.graph import EClassView, EGraph, ENode, attrs_key_for
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import IRModule, Node, verify_module
-
 
 NodeCost = Callable[[Node, IRModule], float]
 
@@ -274,7 +273,8 @@ def _materialize(graph: EGraph, module: IRModule, picks: Mapping[ENode, bool]) -
         try:
             enode = selected[class_id]
         except KeyError as error:
-            raise IRVerificationError(f"Required e-class {class_id} has no selected representative.") from error
+            raise IRVerificationError(
+                f"Required e-class {class_id} has no selected representative.") from error
         if enode.op == "egraph.opaque":
             return emit_original(enode.source_node)
         active_classes.add(class_id)
@@ -302,8 +302,19 @@ def _materialize(graph: EGraph, module: IRModule, picks: Mapping[ENode, bool]) -
             value = emit_class(graph.class_for_node(node_id))
             original_values[node_id] = value
             return value
+        return emit_direct(node_id)
+
+    def emit_direct(node_id: str) -> str:
+        """Emit an original node verbatim, resolving inputs through the EGraph."""
+        if node_id in original_values:
+            return original_values[node_id]
+        if node_id in active_originals:
+            raise IRVerificationError(f"IR contains a cycle through node {node_id!r}.", node_id=node_id)
+        node = module.node_map[node_id]
         active_originals.add(node_id)
-        inputs = tuple(emit_original(value) for value in node.inputs)
+        inputs = tuple(
+            emit_class(graph.class_for_node(value)) if graph.has_node_id(value) else emit_original(value)
+            for value in node.inputs)
         if node_id in emitted_ids:
             raise IRVerificationError(f"E-graph extraction generated duplicate node {node_id!r}.", node_id=node_id)
         emitted.append(replace(node, inputs=inputs))

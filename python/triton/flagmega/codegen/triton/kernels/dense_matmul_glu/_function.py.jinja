@@ -82,6 +82,12 @@ def {{ call.symbol }}({{ call.signature }}):
         dense_glu_up = tl.sum(dense_glu_up, axis=1)
         dense_glu_gate = dense_glu_gate.to({{ call.output_type }}).to(tl.float32)
         dense_glu_up = dense_glu_up.to({{ call.output_type }}).to(tl.float32)
+{% if call.gate_clamp_max is not none %}
+        dense_glu_gate = tl.minimum(dense_glu_gate, {{ call.gate_clamp_max }})
+{% endif %}
+{% if call.up_clamp is not none %}
+        dense_glu_up = tl.clamp(dense_glu_up, -{{ call.up_clamp }}, {{ call.up_clamp }})
+{% endif %}
         dense_glu_activated = (
             dense_glu_gate * tl.sigmoid(dense_glu_gate)
         )

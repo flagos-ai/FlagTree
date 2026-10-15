@@ -42,7 +42,7 @@ def _unpack_contract(node: Node, module: IRModule) -> tuple[Node, tuple[int, ...
         else (int(node.attrs["axis"]),) * axis_count
     )
     axes = normalize_axes(values, vector.type.rank)
-    return vector, axes, vector.type.dtype.lanes[:len(axes)]
+    return vector, axes, vector.type.dtype.lanes[: len(axes)]
 
 
 def _make(
@@ -134,7 +134,7 @@ def _permute_unpack(node: Node, module: IRModule) -> RewriteResult:
             rule="TransposeDevectorizePropagation",
         ),
     )
-    assert lanes == vector.type.dtype.lanes[:len(output_axes)]
+    assert lanes == vector.type.dtype.lanes[: len(output_axes)]
     return RewriteResult(replacement, (transformed,))
 
 
@@ -247,35 +247,33 @@ def _shape_op_unpack(node: Node, module: IRModule, op: str, attr: str) -> Rewrit
 
 def layout_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeTransposePropagation", _pack_permute_matches, _pack_permute),
-        RewriteRule("TransposeDevectorizePropagation", _permute_unpack_matches, _permute_unpack),
+        RewriteRule("VectorizeTransposePropagation", _pack_permute_matches, _pack_permute, root_ops=("tensors.pack",)),
+        RewriteRule(
+            "TransposeDevectorizePropagation", _permute_unpack_matches, _permute_unpack, root_ops=("tensors.permute",)
+        ),
         RewriteRule(
             "VectorizePadPropagation",
             lambda node, module: _pack_shape_op_matches(node, module, "tensors.pad", "pad_end"),
             lambda node, module: _pack_shape_op(node, module, "tensors.pad", "pad_end"),
+            root_ops=("tensors.pack",),
         ),
         RewriteRule(
             "PadDevectorizePropagation",
             lambda node, module: _shape_op_unpack_matches(node, module, "tensors.pad", "pad_end"),
             lambda node, module: _shape_op_unpack(node, module, "tensors.pad", "pad_end"),
+            root_ops=("tensors.pad",),
         ),
         RewriteRule(
             "VectorizeSliceToShapePropagation",
-            lambda node, module: _pack_shape_op_matches(
-                node, module, "tensors.slice_to_shape", "shape"
-            ),
-            lambda node, module: _pack_shape_op(
-                node, module, "tensors.slice_to_shape", "shape"
-            ),
+            lambda node, module: _pack_shape_op_matches(node, module, "tensors.slice_to_shape", "shape"),
+            lambda node, module: _pack_shape_op(node, module, "tensors.slice_to_shape", "shape"),
+            root_ops=("tensors.pack",),
         ),
         RewriteRule(
             "SliceToShapeDevectorizePropagation",
-            lambda node, module: _shape_op_unpack_matches(
-                node, module, "tensors.slice_to_shape", "shape"
-            ),
-            lambda node, module: _shape_op_unpack(
-                node, module, "tensors.slice_to_shape", "shape"
-            ),
+            lambda node, module: _shape_op_unpack_matches(node, module, "tensors.slice_to_shape", "shape"),
+            lambda node, module: _shape_op_unpack(node, module, "tensors.slice_to_shape", "shape"),
+            root_ops=("tensors.slice_to_shape",),
         ),
     )
 

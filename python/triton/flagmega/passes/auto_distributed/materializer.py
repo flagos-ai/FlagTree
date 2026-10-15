@@ -19,6 +19,7 @@ from triton.flagmega.ir import (
     SelectionRecord,
     TupleType,
 )
+from triton.flagmega.ir.entry_abi import redirect_entry_abi
 from triton.flagmega.passes.auto_distributed.reshard import DistributedReshardPlan
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealization,
@@ -99,6 +100,10 @@ class DistributedMaterializer:
                 calls_by_callee.setdefault(str(node.attrs["callee"]), []).append(node)
 
         functions: list[Function] = []
+        # A published entry ABI names entry node ids.  Satisfying a program
+        # output type can insert a reshard, which renames that output, so record
+        # the redirect and apply it to the contract below.
+        entry_output_redirects: dict[str, str] = {}
         for function in self.module.functions:
             call_output_types: tuple[IRType, ...] | None = None
             calls = calls_by_callee.get(function.name, ())
@@ -131,7 +136,7 @@ class DistributedMaterializer:
                         self.result.graph.placement,
                     )
                 )
-                outputs.append(self._require_type(
+                realized_id = self._require_type(
                     source,
                     target_type,
                     function.name,
@@ -144,7 +149,10 @@ class DistributedMaterializer:
                         if function.name == self.module.entry
                         else DistributedReshardUsageKind.FUNCTION_BOUNDARY
                     ),
-                ).id)
+                ).id
+                if function.name == self.module.entry and realized_id != output_id:
+                    entry_output_redirects[output_id] = realized_id
+                outputs.append(realized_id)
             functions.append(replace(function, outputs=tuple(outputs)))
 
         points, selections = distribution_selection_state(
@@ -167,6 +175,14 @@ class DistributedMaterializer:
                 "reshard_nodes": sum(node.op.startswith("distributed.") for node in self.nodes),
             },
         })
+        entry = next(function for function in functions if function.name == self.module.entry)
+        metadata = dict(redirect_entry_abi(
+            metadata,
+            entry_output_redirects,
+            known_values={*(str(value) for value in entry.parameters),
+                          *(str(value) for value in entry.outputs)},
+            stage=self.module.stage,
+        ))
         return replace(
             self.module,
             nodes=tuple(self.nodes),
@@ -320,7 +336,7 @@ class DistributedMaterializer:
                 original_source_kind if step_index == 0 else DistributedReshardSourceKind.INTERNAL,
                 usage_kind if step_index == len(plan.step_types) - 1 else DistributedReshardUsageKind.INTERNAL,
             )
-            realization = self.result.graph.realization_policy.classify(context)
+            realization = self.result.graph.realization_analysis.classify(context)
             if realization == DistributedReshardRealization.UNSUPPORTED:
                 raise IRVerificationError(
                     f"Target realization policy rejected the selected reshard step {current.type!r} -> {step!r}.",

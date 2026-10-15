@@ -46,22 +46,36 @@ class EvaluationContext:
         inputs: Mapping[str, Any],
         weights: WeightResolver,
         constant_assets: Mapping[str, Any],
+        type_nodes=None,
     ) -> None:
         self.module = module
         self.torch = torch
         self.inputs = MappingProxyType(dict(inputs))
         self.weights = weights
         self.constant_assets = constant_assets
-        types = {
-            node.id: node.type
-            for recipe in module.constant_recipes
-            for node in recipe.nodes
-        }
-        types.update((node.id, node.type) for node in module.nodes)
+        if type_nodes is None:
+            types = {node.id: node.type for recipe in module.constant_recipes for node in recipe.nodes}
+            types.update((node.id, node.type) for node in module.nodes)
+        else:
+            types = {node.id: node.type for node in type_nodes}
         self.types: Mapping[str, IRType] = MappingProxyType(types)
         self.dimension_bindings: dict[str, int] = {}
+        # Where freshly created scalars belong.  A reference run holds its
+        # weights on one device, so a compile-time scalar materialised on
+        # another device would fail the first time it meets one.  Resolved
+        # lazily because the resolver, not the context, owns that choice.
+        self._device = None
         self._frames: list[EvaluationFrame] = []
         self._values: dict[str, Any] = {}
+
+    @contextmanager
+    def type_scope(self, nodes):
+        previous = self.types
+        self.types = MappingProxyType({node.id: node.type for node in nodes})
+        try:
+            yield
+        finally:
+            self.types = previous
 
     @property
     def current_node(self) -> Node:
@@ -180,6 +194,21 @@ class EvaluationContext:
         from triton.flagmega.evaluator.torch_backend import validate_value_type
 
         validate_value_type(node, value, dimension_bindings=self.dimension_bindings)
+
+    @property
+    def device(self):
+        """The device new scalars should be created on, or None for default."""
+
+        if self._device is None:
+            candidate = getattr(self.weights, "device", None)
+            if candidate is None:
+                candidate = next(
+                    (getattr(value, "device", None) for value in self.inputs.values()
+                     if getattr(value, "device", None) is not None),
+                    None,
+                )
+            self._device = candidate if candidate is not None else False
+        return self._device or None
 
     def torch_dtype(self, dtype):
         from triton.flagmega.evaluator.torch_backend import torch_dtype

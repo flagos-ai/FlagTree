@@ -17,6 +17,7 @@ from triton.flagmega.ir.ops.tensors._k_major import parse_k_major_layout
 from triton.flagmega.codegen.triton.vectorization import consumed_vector_contracts
 
 from .core import TritonCandidateContext, TritonCandidateProposal
+from .dense_matmul import supports_descriptor_weight_storage
 
 
 class DenseMatmulGluCandidateProvider:
@@ -41,6 +42,16 @@ class DenseMatmulGluCandidateProvider:
         def applicable(implementation) -> bool:
             if implementation.parameters.get("descriptor_kind") == "table" and any(
                 not isinstance(context.module.node_map[value].type, DistributedType)
+                for value in node.inputs[1:3]
+            ):
+                return False
+            # The GLU family pins both of its weights canonical, so a single
+            # tensor map over either one obliges every chip to hold that whole
+            # weight.  Same rule the plain dense_matmul provider applies.
+            if any(
+                not supports_descriptor_weight_storage(
+                    implementation, context.module.node_map[value].type
+                )
                 for value in node.inputs[1:3]
             ):
                 return False

@@ -106,7 +106,7 @@ def {{ call.symbol }}__consumer_stage(weight_stage, qkv_input_pointer, qkv_k_til
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__producer(
-    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {% set writer = call.pipeline_channels[0].writer_parameter %}
@@ -119,7 +119,7 @@ def {{ call.symbol }}__producer(
     tle.gpu.tensor_map_fenceproxy_acquire(qkv_weight_descriptor_entry)
     for qkv_n_tile in tl.range(0, {{ call.num_n_tiles }}):
         for qkv_k_tile in tl.{{ "range" if call.direct_lhs else "static_range" }}(0, {{ call.num_k_tiles }}):
-            qkv_step = qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
+            qkv_step = {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base + {% endif %}qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
             qkv_slot = {{ writer }}.acquire(qkv_step)
             qkv_weight_descriptor = tle.gpu.reinterpret_tensor_map(
                 qkv_weight_descriptor_entry,
@@ -137,12 +137,14 @@ def {{ call.symbol }}__producer(
                 eviction_policy="evict_first",
             )
             {{ writer }}.commit(qkv_step)
+{% if not call.trip_scoped_pipe | default(false) %}
     {{ writer }}.close({{ call.num_n_tiles * call.num_k_tiles }})
+{% endif %}
 
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__consumer(
-    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {% set reader = call.pipeline_channels[0].reader_parameter %}
@@ -184,7 +186,7 @@ def {{ call.symbol }}__consumer(
             {{ call.symbol }}__mma_layout,
         )
         for qkv_k_tile in tl.{{ "range" if call.direct_lhs else "static_range" }}(0, {{ call.num_k_tiles }}):
-            qkv_step = qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
+            qkv_step = {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base + {% endif %}qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
             qkv_ready = {{ reader }}.wait(qkv_step)
 {% if not call.direct_lhs %}
             if qkv_n_tile == 0 and qkv_k_tile == 0:

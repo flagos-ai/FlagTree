@@ -4,25 +4,23 @@
 
 from __future__ import annotations
 
-from weakref import WeakValueDictionary
+from weakref import WeakValueDictionary, ref
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.constant_recipe import ConstantPhase
+from triton.flagmega.ir.distributed_type import is_distributable
 from triton.flagmega.ir.model import (
     AnyType,
     CallableType,
     DistributedType,
-    IRModule,
     InvalidType,
-    Node,
+    IRModule,
     NoneType,
     RefType,
     TensorType,
     TupleType,
     logical_type,
 )
-from triton.flagmega.ir.distributed_type import is_distributable
-from triton.flagmega.ir.types import MaskVectorType, PointerType, VectorType
 from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.ir.tir import (
     PrimFunction,
@@ -30,7 +28,7 @@ from triton.flagmega.ir.tir import (
     verify_execution_functions,
     verify_prim_function,
 )
-
+from triton.flagmega.ir.types import MaskVectorType, PointerType, VectorType
 
 # IRModule recursively freezes its graph and metadata in ``__post_init__``.
 # Verification is therefore stable for one object identity.  Compiler layers
@@ -40,6 +38,59 @@ from triton.flagmega.ir.tir import (
 # from extending checkpoint lifetime, while the identity check makes reused
 # CPython ids harmless.
 _VERIFIED_MODULES: WeakValueDictionary[int, IRModule] = WeakValueDictionary()
+
+# Frozen constant recipes obey the same contract, but their identity outlives
+# the module they are attached to: rewrites republish the identical recipe
+# objects on each new module. Context-independent verifiers need no ambient
+# stage/dialect/entry in their key; custom verifiers retain that context.
+# Include method identities so an override cannot inherit an old proof.
+_VERIFIED_RECIPES: WeakValueDictionary[tuple, object] = WeakValueDictionary()
+
+# Only explicitly context-independent verifiers can retain a local proof
+# across module snapshots. Inputs are checked by object identity, so replacing
+# a producer invalidates unchanged users. Weak references prevent proofs from
+# retaining old graphs, and identity checks make recycled Python ids harmless.
+_VERIFIED_NODES: dict[int, tuple] = {}
+
+
+def _sequence_definitions(operators):
+    definitions = {}
+    for operator in operators:
+        definition = get_definition(operator)
+        method = getattr(definition.verify, "__func__", definition.verify)
+        definitions[operator] = (
+            definition, _local_verification_signature(definition),
+            bool(getattr(method, "_flagmega_context_independent", False)),
+        )
+    return definitions
+
+
+def _local_verification_signature(definition):
+    methods = tuple(getattr(getattr(definition, name), "__func__", getattr(definition, name)) for name in (
+        "verify", "verify_arity", "normalize_attrs", "verify_parameter_types",
+        "infer_call_type", "infer_type", "infer_effect", "ir_attrs",
+    ))
+    return (definition, _verify_type, *methods)
+
+
+def _verify_local_node(node, module, definition, signature):
+    method = getattr(definition.verify, "__func__", definition.verify)
+    independent = getattr(method, "_flagmega_context_independent", False)
+    inputs = tuple(module.node_map[value] for value in node.inputs)
+    identity = id(node)
+    proof = _VERIFIED_NODES.get(identity) if independent else None
+    if (proof is not None and proof[0]() is node and proof[1] == signature
+            and len(proof[2]) == len(inputs)
+            and all(reference() is value for reference, value in zip(proof[2], inputs))):
+        return
+    _verify_type(node.type, module.stage, node.id)
+    definition.verify(node, module)
+    if independent:
+        def discard(reference):
+            current = _VERIFIED_NODES.get(identity)
+            if current is not None and current[0] is reference:
+                _VERIFIED_NODES.pop(identity, None)
+        _VERIFIED_NODES[identity] = (ref(node, discard), signature, tuple(ref(value) for value in inputs))
 
 
 def verify_module(
@@ -68,8 +119,22 @@ def verify_module(
     if not module.nodes:
         raise IRVerificationError("An IR module must contain at least one node.", stage=module.stage)
 
-    node_map: dict[str, Node] = {}
-    for node in module.nodes:
+    prior = module._verification_cache.proof
+    same_nodes = prior is not None and prior[0] is module.nodes
+    definitions = _sequence_definitions(prior[1]) if same_nodes else {}
+    reuse = same_nodes and definitions == prior[1]
+    if reuse:
+        # Topology and local input identities cannot change when the entire
+        # immutable node tuple is shared. Recheck every verifier that consumes
+        # ambient module context, and keep all module-wide checks below.
+        module.__dict__["node_map"] = prior[3]
+        node_map = module.node_map
+        for node in prior[2]:
+            definition, signature, _ = definitions[node.op]
+            _verify_local_node(node, module, definition, signature)
+    else:
+        node_map = {}
+    for node in (() if reuse else module.nodes):
         if node.id in node_map:
             raise IRVerificationError(f"Duplicate node id {node.id!r}.", stage=module.stage, node_id=node.id)
         for input_id in node.inputs:
@@ -79,17 +144,24 @@ def verify_module(
                     stage=module.stage,
                     node_id=node.id,
                 )
-        _verify_type(node.type, module.stage, node.id)
         try:
-            definition = get_definition(node.op)
+            if node.op not in definitions:
+                definition = get_definition(node.op)
+                method = getattr(definition.verify, "__func__", definition.verify)
+                definitions[node.op] = (definition, _local_verification_signature(definition),
+                                        bool(getattr(method, "_flagmega_context_independent", False)))
+            definition, signature, _ = definitions[node.op]
         except KeyError as error:
             raise IRVerificationError(
                 f"No op definition is registered for {node.op!r}.",
                 stage=module.stage,
                 node_id=node.id,
             ) from error
-        definition.verify(node, module)
+        _verify_local_node(node, module, definition, signature)
         node_map[node.id] = node
+
+    ambient_nodes = prior[2] if reuse else tuple(node for node in module.nodes if not definitions[node.op][2])
+    module._verification_cache.proof = (module.nodes, definitions, ambient_nodes, module.node_map)
 
     assets = tuple(
         node for node in module.nodes
@@ -123,6 +195,8 @@ def verify_module(
                 )
     if module.entry not in function_names:
         raise IRVerificationError(f"Entry function {module.entry!r} does not exist.", stage=module.stage)
+    from triton.flagmega.ir.region import verify_regions
+    verify_regions(module)
 
     prim_names: set[str] = set()
     for function in module.prim_functions:
@@ -255,6 +329,67 @@ def verify_module(
     return module
 
 
+def _verify_recipe_graph(recipe, dialect: str, stage: str, entry: str) -> None:
+    """Check one recipe's closed graph, once per recipe object identity.
+
+    A frozen recipe is a closed, immutable graph. Verifiers declaring that
+    validity depends only on nodes/local inputs retain their proof when the
+    parent changes stage. Other verifiers remain keyed by the ambient context.
+    """
+
+    verifiers = tuple(getattr(method, "__func__", method) for method in (
+        get_definition(op).verify for op in dict.fromkeys(node.op for node in recipe.nodes)))
+    context_independent = all(getattr(method, "_flagmega_context_independent", False) for method in verifiers)
+    context = () if context_independent else (dialect, stage, entry)
+    key = (id(recipe), verifiers, context)
+    if _VERIFIED_RECIPES.get(key) is recipe:
+        return
+    local: dict[str, object] = {}
+    # A recipe is a closed graph and its op verification only needs the
+    # recipe-local node table plus dialect/stage. ``replace(module, ...)``
+    # recursively re-froze the complete multi-megabyte module metadata for
+    # every recipe, turning verification into O(recipes * module metadata).
+    recipe_view = IRModule(dialect=dialect, stage=stage, nodes=recipe.nodes, functions=(), entry=entry)
+    for node in recipe.nodes:
+        if node.id in local:
+            raise IRVerificationError(
+                f"Constant recipe {recipe.id!r} has duplicate node {node.id!r}.",
+                stage=stage,
+                node_id=node.id,
+            )
+        missing = set(node.inputs) - set(local)
+        if missing:
+            raise IRVerificationError(
+                f"Constant recipe {recipe.id!r} node {node.id!r} has non-topological inputs {sorted(missing)}.",
+                stage=stage,
+                node_id=node.id,
+            )
+        definition = get_definition(node.op)
+        definition.verify(node, recipe_view)
+        is_source = definition.constant_source and not node.inputs and node.effect.is_pure
+        is_expression = (
+            definition.const_evaluable
+            and definition.deterministic
+            and node.effect.is_pure
+            and bool(node.inputs)
+            and all(value in local for value in node.inputs)
+        )
+        if not is_source and not is_expression:
+            raise IRVerificationError(
+                f"Constant recipe {recipe.id!r} contains non-constant op {node.op!r}.",
+                stage=stage,
+                node_id=node.id,
+            )
+        local[node.id] = node
+    if len(set(recipe.outputs)) != len(recipe.outputs):
+        raise IRVerificationError(f"Constant recipe {recipe.id!r} has duplicate outputs.", stage=stage)
+    for output in recipe.outputs:
+        if output not in local:
+            raise IRVerificationError(
+                f"Constant recipe {recipe.id!r} output {output!r} does not exist.", stage=stage)
+    _VERIFIED_RECIPES[key] = recipe
+
+
 def _verify_constant_recipes(module: IRModule, assets) -> None:
     recipe_map = {recipe.id: recipe for recipe in module.constant_recipes}
     if len(recipe_map) != len(module.constant_recipes):
@@ -270,56 +405,8 @@ def _verify_constant_recipes(module: IRModule, assets) -> None:
         raise IRVerificationError("Constant asset recipe/output bindings must be unique.", stage=module.stage)
 
     for recipe in module.constant_recipes:
-        local: dict[str, object] = {}
-        # A recipe is a closed graph and its op verification only needs the
-        # recipe-local node table plus dialect/stage. ``replace(module, ...)``
-        # recursively re-froze the complete multi-megabyte module metadata for
-        # every recipe, turning verification into O(recipes * module metadata).
-        recipe_view = IRModule(
-            dialect=module.dialect,
-            stage=module.stage,
-            nodes=recipe.nodes,
-            functions=(),
-            entry=module.entry,
-        )
-        for node in recipe.nodes:
-            if node.id in local:
-                raise IRVerificationError(
-                    f"Constant recipe {recipe.id!r} has duplicate node {node.id!r}.",
-                    stage=module.stage,
-                    node_id=node.id,
-                )
-            missing = set(node.inputs) - set(local)
-            if missing:
-                raise IRVerificationError(
-                    f"Constant recipe {recipe.id!r} node {node.id!r} has non-topological inputs {sorted(missing)}.",
-                    stage=module.stage,
-                    node_id=node.id,
-                )
-            definition = get_definition(node.op)
-            definition.verify(node, recipe_view)
-            is_source = definition.constant_source and not node.inputs and node.effect.is_pure
-            is_expression = (
-                definition.const_evaluable
-                and definition.deterministic
-                and node.effect.is_pure
-                and bool(node.inputs)
-                and all(value in local for value in node.inputs)
-            )
-            if not is_source and not is_expression:
-                raise IRVerificationError(
-                    f"Constant recipe {recipe.id!r} contains non-constant op {node.op!r}.",
-                    stage=module.stage,
-                    node_id=node.id,
-                )
-            local[node.id] = node
-        if len(set(recipe.outputs)) != len(recipe.outputs):
-            raise IRVerificationError(
-                f"Constant recipe {recipe.id!r} has duplicate outputs.", stage=module.stage)
+        _verify_recipe_graph(recipe, module.dialect, module.stage, module.entry)
         for output in recipe.outputs:
-            if output not in local:
-                raise IRVerificationError(
-                    f"Constant recipe {recipe.id!r} output {output!r} does not exist.", stage=module.stage)
             asset = asset_map.get((recipe.id, output))
             if asset is None:
                 raise IRVerificationError(

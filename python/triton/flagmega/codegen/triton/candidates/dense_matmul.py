@@ -4,14 +4,22 @@
 
 from __future__ import annotations
 
-from math import prod
 from functools import lru_cache
 from itertools import product
+from math import prod
 
+from triton.flagmega.codegen.triton.distribution import (
+    dense_matmul_distribution_contract,
+)
+from triton.flagmega.codegen.triton.vectorization import (
+    configured_vector_schedule,
+    consumed_vector_contracts,
+    vectorization_contract,
+)
 from triton.flagmega.ir import (
     Candidate,
-    DType,
     DistributedType,
+    DType,
     Node,
     NoneType,
     TensorType,
@@ -25,26 +33,19 @@ from triton.flagmega.ir.distributed_type import (
     SBPSplit,
     local_shape,
 )
-from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.local_shard import local_shard_descriptor
-from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
+from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.ops.ntt._matmul_promotion import promoted_projection_type
+from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.tensors._k_major import k_major_layout_name
-from triton.flagmega.codegen.triton.vectorization import (
-    configured_vector_schedule,
-    consumed_vector_contracts,
-    vectorization_contract,
-)
-from triton.flagmega.codegen.triton.distribution import (
-    dense_matmul_distribution_contract,
-)
 
 from .core import TritonCandidateContext, TritonCandidateProposal
 
 
 class DenseMatmulCandidateProvider:
     op_names = frozenset({
-        "math.matmul", "math.packed_dense_matmul", "ntt.packed_matmul",
+        "math.matmul", "math.packed_dense_matmul", "math.vectorized_matmul",
+        "ntt.packed_matmul",
     })
 
     def propose(
@@ -62,6 +63,12 @@ class DenseMatmulCandidateProvider:
         distribution_contract = dense_matmul_distribution_contract(
             node, context.module
         )
+        if node.op == "math.vectorized_matmul":
+            # Survivors of the offline N-major weight pack lower through the
+            # reviewed logical GEMV path; their attrs own the output lanes.
+            return self._propose_logical(
+                node, context, vector_contract, distribution_contract
+            )
         if node.op in {"math.packed_dense_matmul", "ntt.packed_matmul"}:
             return self._propose_packed(
                 node, context, vector_contract, distribution_contract
@@ -123,6 +130,9 @@ class DenseMatmulCandidateProvider:
                 and (
                     implementation.parameters.get("descriptor_kind") != "table"
                     or isinstance(context.module.node_map[node.inputs[1]].type, DistributedType)
+                )
+                and supports_descriptor_weight_storage(
+                    implementation, context.module.node_map[node.inputs[1]].type
                 )
                 and _supports_lhs_staging(
                     implementation, context.module.node_map[node.inputs[0]].type
@@ -533,6 +543,59 @@ def _supports_packed_descriptor_tiles(
     )
 
 
+def supports_descriptor_weight_storage(implementation, value_type) -> bool:
+    """Reject a single tensor map over a weight this chip does not fully hold.
+
+    A single map spans the canonical tensor, so its base address must be
+    canonical global: selecting it obliges every chip to store a whole copy of
+    the weight. When the weight is split across chips that copy is pure
+    replication, and for a large model it is the difference between fitting in
+    device memory and not. A descriptor table reads the same weight from
+    chip-local storage, so the single form is not applicable here.
+
+    The chip count comes from the weight's own placement rather than the
+    module's launch contract: `_finalize_tir_package` installs that contract
+    long after candidates are proposed, so `launch_chip_count` answers 1 here
+    and would make this test vacuous on exactly the multi-chip launches it
+    exists to constrain.
+    """
+
+    if (
+        not implementation.facts.get("host_tensor_descriptor")
+        or implementation.parameters.get("descriptor_kind") == "table"
+        or not isinstance(value_type, DistributedType)
+    ):
+        return True
+    placement = value_type.placement
+    chip_count = placement.physical_level_size("c") * placement.physical_level_size("d")
+    if chip_count <= 1:
+        return True
+    return not _is_chip_split(value_type)
+
+
+def _is_chip_split(value_type: DistributedType) -> bool:
+    """Check whether any chip placement axis splits the tensor.
+
+    This mirrors the bufferizer's own chip-split test, so candidate
+    applicability and the storage kind it later derives cannot disagree.
+    """
+
+    chip_axes = {
+        axis
+        for axis, level in enumerate(value_type.placement.hierarchy_levels)
+        if level in {"c", "d"}
+    }
+    return any(
+        isinstance(policy, SBPSplit)
+        and any(
+            axis in chip_axes
+            for stage in policy.stages
+            for axis in stage.hierarchy_axes
+        )
+        for policy in value_type.axis_policies
+    )
+
+
 @lru_cache(maxsize=1024)
 def _axis_has_affine_local_order(value, axis: int) -> bool:
     if not isinstance(value, DistributedType):
@@ -692,6 +755,14 @@ class MatMulNormStatsCandidateProvider:
 
         def applicable(implementation) -> bool:
             if not _supports_lhs_staging(implementation, lhs.type):
+                return False
+            # This op fuses a projection, so it reaches the same
+            # `host_tensor_descriptor` implementations the plain dense_matmul
+            # provider does and owes the weight the same storage rule: a single
+            # canonical map would oblige every chip to hold the whole weight.
+            if not supports_descriptor_weight_storage(
+                implementation, context.module.node_map[node.inputs[1]].type
+            ):
                 return False
             statistics_kind = implementation.contract.get("statistics_kind")
             if statistics_kind == "owner_partial":
@@ -892,4 +963,8 @@ def _last_axis_lane_count(value: TensorType) -> int:
     return value.dtype.lane_count
 
 
-__all__ = ["DenseMatmulCandidateProvider", "MatMulNormStatsCandidateProvider"]
+__all__ = [
+    "DenseMatmulCandidateProvider",
+    "MatMulNormStatsCandidateProvider",
+    "supports_descriptor_weight_storage",
+]

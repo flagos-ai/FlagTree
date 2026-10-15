@@ -2,8 +2,18 @@
 {% if distributed_entry %}
 {% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
 {% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}
+{% if "device" in (mesh_axis_sources | default(())) %}
+    _flagmega_device_rank = tle.shard_id(FLAGMEGA_GRID_MESH, "device", device_dptr=device_dptr).to(tl.int64)
+{% endif %}
+{% if "node" in (mesh_axis_sources | default(())) %}
+    _flagmega_node_rank = tle.shard_id(FLAGMEGA_GRID_MESH, "node", device_dptr=device_dptr).to(tl.int64)
+{% endif %}
 {% for axis in range(effective_mesh_rank) %}
-{% if effective_mesh_levels[axis] == "b" %}
+{% if (mesh_axis_sources | default(effective_mesh_levels))[axis] == "device" %}
+    shard_coord{{ axis }} = ((_flagmega_device_rank // {{ mesh_coordinate_strides[axis] }}) % {{ mesh_hierarchy[axis] }})
+{% elif (mesh_axis_sources | default(effective_mesh_levels))[axis] == "node" %}
+    shard_coord{{ axis }} = ((_flagmega_node_rank // {{ mesh_coordinate_strides[axis] }}) % {{ mesh_hierarchy[axis] }})
+{% elif effective_mesh_levels[axis] == "b" %}
     shard_coord{{ axis }} = tle.shard_id(FLAGMEGA_GRID_MESH, '{{ mesh_axis_names[axis] }}').to(tl.int64)
 {% else %}
     shard_coord{{ axis }} = tl.full((), 0, tl.int64)
@@ -22,6 +32,17 @@
 {% endif %}
 {% endfor %}
     shard_index = {{ linear.expression }}
+{% set block_axes = [] %}
+{% for axis in range(effective_mesh_rank) %}
+{% if effective_mesh_levels[axis] == "b" %}
+{% set _ = block_axes.append(axis) %}
+{% endif %}
+{% endfor %}
+{% set block_linear = namespace(expression="0") %}
+{% for axis in block_axes %}
+{% set block_linear.expression = "(" ~ block_linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
+{% endfor %}
+    block_index = {{ block_linear.expression }}
 {% else %}
 {% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
 {% for axis in range(effective_mesh_rank) %}
@@ -32,6 +53,7 @@
     shard_x = shard_coord1
 {% endif %}
     shard_index = 0
+    block_index = 0
 {% endif %}
 {%- endmacro %}
 
@@ -50,8 +72,23 @@ def {{ call.symbol }}({{ call.signature }}):
 {%- endmacro %}
 
 {% macro stage_barrier(axis_group_key=none) -%}
-{% if distributed_entry %}    tle.distributed_barrier({% if axis_group_key %}FLAGMEGA_GRID_AXIS_GROUP_{{ axis_group_key }}{% else %}FLAGMEGA_GRID_MESH{% endif %})
+{% if distributed_entry %}    tle.distributed_barrier({% if axis_group_key %}FLAGMEGA_GRID_AXIS_GROUP_{{ axis_group_key }}{% else %}FLAGMEGA_GRID_MESH{% endif %}{% if mesh_requires_device_dptr | default(false) %}, device_dptr=device_dptr{% endif %})
 {% else %}    tl.debug_barrier()
+{% endif %}{%- endmacro %}
+
+{% macro device_barrier() -%}
+{# A chip barrier orders nothing between chips, so a hazard whose accesses reach
+   a peer chip's instance needs a device rendezvous.  FlagCX allocates the
+   intra-barrier slot as ``peer[myRank * nBarriers + ctaIndex]`` and the runtime
+   requests ``intraBarrierCount = 1``, so exactly one block per chip may enter
+   it.  The leader's rendezvous is bracketed by full chip barriers, which is
+   what makes it order every block of every chip. #}
+{% if distributed_entry and mesh_requires_device_dptr | default(false) %}
+{{ stage_barrier() }}
+    if block_index == 0:
+        tle.distributed_barrier(device_dptr=device_dptr, space="device")
+{{ stage_barrier() }}
+{% else %}{{ stage_barrier() }}
 {% endif %}{%- endmacro %}
 
 {% macro kernel_decorator(call, prefer_inline=false) -%}

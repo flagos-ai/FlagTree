@@ -4,6 +4,7 @@
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
+    _canonical_writer_active,
     _distributed_unique_writer_active,
     _partial_group_owner_expression,
     _partial_group_owner_expression_for_axes,
@@ -114,6 +115,39 @@ def test_unit_non_block_axes_are_zero_and_excluded_from_physical_mesh():
     assert "tle.shard_id(FLAGMEGA_GRID_MESH, 'block_b')" in source
 
 
+def test_chip_axis_lowers_to_device_mesh_and_runtime_rank():
+    mesh = _mesh_context({
+        "hierarchy": (4, 8, 16),
+        "name": "cyx",
+        "hierarchy_levels": "cbb",
+    })
+    source = TritonTemplateRegistry().render(
+        "kernels/elementwise/silu.py.jinja",
+        {
+            **mesh,
+            "distributed_entry": True,
+            "render_calls": (_elementwise_call(),),
+        },
+    )
+    assert mesh["mesh_topology_repr"] == "{'device': 4, 'block': [('block_y', 8), ('block_x', 16)]}"
+    assert mesh["mesh_requires_device_dptr"] is True
+    assert 'tle.shard_id(FLAGMEGA_GRID_MESH, "device", device_dptr=device_dptr)' in source
+    assert "shard_coord0 = ((_flagmega_device_rank // 1) % 4)" in source
+
+
+def test_chip_node_mesh_records_complete_runtime_owner_extent():
+    mesh = _mesh_context({
+        "hierarchy": (2, 3, 8),
+        "name": "cdx",
+        "hierarchy_levels": "cdb",
+    })
+
+    assert mesh["mesh_device_extent"] == 2
+    assert mesh["mesh_node_extent"] == 3
+    assert mesh["mesh_size"] == 48
+    assert mesh["mesh_requires_device_dptr"] is True
+
+
 def test_ordinary_entry_retains_logical_mesh_coordinates_as_zero():
     mesh = _local_mesh({
         "hierarchy": (8, 16),
@@ -137,16 +171,9 @@ def test_ordinary_entry_retains_logical_mesh_coordinates_as_zero():
     assert "shard_x = shard_coord1" in source
 
 
-@pytest.mark.parametrize(
-    "placement",
-    (
-        {"hierarchy": (2, 4), "name": "ab", "hierarchy_levels": "cb"},
-        {"hierarchy": (1, 1), "name": "ab", "hierarchy_levels": "cd"},
-    ),
-)
-def test_unmaterializable_hierarchical_mesh_is_rejected(placement):
+def test_mesh_without_block_axis_is_rejected():
     with pytest.raises(CodegenError):
-        _mesh_context(placement)
+        _mesh_context({"hierarchy": (2, 1), "name": "cd", "hierarchy_levels": "cd"})
 
 
 def test_rank_three_physical_access_binds_every_placement_coordinate():
@@ -210,4 +237,18 @@ def test_rank_three_unique_writer_ordinal_wraps_redundant_owner_count():
 
     assert _distributed_unique_writer_active(abi, writer_ordinal=10) == (
         "(shard_coord0 == 0) & (shard_coord2 == 0)"
+    )
+
+
+def test_canonical_split_writer_preserves_each_block_shard_on_every_chip():
+    abi = _distributed_abi(hierarchy=(4, 8, 16), split_axes=(1,))
+    abi["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
+    assert _canonical_writer_active(abi) == "(shard_coord2 == 0)"
+
+
+def test_canonical_broadcast_writer_reduces_block_axes_but_replicates_chip_axis():
+    abi = _distributed_abi(hierarchy=(4, 8, 16))
+    abi["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
+    assert _canonical_writer_active(abi) == (
+        "(shard_coord1 == 0) & (shard_coord2 == 0)"
     )

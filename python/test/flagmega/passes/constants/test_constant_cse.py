@@ -33,3 +33,30 @@ def test_constant_cse_is_stable_at_a_fixed_point():
     twice = ConstantCSEPass().run(once)
 
     assert twice == once
+
+
+def test_constant_cse_preserves_unchanged_node_identities():
+    module = _duplicate_weight_module()
+    result = ConstantCSEPass().run(module)
+    for identity in ("runtime", "first", "first_silu", "output"):
+        assert result.node_map[identity] is module.node_map[identity]
+    assert result.node_map["combined"] is not module.node_map["combined"]
+
+
+def test_constant_cse_encodes_shared_type_once(monkeypatch):
+    from triton.flagmega.ir import model
+
+    module = _duplicate_weight_module()
+    value_type = module.node_map["first"].type
+    model._SEMANTIC_COMPONENT_JSON.pop(id(value_type), None)
+    original = fm.TensorType.to_data
+    encoded = []
+
+    def record(self):
+        if self is value_type:
+            encoded.append(self)
+        return original(self)
+
+    monkeypatch.setattr(fm.TensorType, "to_data", record)
+    ConstantCSEPass().run(module)
+    assert len(encoded) == 1

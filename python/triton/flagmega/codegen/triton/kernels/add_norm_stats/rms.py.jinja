@@ -19,6 +19,9 @@ def _flagmega_add_norm_stats_rms(
         tl.store(destination + offsets, value, mask=mask)
         value_fp32 = value.to(tl.float32)
         square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)
+    # The value output is partitioned only across the physical block owners
+    # present in this chip-local workspace. Device/node placement axes are
+    # replicated workspace instances, not additional local partial owners.
     tl.store(stats_partials + shard_index, tl.sum(square_sum, axis=0))
 {% if distributed_entry %}
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
@@ -26,7 +29,7 @@ def _flagmega_add_norm_stats_rms(
     tl.debug_barrier()
 {% endif %}
     if shard_index == 0:
-        owner_offsets = tl.arange(0, {{ mesh_size }})
+        owner_offsets = tl.arange(0, triton.next_power_of_2(OWNER_COUNT))
         total = tl.sum(
             tl.load(
                 stats_partials + owner_offsets,

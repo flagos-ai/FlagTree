@@ -31,19 +31,21 @@ except Exception:
     enabled = False
 
 if enabled:
-    from .flagcx_wrapper import (
-        FLAGCXLibrary,
-        flagcxDevCommRequirements,
-        flagcxUniqueId,  # noqa: F401
-        FLAGCX_WIN_COLL_SYMMETRIC,
-    )
     import os
     import tempfile
+    from pathlib import Path
+
     import torch
     import torch.distributed as dist
     from torch.cuda.memory import CUDAPluggableAllocator
     from torch.utils.cpp_extension import load_inline
-    from pathlib import Path
+
+    from .flagcx_wrapper import (
+        FLAGCX_WIN_COLL_SYMMETRIC,
+        FLAGCXLibrary,
+        flagcxDevCommRequirements,
+        flagcxUniqueId,  # noqa: F401
+    )
 
     FLAGCX_LIB_PATH = str(flagcx_rt_conf.shared_lib_path.parent)
     FLAGCX_INCLUDE_PATH = str(flagcx_rt_conf.include_path)
@@ -56,6 +58,29 @@ if enabled:
     _mem_pool = None
     _flagcx_allocator_failed_to_compile = False
     _init_communicator_ = False
+    # ``init_communicator`` may be called by a program that already owns the
+    # torch process group (for example a torchrun model driver).  Keep that
+    # ownership explicit so TLE can reuse the group without initializing it a
+    # second time or destroying it during cleanup.
+    _owns_process_group = False
+    _sync_group = None
+    _FLAGCX_WINDOW_ALIGNMENT = 4096
+
+    def _distributed_barrier():
+        """Synchronize without touching NCCL after FlagCX owns CUDA state.
+
+        FlagCX's symmetric-window registration installs its own CUDA-side
+        communicator state.  A subsequent NCCL barrier on the same process
+        group can report ``cudaErrorInvalidValue`` even though NCCL itself is
+        healthy.  A CPU Gloo subgroup provides the host rendezvous needed for
+        window publication while leaving the NCCL communicator available to
+        the caller and to generated kernels.
+        """
+        if _sync_group is not None:
+            dist.barrier(group=_sync_group)
+            return
+        local_rank = int(os.environ.get("LOCAL_RANK", torch.cuda.current_device()))
+        dist.barrier(device_ids=[local_rank])
 
     def _cleanup_flagcx_mem_pool():
         global _mem_pool
@@ -70,6 +95,10 @@ if enabled:
     atexit.register(_cleanup_flagcx_allocator_wrapper)
     flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
     global comm, rank, dev_mem, dev_comm, win
+    comm = None
+    dev_mem = None
+    dev_comm = None
+    win = None
 
     flagcx_allocator_source = """
     #include <flagcx.h>
@@ -130,7 +159,7 @@ def compile_flagcx_allocator():
             )
 
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.barrier()
+            _distributed_barrier()
 
         if not os.path.isfile(lib_path):
             raise FileNotFoundError(f"FlagCX allocator library not found after compilation: {lib_path}")
@@ -152,14 +181,41 @@ def compile_flagcx_allocator():
 
 
 def get_mem_pool():
-    init_communicator()
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
+    init_communicator()
     global _mem_pool, _flagcx_allocator_failed_to_compile
     if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
         compile_flagcx_allocator()
         if _allocator is not None:
             _mem_pool = torch.cuda.MemPool(_allocator)
     return _mem_pool
+
+
+def allocate_dist_tensor(shape, *, dtype, device):
+    """Allocate a native CUDA tensor suitable for a FlagCX symmetric window.
+
+    ``flagcxMemAlloc`` is useful for ordinary distributed buffers, but the
+    current symmetric-window implementation requires the registered base
+    address to be page aligned.  The pluggable allocator may return a
+    512-byte-aligned address, so window payloads use the native CUDA allocator
+    and an explicitly aligned view instead.
+    """
+    if not enabled:
+        raise RuntimeError("FlagCX/TLE is unavailable")
+    get_mem_pool()  # initialize and validate the communicator before allocation
+    shape = (shape,) if isinstance(shape, int) else tuple(int(value) for value in shape)
+    if not shape or any(value <= 0 for value in shape):
+        raise ValueError(f"symmetric tensor shape must be positive, got {shape}")
+    element_size = torch.empty((), dtype=dtype, device=device).element_size()
+    numel = 1
+    for value in shape:
+        numel *= value
+    extra = (_FLAGCX_WINDOW_ALIGNMENT + element_size - 1) // element_size
+    raw = torch.empty(numel + extra, dtype=dtype, device=device)
+    offset = 0
+    while (raw.data_ptr() + offset * element_size) % _FLAGCX_WINDOW_ALIGNMENT:
+        offset += 1
+    return raw.narrow(0, offset, numel).reshape(shape)
 
 
 def _cleanup_flagcx_mem_pool():
@@ -173,25 +229,49 @@ def _cleanup_flagcx_allocator_wrapper():
 
 
 def cleanup_communicator():
-    global comm, rank, dev_mem, dev_comm, win
-    dist.barrier()
-    flagcx.flagcxDevMemFreeDevicePtr(dev_mem)
-    flagcx.flagcxDevCommFreeDevicePtr(dev_comm)
-    flagcx.flagcxDevMemDestroy(comm, dev_mem)
-    flagcx.flagcxDevCommDestroy(comm, dev_comm)
-    flagcx.flagcxCommWindowDeregister(comm, win)
+    global comm, rank, dev_mem, dev_comm, win, _init_communicator_, _owns_process_group, _sync_group
+    if not _init_communicator_:
+        return
+    _distributed_barrier()
+    if dev_mem is not None:
+        flagcx.flagcxDevMemFreeDevicePtr(dev_mem)
+    if dev_comm is not None:
+        flagcx.flagcxDevCommFreeDevicePtr(dev_comm)
+    if dev_mem is not None:
+        flagcx.flagcxDevMemDestroy(comm, dev_mem)
+    if dev_comm is not None:
+        flagcx.flagcxDevCommDestroy(comm, dev_comm)
+    if win is not None:
+        flagcx.flagcxCommWindowDeregister(comm, win)
     # buf_tensor memory is managed by torch, no explicit free needed
     flagcx.flagcxCommDestroy(comm)
+    comm = dev_mem = dev_comm = win = None
 
-    dist.destroy_process_group()
+    _init_communicator_ = False
+    from triton.runtime import DistributedRtContext
+    DistributedRtContext._reset()
+    if _sync_group is not None and dist.is_initialized():
+        dist.destroy_process_group(_sync_group)
+    _sync_group = None
+    if _owns_process_group and dist.is_initialized():
+        dist.destroy_process_group()
+    _owns_process_group = False
     print(f"[Rank {rank}] Done")
 
 
 def init_communicator():
-    global comm, rank, _init_communicator_
+    global comm, rank, _init_communicator_, _owns_process_group, _sync_group
     if enabled and _init_communicator_:
         return
-    dist.init_process_group(backend="nccl")
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+        _owns_process_group = True
+    else:
+        _owns_process_group = False
+    # Create the host-only rendezvous group before FlagCX registers any
+    # symmetric window.  Every rank enters this call in the same order.
+    if _sync_group is None:
+        _sync_group = dist.new_group(backend="gloo")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
@@ -222,8 +302,29 @@ def init_communicator():
 
 def create_dist_tensor(buf_tensor):
     global comm, rank, dev_mem, dev_comm, win
+    if not getattr(buf_tensor, "is_cuda", False):
+        raise TypeError("FlagCX symmetric windows require a CUDA tensor")
+    if not buf_tensor.is_contiguous():
+        raise ValueError("FlagCX symmetric windows require a contiguous tensor")
     buf_ptr = buf_tensor.data_ptr()
     buf_size = buf_tensor.numel() * buf_tensor.element_size()
+    if buf_size <= 0:
+        raise ValueError("FlagCX symmetric windows require a non-empty tensor")
+    if buf_ptr % _FLAGCX_WINDOW_ALIGNMENT:
+        raise ValueError(
+            "FlagCX symmetric windows require a 4096-byte-aligned base address; "
+            f"got {buf_ptr:#x}. Use tle.allocate_dist_tensor(...)."
+        )
+
+    # Keep the NCCL rendezvous before symmetric-window registration.  Once
+    # FlagCX has published its CUDA window, re-entering the caller's NCCL
+    # communicator is invalid on this backend; before registration it is the
+    # device-side rendezvous that makes every rank enter window setup together.
+    # All local validation above must complete first so one malformed rank
+    # cannot leave its peers blocked in this collective.
+    if dist.is_initialized():
+        local_rank = int(os.environ.get("LOCAL_RANK", torch.cuda.current_device()))
+        dist.barrier(device_ids=[local_rank])
 
     # Register buffer with symmetric window for LSA
     win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
@@ -256,8 +357,8 @@ def create_dist_tensor(buf_tensor):
           f"mem={dev_mem_dptr.value:#x}")
 
     # Synchronize all ranks before kernel launch
-    dist.barrier()
+    _distributed_barrier()
 
     from triton.runtime import DistributedRtContext
-    ctx = DistributedRtContext(dev_mem_dptr.value, dev_comm_dptr.value)
+    ctx = DistributedRtContext(dev_comm_dptr.value, dev_mem_dptr.value)
     return ctx

@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.model import IRModule, Node
@@ -28,6 +28,11 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
     """
 
     module = verify_module(module)
+    # An unrelated graph has no projected GDN uses or aliases to resolve.
+    # Rebuilding all of its nodes invalidates local proofs and serialization
+    # fragments despite leaving its semantics unchanged.
+    if not any(node.op == _GDN_OP for node in module.nodes):
+        return module
     _verify_projected_gdn_uses(module)
     projection_ids = _gdn_projection_ids(module)
     aliases: dict[str, str] = {}
@@ -190,7 +195,8 @@ def decompose_gated_delta_net(module: IRModule) -> IRModule:
                     aliases[original.id] = replacement_id
                 continue
 
-        append(replace(original, inputs=tuple(resolve(value) for value in original.inputs)))
+        inputs = tuple(resolve(value) for value in original.inputs)
+        append(replace(original, inputs=inputs) if inputs != original.inputs else original)
 
     functions = tuple(
         replace(

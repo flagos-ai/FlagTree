@@ -16,6 +16,7 @@ from dataclasses import replace
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import DType, TupleType, tensor_type, verify_module
+from triton.flagmega.ir.region import is_region
 from triton.flagmega.rules.neutral._utility import make_node
 
 
@@ -34,6 +35,21 @@ def apply_qwen3_vllm_profile(module):
     hidden_id = decode.parameters[0]
     hidden_type = original[hidden_id].type
     wide_hidden = tensor_type(DType.FLOAT32, hidden_type.shape)
+    # The carried hidden activation is the same numerical boundary whether the
+    # layers are a call chain or a structured recurrence. A For's iter argument
+    # types must keep matching its body Region's yields, so widening the
+    # activation inside the body also widens the carry on both sides.
+    wide_carries = {}
+    for region in module.functions:
+        if not is_region(region):
+            continue
+        count = int(region.attrs["iter_count"])
+        positions = tuple(index for index, value in enumerate(region.parameters[1:1 + count])
+                          if original[value].type == hidden_type)
+        if positions:
+            wide_carries[region.name] = positions
+    wide_parameters = {module.function_map[name].parameters[1 + index]
+                       for name, positions in wide_carries.items() for index in positions}
     nodes, mapped = [], {}
 
     def emit(op, name, inputs=(), attrs=None):
@@ -62,8 +78,19 @@ def apply_qwen3_vllm_profile(module):
     # weight-table metadata: only the numerical boundaries change.
     for source in module.nodes:
         inputs = tuple(mapped[value] for value in source.inputs)
-        if source.id == hidden_id:
+        if source.id == hidden_id or source.id in wide_parameters:
             result = replace(source, type=wide_hidden)
+        elif source.op == "control.for":
+            positions = wide_carries.get(str(source.attrs["callee"]), ())
+            count = int(source.attrs["iter_count"])
+            arguments = [value.id for value in inputs]
+            for index in positions:
+                initial = inputs[3 + index]
+                arguments[3 + index] = cast(initial, DType.FLOAT32,
+                                            source.id + f".carry_{index}.wide").id
+            fields = tuple(wide_hidden if index in positions else field
+                           for index, field in enumerate(source.type.fields[:count]))
+            result = replace(source, inputs=tuple(arguments), type=TupleType(fields))
         elif source.op == "nn.rms_norm":
             result = norm(source, inputs, wide_output=source.id in {"decode_layer_query_norm", "decode_layer_key_norm"})
         elif source.op == "nn.rope":

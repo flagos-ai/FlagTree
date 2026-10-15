@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from triton.flagmega.codegen.triton.implementation import TritonImplementationModel
+from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_nodes
 from triton.flagmega.errors import IRSchemaError, IRVerificationError
 from triton.flagmega.ir import (
     IRModule,
@@ -15,17 +17,15 @@ from triton.flagmega.ir import (
     verify_buffer_plan,
 )
 from triton.flagmega.ir.bufferization import (
-    MemorySynchronizationPlan,
     SYNCHRONIZATION_SCHEMA,
+    MemorySynchronizationPlan,
 )
-from triton.flagmega.passes.tir.bufferize import plan_memory_synchronization
 from triton.flagmega.passes.tir import (
     memory_synchronization_from_execution_functions,
 )
-from triton.flagmega.targets.nvidia.capability import Sm90Capability
+from triton.flagmega.passes.tir.bufferize import plan_memory_synchronization
 from triton.flagmega.targets.ntt_options import NttTargetOptions
-from triton.flagmega.codegen.triton.implementation import TritonImplementationModel
-from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_nodes
+from triton.flagmega.targets.nvidia.capability import Sm90Capability
 from triton.flagmega.targets.nvidia.package import sm90_codegen_package_plan
 
 
@@ -186,6 +186,10 @@ def verify_sm90_module(
             "tir.ref_slice",
             "tir.call",
             "tir.scalar_const",
+                "control.for",
+                "shapes.dim_as_tensor",
+                "tir.bank_get",
+                "tir.parameter_bank",
         }
         if module.stage not in {"synchronized_tir", "bufferized_tir"}:
             # The logical view is consumed by bufferization and becomes a

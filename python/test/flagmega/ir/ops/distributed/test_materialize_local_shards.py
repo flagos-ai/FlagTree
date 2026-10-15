@@ -147,3 +147,39 @@ def test_materialize_local_shards_does_not_broadcast_lift_a_broadcast_input():
     prepared = MaterializeLocalShards.prepare((source,), {})
 
     assert prepared.result_type == fm.tensor_type("bfloat16", (8, 3, 8))
+
+
+@pytest.mark.parametrize("policies", [
+    # An unsplit axis plus a contiguous split: both are strided views.
+    (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ))),
+    # A block-cyclic axis with block > 1 keeps a per-element index list.
+    (fm.SBP.split_contiguous((0, )), fm.SBP.split_block_cyclic((1, ), 2)),
+])
+def test_torch_and_numpy_materialization_agree_with_the_element_map(policies):
+    """Slicing an affine axis must not change which elements an owner owns."""
+
+    from itertools import product
+
+    from triton.flagmega.ir.local_shard import local_shard_descriptor
+
+    placement = fm.Placement((2, 2), "yx", "bb")
+    value_type = fm.DistributedType(
+        fm.tensor_type("float32", (4, 8)), policies, placement)
+    module = MaterializeShardsModule(value_type).build()
+    value = torch.arange(32, dtype=torch.float32).reshape(4, 8)
+
+    actual = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value})[0]
+
+    expected = []
+    for owner in product(range(2), range(2)):
+        descriptor = local_shard_descriptor(value_type, owner)
+        shard = value
+        for tensor_axis, axis in enumerate(descriptor.axes):
+            indices = [
+                axis.map_local_to_global(index).fixed_value
+                for index in range(axis.active_extent.fixed_value)
+            ]
+            shard = torch.index_select(shard, tensor_axis,
+                                       torch.tensor(indices, dtype=torch.int64))
+        expected.append(shard)
+    torch.testing.assert_close(actual, torch.stack(tuple(expected)))

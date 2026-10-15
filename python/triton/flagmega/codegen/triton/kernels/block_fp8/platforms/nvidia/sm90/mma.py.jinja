@@ -57,7 +57,7 @@ def _flagmega_block_linear_local_tile(
         accumulator = updated
     tl.store(
         destination + destination_offsets,
-        accumulator.to(tl.bfloat16),
+        accumulator.to(destination.dtype.element_ty),
         mask=n_mask,
     )
 {% if render_calls is defined %}

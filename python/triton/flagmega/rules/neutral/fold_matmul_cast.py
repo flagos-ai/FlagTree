@@ -30,7 +30,12 @@ def fold_matmul_cast_rule():
             return root
         return RewriteResult(
             replace(matmul, id=root.id, type=prepared.result_type, attrs=prepared.attrs,
-                    metadata={**matmul.metadata, **root.metadata, "formed_by": "FoldMatMulCast"}))
+                    metadata={**matmul.metadata, **root.metadata,
+                              "formed_by": "FoldMatMulCast",
+                              # Keep the producer identity for later vector and
+                              # packing selection after the private cast node
+                              # becomes the public MatMul result.
+                              "vectorization_root": matmul.id}))
 
     return RewriteRule("FoldMatMulCast", pattern, rewrite)
 

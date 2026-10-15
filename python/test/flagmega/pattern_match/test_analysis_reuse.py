@@ -40,6 +40,14 @@ def test_plain_pattern_does_not_scan_graph_users(monkeypatch):
     assert calls == []
 
 
+def test_different_root_operator_does_not_scan_graph_users(monkeypatch):
+    calls = _count_analysis(monkeypatch)
+    module = _module()
+    pattern = pm.F.math.is_silu().with_user_count(1)
+    assert pm.try_match_root(module.node_map["output"], pattern, module) is None
+    assert calls == []
+
+
 def test_user_analysis_is_shared_across_roots_and_or_branches(monkeypatch):
     calls = _count_analysis(monkeypatch)
     module = _module()

@@ -346,10 +346,12 @@ def _implementation_memory_effect(
     """Expose implementation participation before storage and hazard planning."""
 
     facts = node.attrs.get("facts", node.attrs.get("semantic_facts", {}))
-    if is_result and effect.physical_mode != MemoryAccessMode.NONE:
-        result_scope = MemoryAccessScope(facts.get("result_memory_scope", "inferred"))
-        if result_scope is not MemoryAccessScope.INFERRED:
-            effect = replace(effect, scope=result_scope)
+    if effect.physical_mode != MemoryAccessMode.NONE:
+        declared = MemoryAccessScope(facts.get(
+            "result_memory_scope" if is_result else "source_memory_scope", "inferred",
+        ))
+        if declared is not MemoryAccessScope.INFERRED:
+            effect = replace(effect, scope=declared)
     scope = facts.get("participant_scope", "all_programs")
     if scope not in {"all_programs", "single_program"}:
         raise IRVerificationError(

@@ -7,12 +7,11 @@ from __future__ import annotations
 from dataclasses import replace
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir.memory_effect import MemoryAccessMode, expand_memory_effect
 from triton.flagmega.ir import (
     ExecutionFunction,
+    IRModule,
     KernelDefinition,
     KernelInvoke,
-    IRModule,
     MemoryPoolFrame,
     MemSpan,
     PrimCallBinding,
@@ -21,6 +20,9 @@ from triton.flagmega.ir import (
     kernel_dispatch_of,
     verify_buffer_plan,
 )
+from triton.flagmega.ir.dim_expr import DimVar, dim
+from triton.flagmega.ir.memory_effect import MemoryAccessMode, expand_memory_effect
+from triton.flagmega.ir.tir import For, LoopMode, Range, ValueRef
 from triton.flagmega.passes.functions.graph import (
     callee_first_functions,
     function_nodes,
@@ -60,6 +62,30 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
         dependencies = _execution_dependencies(nodes, executable_ids)
         calls: list[PrimFunctionCall | KernelInvoke] = []
         for node in nodes:
+            if node.op == "control.for":
+                # The loop body is an ordinary callee: build the same nested
+                # call an unrolled chain would, and put it in the region body
+                # so one iteration executes exactly one layer.
+                record = nested.get(node.id)
+                body = Sequential()
+                if record is not None:
+                    try:
+                        callee = result[record.callee]
+                    except KeyError as error:
+                        raise IRVerificationError(
+                            f"ExecutionFunction @{graph_function.name} loops over "
+                            f"unmaterialized @{record.callee}.",
+                            stage=module.stage,
+                            node_id=node.id,
+                        ) from error
+                    region = module.function_map[str(node.attrs["callee"])]
+                    body = Sequential((_nested_call(
+                        graph_function.name, node, record, callee,
+                        dependencies[node.id],
+                        induction=region.parameters[0] if region.parameters else None,
+                    ),))
+                calls.append(_structured_for(module, node, values, body))
+                continue
             primitive = _kernel_primitive(module, node)
             dispatch = None if primitive is None else kernel_dispatch_of(primitive)
             if primitive is not None and dispatch is not None:
@@ -103,8 +129,8 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
             for _, buffer_ids in function_plan.outputs
             for buffer_id in buffer_ids
         )
-        written = {value for call in calls for value in call.writes}
-        sources = {value for call in calls for value in call.transfer_sources}
+        written = {value for call in calls for value in getattr(call, "writes", ())}
+        sources = {value for call in calls for value in getattr(call, "transfer_sources", ())}
         result[graph_function.name] = ExecutionFunction(
             graph_function.name,
             parameters,
@@ -144,6 +170,33 @@ def _affected_parameters(plan, parameters, accesses):
         span = plan.buffer_map[value].physical_access_span
         if any(span.may_alias(access) for access in spans_by_allocation.get(span.buffer.id, ())):
             yield value
+
+
+def _structured_for(module, node, values, body=None):
+    """Keep a graph For as one TIR region marker; never unroll its calls."""
+    bounds = [module.node_map[value] for value in node.inputs[:3]]
+    if any(value.op not in {"tir.scalar_const", "builtin.scalar_const"} for value in bounds):
+        raise IRVerificationError("TIR For lowering requires constant loop bounds.", node_id=node.id)
+    lower, upper, step = (int(value.attrs["value"]) for value in bounds)
+    region = module.function_map[str(node.attrs["callee"])]
+    iter_count = int(node.attrs["iter_count"])
+    iter_args = tuple(
+        ValueRef(value, module.node_map[value].type)
+        for value in node.inputs[3:3 + iter_count]
+    )
+    yields = tuple(
+        ValueRef(value, module.node_map[value].type)
+        for value in region.outputs
+    )
+    return For(
+        loop_var=DimVar(f"{node.id}_iv", lower, max(lower, upper - step)),
+        domain=Range(dim(lower), dim(upper), dim(step)),
+        mode=LoopMode.SERIAL,
+        body=Sequential() if body is None else body,
+        iter_args=iter_args,
+        yield_values=yields,
+        body_function=str(node.attrs["callee"]),
+    )
 
 
 def _kernel_call(
@@ -276,12 +329,17 @@ def _kernel_call(
 
 
 def _nested_call(
-    function_name, node, record, callee, dependencies
+    function_name, node, record, callee, dependencies, *, induction=None
 ) -> PrimFunctionCall:
     argument_map = dict(record.arguments)
     result_map = dict(record.results)
+    # A loop's induction value is produced by the loop itself, so its formal
+    # is its own actual rather than a caller-side buffer.
     arguments = tuple(
-        PrimCallBinding(formal, argument_map[formal])
+        PrimCallBinding(
+            formal,
+            formal if formal == induction else argument_map[formal],
+        )
         for formal in callee.parameters
     )
     results = tuple(

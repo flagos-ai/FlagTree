@@ -131,3 +131,59 @@ def test_packed_descriptor_pipeline_template_maps_physical_tile_to_local_nk():
     assert "tle.gpu.BlockEncoding(" in template
     assert "loop_unroll_factor={{ call.reduction_unroll }}" in template
     assert "qwen" not in source.lower()
+
+
+def _chip_local_raw_call():
+    """A table-kind call whose RHS lives in chip-local storage.
+
+    The chip holds 16 dense owner components of a [K/16, N/8] packed weight, so
+    the descriptor geometry is the local component, not the canonical tensor.
+    """
+
+    source = _abi((1, 2048), (1, 2048), (2048, 1))
+    weight = {
+        **_abi(
+            (128, 256),
+            (32, 16),
+            (2048, 128),
+            scalar_lane_shape=(8, 2, 8),
+        ),
+        "storage_kind": "compact_per_chip",
+        "coordinate_space": "local",
+        "owner_count": 16,
+        "component_stride_scalar_elements": 65536,
+        "distributed_type": None,
+    }
+    result = _abi((1, 256), (1, 256), (2048, 8), scalar_lane_shape=(8,))
+    raw = _raw_call()
+    raw["parameters"] = {**raw["parameters"], "descriptor_kind": "table", "block_k": 128}
+    raw["inputs"] = [_parameter("lhs", source), _parameter("rhs", weight)]
+    raw["outputs"] = [_parameter("result", result)]
+    return raw
+
+
+def test_chip_local_table_descriptor_addresses_owner_components():
+    call = _dense_matmul_call(_chip_local_raw_call())
+    request = call["host_tensor_descriptor_requests"][0]
+    entries = request["entries"]
+
+    assert request["kind"] == "table"
+    # One entry per chip-resident owner, each naming the local component rather
+    # than a window into a canonical weight this chip does not hold.
+    assert len(entries) == 16
+    assert entries[0]["shape"] == (32, 16, 2, 64)
+    assert entries[0]["strides"] == (2048, 128, 64, 1)
+    assert entries[0]["offset_bytes"] == 512
+    assert entries[1]["offset_bytes"] == 512 + 65536 * 2
+
+
+def test_canonical_storage_is_still_required_for_a_single_descriptor():
+    import pytest
+
+    from triton.flagmega.errors import CodegenError
+
+    raw = _chip_local_raw_call()
+    raw["parameters"] = {**raw["parameters"], "descriptor_kind": "single"}
+
+    with pytest.raises(CodegenError, match="canonical-global RHS storage"):
+        _dense_matmul_call(raw)

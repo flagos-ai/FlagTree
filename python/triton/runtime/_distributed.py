@@ -24,6 +24,16 @@ import functools
 
 
 class DistributedRtContext:
+    """Host-side handle for the FlagCX device communication context.
+
+    The launcher ABI names its two appended values ``device_comm_ptr`` and
+    ``device_mem_ptr`` in that order.  TLE pointer intrinsics use the context
+    as a source view instead: index 0 is the symmetric memory handle and
+    index 1 is the communication handle.  Keep those two contracts explicit
+    instead of swapping constructor arguments at each call site.
+    """
+    _instance = None
+    _initialized = False
     _init_count = 0
 
     def __init__(self, _comm_ptr=None, _mem_ptr=None):
@@ -39,6 +49,23 @@ class DistributedRtContext:
     @property
     def registered_buffer(self):
         return getattr(self, "_registered_buffer", None)
+
+    @classmethod
+    def _reset(cls) -> None:
+        """Invalidate the process-local handle after FlagCX teardown.
+
+        TLE/FlagCX owns one context per process, but a service or test runner
+        may load more than one artifact sequentially.  Leaving the singleton
+        marked initialized after cleanup would make the next artifact reuse
+        device pointers that have already been destroyed.
+        """
+        instance = cls._instance
+        if instance is not None:
+            instance._comm_ptr = None
+            instance._mem_ptr = None
+            instance._initialized = False
+        cls._initialized = False
+        cls._init_count = 0
 
     def get_packed_data(self):
         return int(self._mem_ptr), int(self._comm_ptr)
@@ -68,7 +95,7 @@ class DistributedRtContext:
         return inner_action and user_action
 
     def __getitem__(self, index=0):
-        return list(self._get_needed_params().values())[index]
+        return (self._mem_ptr, self._comm_ptr)[index]
 
     def add_args_to_jitfunction(self, **kwargs):
         params = kwargs['params']  # list

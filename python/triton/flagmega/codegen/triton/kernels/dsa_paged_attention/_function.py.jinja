@@ -1,0 +1,48 @@
+{% for call in render_calls %}
+{% if call.family == "dsa_paged_attention" and call.variant == "decode" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}({{ call.signature }}):
+    query_dim = tl.arange(0, {{ call.head_dim }})
+    topk_offsets = tl.arange(0, {{ call.token_tile }})
+    for head in tl.range(0, {{ call.num_query_heads }}):
+        query_offset = head * {{ call.query_head_stride }} + (query_dim // {{ call.query_dim_stride }}) * {{ call.query_dim_stride }} + query_dim % {{ call.query_dim_stride }}
+        query_value = tl.load({{ call.query }} + query_offset, mask=query_dim < {{ call.head_dim }}, other=0.0).to(tl.float32)
+        kv_head = head // ({{ call.num_query_heads }} // {{ call.num_kv_heads }})
+        running_max = -float("inf")
+        running_sum = 0.0
+        accumulator = tl.zeros(({{ call.head_dim }},), tl.float32)
+        for token_start in tl.range(0, {{ call.topk_width }}, {{ call.token_tile }}):
+            token_slot = token_start + topk_offsets
+            valid_slot = token_slot < {{ call.topk_width }}
+            logical_token = tl.load({{ call.topk }} + token_slot, mask=valid_slot, other=-1).to(tl.int32)
+            valid_token = valid_slot & (logical_token >= 0)
+            logical_block = logical_token // {{ call.block_size }}
+            block_offset = logical_token % {{ call.block_size }}
+            physical_block = tl.load({{ call.block_table }} + logical_block, mask=valid_token, other=0).to(tl.int32)
+            cache_base = (
+                ((((physical_block * {{ call.num_layers }} + {{ call.layer_id }}) * 2) * {{ call.block_size }}
+                  + block_offset) * {{ call.num_kv_heads }} + kv_head) * {{ call.head_dim }}
+            )
+            key = tl.load(
+                {{ call.kv_cache }} + cache_base[:, None] + query_dim[None, :] * 1,
+                mask=valid_token[:, None] & (query_dim[None, :] < {{ call.head_dim }}), other=0.0,
+            ).to(tl.float32)
+            score = tl.sum(key * query_value[None, :], axis=1) * {{ call.scale }}
+            score = tl.where(valid_token, score, -float("inf"))
+            tile_max = tl.max(score, axis=0)
+            updated_max = tl.maximum(running_max, tile_max)
+            previous_scale = tl.exp(running_max - updated_max)
+            probability = tl.where(valid_token, tl.exp(score - updated_max), 0.0)
+            value_base = cache_base + {{ call.block_size }} * {{ call.num_kv_heads }} * {{ call.head_dim }}
+            value = tl.load(
+                {{ call.kv_cache }} + value_base[:, None] + query_dim[None, :],
+                mask=valid_token[:, None] & (query_dim[None, :] < {{ call.head_dim }}), other=0.0,
+            ).to(tl.float32)
+            accumulator = accumulator * previous_scale + tl.sum(probability[:, None] * value, axis=0)
+            running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
+            running_max = updated_max
+        normalized = accumulator / tl.maximum(running_sum, 1e-20)
+        result_offset = head * {{ call.result_head_stride }} + (query_dim // {{ call.result_dim_stride }}) * {{ call.result_dim_stride }} + query_dim % {{ call.result_dim_stride }}
+        tl.store({{ call.result }} + result_offset, normalized, mask=query_dim < {{ call.head_dim }})
+{% endif %}
+{% endfor %}

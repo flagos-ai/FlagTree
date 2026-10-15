@@ -22,6 +22,9 @@ class AttentionPrimitiveSemanticTIRCandidateProvider:
         "nn.rotary_embedding",
         "nn.rope",
         "nn.update_paged_attention_kv_cache",
+        "nn.update_paged_attention_kv_cache_pair",
+        "nn.dsa_indexer",
+        "nn.dsa_paged_attention",
         "ntt.vectorized_rope",
     })
 

@@ -64,6 +64,9 @@ def execution_items_of(function: ExecutionFunction):
 
 def verify_execution_functions(module) -> None:
     functions = module.execution_function_map
+    # A structured loop's body repeats, and so does anything it calls, which
+    # is what makes a wrap-around barrier legal in those functions.
+    repeated_functions = _repeated_execution_function_names(module)
     if len(functions) != len(module.execution_functions):
         raise IRVerificationError(
             "ExecutionFunction names must be unique.", stage=module.stage
@@ -307,7 +310,7 @@ def verify_execution_functions(module) -> None:
                             node_id=call.call_id,
                         )
 
-        _verify_barrier_topology(function)
+        _verify_barrier_topology(function, repeated_functions)
         _verify_call_topology(function, function_calls)
 
     if buffer_plan is not None and module.execution_functions:
@@ -321,12 +324,59 @@ def verify_execution_functions(module) -> None:
             )
 
 
-def _verify_barrier_topology(function: ExecutionFunction) -> None:
+def _repeated_execution_function_names(module) -> frozenset[str]:
+    names = {value.name for value in getattr(module, "execution_functions", ())}
+    if not names:
+        return frozenset()
+    result = {
+        value.name for value in module.execution_functions
+        if value.attrs.get("region_kind") == "for"
+    }
+
+    def visit(node) -> None:
+        body_function = getattr(node, "body_function", None)
+        if body_function in names:
+            result.add(body_function)
+        for child in getattr(node, "fields", ()) or ():
+            visit(child)
+        body = getattr(node, "body", None)
+        if body is not None and body is not node:
+            visit(body)
+
+    for value in module.execution_functions:
+        visit(value.body)
+    by_name = {value.name: value for value in module.execution_functions}
+    pending = list(result)
+    while pending:
+        current = by_name.get(pending.pop())
+        if current is None:
+            continue
+        for call in execution_calls_of(current):
+            if call.callee in names and call.callee not in result:
+                result.add(call.callee)
+                pending.append(call.callee)
+    return frozenset(result)
+
+
+def _verify_barrier_topology(
+    function: ExecutionFunction, repeated_functions=frozenset()
+) -> None:
     seen: set[str] = set()
     pending: list[Barrier] = []
+    # A repeated function re-executes, so a hazard between its trailing
+    # access and its own leading one on the next execution names a producer
+    # that is lexically later than the barrier.  That call has executed -- on
+    # the previous execution -- so the function's own calls satisfy the
+    # requirement.  Functions that run once keep the strict "already
+    # executed" rule.
+    repeated = {
+        item.call_id
+        for item in execution_items_of(function)
+        if isinstance(item, (PrimFunctionCall, KernelInvoke))
+    } if function.name in repeated_functions else frozenset()
     for item in execution_items_of(function):
         if isinstance(item, Barrier):
-            if not item.after or not set(item.after).issubset(seen):
+            if not item.after or not set(item.after).issubset(seen | repeated):
                 raise IRVerificationError(
                     f"Barrier before {item.before!r} in @{function.name} "
                     "references a call that has not executed."

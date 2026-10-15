@@ -4,18 +4,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import weakref
+from dataclasses import dataclass, field
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import IRModule, Node
 from triton.flagmega.pattern_match.call_pattern import CallPattern
-from triton.flagmega.pattern_match.or_pattern import OrPattern
+from triton.flagmega.pattern_match.op_pattern import OpPattern
 from triton.flagmega.pattern_match.options import MatchOptions
+from triton.flagmega.pattern_match.or_pattern import OrPattern
 from triton.flagmega.pattern_match.pattern import Pattern
 from triton.flagmega.pattern_match.result import MatchResult
-from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern
 from triton.flagmega.pattern_match.unary_chain_pattern import UnaryChainPattern
+from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern
 
 
 @dataclass
@@ -92,6 +93,11 @@ def _match(
     options: MatchOptions,
 ) -> bool:
     if options.is_suppressed(node, pattern):
+        return False
+    # Reject a different operator before a user-count query builds a whole
+    # graph analysis. Attribute/predicate checks still run in match_leaf.
+    target = pattern.target if isinstance(pattern, CallPattern) else pattern
+    if type(target) is OpPattern and node.op != target.op_name:
         return False
     if pattern.user_count is not None and _cached_user_counts(module).get(node.id, 0) != pattern.user_count:
         return False

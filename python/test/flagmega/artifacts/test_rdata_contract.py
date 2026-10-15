@@ -144,7 +144,8 @@ def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(
         packed = stream.read(entry["nbytes"])
 
     assert packed == raw
-    assert entry["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert "sha256" not in entry
+    verify_rdata(tmp_path / "assets", module=module)
     assert source_key not in loaded
 
 
@@ -288,6 +289,7 @@ def test_artifact_load_hashes_rdata_image_once_in_the_rdata_verifier(
     root, module = _write_rdata_artifact(tmp_path)
     original_hash_file = manifest_module.hash_file
     original_verify_image_hashes = rdata_module._verify_image_hashes
+    original_stream_digest = rdata_module._stream_digest
     verified_images = []
 
     def observe_manifest_hash(path):
@@ -300,6 +302,12 @@ def test_artifact_load_hashes_rdata_image_once_in_the_rdata_verifier(
 
     monkeypatch.setattr(manifest_module, "hash_file", observe_manifest_hash)
     monkeypatch.setattr(rdata_module, "_verify_image_hashes", observe_rdata_hash)
+
+    def observe_stream_digest(image):
+        verified_images.append(image)
+        return original_stream_digest(image)
+
+    monkeypatch.setattr(rdata_module, "_stream_digest", observe_stream_digest)
 
     _, loaded = load_artifact(root)
 

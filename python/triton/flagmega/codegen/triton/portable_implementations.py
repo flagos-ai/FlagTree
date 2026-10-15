@@ -28,7 +28,7 @@ def portable_sparse_experts_implementations() -> tuple[TritonImplementation, ...
 
 
 def portable_tensor_transform_implementations() -> tuple[TritonImplementation, ...]:
-    return tuple(
+    ordinary = tuple(
         TritonImplementation(
             f"tir.{family}.local",
             family,
@@ -36,7 +36,17 @@ def portable_tensor_transform_implementations() -> tuple[TritonImplementation, .
             {"elements_per_program": 128},
             {"indexing": "local"},
             facts={"portable_triton": True},
-        ) for family in ("pad", "slice", "pack", "unpack", "concat", "broadcast_to"))
+        ) for family in ("pad", "slice", "pack", "unpack", "broadcast_to"))
+    concat = tuple(
+        TritonImplementation(
+            f"tir.concat.local{tile}",
+            "concat",
+            "local",
+            {"elements_per_program": tile},
+            {"indexing": "local"},
+            facts={"portable_triton": True},
+        ) for tile in (128, 2048))
+    return ordinary + concat
 
 
 def portable_axis_reduction_implementations() -> tuple[TritonImplementation, ...]:
@@ -52,6 +62,63 @@ def portable_axis_reduction_implementations() -> tuple[TritonImplementation, ...
         ) for family in ("softmax", "reduce_sum", "top_k", "l2_normalization"))
 
 
+
+def portable_staged_routing_implementations() -> tuple[TritonImplementation, ...]:
+    """Single-tile staged routing; the tile must cover the whole router extent."""
+    return tuple(
+        TritonImplementation(
+            f"tir.staged_routing.local{tile}",
+            "staged_routing",
+            "local",
+            {"elements_per_program": tile},
+            {"indexing": "local"},
+            facts={"portable_triton": True},
+        ) for tile in (128, 256, 512, 1024))
+
+
+def portable_kda_implementations() -> tuple[TritonImplementation, ...]:
+    """GLM KDA decode operators over compact scalar decode buffers."""
+    return (
+        TritonImplementation("tir.kda_convolution.local", "kda_convolution", "local",
+                             {"elements_per_program": 1024}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+        TritonImplementation("tir.kda_recurrent_core.local", "kda_recurrent_core", "local",
+                             {"elements_per_program": 128}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+        TritonImplementation("tir.kda_gated_recurrent_core.local", "kda_gated_recurrent_core",
+                             "local", {"elements_per_program": 128}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+    )
+
+
+def portable_mhc_implementations() -> tuple[TritonImplementation, ...]:
+    """GLM-5 hyper-connection stages over replicated decode buffers.
+
+    ``elements_per_program`` bounds the hidden/flattened tile; both renderers
+    shrink it further so the staged weight or product block fits in registers.
+    """
+    return (
+        TritonImplementation("tir.mhc_pre.local", "mhc_pre", "local",
+                             {"elements_per_program": 256}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+        TritonImplementation("tir.mhc_post.local", "mhc_post", "local",
+                             {"elements_per_program": 256}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+    )
+
+
+def portable_gather_implementations() -> tuple[TritonImplementation, ...]:
+    """Owner-local runtime-index gathers over scalar (unpacked) elements."""
+    return (TritonImplementation(
+        "tir.gather.local",
+        "gather",
+        "local",
+        {"elements_per_program": 128},
+        {"indexing": "local"},
+        facts={"portable_triton": True},
+    ),)
+
+
 def portable_router_elementwise_implementations() -> tuple[TritonImplementation, ...]:
     """Owner-local division/sigmoid, including typed-vector sigmoid schedules."""
     return tuple(
@@ -62,7 +129,7 @@ def portable_router_elementwise_implementations() -> tuple[TritonImplementation,
             {"elements_per_program": 128} if kind == "scalar" else {"vector_groups": 32},
             {"semantic_op": f"math.{variant}", "vectorization_kind": kind},
             facts={"portable_triton": True},
-        ) for variant, kind in (("div", "scalar"), ("sigmoid", "scalar"), ("sigmoid", "axes")))
+        ) for variant, kind in (("div", "scalar"), ("exp", "scalar"), ("exp", "axes"), ("sigmoid", "scalar"), ("sigmoid", "axes")))
 
 
 def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
@@ -94,6 +161,32 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
             {"mode": "decode"},
             requires=("cooperative_grid", "grid_sync"),
             facts={**portable, "internal_grid_barriers": 1},
+        ),
+        TritonImplementation(
+            "tir.update_paged_attention_kv_cache_pair.decode",
+            "update_paged_attention_kv_cache_pair",
+            "decode",
+            {"elements_per_program": 128},
+            {"mode": "decode"},
+            requires=("cooperative_grid", "grid_sync"),
+            facts={**portable, "internal_grid_barriers": 1},
+        ),
+        TritonImplementation(
+            "tir.dsa_indexer.decode",
+            "dsa_indexer",
+            "decode",
+            {"elements_per_program": 128},
+            {"mode": "decode"},
+            requires=("cooperative_grid", "grid_sync"),
+            facts={**portable, "internal_grid_barriers": 2},
+        ),
+        TritonImplementation(
+            "tir.dsa_paged_attention.decode",
+            "dsa_paged_attention",
+            "decode",
+            {"token_tile": 2048},
+            {"mode": "decode"},
+            facts=portable,
         ),
         TritonImplementation(
             "tir.paged_attention_partial.decode_t16",
@@ -219,6 +312,9 @@ def portable_attention_preferences() -> Mapping[str, tuple[str, ...]]:
         # decode_t16 stays first: it is the measured best at short context,
         # which is what batch-one decode serves. The rest are ordered so a
         # target that filters out earlier entries still lands on a legal tile.
+        "update_paged_attention_kv_cache_pair": ("tir.update_paged_attention_kv_cache_pair.decode",),
+        "dsa_indexer": ("tir.dsa_indexer.decode",),
+        "dsa_paged_attention": ("tir.dsa_paged_attention.decode",),
         "paged_attention_partial": (
             "tir.paged_attention_partial.decode_t16",
             "tir.paged_attention_partial.decode_layout4",
@@ -349,6 +445,10 @@ __all__ = [
     "portable_sparse_experts_implementations",
     "portable_axis_reduction_implementations",
     "portable_tensor_transform_implementations",
+    "portable_gather_implementations",
+    "portable_staged_routing_implementations",
+    "portable_kda_implementations",
+    "portable_mhc_implementations",
     "portable_router_elementwise_implementations",
     "portable_attention_implementations",
     "portable_attention_preferences",

@@ -4,17 +4,32 @@
 
 {% macro stage_barrier(axis_group_key=none) -%}{{ entry.stage_barrier(axis_group_key) }}{%- endmacro %}
 
+{% macro scoped_barrier(scope, axis_group_key=none) -%}
+{% if scope == "device" %}{{ entry.device_barrier() }}
+{% elif scope == "grid" %}{{ stage_barrier(axis_group_key) }}
+{% else %}    tl.debug_barrier()
+{% endif %}{%- endmacro %}
+
 {% macro pipeline_role_events(events) -%}
 {% if not events %}
     pass
 {% else %}
 {% for event in events %}
 {% if event.kind == "barrier" %}
-{% if event.scope == "grid" %}{{ stage_barrier(event.barrier_axis_group_key | default(none)) }}
-{% else %}    tl.debug_barrier()
-{% endif %}
+{{ scoped_barrier(event.scope, event.barrier_axis_group_key | default(none)) }}
 {% elif event.kind == "handoff" %}
-    {{ event.endpoint }}.{{ event.action }}(0)
+{% if event.acquire | default(false) %}
+    {# A reusable slot must be acquired before it is committed: with capacity
+       1 the next trip's commit has to wait for the previous trip's release,
+       and only `acquire` performs that wait. #}
+    {{ event.endpoint }}.acquire({{ event.index | default("0") }})
+{% endif %}
+    {{ event.endpoint }}.{{ event.action }}({{ event.index | default("0") }})
+{% if event.release | default(false) %}
+    {{ event.endpoint }}.release({{ event.index | default("0") }})
+{% endif %}
+{% elif event.kind == "pipe_close" %}
+    {{ event.endpoint }}.close({{ event.iteration }})
 {% elif event.kind == "drain" %}
 {% for endpoint in event.endpoints %}
     {{ endpoint }}.pipe.wait_drained()
@@ -25,11 +40,13 @@
         {{ event.symbol }}({{ event.arguments }})
 {% else %}    {{ event.symbol }}({{ event.arguments }})
 {% endif %}
+{% elif event.kind == "loop" %}
+    # control.for @{{ event.body_function }} over [{{ event.start }}, {{ event.stop }}) step {{ event.step }}
+    for {{ event.loop_var }} in tl.range({{ event.start }}, {{ event.stop }}, {{ event.step }}):
+{{ pipeline_role_events(event.events) | indent(4, true) }}
 {% else %}
 {% if event.barrier_before %}
-{% if event.barrier_scope | default("grid") == "grid" %}{{ stage_barrier(event.barrier_axis_group_key | default(none)) }}
-{% else %}    tl.debug_barrier()
-{% endif %}
+{{ scoped_barrier(event.barrier_scope | default("grid"), event.barrier_axis_group_key | default(none)) }}
 {% endif %}
     # tir.call {{ event.call }} -> {{ event.family }}/{{ event.variant }} ({{ event.execution_kind }})
 {% if event.participation_active | default("True") != "True" %}    if {{ event.participation_active }}:
@@ -44,7 +61,7 @@
 {% for definition in device_functions | default(()) %}
 @triton.jit(noinline=True)
 def {{ definition.symbol }}__consumer(
-    {{ (definition.schedule.consumer_endpoints + definition.signature_arguments) | join(",\n    ") }}
+    {{ (definition.schedule.consumer_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(definition.schedule.consumer_events) }}
@@ -53,7 +70,7 @@ def {{ definition.symbol }}__consumer(
 {% if definition.schedule.producer_events %}
 @triton.jit(noinline=True)
 def {{ definition.symbol }}__producer(
-    {{ (definition.schedule.producer_endpoints + definition.signature_arguments) | join(",\n    ") }}
+    {{ (definition.schedule.producer_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(definition.schedule.producer_events) }}
@@ -63,7 +80,7 @@ def {{ definition.symbol }}__producer(
 {% if definition.schedule.auxiliary_events %}
 @triton.jit(noinline=True)
 def {{ definition.symbol }}__auxiliary_consumer(
-    {{ (definition.schedule.auxiliary_endpoints + definition.signature_arguments) | join(",\n    ") }}
+    {{ (definition.schedule.auxiliary_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(definition.schedule.auxiliary_events) }}
@@ -74,7 +91,7 @@ def {{ definition.symbol }}__auxiliary_consumer(
 {% if pipeline_schedule | default(none) %}
 @triton.jit
 def {{ symbol }}__consumer(
-    {{ (pipeline_schedule.consumer_endpoints + signature_arguments) | join(",\n    ") }}
+    {{ (pipeline_schedule.consumer_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(pipeline_schedule.consumer_events) }}
@@ -82,7 +99,7 @@ def {{ symbol }}__consumer(
 
 @triton.jit
 def {{ symbol }}__producer(
-    {{ (pipeline_schedule.producer_endpoints + signature_arguments) | join(",\n    ") }}
+    {{ (pipeline_schedule.producer_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(pipeline_schedule.producer_events) }}
@@ -91,7 +108,7 @@ def {{ symbol }}__producer(
 {% if pipeline_schedule.auxiliary_events %}
 @triton.jit
 def {{ symbol }}__auxiliary_consumer(
-    {{ (pipeline_schedule.auxiliary_endpoints + signature_arguments) | join(",\n    ") }}
+    {{ (pipeline_schedule.auxiliary_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(pipeline_schedule.auxiliary_events) }}
@@ -140,12 +157,20 @@ def {{ symbol }}(
 {% endfor %}
 {% endfor %}
 {% for handoff in pipeline_schedule.handoffs %}
+{# A wrap-around handoff's wait and commit are one index apart: the trip's
+   producer waits on index i while its consumer commits index i+1 for the
+   next trip.  With capacity 1 both indices map to slot 0, so the commit
+   overwrites the slot being waited on; two slots keep them apart. #}
     {{ handoff.pipe_name }} = tle.pipe(
-        capacity=1,
+        capacity={{ 2 if handoff.wrap_around | default(false) else 1 }},
         scope="cta",
         name="{{ handoff.id }}",
+{% if handoff.repeated | default(false) %}
+    )
+{% else %}
         one_shot=True,
     )
+{% endif %}
     {{ handoff.reader_name }} = {{ handoff.pipe_name }}.reader()
     {{ handoff.writer_name }} = {{ handoff.pipe_name }}.writer()
 {% endfor %}

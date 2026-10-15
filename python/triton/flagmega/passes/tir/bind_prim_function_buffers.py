@@ -11,6 +11,7 @@ from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.bufferization import BufferPlan, MemSpan, PhysicalBuffer
 from triton.flagmega.ir.dim_expr import dim
 from triton.flagmega.ir.distributed_type import (
+    block_owner_count,
     is_fully_sharded_across_placement,
     local_shape,
     placement_owner_count,
@@ -213,12 +214,26 @@ def _formal_buffer(
         size = (size * dimension).simplify()
     physical_size = (
         ((layout.component_stride_bytes if layout is not None else size)
-         * (placement_owner_count(distributed) - 1) + size).simplify()
+         * ((placement_owner_count(distributed)
+             if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+             else block_owner_count(distributed)) - 1) + size).simplify()
         if distributed is not None
-        and storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+        and storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
         else size
     )
-    alignment = max(alignment or _power_of_two_alignment(logical.dtype.itemsize), parameter.alignment_bytes or 1)
+    # The formal buffer publishes the alignment its ABI actually requires:
+    # the workspace/transfer requirement the caller was planned against, or
+    # the parameter's own declared contract.  Deriving a floor from the
+    # element type instead would invent a requirement nobody declared --
+    # `PlanStorageAlignments` records what each selected implementation needs,
+    # and `BufferPlanner` only allocates for those recorded requirements, so a
+    # dtype-implied floor is unsatisfiable by construction for any value whose
+    # storage is a legitimately weaker-aligned view (a vector reinterpretation
+    # of an offset subspan, for example).
+    alignment = max(alignment or 1, parameter.alignment_bytes or 1)
     physical = PhysicalBuffer(
         f"abi:{function_name}:{name}",
         parameter.memory_space or parameter.role.value,
@@ -347,11 +362,6 @@ def _dense_strides(shape):
         strides.append(current)
         current = (current * dimension).simplify()
     return tuple(reversed(strides))
-
-
-def _power_of_two_alignment(itemsize: int) -> int:
-    limit = min(max(int(itemsize), 1), 16)
-    return 1 << (limit.bit_length() - 1)
 
 
 @dataclass(frozen=True)

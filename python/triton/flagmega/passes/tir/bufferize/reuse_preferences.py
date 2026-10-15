@@ -25,7 +25,7 @@ def record_reuse_preferences(plan, function, conflicts, collected):
     from .synchronization import _hazard_requirement
 
     for previous, current in conflicts:
-        if _hazard_requirement(previous, current)[0] != "grid":
+        if _hazard_requirement(previous, current)[0] not in {"grid", "device"}:
             continue
         left = plan.buffer_map[previous.buffer].mem_span.buffer
         right = plan.buffer_map[current.buffer].mem_span.buffer
@@ -65,8 +65,13 @@ def dominates_memory_schedule(module, candidate, baseline, *, bytes_budget: int 
         result = defaultdict(lambda: [0, 0, 0])
         for event in plan_memory_synchronization(module, plan).events:
             count = result[event.function]
-            count[0] += event.scope == "grid"
-            count[1] += event.scope == "grid" and not event.axis_group_axes
+            # A device event brackets its remote phase with full chip
+            # barriers, so it is at least as expensive as an unrestricted grid
+            # barrier and must count as one here.
+            count[0] += event.scope in {"grid", "device"}
+            count[1] += event.scope == "device" or (
+                event.scope == "grid" and not event.axis_group_axes
+            )
             count[2] += 1
         return result
 

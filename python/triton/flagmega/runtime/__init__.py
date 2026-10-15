@@ -5,10 +5,14 @@
 from triton.flagmega.runtime.prepared import PreparedKernel, ResourceContract, prepare_jit_kernel
 from triton.flagmega.runtime.loader import load
 from triton.flagmega.runtime.lifecycle import RuntimeModule, RuntimeState
+from triton.flagmega.ir.ops.nn._kda_state import KdaState, KdaStateConfig, create_kda_state
+from triton.flagmega.ir.ops.nn._dsa_indexer_state import DsaIndexerState, DsaIndexerStateConfig, create_dsa_indexer_state
 from triton.flagmega.runtime.module import (
     GeneratedAddModule,
     GeneratedElementwiseModule,
+    CompositeModelState,
     GeneratedTirCallGraphModule,
+    GeneratedTirCompositeModelModule,
     GeneratedTirGatedDeltaNetModule,
     GeneratedTirPagedAttentionLayerModule,
     GeneratedTirPagedAttentionModelModule,
@@ -29,13 +33,21 @@ from triton.flagmega.runtime.tensor_descriptor import TensorDescriptorCache
 __all__ = [
     "GeneratedAddModule",
     "GeneratedElementwiseModule",
+    "CompositeModelState",
     "GeneratedTirCallGraphModule",
+    "GeneratedTirCompositeModelModule",
     "GeneratedTirGatedDeltaNetModule",
     "GeneratedTirPagedAttentionLayerModule",
     "GeneratedTirPagedAttentionModelModule",
     "GeneratedTirSingleTensorModule",
     "PreparedKernel",
     "GatedDeltaNetState",
+    "KdaState",
+    "KdaStateConfig",
+    "create_kda_state",
+    "DsaIndexerState",
+    "DsaIndexerStateConfig",
+    "create_dsa_indexer_state",
     "create_tir_runtime",
     "ResourceContract",
     "RuntimePackageRegistry",

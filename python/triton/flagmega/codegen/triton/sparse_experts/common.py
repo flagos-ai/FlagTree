@@ -47,13 +47,41 @@ def stage_context(raw, definition, weight_parameter):
     if tuple(weight["local_capacity_shape"][-2:]) != (scalar_n, scalar_k):
         raise CodegenError("Sparse expert local scalar N/K extents disagree with the weight ABI.")
     block_n, block_k = (int(raw["parameters"][name]) for name in ("block_n", "block_k"))
-    if any(value <= 0 or value & (value - 1) for value in (block_n, block_k)):
+    weight_block_n = int(attrs["weight_block_n"])
+    weight_block_k = int(attrs["weight_block_k"])
+    if any(value <= 0 or value & (value - 1) for value in (block_n, block_k, weight_block_n, weight_block_k)):
         raise CodegenError("Sparse expert tiles must be positive powers of two.")
     routes_abi = operands["router_expert_ids"]["abi"]
     routes = int(routes_abi["local_capacity_shape"][1])
     # The loop already bounds capacity. Repeating that bound in its loads
     # retains redundant predicates through software-pipeline prologues.
     full_routes = _axis_capacity_is_active(_tensor_type(routes_abi), 1, routes)
+    # A weight block scale is a per-K-group contract, and the K tile is an
+    # independent tuning parameter. One scalar group index per tile is only
+    # equivalent while a tile stays inside a single group; once a tile spans
+    # several groups every K lane needs its own group, both for the weight
+    # scale and for the activation quantization the scale was computed against.
+    groups_per_tile = block_k // weight_block_k if block_k > weight_block_k else 1
+    scale_offsets = {}
+    block_scale_loads = {}
+    for name, binding in operands.items():
+        if not name.endswith("_scale"):
+            continue
+        scale_rank = len(binding["abi"]["local_capacity_shape"])
+        if scale_rank == 2:
+            scale_offsets[name] = emit_local_scalar_offset(binding["abi"], ("_fm_expert", "0"))
+        elif scale_rank == 3:
+            row, column = ((f"(_fm_n[:, None] // {weight_block_n})", f"(_fm_k[None, :] // {weight_block_k})")
+                           if groups_per_tile > 1 else
+                           (f"(_fm_n // {weight_block_n})", f"(_fm_k_start // {weight_block_k})"))
+            scale_offset = emit_local_scalar_offset(binding["abi"], ("_fm_expert", row, column))
+            # Either form multiplies an (N, K) weight tile, so the per-tile
+            # column keeps the trailing broadcast the per-lane form has already.
+            block_scale_loads[name] = (f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{group_mask}}, other=1)"
+                                       if groups_per_tile > 1 else
+                                       f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{slot_active}}, other=1)[:, None]")
+        else:
+            raise CodegenError(f"Sparse expert scale {name!r} must have rank 2 or 3.")
     context = {
         "pointers": {name: _pointer(binding)
                      for name, binding in operands.items()},
@@ -75,20 +103,27 @@ def stage_context(raw, definition, weight_parameter):
         f"(_fm_k < (({emit_active_extent(activation, len(activation['local_capacity_shape']) - 1)}) * {activation['scalar_lane_count']}))",
         "writer_active": _canonical_writer_active(output),
         "expert_offset": emit_local_scalar_offset(operands["router_expert_ids"]["abi"], ("_fm_token", "_fm_route")),
-        "scale_offsets": {
-            name: emit_local_scalar_offset(binding["abi"], ("_fm_expert", "0"))
-            for name, binding in operands.items()
-            if name.endswith("_scale")
-        },
+        "scale_offsets": scale_offsets,
+        "block_scale_loads": block_scale_loads,
+        "weight_block_k": weight_block_k,
+        "groups_per_tile": groups_per_tile,
     }
     context["slot_active"] = (context["token_active"] if full_routes else
                               f"({context['token_active']}) & ({context['route_active']})")
     context["scale_loads"] = {
         name: (f"tl.full((), {binding['float32_splat']!r}, tl.float32)" if "float32_splat" in binding else
-               f"tl.load({_pointer(binding)} + ({context['scale_offsets'][name]}), "
-               f"mask={context['slot_active']}, other=1)")
+               (f"tl.load({_pointer(binding)} + ({context['scale_offsets'][name]}), "
+                f"mask={context['slot_active']}, other=1)" if name in context["scale_offsets"] else
+                "tl.full((), 1.0, tl.float32)"))
         for name, binding in operands.items()
         if name.endswith("_scale")
+    }
+    # A per-lane group index reads one scale per (N, K) weight element, so its
+    # predicate is the weight tile's, not the scalar slot's.
+    group_mask = f"_fm_n_mask[:, None] & _fm_k_mask[None, :]" if groups_per_tile > 1 else context["slot_active"]
+    context["block_scale_loads"] = {
+        name: expression.replace("{slot_active}", context["slot_active"]).replace("{group_mask}", group_mask)
+        for name, expression in context["block_scale_loads"].items()
     }
     # div_rn is lowered as an explicit correctly-rounded operation, so even
     # a literal one can retain expensive device division. This identity is

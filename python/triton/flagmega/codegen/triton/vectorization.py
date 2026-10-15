@@ -19,7 +19,6 @@ from triton.flagmega.errors import CodegenError, IRVerificationError
 from triton.flagmega.ir import Node, TensorType, VectorType, logical_type
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 
-
 SCALAR_VECTORIZATION = {"kind": "scalar", "axes": (), "lanes": (), "lane_count": 1}
 
 
@@ -55,6 +54,37 @@ def vectorization_contract(node: Node) -> dict[str, object]:
             axes = (axes[0],) * len(lanes)
         return {"kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
                 "source_candidate": str(candidate) if candidate is not None else "typed-ir"}
+    if node.op == "math.vectorized_matmul":
+        # A surviving VectorizedMatMul carries its contract as physical op
+        # attrs: the selected output axes/lanes are the executable proof, with
+        # no AutoVectorize metadata behind them.
+        value_type = logical_type(node.type)
+        if not isinstance(value_type, TensorType) or not isinstance(value_type.dtype, VectorType):
+            raise IRVerificationError("VectorizedMatMul needs a vector result type.", node_id=node.id)
+        axes = normalize_axes(tuple(int(axis) for axis in node.attrs["output_axes"]), value_type.rank)
+        lanes = tuple(int(value) for value in value_type.dtype.lanes)
+        if len(set(axes)) == 1:
+            axes = (axes[0],) * len(lanes)
+        if not axes or len(axes) != len(lanes) or any(value <= 1 for value in lanes):
+            raise IRVerificationError(
+                f"Node {node.id!r} has an incomplete VectorizedMatMul contract: "
+                f"axes={axes}, lanes={lanes}.",
+                node_id=node.id,
+            )
+        normalized_axes = tuple(axis + value_type.rank if axis < 0 else axis for axis in axes)
+        if any(axis < 0 or axis >= value_type.rank for axis in normalized_axes):
+            raise IRVerificationError(
+                f"Node {node.id!r} vectorization axes {axes} exceed rank {value_type.rank}.",
+                node_id=node.id,
+            )
+        if any(axis != value_type.rank - 1 for axis in normalized_axes):
+            raise IRVerificationError(
+                f"Triton dense MatMul currently lowers only its output axis, got "
+                f"{normalized_axes} on {node.id!r}.",
+                node_id=node.id,
+            )
+        return {"kind": "output_axis", "axes": normalized_axes, "lanes": lanes,
+                "lane_count": prod(lanes), "source_candidate": "vectorized-matmul-attrs"}
     if candidate is None:
         return dict(SCALAR_VECTORIZATION)
     axes = tuple(int(value) for value in node.metadata.get("selected_vector_axes", ()))

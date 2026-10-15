@@ -7,6 +7,7 @@ import torch
 
 from triton.flagmega.importer.numerics.qwen3 import apply_qwen3_vllm_profile
 from triton.flagmega import ir as fm
+from triton.flagmega.ir.ops.control.for_loop import static_trip_count
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.importer import (MemoryCheckpoint, TensorInfo, import_model,
                                      apply_numerical_profile, VLLM_INDUCTOR_LEVEL3)
@@ -68,7 +69,11 @@ def test_preserves_function_reuse_and_round_trips(model, tmp_path):
     assert decode.attrs == model.function_map["decode_layer"].attrs
     assert result.node_map[decode.parameters[0]].type.dtype == fm.DType.FLOAT32
     assert result.node_map[decode.outputs[0]].type.dtype == fm.DType.FLOAT32
-    assert len([node for node in result.nodes if node.op == "builtin.call"]) == 2
+    # The layers are one structured recurrence over a parameter bank, so the
+    # reused decode_layer keeps exactly one call site, not one call per layer.
+    loop = next(node for node in result.nodes if node.op == "control.for")
+    assert static_trip_count(loop, result) == 2
+    assert len([node for node in result.nodes if node.op == "builtin.call"]) == 1
     assert fm.load_module(fm.emit_module(result, tmp_path / "numeric.py")).semantic_hash == result.semantic_hash
     assert model.node_map[decode.parameters[0]].type.dtype == fm.DType.BFLOAT16
 

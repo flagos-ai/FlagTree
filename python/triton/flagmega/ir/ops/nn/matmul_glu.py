@@ -37,26 +37,34 @@ class MatMulGlu(OpDefinition):
     weight_block_k = attribute_parameter()
     gate_weight_encoding = attribute_parameter(default=None)
     up_weight_encoding = attribute_parameter(default=None)
+    gate_clamp_max = attribute_parameter(default=None)
+    up_clamp = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
-        required = {"activation", "weight_block_n", "weight_block_k"}
-        if set(attributes) - required - {"gate_weight_encoding", "up_weight_encoding"}:
-            raise IRSchemaError("MatMulGlu has unknown attributes.")
+        attributes = super().normalize_attrs(attributes)
         if str(attributes["activation"]) != "silu":
             raise IRSchemaError("P0 MatMulGlu only supports SiLU activation.")
         block_n = int(attributes["weight_block_n"])
         block_k = int(attributes["weight_block_k"])
         if block_n <= 0 or block_k <= 0:
             raise IRSchemaError("MatMulGlu block sizes must be positive.")
-        values = {"activation": "silu", "weight_block_n": block_n, "weight_block_k": block_k}
+        for name in ("gate_clamp_max", "up_clamp"):
+            value = attributes[name]
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or value <= 0):
+                raise IRSchemaError(f"MatMulGlu {name} must be a positive number or None.")
+        result = {
+            "activation": "silu", "weight_block_n": block_n, "weight_block_k": block_k,
+            "gate_clamp_max": attributes["gate_clamp_max"], "up_clamp": attributes["up_clamp"],
+        }
         for name in ("gate_weight_encoding", "up_weight_encoding"):
             value = attributes.get(name)
-            if value is not None and not isinstance(value, str):
-                raise IRSchemaError(f"MatMulGlu {name} must be a string or None.")
             if value is not None:
-                values[name] = value
-        return values
+                if not isinstance(value, str):
+                    raise IRSchemaError(f"MatMulGlu {name} must be a string or None.")
+                result[name] = value
+        return result
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -98,6 +106,10 @@ class MatMulGlu(OpDefinition):
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
             output_dtype=context.torch_dtype(node.type.dtype),
         )
+        if node.attrs["gate_clamp_max"] is not None:
+            gate = context.torch.clamp(gate, max=node.attrs["gate_clamp_max"])
+        if node.attrs["up_clamp"] is not None:
+            up = context.torch.clamp(up, min=-node.attrs["up_clamp"], max=node.attrs["up_clamp"])
         return context.torch.nn.functional.silu(gate) * up
 
     @classmethod

@@ -17,7 +17,7 @@ def {{ call.symbol }}({{ call.signature }}):
             for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
                 _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
                 _fm_active = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
-                _fm_candidates = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_active, other=0).to({{ call.scalar_type }})
+                _fm_candidates = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_active, other=0.0).to({{ call.scalar_type }})
                 _fm_nans = _fm_candidates != _fm_candidates
 {% if call.largest %}
                 _fm_follows = tl.where(_fm_previous_nan, (~_fm_nans) | (_fm_offsets > _fm_previous_index),
@@ -50,7 +50,7 @@ def {{ call.symbol }}({{ call.signature }}):
                 _fm_winner_index = tl.where(_fm_better, _fm_tile_index, _fm_winner_index)
                 _fm_winner_nan = tl.where(_fm_better, _fm_tile_nan, _fm_winner_nan)
             # Reload the chosen element, preserving signed zeros and NaN bits.
-            _fm_selected_value = tl.load({{ call.source }} + ({{ call.winner_offset }}), mask=({{ call.outer_active }}), other=0)
+            _fm_selected_value = tl.load({{ call.source }} + ({{ call.winner_offset }}), mask=({{ call.outer_active }}), other=0.0)
             tl.store({{ call.values_pointer }} + ({{ call.values_offset }}), _fm_selected_value, mask=({{ call.outer_active }}) & ({{ call.values_active }}))
             tl.store({{ call.indices_pointer }} + ({{ call.indices_offset }}), _fm_winner_index, mask=({{ call.outer_active }}) & ({{ call.indices_active }}))
             _fm_previous_value = _fm_winner_value

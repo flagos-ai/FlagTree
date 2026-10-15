@@ -21,7 +21,7 @@ def {{ call.symbol }}__partials({{ call.signature }}):
                 (vocab_value, vocab_index), 0, _flagmega_argmax_combine)
             greedy_best, greedy_index = _flagmega_argmax_combine(
                 greedy_best, greedy_index, vocab_tile_max, vocab_tile_index)
-        partial_offset = batch_local * {{ mesh_size }} + shard_index
+        partial_offset = batch_local * {{ call.partial_owner_count }} + {{ call.partial_owner_index }}
         tl.store({{ call.partial_max }} + partial_offset, greedy_best)
         tl.store({{ call.partial_index }} + partial_offset, greedy_index)
 
@@ -30,13 +30,13 @@ def {{ call.symbol }}__partials({{ call.signature }}):
 def {{ call.symbol }}__finalize({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     if {{ call.result_writer }}:
-        greedy_owners = tl.arange(0, triton.next_power_of_2({{ mesh_size }}))
+        greedy_owners = tl.arange(0, triton.next_power_of_2({{ call.partial_owner_count }}))
         for result_batch in tl.range(0, {{ call.result_capacity }}):
             greedy_best = -float("inf")
             greedy_result = {{ call.vocab_size }}
             for partial_batch in tl.range(0, {{ call.batch_capacity }}):
-                partial_offset = partial_batch * {{ mesh_size }} + greedy_owners
-                owner_mask = (greedy_owners < {{ mesh_size }}) & (
+                partial_offset = partial_batch * {{ call.partial_owner_count }} + greedy_owners
+                owner_mask = (greedy_owners < {{ call.partial_owner_count }}) & (
                     ({{ call.partial_batch_logical }}) == ({{ call.result_logical_batch }})
                 )
                 greedy_values = tl.load({{ call.partial_max }} + partial_offset,

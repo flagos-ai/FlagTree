@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 
 from triton.flagmega.errors import IRVerificationError, StageError
 from triton.flagmega.ir.constant_recipe import ConstantPhase, ConstantRecipe
@@ -17,6 +17,8 @@ from triton.flagmega.ir.model import (
     Node,
     TensorType,
     TupleType,
+    _canonical_json,
+    _semantic_component_json,
 )
 from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.ir.verify import verify_module
@@ -92,6 +94,7 @@ class ConstantCSEPass:
         aliases: dict[str, str] = {}
         representatives: dict[str, str] = {}
         nodes: list[Node] = []
+        encoded_attrs: dict[int, str] = {}
 
         def resolve(value: str) -> str:
             while value in aliases:
@@ -99,9 +102,10 @@ class ConstantCSEPass:
             return value
 
         for original in module.nodes:
-            node = replace(original, inputs=tuple(resolve(value) for value in original.inputs))
+            inputs = tuple(resolve(value) for value in original.inputs)
+            node = replace(original, inputs=inputs) if inputs != original.inputs else original
             if original.id in constants:
-                key = _constant_cse_key(node)
+                key = _constant_cse_key(node, encoded_attrs)
                 representative = representatives.get(key)
                 if representative is not None:
                     aliases[node.id] = representative
@@ -188,6 +192,16 @@ def freeze_constant_islands(module: IRModule) -> IRModule:
         observed.update(component)
         components.append(component)
 
+    # Group nodes once in their original topological order. Scanning the
+    # entire module for every independent weight island is quadratic in
+    # checkpoint size; component discovery already gives each node one owner.
+    component_index = {node_id: index for index, component in enumerate(components) for node_id in component}
+    component_nodes: list[list[Node]] = [[] for _ in components]
+    for node in module.nodes:
+        index = component_index.get(node.id)
+        if index is not None:
+            component_nodes[index].append(node)
+
     recipes: list[ConstantRecipe] = []
     asset_by_output: dict[str, Node] = {}
     for index, component in enumerate(components):
@@ -196,7 +210,7 @@ def freeze_constant_islands(module: IRModule) -> IRModule:
             continue
         recipe = ConstantRecipe(
             f"constant_recipe_{index:04d}",
-            tuple(node for node in module.nodes if node.id in component),
+            tuple(component_nodes[index]),
             outputs,
         )
         recipes.append(recipe)
@@ -252,7 +266,7 @@ def freeze_constant_islands(module: IRModule) -> IRModule:
     )
 
     nodes = tuple(
-        asset_by_output[node.id] if node.id in asset_by_output else node
+        asset_by_output.get(node.id, node)
         for node in module.nodes
         if node.id not in required or node.id in asset_by_output
     )
@@ -345,12 +359,19 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
             metadata = dict(recipe_node.metadata)
             if asset is not None and asset.type == recipe_node.type:
                 metadata.update({key: value for key, value in asset.metadata.items() if key != "frozen_constant"})
-            nodes.append(replace(
-                recipe_node,
-                id=identities[recipe_node.id],
-                inputs=tuple(identities[value] for value in recipe_node.inputs),
-                metadata=metadata,
-            ))
+            identity = identities[recipe_node.id]
+            inputs = tuple(identities[value] for value in recipe_node.inputs)
+            # Python equality equates True/1 and can hide a real JSON metadata
+            # edit. Reuse only the original frozen values, never equal copies.
+            unchanged_metadata = len(metadata) == len(recipe_node.metadata) and all(
+                key in recipe_node.metadata and recipe_node.metadata[key] is value
+                for key, value in metadata.items()
+            )
+            nodes.append(
+                recipe_node
+                if identity == recipe_node.id and inputs == recipe_node.inputs and unchanged_metadata
+                else replace(recipe_node, id=identity, inputs=inputs, metadata=metadata)
+            )
         for output, asset in outputs.items():
             if asset.type != recipe.node_map[output].type:
                 # A distribution annotation cannot be copied onto an internal
@@ -378,15 +399,20 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
     ))
 
 
-def _constant_cse_key(node: Node) -> str:
-    payload = {
-        "op": node.op,
-        "inputs": list(node.inputs),
-        "type": node.type.to_data(),
-        "effect": node.effect.to_data(),
-        "attrs": _plain(node.attrs),
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+def _constant_cse_key(node: Node, encoded_attrs: dict[int, str] | None = None) -> str:
+    # Preserve the exact legacy key, but expand shared immutable type/effect
+    # trees once. Attribute encoding differs from the public IR JSON for type
+    # values, so it has a separate, pass-local cache rather than sharing those
+    # fragments. The module retains every attribute object during this pass.
+    identity = id(node.attrs)
+    attrs = encoded_attrs.get(identity) if encoded_attrs is not None else None
+    if attrs is None:
+        attrs = _canonical_json(_plain(node.attrs))
+        if encoded_attrs is not None:
+            encoded_attrs[identity] = attrs
+    return ('{"attrs":' + attrs + ',"effect":' + _semantic_component_json(node.effect)
+            + ',"inputs":' + _canonical_json(node.inputs) + ',"op":' + _canonical_json(node.op)
+            + ',"type":' + _semantic_component_json(node.type) + '}')
 
 
 def _plain(value: Any) -> Any:

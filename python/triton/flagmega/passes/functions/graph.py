@@ -34,7 +34,7 @@ def callee_first_functions(module: IRModule) -> tuple[Function, ...]:
     for function in module.functions:
         values = []
         for node in function_nodes(module, function):
-            if node.op not in {"builtin.call", "tir.call"}:
+            if node.op not in {"builtin.call", "tir.call", "control.for"}:
                 continue
             callee = str(node.attrs.get("callee", ""))
             if callee in module.kernel_callable_map:
@@ -94,7 +94,7 @@ def static_function_invocation_counts(module: IRModule) -> dict[str, int]:
     for function in module.functions:
         counts: dict[str, int] = {}
         for node in function_nodes(module, function):
-            if node.op not in {"builtin.call", "tir.call"}:
+            if node.op not in {"builtin.call", "tir.call", "control.for"}:
                 continue
             callee = str(node.attrs.get("callee", ""))
             if callee in module.kernel_callable_map:
@@ -106,7 +106,13 @@ def static_function_invocation_counts(module: IRModule) -> dict[str, int]:
                     stage=module.stage,
                     node_id=node.id,
                 )
-            counts[callee] = counts.get(callee, 0) + 1
+            count = 1
+            if node.op == "control.for":
+                from triton.flagmega.ir.ops.control.for_loop import static_trip_count
+                count = static_trip_count(node, module)
+                if count is None:
+                    raise IRVerificationError("Static invocation analysis requires bounded For trips.", node_id=node.id)
+            counts[callee] = counts.get(callee, 0) + count
         direct[function.name] = counts
 
     order: list[str] = []

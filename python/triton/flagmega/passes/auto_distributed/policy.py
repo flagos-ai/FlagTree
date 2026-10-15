@@ -6,12 +6,25 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from triton.flagmega.ir import DType, DistributedType, IRModule, Node, Placement, TensorType, VectorType, get_definition
+from triton.flagmega.ir import DistributedType, DType, IRModule, Node, Placement, TensorType, VectorType, get_definition
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidateProviderRegistry
-from triton.flagmega.passes.auto_distributed.inference_providers import (
-    TypeInferenceCandidateProvider, )
 from triton.flagmega.passes.auto_distributed.greedy_sample_provider import GreedySampleCandidateProvider
+from triton.flagmega.passes.auto_distributed.inference_providers import (
+    TypeInferenceCandidateProvider,
+)
+from triton.flagmega.passes.auto_distributed.norm_providers import (
+    AddNormStatsCandidateProvider,
+    BindNormStatsCandidateProvider,
+    GatedNormApplyCandidateProvider,
+    NormApplyCandidateProvider,
+    NormStatsCandidateProvider,
+)
+from triton.flagmega.passes.auto_distributed.packed_matmul_provider import PackedMatMulCandidateProvider
+from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
+    PagedAttentionCombineCandidateProvider,
+    PagedAttentionPartialCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.providers import (
     BinaryCandidateProvider,
     BroadcastCandidateProvider,
@@ -20,41 +33,32 @@ from triton.flagmega.passes.auto_distributed.providers import (
     GdnRecurrentCandidateProvider,
     MatMulCandidateProvider,
     MatMulGluCandidateProvider,
-    PackedQKVParallelLinearCombineCandidateProvider,
     PackedQKVParallelLinearCandidateProvider,
-)
-from triton.flagmega.passes.auto_distributed.norm_providers import (
-    BindNormStatsCandidateProvider,
-    AddNormStatsCandidateProvider,
-    NormApplyCandidateProvider,
-    NormStatsCandidateProvider,
-)
-from triton.flagmega.passes.auto_distributed.packed_matmul_provider import PackedMatMulCandidateProvider
-from triton.flagmega.passes.auto_distributed.sparse_experts_providers import (
-    SparseExpertsGateUpCandidateProvider,
-    SparseExpertsDownCandidateProvider,
-    SparseExpertsDispatchCandidateProvider,
-    SparseExpertsCombineCandidateProvider,
-)
-from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
-    PagedAttentionCombineCandidateProvider,
-    PagedAttentionPartialCandidateProvider,
+    PackedQKVParallelLinearCombineCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.qkv_rope_with_cache_provider import (
-    QKVRoPEWithCacheCandidateProvider, )
-from triton.flagmega.passes.auto_distributed.rope_provider import RoPECandidateProvider
+    QKVRoPEWithCacheCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealizationPolicy,
     NttDistributedReshardRealizationPolicy,
 )
+from triton.flagmega.passes.auto_distributed.rope_provider import RoPECandidateProvider
+from triton.flagmega.passes.auto_distributed.sparse_experts_providers import (
+    SparseExpertsCombineCandidateProvider,
+    SparseExpertsDispatchCandidateProvider,
+    SparseExpertsDownCandidateProvider,
+    SparseExpertsGateUpCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.split_candidates import (
-    ContiguousDistributedSplitCandidateProvider, )
+    ContiguousDistributedSplitCandidateProvider,
+)
+from triton.flagmega.passes.constants import ConstnessAnalysis
 from triton.flagmega.passes.vector_contracts import (
     NATIVE_VECTOR_COMPUTE_OPS,
     retained_vectorization_roots,
     vectorization_root,
 )
-from triton.flagmega.passes.constants import ConstnessAnalysis
 
 _DISTRIBUTION_ADAPTER_OPS = frozenset({
     "distributed.boxing",
@@ -122,6 +126,7 @@ class NttDistributionPolicy:
         registry.add(GdnRecurrentCandidateProvider())
         registry.add(NormStatsCandidateProvider())
         registry.add(NormApplyCandidateProvider())
+        registry.add(GatedNormApplyCandidateProvider())
         registry.add(BindNormStatsCandidateProvider())
         registry.add(AddNormStatsCandidateProvider())
         registry.add(PagedAttentionPartialCandidateProvider())
@@ -132,11 +137,18 @@ class NttDistributionPolicy:
             TypeInferenceCandidateProvider(
                 frozenset({
                     "math.div",
+                    "math.exp",
                     "math.sigmoid",
                     "math.silu",
                     "math.reduce_sum",
                     "math.vectorized_unary",
                     "nn.softmax",
+                    "nn.kda_convolution",
+                    "nn.kda_recurrent_core",
+                    "nn.kda_gated_recurrent_core",
+                    "nn.dsa_indexer",
+                    "nn.dsa_paged_attention",
+                    "nn.staged_routing",
                     "nn.delta_rule_coefficients",
                     "nn.delta_rule_log_prefix",
                     "nn.delta_rule_block_update",
@@ -145,10 +157,12 @@ class NttDistributionPolicy:
                     "nn.gdn_state_slice",
                     "nn.rms_norm",
                     "nn.update_paged_attention_kv_cache",
+                    "nn.update_paged_attention_kv_cache_pair",
                     "ntt.vectorized_cast",
                     "tensors.bitcast",
                     "tensors.broadcast_to",
                     "tensors.concat",
+                    "tensors.gather",
                     "tensors.slice",
                     "tensors.top_k",
                     "tensors.pack",
@@ -157,6 +171,11 @@ class NttDistributionPolicy:
                 })))
         registry.add(BroadcastCandidateProvider(frozenset({
             "math.vectorized_matmul",
+            # The mHC stages contract the hidden axis inside the Sinkhorn
+            # normalization and reject any non-broadcast operand in their own
+            # inference, so replication is the only legal layout today.
+            "nn.mhc_post",
+            "nn.mhc_pre",
             "nn.rotary_embedding",
             "nn.vectorized_rms_norm",
             "tensors.cast",
@@ -178,6 +197,10 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
     """
 
     node_ids = {node.id for node in module.nodes}
+    # Full configured models retain a large physical propagation graph after
+    # distribution; small kernel/unit graphs use the established normalization
+    # contract below unchanged.
+    large_model = len(module.nodes) > 20_000
     native_vector_ops = NATIVE_VECTOR_COMPUTE_OPS
     native_vector_roots = retained_vectorization_roots(module)
     node_map = module.node_map
@@ -217,6 +240,16 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
     pending = [
         node.id for node in module.nodes if vectorization_root(node) in native_vector_roots
         or node.id in native_vector_roots and node.metadata.get("vectorized_from") is not None
+        or (
+            large_model
+            and node.metadata.get("vectorization_propagated") is not None
+            and isinstance(tensor_of(node.type).dtype, VectorType)
+        )
+        or (
+            large_model
+            and node.metadata.get("vectorized_from") is not None
+            and node.op in {"tensors.unpack", "tensors.bitcast"}
+        )
     ]
     # Retained result/layout boundaries (e.g. Concat of a native result and
     # a packed Slice) also own physical operands. Starting only at native
@@ -415,8 +448,53 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                 actual = prepared_input(compute_roots.get(source_id, source_id))
                 definition = get_definition(node.op)
                 attrs = definition.normalize_attrs({**node.attrs, "new_type": target_type})
-                prepared = replace(prepared, inputs=(actual.id, ), type=definition.infer_type((actual, ), attrs),
-                                   attrs=attrs)
+                prepared = replace(prepared, inputs=(actual.id,),
+                                   type=definition.infer_type((actual,), attrs), attrs=attrs)
+            # Scalarizing a propagated helper (for example a reshape) rewrites
+            # the value this adapter reads, but an adapter names one logical
+            # tensor on both sides, so it cannot absorb that dtype change.
+            # Restoring the vector representation it was typed for is a type
+            # invariant of the rewrite above, not a large-model policy: gating
+            # it on graph size leaves a reshard relating a vector type to a
+            # scalar source, which ``sharded_view_error`` rejects.
+            if len(prepared.inputs) == 1:
+                source = prepared_by_id.get(prepared.inputs[0], node_map.get(prepared.inputs[0]))
+                target_tensor = (
+                    None if not isinstance(prepared.type, (TensorType, DistributedType))
+                    else tensor_of(prepared.type)
+                )
+                source_tensor = (
+                    None if source is None or not isinstance(source.type, (TensorType, DistributedType))
+                    else tensor_of(source.type)
+                )
+                if (
+                    source is not None
+                    and source_tensor is not None
+                    and target_tensor is not None
+                    and isinstance(target_tensor.dtype, VectorType)
+                    and not isinstance(source_tensor.dtype, VectorType)
+                ):
+                    axes = tuple(range(
+                        source_tensor.rank - len(target_tensor.dtype.lanes),
+                        source_tensor.rank,
+                    ))
+                    pack_definition = get_definition("tensors.pack")
+                    packed = pack_definition.prepare(
+                        (source,), {"axes": axes, "lanes": target_tensor.dtype.lanes}
+                    )
+                    pack_id = f"{prepared.id}.semantic_input.pack"
+                    pack = Node(
+                        pack_id,
+                        "tensors.pack",
+                        (source.id,),
+                        packed.result_type,
+                        packed.effect,
+                        packed.attrs,
+                        {"introduced_by": "LowerVectorizationContracts", "vector_boundary": "semantic_to_vector"},
+                    )
+                    nodes.append(pack)
+                    prepared_by_id[pack.id] = pack
+                    prepared = replace(prepared, inputs=(pack.id,))
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
             continue
@@ -501,8 +579,26 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             nodes.append(node)
             prepared_by_id[node.id] = node
             continue
-        if ((node.id in native_vector_roots or current_vector_root in native_vector_roots)
-                and node.metadata.get("vectorized_from") is not None):
+        if (
+            large_model
+            and node.metadata.get("vectorized_from") is not None
+            and node.op in {"tensors.unpack", "tensors.bitcast"}
+        ):
+            # These are explicit scalar/vector representation boundaries in
+            # the selected expression. Reconstructing the producer semantic
+            # op in their place would erase the boundary and feed a later
+            # physical Pack with an already vector-typed value.
+            prepared = replace(
+                node,
+                inputs=tuple(compute_roots.get(value, value) for value in node.inputs),
+            )
+            nodes.append(prepared)
+            prepared_by_id[prepared.id] = prepared
+            continue
+        if (
+            (node.id in native_vector_roots or current_vector_root in native_vector_roots)
+            and node.metadata.get("vectorized_from") is not None
+        ):
             # Keep the typed-vector result boundary (usually Unpack) as an
             # explicit zero-copy view.  Its native compute node above owns the
             # executable vector schedule.
@@ -511,10 +607,63 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             continue
         vectorized_from = node.metadata.get("vectorized_from")
         if vectorized_from is None:
+            if not large_model:
+                prepared = replace(
+                    node,
+                    id=compute_roots.get(node.id, node.id),
+                    inputs=tuple(compute_roots.get(value, value) for value in node.inputs),
+                )
+                nodes.append(prepared)
+                prepared_by_id[prepared.id] = prepared
+                continue
+            semantic_edges: list[str] = []
+            for input_index, value in enumerate(node.inputs):
+                mapped = compute_roots.get(value, value)
+                actual = prepared_by_id.get(mapped)
+                if actual is None:
+                    actual = node_map[value]
+                original = node_map[value]
+                if not isinstance(actual.type, (TensorType, DistributedType)) or not isinstance(
+                    original.type, (TensorType, DistributedType)
+                ):
+                    semantic_edges.append(mapped)
+                    continue
+                actual_tensor = tensor_of(actual.type)
+                original_tensor = tensor_of(original.type)
+                if (
+                    isinstance(actual_tensor.dtype, VectorType)
+                    and not isinstance(original_tensor.dtype, VectorType)
+                ):
+                    axes = tuple(int(axis) for axis in original.metadata.get(
+                        "vector_axes",
+                        actual.metadata.get("selected_vector_axes", ()),
+                    ))
+                    if not axes:
+                        axes = tuple(range(
+                            actual_tensor.rank - len(actual_tensor.dtype.lanes),
+                            actual_tensor.rank,
+                        ))
+                    definition = get_definition("tensors.unpack")
+                    unpacked = definition.prepare((actual,), {"axes": axes})
+                    boundary_id = f"{node.id}.semantic_input{input_index}.unpack"
+                    boundary = Node(
+                        boundary_id,
+                        "tensors.unpack",
+                        (actual.id,),
+                        unpacked.result_type,
+                        unpacked.effect,
+                        unpacked.attrs,
+                        {"introduced_by": "LowerVectorizationContracts", "vector_boundary": "vector_to_semantic"},
+                    )
+                    nodes.append(boundary)
+                    prepared_by_id[boundary.id] = boundary
+                    semantic_edges.append(boundary.id)
+                else:
+                    semantic_edges.append(mapped)
             prepared = replace(
                 node,
                 id=compute_roots.get(node.id, node.id),
-                inputs=tuple(compute_roots.get(value, value) for value in node.inputs),
+                inputs=tuple(semantic_edges),
             )
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
@@ -537,8 +686,37 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             compute_roots=compute_roots,
         )
         semantic_attrs = dict(node.metadata.get("vectorization_attrs", {}))
-        definition = get_definition(semantic_op)
         input_nodes = tuple(semantic_input(value) for value in semantic_inputs)
+        # Vectorization recipes retain the original logical attributes, while
+        # the current node carries the packed physical shape used by its
+        # vector type. Shape/coordinate attributes must follow that physical
+        # tensor when the semantic consumer is reconstructed; otherwise a
+        # vector-lane shape is applied once more and reshape/slice inference
+        # changes the element count.
+        if large_model and semantic_op in {
+            "tensors.reshape", "tensors.broadcast_to", "tensors.slice",
+            "tensors.slice_to_shape", "tensors.pad",
+        }:
+            # semantic_input may have inserted an Unpack for a native vector
+            # producer. In that case the original scalar shape is required;
+            # if the semantic edge remains vector-typed, use the packed shape
+            # carried by the current node.
+            vector_input = any(
+                isinstance(tensor_of(value.type).dtype, VectorType)
+                for value in input_nodes
+            )
+            if vector_input:
+                axes = tuple(int(axis) for axis in node.metadata.get("vector_axes", ()))
+                lanes = tuple(int(lane) for lane in node.metadata.get("vector_lanes", ()))
+                if "shape" in semantic_attrs and axes and lanes:
+                    shape = list(int(value) for value in semantic_attrs["shape"])
+                    for axis, lane in zip(axes, lanes):
+                        if axis < 0:
+                            axis += len(shape)
+                        if 0 <= axis < len(shape) and shape[axis] % lane == 0:
+                            shape[axis] //= lane
+                    semantic_attrs["shape"] = tuple(shape)
+        definition = get_definition(semantic_op)
         normalized_attrs = definition.normalize_attrs(semantic_attrs)
         prepared = replace(
             node,

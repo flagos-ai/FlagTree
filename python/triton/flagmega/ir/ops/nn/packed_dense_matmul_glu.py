@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
@@ -45,6 +46,8 @@ class PackedDenseMatMulGlu(OpDefinition):
     up_weight = input_parameter(is_tensor() & has_rank(4))
     activation = attribute_parameter(default="silu")
     round_activation = attribute_parameter(default=True)
+    gate_clamp_max = attribute_parameter(default=None)
+    up_clamp = attribute_parameter(default=None)
     packed_layout = attribute_parameter(default="k_major_n8_k16")
 
     @classmethod
@@ -54,6 +57,11 @@ class PackedDenseMatMulGlu(OpDefinition):
             raise IRSchemaError("PackedDenseMatMulGlu currently supports only SiLU.")
         if not isinstance(attrs["round_activation"], bool):
             raise IRSchemaError("PackedDenseMatMulGlu round_activation must be boolean.")
+        for name in ("gate_clamp_max", "up_clamp"):
+            value = attrs[name]
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not isfinite(value) or value <= 0):
+                raise IRSchemaError(f"PackedDenseMatMulGlu {name} must be a finite positive number or None.")
         if attrs["round_activation"]:
             attrs.pop("round_activation")
         _, _, mesh_interleaved = parse_k_major_layout(attrs["packed_layout"])
@@ -124,6 +132,11 @@ class PackedDenseMatMulGlu(OpDefinition):
         up_weight = unpack_k_major_weight(cls.up_weight.read(arguments), layout)
         gate = context.torch.nn.functional.linear(value, gate_weight)
         up = context.torch.nn.functional.linear(value, up_weight)
+        if node.attrs.get("gate_clamp_max") is not None:
+            gate = context.torch.clamp(gate, max=node.attrs["gate_clamp_max"])
+        if node.attrs.get("up_clamp") is not None:
+            limit = node.attrs["up_clamp"]
+            up = context.torch.clamp(up, min=-limit, max=limit)
         if not node.attrs.get("round_activation", True):
             return (context.torch.nn.functional.silu(gate.float()) * up.float()).to(value.dtype)
         return context.torch.nn.functional.silu(gate) * up

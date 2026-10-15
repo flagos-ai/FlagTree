@@ -10,7 +10,7 @@ def {{ call.symbol }}({{ call.signature }}):
     for _fm_start in tl.range(0, {{ input.capacity }}, {{ call.tile }}):
         _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
         _fm_mask = (_fm_offsets < {{ input.capacity }}) & ({{ input.active }})
-        _fm_value = tl.load({{ input.source }} + ({{ input.input_offset }}), mask=_fm_mask, other=0)
+        _fm_value = tl.load({{ input.source }} + ({{ input.input_offset }}), mask=_fm_mask, other=0.0)
         tl.store({{ call.result }} + ({{ input.output_offset }}), _fm_value, mask=_fm_mask & ({{ call.writer_active }}))
 {% endfor %}
 

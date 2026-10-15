@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Dense BF16 gate/up projections with SiLU GLU."""
 
+from math import isfinite
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
@@ -23,6 +24,8 @@ class DenseMatMulGlu(OpDefinition):
     up_weight = input_parameter(is_tensor() & has_rank(2))
     activation = attribute_parameter(default="silu")
     round_activation = attribute_parameter(default=True)
+    gate_clamp_max = attribute_parameter(default=None)
+    up_clamp = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -31,6 +34,11 @@ class DenseMatMulGlu(OpDefinition):
             raise IRSchemaError("DenseMatMulGlu currently supports only SiLU.")
         if not isinstance(attrs["round_activation"], bool):
             raise IRSchemaError("DenseMatMulGlu round_activation must be boolean.")
+        for name in ("gate_clamp_max", "up_clamp"):
+            value = attrs[name]
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not isfinite(value) or value <= 0):
+                raise IRSchemaError(f"DenseMatMulGlu {name} must be a finite positive number or None.")
         if attrs["round_activation"]:
             attrs.pop("round_activation")  # Preserve the existing default IR encoding.
         return attrs
@@ -67,6 +75,11 @@ class DenseMatMulGlu(OpDefinition):
         value = cls.value.read(arguments)
         gate = context.torch.nn.functional.linear(value, cls.gate_weight.read(arguments))
         up = context.torch.nn.functional.linear(value, cls.up_weight.read(arguments))
+        if node.attrs.get("gate_clamp_max") is not None:
+            gate = context.torch.clamp(gate, max=node.attrs["gate_clamp_max"])
+        if node.attrs.get("up_clamp") is not None:
+            limit = node.attrs["up_clamp"]
+            up = context.torch.clamp(up, min=-limit, max=limit)
         if not node.attrs.get("round_activation", True):
             return (context.torch.nn.functional.silu(gate.float()) * up.float()).to(value.dtype)
         return context.torch.nn.functional.silu(gate) * up

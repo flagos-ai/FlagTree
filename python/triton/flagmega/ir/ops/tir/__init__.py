@@ -9,5 +9,9 @@ from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.kernel import Kernel
 from triton.flagmega.ir.ops.tir.call import Call
 from triton.flagmega.ir.ops.tir.scalar_const import ScalarConst
+from triton.flagmega.ir.ops.tir.parameter_bank import BankGet, ParameterBank
 
-__all__ = ["Barrier", "Buffer", "BufferSubspan", "BufferView", "Call", "Kernel", "RefSlice", "ScalarConst"]
+__all__ = [
+    "Barrier", "BankGet", "Buffer", "BufferSubspan", "BufferView", "Call", "Kernel",
+    "ParameterBank", "RefSlice", "ScalarConst",
+]

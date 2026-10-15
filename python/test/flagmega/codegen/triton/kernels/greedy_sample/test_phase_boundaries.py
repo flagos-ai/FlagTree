@@ -44,6 +44,8 @@ def test_argmax_phases_keep_grid_scratch_in_entry(
                 "logical_index": "shard_index * 8 + vocab_offsets",
                 "partial_max": "maximum",
                 "partial_index": "index",
+                "partial_owner_count": mesh["mesh_size"],
+                "partial_owner_index": "shard_index",
                 "result": "result",
             },),
         },

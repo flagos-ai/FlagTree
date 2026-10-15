@@ -265,7 +265,8 @@ class EGraph:
         return tuple(view for view in self.classes() if view.id in visited)
 
     def roots_for_module(self, module: IRModule) -> tuple[int, ...]:
-        root_ids = {output for function in module.functions for output in function.outputs}
+        root_ids = {value for function in module.functions
+                    for value in (*function.parameters, *function.outputs)}
         root_ids.update(input_id for node in module.nodes if not node.effect.is_pure for input_id in node.inputs)
         roots = {
             self.class_for_node(node_id)

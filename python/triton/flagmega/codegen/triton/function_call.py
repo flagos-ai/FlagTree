@@ -22,16 +22,18 @@ def emit_function_call_arguments(
     module: IRModule,
     caller_binding: Mapping[str, object],
     call_event: Mapping[str, object],
+    *,
+    callee_binding: Mapping[str, object] | None = None,
 ) -> tuple[str, ...]:
     """Emit actuals in the callee's verified flattened signature order."""
 
     if call_event.get("kind") != "function_call":
         raise CodegenError("Triton function-call lowering requires a function event.")
     callee = str(call_event["callee"])
-    callee_binding = describe_function_runtime_binding(
-        module,
-        function_name=callee,
-    )
+    if callee_binding is None:
+        callee_binding = describe_function_runtime_binding(module, function_name=callee)
+    elif callee_binding.get("function") != callee:
+        raise CodegenError(f"Call {call_event['call']!r} has a binding for a different callee.")
     edges = {
         str(edge["formal"]): edge
         for edge in (*call_event["arguments"], *call_event["results"])
@@ -85,14 +87,20 @@ def emit_function_call_arguments(
         expressions[str(pool["name"])] = expression
 
     try:
-        return tuple(
-            expressions[str(name)] for name in callee_binding["signature"]
+        result = tuple(
+            expressions[str(name)] for name in callee_binding["signature"] if name != "device_dptr"
         )
     except KeyError as error:
         raise CodegenError(
             f"Call {call_event['call']!r} did not bind callee signature "
             f"argument {error.args[0]!r}."
         ) from error
+    # Chip/node coordinates are runtime context shared by every generated
+    # helper.  It is deliberately outside the buffer ABI, so carry it
+    # explicitly only when the caller's generated signature declares it.
+    if "device_dptr" in caller_binding.get("signature", ()):
+        result = (*result, "device_dptr")
+    return result
 
 
 __all__ = ["emit_function_call_arguments"]

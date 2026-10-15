@@ -2,12 +2,15 @@
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
+{% if function_offset_tables | default(()) %}
+FLAGMEGA_FUNCTION_OFFSET_TABLES = {{ function_offset_tables }}
+{% endif %}
 {% if use_tle | default(false) %}
 import triton.experimental.tle.language as tle
 
 {% endif %}
 {% if grid_mesh %}
-_FLAGMEGA_GRID_MESH_VALUE = tle.device_mesh({"block": {{ mesh_axes_repr }}})
+_FLAGMEGA_GRID_MESH_VALUE = tle.device_mesh({{ mesh_topology_repr }})
 FLAGMEGA_GRID_MESH = tl.constexpr(_FLAGMEGA_GRID_MESH_VALUE)
 {% for group in grid_barrier_axis_groups | default(()) %}
 FLAGMEGA_GRID_AXIS_GROUP_{{ group.key }} = tl.constexpr(

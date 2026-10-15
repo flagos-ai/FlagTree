@@ -7,12 +7,19 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.tir import For
 from triton.flagmega.passes.tir import lower_transfer_pipeline_regions
 
 from .helpers import module, pipeline_dispatch, prim_function
 
 
-def test_pipeline_under_structured_control_flow_fails_fast():
+def test_pipeline_under_counted_loop_is_mirrored_on_both_sides():
+    """A counted loop runs its body a proven number of times.
+
+    The region mirrors the loop into both partitions, so each trip performs
+    one push/pop pair and the stage order stays paired. Only the structures
+    without that guarantee remain illegal.
+    """
     dispatch = pipeline_dispatch("kernel", 0, shared_start=0)
     loop = fm.T.for_loop(
         fm.dim("i", minimum=0, maximum=0),
@@ -22,6 +29,20 @@ def test_pipeline_under_structured_control_flow_fails_fast():
     )
     function = prim_function("kernel", ())
     function = replace(function, body=fm.T.sequential((loop,)))
+
+    lowered = lower_transfer_pipeline_regions(module(function))
+    region = lowered.prim_function_map["kernel"].body.fields[0]
+    for side in (region.produce_body, region.consume_body):
+        carried = side.fields[0]
+        assert isinstance(carried, For), side
+        assert carried.body.fields, "each partition keeps the loop's stage"
+
+
+def test_pipeline_under_unbounded_control_flow_fails_fast():
+    dispatch = pipeline_dispatch("kernel", 0, shared_start=0)
+    scoped = fm.T.block("guarded", fm.T.sequential((dispatch,)))
+    function = prim_function("kernel", ())
+    function = replace(function, body=fm.T.sequential((scoped,)))
 
     with pytest.raises(IRVerificationError, match="straight-line stage order"):
         lower_transfer_pipeline_regions(module(function))

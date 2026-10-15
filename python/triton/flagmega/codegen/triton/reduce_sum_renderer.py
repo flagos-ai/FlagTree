@@ -8,7 +8,9 @@ from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_ty
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import Node
 from triton.flagmega.ir.axis import normalize_axis
+from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.math.reduce_sum import ReduceSum
+from triton.flagmega.ir.types import VectorType
 
 
 def reduce_sum_call(raw):
@@ -26,6 +28,14 @@ def reduce_sum_call(raw):
     output_coordinates = (tuple("0" if axis in axes else coordinate
                                 for axis, coordinate in enumerate(domain["coordinates"]))
                           if attrs["keep_dims"] else domain["outer_coordinates"])
+    output_type = tensor_of(_tensor_type(result["abi"]))
+    lane_coordinate = None
+    if isinstance(output_type.dtype, VectorType):
+        lanes = output_type.dtype.lane_count
+        scalar_column = output_coordinates[-1]
+        output_coordinates = (*output_coordinates[:-1], f"(({scalar_column}) // {lanes})")
+        if lanes > 1:
+            lane_coordinate = f"(({scalar_column}) % {lanes})"
     scalar = source["abi"]["storage"] == "scalar"
     scalar_value = None
     if scalar:
@@ -38,6 +48,6 @@ def reduce_sum_call(raw):
         "source": None if scalar else _pointer(source),
         "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),
         "result": _pointer(result),
-        "result_offset": emit_local_scalar_offset(result["abi"], output_coordinates),
+        "result_offset": emit_local_scalar_offset(result["abi"], output_coordinates, lane_coordinate=lane_coordinate),
         "writer_active": _canonical_writer_active(result["abi"]),
     }

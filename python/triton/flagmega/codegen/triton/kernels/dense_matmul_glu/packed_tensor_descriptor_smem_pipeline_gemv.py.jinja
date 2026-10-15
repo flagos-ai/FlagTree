@@ -30,6 +30,7 @@
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
             dense_glu_tile_sequence = (
+                {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base +{% endif %}
                 (dense_glu_local_n_start // {{ call.tile_n }})
                 * ({{ call.local_k_capacity }} // {{ call.block_k }})
                 + dense_glu_local_k_start // {{ call.block_k }}
@@ -109,6 +110,7 @@
             )
             {{ writer }}.commit(dense_glu_up_sequence)
 {% endif %}
+    {% if not call.trip_scoped_pipe | default(false) %}
     {{ writer }}.close(
         tl.cdiv({{ call.local_n_capacity }}, {{ call.tile_n }})
         * ({{ call.local_k_capacity }} // {{ call.block_k }})
@@ -116,6 +118,7 @@
         * 2
 {% endif %}
     )
+    {% endif %}
 {% endmacro %}
 
 {% macro consumer_body(call) %}
@@ -169,6 +172,7 @@
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
             dense_glu_tile_sequence = (
+                {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base +{% endif %}
                 (dense_glu_local_n_start // {{ call.tile_n }})
                 * ({{ call.local_k_capacity }} // {{ call.block_k }})
                 + dense_glu_local_k_start // {{ call.block_k }}
@@ -225,6 +229,12 @@
         dense_glu_up_accumulator = tl.sum(dense_glu_up_partial, axis=1)
         dense_glu_gate_accumulator = dense_glu_gate_accumulator.to({{ call.output_type }}).to(tl.float32)
         dense_glu_up_accumulator = dense_glu_up_accumulator.to({{ call.output_type }}).to(tl.float32)
+{% if call.gate_clamp_max is not none %}
+        dense_glu_gate_accumulator = tl.minimum(dense_glu_gate_accumulator, {{ call.gate_clamp_max }})
+{% endif %}
+{% if call.up_clamp is not none %}
+        dense_glu_up_accumulator = tl.clamp(dense_glu_up_accumulator, -{{ call.up_clamp }}, {{ call.up_clamp }})
+{% endif %}
         dense_glu_activated = (
             dense_glu_gate_accumulator
             / (1.0 + tl.exp(-dense_glu_gate_accumulator))
@@ -421,7 +431,7 @@ def {{ call.symbol }}__consumer_stage(
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__producer(
-    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {{ producer_body(call) }}
@@ -429,7 +439,7 @@ def {{ call.symbol }}__producer(
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__consumer(
-    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {{ consumer_body(call) }}

@@ -25,12 +25,25 @@ def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.si
                     _fm_up_partial = tle.gpu.set_layout(tl.zeros(({{ call.block_n }}, {{ call.block_k }}), tl.float32), {{ call.symbol }}__weight_layout)
                     for _fm_k_start in tl.range(0, {{ call.active_k }}, {{ call.block_k }}):
                         _fm_k = _fm_k_start + tle.gpu.set_layout(tl.arange(0, {{ call.block_k }}), {{ call.symbol }}__k_layout)
-                        _fm_input = tl.load({{ call.input_pointer }} + ({{ call.q_offset }}), mask=_fm_k < ({{ call.active_k }}), other=0).to(tl.float32)
-                        _fm_ready = {{ reader }}.wait(_fm_step)
+                        _fm_input = tl.load({{ call.input_pointer }} + ({{ call.q_offset }}), mask=_fm_k < ({{ call.active_k }}), other=0.0).to(tl.float32)
+{% if call.block_scale_loads.gate_proj_scale is defined %}{% if call.groups_per_tile > 1 %}{# The weight scale is a per-K-group contract, so the activation it
+   multiplies has to be quantized over the same groups. #}
+                        _fm_input_groups = tl.reshape(_fm_input, ({{ call.groups_per_tile }}, {{ call.weight_block_k }}))
+                        _fm_input_abs_max = tl.max(tl.abs(_fm_input_groups), axis=1, keep_dims=True)
+                        _fm_group_scale = tl.where(_fm_input_abs_max == 0.0, 1.0, _fm_input_abs_max / 448.0)
+                        _fm_activation_scale = tl.reshape(tl.broadcast_to(_fm_group_scale, ({{ call.groups_per_tile }}, {{ call.weight_block_k }})), ({{ call.block_k }},))
+{% else %}                        _fm_input_abs_max = tl.max(tl.abs(_fm_input), axis=0)
+                        _fm_activation_scale = tl.where(_fm_input_abs_max == 0.0, 1.0, _fm_input_abs_max / 448.0)
+{% endif %}                        _fm_input_quantized = tl.maximum(tl.minimum(_fm_input / _fm_activation_scale, 448.0), -448.0).to(tl.float8e4nv).to(tl.float32)
+{% endif %}                        _fm_ready = {{ reader }}.wait(_fm_step)
                         _fm_gate = {{ call.symbol }}__load_weight(_fm_ready.slot.gate)
                         _fm_up = {{ call.symbol }}__load_weight(_fm_ready.slot.up)
-                        _fm_gate_partial += {% if call.unit_scales.gate_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_gate_input_scale){% endif %}[None, :] * _fm_gate
-                        _fm_up_partial += {% if call.unit_scales.up_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_up_input_scale){% endif %}[None, :] * _fm_up
+{% if call.block_scale_loads.gate_proj_scale is defined %}
+                        _fm_gate_block_scale = {{ call.block_scale_loads.gate_proj_scale }}
+                        _fm_up_block_scale = {{ call.block_scale_loads.up_proj_scale }}
+{% endif %}
+                        _fm_gate_partial += {% if call.block_scale_loads.gate_proj_scale is defined %}(_fm_input_quantized * _fm_activation_scale)[None, :] * _fm_gate * _fm_gate_block_scale{% else %}{% if call.unit_scales.gate_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_gate_input_scale){% endif %}[None, :] * _fm_gate{% endif %}{{ "\n" }}
+                        _fm_up_partial += {% if call.block_scale_loads.up_proj_scale is defined %}(_fm_input_quantized * _fm_activation_scale)[None, :] * _fm_up * _fm_up_block_scale{% else %}{% if call.unit_scales.up_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_up_input_scale){% endif %}[None, :] * _fm_up{% endif %}{{ "\n" }}
                         {{ reader }}.release(_fm_step)
                         _fm_step += 1
                     _fm_gate_result = tl.sum(_fm_gate_partial, 1) * _fm_gate_input_scale * _fm_gate_scale
@@ -38,6 +51,12 @@ def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.si
 {% if call.attrs.round_projections %}
                     _fm_gate_result = _fm_gate_result.to({{ call.output_dtype }}).to(tl.float32)
                     _fm_up_result = _fm_up_result.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+{% if call.attrs.gate_clamp_max is not none %}
+                    _fm_gate_result = tl.minimum(_fm_gate_result, {{ call.attrs.gate_clamp_max }})
+{% endif %}
+{% if call.attrs.up_clamp is not none %}
+                    _fm_up_result = tl.clamp(_fm_up_result, -{{ call.attrs.up_clamp }}, {{ call.attrs.up_clamp }})
 {% endif %}
                     _fm_activation = _fm_gate_result * tl.sigmoid(_fm_gate_result)
 {% if call.attrs.round_activation %}

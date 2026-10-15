@@ -6,29 +6,29 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from triton.flagmega.ir.tir.kernel_definition import replace_kernel_dispatch, replace_kernel_callables
-from math import prod
 
-from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import IRModule, Node, TIRMicroKernelSelection, kernel_dispatch_of
-from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_nodes
 from triton.flagmega.codegen.triton.distribution import requires_distributed_grid
-from triton.flagmega.passes.tir import materialize_kernel_definitions
+from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_nodes
 from triton.flagmega.codegen.triton.microkernels.materialization import (
     materialize_shared_workspace_buffers,
     validate_transfer_pipeline,
 )
 from triton.flagmega.codegen.triton.vectorization import require_vector_schedule
+from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir import IRModule, Node, TIRMicroKernelSelection, kernel_dispatch_of
 from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.entry_abi import redirect_entry_abi
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 from triton.flagmega.ir.ops.tensors.unpack import Unpack
+from triton.flagmega.ir.tir.kernel_definition import replace_kernel_callables, replace_kernel_dispatch
 from triton.flagmega.ir.types import VectorType
-
+from triton.flagmega.passes.tir import materialize_kernel_definitions
 
 _VECTORIZABLE_SEMANTIC_OPS = frozenset({
     "math.add",
     "math.matmul",
     "math.mul",
+    "math.vectorized_matmul",
     "math.div",
     "math.sigmoid",
     "math.packed_dense_matmul",
@@ -37,6 +37,7 @@ _VECTORIZABLE_SEMANTIC_OPS = frozenset({
     "math.vectorized_unary",
     "nn.rms_norm",
     "nn.norm_apply",
+    "nn.gated_norm_apply",
     "ntt.matmul_norm_stats",
     "ntt.add_norm_stats",
     "ntt.packed_matmul",
@@ -106,6 +107,27 @@ class TritonTirLoweringPolicy:
                     inputs=inputs,
                     metadata={**dict(node.metadata), "lowered_from": "builtin.call"},
                 ))
+                continue
+            if node.op == "control.for":
+                # Structured graph control is lowered after distribution and
+                # preserved as a region marker.  Its body is represented by a
+                # reusable function; bufferization/codegen consume the same
+                # marker rather than unrolling it into per-iteration calls.
+                nodes.append(replace(node, inputs=inputs,
+                                     metadata={**dict(node.metadata), "lowered_from": "control.for"}))
+                continue
+            if node.op == "control.bank_get":
+                nodes.append(replace(node, op="tir.bank_get", inputs=inputs,
+                                     metadata={**dict(node.metadata), "lowered_from": "control.bank_get"}))
+                continue
+            if node.op == "builtin.parameter_bank":
+                nodes.append(replace(node, op="tir.parameter_bank", inputs=inputs,
+                                     metadata={**dict(node.metadata), "lowered_from": "builtin.parameter_bank"}))
+                continue
+            if node.op == "shapes.dim_as_tensor":
+                # A dimension expression stays an expression through TIR; the
+                # runtime binding resolves its symbols at the use site.
+                nodes.append(replace(node, inputs=inputs))
                 continue
             if node.op == "builtin.scalar_const":
                 nodes.append(replace(
@@ -276,6 +298,18 @@ class TritonTirLoweringPolicy:
             replace(function, outputs=tuple(resolve(output_id) for output_id in function.outputs))
             for function in module.functions
         )
+        # Alias resolution renames entry outputs, so a published entry ABI must
+        # follow them.  The check turns a missed redirect into a codegen-time
+        # failure rather than an artifact that only fails at runtime load.
+        entry = next(function for function in functions if function.name == module.entry)
+        metadata = dict(redirect_entry_abi(
+            metadata,
+            {output_id: resolve(output_id)
+             for function in module.functions if function.name == module.entry
+             for output_id in function.outputs if resolve(output_id) != output_id},
+            known_values={*(str(value) for value in entry.parameters), *(str(value) for value in entry.outputs)},
+            stage=module.stage,
+        ))
         selected = replace(module, nodes=tuple(nodes), functions=functions, metadata=metadata)
         selected = materialize_kernel_definitions(selected)
         selected = _materialize_direct_implementation_resources(selected, target)

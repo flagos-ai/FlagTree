@@ -4,18 +4,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from math import prod
-from math import gcd
-from math import isfinite
-from typing import Mapping, Sequence
+from math import gcd, isfinite, prod
 
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.dim_expr import DimVar, dim
 from triton.flagmega.ir.bufferization import (
-    AllocationPolicy,
-    AllocationStrategy,
     AliasInfo,
     AliasKind,
+    AllocationPolicy,
+    AllocationStrategy,
     BufferDescriptor,
     BufferPlan,
     CallBufferBinding,
@@ -23,11 +22,23 @@ from triton.flagmega.ir.bufferization import (
     FunctionBufferPlan,
     FunctionMemoryPool,
     KernelCallBufferBinding,
-    MemorySpace,
     MemoryAllocationScope,
     MemorySharingScope,
+    MemorySpace,
     MemSpan,
     PhysicalBuffer,
+)
+from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
+from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
+from triton.flagmega.ir.distributed_type import (
+    SBPSplit,
+    block_owner_count,
+    is_fully_replicated,
+    is_fully_sharded_across_placement,
+    is_local_shard_subview,
+    launch_chip_count,
+    local_shape,
+    placement_owner_count,
 )
 from triton.flagmega.ir.model import (
     DistributedType,
@@ -51,14 +62,14 @@ from triton.flagmega.ir.distributed_type import (
 )
 from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
 from triton.flagmega.passes.tir.bufferize.alias_analysis import AliasAnalysis
-from triton.flagmega.passes.tir.bufferize.call_input_ownership import non_consumable_parameters
 from triton.flagmega.passes.tir.bufferize.alignment import (
     effective_alignment,
     transfer_source_alignment_requirements,
 )
 from triton.flagmega.passes.tir.bufferize.allocation import BufferLifetime
 from triton.flagmega.passes.tir.bufferize.allocation_session import AllocationSession
-from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
+from triton.flagmega.passes.tir.bufferize.call_input_ownership import non_consumable_parameters
+from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
 from triton.flagmega.passes.tir.bufferize.readonly_groups import ReadonlyGroupResolver
 from triton.flagmega.passes.tir.shared_workspace import (
     shared_workspace_buffer_id, )
@@ -74,6 +85,10 @@ class BufferizationOptions:
     optimization_level: str = "optimized"
     barrier_bytes_budget: int = 0
     barrier_fixpoint_rounds: int = 1
+    # Target launch meshes with c/d axes load module readonly data by chip.
+    # This is supplied before bufferization, when launch_contract metadata has
+    # not yet been finalized.
+    rdata_chip_sharding: bool = False
 
     def __post_init__(self):
         if self.optimization_level not in {"fast", "optimized"}:
@@ -162,6 +177,17 @@ class BufferPlanner:
         self.function_plans: dict[str, FunctionBufferPlan] = {}
         self.rdata_offset = 0
         self._physical_serial = 0
+        # Tensor-descriptor transfers address a module-global tensor map.  A
+        # chip-local component cannot be passed to those kernels because the
+        # descriptor's base/stride contract is canonical.  Compute this from
+        # selected-kernel capabilities and propagate it through graph-call
+        # boundaries so both the formal parameter and its rdata source keep
+        # the same physical representation.
+        self.canonical_global_values = _canonical_global_values(module)
+        # A module-scoped readonly pool is loaded once per process.  When the
+        # launch mesh has device/node axes, rdata descriptors use one segment
+        # per chip and retain only block-owner components in each segment.
+        self.rdata_chip_sharding = bool(options.rdata_chip_sharding or launch_chip_count(module) > 1)
 
     def _is_function_pool_storage(self, storage: str) -> bool:
         return storage in self.function_pool_spaces
@@ -291,6 +317,17 @@ class BufferPlanner:
             node for node in self.module.nodes
             if node.op in {"builtin.weight", "builtin.const_asset", "tir.buffer"}
         )
+        # A parameter bank is readonly storage whose rows repeat one schema,
+        # which is exactly the layout an rdata group describes. Expand each
+        # field into per-row members so a row access becomes a byte offset.
+        bank_nodes = self._parameter_bank_rdata_nodes()
+        nodes = (*nodes, *bank_nodes)
+        # Members are synthesized after canonical-global analysis ran, so
+        # inherit the requirement from the row projection that consumes the
+        # field: a descriptor kernel needs a module-global base address.
+        for member in bank_nodes:
+            if str(member.metadata.get("canonical_global", "")) == "true":
+                self.canonical_global_values = self.canonical_global_values | {member.id}
         grouped: dict[str, list[tuple[object, Mapping[str, object]]]] = {}
         group_order: list[str] = []
         ungrouped = []
@@ -334,9 +371,25 @@ class BufferPlanner:
                 if physical_id is None:
                     physical_id = self._new_physical("rdata")
                     deduplicated[identity] = physical_id
+                    storage_kind = (
+                        DistributedBufferStorageKind.CANONICAL_GLOBAL
+                        if self._requires_canonical_global(node, value_type)
+                        else _distributed_storage_kind(
+                            value_type,
+                            "rdata",
+                            "readonly_data",
+                            rdata_chip_sharding=self.rdata_chip_sharding,
+                        )
+                    )
                     self._allocate_rdata_physical(
                         physical_id,
-                        _physical_nbytes(value_type, shape, "rdata", "readonly_data"),
+                        _physical_nbytes(
+                            value_type,
+                            shape,
+                            "rdata",
+                            "readonly_data",
+                            storage_kind=storage_kind,
+                        ),
                         alignment=required_alignment,
                     )
                 ids.append(self._add_descriptor(
@@ -374,17 +427,36 @@ class BufferPlanner:
                         node_id=node.id,
                     )
                 ids = []
-                for buffer_id, value_type, field in _leaf_types(node.id, node.type):
+                for leaf, (buffer_id, value_type, field) in enumerate(
+                    _leaf_types(node.id, node.type)
+                ):
                     shape = _maximum_shape(value_type, self.module.stage, node.id)
                     required_alignment = self._required_alignment(node.id, leaf=buffer_id)
+                    # Group members keep independent physical identities so
+                    # layout equivalence can never deduplicate distinct layer
+                    # values; their offsets stay contiguous.
                     physical_id = self._new_physical("rdata")
-                    self._allocate_rdata_physical(
-                        physical_id,
-                        _physical_nbytes(
-                            value_type, shape, "rdata", "readonly_data_group_member"
-                        ),
-                        alignment=required_alignment,
+                    storage_kind = (
+                        DistributedBufferStorageKind.CANONICAL_GLOBAL
+                        if self._requires_canonical_global(node, value_type)
+                        else _distributed_storage_kind(
+                            value_type,
+                            "rdata",
+                            "readonly_data_group_member",
+                            rdata_chip_sharding=self.rdata_chip_sharding,
+                        )
                     )
+                    member_nbytes = _physical_nbytes(
+                        value_type,
+                        shape,
+                        "rdata",
+                        "readonly_data_group_member",
+                        storage_kind=storage_kind,
+                    )
+                    self._allocate_rdata_physical(
+                        physical_id, member_nbytes, alignment=required_alignment,
+                    )
+                    member_offset = 0
                     ids.append(self._add_descriptor(
                         buffer_id, value_type, shape, "rdata", node.id,
                         field=field, physical_id=physical_id, weight_key=self._rdata_key(node),
@@ -392,8 +464,26 @@ class BufferPlanner:
                         rdata_group=group_name, group_index=index, group_count=count,
                         role="readonly_data_group_member",
                         alignment=required_alignment,
+                        distributed_storage_kind=storage_kind,
+                        fused_weight_keys=node.attrs.get("fused_keys", ()),
                     ))
                 self.bindings[node.id] = tuple(ids)
+
+        # Index each bank field's row-0 member so a row access can bind to it
+        # and let codegen stride by the runtime row index.
+        self.bank_group_members = {}
+        for node in bank_nodes:
+            if int(node.metadata.get("bank_row", -1)) != 0:
+                continue
+            bank_id = str(node.metadata["parameter_bank"])
+            field_index = int(node.metadata["bank_field_index"])
+            leaves = self.bindings.get(node.id, ())
+            self.bank_group_members.setdefault(bank_id, {}).setdefault(
+                field_index, []).extend(leaves)
+        self.bank_group_members = {
+            bank: {index: tuple(values) for index, values in fields.items()}
+            for bank, fields in self.bank_group_members.items()
+        }
 
     def _plan_function(self, function: Function) -> None:
         nodes = function_nodes(self.module, function)
@@ -406,6 +496,27 @@ class BufferPlanner:
             for input_id in node.inputs:
                 if input_id in local_index:
                     last_use[input_id] = max(last_use[input_id], index)
+        # A view op aliases its source's storage rather than copying it, so the
+        # source is still being read wherever the view is read.  Propagate each
+        # view's last use back to its source until it settles; without this a
+        # row access dies at its own get_items while the call consuming those
+        # views runs later, and that call's pool frame may be placed over the
+        # bytes it is reading.
+        aliasing = {"builtin.get_item", "builtin.tuple"}
+        for _ in range(len(nodes)):
+            changed = False
+            for node in nodes:
+                if node.op not in aliasing:
+                    continue
+                reach = last_use.get(node.id)
+                if reach is None:
+                    continue
+                for input_id in node.inputs:
+                    if input_id in local_index and last_use[input_id] < reach:
+                        last_use[input_id] = reach
+                        changed = True
+            if not changed:
+                break
         function_end = len(nodes)
         for output_id in function.outputs:
             last_use[output_id] = function_end
@@ -427,6 +538,11 @@ class BufferPlanner:
             if parameter_id in self.bindings and self.module.node_map[parameter_id].op != "builtin.var":
                 continue
             node = self.module.node_map[parameter_id]
+            if _is_parameter_bank(logical_type(node.type)):
+                # Readonly bank storage is addressed by row access inside the
+                # callee, exactly as a weight root is in its own function, so
+                # it owns no planned buffer on either side of the call.
+                continue
             ids = []
             for buffer_id, value_type, field in _leaf_types(node.id, node.type):
                 shape = _maximum_shape(value_type, self.module.stage, node.id)
@@ -456,8 +572,12 @@ class BufferPlanner:
         kernel_records: list[KernelCallBufferBinding] = []
         for index, node in enumerate(nodes):
             if node.id in function.parameters or node.op in {
-                "builtin.weight", "builtin.const_asset", "tir.buffer"
+                "builtin.weight", "builtin.const_asset", "builtin.parameter_bank",
+                "tir.parameter_bank", "tir.buffer"
             }:
+                # A parameter bank is a readonly storage root, like a weight:
+                # its Ref value names stored rows rather than aliasing another
+                # reference, so it owns no planned buffer of its own.
                 continue
             if node.id in self.bindings:
                 # Constants and their zero-copy views may be reachable from a
@@ -488,6 +608,15 @@ class BufferPlanner:
                 # executable ABI.  Recording an empty binding avoids forcing
                 # their source alias group into canonical-global storage.
                 self.bindings[node.id] = ()
+                continue
+            if node.op in {"control.bank_get", "tir.bank_get"}:
+                # A row access is a readonly view selected at runtime: bind it
+                # to its fields' rdata group members so the generated code
+                # addresses them as "group base + index * per-row stride"
+                # rather than copying a row into workspace.
+                self.bindings[node.id] = self._plan_bank_row(
+                    function, node, index, last_use[node.id]
+                )
                 continue
             if node.op == "builtin.get_item":
                 source, field_index = get_items[node.id]
@@ -570,10 +699,13 @@ class BufferPlanner:
             if (
                 node.op == "builtin.call"
                 or (
-                    node.op == "tir.call"
+                    node.op in {"tir.call", "control.for"}
                     and str(node.attrs.get("callee", "")) in self.module.function_map
                 )
             ):
+                # A structured loop calls its body region once per iteration,
+                # so it needs the same argument/result buffer binding as an
+                # ordinary call. Without it the loop has nothing to render.
                 call, call_lifetimes = self._plan_call(
                     function,
                     node,
@@ -781,7 +913,13 @@ class BufferPlanner:
             )
             for call in call_records
         )
-        parameters = tuple((node_id, self.bindings[node_id]) for node_id in function.parameters)
+        # A readonly parameter bank contributes no buffer, so it does not
+        # appear in the physical parameter list at all.
+        parameters = tuple(
+            (node_id, self.bindings[node_id])
+            for node_id in function.parameters
+            if node_id in self.bindings
+        )
         outputs = tuple((node_id, self.bindings[node_id]) for node_id in function.outputs)
         parameter_ids = {value for _, values in parameters for value in values}
         result_ids = {value for _, values in outputs for value in values}
@@ -815,7 +953,7 @@ class BufferPlanner:
             values=tuple(
                 (node.id, self.bindings[node.id])
                 for node in nodes
-                if node.id in self.bindings and self.bindings[node.id]
+                if self.bindings.get(node.id)
             ),
         )
 
@@ -871,6 +1009,7 @@ class BufferPlanner:
         if isinstance(target_type, DistributedType) and source.distributed_storage_kind in {
             DistributedBufferStorageKind.COMPACT_LOCAL,
             DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
         }:
             storage_type = source.storage_distributed_type
             if (
@@ -1027,29 +1166,52 @@ class BufferPlanner:
         callee_name = str(node.attrs["callee"])
         callee = self.module.function_map[callee_name]
         callee_plan = self.function_plans[callee_name]
-        if len(node.inputs) != len(callee.parameters):
+        # A For's first three operands are its bounds and its body's first
+        # parameter is the induction value, which the loop supplies rather
+        # than the caller. Everything after that binds positionally.
+        is_loop = node.op == "control.for"
+        # The loop's own induction value binds the body's first formal, so it
+        # is planned as a scalar the loop produces rather than a caller edge.
+        induction = callee.parameters[0] if is_loop else None
+        formals = tuple(callee.parameters[1:]) if is_loop else tuple(callee.parameters)
+        actuals = tuple(node.inputs[3:]) if is_loop else tuple(node.inputs)
+        if len(actuals) != len(formals):
             raise IRVerificationError(
-                f"Call {node.id!r} passes {len(node.inputs)} arguments to @{callee_name}, "
-                f"which requires {len(callee.parameters)}.",
+                f"Call {node.id!r} passes {len(actuals)} arguments to @{callee_name}, "
+                f"which requires {len(formals)}.",
                 stage=self.module.stage,
                 node_id=node.id,
             )
         arguments = []
         actual_node_for_formal: dict[str, str] = {}
-        for formal_id, actual_id in zip(callee.parameters, node.inputs):
-            formals = self.bindings[formal_id]
-            actuals = self.bindings[actual_id]
-            if len(formals) != len(actuals):
+        if induction is not None:
+            # The induction value is produced by the loop, so its formal is
+            # its own actual: one scalar slot the loop writes each iteration.
+            for formal in self.bindings.get(induction, ()):
+                arguments.append((formal, formal))
+                actual_node_for_formal[formal] = induction
+        for formal_id, actual_id in zip(formals, actuals):
+            if formal_id not in self.bindings or actual_id not in self.bindings:
+                # Readonly parameter-bank storage is addressed by row access
+                # inside the callee, so neither side owns a planned buffer and
+                # there is nothing to bind for this argument position.
+                continue
+            # Keep distinct names: the pair being iterated is the whole
+            # argument list, so rebinding it here would truncate the walk.
+            formal_leaves = self.bindings[formal_id]
+            actual_leaves = self.bindings[actual_id]
+            if len(formal_leaves) != len(actual_leaves):
                 raise IRVerificationError(
                     f"Call {node.id!r} argument {actual_id!r} does not match formal {formal_id!r}.",
                     stage=self.module.stage,
                     node_id=node.id,
                 )
-            for formal, actual in zip(formals, actuals):
+            for formal, actual in zip(formal_leaves, actual_leaves):
+                self._reconcile_call_argument_storage_abi(formal, actual)
                 self._verify_call_argument_physical_abi(
                     node.id, formal, actual)
-            arguments.extend(zip(formals, actuals))
-            actual_node_for_formal.update((formal, actual_id) for formal in formals)
+            arguments.extend(zip(formal_leaves, actual_leaves))
+            actual_node_for_formal.update((formal, actual_id) for formal in formal_leaves)
         formal_to_actual = dict(arguments)
         alias_results = {}
         for result, parameter in callee_plan.result_aliases:
@@ -1143,6 +1305,18 @@ class BufferPlanner:
         lifetimes: dict[str, list[BufferLifetime]] = {
             name: [] for name in self.function_pool_spaces
         }
+        # A callee's pool frame holds results the caller keeps reading after the
+        # call returns.  Reserving it for the call step alone lets the caller
+        # place its own buffers inside the frame, on top of data a later step
+        # still reads, so the frame stays live until the last use of anything
+        # the call produced.
+        frame_live_end = max(
+            [index, last_use.get(node.id, index)]
+            + [
+                last_use.get(user, index)
+                for user in get_item_users.get(node.id, ())
+            ]
+        )
         memory_pools = []
         for pool in callee_plan.memory_pools:
             if not pool.requires_binding:
@@ -1162,7 +1336,7 @@ class BufferPlanner:
                 pool.scope_bytes,
                 pool.alignment,
                 index,
-                index,
+                frame_live_end,
                 "call_memory_pool",
             ))
             memory_pools.append(CallMemoryPoolBinding(
@@ -1208,6 +1382,38 @@ class BufferPlanner:
                 stage=self.module.stage,
                 node_id=call_id,
             )
+
+    def _reconcile_call_argument_storage_abi(
+        self,
+        formal_id: str,
+        actual_id: str,
+    ) -> None:
+        """Promote a chip-local boundary value when the callee needs global coordinates.
+
+        A callee parameter can become canonical after its body exposes a
+        sharded view that changes the physical owner axes.  The caller's
+        boundary reshard is planned before the call itself and would
+        otherwise retain the compact chip-local component selected from its
+        role.  Promote that caller alias group before ABI verification so the
+        boundary allocation and the finalized formal use one physical
+        representation.  This is driven by the formal storage contract and
+        applies to every reusable function, independent of model names or
+        layer indices.
+        """
+        formal = self.descriptors[formal_id]
+        actual = self.descriptors[actual_id]
+        if (
+            formal.distributed_storage_kind
+            is not DistributedBufferStorageKind.CANONICAL_GLOBAL
+            or actual.distributed_storage_kind
+            not in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            }
+            or formal.distributed_type != actual.distributed_type
+        ):
+            return
+        self._promote_alias_group_to_canonical(actual.id, actual.source_node)
 
     def _plan_value(
         self,
@@ -1315,38 +1521,54 @@ class BufferPlanner:
                     target_kind,
                     distributed_backing_type=target_backing_type,
                 )
-                if (source.nbytes != target_nbytes
-                        or (not reinterpret and (source.dtype != target_tensor.dtype or source.shape != shape
-                                                 or source.strides != _dense_strides(target_component_shape)))
-                        or (target_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
-                            and source.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER)):
+                if (
+                    source.nbytes != target_nbytes
+                    or (
+                        not reinterpret
+                        and (
+                            source.dtype != target_tensor.dtype
+                            or source.shape != shape
+                            or source.strides != _dense_strides(target_component_shape)
+                        )
+                    )
+                    or (
+                        target_kind in {
+                            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                        }
+                        and source.distributed_storage_kind
+                        not in {
+                            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                        }
+                    )
+                ):
                     raise IRVerificationError(
                         f"Alias {buffer_id!r} is physically incompatible with {source.id!r}.",
                         stage=self.module.stage,
                         node_id=source_node,
                     )
-                result.append(
-                    self._add_descriptor(
-                        buffer_id,
-                        tensor_type,
-                        shape,
-                        source.storage,
-                        source_node,
-                        field=leaf_field if leaf_field is not None else field,
-                        alias_of=source.id,
-                        physical_id=source.physical_id,
-                        byte_offset=source.byte_offset,
-                        offset=source.offset,
-                        live_start=live_start if self._is_function_pool_storage(source.storage) else None,
-                        live_end=live_end if self._is_function_pool_storage(source.storage) else None,
-                        function=function.name,
-                        role=role or "alias",
-                        alignment=alignment,
-                        distributed_storage_kind=target_kind,
-                        distributed_backing_type=target_backing_type,
-                        owner_stride_bytes=source.owner_stride_bytes,
-                        alias_kind=alias_kind,
-                    ))
+                result.append(self._add_descriptor(
+                    buffer_id, tensor_type, shape, source.storage, source_node,
+                    field=leaf_field if leaf_field is not None else field,
+                    alias_of=source.id, physical_id=source.physical_id,
+                    # A runtime-indexed parent (a parameter-bank row) has no
+                    # fixed byte offset; carry its symbolic start instead.
+                    byte_offset=(
+                        source.mem_span.start if not source.mem_span.start.is_fixed
+                        else source.byte_offset
+                    ),
+                    offset=(0 if not source.mem_span.start.is_fixed else source.offset),
+                    live_start=live_start if self._is_function_pool_storage(source.storage) else None,
+                    live_end=live_end if self._is_function_pool_storage(source.storage) else None,
+                    function=function.name, role=role or "alias",
+                    alignment=alignment,
+                    distributed_storage_kind=target_kind,
+                    distributed_backing_type=target_backing_type,
+                    owner_stride_bytes=source.owner_stride_bytes,
+                    offset_bindings=source.offset_bindings,
+                    alias_kind=alias_kind,
+                ))
                 continue
             selected_space = memory_space or self.workspace_space
             storage = "output" if is_output and function.name == self.module.entry else (
@@ -1638,6 +1860,16 @@ class BufferPlanner:
         candidates = [
             input_id for input_id in inputs if isinstance(logical_type(self.module.node_map[input_id].type), RefType)
         ]
+        if len(candidates) > 1:
+            # A loop may capture readonly parameter-bank storage alongside the
+            # state it carries. Only a Ref of the same kind can be the identity
+            # source, so a captured bank never competes with the carried state.
+            matching = [
+                input_id for input_id in candidates
+                if logical_type(self.module.node_map[input_id].type) == logical_type(field_type)
+            ]
+            if len(matching) == 1:
+                candidates = matching
         if len(candidates) != 1:
             raise IRVerificationError("A Ref result requires exactly one Ref operand.")
         source = candidates[0]
@@ -1648,6 +1880,7 @@ class BufferPlanner:
 
     def _plan_ref_slice(self, function, node):
         from math import gcd
+
         from triton.flagmega.ir.dim_expr import DimVar, dim
 
         source_id, index_id = node.inputs
@@ -1683,6 +1916,7 @@ class BufferPlanner:
 
     def _plan_tensor_subspan(self, function, node, index, live_end):
         from math import gcd
+
         from triton.flagmega.ir.ops.tir.buffer_subspan import dense_subspan_offset
 
         [source_id] = self.bindings[node.inputs[0]]
@@ -1706,7 +1940,10 @@ class BufferPlanner:
         view = replace(view, distributed_type=node.type if isinstance(node.type, DistributedType) else None,
                        distributed_storage_kind=source.distributed_storage_kind, distributed_backing_type=backing,
                        owner_stride_bytes=(source.component_stride_bytes if source.distributed_storage_kind
-                                           is DistributedBufferStorageKind.COMPACT_PER_OWNER else None),
+                                           in {
+                                               DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                                               DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                                           } else None),
                        live_start=index if self._is_function_pool_storage(source.storage) else None,
                        live_end=live_end if self._is_function_pool_storage(source.storage) else None)
         self.descriptors[node.id] = view
@@ -1752,7 +1989,8 @@ class BufferPlanner:
         alias_of=None, physical_id=None, byte_offset=0, offset=0, weight_key=None,
         rdata_group=None, group_index=None, group_count=None, live_start=None,
         live_end=None, function=None, role="value",
-        alignment=None, distributed_storage_kind=None,
+        alignment=None, distributed_storage_kind=None, fused_weight_keys=(),
+        offset_bindings=(),
         distributed_backing_type=None, alias_kind=None,
         owner_stride_bytes=None,
     ):
@@ -1764,17 +2002,24 @@ class BufferPlanner:
         distributed = value_type if isinstance(value_type, DistributedType) else None
         storage_space = self.options.memory_space_map.get(storage)
         storage_kind = (
-            _distributed_storage_kind(
-                value_type,
-                storage,
-                role,
-                function_pool_sharing_scope=(
-                    None if storage_space is None else storage_space.sharing_scope
-                ),
-                function_pool=(storage in self.function_pool_spaces),
-            )
+            DistributedBufferStorageKind.CANONICAL_GLOBAL
             if distributed_storage_kind is None
-            else DistributedBufferStorageKind(distributed_storage_kind)
+            and source_node in self.canonical_global_values
+            and isinstance(value_type, DistributedType)
+            else (
+                _distributed_storage_kind(
+                    value_type,
+                    storage,
+                    role,
+                    function_pool_sharing_scope=(
+                        None if storage_space is None else storage_space.sharing_scope
+                    ),
+                    function_pool=(storage in self.function_pool_spaces),
+                    rdata_chip_sharding=self.rdata_chip_sharding,
+                )
+                if distributed_storage_kind is None
+                else DistributedBufferStorageKind(distributed_storage_kind)
+            )
         )
         component_shape = _component_shape(
             value_type,
@@ -1796,7 +2041,10 @@ class BufferPlanner:
             storage_kind=storage_kind,
             distributed_backing_type=distributed_backing_type,
         )
-        if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER:
+        if storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }:
             required_alignment = int(alignment or 1)
             if alias_of is None and owner_stride_bytes is None:
                 stride = _align_up(nbytes, required_alignment)
@@ -1805,19 +2053,31 @@ class BufferPlanner:
             stride = nbytes if owner_stride_bytes is None else owner_stride_bytes
             if stride % required_alignment:
                 raise IRVerificationError(f"Buffer {buffer_id!r} owner stride violates its alignment contract.")
-            physical_nbytes = max(physical_nbytes, stride * (placement_owner_count(distributed) - 1) + nbytes)
+            owner_count = (
+                placement_owner_count(distributed)
+                if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                else block_owner_count(distributed)
+            )
+            physical_nbytes = max(physical_nbytes, stride * (owner_count - 1) + nbytes)
         physical_id = str(physical_id)
         if alias_of is not None:
             source = self.descriptors[str(alias_of)]
             physical = source.mem_span.buffer
-            descriptor_alignment = gcd(source.alignment, byte_offset - source.byte_offset)
+            symbolic_start = not getattr(byte_offset, "is_fixed", True) or \
+                not source.mem_span.start.is_fixed
+            if symbolic_start:
+                # A runtime-selected parameter-bank row moves in whole-member
+                # strides, so every row keeps the member's own alignment.
+                descriptor_alignment = source.alignment
+            else:
+                descriptor_alignment = gcd(source.alignment, byte_offset - source.byte_offset)
             if descriptor_alignment < int(alignment or 1):
                 raise IRVerificationError(f"Alias {buffer_id!r} does not satisfy its required alignment.")
             resolved_alias_kind = (
                 AliasKind(alias_kind)
                 if alias_kind is not None
                 else AliasKind.VIEW
-                if byte_offset != source.mem_span.byte_offset
+                if symbolic_start or byte_offset != source.mem_span.byte_offset
                 else AliasKind.INPLACE
             )
             alias = AliasInfo(source.id, resolved_alias_kind)
@@ -1858,16 +2118,44 @@ class BufferPlanner:
             strides=_dense_strides(component_shape),
             storage=storage,
             alignment=(gcd(descriptor_alignment, nbytes if owner_stride_bytes is None else owner_stride_bytes)
-                       if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER and nbytes
+                       if storage_kind in {
+                           DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                           DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                       } and nbytes
                        else descriptor_alignment),
             mem_span=MemSpan(physical, byte_offset, nbytes),
+            offset_bindings=tuple(offset_bindings),
             source_node=source_node,
             field=field,
             alias=alias,
-            weight_key=weight_key,
-            rdata_group=rdata_group,
-            group_index=group_index,
-            group_count=group_count,
+            # A zero-copy view of readonly data denotes the same stored bytes,
+            # so it names the same checkpoint tensor as its source. Without
+            # this the packer sees an rdata buffer with no tensor behind it.
+            weight_key=(
+                weight_key
+                if weight_key is not None or alias_of is None
+                else self.descriptors[alias_of].weight_key
+            ),
+            fused_weight_keys=(
+                tuple(fused_weight_keys)
+                if fused_weight_keys or alias_of is None
+                else self.descriptors[alias_of].fused_weight_keys
+            ),
+            rdata_group=(
+                rdata_group
+                if rdata_group is not None or alias_of is None
+                else self.descriptors[alias_of].rdata_group
+            ),
+            group_index=(
+                group_index
+                if group_index is not None or alias_of is None
+                else self.descriptors[alias_of].group_index
+            ),
+            group_count=(
+                group_count
+                if group_count is not None or alias_of is None
+                else self.descriptors[alias_of].group_count
+            ),
             live_start=live_start,
             live_end=live_end,
             function=function,
@@ -1880,10 +2168,19 @@ class BufferPlanner:
         if alias_of is None:
             self.alias_analysis.define_span(buffer_id, descriptor.mem_span)
         else:
+            parent = self.alias_analysis.view(alias_of)
+            # A runtime-indexed parent carries a symbolic start, so the child's
+            # offset relative to it is what matters; the absolute address is
+            # resolved at run time from the same binding.
+            relative = (
+                dim(0)
+                if not parent.mem_span.start.is_fixed
+                else byte_offset - parent.byte_offset
+            )
             view = self.alias_analysis.add_alias(
                 buffer_id,
                 alias_of,
-                byte_offset=byte_offset - self.alias_analysis.view(alias_of).byte_offset,
+                byte_offset=relative,
                 nbytes=descriptor.nbytes,
                 kind=descriptor.alias.kind,
             )
@@ -1938,6 +2235,204 @@ class BufferPlanner:
             tuple((objective.name, objective.status, objective.value, objective.best_bound)
                   for objective in result.objectives),
         ))
+
+    def _plan_bank_row(self, function, node, live_start, live_end):
+        """Bind one bank row to the index-0 member of each field's group.
+
+        The group members are contiguous and identically typed, so a runtime
+        row index is a byte stride away. Codegen reads the row index from the
+        loop and applies that stride; recording the group identity here is
+        what lets it do so.
+        """
+        bank_id = self._bank_of_value(node.inputs[0])
+        if bank_id is None:
+            raise IRVerificationError(
+                f"Bank row {node.id!r} does not resolve to parameter-bank storage.",
+                stage=self.module.stage, node_id=node.id,
+            )
+        members = self.bank_group_members.get(bank_id, {})
+        schema = self.module.node_map[bank_id].attrs["schema"]
+        row_types = {
+            index: value for index, value in enumerate(
+                node.type.fields if hasattr(node.type, "fields") else ()
+            )
+        }
+        ids: list[str] = []
+        for index, field in enumerate(schema.fields):
+            leaves = members.get(index)
+            if leaves is None:
+                # A literal field, or one whose transform was absorbed into a
+                # fused field, has no stored rows. Plan it at the type the row
+                # declares so the value binding still matches its IR type.
+                declared = row_types.get(index, field.type)
+                # A row view is consumed by a later call, so its storage must
+                # stay live until that last use.  Planning it at [0, 0] lets a
+                # callee's pool frame overlap bytes the call itself still
+                # reads, which corrupts the row during the call.
+                ids.extend(self._plan_value(
+                    function, f"{node.id}.{index}", declared,
+                    live_start, live_end, frozenset(),
+                    prefix=f"{node.id}.{index}",
+                ))
+                continue
+            ids.extend(leaves)
+        return tuple(ids)
+
+    def _bank_of_value(self, value_id):
+        node = self.module.node_map.get(value_id)
+        if node is None:
+            return None
+        if node.op in {"builtin.parameter_bank", "tir.parameter_bank"}:
+            return node.id
+        for owner in self.module.nodes:
+            if owner.op != "control.for":
+                continue
+            region = self.module.function_map.get(str(owner.attrs.get("callee", "")))
+            if region is None:
+                continue
+            for parameter, actual in zip(region.parameters[1:], owner.inputs[3:]):
+                if parameter == value_id:
+                    return self._bank_of_value(actual)
+        return None
+
+    def _parameter_bank_rdata_nodes(self):
+        """Synthesize one readonly member per bank row and field."""
+        from triton.flagmega.ir.model import Node
+
+        result = []
+        for node in self.module.nodes:
+            if node.op not in {"builtin.parameter_bank", "tir.parameter_bank"}:
+                continue
+            schema = node.attrs["schema"]
+            rows = node.attrs["rows"]
+            source = str(node.attrs["source"])
+            # Only a field some row projection actually reads needs storage.
+            # A field whose transform was absorbed into a fused one is dead,
+            # and giving it rdata would claim the same checkpoint tensor twice.
+            consumed = self._consumed_bank_field_indices(node.id)
+            canonical_fields = self._canonical_bank_field_indices(node.id)
+            consumed_types = self._consumed_bank_field_types(node.id)
+            for index, field in enumerate(schema.fields):
+                if field.transform != "checkpoint" or index not in consumed:
+                    continue
+                for row_index, row in enumerate(rows):
+                    keys = row[index] if isinstance(row[index], tuple) else (row[index],)
+                    # A fused field is one physical buffer per row: the
+                    # program concatenates its parts offline, so storage holds
+                    # the fused result, not the individual sources.
+                    entries = (
+                        tuple(zip(keys, field.stored_types, strict=True))
+                        if len(keys) == 1
+                        else ((keys, field.type),)
+                    )
+                    for part, (key, stored) in enumerate(entries):
+                        suffix = ""
+                        # One stored source keeps the type its row projection
+                        # is consumed at, including any distribution, so the
+                        # projection aliases the member directly; a fused
+                        # field keeps each part's own stored type.
+                        member_type = consumed_types.get(index, stored)
+                        result.append(Node(
+                            f"{node.id}.{field.name}{suffix}.row{row_index}",
+                            "builtin.weight", (), member_type,
+                            attrs={
+                                "name": key if isinstance(key, str) else key[0],
+                                "source": source,
+                                "key": key if isinstance(key, str) else key[0],
+                                **({} if isinstance(key, str) else {"fused_keys": tuple(key)}),
+                            },
+                            metadata={
+                                "parameter_bank": node.id,
+                                "bank_field": field.name,
+                                "bank_field_index": index,
+                                "bank_row": row_index,
+                                "canonical_global": (
+                                    "true" if index in canonical_fields else "false"
+                                ),
+                                "rdata_group": {
+                                    "name": f"{node.id}.{field.name}{suffix}",
+                                    "index": row_index,
+                                    "count": len(rows),
+                                },
+                            },
+                        ))
+        return tuple(result)
+
+    def _requires_canonical_global(self, node, value_type) -> bool:
+        """Whether an rdata root must expose module-global coordinates.
+
+        A parameter-bank row is selected at runtime, so every consumer
+        addresses it from the module-global base instead of a shard-local
+        origin. That holds whether or not the stored member itself carries a
+        distribution, which is why this is checked before the distributed
+        storage-kind rules.
+        """
+        if not isinstance(value_type, DistributedType):
+            # An undistributed root already exposes its whole allocation;
+            # canonical-global is only representable for distributed storage.
+            return False
+        return (
+            node.id in self.canonical_global_values
+            or str(node.metadata.get("canonical_global", "")) == "true"
+        )
+
+    def _consumed_bank_field_types(self, bank_id: str) -> dict:
+        """Return the type each field's row projection is consumed at.
+
+        AutoDistributed gives a projection its own distributed type while the
+        schema records the logical one. Storage must match the consumer so a
+        row access can alias the member without a physical conversion.
+        """
+        banks = {bank_id}
+        for node in self.module.nodes:
+            if node.op != "control.for":
+                continue
+            region = self.module.function_map.get(str(node.attrs.get("callee", "")))
+            if region is None:
+                continue
+            for parameter, actual in zip(region.parameters[1:], node.inputs[3:]):
+                if actual in banks:
+                    banks.add(parameter)
+        rows = {
+            node.id for node in self.module.nodes
+            if node.op in {"control.bank_get", "tir.bank_get"} and node.inputs[0] in banks
+        }
+        return {
+            int(node.attrs["index"]): node.type
+            for node in self.module.nodes
+            if node.op == "builtin.get_item" and node.inputs and node.inputs[0] in rows
+        }
+
+    def _canonical_bank_field_indices(self, bank_id: str) -> frozenset[int]:
+        """Return the field indices whose row projection needs a global base.
+
+        A row is selected at runtime, so every consumer addresses it from the
+        module-global rdata base rather than from a shard-local origin. Views
+        built on such a row therefore require canonical coordinates, exactly
+        as an undistributed rdata root does.
+        """
+        return self._consumed_bank_field_indices(bank_id)
+
+    def _consumed_bank_field_indices(self, bank_id: str) -> frozenset[int]:
+        """Return the field indices read through this bank's row accesses."""
+        banks = {bank_id}
+        for node in self.module.nodes:
+            if node.op != "control.for":
+                continue
+            region = self.module.function_map.get(str(node.attrs.get("callee", "")))
+            if region is None:
+                continue
+            for parameter, actual in zip(region.parameters[1:], node.inputs[3:]):
+                if actual in banks:
+                    banks.add(parameter)
+        rows = {
+            node.id for node in self.module.nodes
+            if node.op in {"control.bank_get", "tir.bank_get"} and node.inputs[0] in banks
+        }
+        return frozenset(
+            int(node.attrs["index"]) for node in self.module.nodes
+            if node.op == "builtin.get_item" and node.inputs and node.inputs[0] in rows
+        )
 
     @staticmethod
     def _rdata_key(node):
@@ -2236,6 +2731,7 @@ def _distributed_storage_kind(
     *,
     function_pool_sharing_scope=None,
     function_pool=False,
+    rdata_chip_sharding=False,
 ):
     if not isinstance(value_type, DistributedType):
         return DistributedBufferStorageKind.COMPACT_LOCAL
@@ -2256,6 +2752,26 @@ def _distributed_storage_kind(
         ):
             return DistributedBufferStorageKind.COMPACT_LOCAL
         return DistributedBufferStorageKind.COMPACT_PER_OWNER
+    chip_split = any(
+        isinstance(policy, SBPSplit)
+        and any(
+            axis in {index for index, level in enumerate(value_type.placement.hierarchy_levels) if level in {"c", "d"}}
+            for stage in policy.stages
+            for axis in stage.hierarchy_axes
+        )
+        for policy in value_type.axis_policies
+    )
+    if (
+        rdata_chip_sharding
+        and chip_split
+        and value_type.placement.physical_level_size("c")
+        * value_type.placement.physical_level_size("d") > 1
+        and (storage == "parameter" or role in {"parameter", "function_argument", "function_result"})
+    ):
+        # Function boundaries in a chip-sharded launch carry the same local
+        # component as the caller.  Keeping canonical storage here would make
+        # an rdata-backed boundary fail the physical ABI equality check.
+        return DistributedBufferStorageKind.COMPACT_PER_CHIP
     if (
         storage in {"rdata", "input", "output", "state", "external"}
         or role == "function_argument"
@@ -2266,6 +2782,14 @@ def _distributed_storage_kind(
             "function_result",
         } and not function_pool
     ):
+        if (
+            storage == "rdata"
+            and rdata_chip_sharding
+            and chip_split
+            and value_type.placement.physical_level_size("c")
+            * value_type.placement.physical_level_size("d") > 1
+        ):
+            return DistributedBufferStorageKind.COMPACT_PER_CHIP
         return DistributedBufferStorageKind.CANONICAL_GLOBAL
     if (
         function_pool
@@ -2278,6 +2802,84 @@ def _distributed_storage_kind(
     if is_fully_sharded_across_placement(value_type):
         return DistributedBufferStorageKind.COMPACT_PER_OWNER
     return DistributedBufferStorageKind.CANONICAL_GLOBAL
+
+
+def _canonical_global_values(module: IRModule) -> frozenset[str]:
+    """Find values consumed by descriptor kernels and their call arguments.
+
+    Tensor descriptors encode a canonical module-global base address.  The
+    requirement belongs to the selected kernel capability, rather than to a
+    model weight name or a particular graph function.  Start at descriptor
+    primitive calls, then propagate through graph-function actual/formal
+    bindings until reaching the rdata-producing value.
+    """
+
+    required: set[str] = set()
+    function_map = module.function_map
+    primitive_map = module.kernel_callable_map
+    from triton.flagmega.ir.tir import kernel_dispatch_of
+
+    for function in module.functions:
+        for node in function_nodes(module, function):
+            if node.op not in {"builtin.call", "tir.call"}:
+                continue
+            primitive = primitive_map.get(str(node.attrs.get("callee", "")))
+            if primitive is None:
+                continue
+            dispatch = kernel_dispatch_of(primitive)
+            if dispatch is None or dispatch.microkernel is None:
+                continue
+            descriptor_arguments = set(dispatch.microkernel.facts.get("canonical_global_arguments", ()))
+            unknown = descriptor_arguments - set(dispatch.arguments)
+            if unknown:
+                raise IRVerificationError(
+                    f"Kernel {primitive.name!r} declares unknown canonical arguments {sorted(unknown)}."
+                )
+            indices = {
+                index for index, argument in enumerate(dispatch.arguments)
+                if argument in descriptor_arguments
+            }
+            required.update(
+                node.inputs[index]
+                for index in indices
+                if index < len(node.inputs)
+            )
+
+    # A descriptor operand is often a graph-function formal parameter.  Carry
+    # the physical-storage requirement to each caller's actual value, which
+    # may be a builtin.const_asset/tir.buffer rdata root.
+    changed = True
+    while changed:
+        changed = False
+        for function in module.functions:
+            for node in function_nodes(module, function):
+                if node.id in required and node.op in {
+                    "builtin.get_item", "builtin.tuple", "distributed.sharded_view",
+                    "tir.buffer_view", "tir.buffer_subspan",
+                    # A bank row access carries the requirement to the bank,
+                    # whose rows are the rdata roots behind the descriptor.
+                    "control.bank_get", "tir.bank_get",
+                }:
+                    for input_id in node.inputs:
+                        if input_id not in required:
+                            required.add(input_id)
+                            changed = True
+                if node.op not in {"builtin.call", "tir.call", "control.for"}:
+                    continue
+                callee = function_map.get(str(node.attrs.get("callee", "")))
+                if callee is None:
+                    continue
+                # A For's first three operands are its bounds and its body's
+                # first formal is the loop-supplied induction value.
+                if node.op == "control.for":
+                    pairs = zip(callee.parameters[1:], node.inputs[3:])
+                else:
+                    pairs = zip(callee.parameters, node.inputs, strict=False)
+                for formal, actual in pairs:
+                    if formal in required and actual not in required:
+                        required.add(actual)
+                        changed = True
+    return frozenset(required)
 
 
 def _component_shape(
@@ -2338,8 +2940,11 @@ def _physical_nbytes(
         kind,
         distributed_backing_type=distributed_backing_type,
     )
-    if isinstance(value_type, DistributedType) and kind is DistributedBufferStorageKind.COMPACT_PER_OWNER:
-        return component * placement_owner_count(value_type)
+    if isinstance(value_type, DistributedType):
+        if kind is DistributedBufferStorageKind.COMPACT_PER_OWNER:
+            return component * placement_owner_count(value_type)
+        if kind is DistributedBufferStorageKind.COMPACT_PER_CHIP:
+            return component * block_owner_count(value_type)
     return component
 
 
@@ -2353,10 +2958,15 @@ def _dense_strides(shape: Sequence[int]):
 
 
 def _is_scalar_constant(op, value_type):
+    """Whether a value is a rank-zero scalar carried as an immediate.
+
+    A dimension/logical expression is computed where it is used, exactly like
+    a scalar constant, so it needs no storage and no pointer formal.
+    """
     value_type = logical_type(value_type)
-    return op in {"builtin.scalar_const", "tir.scalar_const"} and (
-        isinstance(value_type, TensorType) and value_type.rank == 0
-    )
+    return op in {
+        "builtin.scalar_const", "tir.scalar_const", "shapes.dim_as_tensor",
+    } and (isinstance(value_type, TensorType) and value_type.rank == 0)
 
 
 def _align_up(value, alignment):
@@ -2364,3 +2974,8 @@ def _align_up(value, alignment):
 
 
 __all__ = ["BufferPlanner", "BufferizationOptions", "plan_buffers"]
+
+
+def _is_parameter_bank(value_type) -> bool:
+    """Return whether a type is readonly parameter-bank storage."""
+    return isinstance(value_type, RefType) and value_type.name == "parameter_bank"

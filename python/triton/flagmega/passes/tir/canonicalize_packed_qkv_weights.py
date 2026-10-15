@@ -828,6 +828,36 @@ def _fused_weight_type(source_types, owner):
             ),
             first.layout,
         )
+
+
+def fused_weight_n_shares(source_types):
+    """How many distinct N shares a fused packed-QKV weight divides into.
+
+    Materialising the owner axis in :func:`_fused_weight_type` turns a
+    ``DistributedType`` into a plain one, so this is the last point that can
+    see how N was split.  Whoever packs the fused bytes needs the count: the
+    sources only divide along N, and owners differing solely along the
+    placement's other axes share one N share.  Concatenating along the
+    logical N axis instead produces the same elements in a different order,
+    which permutation-invariant checks cannot distinguish.
+
+    After the K-major permute the packed layout is ``(k_groups, n_groups)``,
+    so axis 1 carries N.
+    """
+    values = tuple(value for value in source_types if isinstance(value, DistributedType))
+    if len(values) != len(source_types) or not values:
+        return None
+    placement = values[0].placement
+    hierarchy = tuple(int(value) for value in placement.hierarchy)
+    policies = tuple(values[0].axis_policies)
+    if len(policies) < 2:
+        return None
+    shares = 1
+    for stage in getattr(policies[1], "stages", ()):
+        for axis in getattr(stage, "hierarchy_axes", ()):
+            if 0 <= int(axis) < len(hierarchy):
+                shares *= hierarchy[int(axis)]
+    return shares if shares > 1 else None
     if any(not value.shape[1].is_fixed for value in logical_types):
         raise IRVerificationError(
             f"Packed-QKV {owner} weights require fixed projection capacities."

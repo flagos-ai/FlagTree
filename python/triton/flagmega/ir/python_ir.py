@@ -10,38 +10,42 @@ import pprint
 import re
 import runpy
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from heapq import heappop, heappush
 from pathlib import Path
-from typing import Any, Callable
-from weakref import ReferenceType, ref
+from types import MappingProxyType
+from typing import Any
+from weakref import ReferenceType, WeakValueDictionary, ref
 
 from triton.flagmega.errors import CheckpointError
-from triton.flagmega.ir.dim_expr import DimConst, DimExpr, DimVar, Dimension, UnknownDim
+from triton.flagmega.ir.bufferization import MemSpan, PhysicalBuffer
+from triton.flagmega.ir.dim_expr import DimConst, Dimension, DimExpr, DimVar, UnknownDim
 from triton.flagmega.ir.distributed_type import (
+    SBP,
     BlockCyclicSplit,
     ContiguousSplit,
     Placement,
-    SBP,
     SBPBroadCast,
     SBPExclusive,
     SBPPartial,
     SBPSplit,
     SplitStage,
 )
+from triton.flagmega.ir.fusion import Fusion, iter_fusions
+from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import (
+    IR_VERSION,
     AnyType,
-    Candidate,
     CallableType,
+    Candidate,
     DistributedType,
     Effect,
+    InvalidType,
     IRModule,
     IRType,
-    IR_VERSION,
-    InvalidType,
     Node,
     NoneType,
     ProvenanceRecord,
@@ -52,21 +56,20 @@ from triton.flagmega.ir.model import (
     TensorType,
     TupleType,
 )
-from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.ops.core import NodeRef, get_definition
-from triton.flagmega.ir.bufferization import MemSpan, PhysicalBuffer
-from triton.flagmega.ir.tir import TIRNode
 from triton.flagmega.ir.printer import companion_suffix, text_source
+from triton.flagmega.ir.tir import TIRNode
 from triton.flagmega.ir.types import DType, MaskVectorType, PointerType, VectorType
 from triton.flagmega.ir.verify import verify_module
-from triton.flagmega.ir.fusion import Fusion, iter_fusions
 
-_FUSION_NAMES: ContextVar[Mapping[int, str]] = ContextVar("flagmega_python_fusions", default={})
+_FUSION_NAMES: ContextVar[Mapping[int, str]] = ContextVar(
+    "flagmega_python_fusions", default=MappingProxyType({})
+)
 _FUSION_SIGNATURE: ContextVar[tuple] = ContextVar("flagmega_python_fusion_signature", default=())
 
 
 _TYPE_ALIASES: ContextVar[Mapping[IRType, str]] = ContextVar(
-    "flagmega_python_ir_type_aliases", default={}
+    "flagmega_python_ir_aliases", default=MappingProxyType({})
 )
 _TYPE_ALIAS_SIGNATURE: ContextVar[tuple[tuple[int, str], ...]] = ContextVar(
     "flagmega_python_ir_type_alias_signature", default=()
@@ -78,6 +81,49 @@ _PYTHON_EXPR_FRAGMENTS: dict[
     tuple[str, int, tuple[tuple[int, str], ...]],
     tuple[ReferenceType[object], str],
 ] = {}
+
+
+@dataclass(frozen=True)
+class _ExpressionSignature:
+    values: tuple
+    hash_value: int = field(init=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "hash_value", hash(self.values))
+
+    def __hash__(self):
+        return self.hash_value
+
+
+_EXPRESSION_SIGNATURES = WeakValueDictionary()
+
+
+class _TypeAliases(dict):
+    """Structural alias equality with fast repeated identity lookups."""
+
+    def __init__(self, values):
+        super().__init__(values)
+        self._by_identity = {id(value): (value, name) for value, name in self.items()}
+
+    def get(self, value, default=None):
+        cached = self._by_identity.get(id(value))
+        if cached is not None and cached[0] is value:
+            return default if cached[1] is None else cached[1]
+        name = super().get(value)
+        self._by_identity[id(value)] = (value, name)
+        return default if name is None else name
+
+
+def _expression_signature(values):
+    # Python tuple hashing is linear and is not memoized. Putting the full
+    # alias/fusion tables into every fragment key made serialization O(nodes *
+    # aliases). Intern once per environment; every fragment key then hashes in
+    # constant time while equality still compares the complete environment.
+    cached = _EXPRESSION_SIGNATURES.get(values)
+    if cached is None:
+        cached = _ExpressionSignature(values)
+        _EXPRESSION_SIGNATURES[values] = cached
+    return cached
 
 
 @dataclass(frozen=True)
@@ -136,10 +182,10 @@ def module_source(
         collect_fusion(body)
     fusion_names = {key: f"fusion_{index}" for index, key in enumerate(fusions)}
     fusion_token = _FUSION_NAMES.set(fusion_names)
-    fusion_signature = _FUSION_SIGNATURE.set(tuple(fusion_names.items()))
+    fusion_signature = _FUSION_SIGNATURE.set(_expression_signature(tuple(fusion_names.items())))
     alias_token = _TYPE_ALIASES.set(aliases)
     signature_token = _TYPE_ALIAS_SIGNATURE.set(
-        tuple((id(value), name) for value, name in aliases.items())
+        _expression_signature(tuple((id(value), name) for value, name in aliases.items()))
     )
     try:
         return _module_source(module, dump_info=dump_info, _verify=_verify, fusions=tuple(fusions.values()))
@@ -172,8 +218,10 @@ def _module_source(
         f"FLAGMEGA_IR_VERSION = {IR_VERSION}",
         f"DIALECT = {module.dialect!r}",
         f"STAGE = {module.stage!r}",
-        "PARENT_SEMANTIC_HASH = "
-        f"{(module.provenance[-1].parent_semantic_hash if module.provenance else None)!r}",
+        (
+            "PARENT_SEMANTIC_HASH = "
+            f"{(module.provenance[-1].parent_semantic_hash if module.provenance else None)!r}"
+        ),
     ]
     if dump_info is not None:
         if len(module.functions) != 1 or module.functions[0].name != dump_info.function_name:
@@ -299,6 +347,7 @@ def _node_expr(node: Node, names: Mapping[str, str]) -> str:
 
 def _functional_node_expr(node: Node, names: Mapping[str, str]) -> str:
     from dataclasses import replace
+
     from triton.flagmega.ir.op_fusion import has_ops, split_ops
     fused = has_ops(node.attrs)
     call = get_definition(node.op).python_call(replace(node, attrs=split_ops(node.attrs)) if fused else node)
@@ -342,7 +391,18 @@ def _python_value_expr(value: object, names: Mapping[str, str]) -> str:
         return _type_expr(value)
     if isinstance(value, Effect):
         return _effect_expr(value)
+    if isinstance(value, tuple):
+        return _tuple_expr([_python_value_expr(item, names) for item in value])
+    if isinstance(value, list):
+        return _sequence_expr([_python_value_expr(item, names) for item in value], "[", "]")
+    if isinstance(value, Mapping):
+        return _mapping_python_value_expr(value, names)
     return _literal_expr(value)
+
+
+def _mapping_python_value_expr(value: Mapping[object, object], names: Mapping[str, str]) -> str:
+    items = [(repr(str(key)), _python_value_expr(item, names)) for key, item in sorted(value.items(), key=lambda item: str(item[0]))]
+    return "{" + ", ".join(f"{key}: {item}" for key, item in items) + "}"
 
 
 def _node_variable_names(module: IRModule) -> dict[str, str]:
@@ -446,13 +506,15 @@ def _collect_type_aliases(module: IRModule) -> dict[IRType, str]:
     so the alias table contains no unused transitive entries.
     """
 
-    counts = dict(_type_count_fragment(module))
-    return {
+    counts = {}
+    for value, count in _type_count_fragment(module):
+        counts[value] = counts.get(value, 0) + count
+    return _TypeAliases({
         value: f"TYPE_{index:04d}"
         for index, value in enumerate(
             value for value, count in counts.items() if count >= 2
         )
-    }
+    })
 
 
 def _type_count_fragment(value: object) -> tuple[tuple[IRType, int], ...]:
@@ -465,6 +527,8 @@ def _type_count_fragment(value: object) -> tuple[tuple[IRType, int], ...]:
     distinct identities and is traversed in full.
     """
 
+    if value is None or type(value) in (str, int, float, bool):
+        return ()
     if isinstance(value, IRType):
         return ((value, 1),)
     cacheable = isinstance(value, Mapping) or (
@@ -476,11 +540,16 @@ def _type_count_fragment(value: object) -> tuple[tuple[IRType, int], ...]:
         if cached is not None and cached[0]() is value:
             return cached[1]
 
-    counts: dict[IRType, int] = {}
+    # Local fragments count immutable objects by identity. Structural equality
+    # is applied once at the module root, avoiding recursive dataclass hashing
+    # at every enclosing mapping/node/recipe and every repeated type use.
+    counts: dict[int, tuple[IRType, int]] = {}
 
     def merge(items: tuple[tuple[IRType, int], ...]) -> None:
         for value_type, count in items:
-            counts[value_type] = counts.get(value_type, 0) + count
+            identity = id(value_type)
+            previous = counts.get(identity)
+            counts[identity] = (value_type, count + (0 if previous is None else previous[1]))
 
     if isinstance(value, Mapping):
         for item in value.values():
@@ -491,7 +560,7 @@ def _type_count_fragment(value: object) -> tuple[tuple[IRType, int], ...]:
     elif is_dataclass(value) and not isinstance(value, type):
         for field in fields(value):
             merge(_type_count_fragment(getattr(value, field.name)))
-    result = tuple(counts.items())
+    result = tuple(counts.values())
     if cacheable:
         def discard(
             reference: ReferenceType[object], *, key: int = identity
@@ -796,6 +865,10 @@ def _call_expr(
     arguments = list(positional) + [f"{name}={expression}" for name, expression in keywords]
     if not arguments:
         return f"{function}()"
+    if all("\n" not in argument for argument in arguments):
+        compact = f"{function}({', '.join(arguments)})"
+        if len(compact) <= 120:
+            return compact
     lines = [f"{function}("]
     for argument in arguments:
         rendered = _indent(argument, 4).splitlines()
@@ -818,6 +891,10 @@ def _sequence_expr(
 ) -> str:
     if not values:
         return opening + closing
+    if all("\n" not in value for value in values):
+        compact = opening + ", ".join(values) + ("," if always_trailing_comma else "") + closing
+        if len(compact) <= 100:
+            return compact
     if len(values) == 1 and not always_trailing_comma and "\n" not in values[0]:
         return opening + values[0] + closing
     lines = [opening]
@@ -829,11 +906,48 @@ def _sequence_expr(
     return "\n".join(lines)
 
 
+def _bank_field_program_expr(value: Any) -> str:
+    # A program is replayed from its plain data form so an edited checkpoint
+    # keeps one spelling of the transform instead of two.
+    return _call_expr("fm.BankFieldProgram.from_data", positional=(repr(value.to_data()),))
+
+
+def _bank_field_expr(value: Any) -> str:
+    keywords: list[tuple[str, str]] = []
+    if value.transform != "identity":
+        keywords.append(("transform", repr(value.transform)))
+    if value.program is not None:
+        keywords.append(("program", _bank_field_program_expr(value.program)))
+        keywords.append(("source_types", _tuple_expr([_type_expr(item) for item in value.source_types])))
+    return _call_expr("fm.BankField", positional=(repr(value.name), _type_expr(value.type)),
+                      keywords=tuple(keywords))
+
+
 def _literal_expr(value: Any) -> str:
+    if value is None or type(value) in (str, int, float, bool):
+        return repr(value)
     if isinstance(value, Fusion):
         return _FUSION_NAMES.get()[id(value)]
     if isinstance(value, IRType):
         return _type_expr(value)
+    from triton.flagmega.ir.dim_expr import Dimension
+    from triton.flagmega.ir.logical_expr import LogicalExpr
+    from triton.flagmega.ir.parameter_bank import BankField, BankFieldProgram, ParameterBankSchema
+    if isinstance(value, LogicalExpr):
+        # Replay from plain data so one predicate has a single spelling.
+        return _call_expr("fm.logical_from_data", positional=(repr(value.to_data()),))
+    if isinstance(value, Dimension):
+        # Replay from plain data so one expression has a single spelling.
+        return _call_expr("fm.dimension_from_data", positional=(repr(value.to_data()),))
+    if isinstance(value, ParameterBankSchema):
+        return _call_expr(
+            "fm.ParameterBankSchema",
+            positional=(repr(value.name), _tuple_expr([_bank_field_expr(field) for field in value.fields])),
+        )
+    if isinstance(value, BankField):
+        return _bank_field_expr(value)
+    if isinstance(value, BankFieldProgram):
+        return _bank_field_program_expr(value)
     if isinstance(value, (DType, VectorType, PointerType, MaskVectorType)):
         return _data_type_expr(value)
     if isinstance(value, Effect):
@@ -856,9 +970,14 @@ def _literal_expr(value: Any) -> str:
 def _mapping_literal_expr(value: Mapping[object, object]) -> str:
     if not value:
         return "{}"
+    items = [(str(key), _literal_expr(item)) for key, item in sorted(value.items())]
+    if all("\n" not in item for _, item in items):
+        compact = "{" + ", ".join(f"{key!r}: {item}" for key, item in items) + "}"
+        if len(compact) <= 100:
+            return compact
     lines = ["{"]
-    for key, item in sorted(value.items()):
-        rendered = _indent(f"{str(key)!r}: {_literal_expr(item)}", 4).splitlines()
+    for key, item in items:
+        rendered = _indent(f"{key!r}: {item}", 4).splitlines()
         rendered[-1] += ","
         lines.extend(rendered)
     lines.append("}")
@@ -1120,7 +1239,7 @@ def _merge_unique(target, observed, values, key_of, checkpoint: Path) -> None:
 def _stable_order(values: Mapping[str, object], original: tuple[str, ...], observed: list[str]) -> tuple[str, ...]:
     original_present = [key for key in original if key in values]
     original_set = set(original_present)
-    return tuple((*original_present, *(key for key in observed if key not in original_set)))
+    return (*original_present, *(key for key in observed if key not in original_set))
 
 
 def _topological_nodes(

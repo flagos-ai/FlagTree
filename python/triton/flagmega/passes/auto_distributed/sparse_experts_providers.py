@@ -99,6 +99,15 @@ class SparseExpertsGateUpCandidateProvider(DistributedCandidateProviderBase):
                         }))
             except IRSchemaError:
                 continue
+        if not results:
+            # Block-scaled FP8 expert banks may not expose a legal split unit
+            # on the scale grid.  A fully replicated stage remains a valid
+            # semantic candidate; the scale-aware lowering owns the local
+            # dequantization rather than forcing an invalid expert-axis split.
+            try:
+                results.append(_candidate(context, definition, tensors, {}))
+            except IRSchemaError:
+                pass
         return tuple(results)
 
 
@@ -134,6 +143,11 @@ class SparseExpertsDownCandidateProvider(DistributedCandidateProviderBase):
                         }))
             except IRSchemaError:
                 continue
+        if not results:
+            try:
+                results.append(_candidate(context, definition, tensors, {}))
+            except IRSchemaError:
+                pass
         return tuple(results)
 
 

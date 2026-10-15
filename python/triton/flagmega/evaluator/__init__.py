@@ -31,6 +31,11 @@ from triton.flagmega.ir.ops.nn._gdn_state import (
     create_gdn_state,
     gdn_state_config,
 )
+from triton.flagmega.ir.ops.nn._kda_state import (
+    KdaState,
+    KdaStateConfig,
+    create_kda_state,
+)
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
     PagedAttentionState,
     PagedAttentionStateConfig,
@@ -57,12 +62,15 @@ __all__ = [
     "GatedDeltaNetStateConfig",
     "GatedDeltaNetStateDimKind",
     "GatedDeltaNetStateKind",
+    "KdaState",
+    "KdaStateConfig",
     "PagedAttentionState",
     "PagedAttentionStateConfig",
     "TorchEvaluator",
     "NumpyMaterializationContext",
     "block_scaled_linear",
     "create_gdn_state",
+    "create_kda_state",
     "create_paged_attention_state",
     "dynamic_block_quant_dequant",
     "embedding",

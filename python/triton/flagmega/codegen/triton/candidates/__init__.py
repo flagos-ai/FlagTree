@@ -2,31 +2,38 @@
 # SPDX-License-Identifier: MIT
 """Reviewed Triton candidate-family providers."""
 
+from .add_norm_stats import AddNormStatsCandidateProvider
+from .attention_primitives import AttentionPrimitiveSemanticTIRCandidateProvider
 from .core import (
     TritonCandidateContext,
     TritonCandidateProposal,
     TritonCandidateProvider,
     TritonCandidateProviderRegistry,
 )
+from .delta_rule import DeltaRuleCandidateProvider
 from .dense_matmul import DenseMatmulCandidateProvider, MatMulNormStatsCandidateProvider
-from .add_norm_stats import AddNormStatsCandidateProvider
+from .dense_matmul_glu import DenseMatmulGluCandidateProvider
+from .distributed_boxing import DistributedBoxingCandidateProvider
 from .gather_reduce_add_norm_apply import (
     GatherReduceAddNormApplyCandidateProvider,
 )
-from .dense_matmul_glu import DenseMatmulGluCandidateProvider
-from .distributed_boxing import DistributedBoxingCandidateProvider
-from .packed_qkv import PackedQKVSemanticTIRCandidateProvider
-from .paged_attention_split import PagedAttentionSplitSemanticTIRCandidateProvider
-from .qkv_rope_with_cache import QKVRoPEWithCacheSemanticTIRCandidateProvider
 from .gather_reduce_norm_apply import (
     GatherReduceNormApplySemanticTIRCandidateProvider,
 )
-from .attention_primitives import AttentionPrimitiveSemanticTIRCandidateProvider
-from .normalization import NormApplyCandidateProvider, NormStatsCandidateProvider
-from .tensor_transform import TensorTransformCandidateProvider
+from .normalization import (
+    GatedNormApplyCandidateProvider,
+    NormApplyCandidateProvider,
+    NormStatsCandidateProvider,
+)
+from .packed_qkv import PackedQKVSemanticTIRCandidateProvider
+from .paged_attention_split import PagedAttentionSplitSemanticTIRCandidateProvider
+from .qkv_rope_with_cache import QKVRoPEWithCacheSemanticTIRCandidateProvider
 from .reduction import ReductionCandidateProvider
-from .delta_rule import DeltaRuleCandidateProvider
-from .sparse_experts import SparseExpertsCandidateProvider
+from .routing import (
+    KdaCandidateProvider,
+    MhcCandidateProvider,
+    StagedRoutingCandidateProvider,
+)
 from .simple import (
     BlockFp8CandidateProvider,
     ElementwiseCandidateProvider,
@@ -36,6 +43,8 @@ from .simple import (
     MatmulGluCandidateProvider,
     RmsNormCandidateProvider,
 )
+from .sparse_experts import SparseExpertsCandidateProvider
+from .tensor_transform import TensorTransformCandidateProvider
 
 
 def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
@@ -44,6 +53,9 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             ElementwiseCandidateProvider(),
             TensorTransformCandidateProvider(),
             ReductionCandidateProvider(),
+            KdaCandidateProvider(),
+            MhcCandidateProvider(),
+            StagedRoutingCandidateProvider(),
             DeltaRuleCandidateProvider(),
             SparseExpertsCandidateProvider(),
             BlockFp8CandidateProvider(),
@@ -54,6 +66,7 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             RmsNormCandidateProvider(),
             NormStatsCandidateProvider(),
             NormApplyCandidateProvider(),
+            GatedNormApplyCandidateProvider(),
             PackedQKVSemanticTIRCandidateProvider(),
             PagedAttentionSplitSemanticTIRCandidateProvider(),
             AttentionPrimitiveSemanticTIRCandidateProvider(),
@@ -88,6 +101,8 @@ __all__ = [
     "GdnCandidateProvider",
     "GreedySampleCandidateProvider",
     "MatmulGluCandidateProvider",
+    "MhcCandidateProvider",
+    "GatedNormApplyCandidateProvider",
     "NormApplyCandidateProvider",
     "NormStatsCandidateProvider",
     "PackedQKVSemanticTIRCandidateProvider",

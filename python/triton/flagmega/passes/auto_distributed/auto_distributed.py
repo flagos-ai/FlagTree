@@ -69,7 +69,17 @@ class AutoDistributedPass:
 
         graph = proposal_graph(module, target)
         if graph is None:
-            graph = cls._build_graph(module, target)
+            # A resumed/edited proposal already fixes executable choices.
+            # Enumerate the full surface for validation, but do not prove
+            # adapter relations for choices excluded by those hard constraints.
+            fixed = {
+                point.id.removeprefix("distribution."): module.selection_map[point.id].candidate_id
+                for point in module.selection_points
+                if point.kind == "distribution"
+                and point.id.removeprefix("distribution.") in module.node_map
+                and point.id in module.selection_map
+            }
+            graph = cls._build_graph(module, target, fixed_selections=fixed)
         return cls._apply_from_graph(module, target, graph)
 
     @staticmethod
@@ -129,7 +139,7 @@ class AutoDistributedPass:
         return cls._apply_from_graph(proposed, target, rebound)
 
     @staticmethod
-    def _build_graph(module: IRModule, target):
+    def _build_graph(module: IRModule, target, *, fixed_selections=None):
         placements = tuple(target.distributed_placements(module))
         if not placements:
             raise ValueError(f"Target {target.name!r} did not provide an AutoDistributed placement.")
@@ -150,6 +160,7 @@ class AutoDistributedPass:
             realization_policy,
             target.distributed_reshard_cost_model(),
             target.distributed_operation_cost_model(),
+            fixed_selections=fixed_selections,
         )
 
 

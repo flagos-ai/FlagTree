@@ -29,6 +29,7 @@ class _Transform:
 
 def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
     node_map = module.node_map
+    node_indices = {node.id: index for index, node in enumerate(module.nodes)}
     transforms_by_function: dict[str, tuple[_Transform, ...]] = {}
     for function in module.functions:
         parameter_set = set(function.parameters)
@@ -106,12 +107,14 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             removed.update(node.id for node in transform.nodes)
             removed.update(transform.sources)
             replacement_inputs[transform.root.id] = transform.parameter.id
-        last_parameter_index = max(
-            index for index, node in enumerate(module.nodes) if node.id in function.parameters
-        )
-        inserted_parameters.setdefault(last_parameter_index, []).extend(
-            transform.parameter for transform in transforms
-        )
+        # A function's builtin.var parameters are normally grouped near its
+        # start, but imported graphs may contain late-created parameters such
+        # as layer ids after ordinary body nodes. Insert each lifted parameter
+        # immediately before its transformed root instead of after the last
+        # parameter; the new parameter is then available when the root is
+        # visited and the module remains topologically ordered.
+        for transform in transforms:
+            inserted_parameters.setdefault(node_indices[transform.root.id], []).append(transform.parameter)
 
     calls_by_id: dict[str, tuple[Function, tuple[_Transform, ...]]] = {}
     function_map = {function.name: function for function in module.functions}
@@ -125,6 +128,7 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
 
     result_nodes: list[Node] = []
     for index, node in enumerate(module.nodes):
+        result_nodes.extend(inserted_parameters.get(index, ()))
         if node.id not in removed:
             if node.id in calls_by_id:
                 function, transforms = calls_by_id[node.id]
@@ -163,9 +167,24 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             else:
                 inputs = tuple(replacement_inputs.get(value, value) for value in node.inputs)
                 result_nodes.append(replace(node, inputs=inputs))
-        result_nodes.extend(inserted_parameters.get(index, ()))
 
-    return replace(module, nodes=tuple(result_nodes), functions=tuple(functions))
+    # Selection points are contracts over concrete node ids. A vectorized
+    # root can be consumed by this pass as part of an offline transform
+    # closure, in which case keeping its point would leave a dangling owner
+    # after the ABI rewrite. The choice has already been materialized by the
+    # transform, so retire only points owned by removed nodes.
+    selection_points = tuple(
+        point for point in module.selection_points
+        if point.owner is None or point.owner not in removed
+    )
+    point_ids = {point.id for point in selection_points}
+    return replace(
+        module,
+        nodes=tuple(result_nodes),
+        functions=tuple(functions),
+        selection_points=selection_points,
+        selections=tuple(record for record in module.selections if record.point_id in point_ids),
+    )
 
 
 def _transform_closure(

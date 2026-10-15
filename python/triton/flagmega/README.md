@@ -18,6 +18,47 @@ table directly at its producer's store boundary. Thus a numerical profile can
 use BF16 input/output and BF16 tables without surrounding RoPE Cast nodes;
 normalization's separate rounding boundaries remain unchanged.
 
+`F.math.block_scaled_matmul`, `F.math.packed_block_scaled_matmul` and
+`F.math.reduce_sum` accept optional `output_lanes`. They divide the final result
+dimension by the lane count and store the original scalar result in that vector
+layout, preserving its dtype and final rounding. FP8 weight K packing remains
+independent of activation output packing. `F.nn.kda_recurrent_core` and
+`F.nn.kda_gated_recurrent_core` support the same attribute on the activation
+field only; recurrent state remains scalar FP32 with the same effect order.
+All inputs retain their existing scalar/weight contracts. Packing propagation
+selects result lanes from consumer demand after function layouts are reconciled,
+without duplicating a shared producer. Empty lanes preserve the scalar API and
+serialized attributes.
+
+`F.nn.update_paged_attention_kv_cache_pair(slots, state, layer_id,
+advance_sequence, layout=("seq", "head", "dim"))` publishes a BF16 chunk
+whose scalar shape is `[T,H,2D]`, with each head ordered `[K(D) | V(D)]`.
+The cache RefType supplies `H,D` and cache lanes. Input vector lanes belong to
+the semantic `dim` axis; their full product may differ from the cache lanes.
+Both fields read the same old sequence position, scheduler metadata is written
+once, and the sequence advances by `T` only when requested, after all owners
+finish their writes. The result aliases the original state reference.
+Block owners may split input axes; every chip must receive a complete,
+non-partial chunk before updating its CHIP-scoped cache.
+
+The GLM interleaved projection importer uses this consumer directly. The
+target-independent formation rule also recognizes older complementary Slice
+and optional Pack branches feeding non-advancing K then V updates. It preserves
+shared selections, rejects intermediate-state observers and intervening
+effects, and retains projection rounding and required Boxing. Formation runs
+before packing/distribution; codegen reads the original source stride directly
+without K/V slice buffers. The single-field API remains available for separate
+projection sources.
+
+Post-boundary representation extraction uses
+`representation-boundary-preference/v3`: for the same operation, packed tensor
+results have strictly lower preference cost in every operation category,
+including views, structural nodes and Bitcast. Distributed tensor leaves and
+individual Tuple tensor fields follow the same ordering. This preference is
+separate from physical traffic/latency estimates. Existing Pack/Reshape
+equalities therefore select the packed view before producer packing, without
+an additional reshape traversal or normalization pass.
+
 `F.nn.sparse_experts` decomposes before AutoDistribution into Dispatch
 (`[T,H] -> [T,R,H]`), GateUp, per-route FP32 Down, and Combine. `R` is a
 selected route slot, not the expert-bank axis. These stages independently model
@@ -209,11 +250,62 @@ runtime call order are preserved. Stop at `lift-constant-parameters` (IR stage
 `FreezeConstantIslands`. Frozen or already lowered TIR must be resumed from an
 earlier checkpoint to perform this transformation.
 
-Readonly-data verification streams bounded chunks and checks both the whole
-image and every indexed entry. One worker hashes the image while the calling
-thread hashes entry slices over the same immutable chunk; each chunk completes
-before the next read. This overlaps CPU work without caching trust decisions,
-skipping hashes, or making a full-image copy. Worker failures are propagated.
+Readonly-data index v4 hashes bounded chunks as they are written, including
+alignment gaps and owner padding. It avoids rereading the finished image and
+omits redundant whole-image and per-entry payload hashes. Multi-chip `sha256`
+identifies the domain-separated ordered chunk tables and their geometry
+(`digest_kind="sha256-chunks/v1"`, image section v2). Every table must cover
+its complete chip segment without gaps or overlap. Audits verify all chunks;
+runtime mapping verifies the segment it reads. Index v3 segment digests and
+v1/v2 whole-image/entry checks remain supported. Single-chip images keep v3
+and their raw image SHA-256.
+
+Directory checkpoints additionally support index v5 source layouts
+(`digest_kind="sha256-source-layout/v1"`, image section v3). Byte-preserving
+views, concat, Pack and Permute are stored as verified byte-address maps plus
+independent source-file snapshots. Numeric operations still materialize at
+compile time. The sparse `rdata.bin` stores the remaining physical ranges;
+its logical size remains the full dense chip pool. CUDA loading gathers from
+registered readonly host pages directly into that pool, combining layout with
+the required device transfer without CPU reordering or a second model-sized
+device allocation. CPU loading is an explicit reference target. Audits check
+source SHA-256, materialized chunks, bijective transformations and complete
+destination coverage. Every map is checked against the saved constant recipe
+and buffer plan. Older dense image formats retain their existing readers.
+
+Source snapshots use reflink when available and ordinary copies otherwise.
+On Linux, exposed OverlayFS upper files and bind-mount aliases are used only
+after inode identity checks to make same-filesystem remaps legal. Artifacts
+contain their own snapshots; they keep working after removing the checkpoint.
+Already audited inputs can provide `DirectoryCheckpoint(...,
+integrity_report=...)` or CLI `--checkpoint-integrity-report`. This trusted local
+report must name the same checkpoint and contain successful SHA-256 records;
+files changed after the report are rejected. Digest reuse is bound to device,
+inode, size, mtime and ctime. Without a report, each source file is hashed once
+in parallel during its first snapshot. No packed-output cache is required.
+
+Chip packing evaluates independent closed recipes concurrently, with a limit
+on live materialization bytes. Checkpoint arrays share readonly file mappings.
+Writers build disjoint physical extents and assemble the image with reflink
+range cloning, so a single inode's allocation lock does not serialize all
+writers. IR/source emission overlaps packing; the manifest is published only
+after both finish. Failures remove unpublished images and temporary extents.
+Filesystems without reflink range cloning assemble the same extents by bounded
+range copies, preserving payload and verification contracts.
+Immutable local pack-cache hits clone the image without reading or hashing its
+payload. Cache schema v2 includes the complete distribution, backing layout,
+strides and owner stride as well as source identity, recipe fingerprints and
+the materialization ABI;
+equal-sized contiguous and cyclic shards cannot share an entry.
+Writer scheduling and digest-index changes retain the physical materializer
+ABI when packed bytes are unchanged, preserving valid earlier cache entries.
+Cache identity validates each checkpoint shard once, rather than once per
+tensor. Reusing unchanged readonly data avoids model-sized disk writes during
+compiler iteration; a first pack still depends on disk write throughput.
+
+Materializers index only the current closed recipe's node types. NumPy and
+Torch evaluation keep recipe namespaces separate, including when different
+recipes reuse node names; per-recipe type indexing visits each node once.
 
 ### Bufferization optimization levels
 

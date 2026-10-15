@@ -14,6 +14,7 @@ from triton.flagmega.ir import (
     kernel_execution_kind,
     local_shard_descriptor,
     unravel_placement_index,
+    block_owner_axes,
 )
 
 
@@ -111,10 +112,19 @@ def distributed_buffer_abi(
         storage_descriptor.local_capacity_shape, "storage local capacity"
     )
     component_elements = prod(storage_capacity_shape, start=1)
+    physical_owner_index = owner_index
+    if buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP:
+        block_axes = block_owner_axes(storage_type)
+        physical_owner_index = _linear_owner_index(
+            tuple(coordinates[axis] for axis in block_axes),
+            tuple(hierarchy[axis] for axis in block_axes),
+        ) if block_axes else 0
     component_offset = (
-        owner_index * component_elements
-        if buffer.distributed_storage_kind
-        is DistributedBufferStorageKind.COMPACT_PER_OWNER
+        physical_owner_index * component_elements
+        if buffer.distributed_storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
         else 0
     )
     group_coordinates = descriptor.partial_group_coordinates or ()

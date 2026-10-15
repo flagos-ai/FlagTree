@@ -35,6 +35,7 @@ from triton.flagmega.ir import (
     TupleType,
     verify_module,
 )
+from triton.flagmega.ir.entry_abi import redirect_entry_abi
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealization,
     DistributedReshardRealizationContext,
@@ -607,6 +608,9 @@ def _propagate_one_iteration(
         nodes.extend(source_helpers.get(original.id, ()))
 
     functions = []
+    # A published entry ABI names entry node ids; boundary relayout can rename
+    # them, so record the entry redirect and apply it to the contract below.
+    entry_output_redirects: dict[str, str] = {}
     for function in module.functions:
         layout = layouts.get(function.name)
         outputs = []
@@ -621,7 +625,10 @@ def _propagate_one_iteration(
                 replacement = raw_parameter_restores[output_id].id
             else:
                 replacement = output_id
-            outputs.append(_resolve(replacement, removed_substitutions))
+            resolved = _resolve(replacement, removed_substitutions)
+            if function.name == module.entry and resolved != output_id:
+                entry_output_redirects[output_id] = resolved
+            outputs.append(resolved)
         attrs = dict(function.attrs)
         if layout is not None:
             attrs["post_auto_distributed_boundary_layout"] = {
@@ -659,6 +666,13 @@ def _propagate_one_iteration(
     else:
         metadata.pop("distributed_function_boundary_layout_choices", None)
     metadata["distributed_function_boundary_layout_decisions"] = tuple(decisions)
+    entry = next(function for function in functions if function.name == module.entry)
+    metadata = dict(redirect_entry_abi(
+        metadata,
+        entry_output_redirects,
+        known_values={*(str(value) for value in entry.parameters), *(str(value) for value in entry.outputs)},
+        stage=module.stage,
+    ))
 
     return verify_module(replace(
         module,

@@ -71,7 +71,7 @@ def norm_stats_value(value, *, axis: int, use_mean: bool):
     return torch.cat((total.unsqueeze(0), sum_sq.unsqueeze(0)), dim=0)
 
 
-def norm_apply_value(
+def norm_apply_wide(
     value,
     stats,
     scale,
@@ -82,6 +82,13 @@ def norm_apply_value(
     use_mean: bool,
     round_before_scale: bool = False,
 ):
+    """Normalize and affine-transform in FP32, without the output rounding.
+
+    Callers that publish the normalized value as their result must round it to
+    the input dtype (``norm_apply_value``); callers that keep consuming it in
+    FP32 must not, or they introduce a rounding boundary the reference
+    implementation does not have.
+    """
     normalized = normalize_axis(axis, value.ndim)
     normalization_size = prod(int(extent) for extent in value.shape[normalized:])
     source = value.float()
@@ -98,13 +105,41 @@ def norm_apply_value(
     if round_before_scale:
         # This conversion is an observable IR boundary, not relaxed math.
         output = output.to(dtype=value.dtype).float()
-    output = output * scale.float() + bias.float()
-    return output.to(dtype=value.dtype)
+    return output * scale.float() + bias.float()
+
+
+def norm_apply_value(
+    value,
+    stats,
+    scale,
+    bias,
+    *,
+    axis: int,
+    epsilon: float,
+    use_mean: bool,
+    round_before_scale: bool = False,
+):
+    return norm_apply_wide(
+        value, stats, scale, bias, axis=axis, epsilon=epsilon, use_mean=use_mean,
+        round_before_scale=round_before_scale,
+    ).to(dtype=value.dtype)
+
+
+def gate_activation_value(gate, activation: str):
+    """Apply a KDA-style output gate in FP32, matching ``FusedRMSNormGated``."""
+    wide = gate.float()
+    if activation == "sigmoid":
+        return wide.sigmoid()
+    if activation in ("swish", "silu"):
+        return wide * wide.sigmoid()
+    raise IRSchemaError(f"Unsupported gate activation {activation!r}.")
 
 
 __all__ = [
+    "gate_activation_value",
     "is_float_dtype",
     "norm_apply_value",
+    "norm_apply_wide",
     "norm_stats_value",
     "normalize_axis",
     "repack_default_vector",

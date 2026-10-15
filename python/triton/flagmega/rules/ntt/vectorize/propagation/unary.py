@@ -16,9 +16,12 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 
 
 def _pack_unary_matches(node: Node, module: IRModule) -> bool:
-    return (node.op == "tensors.pack" and node.effect.is_pure
-            and module.node_map[node.inputs[0]].op in _scalar_ops()
-            and module.node_map[node.inputs[0]].effect.is_pure)
+    return (
+        node.op == "tensors.pack"
+        and node.effect.is_pure
+        and module.node_map[node.inputs[0]].op in _scalar_ops()
+        and module.node_map[node.inputs[0]].effect.is_pure
+    )
 
 
 def _scalar_ops():
@@ -30,11 +33,7 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
     source = module.node_map[scalar.inputs[0]]
     attrs = dict(node.attrs)
     lanes = tuple(int(value) for value in attrs["lanes"])
-    axes = (
-        tuple(int(value) for value in attrs["axes"])
-        if "axes" in attrs
-        else (int(attrs["axis"]),) * len(lanes)
-    )
+    axes = tuple(int(value) for value in attrs["axes"]) if "axes" in attrs else (int(attrs["axis"]),) * len(lanes)
     packed_type = Pack.infer_type((source,), attrs)
     pack = Node(
         f"{node.id}.propagated.pack",
@@ -113,8 +112,8 @@ def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
 
 def unary_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeUnaryPropagation", _pack_unary_matches, _pack_unary),
-        RewriteRule("UnaryDevectorizePropagation", _unary_unpack_matches, _unary_unpack),
+        RewriteRule("VectorizeUnaryPropagation", _pack_unary_matches, _pack_unary, root_ops=("tensors.pack",)),
+        RewriteRule("UnaryDevectorizePropagation", _unary_unpack_matches, _unary_unpack, root_ops=_scalar_ops()),
     )
 
 

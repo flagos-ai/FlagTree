@@ -1,0 +1,4 @@
+# flagmega-kernel: gated_norm_apply/local platform=generic
+{% if render_calls is defined %}
+{% include "kernels/gated_norm_apply/_function.py.jinja" %}
+{% endif %}

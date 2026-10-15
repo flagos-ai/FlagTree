@@ -65,12 +65,14 @@ def _binary_unpack_matches(node: Node, module: IRModule, operand_index: int) -> 
     vector = module.node_map[unpack.inputs[0]]
     other = module.node_map[node.inputs[1 - operand_index]]
     if (
-        not isinstance(vector.type, TensorType) or not isinstance(vector.type.dtype, VectorType)
-        or not isinstance(other.type, TensorType) or isinstance(other.type.dtype, VectorType)
+        not isinstance(vector.type, TensorType)
+        or not isinstance(vector.type.dtype, VectorType)
+        or not isinstance(other.type, TensorType)
+        or isinstance(other.type.dtype, VectorType)
     ):
         return False
     axes = _unpack_axes(unpack, len(vector.type.dtype.lanes))
-    lanes = vector.type.dtype.lanes[:len(axes)]
+    lanes = vector.type.dtype.lanes[: len(axes)]
     try:
         packed_type = Pack.infer_type((other,), {"lanes": lanes, "axes": axes})
     except (IRSchemaError, TypeError, ValueError):
@@ -84,7 +86,7 @@ def _binary_unpack(node: Node, module: IRModule, operand_index: int) -> RewriteR
     other = module.node_map[node.inputs[1 - operand_index]]
     assert isinstance(vector.type, TensorType) and isinstance(vector.type.dtype, VectorType)
     axes = _unpack_axes(unpack, len(vector.type.dtype.lanes))
-    lanes = vector.type.dtype.lanes[:len(axes)]
+    lanes = vector.type.dtype.lanes[: len(axes)]
     pack_attrs = {"lanes": lanes, "axes": axes}
     packed_other = Node(
         f"{node.id}.propagated.pack{1 - operand_index}",
@@ -142,16 +144,18 @@ def _pack_axes(pack: Node, lane_count: int) -> tuple[int, ...]:
 
 def binary_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeBinaryPropagation", _pack_binary_matches, _pack_binary),
+        RewriteRule("VectorizeBinaryPropagation", _pack_binary_matches, _pack_binary, root_ops=("tensors.pack",)),
         RewriteRule(
             "BinaryDevectorizeLhsPropagation",
             lambda node, module: _binary_unpack_matches(node, module, 0),
             lambda node, module: _binary_unpack(node, module, 0),
+            root_ops=("math.add", "math.mul"),
         ),
         RewriteRule(
             "BinaryDevectorizeRhsPropagation",
             lambda node, module: _binary_unpack_matches(node, module, 1),
             lambda node, module: _binary_unpack(node, module, 1),
+            root_ops=("math.add", "math.mul"),
         ),
     )
 

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.implementation import (
@@ -9,6 +10,7 @@ from triton.flagmega.codegen.triton.implementation import (
     TritonImplementationModel,
 )
 from triton.flagmega.targets import NvidiaSm90Target
+from triton.flagmega.targets.nvidia.package import sm90_codegen_package_plan
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.errors import CodegenError, IRVerificationError
 
@@ -107,6 +109,36 @@ def test_selected_tir_records_and_revalidates_target_owned_package_plan():
     )
     with pytest.raises(IRVerificationError, match="package plan differs"):
         NvidiaSm90Target().verify(tampered)
+
+
+def test_sm90_package_grid_excludes_chip_and_node_axes():
+    module = SimpleNamespace(
+        stage="unit",
+        metadata={
+            "launch_contract": {
+                "cooperative_grid": True,
+                "grid_mesh": {
+                    "hierarchy": [4, 8, 16],
+                    "hierarchy_levels": "cbb",
+                },
+                "num_warps": 8,
+            },
+        },
+    )
+    kernel = SimpleNamespace(
+        id="call",
+        attrs={
+            "semantic_op": "math.add",
+            "parameters": {"family": "elementwise", "variant": "simt"},
+            "facts": {},
+            "candidate": "tir.elementwise.simt",
+        },
+    )
+
+    package = sm90_codegen_package_plan(module, (kernel,), None, None)
+
+    assert package["launch"]["grid"] == (8 * 16, 1, 1)
+    assert package["launch"]["mesh_hierarchy"] == (4, 8, 16)
 
 
 def test_generic_provider_enumerates_target_contract_without_knowing_candidate_id():

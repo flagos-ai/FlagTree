@@ -39,7 +39,9 @@ _register_builtin_packages()
 
 def load(path: str | Path, *, device: str | None = None):
     artifact = Path(path).resolve()
-    manifest, module = load_artifact(artifact)
+    # The runtime adapter digests the rdata payload when it maps the pool, scoped
+    # to the chip segment this rank reads, so loading must not hash it as well.
+    manifest, module = load_artifact(artifact, verify_rdata_payload=False)
     codegen = manifest.get("codegen")
     if manifest.get("status") != "executable" or not isinstance(codegen, Mapping):
         raise ArtifactError("FlagMega artifact does not contain an executable package.")

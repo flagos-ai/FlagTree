@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from dataclasses import replace
+
 from triton.flagmega import ir as fm
 
 
@@ -53,6 +55,55 @@ def test_materialized_function_argument_uses_callee_canonical_storage_abi():
     assert result.distributed_type == broadcast
     assert result.distributed_storage_kind is fm.DistributedBufferStorageKind.CANONICAL_GLOBAL
     assert result.mem_span.must_alias(actual.mem_span)
+
+
+def test_chip_boundary_promotes_when_callee_view_changes_block_owners():
+    placement = fm.Placement((4, 8, 16), "cyx", "cbb")
+    tensor = fm.tensor_type("float32", (16, 8, 1))
+    broadcast = fm.DistributedType(
+        tensor,
+        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.broadcast()),
+        placement,
+    )
+    chip_split = fm.DistributedType(
+        tensor,
+        (fm.SBP.split_contiguous((0,)), fm.SBP.broadcast(), fm.SBP.broadcast()),
+        placement,
+    )
+    block_split = fm.DistributedType(
+        tensor,
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,)), fm.SBP.broadcast()),
+        placement,
+    )
+
+    class Graph(fm.Module):
+        def __init__(self):
+            super().__init__(dialect="tir", stage="selected_tir", entry="main")
+
+        def forward(self):
+            parameter = self.input("parameter", chip_split, id="parameter")
+            viewed = fm.F.distributed.sharded_view(
+                parameter, block_split, name="viewed")
+            value = self.input("value", broadcast, id="value")
+            boxed = fm.F.distributed.boxing(value, chip_split, name="boxed")
+            call = fm.F.builtin.call(
+                boxed, result_type=block_split, callee="worker", name="call")
+            self.function("main", (value,), (call,))
+            self.function(
+                "worker",
+                (parameter,),
+                (viewed,),
+                attrs={"reusable": True, "noinline": True},
+            )
+
+    module = Graph().build()
+    module = replace(module, metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
+    plan = fm.make_buffer_plan(module)
+    formal = plan.buffer_map["parameter"]
+    actual = plan.buffer_map["boxed"]
+    assert formal.distributed_storage_kind is fm.DistributedBufferStorageKind.CANONICAL_GLOBAL
+    assert actual.distributed_storage_kind is formal.distributed_storage_kind
+    assert actual.nbytes == formal.nbytes == 16 * 8 * 1 * 4
 
 
 def test_tuple_projected_function_argument_propagates_canonical_storage_to_field():

@@ -11,7 +11,8 @@ from triton.flagmega.runtime import load
 
 
 def _assert_reused_device_roles(runtime, *, wrapper_depth=0):
-    llir = runtime._prepared.compiled_kernel.asm["llir"]
+    assert len(runtime._prepared) == 1
+    llir = runtime._prepared[0].compiled_kernel.asm["llir"]
     assert not re.search(r"^define .*@[^ (]*\.flagmega_main__(?:consumer|producer)__", llir, re.M)
     names = ["worker", *(f"wrapper_{index}" for index in range(wrapper_depth))]
     for name in names:

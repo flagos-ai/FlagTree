@@ -13,6 +13,7 @@ from triton.flagmega.ir import (
     IRType,
     SBPSplit,
     TensorType,
+    boxing_crossing_chip_axes,
     is_local_shard_subview,
     sharded_view_error,
 )
@@ -66,6 +67,26 @@ class NttDistributedReshardRealizationPolicy:
         self,
         context: DistributedReshardRealizationContext,
     ) -> DistributedReshardRealization:
+        """Decide the realization, then reject one it cannot address.
+
+        Subclasses override ``_classify_realization``, so the peer-addressing
+        constraint below holds for every NTT policy.  It is applied to the
+        answer rather than to the request because only a Boxing reads the
+        source's bytes; a view of the same types reads nothing remote.
+        """
+
+        realization = self._classify_realization(context)
+        if (
+            realization is DistributedReshardRealization.BOXING
+            and reads_unaddressable_peer_instance(context)
+        ):
+            return DistributedReshardRealization.UNSUPPORTED
+        return realization
+
+    def _classify_realization(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> DistributedReshardRealization:
         from triton.flagmega.passes.auto_distributed.reshard import can_box
         from triton.flagmega.ir import TensorType
 
@@ -102,7 +123,7 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
     def __init__(self) -> None:
         super().__init__(unified_shared_storage=True)
 
-    def classify(
+    def _classify_realization(
         self,
         context: DistributedReshardRealizationContext,
     ) -> DistributedReshardRealization:
@@ -146,6 +167,26 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
             if _can_materialize_canonical_chip_view(source_type, target_type)
             else DistributedReshardRealization.BOXING
         )
+
+
+def reads_unaddressable_peer_instance(
+    context: DistributedReshardRealizationContext,
+) -> bool:
+    """Whether this reshard would read a peer chip's copy of opaque storage.
+
+    A chip-crossing Boxing addresses the source on every peer chip through the
+    FlagCX symmetric window, which requires the source bytes to live in a pool
+    the runtime registers as that window.  A function parameter is an opaque
+    pointer the caller supplies: its peer-side base is not the pool's, so no
+    peer address for it exists.  Such a reshard is therefore not realizable at
+    this boundary, and reporting that here lets the boundary planner choose a
+    parameter ABI whose restore stays chip-local instead of emitting a Boxing
+    that only fails once codegen tries to build the remote pointer.
+    """
+
+    if context.source_kind is not DistributedReshardSourceKind.FUNCTION_PARAMETER:
+        return False
+    return bool(boxing_crossing_chip_axes(context.source_type, context.target_type))
 
 
 def _placement_axis_owners(value: DistributedType) -> tuple[int, ...] | None:

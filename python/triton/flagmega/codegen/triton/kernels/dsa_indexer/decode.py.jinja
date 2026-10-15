@@ -1,0 +1,5 @@
+# flagmega-kernel: dsa_indexer/decode
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% include "kernels/dsa_indexer/_function.py.jinja" %}
+{% endif %}

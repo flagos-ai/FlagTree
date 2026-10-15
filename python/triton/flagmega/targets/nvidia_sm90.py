@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from triton.flagmega.targets.pyntt import PyNttTarget
 from triton.flagmega.targets.ntt_options import NttTargetOptions
+from triton.flagmega.ir import Placement
 from triton.flagmega.targets.nvidia import Sm90Capability
 from triton.flagmega.targets.nvidia.machine import NvidiaSm90Machine
 
@@ -52,4 +55,21 @@ class NvidiaSm90Target(PyNttTarget):
             tir_lowering_policy=tir_lowering_policy,
             microkernel_selection_policy=microkernel_selection_policy,
             triton_implementation_model=triton_implementation_model,
+        )
+
+    def with_placement(self, placement: Placement) -> "NvidiaSm90Target":
+        """Return the same SM90 policy with one explicit physical placement.
+
+        Placement is a target configuration, so it is applied before
+        distribution proposal and participates in candidate identities.  The
+        target is rebuilt instead of mutating its distribution policy after
+        the pipeline has started.
+        """
+        if not isinstance(placement, Placement):
+            raise TypeError("placement must be a Placement")
+        options = replace(self.options, placements=(placement,))
+        return type(self)(
+            self.machine.capability,
+            options=options,
+            triton_implementation_model=self.triton_implementation_model,
         )

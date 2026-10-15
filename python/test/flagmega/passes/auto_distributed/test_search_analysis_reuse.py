@@ -25,6 +25,28 @@ def test_one_search_computes_each_exact_reshard_problem_once(monkeypatch):
     assert max(counts.values()) == 1
 
 
+def test_realization_proofs_are_shared_by_planning_costing_and_extraction():
+    from triton.flagmega.passes.auto_distributed import DistributedCandidateProviderRegistry
+
+    target = NvidiaSm90Target()
+    policy = target.distributed_reshard_realization_policy()
+    counts = Counter()
+    classify = policy.classify
+
+    def measure(context):
+        counts[context] += 1
+        return classify(context)
+
+    policy.classify = measure
+    module = packed_matmul_module()
+    registry = DistributedCandidateProviderRegistry()
+    target.register_auto_distributed_candidate_providers(registry)
+    graph = search.build_search_graph(module, target.distributed_placements(module)[0], registry, policy)
+    result = search.solve_search_graph(graph)
+    search.graph_dot(graph, result.selected, result.selected_reshards)
+    assert counts and max(counts.values()) == 1
+
+
 def test_pick_graph_contains_only_selected_candidates_and_plans():
     graph = AutoDistributedPass._build_graph(packed_matmul_module(), NvidiaSm90Target())
     result = search.solve_search_graph(graph)

@@ -15,6 +15,19 @@ from triton.flagmega.ir.tir.synchronization_range import SynchronizationRange
 class BarrierScope(str, Enum):
     BLOCK = "block"
     CHIP = "chip"
+    DEVICE = "device"
+
+
+def synchronization_scope_name(scope: BarrierScope) -> str:
+    """Name used by the synchronization planner and the code generator.
+
+    The planner speaks in terms of the launch grid, so a chip barrier is a
+    ``"grid"`` event there while a device barrier keeps its own name.
+    """
+    return {
+        BarrierScope.DEVICE: "device",
+        BarrierScope.CHIP: "grid",
+    }.get(BarrierScope(scope), "block")
 
 
 @tir_node("barrier")
@@ -48,4 +61,4 @@ class Barrier(TIRStmt):
         return TIRCost(synchronizations=1)
 
 
-__all__ = ["Barrier", "BarrierScope"]
+__all__ = ["Barrier", "BarrierScope", "synchronization_scope_name"]

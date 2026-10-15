@@ -44,6 +44,8 @@ class PackedMatMulGlu(OpDefinition):
     packed_layout = attribute_parameter(default="n_major_k_packed")
     gate_weight_encoding = attribute_parameter(default=None)
     up_weight_encoding = attribute_parameter(default=None)
+    gate_clamp_max = attribute_parameter(default=None)
+    up_clamp = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -55,6 +57,8 @@ class PackedMatMulGlu(OpDefinition):
             "k_pack": int(attrs["k_pack"]),
             "k_vector": int(attrs["k_vector"]),
             "packed_layout": str(attrs["packed_layout"]),
+            "gate_clamp_max": attrs["gate_clamp_max"],
+            "up_clamp": attrs["up_clamp"],
         }
         for name in ("gate_weight_encoding", "up_weight_encoding"):
             if attrs.get(name) is not None:
@@ -68,6 +72,11 @@ class PackedMatMulGlu(OpDefinition):
         for name in ("gate_weight_encoding", "up_weight_encoding"):
             if result.get(name) is not None and not isinstance(result[name], str):
                 raise IRSchemaError(f"PackedMatMulGlu {name} must be a string or None.")
+        for name in ("gate_clamp_max", "up_clamp"):
+            value = result[name]
+            if (value is not None and
+                    (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0)):
+                raise IRSchemaError(f"PackedMatMulGlu {name} must be a positive number or None.")
         return result
 
     @classmethod
@@ -125,6 +134,11 @@ class PackedMatMulGlu(OpDefinition):
         up = block_scaled_linear(
             cls.value.read(arguments), up_weight.reshape(up_weight.shape[0], -1),
             cls.up_scale.read(arguments), **common)
+        if node.attrs["gate_clamp_max"] is not None:
+            gate = context.torch.clamp(gate, max=node.attrs["gate_clamp_max"])
+        if node.attrs["up_clamp"] is not None:
+            limit = node.attrs["up_clamp"]
+            up = context.torch.clamp(up, min=-limit, max=limit)
         return context.torch.nn.functional.silu(gate) * up
 
     @classmethod

@@ -43,16 +43,37 @@ def packed_distributed_tensor_map_table_request(
     descriptor_strides: Sequence[int],
     block_shape: Sequence[int],
 ) -> dict[str, object]:
-    """Build one tensor map per owner of a canonical packed tensor.
+    """Build one tensor map per resident owner of a packed tensor.
 
     The table rebases each descriptor and encodes proven affine axis strides.
     Kernels use dense-local offsets without interpreting mesh coordinates or
     split policies. A non-affine owner requires a different transfer contract.
+
+    Which owners are resident follows the source storage. Canonical-global
+    storage holds every placement owner, so the table spans the whole tensor and
+    each entry rebases to that owner's origin inside it. Chip-local storage holds
+    only the owners of this chip's segment, already dense and contiguous, so the
+    table spans one segment and each entry names one component. Requiring the
+    canonical form for every table would force a chip to hold the entire weight,
+    which is the replication that chip-local storage exists to avoid.
     """
 
-    if str(abi.get("coordinate_space")) != "canonical_global":
+    coordinate_space = str(abi.get("coordinate_space"))
+    storage_kind = str(abi.get("storage_kind"))
+    if storage_kind in {"compact_per_chip", "compact_per_owner"}:
+        return _compact_owner_tensor_map_table_request(
+            abi,
+            parameter=parameter,
+            source=source,
+            offset_bytes=offset_bytes,
+            descriptor_shape=descriptor_shape,
+            descriptor_strides=descriptor_strides,
+            block_shape=block_shape,
+        )
+    if coordinate_space != "canonical_global":
         raise CodegenError(
-            "Tensor-map tables require canonical-global source storage."
+            "Tensor-map tables require canonical-global or compact-owner source "
+            f"storage, not {coordinate_space!r}."
         )
     distributed = abi.get("distributed_type")
     if not isinstance(distributed, Mapping):
@@ -159,6 +180,92 @@ def packed_distributed_tensor_map_table_request(
         "swizzle_mode": _tma_swizzle_mode(tile_shape, item_size),
         "entry_size_bytes": 128,
         "entries": tuple(entries),
+    }
+
+
+def _compact_owner_tensor_map_table_request(
+    abi: Mapping[str, object],
+    *,
+    parameter: str,
+    source: str,
+    offset_bytes: int,
+    descriptor_shape: Sequence[int],
+    descriptor_strides: Sequence[int],
+    block_shape: Sequence[int],
+) -> dict[str, object]:
+    """Build one tensor map per owner component of compact-owner storage.
+
+    Compact-owner storage is already the per-owner projection: each resident
+    owner occupies one dense component of ``component_stride`` scalar elements,
+    and the descriptor geometry describes that component rather than the
+    canonical tensor. Owner selection is therefore pure component indexing, with
+    no mesh coordinates and no split policy to interpret; the kernel indexes the
+    table by the same owner expression the buffer ABI already publishes.
+    """
+
+    physical_shape = _positive_int_tuple(descriptor_shape, "descriptor shape")
+    physical_strides = _positive_int_tuple(
+        descriptor_strides, "descriptor strides"
+    )
+    tile_shape = _positive_int_tuple(block_shape, "descriptor block shape")
+    local_shape = _positive_int_tuple(
+        abi.get("local_capacity_shape"), "local capacity shape"
+    )
+    if not (
+        len(physical_shape) == len(physical_strides) == len(tile_shape)
+        and physical_shape[:len(local_shape)] == local_shape
+    ):
+        raise CodegenError(
+            "Compact-owner tensor-map table descriptor does not preserve its "
+            "local capacity prefix."
+        )
+    scalar_dtype = str(abi.get("scalar_dtype", ""))
+    try:
+        item_size = _DTYPE_ITEM_SIZES[scalar_dtype]
+    except KeyError as error:
+        raise CodegenError(
+            f"Compact-owner tensor-map table does not support dtype {scalar_dtype!r}."
+        ) from error
+    if offset_bytes < 0:
+        raise CodegenError(
+            "Compact-owner tensor-map table source offset must be non-negative."
+        )
+    owner_count = int(abi.get("owner_count", 0))
+    if owner_count <= 0:
+        raise CodegenError(
+            "Compact-owner tensor-map table requires resident owners."
+        )
+    component_stride = int(abi.get("component_stride_scalar_elements", 0))
+    if component_stride <= 0:
+        raise CodegenError(
+            "Compact-owner tensor-map table source has no scalar owner stride."
+        )
+    component_span = 1 + sum(
+        (extent - 1) * stride
+        for extent, stride in zip(physical_shape, physical_strides, strict=True)
+    )
+    if component_stride < component_span:
+        raise CodegenError(
+            "Compact-owner tensor-map payloads overlap in physical storage."
+        )
+    return {
+        "parameter": parameter,
+        "source": source,
+        "kind": "table",
+        "dtype": scalar_dtype,
+        "block_shape": tile_shape,
+        "padding": "zero",
+        "swizzle_mode": _tma_swizzle_mode(tile_shape, item_size),
+        "entry_size_bytes": 128,
+        "entries": tuple(
+            {
+                "offset_bytes": offset_bytes + owner * component_stride * item_size,
+                "shape": physical_shape,
+                "strides": physical_strides,
+                "source_shape_axes": tuple(() for _ in physical_shape),
+            }
+            for owner in range(owner_count)
+        ),
     }
 
 

@@ -18,6 +18,7 @@ from triton.flagmega.ir import (
     SBP,
 )
 from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.ops.nn.gated_norm_apply import GatedNormApply
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
 from triton.flagmega.ir.ops.ntt.add_norm_stats import (
@@ -149,6 +150,92 @@ class NormApplyCandidateProvider(DistributedCandidateProviderBase):
                 objective_evidence=(
                     "materialized-statistics",
                     "suffix-parameter-policy",
+                    "op-definition-cost-factors",
+                    "hierarchical-target-latency",
+                ),
+            ))
+        return tuple(results)
+
+
+class GatedNormApplyCandidateProvider(DistributedCandidateProviderBase):
+    """NormApply's layout rules, plus a gate that shares the input policies."""
+
+    op_names = frozenset({"nn.gated_norm_apply"})
+    allows_partial_inputs = False
+    is_exhaustive = True
+
+    def _enumerate_candidates(
+        self, context: DistributedCandidateContext,
+    ) -> tuple[DistributedCandidate, ...]:
+        node = context.source_call
+        module = context.module
+        value = tensor_of(module.node_map[node.inputs[0]].type)
+        scale = tensor_of(module.node_map[node.inputs[2]].type)
+        bias = tensor_of(module.node_map[node.inputs[3]].type)
+        gate = tensor_of(module.node_map[node.inputs[4]].type)
+        axis = _normalize_axis(int(node.attrs["axis"]), value.rank)
+        results: list[DistributedCandidate] = []
+        for input_type in _candidate_distributed_inputs(context, 0, value):
+            policies = input_type.axis_policies
+            partial_stats = NormStats.infer_type(
+                (_typed_node("<gated_norm_apply_input>", input_type),),
+                {"axis": axis, "use_mean": bool(node.attrs["use_mean"])},
+            )
+            assert isinstance(partial_stats, DistributedType)
+            stats_type = replace(partial_stats, partial=None)
+            suffix_policies = tuple(policies[axis:])
+            try:
+                scale_type = DistributedType(
+                    scale, suffix_policies, context.placement,
+                    exclusive=input_type.exclusive,
+                )
+                bias_type = DistributedType(
+                    bias, suffix_policies, context.placement,
+                    exclusive=input_type.exclusive,
+                )
+                # The gate is elementwise over the whole value, so it can only
+                # be read under the input's own policies.
+                gate_type = DistributedType(
+                    gate, policies, context.placement,
+                    exclusive=input_type.exclusive,
+                )
+                inputs = (
+                    _typed_node("<gated_norm_apply_input>", input_type),
+                    _typed_node("<gated_norm_apply_stats>", stats_type),
+                    _typed_node("<gated_norm_apply_scale>", scale_type),
+                    _typed_node("<gated_norm_apply_bias>", bias_type),
+                    _typed_node("<gated_norm_apply_gate>", gate_type),
+                )
+                output_type = GatedNormApply.infer_type(inputs, node.attrs)
+            except IRSchemaError:
+                continue
+            factors = GatedNormApply.cost_factors(inputs, node.attrs, output_type)
+            results.append(DistributedCandidate(
+                distributed_candidate_id(
+                    node.id,
+                    "gated_norm_apply",
+                    output_type,
+                    tuple(item.type for item in inputs),
+                ),
+                output_type,
+                tuple(item.type for item in inputs),
+                (
+                    _local_elements(input_type)
+                    if factors is None
+                    else context.operation_cost_model.get_latency(
+                        factors, output_type
+                    )
+                ),
+                "gated-norm-apply-compatible-sbp",
+                objective_model=(
+                    "flagmega.gated-norm-apply-local-work/v1"
+                    if factors is None
+                    else context.operation_cost_model.identity
+                ),
+                objective_evidence=(
+                    "materialized-statistics",
+                    "suffix-parameter-policy",
+                    "elementwise-gate-policy",
                     "op-definition-cost-factors",
                     "hierarchical-target-latency",
                 ),
@@ -388,6 +475,7 @@ def _type_local_elements(value: IRType) -> int:
 __all__ = [
     "BindNormStatsCandidateProvider",
     "AddNormStatsCandidateProvider",
+    "GatedNormApplyCandidateProvider",
     "NormApplyCandidateProvider",
     "NormStatsCandidateProvider",
 ]

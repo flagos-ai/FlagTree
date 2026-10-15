@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from triton.flagmega.codegen.triton.lowering import TritonTirLoweringPolicy
 from triton.flagmega.codegen.triton.selection import TritonTirSelectionPolicy
 from triton.flagmega.codegen.triton.microkernels import (
@@ -87,6 +89,15 @@ class PyNttTarget(NttTarget):
                 options, split_candidate_provider
             )
         bufferization_options = machine.bufferization_options()
+        chip_sharded_rdata = any(
+            extent > 1 and level in {"c", "d"}
+            for placement in options.placements
+            for extent, level in zip(placement.hierarchy, placement.hierarchy_levels, strict=True)
+        )
+        bufferization_options = replace(
+            bufferization_options,
+            rdata_chip_sharding=chip_sharded_rdata,
+        )
         super().__init__(
             machine.capability,
             options,

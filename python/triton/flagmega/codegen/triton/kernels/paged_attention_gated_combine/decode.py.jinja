@@ -1,4 +1,6 @@
 # flagmega-kernel: paged_attention_gated_combine/decode
 {% with attention_combine_family = "paged_attention_gated_combine" %}
+{% if render_calls is defined %}
 {% include "kernels/paged_attention_combine/_function.py.jinja" %}
+{% endif %}
 {% endwith %}

@@ -10,6 +10,9 @@ class DistributedBufferStorageKind(str, Enum):
 
     COMPACT_LOCAL = "compact_local"
     COMPACT_PER_OWNER = "compact_per_owner"
+    # One component for every block owner in the chip-local segment.  The
+    # device/node placement axes select that segment at load time.
+    COMPACT_PER_CHIP = "compact_per_chip"
     CANONICAL_GLOBAL = "canonical_global"
     REPLICATED_LOCAL = "replicated_local"
     EXCLUSIVE_LOCAL = "exclusive_local"

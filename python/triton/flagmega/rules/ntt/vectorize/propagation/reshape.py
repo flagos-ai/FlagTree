@@ -47,11 +47,7 @@ def _map_lane_axes(
             if stride == source_strides[source_axis] and target_shape[axis] != 1
         ]
         selected = next(
-            (
-                axis
-                for axis in reversed(candidates)
-                if target_shape[axis] % (products.get(axis, 1) * lane) == 0
-            ),
+            (axis for axis in reversed(candidates) if target_shape[axis] % (products.get(axis, 1) * lane) == 0),
             None,
         )
         if selected is None:
@@ -82,7 +78,7 @@ def _unpack_contract(node: Node, module: IRModule):
         else (int(node.attrs["axis"]),) * axis_count
     )
     axes = normalize_axes(raw_axes, vector.type.rank)
-    return vector, axes, vector.type.dtype.lanes[:len(axes)]
+    return vector, axes, vector.type.dtype.lanes[: len(axes)]
 
 
 def _make(node_id, op, inputs, attrs, metadata):
@@ -220,8 +216,10 @@ def _reshape_unpack(node: Node, module: IRModule) -> RewriteResult:
 
 def reshape_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeReshapePropagation", _pack_reshape_matches, _pack_reshape),
-        RewriteRule("ReshapeDevectorizePropagation", _reshape_unpack_matches, _reshape_unpack),
+        RewriteRule("VectorizeReshapePropagation", _pack_reshape_matches, _pack_reshape, root_ops=("tensors.pack",)),
+        RewriteRule(
+            "ReshapeDevectorizePropagation", _reshape_unpack_matches, _reshape_unpack, root_ops=("tensors.reshape",)
+        ),
     )
 
 

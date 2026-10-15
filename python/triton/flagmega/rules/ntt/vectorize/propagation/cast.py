@@ -54,11 +54,13 @@ def _pack_cast_plan(node: Node, module: IRModule):
         return None
     axes, output_lanes = _pack_contract(node, cast.type.rank)
     try:
-        input_lanes, input_axes = split_vector_lanes(output_lanes, axes,
-            element_bytes=source.type.dtype.itemsize, vector_bytes=output_lanes[-1] * cast.type.dtype.itemsize)
-        packed_input = get_definition("tensors.pack").prepare(
-            (source,), {"axes": input_axes, "lanes": input_lanes}
+        input_lanes, input_axes = split_vector_lanes(
+            output_lanes,
+            axes,
+            element_bytes=source.type.dtype.itemsize,
+            vector_bytes=output_lanes[-1] * cast.type.dtype.itemsize,
         )
+        packed_input = get_definition("tensors.pack").prepare((source,), {"axes": input_axes, "lanes": input_lanes})
     except (IRSchemaError, TypeError, ValueError):
         return None
     return cast, source, input_axes, axes, input_lanes, output_lanes, packed_input
@@ -110,11 +112,7 @@ def _cast_unpack_plan(node: Node, module: IRModule):
         or not isinstance(node.type.dtype, DType)
     ):
         return None
-    axis_count = (
-        len(tuple(unpack.attrs["axes"]))
-        if "axes" in unpack.attrs
-        else len(vector.type.dtype.lanes)
-    )
+    axis_count = len(tuple(unpack.attrs["axes"])) if "axes" in unpack.attrs else len(vector.type.dtype.lanes)
     raw_axes = (
         tuple(int(value) for value in unpack.attrs["axes"])
         if "axes" in unpack.attrs
@@ -124,9 +122,12 @@ def _cast_unpack_plan(node: Node, module: IRModule):
     if len(axes) != len(vector.type.dtype.lanes):
         return None
     try:
-        output_lanes, output_axes = split_vector_lanes(vector.type.dtype.lanes, axes,
+        output_lanes, output_axes = split_vector_lanes(
+            vector.type.dtype.lanes,
+            axes,
             element_bytes=node.type.dtype.itemsize,
-            vector_bytes=vector.type.dtype.lanes[-1] * vector.type.dtype.elem_type.itemsize)
+            vector_bytes=vector.type.dtype.lanes[-1] * vector.type.dtype.elem_type.itemsize,
+        )
         prepared = get_definition("ntt.vectorized_cast").prepare(
             (vector,),
             {"new_type": VectorType(node.type.dtype, output_lanes), "vectorize_axes": axes},
@@ -198,9 +199,9 @@ def _fold_nop(node: Node, module: IRModule) -> RewriteResult:
 
 def cast_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeCastPropagation", _pack_cast_matches, _pack_cast),
-        RewriteRule("CastDevectorizePropagation", _cast_unpack_matches, _cast_unpack),
-        RewriteRule("FoldNopVectorizedCast", _fold_nop_matches, _fold_nop),
+        RewriteRule("VectorizeCastPropagation", _pack_cast_matches, _pack_cast, root_ops=("tensors.pack",)),
+        RewriteRule("CastDevectorizePropagation", _cast_unpack_matches, _cast_unpack, root_ops=("tensors.cast",)),
+        RewriteRule("FoldNopVectorizedCast", _fold_nop_matches, _fold_nop, root_ops=("ntt.vectorized_cast",)),
     )
 
 

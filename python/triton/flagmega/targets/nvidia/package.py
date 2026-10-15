@@ -81,17 +81,40 @@ def sm90_codegen_package_plan(
         )
     grid_mesh = launch.get("grid_mesh")
     hierarchy: tuple[int, ...] = ()
+    levels = ""
     if isinstance(grid_mesh, Mapping):
         raw_hierarchy = grid_mesh.get("hierarchy", ())
         if isinstance(raw_hierarchy, (tuple, list)):
             hierarchy = tuple(int(value) for value in raw_hierarchy)
+        levels = str(grid_mesh.get("hierarchy_levels", ""))
     cooperative = bool(launch.get("cooperative_grid", False))
     if cooperative and (not hierarchy or any(value <= 0 for value in hierarchy)):
         raise IRVerificationError(
             "A cooperative SM90 package requires a positive physical mesh.",
             stage=module.stage,
         )
-    owner_count = prod(hierarchy, start=1) if cooperative else 1
+    if cooperative:
+        if levels and len(levels) != len(hierarchy):
+            raise IRVerificationError(
+                "A cooperative SM90 package has mismatched grid-mesh levels.",
+                stage=module.stage,
+            )
+        # Chip/node axes select the torchrun/FlagCX owner.  They are not
+        # CUDA CTAs and must not be multiplied into the per-rank launch grid.
+        # Only physical block axes participate in cooperative CUDA launch.
+        grid_hierarchy = tuple(
+            extent
+            for extent, level in zip(hierarchy, levels, strict=True)
+            if level == "b"
+        ) if levels else hierarchy
+        if not grid_hierarchy or any(value <= 0 for value in grid_hierarchy):
+            raise IRVerificationError(
+                "A cooperative SM90 package requires at least one physical block axis.",
+                stage=module.stage,
+            )
+        owner_count = prod(grid_hierarchy, start=1)
+    else:
+        owner_count = 1
     num_warps = launch.get("num_warps")
     if isinstance(num_warps, bool) or not isinstance(num_warps, int) or num_warps <= 0:
         raise IRVerificationError(

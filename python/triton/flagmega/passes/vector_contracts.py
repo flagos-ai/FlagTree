@@ -17,6 +17,7 @@ NATIVE_VECTOR_COMPUTE_OPS = frozenset({
     "nn.norm_apply",
     "nn.norm_stats",
     "nn.qkv_rope_with_cache",
+    "nn.update_paged_attention_kv_cache_pair",
     "nn.sparse_experts_gate_up",
     "nn.sparse_experts_combine",
     "ntt.add_norm_stats",

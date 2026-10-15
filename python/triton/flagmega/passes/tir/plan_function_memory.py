@@ -431,7 +431,7 @@ def _effects_are_owner_local(dispatch, names, *, require_write: bool) -> bool:
         if effect is None:
             return False
         if (
-            effect.scope is MemoryAccessScope.CHIP
+            effect.scope in {MemoryAccessScope.CHIP, MemoryAccessScope.DEVICE}
             or effect.owner_access is not MemoryOwnerAccess.LOCAL
             or effect.kind is not MemoryEffectKind.DIRECT
             or (

@@ -45,7 +45,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {% elif call.partials is not none %}
     _flagmega_add_norm_stats_rms(
         {{ call.source }}, {{ call.residual }}, {{ call.result }},
-        {{ call.partials }}, {{ call.stats }}, shard_index,
+        {{ call.partials }}, {{ call.stats }}, {{ call.owner_index }},
         {{ call.elements }}, {{ call.owner_count }}, {{ call.tile }},
     )
 {% else %}

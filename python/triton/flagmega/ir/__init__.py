@@ -4,7 +4,24 @@
 
 from triton.flagmega.ir.builder import ConstantModule, IRBuilder, Module
 from triton.flagmega.ir.fusion import Fusion, fusion
+from triton.flagmega.ir.region import Region, Yield
+from triton.flagmega.ir.parameter_bank import BankField, BankFieldProgram, ParameterBankSchema
 from triton.flagmega.ir.constant_recipe import ConstantPhase, ConstantRecipe, constant_recipe_fingerprint
+from triton.flagmega.ir.dim_expr import Dimension as _Dimension
+from triton.flagmega.ir.logical_expr import (
+    BoolConst,
+    DimCompare,
+    LogicalExpr,
+    LogicalNot,
+    LogicalOp,
+    dim_compare,
+    dim_equal,
+    logical_and,
+    logical_const,
+    logical_from_data,
+    logical_not,
+    logical_or,
+)
 from triton.flagmega.ir.dim_expr import (
     DimConst,
     DimCompareOp,
@@ -53,10 +70,17 @@ from triton.flagmega.ir.distributed_type import (
     is_exclusive,
     is_distributable,
     is_local_shard_subview,
+    boxing_crossing_chip_axes,
+    boxing_reads_peer_chips,
     leaf_candidate_policies,
     local_shape,
     local_tensor_type,
     placement_owner_count,
+    chip_owner_axes,
+    block_owner_axes,
+    chip_owner_count,
+    block_owner_count,
+    launch_chip_count,
     scale_split_units,
     sharded_view_error,
 )
@@ -145,6 +169,7 @@ from triton.flagmega.ir.tir import (
     Block,
     Barrier,
     BarrierScope,
+    synchronization_scope_name,
     Buffer,
     BufferDescriptor,
     BufferLoad,
@@ -236,6 +261,8 @@ from triton.flagmega.ir.type_pattern import (
 )
 
 __all__ = [
+    "Region", "Yield",
+    "BankField", "BankFieldProgram", "ParameterBankSchema",
     "Fusion",
     "fusion",
     "KernelDefinition", "KernelInvoke",
@@ -248,6 +275,7 @@ __all__ = [
     "BlockCyclicSplit",
     "Barrier",
     "BarrierScope",
+    "synchronization_scope_name",
     "ContiguousSplit",
     "ContiguousShardRegion",
     "ConstantPhase",
@@ -352,6 +380,11 @@ __all__ = [
     "local_shard_descriptor",
     "local_tensor_type",
     "placement_owner_count",
+    "chip_owner_axes",
+    "block_owner_axes",
+    "chip_owner_count",
+    "block_owner_count",
+    "launch_chip_count",
     "scale_split_units",
     "effect",
     "execution_calls_of",
@@ -368,6 +401,8 @@ __all__ = [
     "is_callable",
     "is_distributable",
     "is_local_shard_subview",
+    "boxing_crossing_chip_axes",
+    "boxing_reads_peer_chips",
     "is_ir_type",
     "is_invalid",
     "is_none",
@@ -458,4 +493,27 @@ __all__ = [
     "verify_buffer_plan",
     "verify_execution_functions",
     "verify_prim_function",
+]
+
+
+def dimension_from_data(data):
+    """Rebuild a dimension expression from its plain data form."""
+    return _Dimension.from_data(data)
+
+
+__all__ = [
+    *__all__,
+    "BoolConst",
+    "DimCompare",
+    "LogicalExpr",
+    "LogicalNot",
+    "LogicalOp",
+    "dim_compare",
+    "dim_equal",
+    "dimension_from_data",
+    "logical_and",
+    "logical_const",
+    "logical_from_data",
+    "logical_not",
+    "logical_or",
 ]

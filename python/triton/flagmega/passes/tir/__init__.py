@@ -19,6 +19,7 @@ from .materialize_kernel_definitions import (
     MaterializeKernelDefinitionsPass, materialize_kernel_definitions,
 )
 from .bind_prim_function_buffers import BindPrimFunctionBuffersPass, bind_prim_function_buffers
+from .fuse_bank_qkv_weights import fuse_bank_qkv_weights
 from .canonicalize_packed_qkv_weights import (
     CanonicalizePackedQKVWeightsPass,
     canonicalize_packed_qkv_weights,
@@ -58,6 +59,7 @@ __all__ = [
     "FuseGatherReduceAddNormApplyPass",
     "FuseGatherReduceNormApplyPass",
     "canonicalize_packed_qkv_weights",
+    "fuse_bank_qkv_weights",
     "find_norm_consumer_matches",
     "find_projection_logits_argmax_matches",
     "find_projection_residual_norm_matches",

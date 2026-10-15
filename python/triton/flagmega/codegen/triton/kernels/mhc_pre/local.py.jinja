@@ -1,0 +1,92 @@
+# flagmega-kernel: mhc_pre/local platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "mhc_pre" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_i = tl.arange(0, {{ call.stream_lanes }})
+    _fm_stream_active = _fm_i < ({{ call.stream_active }})
+    _fm_pair_active = _fm_stream_active[:, None] & _fm_stream_active[None, :]
+    _fm_scale_pre = tl.load({{ call.scale }} + ({{ call.scale_offsets[0] }})).to(tl.float32)
+    _fm_scale_post = tl.load({{ call.scale }} + ({{ call.scale_offsets[1] }})).to(tl.float32)
+    _fm_scale_comb = tl.load({{ call.scale }} + ({{ call.scale_offsets[2] }})).to(tl.float32)
+    for _fm_token in tl.range(0, {{ call.token_active }}):
+        # Pass one: the RMS square sum and all three coefficient groups share a
+        # single walk over the flattened streams, so the streams are read once
+        # and each group accumulates straight into its own register shape.
+        _fm_square_sum = tl.full((), 0., tl.float32)
+        _fm_pre_mix = tl.zeros(({{ call.stream_lanes }}, ), tl.float32)
+        _fm_post_mix = tl.zeros(({{ call.stream_lanes }}, ), tl.float32)
+        _fm_comb_mix = tl.zeros(({{ call.stream_lanes }}, {{ call.stream_lanes }}), tl.float32)
+        for _fm_start in tl.range(0, {{ call.elements }}, {{ call.matvec_tile }}):
+            _fm_flat = _fm_start + tl.arange(0, {{ call.matvec_tile }})
+            _fm_flat_active = _fm_flat < {{ call.elements }}
+            _fm_values = tl.load({{ call.streams }} + ({{ call.streams_flat_offset }}),
+                                 mask=_fm_flat_active, other=0.).to(tl.float32)
+            _fm_square_sum += tl.sum(_fm_values * _fm_values, 0)
+            _fm_row_active = _fm_stream_active[:, None] & _fm_flat_active[None, :]
+            _fm_pre_mix += tl.sum(
+                tl.load({{ call.projection }} + ({{ call.projection_pre_offset }}),
+                        mask=_fm_row_active, other=0.).to(tl.float32) * _fm_values[None, :], 1)
+            _fm_post_mix += tl.sum(
+                tl.load({{ call.projection }} + ({{ call.projection_post_offset }}),
+                        mask=_fm_row_active, other=0.).to(tl.float32) * _fm_values[None, :], 1)
+            _fm_comb_mix += tl.sum(
+                tl.load({{ call.projection }} + ({{ call.projection_comb_offset }}),
+                        mask=_fm_pair_active[:, :, None] & _fm_flat_active[None, None, :],
+                        other=0.).to(tl.float32) * _fm_values[None, None, :], 2)
+        # RMS without a mean term, over all hc_mult * hidden stream elements.
+        _fm_rms = tl.rsqrt(_fm_square_sum / {{ call.elements }} + {{ call.epsilon }})
+        # The floor added to pre is the hyper-connection epsilon, not the RMS
+        # one: GLM-5.3 ships 1e-6 and 1e-5, so the two are not interchangeable.
+        _fm_pre = tl.sigmoid(
+            _fm_pre_mix * _fm_rms * _fm_scale_pre
+            + tl.load({{ call.base }} + ({{ call.base_pre_offset }}),
+                      mask=_fm_stream_active, other=0.).to(tl.float32)) + {{ call.hc_epsilon }}
+        _fm_post = tl.sigmoid(
+            _fm_post_mix * _fm_rms * _fm_scale_post
+            + tl.load({{ call.base }} + ({{ call.base_post_offset }}),
+                      mask=_fm_stream_active, other=0.).to(tl.float32)) * {{ call.post_multiplier }}
+        _fm_comb = _fm_comb_mix * _fm_rms * _fm_scale_comb \
+            + tl.load({{ call.base }} + ({{ call.base_comb_offset }}),
+                      mask=_fm_pair_active, other=0.).to(tl.float32)
+        # Softmax over the sink axis. Inactive lanes exist only when hc_mult is
+        # not a power of two; they are held out of the max and the sum so they
+        # cannot contribute a NaN that the Sinkhorn sweeps would then spread.
+        _fm_comb = tl.where(_fm_pair_active, _fm_comb, float("-inf"))
+        _fm_row_max = tl.where(_fm_stream_active[:, None], tl.max(_fm_comb, 1)[:, None], 0.)
+        _fm_comb = tl.where(_fm_pair_active, tl.exp(_fm_comb - _fm_row_max), 0.)
+        _fm_comb = _fm_comb / tl.where(_fm_stream_active[:, None],
+                                       tl.sum(_fm_comb, 1)[:, None], 1.)
+        _fm_comb = tl.where(_fm_pair_active, _fm_comb + {{ call.hc_epsilon }}, 0.)
+        # Sinkhorn-Knopp: the first sweep normalizes the source axis only, then
+        # each remaining iteration normalizes sink then source. The epsilon in
+        # every denominator is part of the reference contract, not a guard.
+        _fm_comb = _fm_comb / (tl.sum(_fm_comb, 0)[None, :] + {{ call.hc_epsilon }})
+        for _fm_iteration in tl.range(0, {{ call.sinkhorn_iterations - 1 }}):
+            _fm_comb = _fm_comb / (tl.sum(_fm_comb, 1)[:, None] + {{ call.hc_epsilon }})
+            _fm_comb = _fm_comb / (tl.sum(_fm_comb, 0)[None, :] + {{ call.hc_epsilon }})
+        tl.store({{ call.post }} + ({{ call.post_offset }}), _fm_post,
+                 mask=_fm_stream_active & ({{ call.post_writer_active }}))
+        tl.store({{ call.comb }} + ({{ call.comb_offset }}), _fm_comb,
+                 mask=_fm_pair_active & ({{ call.comb_writer_active }}))
+        # Pass two: collapse the streams with the pre coefficients. The sum is
+        # accumulated in FP32 and only the result returns to the stream dtype.
+        for _fm_start in tl.range(0, {{ call.hidden }}, {{ call.collapse_tile }}):
+            _fm_hidden = _fm_start + tl.arange(0, {{ call.collapse_tile }})
+            _fm_hidden_active = _fm_hidden < ({{ call.hidden_active }})
+            _fm_plane = tl.load(
+                {{ call.streams }} + ({{ call.streams_plane_offset }}),
+                mask=_fm_stream_active[:, None] & _fm_hidden_active[None, :],
+                other=0.).to(tl.float32)
+            _fm_collapsed = tl.sum(_fm_pre[:, None] * _fm_plane, 0)
+            tl.store({{ call.collapsed }} + ({{ call.collapsed_offset }}),
+                     _fm_collapsed.to({{ call.collapsed_type }}),
+                     mask=_fm_hidden_active & ({{ call.collapsed_writer_active }}))
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

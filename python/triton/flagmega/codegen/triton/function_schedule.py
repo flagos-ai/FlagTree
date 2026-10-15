@@ -15,7 +15,13 @@ from collections.abc import Mapping
 from triton.flagmega.codegen.triton.call_abi import describe_function_call_abi
 from triton.flagmega.codegen.triton.distributed_abi import KernelExecutionKind
 from triton.flagmega.errors import CodegenError
-from triton.flagmega.ir import Barrier, IRModule, execution_calls_of, execution_items_of
+from triton.flagmega.ir import (
+    Barrier,
+    IRModule,
+    execution_calls_of,
+    execution_items_of,
+    synchronization_scope_name,
+)
 
 
 FUNCTION_SCHEDULE_SCHEMA = "flagmega.triton-function-schedule/v2"
@@ -128,6 +134,27 @@ def describe_function_schedule(
                 })
                 continue
 
+            if event["kind"] == "loop_region":
+                # The body is scheduled once and executed per iteration, so
+                # plan it like any callee and record the trip count here.
+                flush_local()
+                callee = str(event["callee"])
+                callee_plan = plan(callee, (*active, name))
+                requires_synchronization |= bool(
+                    callee_plan["requires_synchronization"]
+                )
+                regions.append({
+                    "kind": "function_schedule_loop",
+                    "call": str(event["call"]),
+                    "callee": callee,
+                    "lowering": "structured_loop",
+                    "loop_var": str(event["loop_var"]),
+                    "domain": tuple(event["domain"]),
+                    "iter_args": tuple(event["iter_args"]),
+                    "yield_values": tuple(event["yield_values"]),
+                })
+                continue
+
             if event["kind"] != "function_call":
                 raise CodegenError(
                     f"Function @{name} has unknown executable event "
@@ -203,7 +230,38 @@ def _execution_events(module, function_name, abi):
             f"ExecutionFunction @{function_name} call closure differs from its "
             "bufferized ABI."
         )
-    return tuple(by_id[call.call_id] for call in calls)
+    events = [by_id[call.call_id] for call in calls]
+    # A structured loop is a region marker, not a call, so it has no entry in
+    # the per-call ABI. Emit it in place so the schedule descends into its
+    # body exactly once instead of silently skipping the whole region.
+    for loop in _structured_loops(function):
+        events.append({
+            "kind": "loop_region",
+            "call": f"{function_name}.{loop.loop_var.name}",
+            "callee": loop.body_function,
+            "loop_var": loop.loop_var.name,
+            "domain": (loop.domain.start, loop.domain.stop, loop.domain.step),
+            "iter_args": tuple(value.name for value in loop.iter_args),
+            "yield_values": tuple(value.name for value in loop.yield_values),
+        })
+    return tuple(events)
+
+
+def _structured_loops(function):
+    """Yield each structured For region in this function's body, in order."""
+    from triton.flagmega.ir.tir import For, iter_tir_children
+
+    result = []
+
+    def visit(node) -> None:
+        if isinstance(node, For) and node.body_function:
+            result.append(node)
+            return
+        for child in iter_tir_children(node):
+            visit(child)
+
+    visit(function.body)
+    return tuple(result)
 
 
 def memory_barriers_for_function(
@@ -221,7 +279,7 @@ def memory_barriers_for_function(
                 "after": item.after[-1],
                 "before": item.before,
                 "scope": (
-                    "grid" if item.scope.value == "chip" else "block"
+                    synchronization_scope_name(item.scope)
                 ),
                 "hazards": tuple(item.hazards),
                 "axis_group_axes": tuple(item.axis_group_axes),

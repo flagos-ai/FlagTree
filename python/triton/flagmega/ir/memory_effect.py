@@ -28,6 +28,7 @@ class MemoryAccessScope(str, Enum):
     INFERRED = "inferred"
     BLOCK = "block"
     CHIP = "chip"
+    DEVICE = "device"
 
 
 class MemoryEffectKind(str, Enum):

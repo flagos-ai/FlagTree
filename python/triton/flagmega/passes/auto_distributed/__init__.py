@@ -19,6 +19,7 @@ from triton.flagmega.passes.auto_distributed.inference_providers import (
 from triton.flagmega.passes.auto_distributed.norm_providers import (
     BindNormStatsCandidateProvider,
     AddNormStatsCandidateProvider,
+    GatedNormApplyCandidateProvider,
     NormApplyCandidateProvider,
     NormStatsCandidateProvider,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "DistributedOperationCostModel",
     "TypeInferenceCandidateProvider",
     "NttDistributionPolicy",
+    "GatedNormApplyCandidateProvider",
     "NormApplyCandidateProvider",
     "NormStatsCandidateProvider",
     "PagedAttentionCombineCandidateProvider",

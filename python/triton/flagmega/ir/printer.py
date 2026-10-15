@@ -382,7 +382,8 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
         lines.append(f"{prefix}}}")
         return
     if isinstance(statement, PipelineDrain):
-        lines.append(f"{prefix}T.PipelineDrain({statement.stage_id!r})")
+        suffix = ", ArenaReuse" if statement.arena_reuse else ""
+        lines.append(f"{prefix}T.PipelineDrain({statement.stage_id!r}{suffix})")
         return
     if isinstance(statement, PipelineHandoff):
         lines.append(f"{prefix}T.PipelineHandoff({statement.handoff_id!r})")

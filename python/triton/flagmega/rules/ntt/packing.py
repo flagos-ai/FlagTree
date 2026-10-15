@@ -21,7 +21,9 @@ from triton.flagmega.ir import (
     try_div_exactly,
 )
 from triton.flagmega.passes.functions import (
-    lift_parameter_constant_transforms, )
+    absorb_bank_parameter_transforms,
+    lift_parameter_constant_transforms,
+)
 from triton.flagmega.rules import DataflowRewriter, RewriteResult, RewriteRule
 from triton.flagmega.ir.ops.tensors._k_major import (
     k_major_layout_name, )
@@ -328,7 +330,7 @@ class NttPackingPolicy:
         packed = DataflowRewriter(
             (RewriteRule("ntt-auto-packing", matches, rewrite),)
         ).rewrite(module)
-        return lift_parameter_constant_transforms(packed)
+        return absorb_bank_parameter_transforms(lift_parameter_constant_transforms(packed))
 
     def _pack_vectorized_matmul(
         self,
@@ -785,6 +787,8 @@ class NttPackingPolicy:
         prepared = definition.prepare(inputs, {
             "activation": node.attrs["activation"],
             "round_activation": node.attrs.get("round_activation", True),
+            "gate_clamp_max": node.attrs.get("gate_clamp_max"),
+            "up_clamp": node.attrs.get("up_clamp"),
             "packed_layout": packed_layout,
         })
         replacement = replace(

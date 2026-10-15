@@ -4,7 +4,9 @@
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.model import IRModule, Node
-from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, op_definition, tensor_nbytes
+from triton.flagmega.ir.ops.core import (
+    OpCost, OpDefinition, attribute_parameter, context_independent_verifier, op_definition, tensor_nbytes,
+)
 
 
 @op_definition("builtin.var", display_name="Var")
@@ -12,6 +14,7 @@ class Var(OpDefinition):
     name = attribute_parameter()
 
     @classmethod
+    @context_independent_verifier
     def verify(cls, node: Node, module: IRModule) -> None:
         cls.verify_arity(node)
         if set(node.attrs) != {"name"} or not str(node.attrs["name"]):

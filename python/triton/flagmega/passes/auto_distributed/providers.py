@@ -352,6 +352,8 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
             and isinstance(weight.dtype, VectorType)
         ):
             packed_k_lane = weight.dtype.lane_count
+        output_n_lane = (getattr(output.dtype, "lane_count", 1)
+                         if node.op in {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"} else 1)
         if scalar_packed:
             # [K/KLane,N/NLane,payload...]: only the physical N-group axis maps to an
             # independently materializable output split.
@@ -372,8 +374,8 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
                     purpose="output",
                 ):
                     weight_n_policy = (
-                        scale_split_units(output_policy, 1, packed_n_lane)
-                        if scalar_packed
+                        scale_split_units(output_policy, output_n_lane, packed_n_lane)
+                        if scalar_packed or output_n_lane != 1
                         else output_policy
                     )
                     if weight_n_policy is None:

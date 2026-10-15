@@ -1,6 +1,9 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from itertools import product
+from math import prod
+
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import _add_norm_stats_call
@@ -77,6 +80,38 @@ def test_global_rms_counts_vector_lanes_in_the_scalar_iteration_domain():
 
     assert call["mode"] == "global_rms"
     assert call["elements"] == 16
+
+
+@pytest.mark.parametrize("hierarchy,levels", [
+    ((4, 2, 8), "cbb"),
+    ((2, 4, 8), "bcb"),
+    ((2, 3, 4, 2), "cdbb"),
+    ((2, 4, 8), "bbb"),
+])
+def test_global_rms_partitions_stats_within_each_workspace_replica(hierarchy, levels):
+    raw = _raw()
+    raw["parameters"]["owner_count"] = prod(hierarchy)
+    for parameter in (*raw["inputs"], *raw["outputs"]):
+        abi = parameter["buffers"][0]["abi"]
+        abi["storage_kind"] = "canonical_global"
+        abi["distributed_type"]["placement"] = {
+            "hierarchy": hierarchy, "hierarchy_levels": levels,
+        }
+    call = _add_norm_stats_call(raw)
+    block_axes = [axis for axis, level in enumerate(levels) if level == "b"]
+    block_owner_count = prod(hierarchy[axis] for axis in block_axes)
+    assert call["owner_count"] == block_owner_count
+    for coordinates in product(*(range(size) for size in hierarchy)):
+        expected = global_index = 0
+        for axis, coordinate in enumerate(coordinates):
+            global_index = global_index * hierarchy[axis] + coordinate
+            if axis in block_axes:
+                expected = expected * hierarchy[axis] + coordinate
+        actual = eval(call["owner_index"], {"__builtins__": {}}, {
+            "shard_index": global_index,
+            **{f"shard_coord{axis}": coord for axis, coord in enumerate(coordinates)},
+        })
+        assert actual == expected
 
 
 def test_global_rms_rejects_mismatched_vector_lane_abis():

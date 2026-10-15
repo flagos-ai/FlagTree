@@ -18,6 +18,7 @@ from triton.flagmega.ir.ops.core import (
     tensor_elements,
     tensor_nbytes,
 )
+from triton.flagmega.ir.ops.math.exp import Exp
 from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
 from triton.flagmega.ir.ops.math.silu import Silu
 from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
@@ -33,7 +34,7 @@ from triton.flagmega.ir.types import VectorType
 )
 class VectorizedUnary(SameTypePointwiseOp):
     const_evaluable = True
-    scalar_definitions = {"silu": Silu, "sigmoid": Sigmoid}
+    scalar_definitions = {"silu": Silu, "sigmoid": Sigmoid, "exp": Exp}
     value = input_parameter(is_tensor())
     unary_op = attribute_parameter()
 

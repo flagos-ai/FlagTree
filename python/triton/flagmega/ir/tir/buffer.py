@@ -7,6 +7,7 @@ from triton.flagmega.ir.bufferization import MemSpan
 from triton.flagmega.ir.dim_expr import Dimension, dim
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
+    block_owner_count,
     is_local_shard_subview,
     local_shape,
     placement_owner_count,
@@ -44,7 +45,10 @@ class Buffer(TIRNode):
             type(self.owner_stride_bytes) is not int
             or self.owner_stride_bytes < (self.mem_span.size.maximum or 0)
             or self.owner_stride_bytes % self.elem_type.itemsize
-            or self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER
+            or self.distributed_storage_kind not in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            }
         ):
             raise IRSchemaError("TIR Buffer owner stride requires aligned compact-per-owner storage.")
         if len(self.dimensions) != len(self.strides):
@@ -93,6 +97,7 @@ class Buffer(TIRNode):
             if self.distributed_storage_kind not in {
                 DistributedBufferStorageKind.COMPACT_LOCAL,
                 DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
             }:
                 raise IRSchemaError(
                     "A parent-shard backing is valid only for compact distributed storage."
@@ -108,12 +113,17 @@ class Buffer(TIRNode):
                 )
         if (
             self.distributed_type is not None
-            and self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+            and self.distributed_storage_kind in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            }
             and self.mem_span.buffer.size.minimum is not None
             and self.mem_span.size.maximum is not None
             and self.mem_span.buffer.size.minimum
             < (self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum)
-            * (placement_owner_count(self.distributed_type) - 1) + self.mem_span.size.maximum
+            * ((placement_owner_count(self.distributed_type)
+                if self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                else block_owner_count(self.distributed_type)) - 1) + self.mem_span.size.maximum
         ):
             raise IRSchemaError(
                 "Compact-per-owner Buffer backing must contain one component per placement owner."
@@ -147,7 +157,10 @@ class Buffer(TIRNode):
 
     @property
     def component_stride_bytes(self) -> int:
-        if self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER:
+        if self.distributed_storage_kind not in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }:
             return 0
         stride = self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum
         if stride is None:

@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-from triton.flagmega.ir import Candidate, Node, DistributedType, TensorType, VectorType, DType
-from triton.flagmega.ir.distributed_type import is_fully_sharded_across_placement
-from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.codegen.triton.vectorization import (
     configured_vector_schedule,
     vectorization_contract,
 )
+from triton.flagmega.ir import Candidate, DistributedType, DType, Node, TensorType, VectorType
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.distributed_type import is_fully_sharded_across_placement
 
 from .core import TritonCandidateContext, TritonCandidateProposal
 
@@ -27,6 +27,7 @@ class ElementwiseCandidateProvider:
         "math.add",
         "math.mul",
         "math.div",
+        "math.exp",
         "math.sigmoid",
         "math.silu",
         "math.vectorized_binary",

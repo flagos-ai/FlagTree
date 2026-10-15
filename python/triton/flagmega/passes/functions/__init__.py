@@ -19,6 +19,7 @@ from .remove_unused import remove_unused_functions
 from .distributed_boundary_layout import (
     propagate_post_auto_distributed_function_boundary_layouts,
 )
+from .absorb_bank_transforms import absorb_bank_parameter_transforms
 from .lift_parameter_transforms import lift_parameter_constant_transforms
 from .lift_constant_expressions import lift_constant_parameter_expressions
 from .hoist_call_invariants import hoist_call_invariant_expressions
@@ -37,6 +38,7 @@ __all__ = [
     "reusable_function_node_ids",
     "static_function_invocation_counts",
     "static_node_invocation_counts",
+    "absorb_bank_parameter_transforms",
     "lift_parameter_constant_transforms",
     "lift_constant_parameter_expressions",
     "hoist_call_invariant_expressions",

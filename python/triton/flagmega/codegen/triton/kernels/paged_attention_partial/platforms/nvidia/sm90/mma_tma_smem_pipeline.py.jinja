@@ -123,7 +123,7 @@ def {{ call.symbol }}__value_stage(
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__producer(
-    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}{% if call.trip_scoped_dynamic | default(false) %}, _flagmega_pipe_trip_index, _flagmega_pipe_trip_count{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {% set key_writer = call.pipeline_channels[0].writer_parameter %}
@@ -147,7 +147,18 @@ def {{ call.symbol }}__producer(
     layer_id_value = (
         tl.full((), 0, tl.int32) + ({{ call.layer_id }})
     ).to(tl.int32)
-    sequence = tl.full((), 0, tl.int32)
+{% if call.trip_scoped_dynamic | default(false) %}
+    # Every trip commits the same number of slots (the stream length follows
+    # the context, not the layer), so the trip's base is that length times
+    # the trip index.  Keeping the stream gap-free is what lets one pipe
+    # instance serve every trip.
+    _flagmega_pipe_trip_span = tl.cdiv(
+        tl.maximum(token_end - token_begin, 0), {{ call.block_n }}
+    ).to(tl.int32)
+    sequence = (_flagmega_pipe_trip_index * _flagmega_pipe_trip_span).to(tl.int32)
+{% else %}
+    sequence = tl.full((), {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base + {% endif %}0, tl.int32)
+{% endif %}
     for token_start in tl.range(
         token_begin,
         token_end,
@@ -195,13 +206,27 @@ def {{ call.symbol }}__producer(
         )
         {{ value_writer }}.commit(sequence)
         sequence += 1
+{% if call.trip_scoped_dynamic | default(false) %}
+    # One instance serves every trip, so the stream closes once,
+    # on the final trip, at the iteration it has reached.
+    if _flagmega_pipe_trip_index == _flagmega_pipe_trip_count - 1:
+        {{ key_writer }}.close(sequence)
+{% elif not call.trip_scoped_pipe | default(false) %}
     {{ key_writer }}.close(sequence)
+{% endif %}
+{% if call.trip_scoped_dynamic | default(false) %}
+    # One instance serves every trip, so the stream closes once,
+    # on the final trip, at the iteration it has reached.
+    if _flagmega_pipe_trip_index == _flagmega_pipe_trip_count - 1:
+        {{ value_writer }}.close(sequence)
+{% elif not call.trip_scoped_pipe | default(false) %}
     {{ value_writer }}.close(sequence)
+{% endif %}
 
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__consumer(
-    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}{% if call.trip_scoped_dynamic | default(false) %}, _flagmega_pipe_trip_index, _flagmega_pipe_trip_count{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {% set key_reader = call.pipeline_channels[0].reader_parameter %}
@@ -255,7 +280,18 @@ def {{ call.symbol }}__consumer(
         {{ call.symbol }}__mma_layout,
     )
     scale_log2 = {{ call.scale }} * 1.4426950408889634
-    sequence = tl.full((), 0, tl.int32)
+{% if call.trip_scoped_dynamic | default(false) %}
+    # Every trip commits the same number of slots (the stream length follows
+    # the context, not the layer), so the trip's base is that length times
+    # the trip index.  Keeping the stream gap-free is what lets one pipe
+    # instance serve every trip.
+    _flagmega_pipe_trip_span = tl.cdiv(
+        tl.maximum(token_end - token_begin, 0), {{ call.block_n }}
+    ).to(tl.int32)
+    sequence = (_flagmega_pipe_trip_index * _flagmega_pipe_trip_span).to(tl.int32)
+{% else %}
+    sequence = tl.full((), {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base + {% endif %}0, tl.int32)
+{% endif %}
     for token_start in tl.range(
         token_begin,
         token_end,

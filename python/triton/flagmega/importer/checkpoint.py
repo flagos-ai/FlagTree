@@ -9,11 +9,14 @@ use :meth:`quantization_of` to select a device-side quantized kernel.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import struct
+import hashlib
 from dataclasses import dataclass
 from math import prod
 from pathlib import Path
+from threading import RLock
 from typing import Any, Iterable, Mapping, Protocol
 
 from triton.flagmega.errors import ImporterError
@@ -90,6 +93,9 @@ class TensorByteRange:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path).resolve())
+        self._validate_limits()
+
+    def _validate_limits(self) -> None:
         if (
             isinstance(self.offset, bool)
             or not isinstance(self.offset, int)
@@ -99,6 +105,21 @@ class TensorByteRange:
             or self.nbytes < 0
         ):
             raise ImporterError("TensorByteRange offset/nbytes must be non-negative integers.")
+
+    @classmethod
+    def _from_resolved_shard(cls, path: Path, offset: int, nbytes: int):
+        """Use DirectoryCheckpoint's already canonical, verified shard path.
+
+        Shard resolution enforces containment/existence and pins one path for
+        the checkpoint handle. Every tensor still checks its range limits;
+        re-resolving that same file per tensor adds no new validation.
+        """
+        result = object.__new__(cls)
+        object.__setattr__(result, "path", path)
+        object.__setattr__(result, "offset", offset)
+        object.__setattr__(result, "nbytes", nbytes)
+        result._validate_limits()
+        return result
 
 
 class Checkpoint(Protocol):
@@ -124,7 +145,7 @@ class Checkpoint(Protocol):
 class DirectoryCheckpoint:
     """A metadata-first checkpoint reader that never instantiates a model."""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, integrity_report: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
         config_path = self.root / "config.json"
         if not config_path.is_file():
@@ -135,7 +156,64 @@ class DirectoryCheckpoint:
             raise ImporterError(f"Failed to read checkpoint config {config_path}: {error}") from error
         self._headers: dict[str, dict[str, Any]] = {}
         self._payload_offsets: dict[str, int] = {}
+        self._tensor_ranges: dict[str, TensorByteRange] = {}
+        self._resolved_shards: dict[str, Path] = {}
         self._weight_map = self._load_weight_map()
+        self._source_digests: dict[Path, tuple[tuple[int, ...], str]] = {}
+        self._tensor_handles = OrderedDict()
+        self._tensor_handles_lock = RLock()
+        if integrity_report is not None:
+            self.attach_integrity_report(integrity_report)
+
+    def attach_integrity_report(self, path: str | Path) -> None:
+        """Bind a previously completed local SHA-256 audit to unchanged inputs.
+
+        Reports are trusted producer evidence, like the private materialization
+        cache. Both mtime and ctime must precede the report. Reuse is bound to
+        the file's device, inode, size and both timestamps.
+        """
+        report_path = Path(path)
+        report = json.loads(report_path.read_text())
+        if (report.get("ok") is not True or Path(report.get("checkpoint", "")).resolve() != self.root
+                or not isinstance(report.get("shards"), list)):
+            raise ImporterError("Checkpoint integrity report does not describe this verified input.")
+        audited_at = report_path.stat().st_mtime_ns
+        bound = {}
+        for record in report["shards"]:
+            source = self._resolve_shard(str(record.get("file", "")))
+            stat = source.stat()
+            digest = record.get("sha256")
+            if (record.get("ok") is not True or record.get("size") != stat.st_size
+                    or not isinstance(digest, str) or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                    or record.get("expected_sha256", digest) != digest
+                    or max(stat.st_mtime_ns, stat.st_ctime_ns) > audited_at):
+                raise ImporterError(f"Checkpoint integrity report is stale or invalid for {source}.")
+            bound[source] = (self._source_identity(stat), digest)
+        self._source_digests.update(bound)
+
+    @staticmethod
+    def _source_identity(stat) -> tuple[int, ...]:
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def source_file_digest(self, path: str | Path) -> str:
+        """Digest one source file once, or reuse an unchanged audited identity."""
+        source = Path(path).resolve()
+        if source not in set(self._resolved_shards.values()):
+            raise ImporterError(f"Digest source {source} is not a resolved checkpoint shard.")
+        before = self._source_identity(source.stat())
+        cached = self._source_digests.get(source)
+        if cached is not None and cached[0] == before:
+            return cached[1]
+        digest = hashlib.sha256()
+        with source.open("rb") as stream:
+            while chunk := stream.read(8 * 1024 * 1024):
+                digest.update(chunk)
+        if self._source_identity(source.stat()) != before:
+            raise ImporterError(f"Checkpoint source {source} changed during its digest.")
+        value = digest.hexdigest()
+        self._source_digests[source] = (before, value)
+        return value
 
     @property
     def config(self) -> Mapping[str, Any]:
@@ -177,12 +255,35 @@ class DirectoryCheckpoint:
         except ImportError as error:
             raise ImporterError("Loading checkpoint values requires the optional 'safetensors' package.") from error
         path = self._resolve_shard(info.source)
-        with safe_open(path, framework="pt", device=device) as handle:
+        # Each returned tensor retains its source storage. Opening one file
+        # per tensor therefore retains one whole-shard mapping per weight,
+        # exhausting the process's mapping budget on large expert banks.
+        # Share a bounded set of readers; returned tensor views keep their
+        # storage alive independently when a reader is evicted.
+        cache_key = (path, str(device))
+        with self._tensor_handles_lock:
+            identity = self._source_identity(path.stat())
+            cached = self._tensor_handles.pop(cache_key, None)
+            if cached is not None and cached[0] != identity:
+                cached[1].__exit__(None, None, None)
+                cached = None
+            if cached is None:
+                handle = safe_open(path, framework="pt", device=device)
+                handle.__enter__()
+                cached = (identity, handle)
+            self._tensor_handles[cache_key] = cached
+            if len(self._tensor_handles) > 128:
+                _, (_, evicted) = self._tensor_handles.popitem(last=False)
+                evicted.__exit__(None, None, None)
+            handle = cached[1]
             return handle.get_tensor(key)
 
     def tensor_byte_range(self, key: str) -> TensorByteRange:
         """Return the already-validated raw safetensors payload range."""
 
+        cached = self._tensor_ranges.get(key)
+        if cached is not None:
+            return cached
         info = self.tensor_info(key)
         if info.data_offsets is None:  # pragma: no cover - safetensors requires it.
             raise ImporterError(f"Tensor {key!r} has no safetensors data offsets.")
@@ -208,7 +309,9 @@ class DirectoryCheckpoint:
                 ) from error
             self._payload_offsets[info.source] = payload_offset
         start, end = info.data_offsets
-        return TensorByteRange(path, payload_offset + start, end - start)
+        result = TensorByteRange._from_resolved_shard(path, payload_offset + start, end - start)
+        self._tensor_ranges[key] = result
+        return result
 
     def cache_identity(self, keys: Iterable[str]) -> Mapping[str, Any]:
         """Return a cheap identity for build-cache invalidation.
@@ -223,16 +326,17 @@ class DirectoryCheckpoint:
         sources: dict[str, dict[str, object]] = {}
         for key in sorted(set(str(value) for value in keys)):
             info = self.tensor_info(key)
-            path = self._resolve_shard(info.source)
-            stat = path.stat()
-            sources.setdefault(info.source, {
-                "source": info.source,
-                "path": str(path),
-                "device": stat.st_dev,
-                "inode": stat.st_ino,
-                "size": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-            })
+            if info.source not in sources:
+                path = self._resolve_shard(info.source)
+                stat = path.stat()
+                sources[info.source] = {
+                    "source": info.source,
+                    "path": str(path),
+                    "device": stat.st_dev,
+                    "inode": stat.st_ino,
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
             tensors.append({
                 "key": info.key,
                 "dtype": info.dtype.value,
@@ -277,6 +381,7 @@ class DirectoryCheckpoint:
             if not isinstance(weight_map, dict) or not weight_map:
                 raise ImporterError(f"Safetensors index {index_candidates[0]} has no non-empty weight_map.")
             result = {}
+            validated_sources = set()
             for key, value in weight_map.items():
                 tensor_key = str(key)
                 source = str(value)
@@ -284,7 +389,9 @@ class DirectoryCheckpoint:
                     raise ImporterError(
                         f"Safetensors index {index_candidates[0]} contains invalid tensor key {tensor_key!r}."
                     )
-                self._resolve_shard(source, require_exists=False)
+                if source not in validated_sources:
+                    self._resolve_shard(source, require_exists=False)
+                    validated_sources.add(source)
                 result[tensor_key] = source
             return result
 
@@ -314,6 +421,8 @@ class DirectoryCheckpoint:
         return self._headers[source]
 
     def _resolve_shard(self, source: str, *, require_exists: bool = True) -> Path:
+        if require_exists and source in self._resolved_shards:
+            return self._resolved_shards[source]
         candidate = Path(source)
         if (
             not source
@@ -336,6 +445,11 @@ class DirectoryCheckpoint:
             raise ImporterError(
                 f"Checkpoint shard {source!r} does not exist under {self.root}."
             )
+        if require_exists:
+            # Retain the canonical path, including an accepted HF blob target.
+            # A later symlink change cannot redirect a cached reader outside
+            # the validated tree. cache_identity still stats this backing file.
+            self._resolved_shards[source] = path
         return path
 
     def _is_huggingface_blob(self, path: Path) -> bool:

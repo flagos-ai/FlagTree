@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: MIT
 """Block-scaled FP8 matmul definition and its local behaviors."""
 
+from math import prod
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, split_policy, tensor_of
 from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, SBPPartial, tensor_type
+from triton.flagmega.ir.distributed_type import scale_split_units
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
-from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
+from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear, normalize_output_lanes
 from triton.flagmega.ir.ops.math._quantized import matrix_width
-from triton.flagmega.ir.types import DType
+from triton.flagmega.ir.types import DType, VectorType
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -36,25 +39,29 @@ class BlockScaledMatMul(OpDefinition):
     weight_block_k = attribute_parameter()
     weight_encoding = attribute_parameter(default=None)
     output_data_type = attribute_parameter(default=None)
+    output_lanes = attribute_parameter(default=())
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
-        allowed = {"weight_block_n", "weight_block_k", "weight_encoding", "output_data_type"}
-        if set(attributes) - allowed:
-            raise IRSchemaError("BlockScaledMatMul has unknown attributes.")
-        block_n = int(attributes["weight_block_n"])
-        block_k = int(attributes["weight_block_k"])
+        attrs = super().normalize_attrs(attributes)
+        block_n = int(attrs["weight_block_n"])
+        block_k = int(attrs["weight_block_k"])
         if block_n <= 0 or block_k <= 0:
             raise IRSchemaError("BlockScaledMatMul block sizes must be positive.")
-        encoding = attributes.get("weight_encoding")
-        if encoding is not None and not isinstance(encoding, str):
-            raise IRSchemaError("BlockScaledMatMul weight_encoding must be a string or None.")
-        result = {"weight_block_n": block_n, "weight_block_k": block_k}
+        result = {"weight_block_n": block_n, "weight_block_k": block_k,
+                  "output_lanes": normalize_output_lanes(attrs["output_lanes"], "BlockScaledMatMul")}
+        encoding = attrs.get("weight_encoding")
         if encoding is not None:
+            if not isinstance(encoding, str):
+                raise IRSchemaError("BlockScaledMatMul weight_encoding must be a string or None.")
             result["weight_encoding"] = encoding
-        if attributes.get("output_data_type") is not None:
-            result["output_data_type"] = DType(attributes["output_data_type"]).value
+        if attrs.get("output_data_type") is not None:
+            result["output_data_type"] = DType(attrs["output_data_type"]).value
         return result
+
+    @classmethod
+    def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
+        return {key: value for key, value in attrs.items() if key != "output_lanes" or value}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -63,9 +70,16 @@ class BlockScaledMatMul(OpDefinition):
         scale_type = cls.weight_scale.type_of(inputs)
         value = tensor_of(value_type)
         weight = tensor_of(weight_type)
+        if isinstance(value.dtype, VectorType) or isinstance(weight.dtype, VectorType):
+            raise IRSchemaError("BlockScaledMatMul value/weight must use scalar element types.")
         if value.shape[1] != matrix_width(weight, attrs.get("weight_encoding")):
             raise IRSchemaError("BlockScaledMatMul value/weight K dimensions must match.")
-        output = tensor_type(attrs.get("output_data_type", value.dtype), (value.shape[0], weight.shape[0]))
+        lanes = tuple(attrs.get("output_lanes", ()))
+        output_n = try_div_exactly(weight.shape[0], prod(lanes))
+        if output_n is None:
+            raise IRSchemaError("BlockScaledMatMul N must be divisible by output_lanes.")
+        scalar_dtype = DType(attrs["output_data_type"]) if attrs.get("output_data_type") else value.dtype
+        output = tensor_type(VectorType(scalar_dtype, lanes) if lanes else scalar_dtype, (value.shape[0], output_n))
         placement = placement_of(value_type, weight_type, scale_type)
         if placement is None:
             return output
@@ -76,7 +90,10 @@ class BlockScaledMatMul(OpDefinition):
             return DistributedType(output, (SBP.broadcast(), SBP.broadcast()), placement)
         output_split = split_policy(weight_type, 0)
         if output_split is not None and all_broadcast(value_type) and all_broadcast(scale_type):
-            return DistributedType(output, (SBP.broadcast(), output_split), placement)
+            packed_split = scale_split_units(output_split, 1, prod(lanes))
+            if packed_split is None:
+                raise IRSchemaError("BlockScaledMatMul N split must align with output_lanes.")
+            return DistributedType(output, (SBP.broadcast(), packed_split), placement)
         reduction_split = split_policy(weight_type, 1)
         if (attrs.get("weight_encoding") is None and reduction_split is not None
                 and reduction_split == split_policy(value_type, 1) and all_broadcast(scale_type)):
@@ -90,14 +107,17 @@ class BlockScaledMatMul(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        return block_scaled_linear(
+        dtype = tensor_of(node.type).dtype
+        output = block_scaled_linear(
             cls.value.read(arguments),
             cls.weight.read(arguments),
             cls.weight_scale.read(arguments),
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
-            output_dtype=context.torch_dtype(node.type.dtype),
+            output_dtype=context.torch_dtype(dtype.elem_type if isinstance(dtype, VectorType) else dtype),
         )
+        lanes = tuple(node.attrs.get("output_lanes", ()))
+        return output.reshape(output.shape[0], output.shape[1] // prod(lanes), *lanes)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

@@ -29,6 +29,7 @@ from triton.flagmega.ir.memory_effect import (
     MemoryOwnerAccess,
 )
 from triton.flagmega.ir.model import DistributedType, IRModule, RefType, logical_type
+from triton.flagmega.ir.region import is_region
 from triton.flagmega.ir.tir.execution_kind import (
     KernelExecutionKind,
     kernel_execution_kind_for_call,
@@ -117,13 +118,33 @@ def _plan_memory_synchronization(
 
     events = []
     call_accesses = CallAccessResolver(module, plan, _node_accesses)
+    # Program order is fixed for this module, so index it once instead of
+    # rescanning every node to rank each conflicting producer.
+    node_ordinals = {node.id: index for index, node in enumerate(module.nodes)}
+    repeated = _repeated_graph_functions(module)
     for function in module.functions:
         abi = plan.function_map[function.name]
         bindings = dict(abi.values)
+        calls = tuple(
+            node for node in function_nodes(module, function)
+            if node.op in {"tir.kernel", "tir.call"}
+        )
         history: list[_PendingAccess] = []
-        for node in function_nodes(module, function):
-            if node.op not in {"tir.kernel", "tir.call"}:
-                continue
+        if function.name in repeated and calls:
+            # A repeated function's own trailing accesses precede its leading
+            # ones on the next execution.  Walking it once from an empty
+            # history can only see hazards within one execution; seed the
+            # history with its accesses so the wrap-around pair is formed
+            # too, and the barrier lands before the leading call, where every
+            # execution reaches it.  A loop body qualifies, and so does
+            # anything the body calls: `decode_layer` is straight-line but
+            # runs once per trip.
+            for node in calls:
+                history.extend(
+                    _PendingAccess(access)
+                    for access in call_accesses.accesses(function.name, node, bindings)
+                )
+        for node in calls:
             current = call_accesses.accesses(function.name, node, bindings)
             conflicts = [
                 (previous.access, access)
@@ -135,7 +156,7 @@ def _plan_memory_synchronization(
             if conflicts:
                 after = max(
                     (previous.node for previous, _ in conflicts),
-                    key=lambda value: _node_ordinal(module, value),
+                    key=node_ordinals.__getitem__,
                 )
                 ranges = []
                 hazards = set()
@@ -150,7 +171,10 @@ def _plan_memory_synchronization(
                     seen.add(key)
                     ranges.append(MemoryRange(*key))
                 scope, axis_group_axes = _conflict_requirement(conflicts)
-                if reuse_preferences is not None and scope == "grid" and not axis_group_axes:
+                if reuse_preferences is not None and not axis_group_axes and scope in {
+                    "grid",
+                    "device",
+                }:
                     from .reuse_preferences import record_reuse_preferences
 
                     record_reuse_preferences(plan, function.name, conflicts, reuse_preferences)
@@ -175,7 +199,11 @@ def _plan_memory_synchronization(
                 # chip-visible accesses. Preserve them, with coverage, for a
                 # later consumer whose owner relation may be wider.
                 history = [pending for pending in history if not (
-                    pending.coverage.full_chip_synchronized
+                    (
+                        pending.coverage.device_synchronized
+                        if _requires_device(pending.access)
+                        else pending.coverage.full_chip_synchronized
+                    )
                     or (
                         _resolved_scope(pending.access) is MemoryAccessScope.BLOCK
                         and pending.coverage.block_synchronized
@@ -183,6 +211,44 @@ def _plan_memory_synchronization(
                 )]
             history.extend(_PendingAccess(access) for access in current)
     return MemorySynchronizationPlan(tuple(events))
+
+
+def _repeated_graph_functions(module: IRModule) -> frozenset[str]:
+    """Name every graph function that runs more than once per launch.
+
+    A ``control.for`` body is repeated, and so is anything it calls, because
+    the body invokes that callee on every trip.  Only these functions have a
+    wrap-around hazard between their own trailing and leading accesses.
+    """
+
+    callees: dict[str, tuple[str, ...]] = {}
+    for function in module.functions:
+        values = []
+        for node in function_nodes(module, function):
+            if node.op not in {"builtin.call", "tir.call", "control.for"}:
+                continue
+            callee = str(node.attrs.get("callee", ""))
+            if callee in module.function_map:
+                values.append(callee)
+        callees[function.name] = tuple(dict.fromkeys(values))
+
+    result = {
+        function.name for function in module.functions if is_region(function)
+    }
+    for function in module.functions:
+        for node in function_nodes(module, function):
+            if node.op != "control.for":
+                continue
+            callee = str(node.attrs.get("callee", ""))
+            if callee in module.function_map:
+                result.add(callee)
+    pending = list(result)
+    while pending:
+        for callee in callees.get(pending.pop(), ()):
+            if callee not in result:
+                result.add(callee)
+                pending.append(callee)
+    return frozenset(result)
 
 
 def _node_accesses(module, plan, function_name, node, bindings):
@@ -268,7 +334,8 @@ def _node_accesses(module, plan, function_name, node, bindings):
             merged_effect,
             access_partition,
             reference_access or bool(previous and previous.is_reference),
-            (effect.scope is MemoryAccessScope.CHIP or publishes or bool(previous and previous.requires_full_chip)),
+            (effect.scope in {MemoryAccessScope.CHIP, MemoryAccessScope.DEVICE}
+             or publishes or bool(previous and previous.requires_full_chip)),
             plan.memory_space_map[descriptor.mem_span.buffer.memory_space].sharing_scope,
             descriptor.component_stride_bytes,
         )
@@ -352,6 +419,17 @@ def _expanded_output_effects(
 
 
 def _conflicts(previous: _Access, current: _Access) -> bool:
+    # Two accesses can only conflict when they overlap the same physical
+    # bytes.  That test is a handful of comparisons and rejects almost every
+    # candidate pair, so it runs before the effect/partition analysis below;
+    # the predicate is a conjunction, so the order does not change its result.
+    if not (
+        previous.storage == current.storage
+        and previous.physical_id == current.physical_id
+        and previous.offset < current.offset + current.nbytes
+        and current.offset < previous.offset + previous.nbytes
+    ):
+        return False
     producer_reads = bool(previous.effect.physical_mode & MemoryAccessMode.READ)
     producer_writes = bool(previous.effect.physical_mode & MemoryAccessMode.WRITE)
     consumer_reads = bool(current.effect.physical_mode & MemoryAccessMode.READ)
@@ -365,16 +443,9 @@ def _conflicts(previous: _Access, current: _Access) -> bool:
             and previous.buffer != current.buffer
         )
     )
-    if not requires_synchronization or not _partitions_may_alias(
+    return bool(requires_synchronization and _partitions_may_alias(
         previous.access_partition, current.access_partition
-    ):
-        return False
-    return (
-        previous.storage == current.storage
-        and previous.physical_id == current.physical_id
-        and previous.offset < current.offset + current.nbytes
-        and current.offset < previous.offset + previous.nbytes
-    )
+    ))
 
 
 def _conflict_requirement(
@@ -393,6 +464,8 @@ def _conflict_requirement(
     requirements = tuple(
         _hazard_requirement(previous, current) for previous, current in conflicts
     )
+    if any(scope == "device" for scope, _, _ in requirements):
+        return "device", ()
     if all(scope == "block" for scope, _, _ in requirements):
         return "block", ()
     chip = tuple(value for value in requirements if value[0] == "grid")
@@ -418,6 +491,11 @@ def _hazard_requirement(
         if producer is not None and consumer is not None and producer.placement == consumer.placement
         else None
     )
+    if _requires_device(previous) or _requires_device(current):
+        # One side of the hazard reads or writes a peer chip's instance of these
+        # bytes.  Chip-local barriers order nothing across chips, so the event
+        # must escalate to a device rendezvous.
+        return "device", (), placement
     if previous.effect.access_domain.is_same_fixed_block(
         current.effect.access_domain
     ) and (
@@ -477,6 +555,16 @@ def _hazard_requirement(
     return "grid", (), placement
 
 
+def _requires_device(access: _Access) -> bool:
+    """Whether this access reaches another chip's instance of the bytes.
+
+    Only an explicit ``MemoryAccessScope.DEVICE`` effect qualifies; the scope
+    cannot be inferred from storage, because every chip-visible arena looks
+    identical from the buffer plan's point of view.
+    """
+    return access.effect.scope is MemoryAccessScope.DEVICE
+
+
 def _resolved_scope(access: _Access) -> MemoryAccessScope:
     if access.effect.scope is not MemoryAccessScope.INFERRED:
         return access.effect.scope
@@ -494,7 +582,10 @@ def _resolved_scope(access: _Access) -> MemoryAccessScope:
         # owner-map inference below proves a block or placement-axis group.
         or access.distributed_type is not None
         or access.distributed_storage_kind
-        is DistributedBufferStorageKind.COMPACT_PER_OWNER
+        in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
         else MemoryAccessScope.BLOCK
     )
 
@@ -569,7 +660,10 @@ def _infer_raw_axis_group(
     ):
         return None
     if (
-        producer_storage is DistributedBufferStorageKind.COMPACT_PER_OWNER
+        producer_storage in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
         and (previous.nbytes != current.nbytes or previous.owner_stride_bytes != current.owner_stride_bytes)
     ):
         return None
@@ -612,7 +706,10 @@ def _infer_raw_axis_group(
     ):
         if (
             access.distributed_storage_kind
-            is not DistributedBufferStorageKind.COMPACT_PER_OWNER
+            not in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            }
             and access.sharing_scope is not MemorySharingScope.BLOCK
         ):
             # The current FlagMega workspace has no nncase-style
@@ -816,6 +913,8 @@ def _merge_access_scope(
     lhs: MemoryAccessScope,
     rhs: MemoryAccessScope,
 ) -> MemoryAccessScope:
+    if MemoryAccessScope.DEVICE in {lhs, rhs}:
+        return MemoryAccessScope.DEVICE
     if MemoryAccessScope.CHIP in {lhs, rhs}:
         return MemoryAccessScope.CHIP
     if MemoryAccessScope.BLOCK in {lhs, rhs}:
@@ -845,10 +944,6 @@ def _mode_name(mode: MemoryAccessMode) -> str:
     if mode == MemoryAccessMode.WRITE:
         return "write"
     return "read_write"
-
-
-def _node_ordinal(module, node_id):
-    return next(index for index, node in enumerate(module.nodes) if node.id == node_id)
 
 
 __all__ = ["plan_memory_synchronization"]

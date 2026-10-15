@@ -31,11 +31,15 @@ def test_fixed_choices_prune_model_without_changing_search_surface(monkeypatch):
 
     monkeypatch.setattr(cp_model.CpSolver, "solve", capture)
     proposal = solve_search_graph(graph)
+    unpruned = tuple(sizes)
+    sizes.clear()
     fixed = {name: c.id for name, c in proposal.selected.items()}
     applied = solve_search_graph(graph, fixed_selections=fixed)
     assert applied.selected == proposal.selected
     assert applied.objective == proposal.objective
-    assert sizes[1] < sizes[0]
+    # One extraction issues several solves; every pruned model is smaller
+    # than every model the unpruned extraction built.
+    assert max(sizes) < min(unpruned)
     assert tuple(tuple(c.id for c in b.candidates) for b in graph.buckets) == surface
 
 

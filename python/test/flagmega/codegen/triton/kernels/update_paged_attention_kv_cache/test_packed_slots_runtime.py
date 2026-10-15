@@ -11,8 +11,8 @@ from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_at
 from triton.flagmega.runtime import load
 
 
-def cache_update_module(config, packed, layout, split_heads, advance, tokens=1):
-    placement = fm.Placement((2, 2), "yx", "bb")
+def cache_update_module(config, packed, layout, split_heads, advance, tokens=1, *, placement=None):
+    placement = placement or fm.Placement((2, 2), "yx", "bb")
 
     class Update(fm.Module):
         def __init__(self):
@@ -26,7 +26,8 @@ def cache_update_module(config, packed, layout, split_heads, advance, tokens=1):
             tensor = fm.tensor_type(dtype, tuple(extents[axis] for axis in layout))
             policies = [fm.SBP.broadcast()] * 3
             if split_heads:
-                policies[layout.index("head")] = fm.SBP.split(fm.SplitStage((0,), fm.ContiguousSplit()))
+                policies[layout.index("head")] = fm.SBP.split(fm.SplitStage(
+                    (placement.hierarchy_levels.index("b"),), fm.ContiguousSplit()))
             value = self.input("slots", tensor)
             slots = fm.F.distributed.boxing(value, fm.DistributedType(tensor, tuple(policies), placement))
             state = self.input("state", config.ref_type)

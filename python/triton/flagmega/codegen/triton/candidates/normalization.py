@@ -86,6 +86,49 @@ class NormApplyCandidateProvider:
         )
 
 
+class GatedNormApplyCandidateProvider:
+    op_names = frozenset({"nn.gated_norm_apply"})
+
+    def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
+        value = tensor_of(context.module.node_map[node.inputs[0]].type)
+        axis = _normalize_axis(int(node.attrs["axis"]), value.rank)
+        use_mean = bool(node.attrs["use_mean"])
+        activation = str(node.attrs.get("activation", "sigmoid"))
+        contract = vectorization_contract(node)
+        candidates = tuple(
+            context.configure_implementation(
+                implementation,
+                semantic_parameters={
+                    "axis": axis,
+                    "use_mean": use_mean,
+                    "bias_mode": "tensor",
+                    "activation": activation,
+                    "vector_schedule": _vector_schedule(
+                        contract, implementation.parameters),
+                },
+                facts={
+                    "external_materialized_stats": True,
+                    "local_shard_apply": True,
+                },
+            )
+            for implementation in context.implementations(
+                "gated_norm_apply", supports_mean=True, axis_kind="suffix",
+                bias_mode="tensor",
+            )
+            if activation in tuple(implementation.contract.get("activations", ()))
+            and (
+                context.cooperative_grid
+                or "cooperative_grid" not in implementation.requires
+            )
+        )
+        if not candidates:
+            return None
+        return TritonCandidateProposal(
+            candidates,
+            context.choose_default("gated_norm_apply", candidates),
+        )
+
+
 def _vector_schedule(contract: Mapping[str, object], parameters: Mapping[str, object]):
     return configured_vector_schedule(
         contract,
@@ -98,4 +141,8 @@ def _normalize_axis(axis: int, rank: int) -> int:
     return axis + rank if axis < 0 else axis
 
 
-__all__ = ["NormApplyCandidateProvider", "NormStatsCandidateProvider"]
+__all__ = [
+    "GatedNormApplyCandidateProvider",
+    "NormApplyCandidateProvider",
+    "NormStatsCandidateProvider",
+]

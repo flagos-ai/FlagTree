@@ -4,11 +4,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
-from typing import Iterable
+from types import MappingProxyType
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import IRModule, verify_module
+from triton.flagmega.pattern_match.call_pattern import CallPattern
+from triton.flagmega.pattern_match.op_pattern import OpPattern
+from triton.flagmega.pattern_match.or_pattern import OrPattern
+from triton.flagmega.pattern_match.unary_chain_pattern import UnaryChainPattern
 from triton.flagmega.rules.core import (
     RewriteEffectPolicy,
     RewriteRedirect,
@@ -64,27 +69,47 @@ class DataflowRewriter:
 
         current = module
         changed = False
-        positions: dict[str, int] | None = None
-        for node_id in tuple(node.id for node in module.nodes):
-            if positions is None:
-                positions = {node.id: index for index, node in enumerate(current.nodes)}
-            index = positions.get(node_id)
-            if index is None:
+        positions: dict[str, tuple[int, int]] | None = None
+        offset = 0
+        roots = tuple((rule.root_ops if rule.root_ops is not None else _root_operators(rule.pattern), rule)
+                      for rule in self.rules)
+        dispatch = {}
+        users = [None]
+        for original in module.nodes:
+            node_id = original.id
+            node = current.node_map.get(node_id)
+            if node is None:
                 continue
-            rewritten = self._rewrite_node(current, index)
+            op = node.op
+            if op not in dispatch:
+                dispatch[op] = tuple(rule for operators, rule in roots if operators is None or op in operators)
+            if not dispatch[op]:
+                continue
+            if positions is None:
+                positions = {node.id: (index, 0) for index, node in enumerate(current.nodes)}
+                offset = 0
+            rank = positions.get(node_id)
+            if rank is None:
+                continue
+            index = rank[0] + offset
+            rewritten = self._rewrite_node(current, index, positions, dispatch[op], users)
             if rewritten is not None:
-                current = rewritten
+                current, delta = rewritten
                 changed = True
-                # Helpers/redirects can shift later roots. Keep the sweep's
-                # original visit order but rebuild offsets for the new snapshot.
-                positions = None
+                # Local edits shift every later original root equally.
+                # Region edits may remove future roots and require a rebase.
+                if delta is None:
+                    positions = None
+                else:
+                    offset += delta
         return current if changed else None
 
-    def _rewrite_node(self, module: IRModule, index: int) -> IRModule | None:
+    def _rewrite_node(self, module: IRModule, index: int, positions, rules, users) -> tuple[IRModule, int | None] | None:
         node = module.nodes[index]
+        rank = positions[node.id]
         if not self.rewrite_constants and node.op == "builtin.const_asset":
             return None
-        for rule in self.rules:
+        for rule in rules:
             rewritten = rule.apply(node, module)
             if rewritten is None:
                 continue
@@ -106,13 +131,15 @@ class DataflowRewriter:
                         stage=module.stage,
                         node_id=node.id,
                     )
-                if rewritten.target_id not in {value.id for value in module.nodes[:index]}:
+                if positions[rewritten.target_id] >= rank:
                     raise IRVerificationError(
                         f"Rewrite rule {rule.name!r} redirects to non-preceding node {rewritten.target_id!r}.",
                         stage=module.stage,
                         node_id=node.id,
                     )
-                return _redirect(module, node.id, rewritten.target_id)
+                result = _redirect(module, node.id, rewritten.target_id, index, positions, users)
+                positions.pop(node.id)
+                return result, -1
             result = rewritten if isinstance(rewritten, RewriteResult) else RewriteResult(rewritten)
             if result.replacement.id != node.id:
                 raise IRVerificationError(
@@ -142,27 +169,33 @@ class DataflowRewriter:
                     )
             if result.removed_ids or result.extra_replacements or result.insertion_before is not None:
                 from triton.flagmega.rules.region import apply_region
-                return apply_region(module, node, result, rule)
-            occupied = {value.id for value in module.nodes}
+                users[0] = None
+                return apply_region(module, node, result, rule), None
+            occupied = module.node_map.keys()
             prefix_ids = [value.id for value in result.prefix_nodes]
-            collisions = occupied.intersection(prefix_ids)
+            collisions = occupied & set(prefix_ids)
             if collisions or len(prefix_ids) != len(set(prefix_ids)):
                 raise IRVerificationError(
                     f"Rewrite rule {rule.name!r} generated colliding helper ids {sorted(collisions)}.",
                     stage=module.stage,
                     node_id=node.id,
                 )
-            available = {value.id for value in module.nodes[:index]}
+            helpers = set()
+
+            def missing_inputs(value, helpers=helpers):
+                return {input_id for input_id in value.inputs
+                        if input_id not in helpers and positions.get(input_id, rank) >= rank}
+
             for helper in result.prefix_nodes:
-                missing = set(helper.inputs) - available
+                missing = missing_inputs(helper)
                 if missing:
                     raise IRVerificationError(
                         f"Rewrite helper {helper.id!r} has non-topological inputs {sorted(missing)}.",
                         stage=module.stage,
                         node_id=node.id,
                     )
-                available.add(helper.id)
-            missing = set(result.replacement.inputs) - available
+                helpers.add(helper.id)
+            missing = missing_inputs(result.replacement)
             if missing:
                 raise IRVerificationError(
                     f"Rewrite replacement {node.id!r} has non-topological inputs {sorted(missing)}.",
@@ -175,23 +208,84 @@ class DataflowRewriter:
                 result.replacement,
                 *module.nodes[index + 1:],
             )
-            return replace(module, nodes=nodes)
+            updated = replace(module, nodes=nodes)
+            # Copy the existing immutable index in C and update only changed
+            # entries. Rebuilding it in Python after every local rewrite made
+            # sparse edits quadratic in the complete weight-expression graph.
+            node_map = module.node_map.copy()
+            node_map.update((value.id, value) for value in result.prefix_nodes)
+            node_map[node.id] = result.replacement
+            object.__setattr__(updated, "node_map", MappingProxyType(node_map))
+            if users[0] is not None:
+                for input_id in set(node.inputs):
+                    users[0][input_id].discard(node.id)
+                for value in (*result.prefix_nodes, result.replacement):
+                    for input_id in set(value.inputs):
+                        users[0].setdefault(input_id, set()).add(value.id)
+            # Helpers have an earlier order than their anchor. Their relative
+            # order was checked above; later roots only need that relation.
+            positions.update((value.id, (rank[0], -1)) for value in result.prefix_nodes)
+            return updated, len(result.prefix_nodes)
         return None
 
 
-def _redirect(module: IRModule, source: str, target: str) -> IRModule:
-    nodes = tuple(
-        replace(node, inputs=tuple(target if value == source else value for value in node.inputs))
-        for node in module.nodes
-        if node.id != source
+def _root_operators(pattern):
+    """Necessary root names only; custom and predicate patterns stay generic."""
+    if type(pattern) is OpPattern:
+        return frozenset((pattern.op_name,))
+    if type(pattern) is CallPattern and type(pattern.target) is OpPattern:
+        return frozenset((pattern.target.op_name,))
+    if type(pattern) in {OrPattern, UnaryChainPattern}:
+        branches = ((pattern.lhs, pattern.rhs) if type(pattern) is OrPattern
+                    else (pattern.step, pattern.terminal))
+        left, right = (_root_operators(branch) for branch in branches)
+        return None if left is None or right is None else left | right
+    return None
+
+
+def _redirect(module: IRModule, source: str, target: str, index=None, positions=None, users=None) -> IRModule:
+    # A redirect edits direct users only. Build the inverse relation once per
+    # sweep and maintain it for subsequent local edits; sparse redirects must
+    # not repeatedly inspect every unrelated weight expression.
+    if positions is None:
+        positions = {node.id: (ordinal, 0) for ordinal, node in enumerate(module.nodes)}
+    if index is None:
+        index = positions[source][0]
+    if users is None:
+        users = [None]
+    if users[0] is None:
+        users[0] = {}
+        for node in module.nodes:
+            for input_id in set(node.inputs):
+                users[0].setdefault(input_id, set()).add(node.id)
+    readers = users[0].pop(source, set())
+    nodes = list(module.nodes)
+    node_map = module.node_map.copy()
+    offset = index - positions[source][0]
+    for node_id in readers:
+        node = node_map[node_id]
+        updated = replace(node, inputs=tuple(target if value == source else value for value in node.inputs))
+        nodes[positions[node_id][0] + offset] = updated
+        node_map[node_id] = updated
+    users[0].setdefault(target, set()).update(readers)
+    for input_id in set(node_map[source].inputs):
+        users[0][input_id].discard(source)
+    nodes.pop(index)
+    node_map.pop(source)
+    functions = tuple(
+        replace(
+            function,
+            parameters=tuple(target if value == source else value for value in function.parameters),
+            outputs=tuple(target if value == source else value for value in function.outputs),
+        )
+        if source in function.parameters or source in function.outputs
+        else function
+        for function in module.functions
     )
-    functions = tuple(replace(
-        function,
-        parameters=tuple(target if value == source else value for value in function.parameters),
-        outputs=tuple(target if value == source else value for value in function.outputs),
-    ) for function in module.functions)
     points = tuple(replace(point, owner=target) if point.owner == source else point for point in module.selection_points)
-    return replace(module, nodes=nodes, functions=functions, selection_points=points)
+    result = replace(module, nodes=tuple(nodes), functions=functions, selection_points=points)
+    object.__setattr__(result, "node_map", MappingProxyType(node_map))
+    return result
 
 
 def _remove_unused(module: IRModule) -> IRModule:

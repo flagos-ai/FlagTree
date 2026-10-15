@@ -123,7 +123,7 @@ def _rewrite(node: Node, module: IRModule) -> RewriteResult:
 
 
 def rope_propagation_rules() -> tuple[RewriteRule, ...]:
-    return (RewriteRule("VectorizeRoPEPropagation", _matches, _rewrite),)
+    return (RewriteRule("VectorizeRoPEPropagation", _matches, _rewrite, root_ops=("tensors.pack",)),)
 
 
 __all__ = ["rope_propagation_rules"]

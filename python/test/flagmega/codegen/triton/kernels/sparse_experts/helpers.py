@@ -13,8 +13,30 @@ from python.test.flagmega.sparse_experts.helpers import operand_types
 
 
 def stage_module(definition, *, dtype="bfloat16", packed=False, distribution=None, hidden=72, intermediate=40, tokens=4,
-                 **attrs):
+                 weight_dtype=None, block_scaled=False, weight_block=16, **attrs):
+    """Build one expert stage.
+
+    ``block_scaled`` gives the projection scales rank 3, one entry per
+    ``weight_block`` weight tile, which is how a native FP8 checkpoint ships
+    them. Pair it with ``weight_dtype="float8_e4m3fn"`` to reproduce the
+    quantized serving configuration; the two are independent so a test can
+    isolate either the rank-3 scale indexing or the narrow weight dtype.
+    """
+
     types = operand_types(dtype=dtype, tokens=tokens, hidden=hidden, intermediate=intermediate, routes=3, experts=5)
+    if weight_dtype is not None:
+        for name in ("gate_weight", "up_weight", "down_weight"):
+            if name in types:
+                types[name] = fm.tensor_type(weight_dtype, types[name].shape)
+    if block_scaled:
+        attrs.setdefault("weight_block_n", weight_block)
+        attrs.setdefault("weight_block_k", weight_block)
+        for name, weight in (("gate", "gate_weight"), ("up", "up_weight"), ("down", "down_weight")):
+            scale = f"{name}_proj_scale"
+            if scale not in types or weight not in types:
+                continue
+            experts, rows, columns = (dim.fixed_value for dim in types[weight].shape)
+            types[scale] = fm.tensor_type("float32", (experts, -(-rows // weight_block), -(-columns // weight_block)))
     activation = definition.input_parameters[0].name
     if packed:
         tensor = types[activation]
@@ -79,7 +101,9 @@ def execute_and_reference(module, tmp_path, torch, *, checkpoint=None):
         if node_id == "router_expert_ids":
             value = (torch.arange(prod(shape)).reshape(shape) * 3 + 1).remainder(5).int()
         elif node_id.endswith("_scale"):
-            value = (2.**(torch.arange(shape[0]).remainder(3) - 1).float()).reshape(shape)
+            # Powers of two keep the reference exact. A block scale is rank 3,
+            # so the ramp runs over the flattened extent, not just the experts.
+            value = (2.**(torch.arange(prod(shape)).remainder(3) - 1).float()).reshape(shape)
             if node_id.endswith("proj_scale"):
                 value = value.flip(0).contiguous()
         elif node_id == "router_expert_weights":
@@ -87,6 +111,8 @@ def execute_and_reference(module, tmp_path, torch, *, checkpoint=None):
         else:
             lanes = tensor.dtype.lanes if isinstance(tensor.dtype, fm.VectorType) else ()
             dtype = tensor.dtype.elem_type if lanes else tensor.dtype
+            # Sixteenths are exact in FP8 E4M3 as well as in bf16/FP32, so the
+            # same fixture serves a quantized weight without a rounding budget.
             value = (torch.randint(-16, 17,
                                    (*shape, *lanes), generator=generator).float() / 16).to(getattr(torch, dtype.value))
         values[node_id] = value

@@ -86,6 +86,8 @@ def test_all_current_semantic_families_are_explicitly_classified():
         "nn.gdn_convolution",
         "nn.gdn_recurrent_core",
         "nn.greedy_sample",
+        "nn.mhc_post",
+        "nn.mhc_pre",
         "nn.rms_norm",
         "tensors.cast",
         "tensors.bitcast",

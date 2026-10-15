@@ -12,22 +12,31 @@ from collections import deque
 from triton.flagmega.errors import IRVerificationError
 
 
-def propagate_domains(graph, fixed_selections, site_map):
-    from .search import function_boundary_id, function_output_type
-
-    buckets = graph.bucket_map
+def fixed_candidate_domains(buckets, fixed_selections, *, stage):
+    """Validate hard choices before constructing their adapter relations."""
     domains = {name: set(range(len(bucket.candidates))) for name, bucket in buckets.items()}
     unknown = sorted(set(fixed_selections) - set(buckets))
     if unknown:
         raise IRVerificationError("AutoDistributed fixed selections reference unknown nodes: " + ", ".join(unknown),
-                                  stage=graph.module.stage)
+                                  stage=stage)
     for name, candidate_id in fixed_selections.items():
         selected = {i for i, value in enumerate(buckets[name].candidates) if value.id == candidate_id}
         if not selected:
             raise IRVerificationError(f"AutoDistributed candidate {candidate_id!r} is not legal for node {name!r}.",
-                                      stage=graph.module.stage, node_id=name)
+                                      stage=stage, node_id=name)
         domains[name] = selected
+    return domains
+
+
+def propagate_domains(graph, fixed_selections, site_map):
+    from .search import function_boundary_id, function_output_type
+    from triton.flagmega.ir.region import is_region
+
+    buckets = graph.bucket_map
+    domains = fixed_candidate_domains(buckets, fixed_selections, stage=graph.module.stage)
     for function in graph.module.functions:
+        if is_region(function):
+            continue
         for index, output in enumerate(function.outputs):
             target = function_output_type(graph.module, function.name, output, graph.placement)
             domains[output] &= {
@@ -75,6 +84,24 @@ def propagate_domains(graph, fixed_selections, site_map):
                 supports = templates[key] = forward, reverse
             neighbors[producer].append((consumer.id, supports[1]))
             neighbors[consumer.id].append((producer, supports[0]))
+
+    from .loops import binding_relations, loop_edges
+    def add_relation(producer, consumer, pairs):
+        forward = tuple(frozenset(c for p, c in pairs if p == i)
+                        for i in range(len(buckets[producer].candidates)))
+        reverse = tuple(frozenset(p for p, c in pairs if c == i)
+                        for i in range(len(buckets[consumer].candidates)))
+        neighbors[producer].append((consumer, reverse))
+        neighbors[consumer].append((producer, forward))
+    for producer, consumer, pairs in binding_relations(graph.module, buckets):
+        add_relation(producer, consumer, pairs)
+    for node, output, slot in loop_edges(graph.module, buckets):
+        field = slot - len(node.inputs)
+        pairs = tuple((p, c) for p, source in enumerate(buckets[output].candidates)
+                      for c, target in enumerate(buckets[node.id].candidates)
+                      if source.return_type == target.return_type.fields[field]
+                      or (output, p, node.id, c, slot) in site_map)
+        add_relation(output, node.id, pairs)
 
     pending = deque(buckets)
     queued = set(buckets)

@@ -37,10 +37,23 @@ def floating_tensor(rank, *, packed=False):
     )
 
 
+def expert_weight_tensor():
+    return is_tensor() & has_rank(3) & TypePattern(
+        lambda value: tensor_of(value).dtype in {DType.BFLOAT16, DType.FLOAT32, DType.FLOAT8_E4M3FN},
+        "BF16/FP32/FP8 expert weight tensor",
+    )
+
+
+def expert_scale_tensor():
+    return is_tensor() & TypePattern(
+        lambda value: tensor_of(value).dtype == DType.FLOAT32 and tensor_of(value).rank in (2, 3),
+        "FP32 per-expert or block scale tensor",
+    )
+
+
 ROUTER_IDS = is_tensor() & has_rank(2) & TypePattern(lambda value: tensor_of(value).dtype in {DType.INT32, DType.INT64},
                                                      "INT32/INT64 expert ids")
-EXPERT_SCALE = is_tensor() & has_rank(2) & TypePattern(lambda value: tensor_of(value).dtype == DType.FLOAT32,
-                                                       "FP32 expert scales")
+EXPERT_SCALE = expert_scale_tensor()
 
 
 def normalize_numerics(attrs, *rounding_names):
@@ -145,9 +158,15 @@ def validate_expert_ids(ids, count):
         raise EvaluationError(f"SparseExperts expert ids must be in [0, {count}).")
 
 
-def scaled_projection(value, weight, input_scale, projection_scale):
-    # Match nncase's explicit input-scale / projection-scale arithmetic. BF16
-    # import uses unit scales; this is not a quantizing FP8 matmul contract.
+def scaled_projection(value, weight, input_scale, projection_scale, *, block_n=128, block_k=128):
+    # Rank-2 scales are the historical nncase per-expert contract. Rank-3
+    # scales are native FP8 inverse scales laid out as [expert, N-block, K-block].
+    if projection_scale.ndim == 2:
+        from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
+        result = block_scaled_linear(value.unsqueeze(0), weight, projection_scale,
+                                     block_n=block_n, block_k=block_k,
+                                     output_dtype=value.dtype).squeeze(0)
+        return result * input_scale
     return ((value.float() / input_scale) @ weight.float().T) * input_scale * projection_scale
 
 

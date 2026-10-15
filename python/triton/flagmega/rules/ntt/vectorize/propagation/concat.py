@@ -47,13 +47,12 @@ def _unpack_contract(node: Node, module: IRModule):
         else (int(node.attrs["axis"]),) * axis_count
     )
     axes = normalize_axes(raw_axes, vector.type.rank)
-    return vector, axes, vector.type.dtype.lanes[:len(axes)]
+    return vector, axes, vector.type.dtype.lanes[: len(axes)]
 
 
 def _packable(value: Node, axes: tuple[int, ...], lanes: tuple[int, ...]) -> bool:
     return isinstance(value.type, TensorType) and all(
-        try_div_exactly(value.type.shape[axis], lane) is not None
-        for axis, lane in zip(axes, lanes)
+        try_div_exactly(value.type.shape[axis], lane) is not None for axis, lane in zip(axes, lanes)
     )
 
 
@@ -129,9 +128,7 @@ def _concat_unpack(node: Node, module: IRModule) -> RewriteResult:
     assert contract is not None
     axes, lanes = contract
     boundary = next(
-        module.node_map[candidate]
-        for candidate in node.inputs
-        if module.node_map[candidate].op == "tensors.unpack"
+        module.node_map[candidate] for candidate in node.inputs if module.node_map[candidate].op == "tensors.unpack"
     )
     helpers: list[Node] = []
     vector_inputs: list[Node] = []
@@ -182,8 +179,10 @@ def _concat_unpack(node: Node, module: IRModule) -> RewriteResult:
 
 def concat_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeConcatPropagation", _pack_concat_matches, _pack_concat),
-        RewriteRule("ConcatDevectorizePropagation", _concat_unpack_matches, _concat_unpack),
+        RewriteRule("VectorizeConcatPropagation", _pack_concat_matches, _pack_concat, root_ops=("tensors.pack",)),
+        RewriteRule(
+            "ConcatDevectorizePropagation", _concat_unpack_matches, _concat_unpack, root_ops=("tensors.concat",)
+        ),
     )
 
 

@@ -89,11 +89,17 @@ class MaterializeLocalShards(OpDefinition):
                         "fixed per-owner active extent."
                     )
                 active_extent = axis.active_extent.fixed_value
+                selected_shape.append(active_extent)
+                window = axis.local_slice
+                if window is not None:
+                    # Strided selection is a view; only a non-affine axis needs
+                    # a per-element index tensor.
+                    shard = shard[(slice(None), ) * tensor_axis + (window, )]
+                    continue
                 indices = tuple(
                     axis.map_local_to_global(index).fixed_value
                     for index in range(active_extent)
                 )
-                selected_shape.append(active_extent)
                 index = context.torch.tensor(
                     indices,
                     dtype=context.torch.int64,
@@ -140,11 +146,17 @@ class MaterializeLocalShards(OpDefinition):
                         "fixed per-owner active extent."
                     )
                 active_extent = axis.active_extent.fixed_value
+                selected_shape.append(active_extent)
+                window = axis.local_slice
+                if window is not None:
+                    # Strided selection is a view; only a non-affine axis needs
+                    # a per-element index list.
+                    shard = shard[(slice(None), ) * tensor_axis + (window, )]
+                    continue
                 indices = tuple(
                     axis.map_local_to_global(index).fixed_value
                     for index in range(active_extent)
                 )
-                selected_shape.append(active_extent)
                 shard = context.numpy.take(shard, indices, axis=tensor_axis)
             if tuple(selected_shape) != target_outer:
                 physical_shape = (*target_outer, *tuple(value.shape[len(outer_shape):]))

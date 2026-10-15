@@ -10,8 +10,10 @@ from triton.flagmega.ir.ops.builtin.splat_const import SplatConst
 from triton.flagmega.ir.ops.builtin.tuple import TupleValue
 from triton.flagmega.ir.ops.builtin.var import Var
 from triton.flagmega.ir.ops.builtin.weight import Weight
+from triton.flagmega.ir.ops.builtin.parameter_bank import ParameterBank, BankGet
 
 __all__ = [
+    "ParameterBank", "BankGet",
     "Call", "ConstAsset", "GetItem", "NoneValue", "ScalarConst", "SplatConst",
     "TupleValue", "Var", "Weight",
 ]

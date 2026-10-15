@@ -12,7 +12,7 @@ from triton.flagmega.ir import IRModule, Node
 from triton.flagmega.ir.ops.core import OpDefinition, get_definition
 
 
-_VISITOR_HANDLED_OPS = frozenset({"builtin.call"})
+_VISITOR_HANDLED_OPS = frozenset({"builtin.call", "control.for"})
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ def _live_function_nodes(module: IRModule) -> set[str]:
             node = node_map[node_id]
             live.add(node_id)
             pending_nodes.extend(node.inputs)
-            if node.op == "builtin.call":
+            if node.op in {"builtin.call", "control.for"}:
                 pending_functions.append(str(node.attrs["callee"]))
     return live
 

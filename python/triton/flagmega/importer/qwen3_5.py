@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,6 +14,7 @@ from triton.flagmega.importer.checkpoint import Checkpoint, checkpoint_from_path
 from triton.flagmega.importer.source import attach_import_source_locations
 from triton.flagmega.ir import (
     DType,
+    F,
     IRBuilder,
     IRModule,
     TupleType,
@@ -20,6 +22,7 @@ from triton.flagmega.ir import (
     tensor_type,
     verify_module,
 )
+from triton.flagmega.ir.functional import construction_scope
 from triton.flagmega.ir.ops.nn._gdn_state import gdn_state_config
 
 

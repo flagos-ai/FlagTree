@@ -2,20 +2,32 @@
 # SPDX-License-Identifier: MIT
 """Sparse SwiGLU experts with explicit dispatch, projections and combine."""
 
+from math import isfinite
+
+from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.model import Node
-from triton.flagmega.ir.ops.core import OpCost, OpCostFactors, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
+from triton.flagmega.ir.ops.core import (
+    OpCost,
+    OpCostFactors,
+    OpDefinition,
+    attribute_parameter,
+    input_parameter,
+    op_definition,
+    tensor_nbytes,
+)
 from triton.flagmega.ir.ops.nn._sparse_experts import (
     EXPERT_SCALE,
     ROUTER_IDS,
+    expert_weight_tensor,
     floating_tensor,
     normalize_numerics,
     python_dtype_call,
 )
-from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp, evaluate_gate_up
-from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown, evaluate_down
-from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown, evaluate_down
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp, evaluate_gate_up
 
 
 @op_definition("nn.sparse_experts", namespace="nn", functional_name="sparse_experts", display_name="NN.SparseExperts")
@@ -25,13 +37,13 @@ class SparseExperts(OpDefinition):
     router_expert_ids = input_parameter(ROUTER_IDS)
     router_expert_weights = input_parameter(floating_tensor(2))
     gate_input_scale = input_parameter(EXPERT_SCALE)
-    gate_weight = input_parameter(floating_tensor(3))
+    gate_weight = input_parameter(expert_weight_tensor())
     gate_proj_scale = input_parameter(EXPERT_SCALE)
     down_input_scale = input_parameter(EXPERT_SCALE)
-    down_weight = input_parameter(floating_tensor(3))
+    down_weight = input_parameter(expert_weight_tensor())
     down_proj_scale = input_parameter(EXPERT_SCALE)
     up_input_scale = input_parameter(EXPERT_SCALE)
-    up_weight = input_parameter(floating_tensor(3))
+    up_weight = input_parameter(expert_weight_tensor())
     up_proj_scale = input_parameter(EXPERT_SCALE)
     output_dtype = attribute_parameter(default=None)
     intermediate_dtype = attribute_parameter(default=None)
@@ -39,11 +51,20 @@ class SparseExperts(OpDefinition):
     round_activation = attribute_parameter(default=False)
     round_down_projection = attribute_parameter(default=False)
     round_weighted_output = attribute_parameter(default=False)
+    gate_clamp_max = attribute_parameter(default=None)
+    up_clamp = attribute_parameter(default=None)
+    weight_block_n = attribute_parameter(default=128)
+    weight_block_k = attribute_parameter(default=128)
 
     @classmethod
     def normalize_attrs(cls, attributes):
         attrs = normalize_numerics(super().normalize_attrs(attributes), "round_projections", "round_activation",
                                    "round_down_projection", "round_weighted_output")
+        for name in ("gate_clamp_max", "up_clamp"):
+            value = attrs[name]
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not isfinite(value) or not value > 0):
+                raise IRSchemaError(f"SparseExperts {name} must be a finite positive number or None.")
         attrs["intermediate_dtype"] = normalize_numerics({"output_dtype": attrs["intermediate_dtype"]})["output_dtype"]
         return attrs
 
@@ -66,6 +87,10 @@ class SparseExperts(OpDefinition):
                 "output_dtype": attrs["intermediate_dtype"],
                 "round_projections": attrs["round_projections"],
                 "round_activation": attrs["round_activation"],
+                "gate_clamp_max": attrs["gate_clamp_max"],
+                "up_clamp": attrs["up_clamp"],
+                "weight_block_n": attrs["weight_block_n"],
+                "weight_block_k": attrs["weight_block_k"],
             })
         gate_node = Node(f"{name}.gate_up", SparseExpertsGateUp.op_name, tuple(value.id for value in gate.inputs),
                          gate.result_type, gate.effect, gate.attrs, metadata or {})
@@ -73,8 +98,9 @@ class SparseExperts(OpDefinition):
         down_inputs = tuple(operands[parameter.name] for parameter in SparseExpertsDown.input_parameters)
         down = SparseExpertsDown.prepare(
             down_inputs, {
-                "round_projection":
-                attrs["round_down_projection"],
+                "round_projection": attrs["round_down_projection"],
+                "weight_block_n": attrs["weight_block_n"],
+                "weight_block_k": attrs["weight_block_k"],
             })
         down_node = Node(f"{name}.down", SparseExpertsDown.op_name, tuple(value.id for value in down.inputs), down.result_type,
                          down.effect, down.attrs, metadata or {})

@@ -16,9 +16,9 @@ def _count_builds(monkeypatch):
     builds = []
     original = AutoDistributedPass._build_graph
 
-    def build(module, target):
+    def build(module, target, **kwargs):
         builds.append(module)
-        return original(module, target)
+        return original(module, target, **kwargs)
 
     monkeypatch.setattr(AutoDistributedPass, "_build_graph", staticmethod(build))
     return builds

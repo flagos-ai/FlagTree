@@ -4,7 +4,15 @@
 
 from __future__ import annotations
 
-from triton.flagmega.errors import EvaluationError
+from triton.flagmega.errors import EvaluationError, IRSchemaError
+
+
+def normalize_output_lanes(lanes, opname):
+    """Validate optional final-N output packing without choosing a width."""
+    if not isinstance(lanes, (tuple, list)) or any(
+            isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in lanes):
+        raise IRSchemaError(f"{opname} output_lanes must be a sequence of positive integers.")
+    return tuple(lanes)
 
 
 def dynamic_block_quant_dequant(value, *, block_k: int):

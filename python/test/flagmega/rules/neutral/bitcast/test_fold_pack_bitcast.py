@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from math import prod
+
 import pytest
 import torch
 
@@ -53,3 +55,24 @@ def test_repacking_contiguous_final_axis_is_a_view_not_a_copy(axes, lanes, folds
     evaluator = TorchEvaluator(DictWeightResolver({}))
     feeds = {"value": torch.arange(32).float().reshape(2, 4, 4)}
     torch.testing.assert_close(evaluator.run(result, feeds), evaluator.run(source, feeds), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("view_lanes", [(2,), (2, 1)])
+@pytest.mark.parametrize("axis", [1, -1, 0])
+def test_pack_restores_a_partially_unpacked_vector_without_copy(view_lanes, axis):
+    class Graph(fm.Module):
+        def forward(self):
+            value = self.input("value", fm.tensor_type(fm.vector_type("float32", (4, *view_lanes)), (2, 2)))
+            view = fm.F.tensors.bitcast(value, fm.vector_type("float32", view_lanes))
+            packed = fm.F.tensors.pack(view, (4,) if axis != 0 else (2,), axes=(axis,))
+            self.function("main", (value,), (packed,))
+
+    original = Graph(dialect="ntt", stage="packed", entry="main").build()
+    rewritten = DataflowRewriter((fold_pack_bitcast_rule(),)).rewrite(original)
+    if axis != 0:
+        assert rewritten.functions[0].outputs == rewritten.functions[0].parameters
+    else:
+        assert any(node.op == "tensors.pack" for node in rewritten.nodes)
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    feeds = {"value": torch.arange(16 * prod(view_lanes)).float().reshape(2, 2, 4, *view_lanes)}
+    torch.testing.assert_close(evaluator.run(rewritten, feeds), evaluator.run(original, feeds), rtol=0, atol=0)

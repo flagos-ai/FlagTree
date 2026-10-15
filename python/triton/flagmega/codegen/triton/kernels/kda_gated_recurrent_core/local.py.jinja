@@ -1,0 +1,48 @@
+# flagmega-kernel: kda_gated_recurrent_core/local platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "kda_gated_recurrent_core" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_head in tl.range(0, {{ call.heads }}):
+        _fm_offsets_k = tl.arange(0, {{ call.key_dim }})
+        _fm_q = tl.load({{ call.query }} + ({{ call.query_head_offset }}) + _fm_offsets_k).to(tl.float32)
+        _fm_k = tl.load({{ call.key }} + ({{ call.key_head_offset }}) + _fm_offsets_k).to(tl.float32)
+        # The forget gate and beta are computed here, not upstream in the graph:
+        # the raw projections widen once and the bias add, the exp(A_log)
+        # product, both sigmoids and the decay exp all stay in FP32 registers,
+        # matching fused_recurrent_kda(use_gate_in_kernel=True,
+        # use_beta_sigmoid_in_kernel=True, lower_bound=...).
+        _fm_gate = tl.load({{ call.gate }} + ({{ call.gate_head_offset }}) + _fm_offsets_k).to(tl.float32)
+        _fm_gate_bias = tl.load({{ call.gate_bias }} + ({{ call.gate_bias_head_offset }}) + _fm_offsets_k).to(tl.float32)
+        _fm_decay_rate = tl.load({{ call.decay_rate }} + ({{ call.decay_rate_head_offset }}) + _fm_offsets_k).to(tl.float32)
+        _fm_decay = {{ call.lower_bound }} * tl.sigmoid(_fm_decay_rate * (_fm_gate + _fm_gate_bias))
+        _fm_beta = tl.sigmoid(tl.load({{ call.beta_logits }} + ({{ call.beta_logits_head_offset }})).to(tl.float32))
+{% if call.l2norm_in_kernel %}
+        _fm_q = _fm_q / tl.sqrt(tl.sum(_fm_q * _fm_q) + {{ call.epsilon }})
+        _fm_k = _fm_k / tl.sqrt(tl.sum(_fm_k * _fm_k) + {{ call.epsilon }})
+{% endif %}
+        _fm_decay_exp = tl.exp(_fm_decay)[:, None]
+        for _fm_v_chunk in tl.range(0, {{ call.value_chunks }}):
+            _fm_offsets_v = _fm_v_chunk * 32 + tl.arange(0, 32)
+            _fm_v_active = _fm_offsets_v < {{ call.value_dim }}
+            _fm_v = tl.load({{ call.value }} + ({{ call.value_head_offset }}) + _fm_offsets_v,
+                            mask=_fm_v_active, other=0.0).to(tl.float32)
+            _fm_h = tl.load({{ call.state }} + ({{ call.state_head_offset }}) + _fm_offsets_k[:, None] * {{ call.value_dim }} + _fm_offsets_v[None, :],
+                            mask=_fm_v_active[None, :], other=0.0).to(tl.float32)
+            _fm_h = _fm_h * _fm_decay_exp
+            _fm_correction = tl.sum(_fm_h * _fm_k[:, None], 0)
+            _fm_v = (_fm_v - _fm_correction) * _fm_beta
+            _fm_h = _fm_h + _fm_k[:, None] * _fm_v[None, :]
+            _fm_o = tl.sum(_fm_h * _fm_q[:, None], 0)
+            tl.store({{ call.out }} + ({{ call.out_head_offset }}) + _fm_offsets_v, _fm_o.to(tl.bfloat16),
+                     mask=_fm_v_active & ({{ call.out_writer_active }}))
+            tl.store({{ call.new_state }} + ({{ call.new_state_head_offset }}) + _fm_offsets_k[:, None] * {{ call.value_dim }} + _fm_offsets_v[None, :], _fm_h,
+                     mask=_fm_v_active[None, :] & ({{ call.state_writer_active }}))
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

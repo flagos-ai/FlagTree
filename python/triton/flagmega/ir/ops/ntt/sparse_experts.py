@@ -5,13 +5,13 @@
 from dataclasses import replace
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir.model import Node, DistributedType
+from triton.flagmega.ir.model import DistributedType, Node
 from triton.flagmega.ir.ops.core import OpDefinition, attribute_parameter, input_parameter, op_definition
 from triton.flagmega.ir.ops.nn._sparse_experts import EXPERT_SCALE, ROUTER_IDS, floating_tensor, python_dtype_call
-from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
-from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp, evaluate_gate_up
-from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown, evaluate_down
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsWeightedSum, combine_type
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown, evaluate_down
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp, evaluate_gate_up
 
 
 def stage(definition, inputs, attrs):
@@ -35,6 +35,12 @@ class DispatchedExpertsGateUp(OpDefinition):
     output_dtype = attribute_parameter(default=None)
     round_projections = attribute_parameter(default=False)
     round_activation = attribute_parameter(default=False)
+    gate_clamp_max = attribute_parameter(default=None)
+    up_clamp = attribute_parameter(default=None)
+    # The fused op forwards the weight-tile geometry to the gate/up stage it
+    # wraps, so it has to carry the same attributes that stage declares.
+    weight_block_n = attribute_parameter(default=128)
+    weight_block_k = attribute_parameter(default=128)
 
     @classmethod
     def normalize_attrs(cls, attrs):
@@ -78,6 +84,10 @@ class SparseExpertsDownCombine(OpDefinition):
     output_dtype = attribute_parameter(default=None)
     round_weighted_output = attribute_parameter(default=False)
     cast_output = attribute_parameter(default=False)
+    # Same contract as the gate/up fusion: the wrapped down stage owns the
+    # weight-tile geometry, so the fusion has to declare and forward it.
+    weight_block_n = attribute_parameter(default=128)
+    weight_block_k = attribute_parameter(default=128)
 
     @classmethod
     def python_call(cls, node):
@@ -89,11 +99,15 @@ class SparseExpertsDownCombine(OpDefinition):
         normalized = SparseExpertsWeightedSum.normalize_attrs({k: attrs[k] for k in ("output_dtype", "round_weighted_output")})
         if type(attrs["cast_output"]) is not bool:
             raise IRSchemaError("SparseExpertsDownCombine cast_output must be boolean")
-        return {**attrs, **normalized, **SparseExpertsDown.normalize_attrs({"round_projection": attrs["round_projection"]})}
+        return {**attrs, **normalized, **SparseExpertsDown.normalize_attrs(cls.down_attrs(attrs))}
+
+    @classmethod
+    def down_attrs(cls, attrs):
+        return {name: attrs[name] for name in ("round_projection", "weight_block_n", "weight_block_k")}
 
     @classmethod
     def combine_inputs(cls, inputs, attrs):
-        return (stage(SparseExpertsDown, inputs[:5], {"round_projection": attrs["round_projection"]}), inputs[5])
+        return (stage(SparseExpertsDown, inputs[:5], cls.down_attrs(attrs)), inputs[5])
 
     @classmethod
     def infer_type(cls, inputs, attrs):

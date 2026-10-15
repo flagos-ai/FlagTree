@@ -60,6 +60,21 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
+def _lite_mode_supplies_device_handle() -> bool:
+    """Whether the FlagCX handles arrive as injected function arguments.
+
+    Lite mode runs ``tle-add-distributed-params``, which prepends
+    ``device_comm_ptr``/``device_mem_ptr`` to every function, so device-space TLE
+    ops legitimately carry no source operand there.
+    """
+    try:
+        from triton.runtime import DistributedRtContext
+
+        return bool(DistributedRtContext().is_lite_mode)
+    except Exception:
+        return False
+
+
 def _parse_src_arg(builder, src, index=0):
     try:
         from triton.runtime import DistributedRtContext
@@ -385,12 +400,21 @@ class device_mesh:
             topology = topology.to_dict()
         shape = []
         dim_names = []
+        launch_shape = []
+        launch_dim_names = []
         for level_name, level_desc in topology.items():
             if not isinstance(level_name, str) or not level_name:
                 raise ValueError(f"invalid topology level name: {level_name!r}")
             level_shape, level_names = self._parse_level(level_name, level_desc)
             shape.extend(level_shape)
             dim_names.extend(level_names)
+            # Device and node coordinates identify the owning rank; they are
+            # supplied by FlagCX and therefore are not dimensions of the
+            # per-rank Triton launch grid.  Cluster and block coordinates are
+            # materialized by program_id(0) and remain launch dimensions.
+            if level_name not in {"node", "device"}:
+                launch_shape.extend(level_shape)
+                launch_dim_names.extend(level_names)
 
         if len(set(dim_names)) != len(dim_names):
             raise ValueError(f"dimension names must be unique, got {dim_names}")
@@ -398,8 +422,8 @@ class device_mesh:
         self._shape = tuple(shape)
         self._dim_names = tuple(dim_names)
         self._physical_ids = tuple(range(_prod(shape)))
-        self._launch_shape = self._shape
-        self._launch_dim_names = self._dim_names
+        self._launch_shape = tuple(launch_shape)
+        self._launch_dim_names = tuple(launch_dim_names)
         self._grid_group_axes = None
         self._grid_group_shape = None
 
@@ -1484,6 +1508,16 @@ def _create_remote_pointers_tensor(
         # create_dist_tensor exposes registered memory at index 0 and the
         # communicator at index 1.
         ptr = _parse_src_arg(builder, tensor, 0)
+        # ``flagcxGetIntraPointerC`` resolves the peer address from the symmetric
+        # window handle, and only lite mode supplies it without an operand (the
+        # ``device_mem_ptr`` argument ``tle-add-distributed-params`` injects).
+        # ``_parse_src_arg`` answers ``None`` for anything that is neither a
+        # DistributedRtContext nor a tl.tensor -- a plain int included, and ``0``
+        # is additionally falsy -- so outside lite mode that answer builds an op
+        # no lowering can complete.
+        if ptr is None and not _lite_mode_supplies_device_handle():
+            raise TypeError("device space remote pointers require a DistributedRtContext or pointer tensor as the "
+                            f"source window handle, got {type(tensor).__name__}")
         remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
                                                    offset_tensor.handle)
     else:

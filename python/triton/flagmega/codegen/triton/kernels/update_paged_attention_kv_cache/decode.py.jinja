@@ -1,5 +1,6 @@
 # flagmega-kernel: update_paged_attention_kv_cache/decode
 {% if render_calls is defined %}
+{% set cache_update_family = "update_paged_attention_kv_cache" %}
 {% include "kernels/update_paged_attention_kv_cache/_function.py.jinja" %}
 {% endif %}
 @triton.jit

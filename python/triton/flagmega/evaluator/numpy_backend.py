@@ -12,6 +12,9 @@ the semantic Torch evaluator.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from collections import Counter
+from collections import OrderedDict
+from threading import Lock
 from types import MappingProxyType
 from typing import Any
 
@@ -25,9 +28,34 @@ from triton.flagmega.ir import DType, DistributedType, IRModule, TensorType, Vec
 from triton.flagmega.ir.ops.core import get_definition
 
 
-class NumpyMaterializationContext:
+class NumpyStorageReader:
+    """Share checkpoint file mappings across independent representation recipes."""
 
-    def __init__(self, module: IRModule, checkpoint: Checkpoint) -> None:
+    def __init__(self):
+        self.mappings = OrderedDict()
+        self.lock = Lock()
+
+    def array(self, source: TensorByteRange, dtype, shape):
+        import numpy
+        storage = self.mappings.get(source.path)
+        if storage is None:
+            with self.lock:
+                storage = self.mappings.get(source.path)
+                if storage is None:
+                    storage = numpy.memmap(source.path, dtype=numpy.uint8, mode="r")
+                    self.mappings[source.path] = storage
+                    if len(self.mappings) > 128:
+                        self.mappings.popitem(last=False)
+        # ndarray retains its mapping as its base, including after cache eviction.
+        # One mapping per shard avoids an open/mmap/close cycle per tensor.
+        try:
+            return numpy.ndarray(shape, dtype=dtype, buffer=storage, offset=source.offset)
+        except (ValueError, TypeError) as error:
+            raise ArtifactError(f"Checkpoint byte range in {source.path} cannot back shape {shape}.") from error
+
+
+class NumpyMaterializationContext:
+    def __init__(self, module: IRModule, checkpoint: Checkpoint, *, recipe=None, storage_reader=None) -> None:
         try:
             import numpy
         except ImportError as error:
@@ -35,11 +63,10 @@ class NumpyMaterializationContext:
         self.numpy = numpy
         self.module = module
         self.checkpoint = checkpoint
-        self.types = MappingProxyType({
-            node.id: node.type
-            for recipe in module.constant_recipes
-            for node in recipe.nodes
-        })
+        self.storage_reader = storage_reader if storage_reader is not None else NumpyStorageReader()
+        nodes = (recipe.nodes if recipe is not None else
+                 (node for value in module.constant_recipes for node in value.nodes))
+        self.types = MappingProxyType({node.id: node.type for node in nodes})
 
     def storage_dtype(self, dtype):
         scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
@@ -76,14 +103,7 @@ class NumpyMaterializationContext:
                     f"Checkpoint byte range for {key!r} has {byte_range.nbytes} bytes; "
                     f"constant recipe requires {expected}."
                 )
-            return self.numpy.memmap(
-                byte_range.path,
-                dtype=self.storage_dtype(value_type.dtype),
-                mode="r",
-                offset=byte_range.offset,
-                shape=shape,
-                order="C",
-            )
+            return self.storage_reader.array(byte_range, self.storage_dtype(value_type.dtype), shape)
         return self._tensor_to_numpy(self.checkpoint.load_tensor(key, device="cpu"), value_type)
 
     def _tensor_to_numpy(self, value, value_type: TensorType):
@@ -188,7 +208,7 @@ def iter_numpy_materialized_constant_assets(
     if requested is not None and not requested <= available:
         missing = ", ".join(sorted(requested - available))
         raise EvaluationError(f"Unknown constant recipe outputs: {missing}.")
-    torch_resolver = None
+    storage_reader = NumpyStorageReader()
     for recipe in module.constant_recipes:
         selected = (
             recipe.outputs
@@ -197,38 +217,52 @@ def iter_numpy_materialized_constant_assets(
         )
         if not selected:
             continue
-        context = NumpyMaterializationContext(module, checkpoint)
-        local = {}
-        supported = True
-        for node in recipe.nodes:
-            definition = get_definition(node.op)
-            if not definition.numpy_materializable:
-                supported = False
-                break
-            arguments = tuple(local[value] for value in node.inputs)
-            try:
-                result = definition.materialize_numpy(node, arguments, context)
-            except NumpyMaterializationUnsupported:
-                supported = False
-                break
-            _validate_storage_value(node, result, context)
-            local[node.id] = result
-        if supported:
-            values = tuple(local[output] for output in recipe.outputs)
-        else:
-            # Importing Torch is intentionally delayed until the first numeric
-            # recipe that needs semantic arithmetic rather than byte layout.
-            from triton.flagmega.evaluator.torch_backend import (
-                CheckpointWeightResolver,
-                materialize_constant_recipe,
-            )
-
-            if torch_resolver is None:
-                torch_resolver = CheckpointWeightResolver(checkpoint, cache=False)
-            values = materialize_constant_recipe(module, recipe, torch_resolver)
+        values = materialize_numpy_recipe(module, recipe, checkpoint, storage_reader=storage_reader)
         by_output = dict(zip(recipe.outputs, values, strict=True))
         for output in selected:
             yield output, by_output[output]
+
+
+def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None):
+    """Evaluate one verified, closed recipe independently of other recipes."""
+    # Recipes are closed graphs. A whole-module index per recipe is
+    # quadratic and lets a same-named node from another recipe shadow it.
+    context = NumpyMaterializationContext(module, checkpoint, recipe=recipe, storage_reader=storage_reader)
+    local = {}
+    uses = Counter(value for node in recipe.nodes for value in node.inputs)
+    uses.update(recipe.outputs)
+    supported = True
+    for node in recipe.nodes:
+        definition = get_definition(node.op)
+        if not definition.numpy_materializable:
+            supported = False
+            break
+        arguments = tuple(local[value] for value in node.inputs)
+        try:
+            result = definition.materialize_numpy(node, arguments, context)
+        except NumpyMaterializationUnsupported:
+            supported = False
+            break
+        _validate_storage_value(node, result, context)
+        local[node.id] = result
+        for value in node.inputs:
+            uses[value] -= 1
+            if not uses[value]:
+                del local[value]
+    if supported:
+        values = tuple(local[output] for output in recipe.outputs)
+    else:
+        # Importing Torch is intentionally delayed until the first numeric
+        # recipe that needs semantic arithmetic rather than byte layout.
+        local.clear()
+        from triton.flagmega.evaluator.torch_backend import (
+            CheckpointWeightResolver,
+            materialize_constant_recipe,
+        )
+
+        torch_resolver = CheckpointWeightResolver(checkpoint, cache=False)
+        values = materialize_constant_recipe(module, recipe, torch_resolver)
+    return values
 
 
 def _validate_storage_value(node, value, context: NumpyMaterializationContext) -> None:

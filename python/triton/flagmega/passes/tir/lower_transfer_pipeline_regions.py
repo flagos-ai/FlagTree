@@ -13,6 +13,7 @@ from triton.flagmega.ir import verify_buffer_plan
 from triton.flagmega.ir.tir import (
     Block,
     Barrier,
+    synchronization_scope_name,
     BufferLoad,
     BufferStore,
     For,
@@ -58,8 +59,12 @@ def lower_transfer_pipeline_regions(module: IRModule) -> IRModule:
     """
 
     pipeline_functions = _pipeline_execution_functions(module)
+    repeated = _repeated_execution_functions(module)
     execution_functions = tuple(
-        _lower_execution_function(function, module, pipeline_functions)
+        _lower_execution_function(
+            function, module, pipeline_functions,
+            repeated=function.name in repeated,
+        )
         if function.name in pipeline_functions
         else function
         for function in module.execution_functions
@@ -106,6 +111,54 @@ def _pipeline_execution_functions(module: IRModule) -> frozenset[str]:
     return frozenset(result)
 
 
+def _repeated_execution_functions(module: IRModule) -> frozenset[str]:
+    """Name every function that executes more than once per launch.
+
+    A loop body is repeated, and so is anything it calls: ``decode_layer``
+    owns the stage arenas but runs once per trip because the body calls it.
+    Arena reuse therefore wraps around for these functions even though their
+    own bodies are straight-line.
+    """
+
+    result = {
+        function.name
+        for function in module.execution_functions
+        if function.attrs.get("region_kind") == "for"
+    }
+    # A structured loop names its body as a callee, so a body reached only
+    # through a For in another function is repeated too.
+    for function in module.execution_functions:
+        for loop in _structured_loop_bodies(function):
+            result.add(loop)
+    changed = True
+    while changed:
+        changed = False
+        for function in module.execution_functions:
+            if function.name not in result:
+                continue
+            for call in execution_calls_of(function):
+                if call.callee not in result and any(
+                    value.name == call.callee
+                    for value in module.execution_functions
+                ):
+                    result.add(call.callee)
+                    changed = True
+    return frozenset(result)
+
+
+def _structured_loop_bodies(function) -> tuple[str, ...]:
+    result = []
+
+    def visit(node) -> None:
+        if isinstance(node, For) and node.body_function:
+            result.append(node.body_function)
+        for child in iter_tir_children(node):
+            visit(child)
+
+    visit(function.body)
+    return tuple(result)
+
+
 def _call_has_direct_transfer_pipeline(call, module) -> bool:
     primitive = module.kernel_callable_map.get(call.callee)
     if primitive is None:
@@ -134,6 +187,8 @@ def _lower_execution_function(
     function: ExecutionFunction,
     module: IRModule,
     pipeline_functions: frozenset[str],
+    *,
+    repeated: bool = False,
 ) -> ExecutionFunction:
     from triton.flagmega.passes.tir.bufferize.synchronization import transfer_source_dependencies
 
@@ -163,7 +218,10 @@ def _lower_execution_function(
         execution_order, stages, module, pipeline_functions, function.name
     )
     drains, consumer_after, producer_before = _shared_synchronization(
-        owners, function.name
+        owners, function.name,
+        # A repeated function's arena users wrap around: the next execution's
+        # first producer refills bytes this one's last consumer still reads.
+        repeated=repeated,
     )
     plan = verify_buffer_plan(module) if "buffer_plan" in module.metadata else None
     _add_execution_source_handoffs(
@@ -316,7 +374,7 @@ def _first_publication(order, start, end, requirement):
         barrier = order[index]
         if not isinstance(barrier, Barrier):
             continue
-        scope = "grid" if barrier.scope.value == "chip" else "block"
+        scope = synchronization_scope_name(barrier.scope)
         coverage.apply((scope, barrier.axis_group_axes, requirement[2]), None)
         if coverage.covers(requirement):
             return index
@@ -461,7 +519,7 @@ def _fixed_shared_range(buffer, function_name: str) -> _ByteRange:
 
 
 def _shared_synchronization(
-    owners: tuple[_Owner, ...], function_name: str
+    owners: tuple[_Owner, ...], function_name: str, *, repeated: bool = False
 ):
     boundaries: dict[tuple[str, str | None], set[int]] = defaultdict(set)
     for owner in owners:
@@ -477,33 +535,69 @@ def _shared_synchronization(
     producer_before: dict[int, list[PipelineHandoff]] = defaultdict(list)
     handoffs: dict[tuple[int, int], PipelineHandoff] = {}
 
-    for owner_index, owner in enumerate(owners):
-        predecessors: dict[int, int] = {}
-        for span in owner.ranges:
-            for segment_index, (start, end) in enumerate(segments[span.arena]):
-                if span.start >= end or start >= span.end:
-                    continue
-                key = (span.arena, segment_index)
-                predecessor = frontier.get(key)
-                if predecessor is not None and predecessor != owner_index:
-                    predecessors[predecessor] = min(
-                        predecessors.get(predecessor, start), start
+    # A loop body's owners repeat, so the last writer of an arena segment is
+    # the predecessor of the body's first user on the next trip.  Walking the
+    # sequence once leaves that pair unprotected: the next trip's producer
+    # starts filling bytes the previous trip's consumer is still reading.
+    # Running the sequence twice, keeping only the second pass's results,
+    # seeds the frontier with the wrap-around predecessors.
+    passes = (owners, owners) if repeated else (owners,)
+    for index, sequence in enumerate(passes):
+        final = index == len(passes) - 1
+        if not final:
+            # Dry run: establish the frontier the body inherits from the
+            # previous trip, without recording its own synchronization.
+            for owner_index, owner in enumerate(sequence):
+                for span in owner.ranges:
+                    for segment_index, (start, end) in enumerate(segments[span.arena]):
+                        if span.start >= end or start >= span.end:
+                            continue
+                        frontier[(span.arena, segment_index)] = owner_index
+            continue
+        for owner_index, owner in enumerate(sequence):
+            predecessors: dict[int, int] = {}
+            for span in owner.ranges:
+                for segment_index, (start, end) in enumerate(segments[span.arena]):
+                    if span.start >= end or start >= span.end:
+                        continue
+                    key = (span.arena, segment_index)
+                    predecessor = frontier.get(key)
+                    # Within one execution an owner cannot race itself, but a
+                    # repeated one does: the next execution refills the bytes
+                    # this one is still reading, so it is its own predecessor
+                    # across the boundary.
+                    if predecessor is not None and (
+                        predecessor != owner_index or repeated
+                    ):
+                        predecessors[predecessor] = min(
+                            predecessors.get(predecessor, start), start
+                        )
+                    frontier[key] = owner_index
+            for predecessor_index, offset in predecessors.items():
+                predecessor = owners[predecessor_index]
+                # A repeated function cannot use a drain for any arena
+                # hazard.  One pipe instance serves every execution, so its
+                # close sits after the loop, while `tle.pipe.drain` needs
+                # that close in the same async task and in both tasks at
+                # once -- so the drain gets hoisted out and stops protecting
+                # the reuse it was created for.  A handoff is a per-execution
+                # commit/wait/release triple, which is the right shape.  A
+                # wrap-around pair additionally depends on the previous
+                # execution, so it is primed before the loop.
+                wrapped = repeated and predecessor_index >= owner_index
+                if predecessor.stage is not None and not repeated:
+                    drains.add(predecessor.stage.stage_id)
+                elif owner.stage is not None:
+                    pair = (predecessor_index, owner_index)
+                    handoff = handoffs.setdefault(
+                        pair,
+                        PipelineHandoff(
+                            f"{function_name}_shared_handoff_{len(handoffs)}_at_{offset}",
+                            wrap_around=wrapped,
+                        ),
                     )
-                frontier[key] = owner_index
-        for predecessor_index, offset in predecessors.items():
-            predecessor = owners[predecessor_index]
-            if predecessor.stage is not None:
-                drains.add(predecessor.stage.stage_id)
-            elif owner.stage is not None:
-                pair = (predecessor_index, owner_index)
-                handoff = handoffs.setdefault(
-                    pair,
-                    PipelineHandoff(
-                        f"{function_name}_shared_handoff_{len(handoffs)}_at_{offset}"
-                    ),
-                )
-                _append_unique(consumer_after[id(predecessor.statement)], handoff)
-                _append_unique(producer_before[id(owner.statement)], handoff)
+                    _append_unique(consumer_after[id(predecessor.statement)], handoff)
+                    _append_unique(producer_before[id(owner.statement)], handoff)
     return drains, consumer_after, producer_before
 
 
@@ -554,12 +648,18 @@ def _rewrite_consumer(body, stages, drains, consumer_after) -> Sequential:
     for field in body.fields:
         if isinstance(field, Sequential):
             rewritten = _rewrite_consumer(field, stages, drains, consumer_after)
+        elif isinstance(field, For):
+            # A structured loop is mirrored on both sides of the region: the
+            # pipe is built once at function scope and each iteration performs
+            # one push/pop pair, so the loop keeps its consumer body here.
+            rewritten = replace(field, body=_rewrite_consumer(
+                field.body, stages, drains, consumer_after))
         else:
             rewritten = stages.get(id(field), field)
         fields.append(rewritten)
         stage = stages.get(id(field))
         if stage is not None and stage.stage_id in drains:
-            fields.append(PipelineDrain(stage.stage_id))
+            fields.append(PipelineDrain(stage.stage_id, arena_reuse=True))
         fields.extend(consumer_after.get(id(field), ()))
     return replace(body, fields=tuple(fields))
 
@@ -572,22 +672,47 @@ def _build_producer(body, stages, drains, producer_before) -> Sequential:
         if stage is not None:
             fields.append(stage)
             if stage.stage_id in drains:
-                fields.append(PipelineDrain(stage.stage_id))
+                fields.append(PipelineDrain(stage.stage_id, arena_reuse=True))
+            continue
+        if isinstance(field, Barrier):
+            # A barrier inside a warp-specialize partition synchronizes only
+            # that partition's warp group, so the consumer's barriers order
+            # the consumer's memory operations and nothing else.  The producer
+            # also accesses the same global arenas directly -- its TMA loads
+            # read state the consumer wrote earlier in the same function --
+            # and the transfer pipe only orders the shared-memory slots it
+            # hands over, never those global accesses.  Keeping the barrier on
+            # the producer side gives its global reads the same acquire point
+            # the consumer's have, so both partitions observe one order.
+            fields.append(field)
             continue
         if isinstance(field, Sequential):
             nested = _build_producer(field, stages, drains, producer_before)
             if nested.fields:
                 fields.append(nested)
+        elif isinstance(field, For):
+            # Mirror the loop so the producer issues its stages once per
+            # iteration, matching the consumer's pops exactly.
+            nested = _build_producer(field.body, stages, drains, producer_before)
+            if nested.fields:
+                fields.append(replace(field, body=nested))
     return replace(body, fields=tuple(fields))
 
 
 def _execution_order(body: Sequential) -> tuple[object, ...]:
-    """Flatten only Sequential; structured statements remain atomic owners."""
+    """Flatten Sequential and counted loops; other structures stay atomic.
+
+    A counted loop runs its body a proven number of times and the region
+    mirrors the loop on both sides, so its stages participate in the same
+    straight-line push/pop order as the enclosing function's.
+    """
 
     result = []
     for statement in body.fields:
         if isinstance(statement, Sequential):
             result.extend(_execution_order(statement))
+        elif isinstance(statement, For) and statement.domain.step is not None:
+            result.extend(_execution_order(statement.body))
         else:
             result.append(statement)
     return tuple(result)
@@ -600,6 +725,11 @@ def _validate_structured_pipeline_placement(
     function_kind: str,
 ) -> None:
     for statement in _structural_expressions(body):
+        if isinstance(statement, For) and statement.domain.step is not None:
+            # A counted loop executes its body a proven number of times, so a
+            # stage inside it keeps push/pop paired once the region mirrors the
+            # loop. Conditional and scoped forms below have no such guarantee.
+            continue
         if not isinstance(statement, (For, IfThenElse, Let, Block)):
             continue
         if any(

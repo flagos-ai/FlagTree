@@ -1,0 +1,98 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "gated_norm_apply" and call.variant == "local" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for gated_norm_apply_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.tile }}
+    ):
+        norm_apply_local_offsets = (
+            gated_norm_apply_start + tl.arange(0, {{ call.tile }})
+        )
+        gated_norm_apply_mask = (
+            (norm_apply_local_offsets < {{ call.local_capacity }})
+            & ({{ call.active }})
+        )
+        gated_norm_apply_inner_count = {{ call.normalization_size }} + 0.0
+{% if call.use_mean %}
+        gated_norm_apply_mean_sum = tl.load(
+            {{ call.stats }} + ({{ call.stats_sum_offset }}),
+            mask=gated_norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        gated_norm_apply_mean = (
+            gated_norm_apply_mean_sum / gated_norm_apply_inner_count
+        )
+{% else %}
+        gated_norm_apply_mean = 0.0
+{% endif %}
+        gated_norm_apply_square_sum = tl.load(
+            {{ call.stats }} + ({{ call.stats_square_sum_offset }}),
+            mask=gated_norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        gated_norm_apply_variance = (
+            gated_norm_apply_square_sum / gated_norm_apply_inner_count
+        )
+{% if call.use_mean %}
+        gated_norm_apply_variance -= gated_norm_apply_mean * gated_norm_apply_mean
+{% endif %}
+        gated_norm_apply_variance = tl.maximum(gated_norm_apply_variance, 0.0)
+        gated_norm_apply_inverse_std = tl.rsqrt(
+            gated_norm_apply_variance + {{ call.epsilon }}
+        )
+        gated_norm_apply_value = tl.load(
+            {{ call.source }} + ({{ call.source_offset }}),
+            mask=gated_norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        gated_norm_apply_scale = tl.load(
+            {{ call.scale }} + ({{ call.scale_offset }}),
+            mask=gated_norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        gated_norm_apply_bias = tl.load(
+            {{ call.bias }} + ({{ call.bias_offset }}),
+            mask=gated_norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        gated_norm_apply_gate = tl.load(
+            {{ call.gate }} + ({{ call.gate_offset }}),
+            mask=gated_norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        gated_norm_apply_normalized = (
+            (gated_norm_apply_value - gated_norm_apply_mean)
+            * gated_norm_apply_inverse_std
+        )
+{% if call.round_before_scale %}
+        gated_norm_apply_normalized = gated_norm_apply_normalized.to(
+            {{ call.input_type }}
+        ).to(tl.float32)
+{% endif %}
+        gated_norm_apply_normalized = (
+            gated_norm_apply_normalized * gated_norm_apply_scale
+            + gated_norm_apply_bias
+        )
+{% if call.activation == "sigmoid" %}
+        gated_norm_apply_activated = tl.sigmoid(gated_norm_apply_gate)
+{% else %}
+        gated_norm_apply_activated = (
+            gated_norm_apply_gate * tl.sigmoid(gated_norm_apply_gate)
+        )
+{% endif %}
+        # The interior stays fp32 through the gate: the only rounding boundary is
+        # the store below, matching ``FusedRMSNormGated.forward_native``.
+        gated_norm_apply_output = (
+            gated_norm_apply_normalized * gated_norm_apply_activated
+        )
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            gated_norm_apply_output.to({{ call.output_type }}),
+            mask=gated_norm_apply_mask & ({{ call.writer_active }}),
+        )
+
+
+{% endif %}
+{% endfor %}

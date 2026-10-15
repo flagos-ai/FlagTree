@@ -112,7 +112,9 @@ class IRBuilder:
     ) -> Function:
         if any(function.name == name for function in self._functions):
             raise IRSchemaError(f"Duplicate function name {name!r}.")
-        value = Function(
+        from triton.flagmega.ir.region import Region
+        function_type = Region if (attrs or {}).get("region_kind") == "for" else Function
+        value = function_type(
             name,
             tuple(item.id if isinstance(item, Node) else str(item) for item in parameters),
             tuple(item.id if isinstance(item, Node) else str(item) for item in outputs),
@@ -120,6 +122,31 @@ class IRBuilder:
         )
         self._functions.append(value)
         return value
+
+    def region(self, name, parameters, yields, *, iter_count, attrs=None):
+        """Register one closed loop body with explicit IV/iter/capture arguments."""
+        from triton.flagmega.ir.region import combine_effects
+        parameters = tuple(parameters)
+        yields = tuple(yields)
+        parameter_ids = {value.id if isinstance(value, Node) else str(value) for value in parameters}
+        pending = [value.id if isinstance(value, Node) else str(value) for value in yields]
+        node_map = {value.id: value for value in self._nodes}
+        seen = set(parameter_ids)
+        effects = []
+        while pending:
+            value = pending.pop()
+            if value in seen:
+                continue
+            seen.add(value)
+            node = node_map[value]
+            effects.append(node.effect)
+            pending.extend(node.inputs)
+        summary = combine_effects(effects)
+        return self.function(name, parameters, yields, attrs={
+            **dict(attrs or {}), "region_kind": "for", "iter_count": iter_count,
+            "effect_kind": summary.kind.value, "effect_resource": summary.resource,
+            "reusable": True,
+        })
 
     def prim_function(self, value: PrimFunction) -> PrimFunction:
         if not isinstance(value, PrimFunction):

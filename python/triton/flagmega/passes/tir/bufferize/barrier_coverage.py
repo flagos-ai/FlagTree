@@ -14,6 +14,7 @@ SynchronizationRequirement = tuple[str, tuple[int, ...], Placement | None]
 class BarrierCoverage:
     block_synchronized: bool = False
     full_chip_synchronized: bool = False
+    device_synchronized: bool = False
     placement: Placement | None = None
     axis_group_axes: set[int] = field(default_factory=set)
 
@@ -21,6 +22,10 @@ class BarrierCoverage:
         scope, axes, placement = requirement
         if scope == "block":
             return self.block_synchronized
+        # A chip barrier orders nothing between chips, so only a device barrier
+        # discharges a hazard whose accesses reach a peer chip's memory.
+        if scope == "device":
+            return self.device_synchronized
         if self.full_chip_synchronized:
             return True
         return bool(axes) and placement is not None and placement == self.placement and self.axis_group_axes.issuperset(axes)
@@ -29,6 +34,12 @@ class BarrierCoverage:
         scope, axes, placement = requirement
         self.block_synchronized = True
         if scope == "block":
+            return
+        if scope == "device":
+            # Device synchronization brackets its remote phase with full chip
+            # barriers, so it subsumes every chip-local requirement as well.
+            self.device_synchronized = True
+            self.full_chip_synchronized = True
             return
         if not axes:
             self.full_chip_synchronized = True

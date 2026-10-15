@@ -14,6 +14,7 @@ from triton.flagmega.ir.ops.core import (
     OpDefinition,
     PythonCall,
     attribute_parameter,
+    context_independent_verifier,
     op_definition,
     tensor_nbytes,
 )
@@ -58,6 +59,7 @@ class SplatConst(OpDefinition):
         return {"value": cls.value.read((), attrs)}
 
     @classmethod
+    @context_independent_verifier
     def verify(cls, node: Node, module: IRModule) -> None:
         cls.verify_arity(node)
         if set(node.attrs) != {"value"}:
@@ -82,6 +84,7 @@ class SplatConst(OpDefinition):
             shape,
             node.attrs["value"],
             dtype=context.torch_dtype(dtype),
+            device=getattr(context, "device", None),
         )
 
     @classmethod

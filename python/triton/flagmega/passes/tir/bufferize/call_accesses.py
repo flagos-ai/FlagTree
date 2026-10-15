@@ -10,6 +10,7 @@ aliases and frame ranges instead of classifying the entire call as collective.
 from dataclasses import replace
 
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.bufferization import MemoryAllocationScope
 from triton.flagmega.passes.tir.bufferize.graph import function_nodes
 
 
@@ -87,6 +88,19 @@ calls whose relevant operands are accessed only by their local owners.
             space = descriptor.mem_span.buffer.memory_space
             pool = call.memory_pool_map.get(space)
             if pool is None:
+                memory_space = self.plan.memory_space_map.get(space)
+                if (
+                    memory_space is not None
+                    and memory_space.allocation_scope is MemoryAllocationScope.MODULE
+                ):
+                    # Module-scope storage such as readonly data has one
+                    # address for the whole program, so a call frame binding
+                    # would be meaningless: keep the access as it stands.
+                    result.append(replace(
+                        access, node=node.id, storage=space,
+                        physical_id=f"{space}:module",
+                    ))
+                    continue
                 raise IRVerificationError(f"Call {node.id!r} has no binding for accessed pool {space!r}.")
             result.append(
                 replace(access, node=node.id, storage=space, physical_id=f"{space}:@{function_name}",

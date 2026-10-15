@@ -21,12 +21,14 @@ def embedding_producer_rule():
             return None
         indices, weight = (module.node_map[name] for name in node.inputs)
         metadata = {"rewritten_by": "VectorizeEmbeddingPropagation"}
-        packed_weight = make_node("tensors.pack", f"{node.id}.packed_weight", (weight, ),
-                                  {"axes": (1, ) * len(lanes), "lanes": lanes}, metadata)
-        packed = make_node(node.op, f"{node.id}.packed", (indices, packed_weight), node.attrs,
-                           {**dict(node.metadata), **metadata})
+        packed_weight = make_node(
+            "tensors.pack", f"{node.id}.packed_weight", (weight,), {"axes": (1,) * len(lanes), "lanes": lanes}, metadata
+        )
+        packed = make_node(
+            node.op, f"{node.id}.packed", (indices, packed_weight), node.attrs, {**dict(node.metadata), **metadata}
+        )
         rank = tensor_of(node.type).rank
-        restored = make_node("tensors.unpack", node.id, (packed, ), {"axes": (rank - 1, ) * len(lanes)}, metadata)
+        restored = make_node("tensors.unpack", node.id, (packed,), {"axes": (rank - 1,) * len(lanes)}, metadata)
         assert restored.type == node.type
         return RewriteResult(restored, (packed_weight, packed))
 
@@ -37,7 +39,7 @@ def embedding_producer_rule():
     return RewriteRule(
         "VectorizeEmbeddingPropagation",
         lambda node, _: node.op == "nn.embedding" and node.attrs.get("weight_encoding") is None,
-        rewrite,
+        rewrite, root_ops=("nn.embedding",),
     )
 
 

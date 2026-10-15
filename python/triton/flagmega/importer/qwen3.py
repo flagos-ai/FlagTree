@@ -17,6 +17,7 @@ from triton.flagmega.ir import (
     NoneType,
     TupleType,
     effect,
+    get_definition,
     tensor_type,
     verify_module,
 )
@@ -417,7 +418,7 @@ class Qwen3LayerImporter:
         up_weight = weight("mlp.up_proj.weight", (config.intermediate_size, config.hidden_size))
         mlp_gate_up = builder.call(
             "nn.dense_matmul_glu", [mlp_input, gate_weight, up_weight], intermediate_type,
-            id="mlp_gate_up", attrs={"activation": "silu"})
+            id="mlp_gate_up", attrs=get_definition("nn.dense_matmul_glu").normalize_attrs({"activation": "silu"}))
         down_weight = weight("mlp.down_proj.weight", (config.hidden_size, config.intermediate_size))
         mlp_output = builder.call(
             "math.matmul", [mlp_gate_up, down_weight], hidden_type,
@@ -743,7 +744,7 @@ class Qwen3ModelImporter:
             [decode_mlp_input, decode_gate_weight, decode_up_weight],
             intermediate_type,
             id="decode_layer_mlp_gate_up",
-            attrs={"activation": "silu"},
+            attrs=get_definition("nn.dense_matmul_glu").normalize_attrs({"activation": "silu"}),
         )
         decode_mlp_output = builder.call(
             "math.matmul",

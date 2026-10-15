@@ -276,8 +276,14 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
                 raise IRVerificationError(
                     f"Alias {descriptor.id!r} has an invalid MemSpan relative to {source.id!r}."
                 )
-            if (descriptor.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
-                    and source.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+            if (descriptor.distributed_storage_kind in {
+                        DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                        DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                    }
+                    and source.distributed_storage_kind in {
+                        DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                        DistributedBufferStorageKind.COMPACT_PER_CHIP,
+                    }
                     and descriptor.component_stride_bytes != source.component_stride_bytes):
                 raise IRVerificationError(f"Alias {descriptor.id!r} changes its source owner stride.")
         group = (descriptor.rdata_group, descriptor.group_index, descriptor.group_count)
@@ -358,7 +364,14 @@ def _verify_function_abis(module: IRModule, plan: BufferPlan) -> None:
             raise IRVerificationError(
                 f"@{function.name} has no default {plan.default_workspace!r} memory pool."
             )
-        if tuple(value for value, _ in abi.parameters) != function.parameters:
+        # Readonly parameter-bank storage is addressed by row access inside the
+        # function, so it contributes no physical buffer and is absent from the
+        # ABI. The remaining parameters must still keep their graph order.
+        physical = tuple(
+            value for value in function.parameters
+            if not _is_parameter_bank_value(module, value)
+        )
+        if tuple(value for value, _ in abi.parameters) != physical:
             raise IRVerificationError(f"@{function.name} parameter ABI is out of order.")
         if tuple(value for value, _ in abi.outputs) != function.outputs:
             raise IRVerificationError(f"@{function.name} result ABI is out of order.")
@@ -851,3 +864,14 @@ def _verify_formal_buffers(formals, actual_ids, descriptors, call_id, label) -> 
 
 
 __all__ = ["verify_buffer_plan"]
+
+
+def _is_parameter_bank_value(module: IRModule, value_id: str) -> bool:
+    """Return whether a value denotes readonly parameter-bank storage."""
+    from triton.flagmega.ir.model import RefType, logical_type
+
+    node = module.node_map.get(value_id)
+    if node is None:
+        return False
+    value_type = logical_type(node.type)
+    return isinstance(value_type, RefType) and value_type.name == "parameter_bank"

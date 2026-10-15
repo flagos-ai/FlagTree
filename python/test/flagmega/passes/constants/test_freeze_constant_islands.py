@@ -168,8 +168,11 @@ def test_frozen_python_ir_is_editable_and_recomputes_recipe_fingerprint(tmp_path
     assert fm.load_module(path) == frozen
 
     old_fingerprint = frozen.constant_recipes[0].fingerprint
-    old_call = "weight_silu = F.math.silu(\n            weight,"
-    new_call = "weight_silu = F.math.mul(\n            weight,\n            weight,"
+    # Editable IR may choose either compact or multiline calls. Change the
+    # semantic operator and add its second operand independently of wrapping.
+    old_call = "weight_silu = F.math.silu("
+    new_call = "weight_silu = F.math.mul(weight, "
+    assert source.count(old_call) == 1
     path.write_text(
         source.replace(old_call, new_call),
         encoding="utf-8",
@@ -178,6 +181,25 @@ def test_frozen_python_ir_is_editable_and_recomputes_recipe_fingerprint(tmp_path
     assert edited.constant_recipes[0].node_map["weight_silu"].op == "math.mul"
     assert edited.constant_recipes[0].fingerprint != old_fingerprint
     assert Compiler().compile(edited).module.stage == "bufferized_tir"
+
+
+def test_thaw_retains_metadata_edits_that_python_equality_considers_equal():
+    from triton.flagmega.passes.constants import thaw_constant_islands
+
+    original = _shared_island_module()
+    original = replace(original, nodes=tuple(
+        replace(node, metadata={"flag": True}) if node.id == "weight_square" else node
+        for node in original.nodes
+    ))
+    frozen = freeze_constant_islands(original)
+    edited = replace(frozen, nodes=tuple(
+        replace(node, metadata={"flag": 1, "frozen_constant": node.metadata["frozen_constant"]})
+        if node.id == "weight_square" else node
+        for node in frozen.nodes
+    ))
+    result = thaw_constant_islands(edited)
+    assert type(result.node_map["weight_square"].metadata["flag"]) is int
+    assert type(original.node_map["weight_square"].metadata["flag"]) is bool
 
 
 def test_multi_function_frozen_dump_remains_mergeable(tmp_path):

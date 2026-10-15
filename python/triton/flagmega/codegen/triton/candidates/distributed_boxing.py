@@ -2,7 +2,12 @@
 # SPDX-License-Identifier: MIT
 """TIR candidates for executable distributed layout transitions."""
 
-from triton.flagmega.ir import DistributedType, TensorType, TupleType
+from triton.flagmega.ir import (
+    DistributedType,
+    TensorType,
+    TupleType,
+    boxing_reads_peer_chips,
+)
 from triton.flagmega.codegen.triton.candidates.core import (
     TritonCandidateContext,
     TritonCandidateProposal,
@@ -42,6 +47,15 @@ class DistributedBoxingCandidateProvider:
         implementations = context.implementations(
             "distributed_boxing", transition=transition
         )
+        facts = {
+            "collective_semantics": semantics,
+            "tuple_field_count": len(transitions),
+        }
+        if _reads_peer_chips(source, target):
+            # The leaf has to read the peer chips' instances of the source
+            # bytes, so the hazard planner must bracket it with device-scope
+            # rendezvous instead of chip-local grid barriers.
+            facts["source_memory_scope"] = "device"
         candidates = tuple(
             context.configure_implementation(
                 implementation,
@@ -50,10 +64,7 @@ class DistributedBoxingCandidateProvider:
                     "target_type": target,
                     "leaf_transitions": transitions,
                 },
-                facts={
-                    "collective_semantics": semantics,
-                    "tuple_field_count": len(transitions),
-                },
+                facts=dict(facts),
             )
             for implementation in implementations
         )
@@ -63,6 +74,20 @@ class DistributedBoxingCandidateProvider:
             candidates,
             context.choose_default("distributed_boxing", candidates),
         )
+
+
+def _reads_peer_chips(source, target) -> bool:
+    """Whether any leaf of this boxing reads a peer chip's source instance."""
+
+    pending = [(source, target)]
+    while pending:
+        source, target = pending.pop()
+        if isinstance(source, TupleType) and isinstance(target, TupleType):
+            pending.extend(zip(source.fields, target.fields))
+            continue
+        if boxing_reads_peer_chips(source, target):
+            return True
+    return False
 
 
 def _leaf_transitions(source, target) -> tuple[str, ...]:

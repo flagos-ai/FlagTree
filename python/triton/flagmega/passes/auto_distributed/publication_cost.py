@@ -49,7 +49,7 @@ def _input_preserves_publication(graph, source_id, required):
             continue
         context = DistributedReshardRealizationContext(
             source, required, DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind.INTERNAL)
-        if graph.realization_policy.classify(context) is not DistributedReshardRealization.SHARDED_VIEW:
+        if graph.realization_analysis.classify(context) is not DistributedReshardRealization.SHARDED_VIEW:
             return False
         if getattr(source, "exclusive", None) != getattr(required, "exclusive", None):
             return False
@@ -67,7 +67,7 @@ def shared_publication(graph, site, plan):
     source_type = graph.bucket_map[site.producer_id].candidates[site.producer_index].return_type
     context = DistributedReshardRealizationContext(
         source_type, plan.step_types[0], DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind(site.usage))
-    realization = graph.realization_policy.classify(context)
+    realization = graph.realization_analysis.classify(context)
     cost = graph.reshard_cost_model.shared_publication_cost(context, realization)
     if not cost:
         return None

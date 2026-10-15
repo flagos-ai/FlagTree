@@ -4,43 +4,58 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import keyword
-from math import prod
 import re
+from collections.abc import Mapping
+from math import prod
 
+from triton.flagmega.codegen.triton.broadcast_renderer import broadcast_to_call
+from triton.flagmega.codegen.triton.concat_renderer import concat_call
+from triton.flagmega.codegen.triton.delta_rule_block_renderer import delta_rule_block_update_call
+from triton.flagmega.codegen.triton.delta_rule_decay_renderer import delta_rule_log_prefix_call
+from triton.flagmega.codegen.triton.delta_rule_gates_renderer import delta_rule_gates_call
+from triton.flagmega.codegen.triton.delta_rule_renderer import delta_rule_coefficients_call
+from triton.flagmega.codegen.triton.descriptor_abi import device_descriptor_request
+from triton.flagmega.codegen.triton.dimension_expression import emit_dimension
+from triton.flagmega.codegen.triton.grouped_coordinates import tiles_stay_within_groups
+from triton.flagmega.codegen.triton.kda_renderer import (
+    kda_convolution_call,
+    kda_gated_recurrent_call,
+    kda_recurrent_call,
+)
+from triton.flagmega.codegen.triton.l2_normalization_renderer import l2_normalization_call
+from triton.flagmega.codegen.triton.mhc_renderer import mhc_post_call, mhc_pre_call
 from triton.flagmega.codegen.triton.physical_access import (
     emit_active_extent,
     emit_buffer_pointer,
     emit_global_scalar_offset,
     emit_local_scalar_offset,
     emit_logical_coordinate,
+    emit_owner_base,
+    emit_remote_storage_pointer,
     emit_storage_pointer,
 )
-from triton.flagmega.codegen.triton.dimension_expression import emit_dimension
-from triton.flagmega.codegen.triton.grouped_coordinates import tiles_stay_within_groups
-from triton.flagmega.codegen.triton.tensor_transform_renderers import tensor_transform_call, vector_relayout_call
-from triton.flagmega.codegen.triton.concat_renderer import concat_call
-from triton.flagmega.codegen.triton.broadcast_renderer import broadcast_to_call
-from triton.flagmega.codegen.triton.softmax_renderer import softmax_call
-from triton.flagmega.codegen.triton.delta_rule_renderer import delta_rule_coefficients_call
-from triton.flagmega.codegen.triton.delta_rule_decay_renderer import delta_rule_log_prefix_call
-from triton.flagmega.codegen.triton.delta_rule_block_renderer import delta_rule_block_update_call
-from triton.flagmega.codegen.triton.delta_rule_gates_renderer import delta_rule_gates_call
-from triton.flagmega.codegen.triton.l2_normalization_renderer import l2_normalization_call
 from triton.flagmega.codegen.triton.reduce_sum_renderer import reduce_sum_call
-from triton.flagmega.codegen.triton.top_k_renderer import top_k_call
-from triton.flagmega.codegen.triton.sparse_experts.gate_up import sparse_experts_gate_up_call
+from triton.flagmega.codegen.triton.routing_renderer import routing_call
+from triton.flagmega.codegen.triton.softmax_renderer import softmax_call
 from triton.flagmega.codegen.triton.sparse_experts.down import sparse_experts_down_call
+from triton.flagmega.codegen.triton.sparse_experts.gate_up import sparse_experts_gate_up_call
 from triton.flagmega.codegen.triton.sparse_experts.routes import sparse_experts_routes_call
-from triton.flagmega.codegen.triton.descriptor_abi import device_descriptor_request
 from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
     packed_distributed_tensor_map_table_request,
     packed_owner_prefix_tensor_map_table_request,
 )
+from triton.flagmega.codegen.triton.tensor_transform_renderers import (
+    gather_call,
+    tensor_transform_call,
+    vector_relayout_call,
+)
+from triton.flagmega.codegen.triton.top_k_renderer import top_k_call
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import (
     DistributedType,
+    block_owner_axes,
+    boxing_crossing_chip_axes,
     is_fully_replicated,
     is_local_shard_subview,
     local_shard_descriptor,
@@ -182,7 +197,47 @@ def _bind_host_tensor_descriptor_parameters(call: dict[str, object]) -> None:
     call["signature"] = ", ".join(call["arguments"])
 
 
-def _bind_transfer_pipeline_parameters(call: dict[str, object], raw: Mapping[str, object]) -> None:
+def _static_pipe_commits(call) -> int:
+    """Return commits per invocation when the stage's tile grid is static.
+
+    A counted loop can reuse one pipe instance only if it can advance the
+    stage's iteration base by exactly the number of commits a trip issues, so
+    a stage whose stream length is decided at run time (paged attention closes
+    at a dynamic `sequence`) must report 0 rather than a wrong guess.
+    """
+
+    def positive(key):
+        value = call.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return None
+
+    explicit_n, explicit_k = positive("num_n_tiles"), positive("num_k_tiles")
+    if explicit_n or explicit_k:
+        return (explicit_n or 1) * (explicit_k or 1)
+
+    # Tile-descriptor stages walk `tl.range(0, capacity, step)` on each axis,
+    # so the commit count is the product of the per-axis trip counts.  Both
+    # axis step names appear across templates (`tile_n`/`block_n` and
+    # `tile_k`/`block_k`), and an axis is only counted when both its capacity
+    # and its step are statically known.
+    tiles, known = 1, False
+    for capacity_key, step_keys in (
+        ("local_n_capacity", ("tile_n", "block_n")),
+        ("local_k_capacity", ("tile_k", "block_k")),
+    ):
+        capacity = positive(capacity_key)
+        step = next((positive(key) for key in step_keys if positive(key)), None)
+        if capacity is None or step is None:
+            continue
+        tiles *= -(-capacity // step)
+        known = True
+    return tiles if known else 0
+
+
+def _bind_transfer_pipeline_parameters(
+    call: dict[str, object], raw: Mapping[str, object]
+) -> None:
     """Describe role-local formals from the typed transfer contract.
 
     Pipe endpoints and consumer-owned Shared buffers are device-function
@@ -335,7 +390,19 @@ def _bind_transfer_pipeline_parameters(call: dict[str, object], raw: Mapping[str
     call["pipeline_contract"] = dict(pipeline)
     call["shared_workspaces"] = tuple(workspaces)
     call["pipeline_channels"] = tuple(encoded_channels)
-    call["pipeline_consumer_workspaces"] = tuple(encoded_consumer_workspaces)
+    # A counted loop reuses one pipe instance for every trip, so it must know
+    # how many iterations a single invocation consumes to keep the iteration
+    # stream gap-free across trips.  Only the renderer knows the tile counts
+    # that decide it, so publish the product on the encoded call.
+    # Only a stage whose tile counts are known publishes a commit count. A
+    # stage whose stream length is decided at run time (paged attention closes
+    # at a dynamic `sequence`) must report nothing rather than a wrong guess:
+    # a counted loop can only reuse one pipe instance when it can advance the
+    # iteration base by exactly the number of commits each trip issues.
+    call["pipeline_commits_per_invocation"] = _static_pipe_commits(call)
+    call["pipeline_consumer_workspaces"] = tuple(
+        encoded_consumer_workspaces
+    )
     call["pipeline_consumer_parameters"] = tuple(consumer_parameters)
     call["pipeline_producer_parameters"] = tuple(producer_parameters)
     call["pipeline_auxiliary_consumer"] = encoded_auxiliary
@@ -533,9 +600,27 @@ def _embedding_call(raw) -> dict[str, object]:
     lane_coordinate = None if lanes == 1 else f"(local_offsets % {lanes})"
     global_feature = emit_logical_coordinate(result_abi, 1, ("0", local_feature))
     weight_abi = weight["abi"]
-    if str(weight_abi["coordinate_space"]) != "canonical_global":
-        raise CodegenError("Embedding lookup requires a canonical vocabulary table or an "
-                           "explicit lookup-table Boxing implementation.")
+    weight_space = str(weight_abi["coordinate_space"])
+    if weight_space == "canonical_global":
+        # The table spans the whole vocabulary, so the row address is global.
+        weight_offset = emit_global_scalar_offset(
+            weight_abi, ("token_id", global_feature), lane_coordinate=lane_coordinate,
+        )
+    elif weight_space in {"local", "parent_shard_local"}:
+        # A chip-compact table still holds every vocabulary row: the
+        # distributed provider keeps that axis broadcast because a token id is a
+        # runtime value no single owner can answer for.  Only the feature axis
+        # is split, and it is projected exactly onto the output's feature
+        # policy, so this owner reads the features it also writes and the local
+        # feature coordinate addresses them directly.
+        weight_offset = emit_local_scalar_offset(
+            weight_abi, ("token_id", local_feature), lane_coordinate=lane_coordinate,
+        )
+    else:
+        raise CodegenError(
+            "Embedding lookup requires a canonical or chip-local vocabulary "
+            f"table, got coordinate space {weight_space!r}."
+        )
     padding_idx = raw.get("semantic_attrs", {}).get("padding_idx")
     encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
     if encoding not in (None, "IQ4_XS", "Q4_K"):
@@ -549,29 +634,15 @@ def _embedding_call(raw) -> dict[str, object]:
     if encoding is not None and hidden % 256:
         raise CodegenError("Native GGUF quantized embedding requires hidden size divisible by 256.")
     return {
-        "indices":
-        _pointer(indices),
-        "weight":
-        _pointer(weight),
-        "result":
-        _pointer(result),
-        "local_capacity":
-        local_shape[-1] * lanes,
-        "active":
-        f"({emit_active_extent(result_abi, 1)}) * {lanes}",
-        "weight_offset":
-        emit_global_scalar_offset(
-            weight_abi,
-            ("token_id", global_feature),
-            lane_coordinate=lane_coordinate,
-        ),
-        "global_feature":
-        global_feature,
-        "result_offset":
-        emit_local_scalar_offset(
-            result_abi,
-            ("0", local_feature),
-            lane_coordinate=lane_coordinate,
+        "indices": _pointer(indices),
+        "weight": _pointer(weight),
+        "result": _pointer(result),
+        "local_capacity": local_shape[-1] * lanes,
+        "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
+        "weight_offset": weight_offset,
+        "global_feature": global_feature,
+        "result_offset": emit_local_scalar_offset(
+            result_abi, ("0", local_feature), lane_coordinate=lane_coordinate,
         ),
         "tile":
         int(raw["parameters"]["elements_per_program"]),
@@ -712,12 +783,19 @@ def _block_fp8_call(raw) -> dict[str, object]:
     value_abi = value["abi"]
     scale_abi = scale["abi"]
     result_abi = result["abi"]
+    lanes = tuple(raw["semantic_attrs"].get("output_lanes", ()))
+    if (tuple(result_abi.get("scalar_lane_shape", ())) != lanes
+            or int(result_abi.get("scalar_lane_count", 1)) != prod(lanes)
+            or result_abi["scalar_dtype"] != value_abi["scalar_dtype"]):
+        raise CodegenError("TIR block-FP8 output ABI disagrees with output_lanes or activation dtype.")
     value_shape = _static_shape(value_abi, "logical_shape")
     result_local = _static_shape(result_abi, "local_capacity_shape")
     if len(value_shape) != 2 or len(result_local) != 2:
         raise CodegenError("TIR block-FP8 renderer requires rank-two GEMV buffers.")
     local_n = "local_n_offsets"
-    global_n = emit_logical_coordinate(result_abi, 1, ("0", local_n))
+    output_domain = _scalar_last_axis_domain(result_abi, local_n, owner="TIR block-FP8 output")
+    value_domain = _scalar_last_axis_domain(value_abi, "0", owner="TIR block-FP8 activation")
+    global_n = output_domain["global_scalar"]
     global_k_size = _scalar_logical_axis_extent(value_abi, -1)
     global_n_size = _scalar_logical_axis_extent(result_abi, -1)
     block_n, block_k = _semantic_weight_block_shape(
@@ -731,7 +809,7 @@ def _block_fp8_call(raw) -> dict[str, object]:
     if encoding not in (None, "IQ4_XS", "Q4_K"):
         raise CodegenError(f"Unsupported native GGUF weight encoding {encoding!r}.")
     if encoding is None:
-        weight_row = f"({global_n}) * {global_k_size}"
+        weight_row = emit_local_scalar_offset(weight["abi"], (local_n, "0"))
     else:
         bytes_per_block = 136 if encoding == "IQ4_XS" else 144
         if global_k_size % 256:
@@ -739,20 +817,21 @@ def _block_fp8_call(raw) -> dict[str, object]:
         weight_row = f"({global_n}) * ({global_k_size} // 256) * {bytes_per_block}"
     scale_row = emit_global_scalar_offset(
         scale_abi,
-        (f"({global_n}) // {block_n}", "0"),
+        (f"({global_n}) // {block_n}", f"({value_domain['global_scalar']}) // {block_k}"),
     )
     return {
-        "value": _pointer(value),
+        "value": f"({_pointer(value)} + ({value_domain['owner_base_offset']}))",
         "weight": _pointer(weight),
         "scale": _pointer(scale),
         "result": _pointer(result),
-        "local_n_capacity": result_local[-1],
+        "local_n_capacity": output_domain["capacity"],
         "active_n": emit_active_extent(result_abi, 1),
+        "n_mask": output_domain["active"],
         "global_n": global_n,
         "weight_row_offset": weight_row,
         "scale_row_offset": scale_row,
-        "destination_offset": emit_local_scalar_offset(result_abi, ("0", local_n)),
-        "k": global_k_size,
+        "destination_offset": output_domain["offset"],
+        "k": value_domain["capacity"],
         "block_k": block_k,
         "tile_n": int(raw["parameters"]["tile_n"]),
         "weight_encoding": encoding,
@@ -899,7 +978,15 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
         )
     source_space = str(source_abi["coordinate_space"])
     result_space = str(result_abi["coordinate_space"])
-    if source_space == "local" and result_space == "canonical_global":
+    crossing = _boxing_leaf_crossing_chip_axes(source_abi, result_abi)
+    if crossing:
+        # A source-domain scatter only visits this chip's own elements. Each
+        # private destination instance needs the complete destination region,
+        # so peer reads must invert the source map from destination coordinates.
+        mode = "canonical_copy" if result_space == "canonical_global" else "gather"
+        iteration_abi = result_abi
+        logical_abi = result_abi
+    elif source_space == "local" and result_space == "canonical_global":
         mode = "scatter"
         iteration_abi = source_abi
         logical_abi = source_abi
@@ -951,7 +1038,17 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
         emit_logical_coordinate(logical_abi, axis, local_coordinates)
         for axis in range(len(local_shape))
     )
-    if mode == "local_gather":
+    remote = (
+        _cross_chip_boxing_source(
+            source_abi, crossing, mode=mode,
+            logical_coordinates=logical_coordinates,
+            lane_coordinate=lane_coordinate,
+        )
+        if crossing else {}
+    )
+    if crossing:
+        source_offset = remote["remote_source_offset"]
+    elif mode == "local_gather":
         source_offset = _owner_local_operand_offset(source_abi, logical_coordinates, lane_coordinate)
     elif mode in {"scatter", "local_copy"}:
         source_offset = emit_local_scalar_offset(
@@ -979,8 +1076,9 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
         "source_offset": source_offset,
         "result_offset": result_offset,
         "active": active,
+        **remote,
         "writer_active": (
-            _distributed_unique_writer_active(iteration_abi)
+            _chip_local_unique_writer_active(iteration_abi)
             if result_space == "canonical_global"
             else "True"
         ),
@@ -1001,6 +1099,542 @@ def _boxing_is_local_narrowing(source_abi, result_abi):
             return False
         types.append(type_from_data(data))
     return is_local_shard_subview(*types)
+
+
+_REMOTE_PEER_VARIABLE = "boxing_peer"
+
+
+def _boxing_leaf_crossing_chip_axes(source_abi, result_abi) -> tuple[int, ...]:
+    """Chip axes whose peer instances one leaf must read, from its ABIs.
+
+    Every chip owns a private instance of a distributed buffer at identical
+    pool offsets, so a leaf whose destination region is not contained in the
+    same chip's source region has to address the peers explicitly.
+    """
+
+    source = source_abi.get("distributed_type")
+    if not isinstance(source, Mapping) or source.get("kind") != "distributed":
+        return ()
+    source_type = type_from_data(source)
+    result = result_abi.get("distributed_type")
+    result_type = (
+        type_from_data(result)
+        if isinstance(result, Mapping) and result.get("kind") == "distributed"
+        # Boxing preserves the logical tensor, so a plain destination is the
+        # source's logical type: it is materialized whole on every chip.
+        else source_type.tensor
+    )
+    return boxing_crossing_chip_axes(source_type, result_type)
+
+
+def _placement_abi(abi: Mapping[str, object]) -> tuple[tuple[int, ...], str]:
+    distributed = abi.get("distributed_type")
+    placement = (
+        None if not isinstance(distributed, Mapping) else distributed.get("placement")
+    )
+    if not isinstance(placement, Mapping):
+        raise CodegenError("Cross-chip Boxing source has no placement ABI.")
+    hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
+    levels = str(placement.get("hierarchy_levels", ""))
+    if not hierarchy or len(levels) != len(hierarchy):
+        raise CodegenError("Cross-chip Boxing placement ABI is incomplete.")
+    return hierarchy, levels
+
+
+def _group_member_coordinates(
+    hierarchy: tuple[int, ...], axes: tuple[int, ...], member: str
+) -> tuple[str, ...]:
+    """Decompose a dense group ordinal into per-axis placement coordinates."""
+
+    coordinates: dict[int, str] = {}
+    remaining = f"({member})"
+    for position, axis in enumerate(reversed(axes)):
+        extent = hierarchy[axis]
+        is_most_major = position == len(axes) - 1
+        coordinates[axis] = (
+            remaining if is_most_major else f"(({remaining}) % {extent})"
+        )
+        if not is_most_major:
+            remaining = f"(({remaining}) // {extent})"
+    return tuple(coordinates[axis] for axis in axes)
+
+
+def _replicated_owner_coordinates(
+    hierarchy: tuple[int, ...], levels: str
+) -> list[str]:
+    """Owner coordinates for axes that do not distinguish source components.
+
+    A block axis' owners share one chip instance, so any of their components
+    holds the replicated value.  A chip/node axis does not: owner ``0``'s
+    component only exists inside chip ``0``'s instance, so a replicated chip
+    axis must keep this chip's own coordinate.
+    """
+
+    mesh = _mesh_coordinates(len(hierarchy))
+    return [
+        mesh[axis] if levels[axis] in {"c", "d"} else "0"
+        for axis in range(len(hierarchy))
+    ]
+
+
+def _source_owner_coordinates(
+    abi,
+    logical_coordinates,
+    *,
+    group_coordinates: Mapping[int, str] | None = None,
+):
+    """Invert a value's owner map into local and owner-coordinate expressions.
+
+    ``group_coordinates`` pins the axes whose owner a reduction group selects
+    explicitly: a partial axis' component is chosen by the group member, not by
+    the logical coordinate, so the caller's expression replaces this chip's own
+    coordinate on those axes.
+    """
+
+    distributed = abi["distributed_type"]
+    hierarchy, levels = _placement_abi(abi)
+    owner_coordinates = _replicated_owner_coordinates(hierarchy, levels)
+    for axis, coordinate in (group_coordinates or {}).items():
+        if axis < 0 or axis >= len(hierarchy):
+            raise CodegenError("Owner group axis is outside its placement.")
+        owner_coordinates[axis] = coordinate
+    exclusive = distributed.get("exclusive")
+    if isinstance(exclusive, Mapping):
+        # An E value exists only on its selected owner, so a reader outside
+        # that owner group addresses the owner's coordinates, not its own.
+        axes = tuple(int(value) for value in exclusive.get("axes", ()))
+        owners = exclusive.get("owner_coordinates")
+        owners = (0,) * len(axes) if owners is None else tuple(int(value) for value in owners)
+        if not axes or len(axes) != len(owners) or any(
+            axis < 0 or axis >= len(hierarchy) for axis in axes
+        ):
+            raise CodegenError("Cross-chip Boxing source has invalid E owner axes.")
+        for axis, owner in zip(axes, owners, strict=True):
+            owner_coordinates[axis] = str(owner)
+    coordinates = []
+    for coordinate, extent, policy in zip(
+        logical_coordinates, _static_shape(abi, "logical_shape"),
+        distributed["axis_policies"], strict=True,
+    ):
+        local, owners = _invert_split_axis(coordinate, str(extent), policy, hierarchy)
+        coordinates.append(local)
+        for axis, owner in owners:
+            owner_coordinates[axis] = owner
+    return tuple(coordinates), owner_coordinates, hierarchy
+
+
+def _device_rank_expression(
+    hierarchy: tuple[int, ...], levels: str, owner_coordinates
+) -> tuple[str, int]:
+    """Linearize chip coordinates into one owner's FlagCX device rank.
+
+    ``_mesh_context`` derives every ``c`` coordinate from that rank with these
+    strides, so this expression inverts the generated ``shard_coord``
+    definitions and keeps both sides of the ABI in agreement.
+    """
+
+    axes = [
+        axis
+        for axis, level in enumerate(levels)
+        if level == "c" and hierarchy[axis] > 1
+    ]
+    terms = []
+    for position, axis in enumerate(axes):
+        stride = prod((hierarchy[other] for other in axes[position + 1:]), start=1)
+        coordinate = owner_coordinates[axis]
+        terms.append(
+            f"({coordinate})" if stride == 1 else f"({coordinate}) * {stride}"
+        )
+    extent = prod((hierarchy[axis] for axis in axes), start=1)
+    return (" + ".join(terms) if terms else "0"), extent
+
+
+def _cross_chip_remote_source(
+    source_abi: Mapping[str, object],
+    crossing: tuple[int, ...],
+    *,
+    peer_expression: str,
+    peer_count: int,
+) -> dict[str, object]:
+    """Describe the peer-instance read one crossing leaf has to perform."""
+
+    _, levels = _placement_abi(source_abi)
+    node_axes = tuple(axis for axis in crossing if levels[axis] == "d")
+    if node_axes:
+        raise CodegenError(
+            "A Boxing that reads a peer node's instance requires an inter-node "
+            f"transfer; placement axes {node_axes} are node level."
+        )
+    if peer_count <= 1:
+        raise CodegenError(
+            "A cross-chip Boxing requires a chip axis with several owners."
+        )
+    return {
+        "remote_source": emit_remote_storage_pointer(
+            source_abi, peer=peer_expression
+        ),
+        "remote_peers": peer_count,
+        "remote_value_type": _triton_dtype(str(source_abi["scalar_dtype"])),
+        # The peer instances are addressed inside one FlagCX symmetric window,
+        # so the runtime has to register this pool as that window.
+        "remote_window_pool": str(source_abi.get("memory_space")),
+    }
+
+
+def _split_hierarchy_axes(distributed: Mapping[str, object]) -> set[int]:
+    """Placement axes whose owners hold different elements of a value."""
+
+    return {
+        int(axis)
+        for policy in distributed.get("axis_policies", ())
+        if isinstance(policy, Mapping) and policy.get("kind") == "split"
+        for stage in policy.get("stages", ())
+        for axis in stage.get("hierarchy_axes", ())
+    }
+
+
+def _partial_axes(abi: Mapping[str, object]) -> tuple[int, ...]:
+    """The reduction group a partial operand's ABI declares."""
+
+    distributed = abi.get("distributed_type")
+    if not isinstance(distributed, Mapping):
+        return ()
+    partial = distributed.get("partial")
+    if not isinstance(partial, Mapping):
+        return ()
+    return tuple(int(axis) for axis in partial.get("axes", ()))
+
+
+def _split_stage_map(
+    distributed: Mapping[str, object],
+) -> dict[int, tuple[int, object]]:
+    """Map each split placement axis to its tensor axis and distribution."""
+
+    result: dict[int, tuple[int, object]] = {}
+    for tensor_axis, policy in enumerate(distributed.get("axis_policies", ())):
+        if not isinstance(policy, Mapping) or policy.get("kind") != "split":
+            continue
+        for stage in policy.get("stages", ()):
+            if not isinstance(stage, Mapping):
+                continue
+            distribution = stage.get("distribution")
+            key = (
+                None
+                if not isinstance(distribution, Mapping)
+                else tuple(sorted(distribution.items(), key=lambda item: item[0]))
+            )
+            for axis in stage.get("hierarchy_axes", ()):
+                result[int(axis)] = (tensor_axis, key)
+    return result
+
+
+def _relayouts_destination_owners(
+    source_abi: Mapping[str, object],
+    result_abi: Mapping[str, object],
+) -> bool:
+    """Whether the destination's split owner map differs from the source's.
+
+    A block axis the destination splits names one writer per owner: that owner
+    holds those elements and every later reader addresses them through the same
+    map.  A source-domain sweep instead assigns elements to blocks by the
+    *source's* map, so on such an axis it elects the wrong writer -- either a
+    block that owned those elements before the relayout, or (when the axis is
+    in the reduction group) a single elected block standing in for owners the
+    destination still distinguishes.  Both leave each block reading elements a
+    peer wrote, while the hazard analysis reads the declared destination type,
+    sees one consistent owner map, and proves a block-local hazard that needs
+    no chip rendezvous.
+
+    An axis the destination leaves broadcast is not affected: every owner there
+    holds every element, so the elected writer is a valid one.
+    """
+
+    source_distribution = source_abi.get("distributed_type")
+    result_distribution = result_abi.get("distributed_type")
+    if not isinstance(source_distribution, Mapping) or not isinstance(
+        result_distribution, Mapping
+    ):
+        return False
+    if source_distribution.get("placement") != result_distribution.get("placement"):
+        return False
+    try:
+        hierarchy, levels = _placement_abi(source_abi)
+    except CodegenError:
+        return False
+    source_stages = _split_stage_map(source_distribution)
+    result_stages = _split_stage_map(result_distribution)
+    return any(
+        axis in result_stages and source_stages.get(axis) != result_stages[axis]
+        for axis in range(len(hierarchy))
+        if levels[axis] == "b" and hierarchy[axis] > 1
+    )
+
+
+def _partial_group_axis_split(
+    hierarchy: tuple[int, ...], levels: str, axes: tuple[int, ...]
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Separate a reduction group into peer-chip axes and same-chip axes."""
+
+    chip = tuple(
+        axis
+        for axis in axes
+        if levels[axis] in {"c", "d"} and hierarchy[axis] > 1
+    )
+    return chip, tuple(axis for axis in axes if axis not in set(chip))
+
+
+def _element_selected_chip_axes(
+    source_abi: Mapping[str, object],
+    crossing: tuple[int, ...],
+    *,
+    axes: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Crossing chip axes the reduction group does not contain.
+
+    A crossing chip axis inside the group makes every peer contribute to the
+    same destination element, so the leaf still enumerates its destination by
+    enumerating its own source region.  An axis outside the group instead picks
+    one source chip per destination element, and then this chip's source region
+    names only its own share of that destination: the leaf has to iterate the
+    destination domain.  Which domain is iterated is decided before the leaf's
+    offsets are built, so the two kinds are told apart here.
+    """
+
+    if not crossing:
+        return ()
+    hierarchy, levels = _placement_abi(source_abi)
+    group = set(_partial_group_axis_split(hierarchy, levels, axes)[0])
+    return tuple(axis for axis in crossing if axis not in group)
+
+
+def _element_selected_partial_source(
+    source_abi: Mapping[str, object],
+    crossing: tuple[int, ...],
+    *,
+    axes: tuple[int, ...],
+    routed: bool,
+    logical_coordinates,
+) -> tuple[dict[str, object], tuple[int, ...], None]:
+    """Remote descriptor of a partial leaf whose peers hold distinct elements.
+
+    When no member of the reduction group lives on a peer chip, the crossing
+    axes split the source instead: one destination element is a reduction over
+    a single chip's components, and which chip that is follows from the
+    element's logical coordinate.  The peer loop therefore visits each chip once
+    and a per-element predicate keeps the elements it owns, while the group is
+    reduced inside that peer's instance exactly as a chip-local leaf reduces its
+    own.  The component index stays the caller's routed decomposition: only the
+    pool the group is read from changes.
+    """
+
+    hierarchy, levels = _placement_abi(source_abi)
+    split = _split_hierarchy_axes(source_abi["distributed_type"])
+    unselected = tuple(axis for axis in crossing if axis not in split)
+    if unselected:
+        raise CodegenError(
+            "A partial Boxing that reads peer chips must either reduce those "
+            f"peers or split its source over them, but placement axes "
+            f"{unselected} do neither."
+        )
+    if not routed:
+        raise CodegenError(
+            "A partial Boxing whose source chip varies per element must iterate "
+            "its destination domain to reach every element of it."
+        )
+    _, owner_coordinates, _ = _source_owner_coordinates(
+        source_abi, logical_coordinates
+    )
+    rank, extent = _device_rank_expression(hierarchy, levels, owner_coordinates)
+    return (
+        {
+            # Each element selects its own source chip, so the peer loop visits
+            # every chip and a mask keeps the elements this iteration owns.  A
+            # peer holding none of them contributes the reduction's neutral,
+            # which is the identity of the combine, so the sweep is exact.
+            "remote_owner": rank,
+            **_cross_chip_remote_source(
+                source_abi, crossing,
+                peer_expression=_REMOTE_PEER_VARIABLE, peer_count=extent,
+            ),
+        },
+        # The whole group is reduced inside the selected peer's instance.
+        axes,
+        None,
+    )
+
+
+def _cross_chip_partial_source(
+    source_abi: Mapping[str, object],
+    crossing: tuple[int, ...],
+    *,
+    axes: tuple[int, ...],
+    routed: bool,
+    logical_coordinates,
+    member_variable: str,
+) -> tuple[dict[str, object], tuple[int, ...], tuple[str, str] | None]:
+    """Remote descriptor, same-chip group axes, and (base, member) owner offsets.
+
+    A partial value's components are one per placement owner, but only the
+    owners of one chip are materialized inside that chip's instance.  When the
+    reduction group itself spans chips, the reduction runs as a scalar loop over
+    the group's chip members - one peer instance per iteration - with the
+    group's remaining (block) owners reduced inside each instance as before.
+    When it does not, the crossing axes select one peer per destination element
+    instead; a ``None`` offset pair asks the caller for its own owner
+    decomposition. The base follows each output element; only the member
+    varies along the reduction axis. They must not share one vector index:
+    broadcasting a value-dependent owner onto the reduction axis creates
+    a value-by-value cross product instead of one address per group member.
+    """
+
+    hierarchy, levels = _placement_abi(source_abi)
+    chip_axes, local_axes = _partial_group_axis_split(hierarchy, levels, axes)
+    if not chip_axes:
+        return _element_selected_partial_source(
+            source_abi, crossing, axes=axes, routed=routed,
+            logical_coordinates=logical_coordinates,
+        )
+    outside = tuple(axis for axis in crossing if axis not in set(chip_axes))
+    if outside:
+        raise CodegenError(
+            "A partial Boxing that reads peer chips must select its peers from "
+            f"its reduction group, but placement axes {outside} "
+            "cross chips outside it."
+        )
+    element_selected = tuple(
+        axis
+        for axis in sorted(_split_hierarchy_axes(source_abi["distributed_type"]))
+        if levels[axis] == "c" and hierarchy[axis] > 1 and axis not in set(chip_axes)
+    )
+    if element_selected:
+        # ``shard_id`` is a scalar, so one loop iteration reads one peer for
+        # every element of the tile. A split chip axis outside the group would
+        # need a different peer per element while reducing, which is a separate
+        # lowering rather than a variation of this loop.
+        raise CodegenError(
+            "A partial Boxing cannot reduce peer chips while placement axes "
+            f"{element_selected} select a source chip per element."
+        )
+    chip_coordinates = dict(
+        zip(
+            chip_axes,
+            _group_member_coordinates(hierarchy, chip_axes, _REMOTE_PEER_VARIABLE),
+            strict=True,
+        )
+    )
+    if routed:
+        # A routed destination selects the source owner per logical element, so
+        # its split axes come from the inversion rather than from this chip.
+        _, owner_coordinates, _ = _source_owner_coordinates(
+            source_abi, logical_coordinates, group_coordinates=chip_coordinates,
+        )
+    else:
+        # A matching map reduces this chip's own region: every axis outside the
+        # group keeps the reader's own coordinate.
+        owner_coordinates = list(_mesh_coordinates(len(hierarchy)))
+        for axis, coordinate in chip_coordinates.items():
+            owner_coordinates[axis] = coordinate
+    # Only chip axes choose the instance, so the rank is complete before the
+    # group's in-instance owners are substituted.
+    rank, _ = _device_rank_expression(hierarchy, levels, owner_coordinates)
+    if any(
+        coordinate in rank
+        for coordinate in _mesh_coordinates(len(hierarchy))
+    ):
+        # A chip axis outside the group keeps this reader's own coordinate, so
+        # the rank is a runtime i64 mesh value and needs the i32 shard-id
+        # narrowing. A rank built only from the unrolled peer ordinal stays a
+        # Python integer, which selects the compile-time shard-id lowering.
+        rank = f"({rank}).to(tl.int32)"
+    member_coordinates = ["0"] * len(hierarchy)
+    for axis, coordinate in zip(
+        local_axes,
+        _group_member_coordinates(hierarchy, local_axes, member_variable),
+        strict=True,
+    ):
+        owner_coordinates[axis] = "0"
+        member_coordinates[axis] = coordinate
+    component_base = _linear_owner_expression(owner_coordinates, hierarchy)
+    component_member = (
+        _linear_owner_expression(member_coordinates, hierarchy)
+        if local_axes else member_variable
+    )
+    return (
+        _cross_chip_remote_source(
+            source_abi, crossing,
+            peer_expression=rank,
+            peer_count=prod((hierarchy[axis] for axis in chip_axes), start=1),
+        ),
+        local_axes,
+        (component_base, component_member),
+    )
+
+
+def _cross_chip_boxing_source(
+    source_abi: Mapping[str, object],
+    crossing: tuple[int, ...],
+    *,
+    mode: str,
+    logical_coordinates,
+    lane_coordinate: str | None,
+) -> dict[str, object]:
+    """Remote-read descriptor and source offset for a non-reduction leaf."""
+
+    if mode not in {"gather", "canonical_copy"}:
+        raise CodegenError(
+            "A Boxing leaf that reads peer chips must iterate its destination "
+            f"domain, but mode {mode!r} iterates its source."
+        )
+    storage_kind = str(source_abi.get("storage_kind"))
+    if storage_kind not in {
+        "canonical_global", "compact_local", "compact_per_owner", "compact_per_chip",
+    }:
+        raise CodegenError(
+            "A cross-chip Boxing source has unsupported storage kind "
+            f"{storage_kind!r}."
+        )
+    local_coordinates, owner_coordinates, hierarchy = _source_owner_coordinates(
+        source_abi, logical_coordinates
+    )
+    if str(source_abi.get("coordinate_space")) == "canonical_global":
+        # Canonical storage keeps every logical element at the same offset on
+        # every chip, so the peer's instance needs no coordinate inversion.
+        offset = emit_global_scalar_offset(
+            source_abi, logical_coordinates, lane_coordinate=lane_coordinate
+        )
+    else:
+        offset = emit_local_scalar_offset(
+            source_abi, local_coordinates, lane_coordinate=lane_coordinate,
+            shard_coordinates=owner_coordinates,
+        )
+        if storage_kind in {"compact_per_owner", "compact_per_chip"}:
+            if storage_kind == "compact_per_chip":
+                storage_type = type_from_data(
+                    source_abi.get("distributed_backing_type") or source_abi["distributed_type"]
+                )
+                axes = block_owner_axes(storage_type)
+                owner = (_linear_owner_expression(
+                    [owner_coordinates[axis] for axis in axes],
+                    tuple(hierarchy[axis] for axis in axes),
+                ) if axes else "0")
+            else:
+                owner = _linear_owner_expression(owner_coordinates, hierarchy)
+            # The peer pointer addresses the table base. Select the physical
+            # component belonging to this element before its dense local offset.
+            base = emit_owner_base(source_abi, "0", owner_index=owner)
+            offset = f"({base} + ({offset}))"
+    _, levels = _placement_abi(source_abi)
+    rank, extent = _device_rank_expression(hierarchy, levels, owner_coordinates)
+    return {
+        "remote_source_offset": offset,
+        # Each element selects its own source chip, so the peer loop visits
+        # every chip and a mask keeps the elements this iteration owns.
+        "remote_owner": rank,
+        **_cross_chip_remote_source(
+            source_abi, crossing,
+            peer_expression=_REMOTE_PEER_VARIABLE, peer_count=extent,
+        ),
+    }
 
 
 def _partial_boxing_leaf(
@@ -1059,9 +1693,38 @@ def _partial_boxing_leaf(
                 "Partial Boxing requires a destination on the source placement."
             )
         routed = not matching_map
+    elif _relayouts_destination_owners(source_abi, result_abi):
+        # Addressing shared canonical storage by logical coordinate makes a
+        # source-domain sweep write every byte of the destination, so the bytes
+        # look complete.  But the sweep writes them under the *source's* owner
+        # map, so a destination axis the source splits differently gets its
+        # elements from the wrong block.  Every later reader addresses the
+        # destination's map, and the hazard analysis -- reading the declared
+        # destination type -- proves a block-local hazard, so no chip
+        # rendezvous separates them.  Enumerating the destination keeps each
+        # block the writer of its own shard, which is what the result type
+        # promises its readers.
+        routed = True
     owner_stride = int(source_abi.get("component_stride_scalar_elements", 0))
     if owner_stride <= 0:
         raise CodegenError("Partial Boxing source has no owner component stride.")
+    distributed = source_abi.get("distributed_type")
+    assert isinstance(distributed, Mapping)
+    partial = distributed.get("partial")
+    assert isinstance(partial, Mapping)
+    axes = tuple(int(value) for value in partial.get("axes", ()))
+    placement = distributed.get("placement")
+    if not isinstance(placement, Mapping):
+        raise CodegenError("Partial Boxing source has no placement ABI.")
+    hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
+    crossing = _boxing_leaf_crossing_chip_axes(source_abi, result_abi)
+    # A crossing chip axis outside the reduction group makes this chip's source
+    # region cover only its own share of the destination, so enumerating that
+    # region would leave the peers' elements unwritten.  Which domain the leaf
+    # iterates decides every offset below it, so it is settled before them.
+    routed = routed or bool(
+        _element_selected_chip_axes(source_abi, crossing, axes=axes)
+    )
     iteration_abi = result_abi if routed else source_abi
     local_shape = _static_shape(iteration_abi, "local_capacity_shape")
     scalar_capacity = prod(local_shape, start=1) * lane_count
@@ -1084,15 +1747,21 @@ def _partial_boxing_leaf(
         f"(({coordinate}) < ({emit_active_extent(iteration_abi, axis)}))"
         for axis, coordinate in enumerate(local_coordinates)
     ) or "True"
-    distributed = source_abi.get("distributed_type")
-    assert isinstance(distributed, Mapping)
-    partial = distributed.get("partial")
-    assert isinstance(partial, Mapping)
-    axes = tuple(int(value) for value in partial.get("axes", ()))
-    placement = distributed.get("placement")
-    if not isinstance(placement, Mapping):
-        raise CodegenError("Partial Boxing source has no placement ABI.")
-    hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
+    remote: dict[str, object] = {}
+    group_axes = axes
+    partial_owner: str | None = None
+    partial_owner_base: str | None = None
+    if crossing:
+        # The group's chip members live in peer instances of this pool, so they
+        # are visited one peer at a time and only the remaining owners stay in
+        # the in-instance owner vector.
+        remote, group_axes, owner_offsets = _cross_chip_partial_source(
+            source_abi, crossing, axes=axes, routed=routed,
+            logical_coordinates=logical_coordinates,
+            member_variable="boxing_partial_member",
+        )
+        if owner_offsets is not None:
+            partial_owner_base, partial_owner = owner_offsets
     if routed:
         # The destination owns the iteration domain. Each logical element
         # selects its source shard; only partial axes form the reduction group.
@@ -1102,19 +1771,30 @@ def _partial_boxing_leaf(
         source_offset = emit_local_scalar_offset(
             source_abi, source_coordinates, lane_coordinate=lane_coordinate,
         )
-        source_offset = f"(({source_owner}) * {owner_stride} + ({source_offset}))"
-        partial_owner = _group_owner_expression_for_axes(
-            source_abi, axes, "boxing_partial_member",
-            preserved_coordinates=tuple("0" for _ in hierarchy),
-        )
+        if partial_owner is None:
+            # The element's own owner fixes every axis outside the group, and
+            # the group's ordinal fixes the rest, so the two sum to the source
+            # component. A remote peer keeps the same decomposition: the peer
+            # only changes which instance of the pool it is read from.
+            source_offset = f"(({source_owner}) * {owner_stride} + ({source_offset}))"
+            partial_owner = _group_owner_expression_for_axes(
+                source_abi, axes, "boxing_partial_member",
+                preserved_coordinates=tuple("0" for _ in hierarchy),
+            )
     else:
         source_offset = emit_local_scalar_offset(
             source_abi, local_coordinates, lane_coordinate=lane_coordinate,
         )
-        partial_owner = _partial_group_owner_expression_for_axes(
-            source_abi, axes, "boxing_partial_member"
-        )
-    owner_count = prod((hierarchy[axis] for axis in axes), start=1)
+        if partial_owner is None:
+            partial_owner = _partial_group_owner_expression_for_axes(
+                source_abi, axes, "boxing_partial_member"
+            )
+    if partial_owner_base is not None:
+        # This offset varies with the destination value, so it belongs beside
+        # its local element offset, on the load's value axis. The independent
+        # partial_owner vector remains on its reduction axis.
+        source_offset = f"(({partial_owner_base}) * {owner_stride} + ({source_offset}))"
+    owner_count = prod((hierarchy[axis] for axis in group_axes), start=1)
     placement_owner_count = prod(hierarchy, start=1)
     value_tile = _bounded_vector_tile(
         raw["parameters"]["tile"], scalar_capacity, name="Partial Boxing tile"
@@ -1148,7 +1828,19 @@ def _partial_boxing_leaf(
             )
         ),
         "active": active,
-        "writer_active": _distributed_unique_writer_active(source_abi) if canonical_result else "True",
+        **remote,
+        # Writer election follows the domain the leaf enumerates.  A
+        # source-domain sweep assigns elements by the source's owner map, so
+        # the source's replica axes name the redundant writers.  A routed leaf
+        # enumerates the destination, so the destination's own map does: its
+        # split axes each keep one writer per owner, including axes the
+        # reduction folded away on the source side.
+        "writer_active": (
+            _reduced_destination_writer_active(
+                result_abi if routed else source_abi
+            )
+            if canonical_result else "True"
+        ),
         "partial_owner_count": owner_count,
         "partial_owner_tile": owner_tile,
         "placement_owner_count": placement_owner_count,
@@ -1305,6 +1997,27 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
     return result_context
 
 
+def _chip_local_owner_group(abi: Mapping[str, object], owner_count: int) -> tuple[str, int]:
+    """Dense CTA ordinal in one device's allocation, not the logical mesh.
+
+    Removing c/d coordinates explicitly also handles interleaved rank and
+    block axes. A modulo of the flattened logical owner is not equivalent.
+    Callers must establish that their reduction does not span device ranks.
+    """
+    distributed = abi.get("distributed_type")
+    if not isinstance(distributed, Mapping):
+        return "shard_index", owner_count
+    placement = distributed.get("placement", {})
+    hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
+    levels = str(placement.get("hierarchy_levels", "")) or "b" * len(hierarchy)
+    if len(levels) != len(hierarchy):
+        raise CodegenError("Chip-local owner group has inconsistent placement levels.")
+    axes = tuple(axis for axis, level in enumerate(levels) if level not in {"c", "d"})
+    if not axes:
+        return "0", 1
+    return _mesh_group_member_expression_for_axes(abi, axes)
+
+
 def _add_norm_stats_call(raw) -> dict[str, object]:
     source = _buffer(raw, "inputs", "input")
     residual = _buffer(raw, "inputs", "addend")
@@ -1337,6 +2050,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
     if int(stats_abi.get("scalar_lane_count", 1)) != 1:
         raise CodegenError("AddNormStats statistics must use scalar elements.")
     variant = str(raw["parameters"].get("variant", ""))
+    owner_count = int(raw["parameters"].get("owner_count", 1))
     if variant == "local_partial_rms":
         attrs = raw.get("semantic_attrs", {})
         axis = int(attrs.get("axis", -1))
@@ -1416,7 +2130,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
             ),
             "output_type": _triton_dtype(str(result_abi["scalar_dtype"])),
             "elements": prod(shape),
-            "owner_count": int(raw["parameters"].get("owner_count", 1)),
+            "owner_count": owner_count,
         }
     facts = raw.get("facts", {})
     if not isinstance(facts, Mapping):
@@ -1426,6 +2140,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
         raise CodegenError(
             "AddNormStats participant_scope must be all_programs or single_program."
         )
+    owner_index, local_owner_count = _chip_local_owner_group(result_abi, owner_count)
     return {
         "source": _pointer(source),
         "residual": _pointer(residual),
@@ -1434,10 +2149,11 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
         "partials": None if partials is None else _pointer(partials),
         "elements": prod(shape) * lane_count,
         "tile": int(raw["parameters"]["tile"]),
-        "owner_count": int(raw["parameters"].get("owner_count", 1)),
+        "owner_count": local_owner_count,
+        "owner_index": owner_index,
         "mode": "global_rms",
         "participant_active": (
-            "(shard_index == 0)"
+            f"({owner_index} == 0)"
             if participant_scope == "single_program"
             else "True"
         ),
@@ -1912,8 +2628,13 @@ def _norm_apply_call(raw) -> dict[str, object]:
     return _norm_apply_context(raw, stats_formal="stats")
 
 
+def _gated_norm_apply_call(raw) -> dict[str, object]:
+    """Reuse the norm_apply access plan and add the gate in the result domain."""
+    return _norm_apply_context(raw, stats_formal="stats", gate_formal="gate")
+
+
 def _norm_apply_context(
-    raw, *, stats_formal: str
+    raw, *, stats_formal: str, gate_formal: str | None = None
 ) -> dict[str, object]:
     source = _buffer(raw, "inputs", "input")
     stats = _buffer(raw, "inputs", stats_formal)
@@ -1977,7 +2698,36 @@ def _norm_apply_context(
         logical_coordinates,
         use_mean,
     )
+    gate_context: dict[str, object] = {}
+    if gate_formal is not None:
+        gate = _buffer(raw, "inputs", gate_formal)
+        gate_abi = gate["abi"]
+        if (
+            int(gate_abi.get("scalar_lane_count", 1)) != lane_count
+            or tuple(gate_abi.get("scalar_lane_shape", ())) != lane_shape
+        ):
+            raise CodegenError(
+                "TIR GatedNormApply gate vector lanes must match the result."
+            )
+        if _static_shape(gate_abi, "logical_shape") != logical_shape:
+            raise CodegenError(
+                "TIR GatedNormApply gate shape must equal the result shape."
+            )
+        activation = str(attrs.get("activation", "sigmoid"))
+        if activation not in ("sigmoid", "silu", "swish"):
+            raise CodegenError(
+                f"TIR GatedNormApply activation {activation!r} is not supported."
+            )
+        gate_context = {
+            "gate": _pointer(gate),
+            "gate_offset": _access_in_result_domain(
+                gate_abi, result_abi, domain, lane_coordinate=lane_coordinate,
+            ),
+            "gate_type": _triton_dtype(str(gate_abi["scalar_dtype"])),
+            "activation": activation,
+        }
     return {
+        **gate_context,
         "source": _pointer(source),
         "stats": _pointer(stats),
         "scale": _pointer(scale),
@@ -2753,12 +3503,36 @@ def _dense_matmul_call(raw) -> dict[str, object]:
             raise CodegenError("TIR DenseMatMul logical RHS must be rank two.")
         attrs = raw.get("semantic_attrs", {})
         transpose_b = bool(attrs.get("transpose_b", False))
-        expected = (global_n, global_k) if transpose_b else (global_k, global_n)
-        if weight_shape != expected:
-            raise CodegenError(
-                "TIR DenseMatMul RHS shape disagrees with its logical MxK @ KxN "
-                f"contract: {weight_shape} != {expected}."
-            )
+        # A VectorizedMatMul RHS is the zero-copy N-major lane view of the
+        # logical weight: its ABI keeps the packed extents plus the lane
+        # count of the packed axis, which is axis zero under transpose_b and
+        # axis one otherwise.
+        weight_lanes = int(weight_abi.get("scalar_lane_count", 1))
+        if weight_lanes != 1:
+            if str(raw.get("semantic_op", "")) != "math.vectorized_matmul":
+                raise CodegenError(
+                    "A typed-vector DenseMatMul RHS requires the semantic "
+                    "math.vectorized_matmul contract."
+                )
+            rhs_axes = tuple(int(axis) for axis in attrs.get("rhs_axes", ()))
+            n_axis = 0 if transpose_b else 1
+            if rhs_axes != (n_axis,) or len(weight_abi.get("scalar_lane_shape", ())) != 1:
+                raise CodegenError(
+                    "TIR DenseMatMul generic vector RHS must pack only its logical N axis."
+                )
+            packed_n = weight_shape[0] if transpose_b else weight_shape[1]
+            if global_n != packed_n * weight_lanes:
+                raise CodegenError(
+                    "TIR DenseMatMul RHS shape disagrees with its logical MxK @ KxN "
+                    f"contract: {weight_shape} (lanes {weight_lanes}) != N {global_n}, K {global_k}."
+                )
+        else:
+            expected = (global_n, global_k) if transpose_b else (global_k, global_n)
+            if weight_shape != expected:
+                raise CodegenError(
+                    "TIR DenseMatMul RHS shape disagrees with its logical MxK @ KxN "
+                    f"contract: {weight_shape} != {expected}."
+                )
     weight_pointer, weight_offset = _dense_weight_access(
         weight,
         packed_layout=None if packed_layout is None else str(packed_layout),
@@ -2821,11 +3595,28 @@ def _dense_matmul_call(raw) -> dict[str, object]:
         "packed_tensor_descriptor_smem_pipeline_gemv",
     }
     if variant in descriptor_variants:
-        if str(weight_abi.get("coordinate_space")) != "canonical_global":
+        descriptor_kind = str(
+            raw["parameters"].get("descriptor_kind", "single")
+        )
+        # A descriptor table names one resident owner component per entry, so it
+        # describes the local shape of whatever storage the weight has. A single
+        # map spans the canonical tensor and therefore needs canonical storage.
+        chip_local_table = (
+            descriptor_kind == "table"
+            and str(weight_abi.get("storage_kind"))
+            in {"compact_per_chip", "compact_per_owner"}
+        )
+        if (
+            not chip_local_table
+            and str(weight_abi.get("coordinate_space")) != "canonical_global"
+        ):
             raise CodegenError(
                 "Tensor-descriptor DenseMatMul requires canonical-global RHS storage."
             )
-        weight_shape = _static_shape(weight_abi, "logical_shape")
+        weight_shape = _static_shape(
+            weight_abi,
+            "local_capacity_shape" if chip_local_table else "logical_shape",
+        )
         weight_strides = _static_shape(weight_abi, "scalar_storage_strides")
         transpose_b = bool(raw.get("semantic_attrs", {}).get("transpose_b", False))
         packed_descriptor = (
@@ -2892,9 +3683,6 @@ def _dense_matmul_call(raw) -> dict[str, object]:
             int(weight_abi["pool_byte_offset"])
             if str(weight_abi.get("storage")) in {"rdata", "workspace"}
             else 0
-        )
-        descriptor_kind = str(
-            raw["parameters"].get("descriptor_kind", "single")
         )
         if descriptor_kind == "table":
             if not packed_descriptor:
@@ -3388,6 +4176,8 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
     result = {
         "source": _pointer(source),
         "round_activation": bool(raw.get("semantic_attrs", {}).get("round_activation", True)),
+        "gate_clamp_max": raw.get("semantic_attrs", {}).get("gate_clamp_max"),
+        "up_clamp": raw.get("semantic_attrs", {}).get("up_clamp"),
         "gate_weight": gate_weight_pointer,
         "up_weight": up_weight_pointer,
         "result": _pointer(result),
@@ -3433,12 +4223,27 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
             ("up_weight_descriptor", up_weight),
         ):
             abi = binding["abi"]
-            if str(abi.get("coordinate_space")) != "canonical_global":
+            # Same contract the DenseMatMul descriptor path states: a table
+            # names one resident owner component per entry, so it describes the
+            # local shape of whatever storage the weight has, while a single map
+            # spans the canonical tensor and needs canonical storage.
+            chip_local_table = (
+                descriptor_kind == "table"
+                and str(abi.get("storage_kind"))
+                in {"compact_per_chip", "compact_per_owner"}
+            )
+            if (
+                not chip_local_table
+                and str(abi.get("coordinate_space")) != "canonical_global"
+            ):
                 raise CodegenError(
                     "Packed descriptor DenseMatMulGlu requires canonical-global "
                     "weight storage."
                 )
-            weight_shape = _static_shape(abi, "logical_shape")
+            weight_shape = _static_shape(
+                abi,
+                "local_capacity_shape" if chip_local_table else "logical_shape",
+            )
             weight_strides = _static_shape(abi, "scalar_storage_strides")
             lane_shape = tuple(abi.get("scalar_lane_shape", ()))
             if lane_shape == (8, 2, 8) and len(weight_shape) == 2:
@@ -4242,19 +5047,10 @@ def _invert_split_axis(coordinate, parent_extent, policy, hierarchy):
 
 
 def _compact_source_coordinates(abi, logical_coordinates):
-    distributed = abi["distributed_type"]
-    hierarchy = tuple(int(value) for value in distributed["placement"]["hierarchy"])
-    owner_coordinates = ["0"] * len(hierarchy)
-    coordinates = []
-    for coordinate, extent, policy in zip(
-        logical_coordinates, _static_shape(abi, "logical_shape"),
-        distributed["axis_policies"], strict=True,
-    ):
-        local, owners = _invert_split_axis(coordinate, str(extent), policy, hierarchy)
-        coordinates.append(local)
-        for axis, owner in owners:
-            owner_coordinates[axis] = owner
-    return tuple(coordinates), _linear_owner_expression(owner_coordinates, hierarchy)
+    coordinates, owner_coordinates, hierarchy = _source_owner_coordinates(
+        abi, logical_coordinates
+    )
+    return coordinates, _linear_owner_expression(owner_coordinates, hierarchy)
 
 
 def _serialized_fixed_dimension(value) -> str:
@@ -4816,7 +5612,8 @@ def _cache_update_call(raw) -> dict[str, object]:
     lane_count = int(slots_abi.get("scalar_lane_count", 1))
     head_dim = shape[dim_axis] * lane_count
     cache_head_dim = cache_shape[-1] * int(state[0]["abi"].get("scalar_lane_count", 1))
-    if shape[head_axis] != cache_shape[-2] or head_dim != cache_head_dim:
+    pair = raw["family"] == "update_paged_attention_kv_cache_pair"
+    if shape[head_axis] != cache_shape[-2] or head_dim != cache_head_dim * (2 if pair else 1):
         raise CodegenError("Cache update slots and paged storage have different scalar head geometry.")
     # Both pointers address scalars, even when the IR element is a vector.
     # Lanes belong to the semantic dim axis, which need not be the last axis.
@@ -4832,18 +5629,19 @@ def _cache_update_call(raw) -> dict[str, object]:
         "block_table": _pointer(state[4]),
         "layer_id": _scalar_expression(layer_id),
         "advance_sequence": _scalar_expression(advance),
-        "cache_index": 0 if attrs.get("cache_kind") == "key" else 1,
+        "cache_index": f"(({dimension}) // {cache_head_dim})" if pair else (0 if attrs.get("cache_kind") == "key" else 1),
         "num_layers": cache_shape[1],
         "num_kv_heads": cache_shape[-2],
-        "head_dim": head_dim,
+        "head_dim": cache_head_dim,
         "block_size": cache_shape[3],
         "local_capacity": domain["capacity"],
         "active": domain["active"],
-        "writer_active": _distributed_unique_writer_active(slots_abi),
+        "writer_active": _chip_local_unique_writer_active(slots_abi),
+        "metadata_writer_active": f"({_chip_local_owner_group(slots_abi, 1)[0]} == 0)",
         "num_tokens": shape[layout.index("seq")],
         "logical_token": domain["logical_coordinates"][layout.index("seq")],
         "logical_head": domain["logical_coordinates"][head_axis],
-        "logical_dimension": dimension,
+        "logical_dimension": f"(({dimension}) % {cache_head_dim})" if pair else dimension,
         "slots_offset": emit_local_scalar_offset(
             slots_abi, domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]
         ),
@@ -5198,6 +5996,109 @@ def _attention_partial_state_coordinates(
     return tuple(coordinates)
 
 
+def _dsa_indexer_call(raw) -> dict[str, object]:
+    q = _buffer(raw, "inputs", "q")
+    key = _buffer(raw, "inputs", "key")
+    gate = _buffer(raw, "inputs", "gate")
+    weights = _buffer(raw, "inputs", "weights")
+    state = tuple(_buffer(raw, "inputs", "state", index) for index in range(2))
+    layer_id = _buffer(raw, "inputs", "layer_id")
+    advance = _buffer(raw, "inputs", "advance_sequence")
+    norm_weight = _buffer(raw, "inputs", "k_norm_weight")
+    norm_bias = _buffer(raw, "inputs", "k_norm_bias")
+    compress_ape = _buffer(raw, "inputs", "compress_ape")
+    result = _buffer(raw, "outputs", "result")
+    attrs = raw.get("semantic_attrs", {})
+    q_shape = _static_shape(q["abi"], "logical_shape")
+    key_shape = _static_shape(key["abi"], "logical_shape")
+    state_shape = _static_shape(state[0]["abi"], "logical_shape")
+    pool = int(attrs["index_kpool"])
+    topk = int(attrs["index_topk"])
+    output_width = topk + (pool - 1 if attrs.get("always_select_tail", False) else 0)
+    output_tile = 1
+    while output_tile < output_width:
+        output_tile *= 2
+    return {
+        "q": _pointer(q),
+        "key": _pointer(key),
+        "gate": _pointer(gate),
+        "weights": _pointer(weights),
+        "state": _pointer(state[0]),
+        "sequence_lengths": _pointer(state[1]),
+        "layer_id": _scalar_expression(layer_id),
+        "advance_sequence": _scalar_expression(advance),
+        "k_norm_weight": _pointer(norm_weight),
+        "k_norm_bias": _pointer(norm_bias),
+        "compress_ape": _pointer(compress_ape),
+        "result": _pointer(result),
+        "q_width": q_shape[-1],
+        "index_dim": key_shape[-1],
+        "index_heads": int(attrs["index_n_heads"]),
+        "index_topk": topk,
+        "pool": pool,
+        "output_width": output_width,
+        "output_tile": output_tile,
+        "state_layers": state_shape[0],
+        "state_capacity": state_shape[1],
+        "state_width": state_shape[2],
+        "q_stride": int(q["abi"]["scalar_storage_strides"][-1]),
+        "key_stride": int(key["abi"]["scalar_storage_strides"][-1]),
+        "gate_stride": int(gate["abi"]["scalar_storage_strides"][-1]),
+        "weights_stride": int(weights["abi"]["scalar_storage_strides"][-1]),
+        "state_layer_stride": int(state[0]["abi"]["scalar_storage_strides"][0]),
+        "state_token_stride": int(state[0]["abi"]["scalar_storage_strides"][1]),
+        "state_value_stride": int(state[0]["abi"]["scalar_storage_strides"][2]),
+        "ape_row_stride": int(compress_ape["abi"]["scalar_storage_strides"][0]),
+        "ape_dim_stride": int(compress_ape["abi"]["scalar_storage_strides"][1]),
+        "norm_stride": int(norm_weight["abi"]["scalar_storage_strides"][-1]),
+        "writer_active": _chip_local_unique_writer_active(state[0]["abi"]),
+        "epsilon": repr(float(attrs["epsilon"])),
+        "scale": repr(float(key_shape[-1] ** -0.5)),
+    }
+
+
+def _dsa_paged_attention_call(raw) -> dict[str, object]:
+    query = _buffer(raw, "inputs", "q")
+    topk = _buffer(raw, "inputs", "topk")
+    state = tuple(_buffer(raw, "inputs", "state", index) for index in range(5))
+    layer_id = _buffer(raw, "inputs", "layer_id")
+    result = _buffer(raw, "outputs", "result")
+    attrs = raw.get("semantic_attrs", {})
+    query_shape = _static_shape(query["abi"], "logical_shape")
+    cache_shape = _static_shape(state[0]["abi"], "logical_shape")
+    query_lanes = int(query["abi"].get("scalar_lane_count", 1))
+    cache_lanes = int(state[0]["abi"].get("scalar_lane_count", 1))
+    query_dim = query_shape[-1] * query_lanes
+    cache_dim = cache_shape[-1] * cache_lanes
+    if query_dim != cache_dim:
+        raise CodegenError("DSA paged attention query/cache scalar dimensions disagree.")
+    return {
+        "query": _pointer(query),
+        "topk": _pointer(topk),
+        "kv_cache": _pointer(state[0]),
+        "query_start_loc": _pointer(state[1]),
+        "sequence_lengths": _pointer(state[2]),
+        "slot_mapping": _pointer(state[3]),
+        "block_table": _pointer(state[4]),
+        "layer_id": _scalar_expression(layer_id),
+        "result": _pointer(result),
+        "num_query_heads": query_shape[-2],
+        "num_kv_heads": cache_shape[-2],
+        "head_dim": query_dim,
+        "block_size": cache_shape[3],
+        "num_layers": cache_shape[1],
+        "topk_width": _static_shape(topk["abi"], "logical_shape")[-1],
+        "query_head_stride": int(query["abi"]["scalar_storage_strides"][-2]),
+        "query_dim_stride": int(query["abi"]["scalar_storage_strides"][-1]),
+        "topk_stride": int(topk["abi"]["scalar_storage_strides"][-1]),
+        "result_head_stride": int(result["abi"]["scalar_storage_strides"][-2]),
+        "result_dim_stride": int(result["abi"]["scalar_storage_strides"][-1]),
+        "cache_strides": tuple(int(value) for value in state[0]["abi"]["scalar_storage_strides"]),
+        "scale": repr(float(attrs["scale"])),
+        "token_tile": 64,
+    }
+
+
 def _greedy_sample_call(raw) -> dict[str, object]:
     logits = _buffer(raw, "inputs", "logits")
     result = _buffer(raw, "outputs", "result")
@@ -5209,8 +6110,29 @@ def _greedy_sample_call(raw) -> dict[str, object]:
     output_domain = _local_domain(result["abi"], "result_batch")
     distributed = logits_abi.get("distributed_type")
     hierarchy = tuple(distributed["placement"]["hierarchy"]) if isinstance(distributed, Mapping) else ()
+    vocab_split_axes = set()
+    if isinstance(distributed, Mapping):
+        policies = distributed.get("axis_policies", ())
+        vocab_policy = policies[1] if len(policies) > 1 else {}
+        if vocab_policy.get("kind") == "split":
+            for stage in vocab_policy.get("stages", ()):
+                vocab_split_axes.update(int(axis) for axis in stage.get("hierarchy_axes", ()))
+    levels = (
+        str(distributed.get("placement", {}).get("hierarchy_levels", ""))
+        if isinstance(distributed, Mapping) else ""
+    ) or "b" * len(hierarchy)
+    if any(levels[axis] in {"c", "d"} for axis in vocab_split_axes):
+        raise CodegenError(
+            "Greedy distributed_argmax cannot reduce a logits split across "
+            "device/node placement axes without a remote partial reduction."
+        )
+    partial_owner_index, partial_owner_count = _chip_local_owner_group(
+        logits_abi, prod(hierarchy, start=1),
+    )
+    block_axes = tuple(axis for axis, level in enumerate(levels) if level not in {"c", "d"})
     owner_coordinates = tuple(
-        f"((greedy_owners // {prod(hierarchy[axis + 1:])}) % {extent})"
+        f"((greedy_owners // {prod(hierarchy[inner] for inner in block_axes if inner > axis)}) % {extent})"
+        if axis in block_axes else _mesh_coordinate(axis, len(hierarchy))
         for axis, extent in enumerate(hierarchy)
     )
     return {
@@ -5218,6 +6140,8 @@ def _greedy_sample_call(raw) -> dict[str, object]:
         "result": _pointer(result),
         "partial_max": _pointer(partial_max),
         "partial_index": _pointer(partial_index),
+        "partial_owner_count": partial_owner_count,
+        "partial_owner_index": partial_owner_index,
         "local_capacity": local_shape[-1],
         "batch_capacity": local_shape[0],
         "active": " & ".join(
@@ -5414,12 +6338,23 @@ def _dense_weight_access(
         )
 
     if packed_layout is None:
+        lane_shape = tuple(int(value) for value in abi.get("scalar_lane_shape", ()))
+        if lane_shape:
+            if len(lane_shape) != 1:
+                raise CodegenError(
+                    "TIR DenseMatMul generic vector RHS must have one N-axis lane dimension."
+                )
+            lane_count = lane_shape[0]
+            n_coordinate = f"(({n_coordinate}) // {lane_count})"
+            lane_coordinate = f"(({global_n}) % {lane_count})"
+        else:
+            lane_coordinate = None
         coordinates = (
             (n_coordinate, k_coordinate)
             if transpose_b
             else (k_coordinate, n_coordinate)
         )
-        return pointer, emit_offset(abi, coordinates)
+        return pointer, emit_offset(abi, coordinates, lane_coordinate=lane_coordinate)
 
     if packed_layout != "k_major_n8_k16":
         raise CodegenError(
@@ -5786,13 +6721,75 @@ def _linear_owner_expression(
 def _canonical_writer_active(abi: Mapping[str, object]) -> str:
     if str(abi.get("storage_kind")) != "canonical_global":
         return "True"
-    return _distributed_unique_writer_active(abi)
+    return _chip_local_unique_writer_active(abi)
+
+
+def _reduced_destination_writer_active(source_abi: Mapping[str, object]) -> str:
+    """Elect writers for a destination this leaf has already reduced.
+
+    Unlike :func:`_chip_local_unique_writer_active`, which must keep a partial
+    chip axis as a writer because a partial is not a replica, this leaf stores
+    the reduced value: the chip axes it did not split now hold identical copies
+    and each of them owns a private instance of the destination pool, so every
+    one of them has to publish into its own instance.
+    """
+
+    distributed = source_abi.get("distributed_type")
+    if not isinstance(distributed, Mapping):
+        return "True"
+    placement = distributed.get("placement", {})
+    levels = str(placement.get("hierarchy_levels", ""))
+    split = {
+        int(axis)
+        for policy in distributed.get("axis_policies", ())
+        if policy.get("kind") == "split"
+        for stage in policy.get("stages", ())
+        for axis in stage.get("hierarchy_axes", ())
+    }
+    # Unlike a materialized source, a reduced value carries no partial, so its
+    # chip axes are replicas of the stored value no matter whether the
+    # reduction or a broadcast made them so.
+    replicas = tuple(
+        axis
+        for axis, level in enumerate(levels)
+        if level in {"c", "d"} and axis not in split
+    )
+    return _distributed_unique_writer_active(
+        source_abi, allow_redundant_axes=replicas
+    )
+
+
+def _chip_local_unique_writer_active(abi: Mapping[str, object]) -> str:
+    """Elect writers per allocation, preserving distinct logical shards."""
+    distributed = abi.get("distributed_type")
+    if not isinstance(distributed, Mapping):
+        return "True"
+    placement = distributed.get("placement", {})
+    levels = str(placement.get("hierarchy_levels", ""))
+    used = {
+        int(axis)
+        for policy in distributed.get("axis_policies", ())
+        if policy.get("kind") == "split"
+        for stage in policy.get("stages", ())
+        for axis in stage.get("hierarchy_axes", ())
+    }
+    # A chip axis carrying a partial is not a replica. It requires a remote
+    # reduction rather than independently publishing each rank's component.
+    used.update((distributed.get("partial") or {}).get("axes", ()))
+    replicas = tuple(axis for axis, level in enumerate(levels) if level in {"c", "d"} and axis not in used)
+    return _distributed_unique_writer_active(abi, allow_redundant_axes=replicas)
 
 
 def _distributed_unique_writer_active(
     abi: Mapping[str, object], *, writer_ordinal: int = 0,
     allow_redundant_axes: tuple[int, ...] = (),
 ) -> str:
+    """Elect one writer among the axes that hold redundant copies of a value.
+
+    ``allow_redundant_axes`` names axes whose owners all publish the same value
+    and may therefore write it concurrently.
+    """
+
     if writer_ordinal < 0:
         raise CodegenError("Distributed writer ordinal must be non-negative.")
     distributed = abi.get("distributed_type")
@@ -6174,6 +7171,12 @@ _FAMILY_ENCODERS = {
     "softmax": softmax_call,
     "reduce_sum": reduce_sum_call,
     "top_k": top_k_call,
+    "staged_routing": routing_call,
+    "kda_convolution": kda_convolution_call,
+    "kda_recurrent_core": kda_recurrent_call,
+    "kda_gated_recurrent_core": kda_gated_recurrent_call,
+    "mhc_pre": mhc_pre_call,
+    "mhc_post": mhc_post_call,
     "sparse_experts_gate_up": sparse_experts_gate_up_call,
     "sparse_experts_down": sparse_experts_down_call,
     "sparse_experts_dispatch": sparse_experts_routes_call,
@@ -6181,6 +7184,7 @@ _FAMILY_ENCODERS = {
     "unpack": vector_relayout_call,
     "pad": tensor_transform_call,
     "slice": tensor_transform_call,
+    "gather": gather_call,
     "embedding": _embedding_call,
     "rms_norm": _rms_norm_call,
     "block_fp8": _block_fp8_call,
@@ -6192,6 +7196,7 @@ _FAMILY_ENCODERS = {
     "gather_reduce_add_norm_apply": _gather_reduce_add_norm_apply_call,
     "gather_reduce_norm_apply": _gather_reduce_norm_apply_call,
     "norm_apply": _norm_apply_call,
+    "gated_norm_apply": _gated_norm_apply_call,
     "matmul_glu": _matmul_glu_call,
     "elementwise": _elementwise_call,
     "norm_stats": _norm_stats_call,
@@ -6203,9 +7208,12 @@ _FAMILY_ENCODERS = {
     "rotary_embedding": _rotary_embedding_call,
     "rope": _rope_call,
     "update_paged_attention_kv_cache": _cache_update_call,
+    "update_paged_attention_kv_cache_pair": _cache_update_call,
     "paged_attention_partial": _paged_attention_partial_call,
     "paged_attention_combine": _paged_attention_combine_call,
     "paged_attention_gated_combine": _paged_attention_gated_combine_call,
+    "dsa_indexer": _dsa_indexer_call,
+    "dsa_paged_attention": _dsa_paged_attention_call,
     "greedy_sample": _greedy_sample_call,
 }
 

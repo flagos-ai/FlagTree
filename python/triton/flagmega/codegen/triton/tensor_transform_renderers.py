@@ -11,10 +11,11 @@ from math import prod
 
 from triton.flagmega.codegen.triton.physical_access import emit_local_scalar_offset
 from triton.flagmega.errors import CodegenError
-from triton.flagmega.ir import DistributedType, Node, SBP, get_definition, tensor_type, type_from_data, vector_type
+from triton.flagmega.ir import SBP, DistributedType, Node, get_definition, tensor_type, type_from_data, vector_type
+from triton.flagmega.ir.axis import normalize_axis
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.ops.tensors.slice import Slice
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
+from triton.flagmega.ir.ops.tensors.slice import Slice
 
 
 def tensor_transform_call(raw):
@@ -145,6 +146,69 @@ def vector_relayout_call(raw):
         emit_local_scalar_offset(output_abi, domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]),
         "pad_value":
         0,
+        "tile":
+        int(raw["parameters"]["elements_per_program"]),
+    }
+
+
+def gather_call(raw):
+    """Realize a runtime-index gather over owner-local scalar elements.
+
+    Per output element the kernel loads one index on the gather axis and one
+    value at the indexed source coordinate; both operands must be broadcast
+    across owners (Gather's type contract), so all addresses are local.
+    """
+    from triton.flagmega.codegen.triton.kernel_call_renderers import (
+        _buffer,
+        _canonical_writer_active,
+        _pointer,
+        _scalar_local_domain,
+    )
+
+    source = _buffer(raw, "inputs", "value")
+    index_buffer = _buffer(raw, "inputs", "indices")
+    result = _buffer(raw, "outputs", "result")
+    for abi in (source["abi"], index_buffer["abi"], result["abi"]):
+        if abi.get("scalar_lane_shape"):
+            raise CodegenError("Gather's local implementation gathers scalar (unpacked) elements only.")
+    source_type = _tensor_type(source["abi"])
+    index_type = _tensor_type(index_buffer["abi"])
+    result_type = _tensor_type(result["abi"])
+    definition = get_definition("tensors.gather")
+    attrs = definition.normalize_attrs(raw["semantic_attrs"])
+    actual_type = definition.infer_type(
+        (
+            Node("value", "builtin.var", (), source_type),
+            Node("indices", "builtin.var", (), index_type),
+        ), attrs)
+    if actual_type != result_type:
+        raise CodegenError("Gather call ABI disagrees with its inferred gather contract.")
+    domain = _scalar_local_domain(result["abi"], "_fm_offsets")
+    axis = normalize_axis(attrs["axis"], tensor_of(source_type).rank)
+    index_coordinates = list(domain["local_coordinates"])
+    value_coordinates = list(domain["local_coordinates"])
+    value_coordinates[axis] = "_fm_source_index"
+    return {
+        "source":
+        _pointer(source),
+        "indices":
+        _pointer(index_buffer),
+        "result":
+        _pointer(result),
+        "capacity":
+        domain["capacity"],
+        "active":
+        domain["active"],
+        "index_offset":
+        emit_local_scalar_offset(
+            index_buffer["abi"], index_coordinates, lane_coordinate=domain["lane_coordinate"]),
+        "source_offset":
+        emit_local_scalar_offset(source["abi"], value_coordinates, lane_coordinate=domain["lane_coordinate"]),
+        "result_offset":
+        emit_local_scalar_offset(
+            result["abi"], domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]),
+        "writer_active":
+        _canonical_writer_active(result["abi"]),
         "tile":
         int(raw["parameters"]["elements_per_program"]),
     }

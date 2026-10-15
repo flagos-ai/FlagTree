@@ -4,13 +4,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 from triton.flagmega.ir import IRModule, Node
 from triton.flagmega.pattern_match import MatchResult, Pattern, try_match_root
-
 
 RuleMatch = Callable[[Node, IRModule], bool]
 @dataclass(frozen=True)
@@ -64,6 +63,7 @@ class RewriteRule:
         pattern: Pattern | None = None,
         effect_policy: RewriteEffectPolicy | str = RewriteEffectPolicy.PRESERVE,
         supports_fusion: bool = False,
+        root_ops: Iterable[str] | None = None,
     ) -> None:
         if not name:
             raise ValueError("RewriteRule requires a non-empty name.")
@@ -81,8 +81,15 @@ class RewriteRule:
         self.rewrite = rewrite
         self.effect_policy = RewriteEffectPolicy(effect_policy)
         self.supports_fusion = supports_fusion
+        # Predicate rules can declare necessary root names, allowing providers
+        # to reject unrelated nodes before fusion and operand analyses.
+        self.root_ops = None if root_ops is None else frozenset(root_ops)
+        if self.root_ops is not None and any(not isinstance(op, str) or not op for op in self.root_ops):
+            raise ValueError("RewriteRule root_ops must contain non-empty operation names.")
 
     def apply(self, node: Node, module: IRModule) -> RuleOutput | None:
+        if self.root_ops is not None and node.op not in self.root_ops:
+            return None
         from triton.flagmega.ir.op_fusion import has_ops
         if not self.supports_fusion and has_ops(node.attrs):
             return None

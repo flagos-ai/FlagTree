@@ -10,10 +10,12 @@ created, and TIR passes treat the recipe table as immutable artifact data.
 from __future__ import annotations
 
 import hashlib
-import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Mapping
+from functools import cached_property
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 from triton.flagmega.errors import IRSchemaError
 
@@ -44,9 +46,9 @@ class ConstantRecipe:
             raise IRSchemaError("A constant recipe requires nodes and at least one output.")
         object.__setattr__(self, "fingerprint", constant_recipe_fingerprint(self.nodes, self.outputs))
 
-    @property
-    def node_map(self) -> dict[str, Node]:
-        return {node.id: node for node in self.nodes}
+    @cached_property
+    def node_map(self) -> Mapping[str, Node]:
+        return MappingProxyType({node.id: node for node in self.nodes})
 
     def to_data(self) -> dict[str, object]:
         return {
@@ -73,20 +75,20 @@ def constant_recipe_fingerprint(nodes: tuple[Node, ...], outputs: tuple[str, ...
     """Hash recipe semantics independently of incidental node names."""
 
     positions = {node.id: index for index, node in enumerate(nodes)}
-    payload = {
-        "nodes": [
-            {
-                "op": node.op,
-                "inputs": [positions[value] for value in node.inputs],
-                "type": node.type.to_data(),
-                "effect": node.effect.to_data(),
-                "attrs": _plain(node.attrs),
-            }
-            for node in nodes
-        ],
-        "outputs": [positions[value] for value in outputs],
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    from triton.flagmega.ir.model import _canonical_json, _semantic_component_json
+
+    # Keep the name-independent fingerprint byte-for-byte, while sharing
+    # immutable type/effect encodings across large constant islands.
+    encoded_nodes = (
+        '{"attrs":' + _canonical_json(_plain(node.attrs))
+        + ',"effect":' + _semantic_component_json(node.effect)
+        + ',"inputs":' + _canonical_json([positions[value] for value in node.inputs])
+        + ',"op":' + _canonical_json(node.op)
+        + ',"type":' + _semantic_component_json(node.type) + '}'
+        for node in nodes
+    )
+    encoded = '{"nodes":[' + ",".join(encoded_nodes) + '],"outputs":' + _canonical_json(
+        [positions[value] for value in outputs]) + "}"
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

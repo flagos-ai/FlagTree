@@ -307,13 +307,28 @@ def unknown_dim() -> UnknownDim:
     return UNKNOWN_DIM
 
 
-def dim_expr(op: str, *operands: DimensionLike) -> Dimension:
-    values = tuple(dim(value) for value in operands)
+@lru_cache(maxsize=16384)
+def _dim_expr_cached(op: str, values: tuple[Dimension, ...]) -> Dimension:
+    """Validate and canonicalize one already-normalized expression.
+
+    Validation and structural simplification are pure functions of the operator
+    and its immutable operands, and distributed-type analyses re-derive the same
+    coordinate arithmetic for every owner of every candidate: on the 45-layer
+    GLM-5.3 graph `dim_expr` is called 1,547,681 times for 4,960 distinct
+    expressions, a 99.7% repeat rate. `_simplify_sympy` already caches its own
+    (much smaller) share, so without this the repeats pay for validation and
+    `_simplify_local` every time.
+    """
+
     _validate_expression(op, values)
     simplified = _simplify_local(op, values)
     if not isinstance(simplified, DimExpr):
         return simplified
     return _simplify_sympy(simplified)
+
+
+def dim_expr(op: str, *operands: DimensionLike) -> Dimension:
+    return _dim_expr_cached(op, tuple(dim(value) for value in operands))
 
 
 def dim_add(*operands: DimensionLike) -> Dimension:

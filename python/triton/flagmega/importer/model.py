@@ -7,16 +7,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from triton.flagmega.importer.checkpoint import Checkpoint, checkpoint_from_path
+from triton.flagmega.errors import ImporterError
+from triton.flagmega.importer.glm5_moe import Glm5MoeImporter, Glm5MoeModelImporter
+from triton.flagmega.importer.numerics import VLLM_AE10_INDUCTOR_LEVEL3, VLLM_INDUCTOR_LEVEL3
+from triton.flagmega.importer.numerics.qwen3 import apply_qwen3_vllm_profile
+from triton.flagmega.importer.numerics.qwen3_5_moe import apply_qwen35_moe_vllm_profile
 from triton.flagmega.importer.qwen3 import Qwen3LayerImporter, Qwen3ModelImporter
 from triton.flagmega.importer.qwen3_5 import Qwen35Layer0Importer
 from triton.flagmega.importer.qwen3_5_dense import Qwen35DenseImporter
 from triton.flagmega.importer.qwen3_5_moe import Qwen35MoeImporter
 from triton.flagmega.importer.registry import ModelImporterRegistry, ModelImporterSpec
-from triton.flagmega.importer.numerics import VLLM_INDUCTOR_LEVEL3, VLLM_AE10_INDUCTOR_LEVEL3
-from triton.flagmega.importer.numerics.qwen3 import apply_qwen3_vllm_profile
-from triton.flagmega.importer.numerics.qwen3_5_moe import apply_qwen35_moe_vllm_profile
 from triton.flagmega.ir import IRModule, verify_module
-from triton.flagmega.errors import ImporterError
 
 importer_registry = ModelImporterRegistry()
 
@@ -39,6 +40,16 @@ def _register_builtin_importers() -> None:
             _import_qwen35_layer,
             lambda source, revision: Qwen35DenseImporter(source, revision=revision).import_module(),
         ))
+    importer_registry.register(ModelImporterSpec(
+        "glm5_moe",
+        frozenset({"Glm5NextForConditionalGeneration"}),
+        frozenset({"glm5_next_text"}),
+        lambda source, layer, revision, **options: Glm5MoeImporter(source, layer=layer, revision=revision,
+                                                                   **options).import_module(),
+        lambda source, revision, **options: Glm5MoeModelImporter(source, revision=revision,
+                                                                  **options).import_module(),
+        execution_modes=frozenset({"decode-1"}),
+    ))
     importer_registry.register(
         ModelImporterSpec(
             "qwen3.5_moe",

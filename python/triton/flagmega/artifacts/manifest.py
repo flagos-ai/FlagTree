@@ -21,7 +21,7 @@ _HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
 @dataclass(frozen=True)
 class ArtifactSection:
-    """One immutable file referenced by the artifact manifest."""
+    """One immutable file and its kind-specific SHA-256 content identity."""
 
     name: str
     kind: str
@@ -137,8 +137,8 @@ def verify_sections(
 
     Deferred sections still receive path, existence, and size validation.  A
     caller must subsequently validate their bytes against the same digest and
-    cross-check any subordinate index.  This is used for rdata because its
-    verifier hashes the image and all indexed tensor ranges in one pass.
+    cross-check any subordinate index. Rdata image v2 verifies an ordered chip
+    digest table; other section kinds retain raw-file SHA-256 semantics.
     """
 
     for section in sections:
@@ -147,7 +147,22 @@ def verify_sections(
             raise ArtifactError(f"Artifact section {section.name!r} is missing: {path}.")
         if path.stat().st_size != section.nbytes:
             raise ArtifactError(f"Artifact section {section.name!r} size does not match its manifest.")
-        if section.name not in defer_hashes and hash_file(path) != section.sha256:
+        if section.name in defer_hashes:
+            continue
+        if section.kind in {"rdata.image/v2", "rdata.image/v3"}:
+            # This section identifies the ordered chip digest table, not a
+            # second SHA chain over the raw image. Its verifier reads each
+            # disjoint segment once and reconstructs that content identity.
+            from triton.flagmega.artifacts.rdata import RDATA_COMPOSITE_DIGEST_KINDS, verify_rdata
+            from triton.flagmega.artifacts.source_layout import SOURCE_LAYOUT_DIGEST
+
+            index = verify_rdata(path.parent)
+            if (index.get("digest_kind") not in RDATA_COMPOSITE_DIGEST_KINDS
+                    or ((index.get("digest_kind") == SOURCE_LAYOUT_DIGEST) != (section.kind == "rdata.image/v3"))
+                    or (path.parent / str(index["image"])).resolve() != path.resolve()
+                    or index["sha256"] != section.sha256 or index["nbytes"] != section.nbytes):
+                raise ArtifactError(f"Artifact section {section.name!r} digest does not match its chip index.")
+        elif hash_file(path) != section.sha256:
             raise ArtifactError(f"Artifact section {section.name!r} hash does not match its manifest.")
 
 

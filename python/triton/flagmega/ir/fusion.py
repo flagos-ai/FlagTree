@@ -189,6 +189,8 @@ def fusion(input_type: IRType, *, name: str | None = None, parameter: str = "val
 
 def iter_fusions(value):
     """Find embedded semantic functions, including TIR dispatch attributes."""
+    if value is None or type(value) in (str, int, float, bool):
+        return
     from collections.abc import Mapping
     from dataclasses import fields, is_dataclass
     if isinstance(value, Fusion):

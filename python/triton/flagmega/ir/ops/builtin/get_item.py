@@ -6,7 +6,6 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import IRType, Node
-from triton.flagmega.ir.type_pattern import is_tuple
 from triton.flagmega.ir.ops.core import (
     NodeRef,
     OpCost,
@@ -16,6 +15,7 @@ from triton.flagmega.ir.ops.core import (
     input_parameter,
     op_definition,
 )
+from triton.flagmega.ir.type_pattern import is_tuple
 
 
 @op_definition(
@@ -26,6 +26,11 @@ from triton.flagmega.ir.ops.core import (
 )
 class GetItem(OpDefinition):
     const_evaluable = True
+    # Tuple projection must return the selected field's type verbatim. The
+    # broadcast-lifting fallback re-infers from logical inputs and would lift a
+    # scalar field of an otherwise distributed tuple into a broadcast
+    # DistributedType, corrupting checkpoint rebuilds at distributed stages.
+    supports_broadcast_lifting = False
     value = input_parameter(is_tuple())
     index = attribute_parameter(positional=True)
 

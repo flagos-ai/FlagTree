@@ -1,0 +1,72 @@
+{% for call in render_calls %}
+{% if call.family == "dsa_indexer" and call.variant == "decode" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}({{ call.signature }}):
+    q_offsets = tl.arange(0, {{ call.q_width }})
+    d_offsets = tl.arange(0, {{ call.index_dim }})
+    head_offsets = tl.arange(0, {{ call.index_heads }})
+    q = tl.load({{ call.q }} + q_offsets * {{ call.q_stride }}, mask=q_offsets < {{ call.q_width }}, other=0.0).to(tl.float32)
+    k = tl.load({{ call.key }} + d_offsets * {{ call.key_stride }}, mask=d_offsets < {{ call.index_dim }}, other=0.0).to(tl.float32)
+    gate = tl.load({{ call.gate }} + d_offsets * {{ call.gate_stride }}, mask=d_offsets < {{ call.index_dim }}, other=0.0).to(tl.float32)
+    norm_w = tl.load({{ call.k_norm_weight }} + d_offsets * {{ call.norm_stride }}, mask=d_offsets < {{ call.index_dim }}, other=1.0).to(tl.float32)
+    norm_b = tl.load({{ call.k_norm_bias }} + d_offsets * {{ call.norm_stride }}, mask=d_offsets < {{ call.index_dim }}, other=0.0).to(tl.float32)
+    mean = tl.sum(k, axis=0) / {{ call.index_dim }}
+    centered = k - mean
+    variance = tl.sum(centered * centered, axis=0) / {{ call.index_dim }}
+    k = centered * tl.rsqrt(variance + {{ call.epsilon }}) * norm_w + norm_b
+    base = tl.load({{ call.sequence_lengths }}).to(tl.int32)
+    layer = {{ call.layer_id }}
+    state_base = layer * {{ call.state_layer_stride }} + base * {{ call.state_token_stride }}
+    if {{ call.writer_active }}:
+        tl.store({{ call.state }} + state_base + d_offsets * {{ call.state_value_stride }}, k,
+                 mask=d_offsets < {{ call.index_dim }})
+        tl.store({{ call.state }} + state_base + ({{ call.index_dim }} + d_offsets) * {{ call.state_value_stride }}, gate,
+                 mask=d_offsets < {{ call.index_dim }})
+        tl.store({{ call.state }} + state_base + 2 * {{ call.index_dim }} * {{ call.state_value_stride }}, 1.0)
+{{ entry.stage_barrier() }}
+    pool_offsets = tl.arange(0, {{ call.pool }})
+    for selection in tl.range(0, {{ call.index_topk // call.pool }}):
+        winner_score = tl.full((), -float("inf"), tl.float32)
+        winner_pool = tl.full((), -1, tl.int32)
+        for pool_index in tl.range(0, {{ call.state_capacity }} // {{ call.pool }}):
+            active = pool_index * {{ call.pool }} + {{ call.pool }} <= base + 1
+            token_offsets = pool_index * {{ call.pool }} + pool_offsets
+            state_token = layer * {{ call.state_layer_stride }} + token_offsets * {{ call.state_token_stride }}
+            keys = tl.load({{ call.state }} + state_token[:, None] + d_offsets[None, :] * {{ call.state_value_stride }},
+                           mask=active & (d_offsets[None, :] < {{ call.index_dim }}), other=0.0).to(tl.float32)
+            gates = tl.load({{ call.state }} + state_token[:, None] + ({{ call.index_dim }} + d_offsets[None, :]) * {{ call.state_value_stride }},
+                            mask=active & (d_offsets[None, :] < {{ call.index_dim }}), other=-float("inf")).to(tl.float32)
+            ape = tl.load({{ call.compress_ape }} + pool_offsets[:, None] * {{ call.ape_row_stride }}
+                          + d_offsets[None, :] * {{ call.ape_dim_stride }},
+                          mask=d_offsets[None, :] < {{ call.index_dim }}, other=0.0).to(tl.float32)
+            logits = gates + ape
+            logits = logits - tl.max(logits, axis=0)[None, :]
+            probabilities = tl.exp(logits)
+            probabilities = probabilities / (tl.sum(probabilities, axis=0)[None, :] + 1e-20)
+            pooled = tl.sum(probabilities * keys, axis=0)
+            scores = tl.sum(q.reshape(({{ call.index_heads }}, {{ call.index_dim }})) * pooled[None, :], axis=1)
+            weight_value = tl.load({{ call.weights }} + head_offsets * {{ call.weights_stride }},
+                                   mask=head_offsets < {{ call.index_heads }}, other=0.0).to(tl.float32)
+            score = tl.sum(weight_value * tl.maximum(scores * {{ call.scale }}, 0.0), axis=0)
+            score = tl.where(active, score, -float("inf"))
+            better = score > winner_score
+            winner_score = tl.where(better, score, winner_score)
+            winner_pool = tl.where(better, pool_index, winner_pool)
+        selected_value = winner_pool * {{ call.pool }} + pool_offsets
+        selected_valid = (winner_pool >= 0) & (pool_offsets < {{ call.pool }})
+        tl.store({{ call.result }} + selection * {{ call.pool }} + pool_offsets,
+                 tl.where(selected_valid, selected_value, -1), mask=pool_offsets < {{ call.pool }})
+    output_offsets = tl.arange(0, {{ call.output_tile }})
+{% if call.output_width > call.index_topk %}
+    tail_count = (base + 1) % {{ call.pool }}
+    tail_offset = output_offsets - {{ call.index_topk }}
+    tail_value = base + 1 - tail_count + tail_offset
+    tail_valid = (output_offsets >= {{ call.index_topk }}) & (tail_offset < tail_count - 1)
+    tl.store({{ call.result }} + output_offsets, tl.where(tail_valid, tail_value, tl.load({{ call.result }} + output_offsets, mask=output_offsets < {{ call.output_width }}, other=-1)),
+             mask=output_offsets < {{ call.output_width }})
+{% endif %}
+{{ entry.stage_barrier() }}
+    if {{ call.writer_active }} and {{ call.advance_sequence }}:
+        tl.store({{ call.sequence_lengths }}, base + 1)
+{% endif %}
+{% endfor %}

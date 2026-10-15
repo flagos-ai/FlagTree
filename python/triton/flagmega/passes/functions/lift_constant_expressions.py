@@ -16,6 +16,7 @@ from triton.flagmega.errors import IRVerificationError, StageError
 from triton.flagmega.ir import DistributedType, IRModule, Node, PointerType, TensorType, TupleType, verify_module
 from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.passes.constants import ConstnessAnalysis, require_constants_open
+
 from .graph import callee_first_functions, function_nodes
 
 
@@ -119,7 +120,8 @@ def _lift_function(module: IRModule, name: str) -> IRModule:
                 result.append(parameters[node.id])
             continue
         if node.op != "builtin.call" or node.attrs["callee"] != name:
-            result.append(replace(node, inputs=tuple(redirects.get(v, v) for v in node.inputs)))
+            inputs = tuple(redirects.get(v, v) for v in node.inputs)
+            result.append(replace(node, inputs=inputs) if inputs != node.inputs else node)
             continue
         actuals = dict(zip(function.parameters, node.inputs, strict=True))
         for original in movable:

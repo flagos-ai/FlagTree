@@ -14,7 +14,7 @@ def {{ call.symbol }}({{ call.signature }}):
             for _fm_route in tl.range(0, {{ call.routes }}):
                 _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }}), mask={{ call.slot_active }}, other=0).to(tl.int64)
 {% if call.combine_routes %}
-                _fm_probability = tl.load({{ call.pointers.router_expert_weights }} + ({{ call.probability_offset }}), mask={{ call.slot_active }}, other=0).to(tl.float32)
+                _fm_probability = tl.load({{ call.pointers.router_expert_weights }} + ({{ call.probability_offset }}), mask={{ call.slot_active }}, other=0.0).to(tl.float32)
 {% endif %}
                 _fm_input_scale = {{ call.scale_loads.down_input_scale }}
                 _fm_scale = {{ call.scale_loads.down_proj_scale }}
@@ -22,9 +22,23 @@ def {{ call.symbol }}({{ call.signature }}):
                 for _fm_k_start in tl.range(0, {{ call.scalar_k }}, {{ call.block_k }}):
                     _fm_k = _fm_k_start + tl.arange(0, {{ call.block_k }})
                     _fm_k_mask = (_fm_k < {{ call.scalar_k }}) & ({{ call.k_active }}) & ({{ call.slot_active }})
-                    _fm_activation = tl.load({{ call.pointers.activations }} + ({{ call.activation_offset }}), mask=_fm_k_mask, other=0).to(tl.float32)
-                    _fm_weight = tl.load({{ call.pointers.down_weight }} + ({{ call.weight_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0).to(tl.float32)
-                    _fm_partial += {% if call.unit_scales.down_input_scale %}_fm_activation{% else %}tl.div_rn(_fm_activation, _fm_input_scale){% endif %}[None, :] * _fm_weight
+{# ``other`` is cast to the pointee type, and an integer literal has no such
+   cast to a narrow float: FP8 E4M3 rejects it outright. Fill every value load
+   with a floating zero so the pointee dtype stays free. #}
+                    _fm_activation = tl.load({{ call.pointers.activations }} + ({{ call.activation_offset }}), mask=_fm_k_mask, other=0.0).to(tl.float32)
+{% if call.block_scale_loads.down_proj_scale is defined %}{% if call.groups_per_tile > 1 %}{# The weight scale is a per-K-group contract, so the activation it
+   multiplies has to be quantized over the same groups. A tile wider than one
+   group reduces per group and broadcasts each scale back over its own lanes. #}
+                    _fm_activation_groups = tl.reshape(_fm_activation, ({{ call.groups_per_tile }}, {{ call.weight_block_k }}))
+                    _fm_activation_abs_max = tl.max(tl.abs(_fm_activation_groups), axis=1, keep_dims=True)
+                    _fm_group_scale = tl.where(_fm_activation_abs_max == 0.0, 1.0, _fm_activation_abs_max / 448.0)
+                    _fm_activation_scale = tl.reshape(tl.broadcast_to(_fm_group_scale, ({{ call.groups_per_tile }}, {{ call.weight_block_k }})), ({{ call.block_k }},))
+{% else %}                    _fm_activation_abs_max = tl.max(tl.abs(_fm_activation), axis=0)
+                    _fm_activation_scale = tl.where(_fm_activation_abs_max == 0.0, 1.0, _fm_activation_abs_max / 448.0)
+{% endif %}                    _fm_activation_quantized = tl.maximum(tl.minimum(_fm_activation / _fm_activation_scale, 448.0), -448.0).to(tl.float8e4nv).to(tl.float32)
+{% endif %}                    _fm_weight = tl.load({{ call.pointers.down_weight }} + ({{ call.weight_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0.0).to(tl.float32)
+                    _fm_block_scale = {{ call.block_scale_loads.down_proj_scale if call.block_scale_loads.down_proj_scale is defined else "1.0" }}
+                    _fm_partial += {% if call.block_scale_loads.down_proj_scale is defined %}(_fm_activation_quantized * _fm_activation_scale)[None, :] * _fm_weight * _fm_block_scale{% else %}{% if call.unit_scales.down_input_scale %}_fm_activation{% else %}tl.div_rn(_fm_activation, _fm_input_scale){% endif %}[None, :] * _fm_weight{% endif %}{{ "\n" }}
                 _fm_projection = tl.sum(_fm_partial, 1) * _fm_input_scale * _fm_scale
 {% if call.attrs.round_projection %}
                 _fm_projection = _fm_projection.to({{ call.activation_dtype }}).to(tl.float32)

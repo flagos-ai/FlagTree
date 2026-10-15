@@ -74,6 +74,7 @@ from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
     UpdatePagedAttentionKVCache,
 )
+from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache_pair import UpdatePagedAttentionKVCachePair
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
@@ -1377,6 +1378,19 @@ class _nn:
             call_name=call_name,
             condition=condition,
         )
+
+    @staticmethod
+    @_op_pattern_function(UpdatePagedAttentionKVCachePair)
+    def is_update_paged_attention_kv_cache_pair(
+        slots: PatternInput = None, state: PatternInput = None,
+        layer_id: PatternInput = None, advance_sequence: PatternInput = None, *,
+        layout: tuple[str, ...] | None = None, target_name: str | None = None,
+        call_name: str | None = None, condition: Condition = None,
+    ) -> CallPattern:
+        return _call_pattern(UpdatePagedAttentionKVCachePair,
+                             (slots, state, layer_id, advance_sequence),
+                             attributes={"layout": layout}, target_name=target_name,
+                             call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(PagedAttention)

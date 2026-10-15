@@ -37,6 +37,13 @@ class Compiler:
         if self.options.effective_dump_flags and self.options.work_dir is None:
             raise StageError("Dump flags require CompileOptions.work_dir (CLI: --work-dir).")
         self.target = get_target(self.options.target)
+        if self.options.placement is not None:
+            configure = getattr(self.target, "with_placement", None)
+            if configure is None:
+                raise StageError(
+                    f"Target {self.target.name!r} does not support explicit placements."
+                )
+            self.target = configure(self.options.placement)
         if self.options.bufferize_opt_level is not None:
             configure = getattr(self.target, "with_bufferize_opt_level", None)
             if configure is None:

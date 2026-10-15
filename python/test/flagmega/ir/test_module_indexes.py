@@ -33,3 +33,34 @@ def test_replacing_or_reloading_module_cannot_reuse_stale_index():
     assert loaded.node_map is not previous
     assert loaded.node_map == previous
     assert loaded.node_map["value"] is not previous["value"]
+
+
+@pytest.mark.parametrize("name", [
+    "function_map",
+    "prim_function_map",
+    "kernel_callable_map",
+    "execution_function_map",
+])
+def test_every_callable_index_is_shared_and_readonly(name):
+    """A per-node lookup must not rebuild the whole callable table.
+
+    Bufferize resolves a callee for every kernel call; when these indexes were
+    plain properties, planning the 45-layer model spent minutes rebuilding
+    them.  Sharing them is only sound because the module is immutable, so the
+    index must also refuse writes.
+    """
+
+    module = _module()
+    index = getattr(module, name)
+    assert getattr(module, name) is index
+    with pytest.raises(TypeError):
+        index["main"] = None
+
+
+def test_an_edited_module_rebuilds_its_function_index():
+    module = _module()
+    previous = module.function_map
+    renamed = replace(module.functions[0], name="other")
+    edited = replace(module, functions=(renamed, ), entry="other")
+    assert "other" in edited.function_map
+    assert "other" not in previous

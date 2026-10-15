@@ -21,16 +21,19 @@ def ensure_registered() -> None:
     # the registry while this package is being initialized.
     _REGISTERED = True
     from triton.flagmega.ir.ops import builtin as _builtin
+    from triton.flagmega.ir.ops import control as _control
     from triton.flagmega.ir.ops import distributed as _distributed
     from triton.flagmega.ir.ops import math as _math
     from triton.flagmega.ir.ops import nn as _nn
+    from triton.flagmega.ir.ops import shapes as _shapes
     from triton.flagmega.ir.ops import ntt as _ntt
     from triton.flagmega.ir.ops import tensors as _tensors
     from triton.flagmega.ir.ops import tir as _tir
 
     # Keep explicit references so static analyzers see these as intentional
     # side-effect imports rather than removable discovery machinery.
-    assert _builtin and _distributed and _math and _nn and _ntt and _tensors and _tir
+    assert (_builtin and _control and _distributed and _math and _nn and _shapes
+            and _ntt and _tensors and _tir)
 
 
 ensure_registered()

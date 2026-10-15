@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Emit FlagMega :class:`Dimension` trees as Triton scalar expressions."""
+"""Emit FlagMega :class:`Dimension`/:class:`LogicalExpr` trees as Triton."""
 
 from __future__ import annotations
 
@@ -8,6 +8,22 @@ from collections.abc import Mapping
 
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir.dim_expr import DimConst, DimExpr, DimVar, Dimension, UnknownDim
+from triton.flagmega.ir.logical_expr import (
+    BoolConst,
+    DimCompare,
+    LogicalExpr,
+    LogicalNot,
+    LogicalOp,
+)
+
+_COMPARISON_SOURCE = {
+    "equal": "==",
+    "not_equal": "!=",
+    "less_than": "<",
+    "less_or_equal": "<=",
+    "greater_than": ">",
+    "greater_or_equal": ">=",
+}
 
 
 def emit_dimension(value: Dimension, *, symbols: Mapping[str, str] | None = None) -> str:
@@ -73,4 +89,27 @@ def emit_dimension(value: Dimension, *, symbols: Mapping[str, str] | None = None
     raise CodegenError(f"Unsupported dimension expression op {value.op!r}.")
 
 
-__all__ = ["emit_dimension"]
+def emit_logical(value: LogicalExpr, *, symbols: Mapping[str, str] | None = None) -> str:
+    """Render a boolean expression over dimensions as Triton source.
+
+    The result is a scalar predicate, so it composes with ordinary Triton
+    boolean operators and needs no block shape.
+    """
+
+    if isinstance(value, BoolConst):
+        return "True" if value.constant else "False"
+    if isinstance(value, DimCompare):
+        comparison = _COMPARISON_SOURCE[value.compare.value]
+        lhs = emit_dimension(value.lhs, symbols=symbols)
+        rhs = emit_dimension(value.rhs, symbols=symbols)
+        return f"(({lhs}) {comparison} ({rhs}))"
+    if isinstance(value, LogicalNot):
+        return f"(not {emit_logical(value.operand, symbols=symbols)})"
+    if isinstance(value, LogicalOp):
+        joiner = " and " if value.op == "and" else " or "
+        return "(" + joiner.join(
+            emit_logical(operand, symbols=symbols) for operand in value.operands) + ")"
+    raise CodegenError(f"Unsupported logical expression node {type(value).__name__}.")
+
+
+__all__ = ["emit_dimension", "emit_logical"]

@@ -60,7 +60,8 @@ class ScalarConst(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         return context.torch.tensor(
-            node.attrs["value"], dtype=context.torch_dtype(node.type.dtype)
+            node.attrs["value"], dtype=context.torch_dtype(node.type.dtype),
+            device=getattr(context, "device", None),
         )
 
     @classmethod

@@ -4,36 +4,47 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import ast
 import keyword
 import re
+from dataclasses import dataclass
 from typing import Callable, Mapping
 
+from triton.flagmega.codegen.triton.descriptor_resources import DescriptorResources
 from triton.flagmega.codegen.triton.function_call import (
     emit_function_call_arguments,
 )
-from triton.flagmega.codegen.triton.pool_abi import emit_pool_scope_base
-from triton.flagmega.codegen.triton.descriptor_resources import DescriptorResources
-from triton.flagmega.codegen.triton.pipeline_function_abi import (
-    descriptor_requests, instantiate_resources,
+from triton.flagmega.codegen.triton.function_pool_abi import (
+    ROW_INDEX,
+    OFFSET_TABLE,
+    function_pool_actuals,
+    function_pool_aliases,
+    function_pool_signature,
+    plan_function_pool_abis,
 )
+from triton.flagmega.codegen.triton.pipeline_function_abi import (
+    descriptor_requests,
+    instantiate_resources,
+)
+from triton.flagmega.codegen.triton.pool_abi import emit_pool_scope_base
 from triton.flagmega.errors import CodegenError, IRSchemaError
 from triton.flagmega.ir import (
     Barrier,
     Buffer,
+    For,
     IRModule,
+    KernelInvoke,
     PipelineDrain,
     PipelineHandoff,
     PipelineStage,
     PrimFunctionCall,
-    KernelInvoke,
     ProducerConsumerRegion,
     Sequential,
     execution_calls_of,
     kernel_dispatch_of,
+    synchronization_scope_name,
     verify_buffer_plan,
 )
-
 
 KernelEventFactory = Callable[
     [
@@ -74,42 +85,88 @@ def build_pipeline_source_schedule(
     execution = module.execution_function_map.get(module.entry)
     if execution is None:
         return None
-    definitions: dict[str, dict[str, object]] = {}
+    # Keyed by (function name, called-from-a-loop): a loop call site needs
+    # its own definition because its handoffs release reusable slots.
+    definitions: dict[tuple[str, bool], dict[str, object]] = {}
     active: list[str] = []
+    # A parameter-bank row is stored as one group member per layer, all the
+    # same size, so the byte distance between consecutive rows is that size.
+    # The planner recorded the group identity for exactly this purpose.
+    row_strides = {}
+    for buffer in verify_buffer_plan(module).buffers:
+        if not getattr(buffer, "rdata_group", None):
+            continue
+        span = buffer.mem_span
+        size = getattr(getattr(span, "size", None), "fixed_value", None)
+        if size is None:
+            size = getattr(getattr(span, "size", None), "value", None)
+        if isinstance(size, int) and size > 0:
+            row_strides[str(getattr(span.buffer, "id", span.buffer))] = size
+    pool_abis, offset_tables = plan_function_pool_abis(
+        bindings, row_strides, entry=module.entry
+    )
 
-    def build_function(name):
-        if name in definitions:
-            return definitions[name]
+    def build_function(name, in_loop=False):
+        # The entry is never a loop body, so keep it on one key: a second
+        # copy would be emitted as an uncalled device function.
+        key = (name, bool(in_loop) and name != module.entry)
+        if key in definitions:
+            return definitions[key]
         if name in active:
             raise CodegenError("Recursive pipeline function: " + " -> ".join((*active, name)))
         active.append(name)
         signature = tuple(str(value) for value in bindings[name]["signature"])
-        context = _Context(name, {value: value for value in signature},
+        pool_abi = pool_abis.get(name)
+        actuals = {value: value for value in signature}
+        actuals.update(function_pool_aliases(pool_abi))
+        if offset_tables:
+            actuals[OFFSET_TABLE] = OFFSET_TABLE
+        context = _Context(name, actuals,
                            {value: (value, 0) for value in signature}, {}, ())
         function = module.execution_function_map[name]
         body = _top_level_region(function.body, name) or function.body
         builder = _PipelineSourceBuilder(
             module, bindings, encoded_calls, kernel_event_factory,
-            build_function, descriptor_instantiator,
+            build_function, descriptor_instantiator, pool_abis, bool(offset_tables),
         )
         builder.descriptor_specs = DescriptorResources(formal_origins=name != module.entry)
+        builder.row_index_formal = ROW_INDEX in source_signature_probe(
+            signature, pool_abi, bool(offset_tables)
+        )
+        builder.in_loop = bool(in_loop)
+        builder.loop_variable = _induction_formal(module, name) if in_loop else None
         schedule = builder.build(body, context)
+        source_signature = function_pool_signature(
+            (*signature, *builder.descriptor_specs.parameters()), pool_abi,
+            has_tables=bool(offset_tables),
+        )
         result = {
             "function": name,
             "symbol": f"_flagmega_function_{_identifier(name)}",
-            "signature_arguments": [*signature, *builder.descriptor_specs.parameters()],
+            "signature_arguments": source_signature,
+            "logical_signature_arguments": list(signature),
+            "typed_signature_arguments": [
+                "device_dptr: tl.constexpr" if value == "device_dptr" else value
+                for value in source_signature
+            ],
+            "function_pool_abi": pool_abi,
             "host_tensor_descriptor_specs": builder.descriptor_specs,
             "schedule": schedule,
         }
-        definitions[name] = result
+        definitions[key] = result
         active.pop()
         return result
 
     root = build_function(module.entry)
+    _compact_duplicate_function_actuals(root["schedule"], tuple(definitions.values()))
     return {
         **root["schedule"],
         "host_tensor_descriptor_specs": root["host_tensor_descriptor_specs"],
-        "device_functions": [definition for name, definition in definitions.items() if name != module.entry],
+        "device_functions": [
+            definition for (name, _in_loop), definition in definitions.items()
+            if name != module.entry
+        ],
+        "function_offset_tables": offset_tables,
     }
 
 
@@ -122,6 +179,8 @@ class _PipelineSourceBuilder:
         kernel_event_factory: KernelEventFactory,
         function_builder: Callable,
         descriptor_instantiator: Callable,
+        pool_abis: Mapping[str, Mapping] | None = None,
+        has_offset_tables: bool = False,
     ) -> None:
         self.module = module
         self.bindings = bindings
@@ -129,6 +188,8 @@ class _PipelineSourceBuilder:
         self.kernel_event_factory = kernel_event_factory
         self.function_builder = function_builder
         self.descriptor_instantiator = descriptor_instantiator
+        self.pool_abis = {} if pool_abis is None else pool_abis
+        self.has_offset_tables = has_offset_tables
         self.descriptor_specs = DescriptorResources()
         self.function_instances: dict[tuple[str, ...], dict[str, object]] = {}
         self.drained_stage_ids: set[str] = set()
@@ -136,6 +197,12 @@ class _PipelineSourceBuilder:
         self.stage_by_key: dict[tuple[str, ...], dict[str, object]] = {}
         self.logical_stage_leaves: dict[tuple[str, ...], tuple[str, ...]] = {}
         self.handoffs: list[dict[str, object]] = []
+        self.in_loop = False
+        self.loop_variable = None
+        self.loop_trips = 0
+        # True when this function itself receives a bank row index to forward.
+        self.row_index_formal = False
+        self._deferred_drains: dict[str, list[dict[str, object]]] = {}
         self.handoff_by_key: dict[tuple[str, ...], dict[str, object]] = {}
         self.event_cache: dict[tuple[str, ...], dict[str, object]] = {}
         self.consumer_events: list[dict[str, object]] = []
@@ -159,9 +226,37 @@ class _PipelineSourceBuilder:
             raise CodegenError(
                 f"Pipeline entry @{context.function_name} has no leaf transfer stage."
             )
+        # A wrap-around wait guards the arena bytes this body's own later
+        # stages refill, so its release belongs after them, not next to the
+        # wait.  Each role body is appended to independently because the
+        # handoff is rendered in whichever body contains it.
+        self.producer_events = _append_deferred_releases(self.producer_events)
+        self.auxiliary_events = _append_deferred_releases(self.auxiliary_events)
         self._resolve_drains(self.consumer_events)
         self._resolve_drains(self.producer_events)
         self._resolve_drains(self.auxiliary_events)
+        # When the caller repeats this function once per loop trip, its pipe
+        # streams close in the caller after the final trip; a drain cannot
+        # precede that close from inside this body, so defer it upward.
+        if self.in_loop:
+            # Every drain follows its stream's close out of the loop: one
+            # pipe instance serves all trips, so the close is after the loop
+            # and `tle.pipe.drain` needs it in the same async task.  Arena
+            # hazards that need per-trip waiting are handoffs instead.
+            self.producer_events, producer_drains = _split_drains(
+                self.producer_events
+            )
+            self.consumer_events, consumer_drains = _split_drains(
+                self.consumer_events
+            )
+            self.auxiliary_events, auxiliary_drains = _split_drains(
+                self.auxiliary_events
+            )
+            self._deferred_drains = {
+                "producer": producer_drains,
+                "consumer": consumer_drains,
+                "auxiliary": auxiliary_drains,
+            }
         producer_warps = {int(value["producer_warps"]) for value in self.stages}
         producer_registers = {
             int(value["producer_registers"]) for value in self.stages
@@ -223,6 +318,17 @@ class _PipelineSourceBuilder:
             "consumer_events": self.consumer_events,
             "producer_events": self.producer_events,
             "auxiliary_events": self.auxiliary_events,
+            # Writers whose stream stays open across loop trips; the caller
+            # closes each once after the final trip.
+            "trip_scoped_drains": self._deferred_drains,
+            "trip_scoped_closes": [
+                *_post_loop_closes(self.producer_events, 1),
+                *(
+                    close
+                    for event in self.producer_events
+                    for close in (event.get("trip_scoped_closes") or ())
+                ),
+            ],
             "consumer_endpoints": [
                 *(
                     str(channel["reader_name"])
@@ -291,14 +397,103 @@ class _PipelineSourceBuilder:
             if isinstance(statement, Sequential):
                 self._visit_body(statement, role, context, region_path, output)
                 continue
-            if isinstance(statement, Barrier):
-                if role != "consumer":
-                    raise CodegenError(
-                        "A pipeline producer body cannot contain an ordinary barrier."
+            if isinstance(statement, For):
+                # A structured loop keeps its body as one region: emit the body
+                # once, nested inside a loop event, so the generated source
+                # repeats it per iteration instead of unrolling the schedule.
+                # The region marker's own body is empty: the loop's calls live
+                # in the body function's ExecutionFunction. Visit that body so
+                # the generated loop actually executes one iteration's work.
+                nested: list[dict[str, object]] = []
+                outer_in_loop = self.in_loop
+                outer_loop_variable = self.loop_variable
+                outer_loop_trips = self.loop_trips
+                self.in_loop = True
+                self.loop_variable = statement.loop_var.name
+                self.loop_trips = _trip_count(
+                    _static_bound(statement.domain.start),
+                    _static_bound(statement.domain.stop),
+                    _static_bound(statement.domain.step),
+                )
+                region_body = statement.body
+                if statement.body_function and not getattr(region_body, "fields", ()):
+                    callee = self.module.execution_function_map.get(statement.body_function)
+                    if callee is None:
+                        raise CodegenError(
+                            "A structured loop references unmaterialized "
+                            f"@{statement.body_function}."
+                        )
+                    region = _top_level_region(callee.body, callee.name) or callee.body
+                    if isinstance(region, ProducerConsumerRegion):
+                        # The body's own producer side belongs to its transfer
+                        # pipeline, which this loop does not re-establish.
+                        raise CodegenError(
+                            f"Structured loop body @{callee.name} owns a transfer "
+                            "pipeline; lower it to a callable region first."
+                        )
+                    region_body = region
+                try:
+                    self._visit_body(
+                        region_body, role, context,
+                        (*region_path, statement.loop_var.name), nested,
                     )
+                finally:
+                    self.in_loop = outer_in_loop
+                    self.loop_variable = outer_loop_variable
+                    self.loop_trips = outer_loop_trips
+                # A trip-scoped stream closes once after the final trip, and
+                # `tle.pipe.drain` requires that close to precede it in the
+                # same async task, so the matching drain moves out with it.
+                trips = _trip_count(
+                    _static_bound(statement.domain.start),
+                    _static_bound(statement.domain.stop),
+                    _static_bound(statement.domain.step),
+                )
+                hoisted = (
+                    _collect_trip_closes(nested, trips)
+                    if role == "producer" else []
+                )
+                nested, hoisted_drains = _split_drains(nested)
+                for event in nested:
+                    hoisted_drains.extend(event.get("trip_scoped_drains") or ())
+                # A wrap-around handoff orders each trip's producer against
+                # the previous trip's consumer.  The first trip has no
+                # previous one, so prime the slot here: without it the loop
+                # cannot start, and with it every trip waits on a commit
+                # that has already happened.  The handoff may belong to a
+                # callee, which instantiates it into this schedule, so the
+                # instantiated registry is what names the endpoints.
+                if role == "consumer":
+                    output.extend(_wrap_around_priming(self.handoffs))
+
+                output.append({
+                    "kind": "loop",
+                    "loop_var": statement.loop_var.name,
+                    # The manifest is JSON, so publish plain bounds rather
+                    # than DimConst objects.
+                    "start": _static_bound(statement.domain.start),
+                    "stop": _static_bound(statement.domain.stop),
+                    "step": _static_bound(statement.domain.step),
+                    "body_function": statement.body_function,
+                    "iter_args": tuple(value.name for value in statement.iter_args),
+                    "yield_values": tuple(value.name for value in statement.yield_values),
+                    "events": nested,
+                })
+                # The loop ran every trip's acquire/commit on one pipe
+                # instance, so each trip-scoped writer closes exactly once,
+                # after the final trip, at the iteration the stream reached.
+                output.extend(hoisted)
+                output.extend(hoisted_drains)
+                continue
+            if isinstance(statement, Barrier):
+                # A producer partition reads global arenas the consumer wrote,
+                # and the transfer pipe orders only the shared-memory slots it
+                # hands over.  LowerTransferPipelineRegions keeps the hazard's
+                # barrier in both bodies for that reason, so both roles emit
+                # it rather than the consumer alone.
                 output.append({
                     "kind": "barrier",
-                    "scope": "grid" if statement.scope.value == "chip" else "block",
+                    "scope": synchronization_scope_name(statement.scope),
                     "axis_group_axes": tuple(statement.axis_group_axes),
                     "after": tuple(statement.after),
                     "before": statement.before,
@@ -307,13 +502,57 @@ class _PipelineSourceBuilder:
                 })
                 continue
             if isinstance(statement, PipelineHandoff):
-                handoff = self._handoff((*region_path, statement.handoff_id))
+                handoff = self._handoff(
+                    (*region_path, statement.handoff_id),
+                    wrap_around=bool(statement.wrap_around),
+                )
                 output.append({
                     "kind": "handoff",
                     "endpoint": handoff[
                         "writer_name" if role == "consumer" else "reader_name"
                     ],
                     "action": "commit" if role == "consumer" else "wait",
+                    # A reusable slot must be released after it is consumed,
+                    # or the next iteration's commit waits on a full pipe. A
+                    # one-shot slot is never reused and needs no release.
+                    #
+                    # A wrap-around handoff is the exception: it guards the
+                    # arena bytes the stages after it are about to refill, so
+                    # releasing here -- immediately after the wait -- would
+                    # let the next trip's commit proceed before those stages
+                    # have run.  Its release is deferred to the end of the
+                    # body instead, which is where the guarded work finishes.
+                    "release": (bool(handoff.get("repeated")) or self.in_loop)
+                               and role != "consumer"
+                               and not statement.wrap_around,
+                    # Deferred release for the wrap-around case above.
+                    "deferred_release": (
+                        bool(statement.wrap_around) and role != "consumer"
+                    ),
+                    # phase = (iter // capacity) % 2, so a reusable slot must
+                    # advance its index with the loop or the next iteration
+                    # waits on a phase the pipe has already passed.  The pipe
+                    # indexes slots with i32 while a loop variable is i64.
+                    #
+                    # A wrap-around edge spans the trip boundary.  Its wait
+                    # sits at the producer's head and its commit at the
+                    # consumer's tail, so trip i's producer must be released
+                    # by trip i-1's consumer: the consumer runs one index
+                    # ahead, and a priming commit before the loop supplies
+                    # index 0 for the first trip.  Using one index on both
+                    # sides would make trip i wait on its own later commit.
+                    "index": _handoff_index(
+                        self.loop_variable,
+                        ahead=bool(statement.wrap_around) and role == "consumer",
+                    ),
+                    # The enclosing loop reads this to emit the priming
+                    # commit the first trip's wait depends on.
+                    "wrap_around": bool(statement.wrap_around),
+                    # The writer side of a reusable slot must acquire before
+                    # committing, or a later trip's commit overruns a slot the
+                    # reader has not released yet.
+                    "acquire": (bool(handoff.get("repeated")) or self.in_loop)
+                               and role == "consumer",
                 })
                 continue
             if isinstance(statement, PipelineDrain):
@@ -321,12 +560,14 @@ class _PipelineSourceBuilder:
                     "kind": "drain",
                     "logical_stage": (*region_path, statement.stage_id),
                     "role": role,
+                    "arena_reuse": bool(statement.arena_reuse),
                 })
                 if role == "consumer":
                     self.auxiliary_events.append({
                         "kind": "drain",
                         "logical_stage": (*region_path, statement.stage_id),
                         "role": "auxiliary",
+                        "arena_reuse": bool(statement.arena_reuse),
                     })
                 continue
             if isinstance(statement, PipelineStage):
@@ -405,6 +646,10 @@ class _PipelineSourceBuilder:
             )
         self._visit_call(operation, role, context, output, staged=True)
 
+    @staticmethod
+    def _static_bound(value):
+        return _static_bound(value)
+
     def _visit_call(
         self,
         call: PrimFunctionCall,
@@ -458,12 +703,50 @@ class _PipelineSourceBuilder:
                     f"Pipeline stage {call.call_id!r} {role} endpoint arity "
                     "differs from its prepared helper ABI."
                 )
+            arguments = _join_arguments(endpoints, str(event["arguments"]))
+            # A counted loop calls this stage once per trip against ONE pipe
+            # instance, where the straight-line schedule gave every call site
+            # its own instance.  One instance means one lifetime: `stage =
+            # iter % capacity` and `phase = (iter // capacity) % 2`, so the
+            # iteration stream has to keep advancing across trips and stay
+            # gap-free, or a later trip waits on a phase the pipe has already
+            # passed.  Pass the trip's base iteration so the stage offsets its
+            # own indices; `close` is emitted once after the loop instead.
+            # A stage whose commit count per invocation is not statically
+            # known (paged attention closes at a run-time `sequence`) cannot
+            # have its iteration base advanced by a fixed stride, so it keeps
+            # the per-trip lifecycle the straight-line schedule gives it.
+            commits = _stage_commits_per_trip(event) if self.in_loop else 0
+            # A stage whose commit count is decided at run time still issues
+            # the SAME count every trip (paged attention's stream length
+            # follows the context, not the layer), so it can scale its own
+            # base: give it the trip index and the trip count and let it do
+            # the arithmetic, including closing on the final trip.
+            dynamic = bool(self.in_loop) and not commits
+            if commits:
+                arguments = _join_arguments(
+                    (arguments,),
+                    f"({self.loop_variable}) * {commits}",
+                )
+            elif dynamic:
+                arguments = _join_arguments(
+                    (arguments,),
+                    f"({self.loop_variable}), {self.loop_trips}",
+                )
             output.append({
                 **event,
                 "kind": "pipeline_kernel_call",
                 "role": role,
                 "symbol": f"{event['symbol']}__{role}",
-                "arguments": _join_arguments(endpoints, str(event["arguments"])),
+                "arguments": arguments,
+                "trip_scoped_pipe": bool(commits),
+                "trip_scoped_dynamic": dynamic,
+                # Instantiated writer endpoints, so the enclosing loop can
+                # close this stage's stream once after the final trip.
+                "trip_scoped_writers": tuple(
+                    str(channel["writer_name"])
+                    for channel in stage_plan["channels"]
+                ) if commits and role == "producer" else (),
             })
             if role == "consumer":
                 self._append_auxiliary_event(
@@ -485,14 +768,19 @@ class _PipelineSourceBuilder:
             )
         key = (*context.call_path, call.call_id)
         instance = self.function_instances.get(key)
-        definition = self.function_builder(execution.name)
+        definition = self.function_builder(execution.name, self.in_loop)
         if instance is None:
             resources, names = instantiate_resources(
                 definition["schedule"], nested.shared_by_name,
                 f"_flagmega_{_identifier('__'.join(key))}",
             )
             self.stages.extend(resources["stages"])
-            self.handoffs.extend(resources["handoffs"])
+            # A callee invoked from a structured loop performs its handoffs
+            # once per iteration, so their slots must be reusable.
+            self.handoffs.extend(
+                {**value, "repeated": True} if self.in_loop else value
+                for value in resources["handoffs"]
+            )
             descriptors = self.descriptor_instantiator(
                 {"host_tensor_descriptor_requests": descriptor_requests(
                     definition["host_tensor_descriptor_specs"])},
@@ -501,10 +789,21 @@ class _PipelineSourceBuilder:
             actuals = [
                 nested.actual_by_formal[str(formal)]
                 for formal in self.bindings[execution.name]["signature"]
+                if formal not in function_pool_aliases(self.pool_abis.get(execution.name))
             ]
+            pool_actuals = function_pool_actuals(
+                self.bindings[context.function_name], call, self.pool_abis.get(execution.name),
+                context.actual_by_formal, has_tables=self.has_offset_tables,
+                # Inside a counted loop the callee's bank row is the trip.
+                # A function between the loop and the bank user receives the
+                # index as its own formal and forwards it unchanged.
+                row_index=self.loop_variable or (
+                    ROW_INDEX if self.row_index_formal else None
+                ),
+            )
             instance = {
                 "names": names,
-                "arguments": [*actuals, *descriptors],
+                "arguments": [*actuals, *descriptors, *pool_actuals],
                 "drained_stages": tuple(names[value] for value in definition["schedule"]["drained_stage_ids"]),
             }
             self.function_instances[key] = instance
@@ -518,17 +817,35 @@ class _PipelineSourceBuilder:
         names = instance["names"]
         endpoints = [names[value] for value in definition["schedule"][f"{role}_endpoints"]]
         suffix = "auxiliary_consumer" if role == "auxiliary" else role
+        arguments = (*endpoints, *instance["arguments"])
         return {
             "kind": "function_call",
             "call": call.call_id,
             "callee": call.callee,
             "symbol": f"{definition['symbol']}__{suffix}",
-            "arguments": ", ".join((*endpoints, *instance["arguments"])),
+            "arguments": ", ".join(arguments),
+            "argument_expressions": arguments,
             "endpoint_bindings": dict(zip(
                 definition["schedule"][f"{role}_endpoints"], endpoints, strict=True,
             )),
             "barrier_before": False,
             "drained_stages": instance["drained_stages"],
+            # Per-trip stage closes deferred to the caller, remapped to this
+            # instance's endpoint names.
+            "trip_scoped_closes": [
+                {**close, "endpoint": names.get(
+                    str(close["endpoint"]), str(close["endpoint"]))}
+                for close in definition["schedule"].get("trip_scoped_closes", ())
+            ],
+            # Drains the callee deferred because its stream now closes in the
+            # caller, after the final trip.
+            "trip_scoped_drains": [
+                {**drain, "endpoints": [
+                    names.get(str(value), str(value))
+                    for value in drain.get("endpoints", ())
+                ]}
+                for drain in (definition["schedule"].get("trip_scoped_drains") or {}).get(role, ())
+            ],
         }
 
     def _kernel_event(
@@ -914,7 +1231,7 @@ class _PipelineSourceBuilder:
             and str(value["call"]) == call.call_id
         )
         local_actuals = emit_function_call_arguments(
-            self.module, caller_binding, event
+            self.module, caller_binding, event, callee_binding=callee_binding
         )
         signature = callee_binding["signature"]
         if len(local_actuals) != len(signature):
@@ -952,7 +1269,9 @@ class _PipelineSourceBuilder:
             (*context.call_path, call.call_id),
         )
 
-    def _handoff(self, key: tuple[str, ...]) -> dict[str, object]:
+    def _handoff(
+        self, key: tuple[str, ...], *, wrap_around: bool = False
+    ) -> dict[str, object]:
         existing = self.handoff_by_key.get(key)
         if existing is not None:
             return existing
@@ -963,6 +1282,14 @@ class _PipelineSourceBuilder:
             "reader_name": f"_flagmega_{stem}_handoff_reader",
             "writer_name": f"_flagmega_{stem}_handoff_writer",
             "semantic": True,
+            # A handoff inside a structured loop is performed once per
+            # iteration, so a one-shot slot would be consumed by the first
+            # iteration and the next would wait on it forever.
+            "repeated": self.in_loop,
+            # This edge's producer side waits for the *previous* trip's
+            # consumer, so the first trip has no predecessor and the pipe is
+            # primed with one commit before the loop.
+            "wrap_around": bool(wrap_around),
         }
         self.handoffs.append(handoff)
         self.handoff_by_key[key] = handoff
@@ -971,6 +1298,14 @@ class _PipelineSourceBuilder:
     def _resolve_drains(self, events: list[dict[str, object]]) -> None:
         resolved = []
         for event in events:
+            if event["kind"] == "loop":
+                # A loop's nested events are part of the same role body, so
+                # their drains resolve against the same stage leaves.
+                nested_events = list(event["events"])
+                self._resolve_drains(nested_events)
+                event["events"] = tuple(nested_events)
+                resolved.append(event)
+                continue
             if event["kind"] != "drain":
                 resolved.append(event)
                 continue
@@ -1009,6 +1344,71 @@ class _PipelineSourceBuilder:
                 event["endpoints"] = [str(value) for value in endpoints]
                 resolved.append(event)
         events[:] = resolved
+
+
+def _compact_duplicate_function_actuals(root_schedule, definitions):
+    """Share formals whose direct SSA actual is equal at every role call.
+
+    Tensor-map rebasing can reuse one descriptor for Q/K/V. Preserving three
+    independent pointer formals would throw away that already-proven equality
+    at the kernel-function boundary. Expressions with loads or calls are not
+    SSA identity proofs and are deliberately excluded here.
+    """
+    schedules = tuple({id(schedule): schedule for schedule in (
+        root_schedule, *(definition["schedule"] for definition in definitions)
+    )}.values())
+    events = [event for schedule in schedules
+              for role in ("consumer", "producer", "auxiliary")
+              for event in schedule[f"{role}_events"]]
+    for definition in definitions:
+        calls = [event for event in events if event["kind"] == "function_call"
+                 and event["callee"] == definition["function"]]
+        if not calls:
+            continue
+        signature = list(definition["signature_arguments"])
+        prefix = {id(call): len(call["argument_expressions"]) - len(signature) for call in calls}
+        retained = []
+        aliases = {}
+        removed = set()
+        for index, name in enumerate(signature):
+            actuals = [call["argument_expressions"][prefix[id(call)] + index] for call in calls]
+            if all(actual.isidentifier() for actual in actuals):
+                anchor = next((other for other in retained if all(
+                    call["argument_expressions"][prefix[id(call)] + other] == actual
+                    for call, actual in zip(calls, actuals, strict=True)
+                )), None)
+                if anchor is not None:
+                    aliases[name] = signature[anchor]
+                    removed.add(index)
+                    continue
+            retained.append(index)
+        if not aliases:
+            continue
+        definition["signature_arguments"] = [signature[index] for index in retained]
+        definition["typed_signature_arguments"] = [
+            definition["typed_signature_arguments"][index] for index in retained
+        ]
+        definition["duplicate_argument_aliases"] = aliases
+        for call in calls:
+            first = prefix[id(call)]
+            arguments = tuple(value for index, value in enumerate(call["argument_expressions"])
+                              if index < first or index - first not in removed)
+            call["argument_expressions"] = arguments
+            call["arguments"] = ", ".join(arguments)
+
+        class Rename(ast.NodeTransformer):
+            def visit_Name(self, node):
+                return ast.copy_location(ast.Name(aliases.get(node.id, node.id), node.ctx), node)
+
+        for role in ("consumer", "producer", "auxiliary"):
+            for event in definition["schedule"][f"{role}_events"]:
+                if "arguments" not in event:
+                    continue
+                parsed = Rename().visit(ast.parse(f"_call({event['arguments']})", mode="eval").body)
+                arguments = tuple(ast.unparse(argument) for argument in parsed.args)
+                event["arguments"] = ", ".join(arguments)
+                if "argument_expressions" in event:
+                    event["argument_expressions"] = arguments
 
 
 def function_call_storage_roots(
@@ -1160,3 +1560,219 @@ __all__ = [
     "build_pipeline_source_schedule",
     "function_call_storage_roots",
 ]
+
+
+def _append_deferred_releases(events):
+    """Move each wrap-around wait's release to the end of the body.
+
+    The wait guards arena bytes the following stages refill, so the slot
+    cannot go back to the writer until those stages have run.
+    """
+
+    releases: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def walk(items):
+        for event in items or ():
+            if event.get("kind") == "loop":
+                walk(event.get("events"))
+                continue
+            if event.get("kind") != "handoff":
+                continue
+            if not event.pop("deferred_release", False):
+                continue
+            endpoint = str(event["endpoint"])
+            if endpoint in seen:
+                continue
+            seen.add(endpoint)
+            releases.append({
+                "kind": "handoff",
+                "endpoint": endpoint,
+                "action": "release",
+                "index": event.get("index", "0"),
+            })
+
+    walk(events)
+    return [*events, *releases]
+
+
+def _wrap_around_priming(handoffs):
+    """Build the pre-loop commit each wrap-around handoff needs.
+
+    Only the committing side is primed: the waiting side's first trip is
+    satisfied by this commit instead of by a predecessor trip.  The slot is
+    acquired first, exactly as the in-loop commit does, so capacity-1
+    accounting stays balanced.  The consumer owns the writer endpoint of a
+    semantic handoff, which is the side that commits.
+    """
+
+    result: list[dict[str, object]] = []
+    for handoff in handoffs or ():
+        if not handoff.get("wrap_around"):
+            continue
+        result.append({
+            "kind": "handoff",
+            "endpoint": str(handoff["writer_name"]),
+            "action": "commit",
+            "index": "0",
+            "acquire": True,
+            "release": False,
+        })
+    return result
+
+
+def _handoff_index(loop_variable, *, ahead=False):
+    """Render a handoff's slot index, optionally one trip ahead.
+
+    The pipe indexes slots with i32 while a loop variable is i64, so a loop
+    trip's index is narrowed. A call site that is not inside a loop supplies a
+    constant instead: it carries no Triton value to narrow, and ``.to`` on a
+    Python int raises during kernel compilation, so it is emitted as-is.
+    """
+
+    if loop_variable is None:
+        return "1" if ahead else "0"
+    text = str(loop_variable).strip()
+    if text.lstrip("+-").isdigit():
+        return str(int(text) + 1) if ahead else text
+    offset = " + 1" if ahead else ""
+    return f"(({loop_variable}){offset}).to(tl.int32)"
+
+
+def _split_drains(events):
+    """Separate a loop body's events from the drains that must follow it.
+
+    One pipe instance serves every trip, so its close is after the loop, and
+    `tle.pipe.drain` needs that close in the same async task and in both
+    tasks at once.  A drain therefore cannot stay inside a repeated body at
+    all; the arena hazards that would need per-trip waiting are expressed as
+    handoffs by LowerTransferPipelineRegions instead.
+    """
+
+    body: list[dict[str, object]] = []
+    drains: list[dict[str, object]] = []
+    for event in events or ():
+        if event.get("kind") == "drain":
+            drains.append(event)
+            continue
+        if event.get("kind") == "loop":
+            inner, inner_drains = _split_drains(event.get("events"))
+            if inner_drains:
+                event = {**event, "events": inner}
+                drains.extend(inner_drains)
+        body.append(event)
+    return body, drains
+
+
+def _collect_trip_closes(events, trips: int):
+    """Gather trip-scoped closes from a loop body, scaled to the trip count."""
+
+    closes: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def walk(items):
+        for event in items or ():
+            if event.get("kind") == "loop":
+                walk(event.get("events"))
+                continue
+            for close in (*_post_loop_closes([event], 1),
+                          *(event.get("trip_scoped_closes") or ())):
+                endpoint = str(close["endpoint"])
+                if endpoint in seen:
+                    continue
+                seen.add(endpoint)
+                closes.append({
+                    "kind": "pipe_close",
+                    "endpoint": endpoint,
+                    "iteration": trips * int(close["iteration"]),
+                })
+    walk(events)
+    return closes
+
+
+def source_signature_probe(signature, pool_abi, has_tables: bool):
+    """Return the callee signature, to test whether it carries a row index."""
+
+    return function_pool_signature(tuple(signature), pool_abi, has_tables=has_tables)
+
+
+def _trip_count(start: int, stop: int, step: int) -> int:
+    """Return how many times a counted loop executes its body."""
+
+    if step <= 0:
+        raise CodegenError(f"A structured loop requires a positive step, got {step}.")
+    return max(0, -(-(stop - start) // step))
+
+
+def _post_loop_closes(events, trips: int):
+    """Build one close event per trip-scoped writer reached inside the loop."""
+
+    closes: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def walk(items):
+        for event in items or ():
+            if event.get("kind") == "loop":
+                walk(event.get("events"))
+                continue
+            if not event.get("trip_scoped_pipe"):
+                continue
+            commits = _stage_commits_per_trip(event)
+            for writer in event.get("trip_scoped_writers", ()) or ():
+                writer = str(writer)
+                if not writer or writer in seen:
+                    continue
+                seen.add(writer)
+                closes.append({
+                    "kind": "pipe_close",
+                    "endpoint": writer,
+                    "iteration": trips * commits,
+                })
+    walk(events)
+    return closes
+
+
+def _stage_commits_per_trip(event) -> int:
+    """Return how many pipe iterations one invocation of a stage consumes.
+
+    A pipelined stage commits one slot per (n_tile, k_tile) pair, so that
+    product is the stride a counted loop must advance the stage's iteration
+    base by.  The stride must equal the commits actually issued: a larger
+    stride leaves holes in the iteration stream, and `phase = (iter //
+    capacity) % 2` then disagrees between the writer and the reader.
+    """
+
+    value = event.get("pipeline_commits_per_invocation")
+    return value if isinstance(value, int) and value > 0 else 0
+
+
+def _static_bound(value):
+    """Return a structured loop bound as a plain integer."""
+    for attribute in ("fixed_value", "value", "fixed"):
+        candidate = getattr(value, attribute, None)
+        if isinstance(candidate, int):
+            return candidate
+    if isinstance(value, int):
+        return value
+    raise CodegenError(f"A structured loop requires static bounds, got {value!r}.")
+
+
+def _induction_formal(module, function_name):
+    """Return an in-scope value that advances with the enclosing loop.
+
+    A loop body has the induction value as its own first formal. A callee of
+    that body does not, but it receives the per-iteration layer index, which
+    advances identically and is already a scalar in its signature.
+    """
+    from triton.flagmega.ir.region import is_region
+
+    function = module.function_map.get(function_name)
+    if function is None or not function.parameters:
+        return None
+    if is_region(function):
+        return function.parameters[0]
+    for parameter in function.parameters:
+        node = module.node_map.get(parameter)
+        if node is not None and str(node.attrs.get("name", "")) == "layer_id":
+            return parameter
+    return None

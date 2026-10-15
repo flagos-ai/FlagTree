@@ -260,3 +260,96 @@ def test_packed_descriptor_pipeline_rejects_block_cyclic_local_tiles():
     assert "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv" not in {
         value.id for value in point.candidates
     }
+
+
+def _chip_split_packed_projection() -> fm.IRModule:
+    """A projection whose weight is split across chips as well as blocks."""
+
+    placement = fm.Placement((4, 8, 16), "cyx", "cbb")
+    lhs = fm.Node(
+        "lhs",
+        "builtin.var",
+        (),
+        fm.DistributedType(
+            fm.tensor_type("bfloat16", (1, 16384)),
+            (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 512)),
+            placement,
+        ),
+    )
+    rhs = fm.Node(
+        "rhs",
+        "builtin.var",
+        (),
+        fm.DistributedType(
+            fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (1024, 256)),
+            (
+                fm.SBP.split_contiguous((0, 1), 32),
+                fm.SBP.split_contiguous((2,), 16),
+            ),
+            placement,
+        ),
+    )
+    result = fm.Node(
+        "result",
+        "ntt.packed_matmul",
+        (lhs.id, rhs.id),
+        fm.DistributedType(
+            fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 256)),
+            (fm.SBP.broadcast(), fm.SBP.split_contiguous((2,), 16)),
+            placement,
+            fm.SBP.partial((0, 1)),
+        ),
+        metadata={
+            "selected_vectorization": "vectorization.matmul.n",
+            "selected_vector_axes": (1,),
+            "selected_vector_lanes": (8,),
+        },
+    )
+    return fm.IRModule(
+        dialect="distributed",
+        stage="distributed",
+        nodes=(lhs, rhs, result),
+        functions=(),
+        entry="main",
+        metadata={"launch_contract": {"grid_mesh": placement.to_data()}},
+    )
+
+
+def test_chip_split_weight_excludes_the_replicating_single_descriptor():
+    """A single map would oblige every chip to hold the whole weight.
+
+    The table variant reads the same weight from chip-local storage, so the
+    single form is not applicable and must not be proposed at all.
+    """
+
+    proposed = NvidiaSm90Target().propose_tir(_chip_split_packed_projection())
+    point = next(value for value in proposed.selection_points if value.id == "tir.result")
+    descriptor_ids = {
+        value.id for value in point.candidates
+        if value.parameters.get("descriptor_kind") == "table"
+        or "tensor_descriptor" in value.id
+    }
+
+    assert point.default_candidate == (
+        "tir.dense_matmul."
+        "split_k_n_packed_k_major_gemv_tn64"
+    )
+    assert descriptor_ids == {
+        "tir.dense_matmul."
+        "split_k_n_packed_tensor_descriptor_table_smem_pipeline_gemv"
+    }
+
+
+def test_block_only_split_keeps_the_single_descriptor_default():
+    """Without a chip split there is no replication to avoid.
+
+    Every owner is resident on the one chip, so the single map costs nothing
+    extra and stays the default.
+    """
+
+    proposed = NvidiaSm90Target().propose_tir(_hybrid_split_packed_projection())
+    point = next(value for value in proposed.selection_points if value.id == "tir.result")
+
+    assert point.default_candidate == (
+        "tir.dense_matmul.split_k_n_packed_tensor_descriptor_smem_pipeline_gemv"
+    )

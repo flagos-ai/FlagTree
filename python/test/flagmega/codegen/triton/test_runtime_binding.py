@@ -5,11 +5,11 @@ from dataclasses import replace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.call_abi import describe_function_call_abi
-from triton.flagmega.codegen.triton.runtime_binding import (
-    describe_function_runtime_binding,
-)
 from triton.flagmega.codegen.triton.function_call import (
     emit_function_call_arguments,
+)
+from triton.flagmega.codegen.triton.runtime_binding import (
+    describe_function_runtime_binding,
 )
 from triton.flagmega.passes.tir import (
     bind_prim_function_buffers,
@@ -74,13 +74,15 @@ def _module() -> fm.IRModule:
         else node
         for node in bound.nodes
     )
-    return fm.verify_module(replace(
-        bound,
-        nodes=nodes,
-        stage="bufferized_tir",
-        dialect="bufferized_tir",
-        metadata={**bound.metadata, "buffer_plan": plan.to_data()},
-    ))
+    return fm.verify_module(
+        replace(
+            bound,
+            nodes=nodes,
+            stage="bufferized_tir",
+            dialect="bufferized_tir",
+            metadata={**bound.metadata, "buffer_plan": plan.to_data()},
+        )
+    )
 
 
 def _nested_rdata_module() -> fm.IRModule:
@@ -93,16 +95,10 @@ def _nested_rdata_module() -> fm.IRModule:
         key="rhs",
         id="rhs",
     )
-    worker_input = builder.var(
-        "worker_input", value_type, id="worker_input"
-    )
-    worker_weight = builder.var(
-        "worker_weight", value_type, id="worker_weight"
-    )
+    worker_input = builder.var("worker_input", value_type, id="worker_input")
+    worker_weight = builder.var("worker_weight", value_type, id="worker_weight")
     scalar_type = fm.tensor_type("int32", ())
-    worker_layer = builder.var(
-        "worker_layer", scalar_type, id="worker_layer"
-    )
+    worker_layer = builder.var("worker_layer", scalar_type, id="worker_layer")
     worker_result = builder.call(
         "tir.kernel",
         (worker_input, worker_weight),
@@ -160,13 +156,15 @@ def _nested_rdata_module() -> fm.IRModule:
         else node
         for node in bound.nodes
     )
-    return fm.verify_module(replace(
-        bound,
-        nodes=nodes,
-        stage="bufferized_tir",
-        dialect="bufferized_tir",
-        metadata={**bound.metadata, "buffer_plan": plan.to_data()},
-    ))
+    return fm.verify_module(
+        replace(
+            bound,
+            nodes=nodes,
+            stage="bufferized_tir",
+            dialect="bufferized_tir",
+            metadata={**bound.metadata, "buffer_plan": plan.to_data()},
+        )
+    )
 
 
 def test_runtime_binding_uses_external_rdata_and_sat_workspace_roots():
@@ -175,22 +173,24 @@ def test_runtime_binding_uses_external_rdata_and_sat_workspace_roots():
     assert binding["schema"] == "flagmega.function-runtime-binding/v1"
     assert binding["signature"] == ["lhs", "output", "rdata", "workspace"]
     assert binding["pools"] == [
-        {"name": "rdata", "storage": "rdata", "nbytes": 256},
+        {
+            "name": "rdata",
+            "storage": "rdata",
+            "nbytes": 256,
+            "chip_sharded": False,
+            "chip_count": 1,
+            "segment_nbytes": 256,
+        },
         {"name": "workspace", "storage": "workspace", "nbytes": 256},
     ]
     calls = binding["call_abi"]["kernel_calls"]
     assert [call["call"] for call in calls] == ["temporary", "output"]
-    assert [
-        buffer["runtime_argument"]
-        for parameter in calls[0]["inputs"]
-        for buffer in parameter["buffers"]
-    ] == ["lhs", "rdata"]
-    assert calls[0]["outputs"][0]["buffers"][0][
-        "runtime_argument"
-    ] == "workspace"
-    assert calls[1]["outputs"][0]["buffers"][0][
-        "runtime_argument"
-    ] == "output"
+    assert [buffer["runtime_argument"] for parameter in calls[0]["inputs"] for buffer in parameter["buffers"]] == [
+        "lhs",
+        "rdata",
+    ]
+    assert calls[0]["outputs"][0]["buffers"][0]["runtime_argument"] == "workspace"
+    assert calls[1]["outputs"][0]["buffers"][0]["runtime_argument"] == "output"
 
 
 def test_runtime_binding_is_deterministic_and_does_not_mutate_call_abi():
@@ -201,9 +201,7 @@ def test_runtime_binding_is_deterministic_and_does_not_mutate_call_abi():
 
     assert first == second
     plain_call_abi = describe_function_call_abi(module)
-    assert "runtime_argument" not in (
-        plain_call_abi["kernel_calls"][0]["inputs"][0]["buffers"][0]
-    )
+    assert "runtime_argument" not in (plain_call_abi["kernel_calls"][0]["inputs"][0]["buffers"][0])
 
 
 def test_nested_call_keeps_callee_only_rdata_in_entry_signature():
@@ -216,9 +214,7 @@ def test_nested_call_keeps_callee_only_rdata_in_entry_signature():
     ]
     nested = binding["call_abi"]["events"][1]
     assert nested["kind"] == "function_call"
-    assert [
-        edge["actual_runtime_argument"] for edge in nested["arguments"]
-    ] == ["workspace", "rdata", "7"]
+    assert [edge["actual_runtime_argument"] for edge in nested["arguments"]] == ["workspace", "rdata", "7"]
     assert nested["arguments"][2]["actual_runtime_value_kind"] == "immediate"
     assert nested["results"][0]["actual_runtime_argument"] == "workspace"
     assert binding["values"][-1] == {
@@ -243,3 +239,25 @@ def test_nested_call_arguments_follow_callee_signature_and_storage_bases():
         "rdata.to(tl.pointer_type(tl.float32))",
         "tl.full((), 7, tl.int32)",
     )
+
+
+def test_nested_calls_reuse_the_verified_package_binding(monkeypatch):
+    from triton.flagmega.codegen.triton import function_call
+
+    module = _nested_rdata_module()
+    caller = describe_function_runtime_binding(module)
+    event = caller["call_abi"]["events"][1]
+    callee = describe_function_runtime_binding(module, function_name=str(event["callee"]))
+    expected = emit_function_call_arguments(module, caller, event)
+
+    def duplicate_analysis(*args, **kwargs):
+        raise AssertionError("Package lowering must reuse its verified callee binding")
+
+    monkeypatch.setattr(function_call, "describe_function_runtime_binding", duplicate_analysis)
+    for _ in range(5):
+        assert emit_function_call_arguments(module, caller, event, callee_binding=callee) == expected
+    # Package preparation adds device context to generated signatures after
+    # describing the storage ABI. Reuse that binding without binding it twice.
+    caller["signature"].append("device_dptr")
+    callee["signature"].append("device_dptr")
+    assert emit_function_call_arguments(module, caller, event, callee_binding=callee) == (*expected, "device_dptr")

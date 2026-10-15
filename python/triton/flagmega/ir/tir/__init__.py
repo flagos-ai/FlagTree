@@ -15,7 +15,11 @@ from triton.flagmega.ir.bufferization import (
 )
 from triton.flagmega.ir.bufferization.verify import verify_buffer_plan
 from triton.flagmega.ir.tir.base import TIRCost, TIRNode, TIRStmt, TIRValue
-from triton.flagmega.ir.tir.barrier import Barrier, BarrierScope
+from triton.flagmega.ir.tir.barrier import (
+    Barrier,
+    BarrierScope,
+    synchronization_scope_name,
+)
 from triton.flagmega.ir.tir.auxiliary_consumer_contract import TIRAuxiliaryConsumerContract
 from triton.flagmega.ir.tir.binary import Binary
 from triton.flagmega.ir.tir.block import Block
@@ -88,5 +92,5 @@ __all__ = [
     "T", "TIRAuxiliaryConsumerContract", "TIRCost", "TIRMicroKernelSelection", "TIRNode", "TIRRewriter", "TIRSharedWorkspaceDescriptor", "TIRStmt", "TIRTransferPipelineChannel", "TIRTransferPipelineContract", "TIRValue", "TIRVisitor",
     "estimate_tir_cost", "execution_calls_of", "execution_items_of", "iter_tir_children", "make_buffer_plan", "tir_from_data", "tir_to_data",
     "SynchronizationRange", "ValueRef", "WorkspaceLifetime", "WorkspaceRequirement", "kernel_dispatch_for_call", "kernel_dispatch_of", "kernel_execution_kind", "kernel_execution_kind_for_call", "verify_buffer_plan",
-    "verify_execution_functions", "verify_prim_function",
+    "verify_execution_functions", "verify_prim_function", "synchronization_scope_name",
 ]

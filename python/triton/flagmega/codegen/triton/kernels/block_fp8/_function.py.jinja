@@ -22,7 +22,7 @@ def {{ call.symbol }}({{ call.signature }}):
         0, {{ call.local_n_capacity }}, {{ call.tile_n }}
     ):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
-        n_mask = local_n_offsets < ({{ call.active_n }})
+        n_mask = {{ call.n_mask }}
         weight_rows = {{ call.weight_row_offset }}
         scale_rows = {{ call.scale_row_offset }}
         destination_offsets = {{ call.destination_offset }}

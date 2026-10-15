@@ -1,0 +1,35 @@
+# flagmega-kernel: kda_convolution/local platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "kda_convolution" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+        _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+        _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+{% for part in call.parts %}
+        # part {{ loop.index0 }} of q/k/v: its own projection and result buffer,
+        # sharing the [3, heads, head_dim, ...] state and weight.
+        _fm_x = tl.load({{ part.value }} + ({{ part.value_offset }}), mask=_fm_mask, other=0.0).to(tl.float32)
+        _fm_acc = tl.zeros_like(_fm_x)
+{% for j in range(call.kernel - 1) %}
+        _fm_hist = tl.load({{ call.state }} + ({{ part.state_offsets[j] }}), mask=_fm_mask, other=0.0).to(tl.float32)
+        _fm_acc += tl.load({{ call.weight }} + ({{ part.weight_offsets[j] }}), mask=_fm_mask, other=0.0).to(tl.float32) * _fm_hist
+{% if j + 1 < call.kernel - 1 %}
+        _fm_shifted = tl.load({{ call.state }} + ({{ part.state_offsets[j + 1] }}), mask=_fm_mask, other=0.0)
+        tl.store({{ call.new_state }} + ({{ part.new_state_offsets[j] }}), _fm_shifted, mask=_fm_mask & ({{ call.writer_active }}))
+{% endif %}
+{% endfor %}
+        _fm_acc += tl.load({{ call.weight }} + ({{ part.weight_offsets[call.kernel - 1] }}), mask=_fm_mask, other=0.0).to(tl.float32) * _fm_x
+        tl.store({{ call.new_state }} + ({{ part.new_state_offsets[call.kernel - 2] }}), _fm_x.to(tl.bfloat16), mask=_fm_mask & ({{ call.writer_active }}))
+        _fm_out = _fm_acc * tl.sigmoid(_fm_acc)
+        tl.store({{ part.result }} + ({{ part.result_offset }}), _fm_out.to(tl.bfloat16),
+                 mask=_fm_mask & ({{ part.result_writer_active }}))
+{% endfor %}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

@@ -9,7 +9,8 @@ import keyword
 import re
 
 from triton.flagmega.codegen.triton.call_abi import describe_function_call_abi
-from triton.flagmega.codegen.triton.dimension_expression import emit_dimension
+from triton.flagmega.codegen.triton.dimension_expression import emit_dimension, emit_logical
+from triton.flagmega.ir.logical_expr import LogicalExpr
 from triton.flagmega.ir.dim_expr import Dimension
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import IRModule, verify_buffer_plan
@@ -17,6 +18,8 @@ from triton.flagmega.codegen.triton.pool_abi import (
     is_runtime_pool_space,
     memory_scope_count,
 )
+from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
+from triton.flagmega.ir.distributed_type import launch_chip_count
 
 
 FUNCTION_RUNTIME_BINDING_SCHEMA = "flagmega.function-runtime-binding/v1"
@@ -136,6 +139,11 @@ def describe_function_runtime_binding(
             str(frame["memory_space"])
             for frame in event["memory_pools"]
         )
+        # A callee may read module-scope storage this function never names in
+        # an argument edge, such as readonly data reached through a parameter
+        # bank. The pool must still be forwarded, so take the transitive
+        # closure of what the callees actually touch.
+        used_storages.update(_callee_pool_storages(plan, str(event["callee"])))
 
     pools: list[dict[str, object]] = []
     ordered_spaces = sorted(
@@ -162,6 +170,16 @@ def describe_function_runtime_binding(
             "storage": storage,
             "nbytes": scope_nbytes * scope_count,
         }
+        if storage == "rdata":
+            chip_sharded = any(
+                buffer.storage == "rdata"
+                and buffer.distributed_storage_kind
+                is DistributedBufferStorageKind.COMPACT_PER_CHIP
+                for buffer in plan.buffers
+            )
+            pool["chip_sharded"] = chip_sharded
+            pool["chip_count"] = launch_chip_count(module) if chip_sharded else 1
+            pool["segment_nbytes"] = scope_nbytes
         if physical_scope_count != 1:
             pool.update({
                 "scope": space.sharing_scope.value,
@@ -334,6 +352,22 @@ def _scalar_immediate(module: IRModule, plan, buffer_id: str) -> str:
             "tir.scalar_const",
         }:
             return repr(node.attrs["value"])
+        loop_variable = _loop_induction_variable(module, str(buffer.source_node or current))
+        if loop_variable is not None:
+            # A loop's induction value is live only inside the loop, where the
+            # generated source binds it as the loop variable.
+            return loop_variable
+        if node is not None and node.op == "shapes.dim_as_tensor":
+            # A dimension/logical expression is emitted in place; its symbols
+            # are the enclosing loop variables, which the loop source binds.
+            expression = node.attrs["expression"]
+            # A scalar immediate has no owning function recorded, so find
+            # the loop body that contains this node instead.
+            symbols = _dimension_symbols(
+                module, expression, _owning_region(module, node.id))
+            if isinstance(expression, LogicalExpr):
+                return emit_logical(expression, symbols=symbols)
+            return emit_dimension(expression, symbols=symbols)
         if buffer.alias_of is None:
             break
         current = buffer.alias_of
@@ -362,3 +396,94 @@ __all__ = [
     "FUNCTION_RUNTIME_BINDING_SCHEMA",
     "describe_function_runtime_binding",
 ]
+
+
+def _loop_induction_variable(module: IRModule, value_id: str) -> str | None:
+    """Return the loop variable name when a value is a body's induction formal."""
+    for node in module.nodes:
+        if node.op != "control.for":
+            continue
+        region = module.function_map.get(str(node.attrs.get("callee", "")))
+        if region is not None and region.parameters and region.parameters[0] == value_id:
+            return f"{node.id}_iv"
+    return None
+
+
+def _callee_pool_storages(plan, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
+    """Return every runtime pool storage a callee and its callees touch."""
+    if name in seen:
+        return set()
+    function_plan = plan.function_map.get(name)
+    if function_plan is None:
+        return set()
+    seen = seen | {name}
+    result: set[str] = set()
+    for value, ids in (
+        *function_plan.parameters,
+        *function_plan.outputs,
+        *function_plan.values,
+    ):
+        for buffer_id in ids:
+            buffer = plan.buffer_map.get(buffer_id)
+            if buffer is not None and _is_runtime_pool_storage(plan, buffer.storage):
+                result.add(str(buffer.storage))
+    for call in function_plan.calls:
+        result.update(_callee_pool_storages(plan, call.callee, seen))
+    return result
+
+
+def _dimension_symbols(module, expression, function_name=None) -> dict[str, str]:
+    """Bind a dimension expression's symbols to generated source names.
+
+    The symbol names a loop's induction value. Inside the loop body that value
+    arrives as the body's own induction formal, so bind the symbol to that
+    parameter rather than to the caller's loop variable, which is not in
+    scope there.
+    """
+    from triton.flagmega.ir.dim_expr import DimVar
+    from triton.flagmega.ir.logical_expr import DimCompare, LogicalNot
+
+    names: dict[str, str] = {}
+
+    def visit(value) -> None:
+        if isinstance(value, DimVar):
+            names[value.symbol] = value.symbol
+            return
+        for operand in (
+            *getattr(value, "operands", ()),
+            *((value.lhs, value.rhs) if isinstance(value, DimCompare) else ()),
+            *((value.operand,) if isinstance(value, LogicalNot) else ()),
+        ):
+            visit(operand)
+
+    visit(expression)
+    local = _local_induction_formal(module, function_name)
+    if local is not None:
+        return {symbol: local for symbol in names}
+    return names
+
+
+def _owning_region(module, node_id):
+    """Return the loop-body function whose closure contains this node."""
+    from triton.flagmega.passes.functions.graph import function_nodes
+    from triton.flagmega.ir.region import is_region
+
+    for function in module.functions:
+        if not is_region(function):
+            continue
+        if any(value.id == node_id for value in function_nodes(module, function)):
+            return function.name
+    return None
+
+
+def _local_induction_formal(module, function_name):
+    """Return this function's induction formal when it is a loop body."""
+    if function_name is None:
+        return None
+    for node in module.nodes:
+        if node.op != "control.for" or str(node.attrs.get("callee", "")) != function_name:
+            continue
+        region = module.function_map.get(function_name)
+        if region is not None and region.parameters:
+            return region.parameters[0]
+    return None

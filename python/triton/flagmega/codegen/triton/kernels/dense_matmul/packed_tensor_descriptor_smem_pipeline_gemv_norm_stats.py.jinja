@@ -139,7 +139,7 @@ def {{ call.symbol }}__consumer_stage(
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__producer(
-    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {% set writer = call.pipeline_channels[0].writer_parameter %}
@@ -159,6 +159,7 @@ def {{ call.symbol }}__producer(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
             dense_pipeline_sequence = (
+                {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base +{% endif %}
                 (dense_local_n_start // {{ call.tile_n }})
                 * ({{ call.local_k_capacity }} // {{ call.block_k }})
                 + dense_local_k_start // {{ call.block_k }}
@@ -181,15 +182,17 @@ def {{ call.symbol }}__producer(
                 eviction_policy="evict_first",
             )
             {{ writer }}.commit(dense_pipeline_sequence)
+    {% if not call.trip_scoped_pipe | default(false) %}
     {{ writer }}.close(
         {{ call.tiles_per_owner }}
         * ({{ call.local_k_capacity }} // {{ call.block_k }})
     )
+    {% endif %}
 
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__consumer(
-    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}{% if call.trip_scoped_pipe | default(false) %}, _flagmega_pipe_trip_base{% endif %}
 ):
 {{ entry.mesh_coordinates() }}
 {% set reader = call.pipeline_channels[0].reader_parameter %}
@@ -263,6 +266,7 @@ def {{ call.symbol }}__consumer(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
             dense_pipeline_sequence = (
+                {% if call.trip_scoped_pipe | default(false) %}_flagmega_pipe_trip_base +{% endif %}
                 (dense_local_n_start // {{ call.tile_n }})
                 * ({{ call.local_k_capacity }} // {{ call.block_k }})
                 + dense_local_k_start // {{ call.block_k }}

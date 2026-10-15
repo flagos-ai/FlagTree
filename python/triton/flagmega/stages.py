@@ -42,6 +42,7 @@ from triton.flagmega.passes.auto_distributed.policy import (
 )
 from triton.flagmega.passes.tir import (
     canonicalize_packed_qkv_weights,
+    fuse_bank_qkv_weights,
     lower_transfer_pipeline_regions,
     lower_tuple_boxing,
     materialize_execution_functions,
@@ -192,7 +193,9 @@ def _lower_to_tir(module: IRModule, target: Target) -> IRModule:
 def _canonicalize_packed_qkv_weights(
     module: IRModule, _target: Target
 ) -> IRModule:
-    return canonicalize_packed_qkv_weights(module)
+    # A loop body reads its weights from a parameter bank, so fuse those three
+    # fields first; the canonicalizer then sees one already fused RHS.
+    return fuse_bank_qkv_weights(canonicalize_packed_qkv_weights(module))
 
 
 def _propose_microkernels(module: IRModule, target: Target) -> IRModule:

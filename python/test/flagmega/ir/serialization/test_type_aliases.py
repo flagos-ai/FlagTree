@@ -53,6 +53,49 @@ def test_single_use_type_stays_inline_for_local_editability():
     assert "fm.tensor_type(" in source
 
 
+def test_shared_type_hashing_is_independent_of_node_count(monkeypatch):
+    prototype = _module_with_repeated_distributed_type()
+    value_type = prototype.nodes[0].type
+    nodes = tuple(fm.Node(f"x{i}", "builtin.var", (), value_type, attrs={"name": f"x{i}"}) for i in range(50))
+    module = replace(prototype, nodes=nodes, functions=(fm.Function("main", tuple(n.id for n in nodes), (nodes[-1].id,)),))
+    original = fm.DistributedType.__hash__
+    calls = []
+
+    def count(self):
+        if self is value_type:
+            calls.append(self)
+        return original(self)
+
+    monkeypatch.setattr(fm.DistributedType, "__hash__", count)
+    source = fm.module_source(module)
+    assert source.count("fm.DistributedType(") == 1
+    assert len(calls) <= 8
+
+
+def test_fragment_cache_does_not_rehash_full_alias_table_per_lookup(monkeypatch):
+    class CountedSignature(tuple):
+        members_hashed = 0
+
+        def __hash__(self):
+            type(self).members_hashed += len(self)
+            return super().__hash__()
+
+    signature = CountedSignature((index, f"TYPE_{index}") for index in range(1024))
+    # Exercise the actual module-source environment setup and fragment cache.
+    # A counting table preserves normal tuple equality and hashing semantics.
+    original = python_ir._expression_signature
+    environment = original(signature)
+    token = python_ir._TYPE_ALIAS_SIGNATURE.set(environment)
+    try:
+        owner = _module_with_repeated_distributed_type().metadata
+        CountedSignature.members_hashed = 0
+        for _ in range(100):
+            assert python_ir._cached_python_expr("unit-signature", owner, lambda: "value") == "value"
+        assert CountedSignature.members_hashed == 0
+    finally:
+        python_ir._TYPE_ALIAS_SIGNATURE.reset(token)
+
+
 def test_shared_fragment_cache_observes_an_edited_node_type():
     original = _module_with_repeated_distributed_type()
     assert "TYPE_0000" in fm.module_source(original)

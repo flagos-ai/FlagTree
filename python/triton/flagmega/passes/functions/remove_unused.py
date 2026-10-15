@@ -40,7 +40,7 @@ def remove_unused_functions(module: IRModule) -> IRModule:
         function = function_map[function_name]
         reachable_functions.add(function_name)
         for node in function_nodes(module, function):
-            if node.op not in {"builtin.call", "tir.call"}:
+            if node.op not in {"builtin.call", "tir.call", "control.for"}:
                 continue
             callee = str(node.attrs.get("callee", ""))
             if callee in module.kernel_callable_map:
