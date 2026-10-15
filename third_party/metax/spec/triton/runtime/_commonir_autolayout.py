@@ -46,60 +46,18 @@ def _median_intervals(samples, candidate_count):
     return intervals
 
 
-def _fast_launch_key(kernel, grid, stream, args):
-    """Describe the current launch without serialization or device properties."""
+def _specialization_key(kernel):
+    """Persist one winner per compiled specialization and physical device.
+
+    Ordinary JIT specialization already captures compilation assumptions.
+    Runtime shapes, strides, scalar values and launch grids do not select
+    additional layouts; the first nonempty launch supplies the tuning inputs.
+    """
     import torch
-
-    def describe(value):
-        if isinstance(value, torch.Tensor):
-            # Pointer plus storage_offset/dtype also determines the storage
-            # base, so changed views and alias relationships cannot hit here.
-            return (type(value), id(value), value.data_ptr(), tuple(value.shape), value.stride(),
-                    value.storage_offset(), value.dtype, value.device)
-        if isinstance(value, (tuple, list)):
-            items = tuple(describe(item) for item in value)
-            return None if any(item is None for item in items) else (type(value), items)
-        if value is None or isinstance(value, (str, bool, int)):
-            return type(value), value
-        if isinstance(value, float):
-            return float, value.hex()
-        # Unhandled arguments still use the existing complete workload key.
-        return None
-
-    arguments = tuple(describe(arg) for arg in args)
-    if any(arg is None for arg in arguments):
-        return None
-    return kernel, torch.cuda.current_device(), grid, stream, arguments
-
-
-def _workload_key(kernel, grid, args):
-    import torch
-
-    storages = {}
-
-    def describe(value):
-        if isinstance(value, torch.Tensor):
-            storage = value.untyped_storage()
-            identity = (str(value.device), storage.data_ptr())
-            alias = storages.setdefault(identity, len(storages))
-            pointer = value.data_ptr()
-            return ("tensor", str(value.device), str(value.dtype), tuple(value.shape), tuple(value.stride()),
-                    value.storage_offset(), min(pointer & -pointer, 256), alias)
-        if isinstance(value, (tuple, list)):
-            return [describe(item) for item in value]
-        if value is None or isinstance(value, (str, bool, int)):
-            return value
-        if isinstance(value, float):
-            return value.hex()
-        # constexpr types are already part of the compiled specialization.
-        if isinstance(value, torch.dtype) or type(value).__module__.startswith("triton.language"):
-            return str(value)
-        raise TypeError(f"autolayout does not support argument type {type(value).__name__}")
 
     device = torch.cuda.get_device_properties(torch.cuda.current_device())
-    payload = (_PROTOCOL, kernel.hash, str(getattr(device,
-                                                   "uuid", device.name)), device.name, device.multi_processor_count,
-               tuple(grid), [describe(arg) for arg in args])
+    payload = (_PROTOCOL, "jit-specialization-v1", kernel.hash, str(getattr(device, "uuid", device.name)),
+               device.name, device.multi_processor_count)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -177,8 +135,6 @@ class CommonIRAutolayoutJITFunction(JITFunction):
         super().__init__(*args, **kwargs)
         self._layout_lock = threading.RLock()
         self._layout_kernels = {}
-        self._layout_winners = {}
-        self._layout_fast_winners = {}
         self.autolayout_results = {}
 
     def create_binder(self):
@@ -306,17 +262,16 @@ class CommonIRAutolayoutJITFunction(JITFunction):
                      len(compiled), sum(item["status"] == "pruned" for item in measurements.values()), len(timings))
         return timings, report
 
-    def _remember_fast_winner(self, launch_key, workload_key, winner):
-        if launch_key is not None:
-            # Do not retain every tensor allocation identity in a long run.
-            if len(self._layout_fast_winners) >= 128:
-                self._layout_fast_winners.clear()
-            self._layout_fast_winners[launch_key] = workload_key, winner
+    def _remember_winner(self, kernel_cache, key, winner):
+        # The selected candidate may be the original manifest-bearing kernel.
+        # Mark it too, so subsequent launches never re-enter layout selection.
+        winner._commonir_autolayout_selected = True
+        kernel_cache[key] = winner
         return winner
 
-    def _prepare_kernel_for_launch(self, kernel, grid, stream, bound_args):
-        import torch
-
+    def _prepare_kernel_for_launch(self, kernel, grid, stream, bound_args, *, kernel_cache, key):
+        if getattr(kernel, "_commonir_autolayout_selected", False):
+            return kernel
         manifest = getattr(kernel.metadata, "commonir_layout_candidates", None)
         if manifest is None or len(manifest["variants"]) == 1:
             return kernel
@@ -325,19 +280,18 @@ class CommonIRAutolayoutJITFunction(JITFunction):
         grid = tuple(grid) + (1, ) * (3 - len(grid))
         if any(size == 0 for size in grid):
             return kernel
-        args = tuple(bound_args.values())
-        launch_key = _fast_launch_key(kernel, grid, stream, args)
-        cached = self._layout_fast_winners.get(launch_key)
-        if cached is not None:
-            workload_key, winner = cached
-            if self._layout_winners.get(workload_key) is winner:
-                return winner
-        key = _workload_key(kernel, grid, args)
+        import torch
+
+        jit_key = key
         with self._layout_lock:
-            if key in self._layout_winners:
-                return self._remember_fast_winner(launch_key, key, self._layout_winners[key])
+            # Another caller may have selected this specialization while we
+            # waited. The ordinary JIT cache is also the in-memory winner cache.
+            cached = kernel_cache.get(jit_key, kernel)
+            if getattr(cached, "_commonir_autolayout_selected", False):
+                return cached
+            key = _specialization_key(kernel)
             if torch.cuda.is_current_stream_capturing():
-                raise RuntimeError("run autolayout once before capturing this workload in a GPU graph")
+                raise RuntimeError("run autolayout once before capturing this specialization in a GPU graph")
 
             cache = get_cache_manager(key)
             path = cache.get_file("commonir-autolayout.json")
@@ -352,14 +306,14 @@ class CommonIRAutolayoutJITFunction(JITFunction):
                 except Exception as error:
                     _LOGGER.warning("CommonIR cached candidate could not be reused: %s", error)
                 else:
-                    self._layout_winners[key] = winner
                     self.autolayout_results[key] = dict(record, source="disk")
-                    return self._remember_fast_winner(launch_key, key, winner)
+                    return self._remember_winner(kernel_cache, jit_key, winner)
 
             # Materialize all binaries before benchmarking, keeping compiler
             # and launcher setup out of the timed regions.
             _require_quantile_test()
             compiled, failures = self._compile_candidates(kernel, manifest)
+            args = tuple(bound_args.values())
 
             def validate_pointer(value, signature):
                 if isinstance(signature, tuple):
@@ -390,8 +344,7 @@ class CommonIRAutolayoutJITFunction(JITFunction):
                       "benchmark": benchmark}
             cache.put(json.dumps(record), "commonir-autolayout.json", binary=False)
             winner = compiled[selected]
-            self._layout_winners[key] = winner
             self.autolayout_results[key] = dict(record, source="tuned")
             _LOGGER.info("CommonIR autolayout selected %s: %.6f ms (%d candidates)", selected, timings[selected],
                          len(timings))
-            return self._remember_fast_winner(launch_key, key, winner)
+            return self._remember_winner(kernel_cache, jit_key, winner)
