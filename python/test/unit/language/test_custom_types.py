@@ -5,6 +5,9 @@ pass that removes the custom types is covered by ``test/Triton/lower-structs.mli
 """
 
 import ctypes
+import os
+import subprocess
+import sys
 
 import pytest
 import triton
@@ -240,48 +243,32 @@ def _interp(fn):
     return InterpretedFunction(fn)
 
 
+# The Triton interpreter patches ``triton.language`` in place the first time an
+# interpreted kernel runs, and never undoes it.  Running the interpreter here
+# would therefore corrupt every compiled test that executes later in this
+# process, so each case is executed in a child process instead.
+_INTERPRETER_HELPER = os.path.join(os.path.dirname(os.path.realpath(__file__)), "custom_types_interpreter_helper.py")
+
+
+def _run_interpreter_case(case):
+    proc = subprocess.run([sys.executable, _INTERPRETER_HELPER, case], capture_output=True)
+    assert proc.returncode == 0, proc.stderr.decode()
+
+
 def test_interpreter_scalar_and_array_field():
-    st = TensorView._triton_struct_type
-    buf = _FakeDeviceBuffer(st.size)
-    tv = TensorView.from_buffer(buf)
-    tv.ndim = 41
-    tv.shape[2] = 5
-    view = tl.StructView(st, buf)
-    _interp(_k_write_ndim.fn).run(view, grid=(1, ))
-    _interp(_k_write_shape.fn).run(view, 2, grid=(1, ))
-    assert tv.ndim == 42
-    assert tv.shape[2] == 15
+    _run_interpreter_case("scalar_and_array_field")
 
 
 def test_interpreter_nested_struct():
-    st = Outer._triton_struct_type
-    buf = _FakeDeviceBuffer(st.size)
-    o = Outer.from_buffer(buf)
-    o.inner.a = 10
-    view = tl.StructView(st, buf)
-    _interp(_k_nested_write.fn).run(view, grid=(1, ))
-    assert o.inner.a == 13
+    _run_interpreter_case("nested_struct")
 
 
 def test_interpreter_array_of_struct():
-    st = WithArray._triton_struct_type
-    buf = _FakeDeviceBuffer(st.size)
-    wa = WithArray.from_buffer(buf)
-    wa.arr[1].b = 3.5
-    view = tl.StructView(st, buf)
-    _interp(_k_array_of_struct.fn).run(view, 1, grid=(1, ))
-    assert abs(wa.arr[1].b - 5.0) < 1e-9
+    _run_interpreter_case("array_of_struct")
 
 
 def test_interpreter_pointer_field():
-    st = TensorView._triton_struct_type
-    buf = _FakeDeviceBuffer(st.size)
-    tv = TensorView.from_buffer(buf)
-    tv.base = 0x1234567890
-    view = tl.StructView(st, buf)
-    _interp(_k_copy_base.fn).run(view, grid=(1, ))
-    # `base` (a pointer field) is copied verbatim into a uint64 field.
-    assert tv.shape[3] == 0x1234567890
+    _run_interpreter_case("pointer_field")
 
 
 # --- real hardware (Ascend NPU) --------------------------------------------------

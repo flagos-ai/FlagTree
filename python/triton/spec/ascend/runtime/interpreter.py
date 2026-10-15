@@ -441,16 +441,16 @@ class InterpreterBuilder:
         return TensorHandle(np.array([self.grid_dim[axis]], dtype=np.int32), tl.int32)
 
     # memory ops
-    def create_load(self, ptr, _0, _1, is_volatile):
+    def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=""):
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         other = None
-        return self.create_masked_load(ptr, mask, other, _0, _1, is_volatile)
+        return self.create_masked_load(ptr, mask, other, _0, _1, is_volatile, flagtree_hints)
 
     def create_store(self, ptr, val, _0, _1):
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         return self.create_masked_store(ptr, val, mask, None, None)
 
-    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile):
+    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile, flagtree_hints=""):
         dtype_tt = ptrs.get_element_ty()
         # A pointer field is a pointer-to-pointer: load the stored pointer,
         # rather than fully unwrapping to the pointee scalar.
@@ -672,7 +672,7 @@ class InterpreterBuilder:
         return TensorHandle(ptr.data + off, tl.pointer_type(elem_ty))
 
     def create_tensor_pointer_load(self, ptr, boundary_check, padding_option, cache_modifier, eviction_policy,
-                                   is_volatile):
+                                   is_volatile, flagtree_hints=""):
         ptrs, masks = ptr.materialize_pointers(boundary_check)
         dtype_tt = ptrs.get_element_ty()
         dtype_np = _get_np_dtype(dtype_tt)
