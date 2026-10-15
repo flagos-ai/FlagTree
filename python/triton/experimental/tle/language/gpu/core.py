@@ -985,8 +985,6 @@ def wgmma_wait(pendings, acc=None, _semantic: TLESemantic | None = None, _genera
     pendings = _require_wgmma_int(pendings, "pendings")
     if pendings < 0:
         raise ValueError("wgmma_wait pendings must be non-negative")
-    if mthreads_common.enabled():
-        mthreads_wgmma.validate_wait_pendings(pendings)
     if not isinstance(acc, tl.tensor):
         raise ValueError(f"wgmma_wait acc must be a tl.tensor, got {type(acc).__name__}")
     result = _semantic.builder.create_tle_wgmma_wait(acc.handle, pendings)

@@ -100,9 +100,3 @@ def validate_dimensions(m: int, n: int) -> None:
         raise ValueError("mthreads TLE wgmma result M dimension must be divisible by 16")
     if n < 16 or n % 16 != 0:
         raise ValueError("mthreads TLE wgmma result N dimension must be divisible by 16")
-
-
-def validate_wait_pendings(pendings: int) -> None:
-    if pendings != 0:
-        raise ValueError("mthreads TLE wgmma_wait currently requires pendings=0; "
-                         "non-zero pending groups are not supported")
