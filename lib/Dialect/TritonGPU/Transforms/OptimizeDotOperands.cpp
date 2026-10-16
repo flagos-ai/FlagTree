@@ -114,6 +114,31 @@ static Value stripMemDescViews(Value value) {
 
 static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active);
 
+// PPU only: true for a memdesc defined directly by a local_alloc with a
+// non-trivial swizzled shared encoding (max phase > 1, i.e. chosen explicitly
+// rather than the plain default) that is written by local_store: that layout
+// was picked for the stores, so it is kept.
+static bool keepsStoredSwizzledLayout(Value memDesc) {
+  auto alloc = memDesc.getDefiningOp<LocalAllocOp>();
+  if (!alloc || alloc.getSrc())
+    return false;
+  auto module = alloc->getParentOfType<ModuleOp>();
+  auto target =
+      module ? module->getAttrOfType<StringAttr>(AttrTargetName) : nullptr;
+  if (!target || !target.strref().starts_with("ppu:"))
+    return false;
+  auto memDescTy = dyn_cast<MemDescType>(memDesc.getType());
+  if (!memDescTy)
+    return false;
+  auto swizzled = dyn_cast<SwizzledSharedEncodingAttr>(memDescTy.getEncoding());
+  if (!swizzled || swizzled.getMaxPhase() <= 1)
+    return false;
+  for (Operation *user : memDesc.getUsers())
+    if (isa<LocalStoreOp>(user))
+      return true;
+  return false;
+}
+
 static bool isForIterArgBackedByLocalAlloc(BlockArgument arg,
                                            llvm::DenseSet<Value> &active) {
   auto forOp = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
@@ -286,11 +311,17 @@ public:
       if (srcMemDescTy && srcMemDescTy.getShape() == srcTy.getShape() &&
           srcMemDescTy.getElementType() == srcTy.getElementType() &&
           isBackedByLocalAlloc(srcMemDesc)) {
-        auto updatedMemDescTy = MemDescType::get(
-            srcMemDescTy.getShape(), srcMemDescTy.getElementType(),
-            newInnerCvtEnc, srcMemDescTy.getMemorySpace(),
-            srcMemDescTy.getMutableMemory(), srcMemDescTy.getAllocShape());
-        srcMemDesc.setType(updatedMemDescTy);
+        // A swizzled buffer that the kernel fills with its own local_store
+        // keeps its encoding: retagging it for this read would move the cost
+        // to every store (e.g. a row-major tile becoming column-major), and
+        // the transposed view below can be read from the existing encoding.
+        if (!keepsStoredSwizzledLayout(srcMemDesc)) {
+          auto updatedMemDescTy = MemDescType::get(
+              srcMemDescTy.getShape(), srcMemDescTy.getElementType(),
+              newInnerCvtEnc, srcMemDescTy.getMemorySpace(),
+              srcMemDescTy.getMutableMemory(), srcMemDescTy.getAllocShape());
+          srcMemDesc.setType(updatedMemDescTy);
+        }
         auto newTrans = rewriter.create<MemDescTransOp>(
             trans.getLoc(), srcMemDesc, ArrayRef<int32_t>({1, 0}));
         auto localLoadOp = rewriter.create<LocalLoadOp>(
