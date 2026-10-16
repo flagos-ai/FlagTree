@@ -25,6 +25,26 @@ from typing import List, Any
 from triton._utils import validate_block_shape
 
 
+def _get_stride_alignment():
+    # Import lazily to avoid importing runtime drivers while triton.tools is
+    # being initialized.  A tools-only process may have no active driver; in
+    # that case retain the existing conservative contract.
+    from triton.runtime import driver
+
+    try:
+        alignment = driver.active.get_tensor_descriptor_stride_alignment()
+    except RuntimeError as error:
+        if not str(error).startswith("0 active drivers"):
+            raise
+        alignment = 16
+
+    assert isinstance(alignment, int) and not isinstance(alignment, bool), \
+        "tensor descriptor stride alignment must be an integer"
+    assert alignment > 0 and (alignment & (alignment - 1)) == 0, \
+        "tensor descriptor stride alignment must be a positive power of two"
+    return alignment
+
+
 @dataclass
 class TensorDescriptor:
     base: Any
@@ -43,9 +63,11 @@ class TensorDescriptor:
         if ty.__name__ not in ("FakeTensor", "FunctionalTensor"):
             assert self.base.data_ptr() % 16 == 0, "base must be 16-byte aligned"
         validate_block_shape(self.block_shape)
+        stride_alignment = _get_stride_alignment()
         elem_bytes = self.base.dtype.itemsize
         for stride in self.strides[:-1]:
-            assert (stride * elem_bytes) % 16 == 0, "strides must be 16-byte aligned"
+            assert (stride * elem_bytes) % stride_alignment == 0, \
+                f"strides must be {stride_alignment}-byte aligned"
         for shape_dim in self.shape:
             assert shape_dim > 0, "shape must be positive"
         assert self.strides[-1] == 1, "Last dimension must be contiguous"

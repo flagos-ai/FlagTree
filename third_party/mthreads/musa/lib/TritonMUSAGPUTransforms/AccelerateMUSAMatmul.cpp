@@ -446,7 +446,7 @@ static bool isKnownBrokenSqmmaConfig(
   triton::musa::SQMMAEltType eltTypeC = elemTy.isInteger(8)
                                             ? triton::musa::SQMMAEltType::s32
                                             : triton::musa::SQMMAEltType::f32;
-  return !triton::musa::isSupportedSqmma(
+  return !triton::musa::isSupportedSqmmaWithK128Compatibility(
       *eltTypeA, *eltTypeA, eltTypeC, instrShape[0], instrShape[1],
       instrShape[2], sqTraits, layoutA, layoutB, elemBytes, aIsShared,
       bIsShared);
@@ -772,10 +772,10 @@ validateSqmmaConfig(const MusaDotProblem &problem, const SelectedConfig &config,
   if (!eltTypeC)
     return {MusaMmaValidationFailure::UnsupportedAccumulatorType};
   if (!eltTypeA || !eltTypeB ||
-      !triton::musa::isSupportedSqmma(*eltTypeA, *eltTypeB, *eltTypeC, instM,
-                                      instN, instK, sqTraits, layoutA, layoutB,
-                                      elemBytes, /*aIsShared=*/true,
-                                      /*bIsShared=*/true))
+      !triton::musa::isSupportedSqmmaWithK128Compatibility(
+          *eltTypeA, *eltTypeB, *eltTypeC, instM, instN, instK, sqTraits,
+          layoutA, layoutB, elemBytes, /*aIsShared=*/true,
+          /*bIsShared=*/true))
     return {MusaMmaValidationFailure::UnsupportedInstruction};
 
   if (!validateSqmmaOperandMaterialization(problem.a).succeeded() ||
@@ -1788,7 +1788,7 @@ public:
     if (!eltTypeC || !eltTypeA || !eltTypeB)
       return failure();
 #ifndef __TLE__
-    if (!triton::musa::isSupportedSqmma(
+    if (!triton::musa::isSupportedSqmmaWithK128Compatibility(
             *eltTypeA, *eltTypeB, *eltTypeC, config->instrShape[0],
             config->instrShape[1], config->instrShape[2], *sqTraits, layoutA,
             layoutB, *elemBytes, aIsShared, bIsShared))

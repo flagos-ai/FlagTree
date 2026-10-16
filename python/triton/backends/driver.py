@@ -65,6 +65,10 @@ class DriverBase(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
+    def get_tensor_descriptor_stride_alignment(self) -> int:
+        """Return the target's required byte alignment for descriptor strides."""
+        return 16
+
     def __init__(self) -> None:
         pass
 
