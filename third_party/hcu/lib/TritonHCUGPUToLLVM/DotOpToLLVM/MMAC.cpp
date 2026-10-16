@@ -25,6 +25,7 @@
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -82,8 +83,6 @@ struct DotOpMFMAConversionHelper {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value zeroFlag = b.i32_val(0);
     auto resType = valC.getType();
-    OperationState loweredOp(loc, intrinsicName);
-    loweredOp.addTypes(resType);
     Value i32Flag = b.i32_val(0);
     Value i1Flag = b.false_val();
     bool isMmacLTS = mmacLayout == MmacLayout::TRANSPOSE ||
@@ -92,6 +91,18 @@ struct DotOpMFMAConversionHelper {
                      mmacLayout == MmacLayout::INTERLEAVE_TRANSPOSE;
     Value ltsFlag = isMmacLTS ? b.true_val() : b.false_val();
     Value litFlag = isMmacLIT ? b.true_val() : b.false_val();
+    // Some HCU matrix core intrinsics (e.g. the fp64 one) have no ROCDL dialect
+    // op. Emit them as an llvm.call_intrinsic directly; the HCU LLVM backend
+    // lowers the intrinsic to the matching v_mmac instruction. The operand list
+    // follows HCUMMopVstepIntrinsic: (A, B, C, vstep, lts).
+    if (intrinsicName.starts_with("llvm.hcu.")) {
+      auto callIntrinsic = LLVM::createLLVMIntrinsicCallOp(
+          rewriter, loc, intrinsicName, resType,
+          ValueRange{valA, valB, valC, i32Flag, ltsFlag});
+      return callIntrinsic.getResult(0);
+    }
+    OperationState loweredOp(loc, intrinsicName);
+    loweredOp.addTypes(resType);
     if (intrinsicName.compare("rocdl.mmac.16x16x4.f32") == 0) {
       loweredOp.addOperands({valA, valB, valC, i32Flag, ltsFlag});
     } else if (intrinsicName.compare("rocdl.mmac.16x16x8.f32") == 0 ||
