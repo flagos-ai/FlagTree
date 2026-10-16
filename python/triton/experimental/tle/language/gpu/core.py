@@ -629,10 +629,16 @@ def _normalize_barrier_init(init) -> str:
 _FIRST_VIRTUAL_NAMED_BARRIER_ID = 16
 
 
-def _reserve_named_barrier_ids(_semantic: TLESemantic | None, count: int) -> int:
-    next_id = getattr(_semantic, "_tle_next_named_barrier_id", _FIRST_VIRTUAL_NAMED_BARRIER_ID)
+def _reserve_named_barrier_ids(_semantic: TLESemantic | None, count: int, _generator=None) -> int:
+    # A CodeGenerator is created for every outlined @triton.jit helper, while
+    # all generators participating in one compilation share the same Python
+    # ModuleOp wrapper. Keep the counter on that wrapper so virtual ids are
+    # unique across the complete codegen module, including helper-local
+    # allocations. The semantic fallback keeps direct builtin tests working.
+    owner = _generator.module if _generator is not None else _semantic
+    next_id = getattr(owner, "_tle_next_named_barrier_id", _FIRST_VIRTUAL_NAMED_BARRIER_ID)
     last_id = next_id + count - 1
-    setattr(_semantic, "_tle_next_named_barrier_id", last_id + 1)
+    setattr(owner, "_tle_next_named_barrier_id", last_id + 1)
     return next_id
 
 
@@ -644,7 +650,7 @@ def _barrier_handle_key(handle):
         return id(handle)
 
 
-def _ensure_named_barrier_ids(slot: tle.barrier, _semantic: TLESemantic | None) -> None:
+def _ensure_named_barrier_ids(slot: tle.barrier, _semantic: TLESemantic | None, _generator=None) -> None:
     if slot.named_base_id > 0:
         return
     key = slot.allocation_key
@@ -656,7 +662,7 @@ def _ensure_named_barrier_ids(slot: tle.barrier, _semantic: TLESemantic | None) 
         setattr(_semantic, "_tle_barrier_named_bases", named_bases)
     base_id = named_bases.get(key)
     if base_id is None:
-        base_id = _reserve_named_barrier_ids(_semantic, slot.num_barriers)
+        base_id = _reserve_named_barrier_ids(_semantic, slot.num_barriers, _generator)
         named_bases[key] = base_id
     slot.named_base_id = base_id
     slot.type.named_base_id = base_id
@@ -750,7 +756,13 @@ def alloc_barriers(
             raise ValueError("expect_bytes must be positive when provided")
 
     layout = tle.swizzled_shared_layout.make_default(rank=2)
-    named_base_id = 0
+    # Only PENDING barriers without transaction bytes can select the named
+    # backend. Reserve their identity at allocation time and embed it in
+    # barrier_type.mangle(), so distinct barriers passed to the same helper do
+    # not share a helper specialization. Forced mbarriers keep the historical
+    # type identity and do not consume virtual named-barrier ids.
+    can_use_named_backend = expect_bytes is None and init == tle.PENDING
+    named_base_id = (_reserve_named_barrier_ids(_semantic, num_barriers, _generator) if can_use_named_backend else 0)
     barrier_ty = tle.barrier_type(num_barriers, arrive_count, init, expect_bytes, layout, _semantic,
                                   shape=[num_barriers, 1], named_base_id=named_base_id)
     handle = _semantic.builder.create_barrier_alloc(
@@ -775,18 +787,18 @@ def alloc_barrier(
     _generator=None,
 ) -> tle.barrier:
     """Allocate a single TLE GPU barrier."""
-    _mark_wgmma_user_promise(_semantic, _generator)
     return alloc_barriers(
         1,
         arrive_count,
         init,
         expect_bytes,
         _semantic=_semantic,
+        _generator=_generator,
     )
 
 
 @tl.builtin
-def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None) -> None:
+def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None, _generator=None) -> None:
     """Wait on a TLE GPU barrier slot."""
     slot = _barrier_slot(barr, _semantic)
     if phaseIdx is None:
@@ -796,7 +808,7 @@ def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None) -> N
             raise ValueError("barrier_wait without phaseIdx selects named barrier, which does not support READY")
         if slot.static_index is None:
             raise ValueError("named barrier backend requires a static barrier slot index")
-        _ensure_named_barrier_ids(slot, _semantic)
+        _ensure_named_barrier_ids(slot, _semantic, _generator)
         _record_barrier_backend(slot, "named", _semantic)
         _semantic.builder.create_barrier_wait_named(slot.handle, slot.named_base_id + slot.static_index,
                                                     slot.arrive_count)
@@ -808,7 +820,7 @@ def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None) -> N
 
 
 @tl.builtin
-def barrier_arrive(barr, arrive_count=1, phaseIdx=None, _semantic: TLESemantic | None = None) -> None:
+def barrier_arrive(barr, arrive_count=1, phaseIdx=None, _semantic: TLESemantic | None = None, _generator=None) -> None:
     """Arrive on a TLE GPU barrier slot."""
     slot = _barrier_slot(barr, _semantic)
     arrive_count = _require_barrier_int(arrive_count, "arrive_count")
@@ -824,7 +836,7 @@ def barrier_arrive(barr, arrive_count=1, phaseIdx=None, _semantic: TLESemantic |
             raise ValueError("named barrier backend requires barrier_arrive arrive_count = 1")
         if slot.static_index is None:
             raise ValueError("named barrier backend requires a static barrier slot index")
-        _ensure_named_barrier_ids(slot, _semantic)
+        _ensure_named_barrier_ids(slot, _semantic, _generator)
         _record_barrier_backend(slot, "named", _semantic)
         _semantic.builder.create_barrier_arrive_named(slot.handle, slot.named_base_id + slot.static_index,
                                                       slot.arrive_count)

@@ -12,6 +12,20 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
 
 // -----
 
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // Helpers called by the default warp group have no explicit ttg.num-warps
+  // attribute. Preserve the module fallback so warp-specialize lowering can
+  // still rewrite barriers inside the helper with 4 * 32 participants.
+  // CHECK-LABEL: llvm.func internal @default_group_helper
+  // CHECK-SAME: attributes
+  // CHECK-SAME: ws_num_warps = 4 : i32
+  tt.func private @default_group_helper() {
+    tt.return
+  }
+}
+
+// -----
+
 #blocked0 = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // CHECK-LABEL: basic_load
