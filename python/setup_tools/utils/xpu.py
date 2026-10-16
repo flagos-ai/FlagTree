@@ -738,11 +738,66 @@ def collect_xpu_backend_package_data(backend):
     return files
 
 
+def liblaunch_has_try_launch_table(archive):
+    """Return True if *archive* has an undefined ``try_launch_table`` ref.
+
+    That undefined symbol is the call site in ``launch.cpp.o`` that pulls
+    ``liblaunch_shared.so`` into the launcher and makes ``strip-all-ir``
+    kernels reachable via the launch table. The SDNN-cache
+    ``device/xpu3/liblaunch.a`` lacks it; the in-tree ``device/liblaunch.a``
+    has it (see FlagTree #1380).
+    """
+    archive = Path(archive)
+    if not archive.is_file():
+        return False
+    try:
+        out = subprocess.run(
+            ["nm", "-C", "--undefined-only", str(archive)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return "try_launch_table" in (out.stdout or "")
+
+
+def resolve_xpu_launch_static_lib(src_dir):
+    """Pick the ``liblaunch.a`` that carries ``try_launch_table`` call sites.
+
+    Packaging used to hard-code ``device/xpu3/liblaunch.a``, which is delivered
+    by the ``xpu-sdnn-objects`` vendor cache and has zero callers for
+    ``try_launch_table``. Prefer the in-tree ``device/liblaunch.a`` (and any
+    other candidate that ``nm`` confirms) so stripped kernels are not silent
+    no-ops.
+    """
+    src_dir = Path(src_dir)
+    candidates = [
+        src_dir / "device" / "liblaunch.a",
+        src_dir / "device" / "xpu3" / "liblaunch.a",
+    ]
+    for cand in candidates:
+        if liblaunch_has_try_launch_table(cand):
+            return cand
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return None
+
+
 def ensure_xpu_launch_static_lib(backend):
-    src = Path(backend.src_dir) / "device" / "xpu3" / "liblaunch.a"
-    if not src.exists():
-        print(f"[XPU] liblaunch.a not found at {src}; packaged launcher may fail to link", file=sys.stderr)
+    src = resolve_xpu_launch_static_lib(backend.src_dir)
+    if src is None:
+        missing = Path(backend.src_dir) / "device" / "liblaunch.a"
+        print(f"[XPU] liblaunch.a not found at {missing} (or device/xpu3/); "
+              f"packaged launcher may fail to link", file=sys.stderr)
         return
+    if not liblaunch_has_try_launch_table(src):
+        print(
+            f"[XPU] WARNING: {src} has no undefined try_launch_table; "
+            f"strip-all-ir kernels will silently no-op (FlagTree #1380)",
+            file=sys.stderr,
+        )
     dst = Path(backend.backend_dir) / "xpu3" / "lib" / "liblaunch.a"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
