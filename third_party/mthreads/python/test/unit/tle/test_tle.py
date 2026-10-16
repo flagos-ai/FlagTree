@@ -46,6 +46,7 @@ def test_tle_language_import_exports_load_signature():
         "offsets",
         "barrier",
         "mask",
+        "cache_policy",
         "_semantic",
     ]
     assert hasattr(tle.gpu, "copy")

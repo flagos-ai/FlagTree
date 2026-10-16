@@ -19,6 +19,7 @@
 # SOFTWARE.
 
 # flagtree tle
+from . import mthreads
 from .core import (
     pipeline,
     range,
@@ -43,6 +44,7 @@ from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, Do
 storage_kind = memory_space
 
 __all__ = [
+    "mthreads",
     "pipeline",
     "range",
     "alloc",

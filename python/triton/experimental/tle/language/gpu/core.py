@@ -159,7 +159,8 @@ def _as_call_args(args):
         raise ValueError(f"warp_specialize function arguments must be a tuple, got {type(args).__name__}")
 
     def normalize(arg):
-        if isinstance(arg, (tl.dtype, float, int, bool)):
+        if isinstance(arg, (tl.dtype, float, int, bool, str, tuple)) or isinstance(getattr(arg, "type", None),
+                                                                                   tl.constexpr_type):
             return tl.constexpr(arg)
         return arg
 
@@ -1102,6 +1103,7 @@ def copy(
     offsets: Sequence[constexpr | tensor] = None,
     barrier=None,
     mask=None,
+    cache_policy=None,
     _semantic: TLESemantic | None = None,
 ) -> None:
     """
@@ -1138,6 +1140,16 @@ def copy(
             global-to-local copies, masked elements are written to local memory
             as zero. For local-to-global copies, masked elements are not stored.
             TMA descriptor copies do not accept a mask.
+        cache_policy: Optional backend-specific compile-time policy object.
+            None preserves the backend's default behavior. MThreads accepts
+            ``tle.gpu.mthreads.TMECachePolicy(inner, outer)`` for
+            descriptor-to-shared copies; both fields default to ``"normal"``
+            and accept ``"none"``, ``"once"``, ``"normal"``, or ``"persist"``.
+            Other backends and CommonIR currently reject explicit policies.
+            Hints apply to this copy only and do not change synchronization.
+            Benchmark non-default policies on the target workload. Streaming
+            access alone does not justify ``inner="none"``, which can severely
+            degrade GEMM performance.
         _semantic: Internal semantic analyzer for validation and compilation (user-provided)
 
     Raises:
@@ -1160,12 +1172,21 @@ def copy(
         Masked global -> local copy with zero fill:
             tle.copy(global_ptrs, local_buf, [64, 128], mask=valid)
 
+        MUSA TME load with explicit default cache persistence:
+            tle.gpu.copy(tma_desc, local_buf, [64, 64], [x_offset, y_offset],
+                         barrier=bar, cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal"))
+
         Logical tensor-descriptor -> automatic exact tiled buffer:
             local_buf = tle.alloc([80, 256], dtype=tl.float16, scope=tle.smem)
             tle.copy(desc_80x256, local_buf, [80, 256], [0, 0])
     """
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
+    cache_policy = tl._unwrap_if_constexpr(cache_policy)
+    if mthreads_enabled:
+        cache_policy = mthreads_copy.normalize_cache_policy(cache_policy)
+    elif cache_policy is not None:
+        raise ValueError("copy cache_policy is not supported by this backend")
 
     def normcopy(
         src: tl.tensor,
@@ -1340,6 +1361,9 @@ def copy(
             f"Invalid copy combination: src={type(src).__name__}, dst={type(dst).__name__}. "
             "One operand must be tl.tensor (global memory) and the other must be tle.buffered_tensor (local memory)")
 
+    if cache_policy is not None and (is_normcopy or direction != CopyDirection.GM_TO_LOCAL):
+        raise ValueError("copy cache_policy is only supported for descriptor-to-shared copies")
+
     if not isinstance(shape, (tuple, list)):
         # Try to handle Triton tuple-like objects
         if hasattr(shape, '__iter__'):
@@ -1389,7 +1413,8 @@ def copy(
             if direction != CopyDirection.GM_TO_LOCAL:
                 raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
-        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, _semantic)
+        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, cache_policy=cache_policy,
+                                     _semantic=_semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, barrier, _semantic)
 
