@@ -223,6 +223,7 @@ class VariantInfo:
     stage: str = "public"
     dtype_roles: Mapping[str, str] = dataclass_field(default_factory=dict)
     route_binding: Optional[str] = None
+    configs_from_params: bool = False
 
     @property
     def input_names(self) -> List[str]:
@@ -494,6 +495,28 @@ def _parse_config_space(raw_space: Any, location: str) -> ParameterSpace:
     return ParameterSpace(fields=fields, explicit_configs=normalized)
 
 
+def _parse_configs(raw_configs: Any, param_space: ParameterSpace, location: str) -> List[Dict[str, Any]]:
+    """Validate an exact candidate list against the declared parameter domain."""
+    if not isinstance(raw_configs, list) or not raw_configs:
+        raise FlagTuneConfigError(f"{location} must be a non-empty list")
+    names = param_space.all_field_names
+    legal_values = param_space.field_values()
+    result = []
+    seen = set()
+    for index, raw_config in enumerate(raw_configs):
+        config = dict(_require_mapping(raw_config, f"{location}[{index}]"))
+        if list(config) != names:
+            raise FlagTuneConfigError(f"{location}[{index}] fields must exactly match params in declaration order")
+        for name, value in config.items():
+            if value not in legal_values[name]:
+                raise FlagTuneConfigError(f"{location}[{index}].{name}={value!r} is outside params")
+        key = param_space.config_key(config)
+        if key not in seen:
+            seen.add(key)
+            result.append(config)
+    return result
+
+
 def _parse_features(
     raw_features: Any,
     operations: Mapping[str, Operation],
@@ -564,16 +587,20 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
         location = f"config.variants.{variant_name}"
         spec = _require_mapping(raw_variant, location)
         unknown = set(spec) - {
-            "inputs", "when", "params", "config_space", "features", "stage", "dtype_roles", "route_binding"
+            "inputs", "when", "params", "configs", "config_space", "features", "stage", "dtype_roles", "route_binding"
         }
         if unknown:
             raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
 
         inputs = _parse_inputs(spec.get("inputs"), operations, f"{location}.inputs")
+        if "config_space" in spec and "configs" in spec:
+            raise FlagTuneConfigError(f"{location} cannot define both config_space and configs")
         if "config_space" in spec:
             param_space = _parse_config_space(spec["config_space"], f"{location}.config_space")
         else:
             param_space = _parse_params(spec.get("params"), f"{location}.params")
+            if "configs" in spec:
+                param_space.explicit_configs = _parse_configs(spec["configs"], param_space, f"{location}.configs")
         variables = {field.name for field in inputs} | {"inputs"}
         when = spec.get("when", True)
         _validate_expression(when, operations, variables, f"{location}.when")
@@ -591,6 +618,7 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
             stage=str(spec.get("stage", "public")),
             dtype_roles=dict(spec.get("dtype_roles", {})),
             route_binding=spec.get("route_binding"),
+            configs_from_params="configs" in spec,
         )
 
     # A public route may bind to a stage model without duplicating its complete
@@ -710,7 +738,7 @@ def variant_to_model_config(
         raise FlagTuneConfigError(f"unsupported GPU backend: {backend!r}")
     from triton.flagtune.contract.archive import validate_model_version
 
-    return {
+    result = {
         "format_version": 5,
         "model_version": validate_model_version(model_version),
         "platform_key": identity.platform_key,
@@ -724,6 +752,9 @@ def variant_to_model_config(
         "params": params,
         "features": features,
     }
+    if variant.configs_from_params:
+        result["configs"] = [dict(config) for config in variant.param_space.explicit_configs]
+    return result
 
 
 def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
@@ -759,6 +790,7 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
         "inputs",
         "when",
         "params",
+        "configs",
         "features",
     }
     unknown = set(root) - allowed
@@ -782,6 +814,7 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
                 "inputs": root.get("inputs"),
                 "when": root.get("when", True),
                 "params": root.get("params"),
+                **({"configs": root["configs"]} if "configs" in root else {}),
                 "features": root.get("features"),
             }
         },
