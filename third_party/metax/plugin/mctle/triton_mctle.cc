@@ -95,6 +95,37 @@ void init_triton_mctle_ir(py::module &&m) {
              return mlir::cast<Attribute>(ttg::SwizzledSharedEncodingAttr::get(
                  context, vectorSize, perPhase, maxPhase, order, CTALayout));
            })
+      .def("make_nv_mma_shared_encoding_attr",
+           [](TritonOpBuilder &self, std::vector<int64_t> shape,
+              std::vector<unsigned> order, Type &elemType,
+              std::vector<unsigned> CTAsPerCGA,
+              std::vector<unsigned> CTASplitNum,
+              std::vector<unsigned> CTAOrder, bool fp4Padded,
+              bool swizzled) {
+             assert(shape.size() == order.size());
+             assert(order.size() == CTAsPerCGA.size());
+             assert(CTAsPerCGA.size() == CTASplitNum.size());
+             assert(CTASplitNum.size() == CTAOrder.size());
+
+             auto context = self.getBuilder().getContext();
+             auto CTALayout = ttg::CTAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+
+             if (swizzled) {
+               return mlir::cast<Attribute>(
+                   ttg::NVMMASharedEncodingAttr::get(
+                       context, shape, order, CTALayout, elemType,
+                       fp4Padded));
+             }
+
+             return mlir::cast<Attribute>(
+                 ttg::NVMMASharedEncodingAttr::get(
+                     context,
+                     /*swizzlingByteWidth=*/0,
+                     /*transposed=*/order[0] == 0,
+                     elemType.getIntOrFloatBitWidth(),
+                     fp4Padded, CTALayout));
+           })
       .def("create_local_alloc",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding) -> mlir::Value {
