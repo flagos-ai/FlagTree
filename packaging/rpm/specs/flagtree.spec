@@ -48,6 +48,9 @@ BuildRequires:  python3-setuptools
 BuildRequires:  python3-wheel
 
 Requires:       python3
+# Runtime, not only build time: the Triton JIT compiles CUDA utility modules
+# on first use and needs Python.h for that.
+Requires:       python3-devel
 Requires:       python3-filelock
 Requires:       python3-setuptools
 

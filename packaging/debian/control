@@ -24,8 +24,11 @@ Architecture: amd64
 Depends: ${python:Depends},
          ${shlibs:Depends},
          ${misc:Depends},
+         python3-dev,
          python3-filelock,
          python3-setuptools
+# python3-dev is a runtime dependency: the Triton JIT compiles CUDA utility
+# modules on first use and needs Python.h for that.
 # python3-torch is intentionally NOT declared. The distro 'python3-torch'
 # is CPU-only and unsuitable for GPU workloads; users install matching
 # CUDA torch via pip — see packaging/INSTALL.md once published.
