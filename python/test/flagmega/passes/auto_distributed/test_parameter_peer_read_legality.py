@@ -17,7 +17,6 @@ storage 'parameter'``.
 """
 
 import pytest
-
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import (
     DistributedReshardRealization,
@@ -112,13 +111,11 @@ def test_a_block_only_reshard_of_a_parameter_stays_realizable(policy):
     )) is not DistributedReshardRealization.UNSUPPORTED
 
 
-def test_a_parameter_view_of_the_same_chip_crossing_types_is_still_a_view():
-    """The constraint applies to the answer, not the request.
+def test_exclusive_selection_cannot_alias_missing_parameter_peer_shards():
+    """The exclusive chip's consumer still needs the full logical tensor.
 
-    A ``sharded_view`` reads nothing: it only renames the region a reader
-    addresses.  Rejecting the types outright would also forbid views that are
-    perfectly addressable, so an exclusive transition - which PyNTT realizes as
-    a view - must survive even from a parameter.
+    Selecting one chip to execute cannot fill the other chips' components in
+    that chip's opaque parameter instance. This needs an unaddressable gather.
     """
 
     policy = PyNttDistributedReshardRealizationPolicy()
@@ -135,4 +132,4 @@ def test_a_parameter_view_of_the_same_chip_crossing_types_is_still_a_view():
         exclusive,
         DistributedReshardSourceKind.FUNCTION_PARAMETER,
         DistributedReshardUsageKind.INTERNAL,
-    )) is DistributedReshardRealization.SHARDED_VIEW
+    )) is DistributedReshardRealization.UNSUPPORTED

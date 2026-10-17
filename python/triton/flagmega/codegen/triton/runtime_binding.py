@@ -23,6 +23,10 @@ from triton.flagmega.ir.distributed_type import launch_chip_count
 
 
 FUNCTION_RUNTIME_BINDING_SCHEMA = "flagmega.function-runtime-binding/v1"
+DEVICE_CONTEXT_ABI = "runtime-handles/v2"
+DEVICE_CONTEXT_HANDLES = ("device_mem_ptr", "device_comm_ptr")
+DEVICE_CONTEXT_MODE = "device_context_mode"
+DEVICE_CONTEXT_ARGUMENTS = (*DEVICE_CONTEXT_HANDLES, DEVICE_CONTEXT_MODE)
 
 
 def describe_function_runtime_binding(
@@ -56,7 +60,7 @@ def describe_function_runtime_binding(
     argument_by_physical: dict[str, str] = {}
     arguments: list[dict[str, object]] = []
     value_bindings: list[dict[str, object]] = []
-    used_names: set[str] = set()
+    used_names: set[str] = {"device_dptr", *DEVICE_CONTEXT_ARGUMENTS}
 
     def add_external(
         value: str,

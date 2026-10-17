@@ -9,23 +9,28 @@ transfer, avoiding both compiler-side reordering and an intermediate image.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from itertools import product
-from math import prod
-from pathlib import Path
 import hashlib
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from itertools import product
+from math import prod
+from pathlib import Path
 
+from triton.flagmega.artifacts.manifest import hash_file, resolve_artifact_path
+from triton.flagmega.artifacts.source_verification import (
+    file_identity,
+    remember_snapshot_digest,
+    verified_source_digest,
+)
 from triton.flagmega.errors import ArtifactError
 from triton.flagmega.ir import DistributedBufferStorageKind, VectorType
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.distributed_type import block_owner_axes, chip_owner_axes, BlockCyclicSplit
+from triton.flagmega.ir.distributed_type import BlockCyclicSplit, block_owner_axes, chip_owner_axes
 from triton.flagmega.ir.local_shard import local_shard_descriptor, unravel_placement_index
 from triton.flagmega.ir.op_fusion import has_ops
 from triton.flagmega.ir.ops.core import get_definition, tensor_nbytes
-from triton.flagmega.artifacts.manifest import hash_file, resolve_artifact_path
 
 SOURCE_LAYOUT_SCHEMA = "flagmega.rdata-index/v5"
 SOURCE_LAYOUT_DIGEST = "sha256-source-layout/v1"
@@ -176,15 +181,26 @@ def prepare_programs(module, checkpoint, buffers, destination):
         after = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         if before != after:
             raise ArtifactError(f"Source {source} changed while snapshotting readonly data.")
-        return {"path": relative, "nbytes": before[2], "sha256": digest}
+        return ({"path": relative, "nbytes": before[2], "sha256": digest},
+                file_identity(staging / f"{index:04d}.bin"))
 
     with tempfile.TemporaryDirectory(prefix=".rdata-source-snapshots-", dir=destination) as temporary:
         staging = Path(temporary)
         with ThreadPoolExecutor(max_workers=min(32, len(paths)), thread_name_prefix="flagmega-source-snapshot") as workers:
-            sources = list(workers.map(lambda item: snapshot(item, staging), enumerate(paths)))
+            snapshots = list(workers.map(lambda item: snapshot(item, staging), enumerate(paths)))
         (destination / "sources").mkdir(exist_ok=True)
-        for index, source in enumerate(sources):
-            os.replace(staging / f"{index:04d}.bin", destination / source["path"])
+        sources = []
+        for index, (source, identity) in enumerate(snapshots):
+            path = destination / source["path"]
+            os.replace(staging / f"{index:04d}.bin", path)
+            relocated = file_identity(path)
+            # Rename may change ctime, but cannot change the copied bytes.
+            # Bind the copy proof to the final version only after checking the
+            # same inode, size and data-modification time survived relocation.
+            if relocated[:4] != identity[:4]:
+                raise ArtifactError(f"Readonly source snapshot changed while publishing: {path}.")
+            remember_snapshot_digest(path, source["sha256"], relocated)
+            sources.append(source)
     source_indices = {path: index for index, path in enumerate(paths)}
     for program in programs:
         for operand in program["operands"]:
@@ -236,7 +252,7 @@ def content_digest(index):
     return hashlib.sha256(json.dumps(table, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def validate_source_layout(root, index, module, *, segment, verify_bytes):
+def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_source_proofs=False):
     """Validate source/program geometry even when payload auditing is deferred."""
     if index.get("digest_kind") != SOURCE_LAYOUT_DIGEST or index.get("sha256") != content_digest(index):
         raise ArtifactError("Rdata source layout digest does not match its index.")
@@ -313,8 +329,8 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes):
         if cursor != size:
             raise ArtifactError("Rdata source layout does not cover the complete chip segment.")
     if module is not None:
-        from triton.flagmega.ir import verify_buffer_plan
         from triton.flagmega.importer.checkpoint import TensorByteRange
+        from triton.flagmega.ir import verify_buffer_plan
         buffers = verify_buffer_plan(module).buffer_map
         recipes = {output: recipe for recipe in module.constant_recipes for output in recipe.outputs}
         for program in programs:
@@ -334,7 +350,9 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes):
     if verify_bytes:
         def audit(item):
             path, source = item
-            if hash_file(path) != source["sha256"]:
+            actual = (verified_source_digest(path, source["sha256"], hash_file)
+                      if reuse_source_proofs else hash_file(path))
+            if actual != source["sha256"]:
                 raise ArtifactError(f"Rdata source hash mismatch: {source['path']}.")
         with ThreadPoolExecutor(max_workers=min(32, max(1, len(sources)))) as workers:
             list(workers.map(audit, zip(paths, sources, strict=True)))

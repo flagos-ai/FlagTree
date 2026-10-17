@@ -1,9 +1,10 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from dataclasses import replace
+
 import pytest
 import torch
-
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.target_independent import decompose_complex_ops
@@ -25,8 +26,11 @@ def module(dtype, result_dtype, *, shared=False, round_before_scale=False):
 
 @pytest.mark.parametrize("source,result", [("float32", "bfloat16"), ("bfloat16", "float32")])
 @pytest.mark.parametrize("round_before_scale", [False, True])
-def test_output_cast_fuses_without_changing_either_rounding_boundary(tmp_path, source, result, round_before_scale):
+@pytest.mark.parametrize("contract", ["relaxed", "strict"])
+def test_output_cast_fuses_without_changing_either_rounding_boundary(tmp_path, source, result, round_before_scale,
+                                                                  contract):
     original = module(source, result, round_before_scale=round_before_scale)
+    original = replace(original, metadata={**original.metadata, "floating_point_contract": contract})
     fused = decompose_complex_ops(original)
     output = fused.node_map["output"]
     assert output.op == "nn.norm_apply"

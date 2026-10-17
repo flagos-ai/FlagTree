@@ -45,6 +45,7 @@ from triton.flagmega.passes.auto_distributed.realization import (
 )
 from triton.flagmega.passes.auto_distributed.rope_provider import RoPECandidateProvider
 from triton.flagmega.passes.auto_distributed.sparse_experts_providers import (
+    PartitionedSparseExpertsDownCandidateProvider,
     SparseExpertsCombineCandidateProvider,
     SparseExpertsDispatchCandidateProvider,
     SparseExpertsDownCandidateProvider,
@@ -115,6 +116,7 @@ class NttDistributionPolicy:
         registry.add(MatMulGluCandidateProvider())
         registry.add(SparseExpertsGateUpCandidateProvider())
         registry.add(SparseExpertsDownCandidateProvider())
+        registry.add(PartitionedSparseExpertsDownCandidateProvider())
         registry.add(SparseExpertsDispatchCandidateProvider())
         registry.add(SparseExpertsCombineCandidateProvider())
         registry.add(PackedQKVParallelLinearCandidateProvider())
@@ -146,8 +148,10 @@ class NttDistributionPolicy:
                     "nn.kda_convolution",
                     "nn.kda_recurrent_core",
                     "nn.kda_gated_recurrent_core",
+                    "nn.kda_gated_step",
                     "nn.dsa_indexer",
                     "nn.dsa_paged_attention",
+                    "nn.mla_projection",
                     "nn.staged_routing",
                     "nn.delta_rule_coefficients",
                     "nn.delta_rule_log_prefix",

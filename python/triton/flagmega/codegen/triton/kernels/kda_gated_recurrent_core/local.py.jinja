@@ -3,11 +3,24 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "kda_gated_recurrent_core" %}
+{% if call.kda_reduction_layout == "warp_k" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__warp_k = tl.constexpr(tle.gpu.BlockEncoding([4, 1], [32, 1], [1, {{ num_warps }}], [0, 1]))
+{{ call.symbol }}__k_vector = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__warp_k))
+{{ call.symbol }}__v_vector = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__warp_k))
+{% endif %}
+{% set phase_dispatch = call.request_prefill is not none %}
+{% set arithmetic_modes = ("chunk_bf16", "recurrent") if phase_dispatch else (call.arithmetic,) %}
+{% for arithmetic in arithmetic_modes %}
+{% set symbol = call.symbol ~ ("__prefill" if arithmetic == "chunk_bf16" else "__decode") if phase_dispatch else call.symbol %}
 {{ entry.kernel_decorator(call) }}
-def {{ call.symbol }}({{ call.signature }}):
+def {{ symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     for _fm_head in tl.range(0, {{ call.heads }}):
         _fm_offsets_k = tl.arange(0, {{ call.key_dim }})
+{% if call.kda_reduction_layout == "warp_k" and arithmetic == "recurrent" %}
+        _fm_offsets_k = tle.gpu.set_layout(_fm_offsets_k, {{ call.symbol }}__k_vector)
+{% endif %}
         _fm_q = tl.load({{ call.query }} + ({{ call.query_head_offset }}) + _fm_offsets_k).to(tl.float32)
         _fm_k = tl.load({{ call.key }} + ({{ call.key_head_offset }}) + _fm_offsets_k).to(tl.float32)
         # The forget gate and beta are computed here, not upstream in the graph:
@@ -18,29 +31,118 @@ def {{ call.symbol }}({{ call.signature }}):
         _fm_gate = tl.load({{ call.gate }} + ({{ call.gate_head_offset }}) + _fm_offsets_k).to(tl.float32)
         _fm_gate_bias = tl.load({{ call.gate_bias }} + ({{ call.gate_bias_head_offset }}) + _fm_offsets_k).to(tl.float32)
         _fm_decay_rate = tl.load({{ call.decay_rate }} + ({{ call.decay_rate_head_offset }}) + _fm_offsets_k).to(tl.float32)
-        _fm_decay = {{ call.lower_bound }} * tl.sigmoid(_fm_decay_rate * (_fm_gate + _fm_gate_bias))
-        _fm_beta = tl.sigmoid(tl.load({{ call.beta_logits }} + ({{ call.beta_logits_head_offset }})).to(tl.float32))
-{% if call.l2norm_in_kernel %}
-        _fm_q = _fm_q / tl.sqrt(tl.sum(_fm_q * _fm_q) + {{ call.epsilon }})
-        _fm_k = _fm_k / tl.sqrt(tl.sum(_fm_k * _fm_k) + {{ call.epsilon }})
+{% if call.decay_input == "log_rate" %}
+        _fm_decay_rate = tl.exp(_fm_decay_rate)
 {% endif %}
-        _fm_decay_exp = tl.exp(_fm_decay)[:, None]
+{% if arithmetic == "chunk_bf16" %}
+        _fm_gate_arg = _fm_decay_rate * (_fm_gate + _fm_gate_bias)
+        _fm_gate_tanh = tl.inline_asm_elementwise("tanh.approx.f32 $0, $1;", constraints="=f,f",
+                                                 args=[_fm_gate_arg * 0.5], dtype=tl.float32, is_pure=True, pack=1)
+        _fm_decay_log2 = {{ call.gate_scale_log2 }} * tl.fma(_fm_gate_tanh, 0.5, 0.5)
+        _fm_beta_arg = tl.load({{ call.beta_logits }} + ({{ call.beta_logits_head_offset }})).to(tl.float32)
+        _fm_beta_tanh = tl.inline_asm_elementwise("tanh.approx.f32 $0, $1;", constraints="=f,f",
+                                                 args=[_fm_beta_arg * 0.5], dtype=tl.float32, is_pure=True, pack=1)
+        _fm_beta = tl.fma(_fm_beta_tanh, 0.5, 0.5).to(tl.bfloat16).to(tl.float32)
+{% if call.l2norm_in_kernel %}
+        _fm_q = _fm_q * tl.rsqrt(tl.sum(_fm_q * _fm_q) + {{ call.epsilon }})
+        _fm_k = _fm_k * tl.rsqrt(tl.sum(_fm_k * _fm_k) + {{ call.epsilon }})
+{% endif %}
+        _fm_q = _fm_q.to(tl.bfloat16).to(tl.float32)
+        _fm_k = _fm_k.to(tl.bfloat16).to(tl.float32)
+        _fm_decay_total = tl.exp2(_fm_decay_log2)
+        _fm_e = _fm_decay_total.to(tl.bfloat16).to(tl.float32)
+        _fm_e_inverse = tl.exp2(-_fm_decay_log2).to(tl.bfloat16).to(tl.float32)
+        _fm_qd = (_fm_q * _fm_e).to(tl.bfloat16).to(tl.float32)
+        _fm_scale = tl.full((), {{ call.query_scale }}, tl.float32).to(tl.bfloat16).to(tl.float32)
+        _fm_qd = (_fm_qd * _fm_scale).to(tl.bfloat16).to(tl.float32)
+        _fm_kd = (_fm_k * _fm_e).to(tl.bfloat16).to(tl.float32)
+        _fm_ki = (_fm_k * _fm_e_inverse).to(tl.bfloat16).to(tl.float32)
+        _fm_kr = (_fm_ki * _fm_e).to(tl.bfloat16).to(tl.float32)
+        _fm_score = tl.sum(_fm_qd * _fm_ki).to(tl.bfloat16).to(tl.float32)
         for _fm_v_chunk in tl.range(0, {{ call.value_chunks }}):
             _fm_offsets_v = _fm_v_chunk * 32 + tl.arange(0, 32)
             _fm_v_active = _fm_offsets_v < {{ call.value_dim }}
             _fm_v = tl.load({{ call.value }} + ({{ call.value_head_offset }}) + _fm_offsets_v,
                             mask=_fm_v_active, other=0.0).to(tl.float32)
             _fm_h = tl.load({{ call.state }} + ({{ call.state_head_offset }}) + _fm_offsets_k[:, None] * {{ call.value_dim }} + _fm_offsets_v[None, :],
+                            mask=_fm_v_active[None, :], other=0.0).to(tl.bfloat16).to(tl.float32)
+            _fm_prediction = tl.sum(_fm_h * _fm_kd[:, None], 0).to(tl.bfloat16).to(tl.float32)
+            _fm_previous = tl.sum(_fm_h * _fm_qd[:, None], 0).to(tl.bfloat16).to(tl.float32)
+            _fm_delta = (_fm_v - _fm_prediction).to(tl.bfloat16).to(tl.float32)
+            _fm_delta = (_fm_delta * _fm_beta).to(tl.bfloat16).to(tl.float32)
+            # Keep the score product's BF16 store before the BF16 add. A
+            # contractable multiply becomes fma.rn.bf16 after narrowing and
+            # erases this boundary even with explicit BF16/F32 casts.
+            _fm_correction = libdevice.mul_rn(_fm_score, _fm_delta).to(tl.bfloat16).to(tl.float32)
+            _fm_o = (_fm_previous + _fm_correction).to(tl.bfloat16)
+            _fm_outer = _fm_kr[:, None] * _fm_delta[None, :]
+            # The CUDA chunk state FMA uses fast math (FTZ), independently of
+            # BF16 readout arithmetic, which can retain subnormal BF16 values.
+            _fm_h = tl.inline_asm_elementwise("fma.rn.ftz.f32 $0, $1, $2, $3;", constraints="=f,f,f,f",
+                                             args=[_fm_h, _fm_decay_total[:, None], _fm_outer],
+                                             dtype=tl.float32, is_pure=True, pack=1).to(tl.bfloat16).to(tl.float32)
+            tl.store({{ call.out }} + ({{ call.out_head_offset }}) + _fm_offsets_v, _fm_o,
+                     mask=_fm_v_active & ({{ call.out_writer_active }}))
+            tl.store({{ call.new_state }} + ({{ call.new_state_head_offset }}) + _fm_offsets_k[:, None] * {{ call.value_dim }} + _fm_offsets_v[None, :], _fm_h,
+                     mask=_fm_v_active[None, :] & ({{ call.state_writer_active }}))
+{% else %}
+        _fm_decay = {{ call.lower_bound }} * tl.sigmoid(_fm_decay_rate * (_fm_gate + _fm_gate_bias))
+        _fm_beta = tl.sigmoid(tl.load({{ call.beta_logits }} + ({{ call.beta_logits_head_offset }})).to(tl.float32))
+{% if call.l2norm_in_kernel %}
+{% if call.kda_reduction_layout == "warp_k" %}
+        # A matrix reduction keeps each thread's original contiguous K4
+        # grouping without an expensive one-dimensional slice reshape.
+        _fm_q_square = tle.gpu.set_layout((_fm_q * _fm_q)[:, None], {{ call.symbol }}__warp_k)
+        _fm_k_square = tle.gpu.set_layout((_fm_k * _fm_k)[:, None], {{ call.symbol }}__warp_k)
+        _fm_q = _fm_q / tl.sqrt(tl.reshape(tl.sum(_fm_q_square, 0), ()) + {{ call.epsilon }})
+        _fm_k = _fm_k / tl.sqrt(tl.reshape(tl.sum(_fm_k_square, 0), ()) + {{ call.epsilon }})
+{% else %}
+        _fm_q = _fm_q / tl.sqrt(tl.sum(_fm_q * _fm_q) + {{ call.epsilon }})
+        _fm_k = _fm_k / tl.sqrt(tl.sum(_fm_k * _fm_k) + {{ call.epsilon }})
+{% endif %}
+{% endif %}
+{% if call.query_scale != 1.0 %}
+        _fm_q = _fm_q * {{ call.query_scale }}
+{% endif %}
+        _fm_decay_exp = tl.exp(_fm_decay)[:, None]
+        for _fm_v_chunk in tl.range(0, {{ call.value_chunks }}):
+            _fm_offsets_v = _fm_v_chunk * 32 + tl.arange(0, 32)
+{% if call.kda_reduction_layout == "warp_k" %}
+            _fm_offsets_v = tle.gpu.set_layout(_fm_offsets_v, {{ call.symbol }}__v_vector)
+{% endif %}
+            _fm_v_active = _fm_offsets_v < {{ call.value_dim }}
+            _fm_v = tl.load({{ call.value }} + ({{ call.value_head_offset }}) + _fm_offsets_v,
+                            mask=_fm_v_active, other=0.0).to(tl.float32)
+            _fm_h = tl.load({{ call.state }} + ({{ call.state_head_offset }}) + _fm_offsets_k[:, None] * {{ call.value_dim }} + _fm_offsets_v[None, :],
                             mask=_fm_v_active[None, :], other=0.0).to(tl.float32)
             _fm_h = _fm_h * _fm_decay_exp
+{% if call.kda_reduction_layout == "warp_k" %}
+            _fm_correction = tl.sum(tle.gpu.set_layout(_fm_h * _fm_k[:, None], {{ call.symbol }}__warp_k), 0)
+{% else %}
             _fm_correction = tl.sum(_fm_h * _fm_k[:, None], 0)
+{% endif %}
             _fm_v = (_fm_v - _fm_correction) * _fm_beta
             _fm_h = _fm_h + _fm_k[:, None] * _fm_v[None, :]
+{% if call.kda_reduction_layout == "warp_k" %}
+            _fm_o = tl.sum(tle.gpu.set_layout(_fm_h * _fm_q[:, None], {{ call.symbol }}__warp_k), 0)
+{% else %}
             _fm_o = tl.sum(_fm_h * _fm_q[:, None], 0)
+{% endif %}
             tl.store({{ call.out }} + ({{ call.out_head_offset }}) + _fm_offsets_v, _fm_o.to(tl.bfloat16),
                      mask=_fm_v_active & ({{ call.out_writer_active }}))
             tl.store({{ call.new_state }} + ({{ call.new_state_head_offset }}) + _fm_offsets_k[:, None] * {{ call.value_dim }} + _fm_offsets_v[None, :], _fm_h,
                      mask=_fm_v_active[None, :] & ({{ call.state_writer_active }}))
+{% endif %}
+{% endfor %}
+{% if phase_dispatch %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    if {{ call.request_prefill }}:
+        {{ call.symbol }}__prefill({{ call.signature }})
+    else:
+        {{ call.symbol }}__decode({{ call.signature }})
+{% endif %}
 
 
 {% endif %}

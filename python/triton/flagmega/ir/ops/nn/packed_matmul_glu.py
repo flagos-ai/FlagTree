@@ -19,7 +19,11 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
+from triton.flagmega.ir.ops.math._block_scaled import (
+    block_scaled_linear,
+    normalize_glu_activation_quantization,
+    verify_block_scaled_precision_inputs,
+)
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.types import VectorType
 
@@ -46,6 +50,7 @@ class PackedMatMulGlu(OpDefinition):
     up_weight_encoding = attribute_parameter(default=None)
     gate_clamp_max = attribute_parameter(default=None)
     up_clamp = attribute_parameter(default=None)
+    activation_quantization = attribute_parameter(default="dynamic_fp8")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -77,6 +82,7 @@ class PackedMatMulGlu(OpDefinition):
             if (value is not None and
                     (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0)):
                 raise IRSchemaError(f"PackedMatMulGlu {name} must be a positive number or None.")
+        result.update(normalize_glu_activation_quantization(attrs, "PackedMatMulGlu"))
         return result
 
     @classmethod
@@ -98,6 +104,8 @@ class PackedMatMulGlu(OpDefinition):
         output = tensor_type(value.dtype, (value.shape[0], gate.shape[0]))
         gate_scale_type = cls.gate_scale.type_of(inputs)
         up_scale_type = cls.up_scale.type_of(inputs)
+        verify_block_scaled_precision_inputs(value, gate, tensor_of(gate_scale_type), attrs, "PackedMatMulGlu")
+        verify_block_scaled_precision_inputs(value, up, tensor_of(up_scale_type), attrs, "PackedMatMulGlu")
         distributed_inputs = (
             value_type, gate_type, up_type, gate_scale_type, up_scale_type)
         placement = placement_of(*distributed_inputs)
@@ -127,6 +135,7 @@ class PackedMatMulGlu(OpDefinition):
             "block_n": int(cls.weight_block_n.read(arguments, node.attrs)),
             "block_k": int(cls.weight_block_k.read(arguments, node.attrs)),
             "output_dtype": context.torch_dtype(tensor_of(node.type).dtype),
+            "activation_quantization": node.attrs.get("activation_quantization", "dynamic_fp8"),
         }
         gate = block_scaled_linear(
             cls.value.read(arguments), gate_weight.reshape(gate_weight.shape[0], -1),

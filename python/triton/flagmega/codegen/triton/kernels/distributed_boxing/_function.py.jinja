@@ -30,7 +30,25 @@ for boxing_partial_start in tl.range(
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.leaves | selectattr("remote_source", "defined") | list %}
+{# A callee's pool pointer already includes all enclosing function frames.
+   Recover its allocation-relative displacement against this rank's registered
+   window, then use that same displacement in the peer's window. #}
+    boxing_window_base = tle.remote(
+        device_dptr, space="device", dtype=tl.uint8,
+        shard_id=_flagmega_device_rank.to(tl.int32), offset=0,
+    )
+{% endif %}
 {% for leaf in call.leaves %}
+{% if leaf.source_is_scalar | default(false) %}
+    tl.store({{ leaf.result }} + ({{ leaf.result_offset }}), {{ leaf.source }},
+             mask=({{ leaf.writer_active }}))
+{% else %}
+{% if leaf.remote_source is defined %}
+    boxing_source_byte_offset = (
+        ({{ leaf.remote_local_base }}).to(tl.uint64) - boxing_window_base.to(tl.uint64)
+    ).to(tl.int64)
+{% endif %}
     for boxing_start in tl.range(0, {{ leaf.capacity }}, {{ leaf.tile }}):
         boxing_offsets = boxing_start + tl.arange(0, {{ leaf.tile }})
         boxing_mask = (
@@ -73,8 +91,6 @@ def {{ call.symbol }}({{ call.signature }}):
                 ),
                 boxing_value,
             )
-{% elif leaf.source_is_scalar | default(false) %}
-        boxing_value = {{ leaf.source }}
 {% else %}
         boxing_value = tl.load(
             {{ leaf.source }} + ({{ leaf.source_offset }}),
@@ -87,6 +103,7 @@ def {{ call.symbol }}({{ call.signature }}):
             boxing_value,
             mask=boxing_mask & ({{ leaf.writer_active }}),
         )
+{% endif %}
 {% endif %}
 {% endfor %}
 

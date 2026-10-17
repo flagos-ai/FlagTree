@@ -1170,6 +1170,12 @@ class _StripedImage:
                     self.stream.seek(part * self.part_nbytes)
                     while chunk := source.read(_HASH_CHUNK_BYTES):
                         _write_all(self.stream, memoryview(chunk))
+            # Writers have joined. Consume each staging extent as soon as its
+            # bytes belong to the image, so copy assembly needs one extra extent
+            # instead of retaining a second complete image until context exit.
+            array._mmap.close()
+            path.unlink()
+            del self.parts[part]
         self.stream.truncate(self.nbytes)
 
 
@@ -1254,6 +1260,7 @@ def verify_rdata(
     module: IRModule | None = None,
     segment: int | None = None,
     verify_image_bytes: bool = True,
+    reuse_source_proofs: bool = False,
 ) -> dict[str, object]:
     """Verify a packed rdata image, optionally only the caller's chip segment.
 
@@ -1268,6 +1275,11 @@ def verify_rdata(
     maps those bytes.  It exists so one process hashes the payload once instead
     of once per layer that happens to inspect the artifact; the mapping caller
     must still verify before use.
+
+    ``reuse_source_proofs=True`` lets a runtime reuse a host-local digest proof
+    for the exact unchanged source-snapshot file version. Unknown or changed
+    versions are hashed before use; physical image chunks still receive their
+    normal byte audit. Explicit artifact audits keep the default fresh hashes.
     """
 
     if segment is not None and not verify_image_bytes:
@@ -1337,7 +1349,8 @@ def verify_rdata(
     if module is not None:
         _verify_module_contract(module, index, entries)
     if index.get("schema") == SOURCE_LAYOUT_SCHEMA:
-        validate_source_layout(root, index, module, segment=segment, verify_bytes=verify_image_bytes)
+        validate_source_layout(root, index, module, segment=segment, verify_bytes=verify_image_bytes,
+                               reuse_source_proofs=reuse_source_proofs)
     return index
 
 

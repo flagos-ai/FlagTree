@@ -1,8 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
 import torch
-
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.rules import DataflowRewriter
@@ -81,3 +81,20 @@ def test_fold_pack_reshape_rejects_vector_lane_in_middle_of_mapped_shape():
 
     original = Graph().build()
     assert _run(original).semantic_hash == original.semantic_hash
+
+
+@pytest.mark.parametrize('source_shape,target_shape', [((128,), (2, 64)), ((2, 8, 8), (2, 64))])
+def test_fold_pack_reshape_composes_repeated_axis_lanes(source_shape, target_shape):
+    class Graph(fm.Module):
+        def forward(self):
+            value = self.input('value', fm.tensor_type('bfloat16', source_shape), id='value')
+            reshaped = fm.F.tensors.reshape(value, target_shape, name='reshaped')
+            packed = fm.F.tensors.pack(reshaped, (2, 4), axes=(1, 1), name='result')
+            self.function('main', (value,), (packed,))
+
+    original = Graph(dialect='ntt', stage='packed', entry='main').build()
+    rewritten = _run(original)
+    assert rewritten.node_map['result'].op == 'tensors.reshape'
+    assert rewritten.node_map['result'].attrs['shape'] == (2, 8)
+    value = torch.arange(128, dtype=torch.bfloat16).reshape(source_shape)
+    _assert_equivalent(original, rewritten, {'value': value})

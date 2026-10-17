@@ -2,7 +2,7 @@
 {% if render_calls is defined %}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
-{% if call.family == "mhc_pre" %}
+{% if call.family == "mhc_pre" and call.variant == "local" %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -73,7 +73,13 @@ def {{ call.symbol }}({{ call.signature }}):
         tl.store({{ call.comb }} + ({{ call.comb_offset }}), _fm_comb,
                  mask=_fm_pair_active & ({{ call.comb_writer_active }}))
         # Pass two: collapse the streams with the pre coefficients. The sum is
-        # accumulated in FP32 and only the result returns to the stream dtype.
+        # accumulated in FP32 and only the result converts to collapsed_type.
+{% if call.collapse_sequential_fma %}
+{% for source in range(call.hc) %}
+        _fm_pre_{{ source }} = tl.reshape(tl.gather(
+            _fm_pre, tl.full((1,), {{ source }}, tl.int32), 0), ())
+{% endfor %}
+{% endif %}
         for _fm_start in tl.range(0, {{ call.hidden }}, {{ call.collapse_tile }}):
             _fm_hidden = _fm_start + tl.arange(0, {{ call.collapse_tile }})
             _fm_hidden_active = _fm_hidden < ({{ call.hidden_active }})
@@ -81,7 +87,20 @@ def {{ call.symbol }}({{ call.signature }}):
                 {{ call.streams }} + ({{ call.streams_plane_offset }}),
                 mask=_fm_stream_active[:, None] & _fm_hidden_active[None, :],
                 other=0.).to(tl.float32)
+{% if call.collapse_input_type is not none %}
+            _fm_plane = _fm_plane.to({{ call.collapse_input_type }}).to(tl.float32)
+{% endif %}
+{% if call.collapse_sequential_fma %}
+            _fm_collapsed = tl.full(({{ call.collapse_tile }},), 0., tl.float32)
+{% for source in range(call.hc) %}
+            _fm_plane_{{ source }} = tl.reshape(tl.gather(
+                _fm_plane, tl.full((1, {{ call.collapse_tile }}), {{ source }}, tl.int32), 0),
+                ({{ call.collapse_tile }},))
+            _fm_collapsed = tl.fma(_fm_pre_{{ source }}, _fm_plane_{{ source }}, _fm_collapsed)
+{% endfor %}
+{% else %}
             _fm_collapsed = tl.sum(_fm_pre[:, None] * _fm_plane, 0)
+{% endif %}
             tl.store({{ call.collapsed }} + ({{ call.collapsed_offset }}),
                      _fm_collapsed.to({{ call.collapsed_type }}),
                      mask=_fm_hidden_active & ({{ call.collapsed_writer_active }}))

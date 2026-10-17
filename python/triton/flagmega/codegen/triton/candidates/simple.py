@@ -8,9 +8,14 @@ from triton.flagmega.codegen.triton.vectorization import (
     configured_vector_schedule,
     vectorization_contract,
 )
+from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import Candidate, DistributedType, DType, Node, TensorType, VectorType
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import is_fully_sharded_across_placement
+from triton.flagmega.ir.ops.math._block_scaled import (
+    block_scaled_mma_supports_precision,
+    block_scaled_precision_supports_target,
+)
 
 from .core import TritonCandidateContext, TritonCandidateProposal
 
@@ -75,10 +80,18 @@ class BlockFp8CandidateProvider:
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
         native_quant = node.attrs.get("weight_encoding")
+        if not block_scaled_precision_supports_target(
+                node.attrs, getattr(context.target, "codegen_platform", None),
+                getattr(context.target, "codegen_architecture", None)):
+            raise CodegenError("SM90 reciprocal activation quantization requires the NVIDIA SM90 target.")
+        value_dtype = tensor_of(context.module.node_map[node.inputs[0]].type).dtype
+        mma_legal = block_scaled_mma_supports_precision(node.attrs, value_dtype,
+                                                       block_k=int(node.attrs["weight_block_k"]))
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations("block_fp8")
-            if native_quant is None or implementation.variant == "simt")
+            if (native_quant is None or implementation.variant == "simt")
+            and (implementation.variant != "mma" or mma_legal))
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("block_fp8", candidates))
@@ -88,6 +101,10 @@ class MatmulGluCandidateProvider:
     op_names = frozenset({"nn.matmul_glu", "nn.packed_matmul_glu"})
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
+        if not block_scaled_precision_supports_target(
+                node.attrs, getattr(context.target, "codegen_platform", None),
+                getattr(context.target, "codegen_architecture", None)):
+            raise CodegenError("SM90 reciprocal activation quantization requires the NVIDIA SM90 target.")
         native_quant = node.attrs.get("gate_weight_encoding") or node.attrs.get("up_weight_encoding")
         candidates = tuple(
             context.configure_implementation(implementation)

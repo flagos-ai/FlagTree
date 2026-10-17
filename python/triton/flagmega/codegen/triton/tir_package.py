@@ -28,6 +28,10 @@ from triton.flagmega.codegen.triton.pipeline_source import (
     function_call_storage_roots,
 )
 from triton.flagmega.codegen.triton.runtime_binding import (
+    DEVICE_CONTEXT_ABI,
+    DEVICE_CONTEXT_ARGUMENTS,
+    DEVICE_CONTEXT_HANDLES,
+    DEVICE_CONTEXT_MODE,
     describe_function_runtime_binding,
 )
 from triton.flagmega.codegen.triton.templates import (
@@ -37,6 +41,7 @@ from triton.flagmega.codegen.triton.templates import (
 )
 from triton.flagmega.errors import CodegenError, IRVerificationError
 from triton.flagmega.ir import IRModule, execution_calls_of, verify_buffer_plan, verify_module
+from triton.flagmega.ir.ops.math._block_scaled import block_scaled_precision_supports_target
 
 from .descriptor_resources import DescriptorResources
 
@@ -94,8 +99,8 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
     )
     # A chip/node coordinate comes from the FlagCX runtime context rather
     # than the per-rank Triton launch grid.  Thread that context through every
-    # generated wrapper as one static argument so nested calls and kernel
-    # helpers observe the same topology.
+    # generated wrapper as one tuple of runtime handles so nested calls and
+    # kernel helpers observe the same topology without address specialization.
     needs_device_dptr = bool(mesh.get("mesh_requires_device_dptr", False))
     if needs_device_dptr:
         for binding in bindings.values():
@@ -109,9 +114,6 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
                 if "device_dptr" not in pointer_arguments:
                     pointer_arguments.append("device_dptr")
                 call["arguments"] = [*pointer_arguments, *descriptors]
-                # Call sites are Python expressions, so they carry the plain
-                # value name.  The ``tl.constexpr`` annotation belongs only
-                # to the generated function definition assembled below.
                 call["signature"] = ", ".join(call["arguments"])
 
     root_binding = bindings[module.entry]
@@ -166,6 +168,13 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         for name in function_names
         for call in encoded_calls[name]
     ]
+    device_function_names = {
+        definition["function"]
+        for definition in source_schedule.get("device_functions", ())
+    } if source_schedule is not None else set()
+    for name, calls in encoded_calls.items():
+        for call in calls:
+            call["device_function_parent"] = name in device_function_names
     # A stage the schedule invokes once per loop trip shares one pipe instance
     # across trips, so its template renders a trip-base offset and leaves the
     # stream open; mark those wrappers before any template sees them.
@@ -196,6 +205,35 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
                 call["partial_owner_index"] = "0"
 
     platform, architecture = module_template_target(module)
+    if (platform != "nvidia" or architecture != "sm90") and any(
+        call.get("decode_schedule") == "bf16_mma" for calls in encoded_calls.values() for call in calls
+    ):
+        raise CodegenError("DSA bf16_mma requires the NVIDIA SM90 target.")
+    if (platform != "nvidia" or architecture != "sm90") and any(
+        call.get("kda_reduction_layout") == "warp_k" for calls in encoded_calls.values() for call in calls
+    ):
+        raise CodegenError("KDA warp_k requires the NVIDIA SM90 target.")
+    if (platform != "nvidia" or architecture != "sm90") and any(
+        call.get("norm_stats_reduction_algorithm") == "fma_1024"
+        for calls in encoded_calls.values() for call in calls
+    ):
+        raise CodegenError("NormStats fma_1024 requires the NVIDIA SM90 target.")
+    if (platform != "nvidia" or architecture != "sm90") and any(
+        call.get("norm_stats_reduction_layout") == "contiguous_8"
+        or call.get("norm_partial_reduction") == "global_tree"
+        for calls in encoded_calls.values() for call in calls
+    ):
+        raise CodegenError("Contiguous NormStats/global-tree finalization requires the NVIDIA SM90 target.")
+    if int(plan_launch["num_warps"]) < 2 and any(
+        call.get("norm_stats_reduction_algorithm") == "fma_1024"
+        for calls in encoded_calls.values() for call in calls
+    ):
+        raise CodegenError("NormStats fma_1024 requires at least two compute warps.")
+    # A resumed raw TIR call also has to satisfy the approximation's target
+    # contract; candidate filtering alone cannot protect this entry point.
+    if any(not block_scaled_precision_supports_target(call.get("semantic_attrs", {}), platform, architecture)
+           for calls in encoded_calls.values() for call in calls):
+        raise CodegenError("SM90 reciprocal activation quantization requires the NVIDIA SM90 target.")
     raw_templates = package_plan.get("kernel_templates")
     if not isinstance(raw_templates, (tuple, list)):
         raise CodegenError("TIR package plan has no kernel-template closure.")
@@ -217,21 +255,33 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
     )
     descriptor_names = [str(value["name"]) for value in descriptor_specs]
     offset_tables = source_schedule["function_offset_tables"] if source_schedule else []
-    signature = [*root_signature, *descriptor_names, *(table["name"] for table in offset_tables)]
+    entry_signature = [field for name in root_signature
+                       for field in (DEVICE_CONTEXT_ARGUMENTS if name == "device_dptr" else (name,))]
+    signature = [*entry_signature, *descriptor_names, *(table["name"] for table in offset_tables)]
+    if len(signature) != len(set(signature)):
+        raise CodegenError(
+            "TIR entry ABI requires unique argument names across buffers, "
+            "device context, descriptors and function offset tables."
+        )
     scalar_arguments = {
         str(value["name"]): str(value["scalar_dtype"])
         for value in root_binding["arguments"]
         if value.get("runtime_value_kind") == "scalar"
     }
-    typed_signature = ",\n    ".join(
-        "device_dptr: tl.constexpr" if name == "device_dptr" else
-        f"{name}: {emit_triton_scalar_type(scalar_arguments[name])}" if name in scalar_arguments else name
+    if needs_device_dptr:
+        scalar_arguments.update({name: "int64" for name in DEVICE_CONTEXT_HANDLES})
+    typed_signature_arguments = [
+        f"{name}: tl.constexpr" if needs_device_dptr and name == DEVICE_CONTEXT_MODE else name
         for name in signature
+    ]
+    typed_signature = ",\n    ".join(
+        f"{name}: {emit_triton_scalar_type(scalar_arguments[name])}" if name in scalar_arguments else typed_name
+        for name, typed_name in zip(signature, typed_signature_arguments, strict=True)
     )
     external_names = {
         str(value["name"]) for value in root_binding["arguments"]
     }
-    descriptor_base = len(root_signature)
+    descriptor_base = len(entry_signature)
     dynamic_descriptors = [
         descriptor_base + index
         for index, spec in enumerate(descriptor_specs)
@@ -248,10 +298,7 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         "signature_arguments": [
             name for name in signature
         ],
-        "typed_signature_arguments": [
-            "device_dptr: tl.constexpr" if name == "device_dptr" else name
-            for name in signature
-        ],
+        "typed_signature_arguments": typed_signature_arguments,
         "signature": typed_signature,
         "scalar_arguments": list(scalar_arguments),
         "host_tensor_descriptor_specs": plain_package_value(
@@ -259,9 +306,8 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         ),
         "function_offset_tables": plain_package_value(offset_tables),
         "function_schedule": plain_package_value(root_schedule),
-        # ``device_dptr`` is a generated static context argument, not an
-        # external buffer/pool root.  Keep it in the Triton source signature
-        # while preserving the runtime binding's physical ABI.
+        # The logical context is not an external buffer or memory-pool root.
+        # Only the generated entry expands it into two runtime scalar handles.
         "runtime_binding": plain_package_value({
             **root_binding,
             "signature": [
@@ -281,6 +327,7 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         "target_architecture": architecture,
         "distributed_entry": cooperative,
         "distributed_device_dptr": needs_device_dptr,
+        "device_context_abi": DEVICE_CONTEXT_ABI if needs_device_dptr else None,
         # A kernel that reads a peer chip's instance addresses it inside the
         # FlagCX symmetric window, so the runtime has to register this pool
         # itself rather than a placeholder allocation.
@@ -624,7 +671,7 @@ def _device_window_storage(
     storages = {
         str(leaf["remote_window_pool"])
         for call in wrappers
-        for leaf in call.get("leaves", ())
+        for leaf in (call, *call.get("leaves", ()))
         if "remote_window_pool" in leaf
     }
     if not storages:

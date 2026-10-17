@@ -63,6 +63,7 @@ class _Access:
 class _PendingAccess:
     access: _Access
     coverage: BarrierCoverage = field(default_factory=BarrierCoverage)
+    needs_device_coverage: bool = False
 
 
 def plan_memory_synchronization(
@@ -126,9 +127,12 @@ def _plan_memory_synchronization(
         abi = plan.function_map[function.name]
         bindings = dict(abi.values)
         calls = tuple(
-            node for node in function_nodes(module, function)
+            (node, call_accesses.accesses(function.name, node, bindings))
+            for node in function_nodes(module, function)
             if node.op in {"tir.kernel", "tir.call"}
         )
+        device_ranges = _device_visible_ranges(calls)
+
         history: list[_PendingAccess] = []
         if function.name in repeated and calls:
             # A repeated function's own trailing accesses precede its leading
@@ -139,13 +143,11 @@ def _plan_memory_synchronization(
             # execution reaches it.  A loop body qualifies, and so does
             # anything the body calls: `decode_layer` is straight-line but
             # runs once per trip.
-            for node in calls:
+            for _, accesses in calls:
                 history.extend(
-                    _PendingAccess(access)
-                    for access in call_accesses.accesses(function.name, node, bindings)
+                    _pending_access(access, device_ranges) for access in accesses
                 )
-        for node in calls:
-            current = call_accesses.accesses(function.name, node, bindings)
+        for node, current in calls:
             conflicts = [
                 (previous.access, access)
                 for previous in history
@@ -195,22 +197,52 @@ def _plan_memory_synchronization(
                 requirement = (scope, axis_group_axes, placement)
                 for pending in history:
                     pending.coverage.apply(requirement, pending.access.distributed_type)
-                # A block or axis-group barrier does not discharge outstanding
-                # chip-visible accesses. Preserve them, with coverage, for a
-                # later consumer whose owner relation may be wider.
+                # Coverage must also suffice for future owner relations. A
+                # local writer can feed a later peer read after an intervening
+                # chip barrier; that barrier has not published its bytes to
+                # the peer. Keep accesses to device-visible ranges until a
+                # device rendezvous, including accesses that are local here.
                 history = [pending for pending in history if not (
                     (
                         pending.coverage.device_synchronized
-                        if _requires_device(pending.access)
+                        if pending.needs_device_coverage
                         else pending.coverage.full_chip_synchronized
                     )
                     or (
-                        _resolved_scope(pending.access) is MemoryAccessScope.BLOCK
+                        not pending.needs_device_coverage
+                        and _resolved_scope(pending.access) is MemoryAccessScope.BLOCK
                         and pending.coverage.block_synchronized
                     )
                 )]
-            history.extend(_PendingAccess(access) for access in current)
+            history.extend(_pending_access(access, device_ranges) for access in current)
     return MemorySynchronizationPlan(tuple(events))
+
+
+def _pending_access(access, device_ranges):
+    ranges = device_ranges.get((access.storage, access.physical_id), ())
+    needs_device = any(start < access.offset + access.nbytes and access.offset < end
+                       for start, end in ranges)
+    return _PendingAccess(access, needs_device_coverage=needs_device)
+
+
+def _device_visible_ranges(calls):
+    """Byte ranges that any access in this function can reach across chips."""
+    ranges = {}
+    for _, accesses in calls:
+        for access in accesses:
+            if _requires_device(access):
+                ranges.setdefault((access.storage, access.physical_id), []).append(
+                    (access.offset, access.offset + access.nbytes))
+    result = {}
+    for key, spans in ranges.items():
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        result[key] = tuple(merged)
+    return result
 
 
 def _repeated_graph_functions(module: IRModule) -> frozenset[str]:
@@ -558,11 +590,23 @@ def _hazard_requirement(
 def _requires_device(access: _Access) -> bool:
     """Whether this access reaches another chip's instance of the bytes.
 
-    Only an explicit ``MemoryAccessScope.DEVICE`` effect qualifies; the scope
-    cannot be inferred from storage, because every chip-visible arena looks
-    identical from the buffer plan's point of view.
+    A typed partial-group access reaches every owner of that group, including
+    peer chips. Ordinary local accesses to the same type do not. Storage alone
+    cannot establish that distinction.
     """
-    return access.effect.scope is MemoryAccessScope.DEVICE
+    if access.effect.scope is MemoryAccessScope.DEVICE:
+        return True
+    value_type = access.distributed_type
+    return (
+        access.effect.owner_access is MemoryOwnerAccess.PARTIAL_GROUP
+        and value_type is not None
+        and value_type.partial is not None
+        and any(
+            value_type.placement.hierarchy_levels[axis] in {"c", "d"}
+            and value_type.placement.hierarchy[axis] > 1
+            for axis in value_type.partial.axes
+        )
+    )
 
 
 def _resolved_scope(access: _Access) -> MemoryAccessScope:

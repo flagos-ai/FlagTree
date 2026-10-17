@@ -22,26 +22,44 @@ def collect_reuse_preferences(module, plan):
 
 
 def record_reuse_preferences(plan, function, conflicts, collected):
+    from .synchronization import _conflict_requirement
+
+    candidates = []
+    fixed = []
+    for previous, current in conflicts:
+        pair = _reallocatable_reuse_pair(plan, previous, current)
+        if pair is None:
+            fixed.append((previous, current))
+        else:
+            candidates.append(pair)
+    # Relocation cannot remove or weaken a cut whose true dependencies still
+    # require the same rendezvous. Pricing its incidental reuse pairs gives
+    # SAT an objective unrelated to the synchronization we accept afterward.
+    if fixed and _conflict_requirement(fixed) == _conflict_requirement(conflicts):
+        return
+    for owner_function, space, pair in candidates:
+        collected[(owner_function, space)].add(pair)
+
+
+def _reallocatable_reuse_pair(plan, previous, current):
     from .synchronization import _hazard_requirement
 
-    for previous, current in conflicts:
-        if _hazard_requirement(previous, current)[0] not in {"grid", "device"}:
-            continue
-        left = plan.buffer_map[previous.buffer].mem_span.buffer
-        right = plan.buffer_map[current.buffer].mem_span.buffer
-        space = plan.memory_space_map[left.memory_space]
-        if (
-            left.id == right.id
-            or left.function != right.function
-            or left.memory_space != right.memory_space
-            or not space.supports_lifetime_reuse
-            or space.sharing_scope is not MemorySharingScope.CHIP
-        ):
-            # Semantic aliases, references and producer/consumer owner
-            # changes remain governed by the original effects and
-            # synchronization analysis; reallocation cannot remove them.
-            continue
-        collected[(left.function, left.memory_space)].add(tuple(sorted((left.id, right.id))))
+    if _hazard_requirement(previous, current)[0] not in {"grid", "device"}:
+        return None
+    left = plan.buffer_map[previous.buffer].mem_span.buffer
+    right = plan.buffer_map[current.buffer].mem_span.buffer
+    space = plan.memory_space_map[left.memory_space]
+    if (
+        left.id == right.id
+        or left.function != right.function
+        or left.memory_space != right.memory_space
+        or not space.supports_lifetime_reuse
+        or space.sharing_scope is not MemorySharingScope.CHIP
+    ):
+        # Semantic aliases, references and producer/consumer owner changes
+        # remain governed by the original effects and synchronization analysis.
+        return None
+    return left.function, left.memory_space, tuple(sorted((left.id, right.id)))
 
 
 def dominates_memory_schedule(module, candidate, baseline, *, bytes_budget: int = 0):

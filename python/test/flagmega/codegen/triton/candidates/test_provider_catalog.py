@@ -39,6 +39,7 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "nn.kda_convolution",
         "nn.kda_recurrent_core",
         "nn.kda_gated_recurrent_core",
+        "nn.kda_gated_step",
         "nn.delta_rule_coefficients",
         "nn.delta_rule_log_prefix",
         "nn.delta_rule_block_update",
@@ -52,10 +53,12 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "nn.matmul_glu",
         "nn.mhc_pre",
         "nn.mhc_post",
+        "nn.mla_projection",
         "nn.norm_apply",
         "nn.norm_stats",
         "nn.packed_dense_matmul_glu",
         "nn.packed_matmul_glu",
+        "nn.partitioned_sparse_experts_down",
         "nn.qkv_rope_with_cache",
         "nn.rms_norm",
         "nn.rope",
@@ -93,7 +96,7 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "tensors.slice",
         "tensors.slice_to_shape",
     })
-    assert len(registry.providers) == 28
+    assert len(registry.providers) == 29
 
 
 def test_selection_orchestrator_contains_no_candidate_catalog_branches():

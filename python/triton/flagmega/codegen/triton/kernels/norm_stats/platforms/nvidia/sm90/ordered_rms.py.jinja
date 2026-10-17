@@ -1,0 +1,29 @@
+# Ordered RMS: tile FMA, serial per-lane additions, then a 64-lane sum.
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__lane_layout = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [{{ num_warps }}], [0]))
+{{ call.symbol }}__matrix_layout = tl.constexpr(tle.gpu.BlockEncoding([1, 16], [32, 1], [2, {{ num_warps // 2 }}], [0, 1]))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for norm_outer_index in tl.range(0, {{ call.outer_capacity }}):
+        norm_lanes = tl.arange(0, 64)
+        norm_elements = tl.arange(0, 16)
+        norm_local_offsets = norm_lanes[:, None] * 8 + (norm_elements[None, :] // 8) * 512 + norm_elements[None, :] % 8
+        norm_squares = tle.gpu.set_layout(tl.zeros((64, 16), tl.float32), {{ call.symbol }}__matrix_layout)
+        for norm_reduction_start in tl.range(0, {{ call.reduction_capacity }}, 1024):
+            norm_reduction_offsets = norm_reduction_start + norm_local_offsets
+            norm_mask = (norm_reduction_offsets < {{ call.reduction_capacity }}) & ({{ call.source_active }})
+            norm_value = _flagmega_norm_stats_load({{ call.source }} + ({{ call.source_offset }}), norm_mask)
+            norm_value = tle.gpu.set_layout(tl.where(norm_mask, norm_value, 0.), {{ call.symbol }}__matrix_layout)
+            norm_squares = tl.fma(norm_value, norm_value, norm_squares)
+        norm_lane_sum = tl.zeros((64,), tl.float32)
+        for norm_ordinal in tl.static_range(16):
+            norm_element = (norm_ordinal % 2) * 8 + norm_ordinal // 2
+            norm_scalar = tl.sum(tl.gather(norm_squares, tl.full((64, 1), norm_element, tl.int32), 1), 1)
+            norm_lane_sum = norm_lane_sum + norm_scalar
+        # Native 64-thread butterfly combines warps before shuffle stages.
+        norm_warp_lanes = tl.arange(0, 32)
+        norm_pairs = tl.gather(norm_lane_sum, norm_warp_lanes, 0) + tl.gather(norm_lane_sum, norm_warp_lanes + 32, 0)
+        norm_pairs = tle.gpu.set_layout(norm_pairs, {{ call.symbol }}__lane_layout)
+        tl.store({{ call.result }} + ({{ call.result_offsets[0] }}), tl.sum(norm_pairs, 0),
+                 mask=({{ call.outer_active }}) & ({{ call.writer_active }}))

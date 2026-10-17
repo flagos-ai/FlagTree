@@ -4,6 +4,12 @@
 
 {% macro stage_barrier(axis_group_key=none) -%}{{ entry.stage_barrier(axis_group_key) }}{%- endmacro %}
 
+{% macro runtime_device_context() -%}
+{% if device_context_abi | default(none) in ("runtime-handles/v1", "runtime-handles/v2") %}
+    device_dptr = (device_mem_ptr, device_comm_ptr)
+{% endif %}
+{%- endmacro %}
+
 {% macro scoped_barrier(scope, axis_group_key=none) -%}
 {% if scope == "device" %}{{ entry.device_barrier() }}
 {% elif scope == "grid" %}{{ stage_barrier(axis_group_key) }}
@@ -93,6 +99,7 @@ def {{ definition.symbol }}__auxiliary_consumer(
 def {{ symbol }}__consumer(
     {{ (pipeline_schedule.consumer_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
 ):
+{{ runtime_device_context() }}
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(pipeline_schedule.consumer_events) }}
 
@@ -101,6 +108,7 @@ def {{ symbol }}__consumer(
 def {{ symbol }}__producer(
     {{ (pipeline_schedule.producer_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
 ):
+{{ runtime_device_context() }}
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(pipeline_schedule.producer_events) }}
 
@@ -110,6 +118,7 @@ def {{ symbol }}__producer(
 def {{ symbol }}__auxiliary_consumer(
     {{ (pipeline_schedule.auxiliary_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
 ):
+{{ runtime_device_context() }}
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(pipeline_schedule.auxiliary_events) }}
 
@@ -209,6 +218,7 @@ def {{ symbol }}(
 def {{ symbol }}(
     {{ signature }}
 ):
+{{ runtime_device_context() }}
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(entry_events) }}
 {% endif %}

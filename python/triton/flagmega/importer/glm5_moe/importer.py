@@ -529,7 +529,7 @@ class Glm5MoeModelImporter:
                         normalized, states[0], layer_id, advance, weights, c, prefix=name,
                         dsa_state=states[1] if c.indexer_types else None,
                         dsa_layer_id=dsa_layer_id, dsa_advance=dsa_advance, topk=topk,
-                        indexer_kind=indexer_kind)
+                        indexer_kind=indexer_kind, dsa_layer_ids=importer.full_indexer_layers)
                     state_outputs = ((updated, output_topk)
                                      if c.indexer_types else (updated, ))
                 else:

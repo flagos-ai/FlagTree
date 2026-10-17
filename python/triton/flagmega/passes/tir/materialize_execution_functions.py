@@ -124,11 +124,13 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
             for _, buffer_ids in function_plan.parameters
             for buffer_id in buffer_ids
         )
-        outputs = tuple(
+        # Logical tuple fields retain their mapping in FunctionBufferPlan;
+        # the physical orchestration ABI binds each result only once.
+        outputs = tuple(dict.fromkeys(
             buffer_id
             for _, buffer_ids in function_plan.outputs
             for buffer_id in buffer_ids
-        )
+        ))
         written = {value for call in calls for value in getattr(call, "writes", ())}
         sources = {value for call in calls for value in getattr(call, "transfer_sources", ())}
         result[graph_function.name] = ExecutionFunction(
@@ -332,7 +334,13 @@ def _nested_call(
     function_name, node, record, callee, dependencies, *, induction=None
 ) -> PrimFunctionCall:
     argument_map = dict(record.arguments)
-    result_map = dict(record.results)
+    result_map = {}
+    for formal, actual in record.results:
+        if formal in result_map and result_map[formal] != actual:
+            raise IRVerificationError(
+                f"Call {node.id!r} binds physical result {formal!r} to different caller buffers."
+            )
+        result_map[formal] = actual
     # A loop's induction value is produced by the loop itself, so its formal
     # is its own actual rather than a caller-side buffer.
     arguments = tuple(

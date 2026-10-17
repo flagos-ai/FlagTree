@@ -20,7 +20,12 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear, normalize_output_lanes
+from triton.flagmega.ir.ops.math._block_scaled import (
+    block_scaled_linear,
+    normalize_block_scaled_precision,
+    normalize_output_lanes,
+    verify_block_scaled_precision_inputs,
+)
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.types import VectorType
 
@@ -32,7 +37,12 @@ from triton.flagmega.ir.types import VectorType
     display_name="Math.PackedBlockScaledMatMul",
 )
 class PackedBlockScaledMatMul(OpDefinition):
-    """Packed weights retain scalar N rows; output_lanes packs result N only."""
+    """K packing and computation precision are independent contracts.
+
+    Weights retain scalar N rows; output_lanes packs result N only.
+    Activation quantization and weight dequantization rounding have the same
+    semantics as BlockScaledMatMul, applied to all physical K lane scalars.
+    """
     const_evaluable = True
     value = input_parameter(is_tensor() & has_rank(2))
     weight = input_parameter(is_tensor() & has_rank(2))
@@ -44,6 +54,8 @@ class PackedBlockScaledMatMul(OpDefinition):
     packed_layout = attribute_parameter(default="n_major_k_packed")
     weight_encoding = attribute_parameter(default=None)
     output_lanes = attribute_parameter(default=())
+    activation_quantization = attribute_parameter(default="dynamic_fp8")
+    weight_dequant_dtype = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -64,6 +76,7 @@ class PackedBlockScaledMatMul(OpDefinition):
             raise IRSchemaError("PackedBlockScaledMatMul requires n_major_k_packed layout.")
         if result.get("weight_encoding") is not None and not isinstance(result["weight_encoding"], str):
             raise IRSchemaError("PackedBlockScaledMatMul weight_encoding must be a string or None.")
+        result.update(normalize_block_scaled_precision(attrs, "PackedBlockScaledMatMul"))
         return result
 
     @classmethod
@@ -80,6 +93,8 @@ class PackedBlockScaledMatMul(OpDefinition):
             raise IRSchemaError("PackedBlockScaledMatMul value must use a scalar element type.")
         if not isinstance(weight.dtype, VectorType):
             raise IRSchemaError("PackedBlockScaledMatMul weight must use VectorType.")
+        verify_block_scaled_precision_inputs(value, weight, tensor_of(cls.weight_scale.type_of(inputs)), attrs,
+                                             "PackedBlockScaledMatMul")
         expected_lanes = (int(attrs["k_pack"]), int(attrs["k_vector"]))
         if weight.dtype.lanes != expected_lanes:
             raise IRSchemaError(f"Packed weight lanes must be {expected_lanes}, got {weight.dtype.lanes}.")
@@ -141,6 +156,8 @@ class PackedBlockScaledMatMul(OpDefinition):
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
             output_dtype=context.torch_dtype(dtype.elem_type if isinstance(dtype, VectorType) else dtype),
+            activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"),
+            weight_dequant_dtype=node.attrs.get("weight_dequant_dtype"),
         )
         lanes = tuple(node.attrs.get("output_lanes", ()))
         return output.reshape(output.shape[0], output.shape[1] // prod(lanes), *lanes)

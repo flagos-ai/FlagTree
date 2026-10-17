@@ -33,3 +33,12 @@ def sparse_experts_pipeline_implementations():
                     capacity=2, producer_read_argument_indices=(1,)),
             ))
     return tuple(result)
+
+
+def sparse_experts_wgmma_implementations():
+    return tuple(TritonImplementation(
+        f"tir.{family}.wgmma", family, "wgmma",
+        {"block_n": 64, "block_k": 128, "compute_num_warps": 4},
+        {"indexing": "local", "rounding": "explicit", "requires_block_fp8_wgmma": True},
+        requires=("mma_v3", "fp8"),
+    ) for family in ("sparse_experts_gate_up", "partitioned_sparse_experts_down"))

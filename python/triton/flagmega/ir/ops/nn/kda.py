@@ -7,7 +7,7 @@ per-head scalar decay. KDA (Kimi Linear, arXiv:2510.26692) applies
 fine-grained per-channel decay:
 
     S_t = (I - β_t k_t k_tᵀ) Diag(g_t) S_{t-1} + β_t k_t v_tᵀ
-    o_t = S_tᵀ q_t
+    o_t = S_tᵀ (query_scale * q_t)
 
 with q/k L2-normalized, ``g_t`` the per-channel log-decay emitted by the
 layer's forget gate (GLM-5.3: ``lower_bound * sigmoid(exp(A_log)·(g+dt_bias))``
@@ -24,7 +24,7 @@ here — one head's state, gate and projections must live on one owner.
 """
 
 from collections.abc import Mapping, Sequence
-from math import prod
+from math import isfinite, prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -42,7 +42,6 @@ from triton.flagmega.ir.ops.core import (
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
-
 #: Every KDA operand and result carries the head count on this tensor axis.
 HEAD_AXIS = 1
 
@@ -52,6 +51,12 @@ def _normalize_output_lanes(lanes, opname):
             isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in lanes):
         raise IRSchemaError(f"{opname} output_lanes must be a sequence of positive integers.")
     return tuple(lanes)
+
+
+def _normalize_query_scale(value, opname):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
+        raise IRSchemaError(f"{opname} query_scale must be a positive finite number.")
+    return float(value)
 
 
 def _recurrent_output_type(query, head_v, attrs, opname):
@@ -330,7 +335,11 @@ class KdaConvolution(OpDefinition):
 @op_definition("nn.kda_recurrent_core", namespace="nn", functional_name="kda_recurrent_core",
                display_name="NN.KdaRecurrentCore")
 class KdaRecurrentCore(OpDefinition):
-    """One KDA recurrent step: L2-normalized q/k, per-channel decay, delta write."""
+    """KDA with query scaling after L2 normalization and an independent state update.
+
+    ``query_scale=1`` retains the unscaled readout of existing IR. Model
+    importers specify their attention scale explicitly.
+    """
 
     const_evaluable = True
     query = input_parameter(is_tensor())
@@ -341,6 +350,7 @@ class KdaRecurrentCore(OpDefinition):
     state = input_parameter(is_tensor())
     epsilon = attribute_parameter(default=1e-6)
     l2norm_in_kernel = attribute_parameter(default=True)
+    query_scale = attribute_parameter(default=1.0)
     output_lanes = attribute_parameter(default=())
 
     @classmethod
@@ -352,11 +362,13 @@ class KdaRecurrentCore(OpDefinition):
         if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)) or not epsilon > 0:
             raise IRSchemaError("KdaRecurrentCore epsilon must be positive.")
         attrs["output_lanes"] = _normalize_output_lanes(attrs["output_lanes"], "KdaRecurrentCore")
+        attrs["query_scale"] = _normalize_query_scale(attrs["query_scale"], "KdaRecurrentCore")
         return attrs
 
     @classmethod
     def ir_attrs(cls, attrs):
-        return {key: value for key, value in attrs.items() if key != "output_lanes" or value}
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value) and (key != "query_scale" or value != 1.0)}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
@@ -428,6 +440,7 @@ class KdaRecurrentCore(OpDefinition):
         if node.attrs["l2norm_in_kernel"]:
             q = q / context.torch.sqrt(q.pow(2).sum(-1, keepdim=True) + epsilon)
             k = k / context.torch.sqrt(k.pow(2).sum(-1, keepdim=True) + epsilon)
+        q = q * float(node.attrs.get("query_scale", 1.0))
         state = state * decay.exp().unsqueeze(-1)
         correction = (state * k.unsqueeze(-1)).sum(-2)
         value = v - correction

@@ -25,13 +25,19 @@ def {{ call.symbol }}({{ call.signature }}):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
         n_mask = local_n_offsets < ({{ call.active_n }})
         weight_rows = {{ call.weight_row_offset }}
+        up_weight_rows = {{ call.up_weight_row_offset }}
         scale_rows = {{ call.scale_row_offset }}
         destination_offsets = {{ call.destination_offset }}
         _flagmega_block_glu_local_tile(
             {{ call.value }}, {{ call.gate_weight }}, {{ call.up_weight }},
             {{ call.gate_scale }}, {{ call.up_scale }}, {{ call.result }},
-            weight_rows, scale_rows, destination_offsets, n_mask,
+            weight_rows, up_weight_rows, scale_rows, destination_offsets, n_mask,
             {{ call.k }}, {{ call.block_k }},
+            {{ call.gate_clamp_max }}, {{ call.up_clamp }},
+            "{{ call.activation_quantization }}",
+{% if call.variant == "mma" %}
+            "{{ call.scaled_accumulation | default('compensated') }}",
+{% endif %}
         )
 {% endif %}
 

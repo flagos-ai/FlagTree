@@ -46,10 +46,10 @@ def kda_recurrent_producer_rule():
 
     return RewriteRule(
         "VectorizeKdaRecurrentPropagation",
-        lambda node, _: node.op in {"nn.kda_recurrent_core", "nn.kda_gated_recurrent_core"},
+        lambda node, _: node.op in {"nn.kda_recurrent_core", "nn.kda_gated_recurrent_core", "nn.kda_gated_step"},
         rewrite,
         effect_policy=RewriteEffectPolicy.ALLOW,
-        root_ops=("nn.kda_recurrent_core", "nn.kda_gated_recurrent_core"),
+        root_ops=("nn.kda_recurrent_core", "nn.kda_gated_recurrent_core", "nn.kda_gated_step"),
     )
 
 

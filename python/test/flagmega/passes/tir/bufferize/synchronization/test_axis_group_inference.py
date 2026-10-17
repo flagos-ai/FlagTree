@@ -1,6 +1,7 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.bufferization import (
     AllocationStrategy,
@@ -41,6 +42,7 @@ def _kernel(
     input_effect: fm.MemoryEffect,
     *,
     requires: tuple[str, ...] = (),
+    output_effect: fm.MemoryEffect = fm.MemoryEffect.WRITE,
 ) -> fm.PrimFunction:
     input_parameter = fm.PrimParameter(
         "input", value_type, fm.PrimParameterRole.INPUT
@@ -57,7 +59,7 @@ def _kernel(
         outputs=("result",),
         reads=("input",),
         writes=("result",),
-        memory_effects=(("input", input_effect), ("result", fm.MemoryEffect.WRITE)),
+        memory_effects=(("input", input_effect), ("result", output_effect)),
     )
     return fm.PrimFunction(
         name,
@@ -141,6 +143,62 @@ def test_partial_owner_raw_uses_only_its_mesh_axis_group():
     assert (event.after, event.before) == ("produced", "consumed")
     assert event.scope == "grid"
     assert event.axis_group_axes == (0,)
+
+
+@pytest.mark.parametrize("axes,scope", [((0,), "device"), ((0, 2), "device"), ((2,), "grid")])
+def test_partial_owner_visibility_follows_the_reduction_group(axes, scope):
+    placement = fm.Placement((4, 8, 16), "cyx", "cbb")
+    partial = fm.DistributedType(
+        fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),), placement,
+        partial=fm.SBP.partial(axes),
+    )
+    producer = _kernel("producer", partial, fm.MemoryEffect.READ)
+    consumer = _kernel("consumer", partial, fm.MemoryEffect.READ.across_partial_owners())
+    builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
+    source = builder.var("source", partial, id="source")
+    produced = builder.call("tir.call", (source,), partial, id="produced", attrs={"callee": producer.name})
+    consumed = builder.call("tir.call", (produced,), partial, id="consumed", attrs={"callee": consumer.name})
+    builder.prim_function(producer)
+    builder.prim_function(consumer)
+    builder.function("main", (source,), (consumed,))
+    module = builder.build(entry="main")
+
+    plan = plan_memory_synchronization(module, fm.make_buffer_plan(module, options=_chip_workspace_options()))
+    event, = (event for event in plan.events if event.after == "produced" and event.before == "consumed")
+    assert event.scope == scope
+    assert event.axis_group_axes == (() if scope == "device" else axes)
+
+
+@pytest.mark.parametrize('producer_scope', (fm.MemoryAccessScope.INFERRED, fm.MemoryAccessScope.BLOCK))
+def test_chip_barrier_retains_a_writer_needed_by_a_later_peer_read(producer_scope):
+    """A local consumer cannot publish its producer to a later remote one."""
+    placement = fm.Placement((4, 8, 16), "cyx", "cbb")
+    value_type = fm.DistributedType(
+        fm.tensor_type("float32", (1, 512)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1, 2), 1)), placement,
+    )
+    producer = _kernel("producer", value_type, fm.MemoryEffect.READ,
+                       output_effect=fm.MemoryEffect(fm.MemoryAccessMode.WRITE, producer_scope))
+    local = _kernel("local", value_type, fm.MemoryEffect(
+        fm.MemoryAccessMode.READ, fm.MemoryAccessScope.CHIP))
+    remote = _kernel("remote", value_type, fm.MemoryEffect(
+        fm.MemoryAccessMode.READ, fm.MemoryAccessScope.DEVICE))
+    builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
+    source = builder.var("source", value_type, id="source")
+    produced = builder.call("tir.call", (source,), value_type, id="produced",
+                            attrs={"callee": producer.name})
+    local_result = builder.call("tir.call", (produced,), value_type, id="local_result",
+                                attrs={"callee": local.name})
+    remote_result = builder.call("tir.call", (produced,), value_type, id="remote_result",
+                                 attrs={"callee": remote.name})
+    for kernel in (producer, local, remote):
+        builder.prim_function(kernel)
+    builder.function("main", (source,), (local_result, remote_result))
+    module = builder.build(entry="main")
+    sync = plan_memory_synchronization(
+        module, fm.make_buffer_plan(module, options=_chip_workspace_options()))
+    assert any(event.before == "local_result" and event.scope == "grid" for event in sync.events)
+    assert any(event.before == "remote_result" and event.scope == "device" for event in sync.events)
 
 
 def test_synchronized_local_kernel_does_not_widen_partial_owner_hazard():

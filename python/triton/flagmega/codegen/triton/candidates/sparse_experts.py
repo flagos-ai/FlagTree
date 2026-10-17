@@ -7,12 +7,14 @@ from itertools import product
 
 from triton.flagmega.ir import DistributedType, VectorType, local_tensor_type, local_shard_descriptor, logical_type
 from triton.flagmega.ir.ops.core import get_definition
+from triton.flagmega.codegen.triton.sparse_experts.mma import supports_block_fp8_wgmma
 
 from .core import TritonCandidateProposal
 
 
 class SparseExpertsCandidateProvider:
     op_names = frozenset({"nn.sparse_experts_gate_up", "nn.sparse_experts_down",
+                          "nn.partitioned_sparse_experts_down",
                           "ntt.dispatched_experts_gate_up", "ntt.sparse_experts_down_combine",
                           "nn.sparse_experts_dispatch", "nn.sparse_experts_weighted_sum"})
 
@@ -23,7 +25,12 @@ class SparseExpertsCandidateProvider:
             context.configure_implementation(implementation)
             for implementation in context.implementations(family, indexing="local", rounding="explicit")
             if _supports_local_n(implementation, node.type)
-            and _supports_weight_tiles(implementation, node, context))
+            and _supports_weight_tiles(implementation, node, context)
+            and (not implementation.contract.get("requires_block_fp8_wgmma", False)
+                 or supports_block_fp8_wgmma(node.op, {
+                     parameter.name: context.module.node_map[node.inputs[index]].type
+                     for index, parameter in enumerate(get_definition(node.op).input_parameters)
+                 }, node.attrs)))
         if not candidates:
             return None
         return TritonCandidateProposal(

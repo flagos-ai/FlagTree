@@ -1,5 +1,6 @@
 # flagmega-kernel: block_fp8/simt platform=generic
 {% set block_fp8_variant = "simt" %}
+{% include "kernels/_activation_quantization.py.jinja" %}
 @triton.jit
 def _flagmega_iq4_xs_linear_local_tile(
     source, weight, destination, weight_row_offsets, destination_offsets,
@@ -71,6 +72,7 @@ def _flagmega_block_linear_local_tile(
     source, weight, weight_scale, destination,
     weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,
     K: tl.constexpr, BLOCK_K: tl.constexpr,
+    ACTIVATION_QUANTIZATION: tl.constexpr, WEIGHT_DEQUANT_DTYPE: tl.constexpr,
 ):
     """Block-scaled GEMV using only scalar/vector Triton operations."""
     accumulator = tl.zeros(({{ tn }},), tl.float32)
@@ -81,11 +83,8 @@ def _flagmega_block_linear_local_tile(
         source_value = tl.load(
             source + k_offsets, mask=k_mask, other=0.0,
         ).to(tl.float32)
-        maximum = tl.max(tl.abs(source_value), axis=0)
-        activation_scale = tl.where(maximum == 0.0, 1.0, maximum / 448.0)
-        quantized = tl.maximum(
-            tl.minimum(source_value / activation_scale, 448.0), -448.0,
-        ).to(tl.float8e4nv)
+        if ACTIVATION_QUANTIZATION != "none":
+            quantized, activation_scale = _flagmega_quantize_block_fp8(source_value, ACTIVATION_QUANTIZATION)
         block_scale = tl.load(
             weight_scale + scale_row_offsets + (k_start // BLOCK_K),
             mask=n_mask,
@@ -96,13 +95,21 @@ def _flagmega_block_linear_local_tile(
             mask=n_mask[:, None] & k_mask[None, :],
             other=0.0,
         ).to(tl.float32)
-        partial = (
-            tl.sum(
-                weight_value * quantized.to(tl.float32)[None, :], axis=1,
+        if ACTIVATION_QUANTIZATION != "none" and WEIGHT_DEQUANT_DTYPE is None:
+            partial = (
+                tl.sum(
+                    weight_value * quantized.to(tl.float32)[None, :], axis=1,
+                )
+                * activation_scale
+                * block_scale
             )
-            * activation_scale
-            * block_scale
-        )
+        else:
+            if ACTIVATION_QUANTIZATION != "none":
+                source_value = quantized.to(tl.float32) * activation_scale
+            weight_value = weight_value * block_scale[:, None]
+            if WEIGHT_DEQUANT_DTYPE is not None:
+                weight_value = weight_value.to(WEIGHT_DEQUANT_DTYPE).to(tl.float32)
+            partial = tl.sum(weight_value * source_value[None, :], axis=1)
         corrected = partial - compensation
         updated = accumulator + corrected
         compensation = (updated - accumulator) - corrected

@@ -13,11 +13,12 @@ from math import prod
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import placement_of, tensor_of
-from triton.flagmega.ir.distributed_type import SBPSplit, scale_split_units
-from triton.flagmega.ir.model import DistributedType, SBP, tensor_type
+from triton.flagmega.ir.distributed_type import BlockCyclicSplit, SBPSplit, scale_split_units
+from triton.flagmega.ir.local_shard import local_shard_descriptor
+from triton.flagmega.ir.model import SBP, DistributedType, tensor_type
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
-from triton.flagmega.ir.type_pattern import has_rank, is_tensor, TypePattern
+from triton.flagmega.ir.type_pattern import TypePattern, has_rank, is_tensor
 from triton.flagmega.ir.types import DType, VectorType, data_type, data_type_to_data
 
 
@@ -54,6 +55,48 @@ def expert_scale_tensor():
 ROUTER_IDS = is_tensor() & has_rank(2) & TypePattern(lambda value: tensor_of(value).dtype in {DType.INT32, DType.INT64},
                                                      "INT32/INT64 expert ids")
 EXPERT_SCALE = expert_scale_tensor()
+
+
+def normalize_sparse_quantization(attrs):
+    attrs = dict(attrs)
+    for name in ("weight_block_n", "weight_block_k"):
+        if type(attrs[name]) is not int or attrs[name] <= 0:
+            raise IRSchemaError(f"SparseExperts {name} must be a positive integer.")
+    mode = attrs.pop("activation_quantization", "dynamic_fp8")
+    if not isinstance(mode, str) or mode not in {"dynamic_fp8", "dynamic_fp8_ue8m0"}:
+        raise IRSchemaError("SparseExperts activation_quantization must be dynamic_fp8 or dynamic_fp8_ue8m0.")
+    if mode != "dynamic_fp8":
+        attrs["activation_quantization"] = mode
+    return attrs
+
+
+def verify_sparse_quantization(activation, weight, projection_scale, attrs):
+    if attrs.get("activation_quantization", "dynamic_fp8") != "dynamic_fp8_ue8m0":
+        return
+    if (element_type(activation.dtype) != DType.BFLOAT16 or weight.dtype != DType.FLOAT8_E4M3FN
+            or projection_scale.rank != 3):
+        raise IRSchemaError("SparseExperts UE8M0 activation quantization requires BF16 activations, "
+                            "FP8 E4M3FN weights and rank-3 block scales.")
+
+
+def verify_quantization_group_shards(weight_type, projection_scale, block_k):
+    if projection_scale.rank != 3 or not isinstance(weight_type, DistributedType):
+        return
+    descriptor = local_shard_descriptor(weight_type, tuple(f"owner_{axis}" for axis in range(weight_type.placement.rank)))
+    for stage in descriptor.axes[-1].stages:
+        if stage.shard_count == 1:
+            continue
+        distribution = stage.stage.distribution
+        span = (distribution.block_size if isinstance(distribution, BlockCyclicSplit)
+                else stage.local_capacity.fixed_value if stage.local_capacity.is_fixed else None)
+        # A stage contained in one ownership block does not actually split
+        # the active reduction. Otherwise each boundary must preserve groups;
+        # a later partial sum cannot repair quantization with a partial amax.
+        parent = stage.parent_extent.maximum
+        if span is not None and parent is not None and parent <= span:
+            continue
+        if span is None or span % block_k:
+            raise IRSchemaError("SparseExperts reduction sharding must preserve each activation quantization group.")
 
 
 def normalize_numerics(attrs, *rounding_names):
@@ -158,14 +201,18 @@ def validate_expert_ids(ids, count):
         raise EvaluationError(f"SparseExperts expert ids must be in [0, {count}).")
 
 
-def scaled_projection(value, weight, input_scale, projection_scale, *, block_n=128, block_k=128):
+def scaled_projection(value, weight, input_scale, projection_scale, *, block_n=128, block_k=128,
+                      activation_quantization="dynamic_fp8"):
     # Rank-2 scales are the historical nncase per-expert contract. Rank-3
     # scales are native FP8 inverse scales laid out as [expert, N-block, K-block].
     if projection_scale.ndim == 2:
         from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
         result = block_scaled_linear(value.unsqueeze(0), weight, projection_scale,
                                      block_n=block_n, block_k=block_k,
-                                     output_dtype=value.dtype).squeeze(0)
+                                     # Projection rounding belongs to the stage's
+                                     # explicit flag, after its input scale.
+                                     output_dtype=projection_scale.dtype,
+                                     activation_quantization=activation_quantization).squeeze(0)
         return result * input_scale
     return ((value.float() / input_scale) @ weight.float().T) * input_scale * projection_scale
 

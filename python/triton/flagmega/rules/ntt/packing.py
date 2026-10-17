@@ -20,13 +20,14 @@ from triton.flagmega.ir import (
     tensor_type,
     try_div_exactly,
 )
+from triton.flagmega.ir.ops.tensors._k_major import (
+    k_major_layout_name,
+)
 from triton.flagmega.passes.functions import (
     absorb_bank_parameter_transforms,
     lift_parameter_constant_transforms,
 )
 from triton.flagmega.rules import DataflowRewriter, RewriteResult, RewriteRule
-from triton.flagmega.ir.ops.tensors._k_major import (
-    k_major_layout_name, )
 
 
 class NttPackingPolicy:
@@ -1043,6 +1044,7 @@ def _parameter_transform_origin(weight: Node, module: IRModule) -> Node:
             "tensors.pad",
             "tensors.permute",
             "tensors.reshape",
+            "tensors.slice",
             "tensors.slice_to_shape",
             "tensors.unpack",
         }

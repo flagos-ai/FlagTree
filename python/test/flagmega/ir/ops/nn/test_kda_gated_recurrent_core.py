@@ -47,7 +47,7 @@ def _attrs(**overrides):
     return {"lower_bound": LOWER_BOUND, "epsilon": 1e-6, "l2norm_in_kernel": True, **overrides}
 
 
-def _module(*, l2norm=True, gate_dtype="bfloat16", beta_dtype="bfloat16"):
+def _module(*, l2norm=True, gate_dtype="bfloat16", beta_dtype="bfloat16", query_scale=None):
     names = ("q", "k", "v", "g", "decay_rate", "gate_bias", "beta", "state")
     types = _operand_types(gate_dtype=gate_dtype, beta_dtype=beta_dtype)
 
@@ -56,7 +56,8 @@ def _module(*, l2norm=True, gate_dtype="bfloat16", beta_dtype="bfloat16"):
             operands = tuple(self.input(name, value_type, id=name)
                              for name, value_type in zip(names, types))
             pair = fm.F.nn.kda_gated_recurrent_core(
-                *operands, lower_bound=LOWER_BOUND, epsilon=1e-6, l2norm_in_kernel=l2norm)
+                *operands, lower_bound=LOWER_BOUND, epsilon=1e-6, l2norm_in_kernel=l2norm,
+                **({"query_scale": query_scale} if query_scale is not None else {}))
             output, new_state = fm.F.tensors.get_items(pair, 0, 1, name_prefix="recurrent")
             self.function("main", operands, (output, new_state))
 

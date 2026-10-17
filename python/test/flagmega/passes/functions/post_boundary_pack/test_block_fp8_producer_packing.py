@@ -6,7 +6,6 @@ from math import ceil, prod
 
 import pytest
 import torch
-
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.functions import post_function_boundary_pack_propagation
@@ -16,11 +15,12 @@ from triton.flagmega.targets import NvidiaSm90Target
 class Fp8Consumers(fm.Module):
     def __init__(self, *, packed_weights=True, lanes=(8,), output_lanes=(),
                  scalar_users=False, mixed_users=False, large=False, n=40, k=128,
-                 dtype="bfloat16"):
+                 dtype="bfloat16", quantization="dynamic_fp8", weight_dtype=None):
         super().__init__(dialect="high_level", stage="packed", entry="main")
         self.packed_weights, self.lanes, self.output_lanes = packed_weights, lanes, output_lanes
         self.scalar_users, self.mixed_users, self.large = scalar_users, mixed_users, large
         self.n, self.k, self.dtype = n, k, dtype
+        self.quantization, self.weight_dtype = quantization, weight_dtype
 
     def forward(self):
         value = self.input("value", fm.tensor_type(self.dtype, (1, self.k)), id="value")
@@ -30,6 +30,7 @@ class Fp8Consumers(fm.Module):
         scale = self.weight("weight_scale", fm.tensor_type("float32", (ceil(self.n / 16), ceil(self.k / 128))),
                             source="weights", key="weight_scale", id="weight_scale")
         kwargs = {"weight_block_n": 16, "weight_block_k": 128, "name": "projection"}
+        kwargs.update(activation_quantization=self.quantization, weight_dequant_dtype=self.weight_dtype)
         if self.output_lanes:
             kwargs["output_lanes"] = self.output_lanes
         if self.packed_weights:
@@ -108,3 +109,29 @@ def test_fp8_output_packing_is_registered_on_the_large_graph_path():
     projection, = (node for node in rewritten.nodes if node.op == "math.packed_block_scaled_matmul")
     assert projection.attrs.get("output_lanes") == (8,)
     assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
+
+
+@pytest.mark.parametrize("packed_weights", [False, True])
+@pytest.mark.parametrize("large", [False, True])
+def test_dequantized_precision_survives_both_propagation_paths(packed_weights, large):
+    from dataclasses import replace
+
+    original = Fp8Consumers(packed_weights=packed_weights, lanes=(2, 4), scalar_users=True, mixed_users=True,
+                            large=large, quantization="none", weight_dtype="bfloat16").build()
+    if large:
+        assert len(original.nodes) > 20_000
+    rewritten = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
+    projection, = (node for node in rewritten.nodes if node.op in
+                   {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"})
+    assert projection.attrs["activation_quantization"] == "none"
+    assert projection.attrs["weight_dequant_dtype"] == "bfloat16"
+    assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
+    assert post_function_boundary_pack_propagation(rewritten, NvidiaSm90Target()).semantic_hash == rewritten.semantic_hash
+    # Keep the actual large graph for rewriting; the unrelated deep padding
+    # output is not part of the precision comparison or its recursive evaluator.
+    if large:
+        original = replace(original, functions=(replace(original.functions[0], outputs=original.functions[0].outputs[:-1]),))
+        rewritten = replace(rewritten, functions=(replace(rewritten.functions[0], outputs=rewritten.functions[0].outputs[:-1]),))
+    values, weights = operands(packed_weights=packed_weights)
+    evaluator = TorchEvaluator(DictWeightResolver(weights))
+    torch.testing.assert_close(evaluator.run(rewritten, values), evaluator.run(original, values), rtol=0, atol=0)

@@ -507,6 +507,10 @@ def _nested_event(
             "memory_space": pool.memory_space,
             "allocation": pool.allocation,
             "offset": pool.offset,
+            "alignment_bytes": (
+                1 if pool.allocation is None or pool_scope_counts.get(pool.memory_space, 1) > 1
+                else plan.physical_buffer_map[pool.allocation].alignment
+            ),
             "scope_bytes": (
                 pool.scope_bytes
                 if hasattr(pool, "scope_bytes")

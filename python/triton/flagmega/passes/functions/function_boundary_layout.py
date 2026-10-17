@@ -16,23 +16,21 @@ realization requires target placement policy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import os
-from typing import Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
-from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import Function, IRModule, Node, PURE, TupleType, verify_module
+from triton.flagmega.errors import IRSchemaError, IRVerificationError
+from triton.flagmega.ir import PURE, Function, IRModule, Node, TensorLayout, TupleType, verify_module
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.ops.tensors.pack import Pack
-from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.ir.ops.core import get_definition
+from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 from triton.flagmega.ir.types import VectorType, data_type_to_data
 from triton.flagmega.passes.functions.graph import function_nodes
 from triton.flagmega.passes.vector_contracts import (
     is_transient_vectorization_boundary,
     retained_vectorization_roots,
 )
-
 
 _MAX_PLANNING_ITERATIONS = 8
 _IDENTITY_VARIANT_PENALTY = 1000
@@ -50,6 +48,7 @@ class _InputLayout:
     restore_attrs: dict[str, object]
     transform_op: str = "tensors.pack"
     restore_op: str = "tensors.unpack"
+    view_pack_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -175,6 +174,7 @@ def _propagate_one_iteration(
     removed_substitutions: dict[str, str] = {}
     removed_owners: dict[str, str] = {}
     parameter_types: dict[str, object] = {}
+    packed_input_views: dict[str, Node] = {}
     raw_parameter_restores: dict[str, Node] = {}
     raw_parameter_use_nodes: dict[str, frozenset[str]] = {}
     output_replacements: dict[tuple[str, int], str] = {}
@@ -193,6 +193,14 @@ def _propagate_one_iteration(
         for item in layout.inputs.values():
             parameter_types[item.parameter_id] = item.packed_type
             for pack_id in item.pack_ids:
+                if pack_id in item.view_pack_ids:
+                    original = node_map[pack_id]
+                    packed_input_views[pack_id] = replace(
+                        original, op="tensors.bitcast", inputs=(item.parameter_id,),
+                        attrs={"dtype": data_type_to_data(tensor_of(original.type).dtype)},
+                        metadata={**original.metadata, "boundary_layout": "packed_input_view",
+                                  "introduced_by": "FunctionBoundaryLayoutPropagation"})
+                    continue
                 removed_substitutions[pack_id] = item.parameter_id
                 removed_owners[pack_id] = item.parameter_id
             raw_users = frozenset(
@@ -276,6 +284,7 @@ def _propagate_one_iteration(
     }
     nodes: list[Node] = []
     for node in module.nodes:
+        node = packed_input_views.get(node.id, node)
         if node.id in removed_substitutions:
             continue
         if node.id in parameter_types:
@@ -590,13 +599,16 @@ def _discover_internal_layout(
         if not candidates:
             continue
         first = candidates[0]
-        if any(
+        different = any(
             node.op != first.op
             or node.attrs != first.attrs
             or node.type != first.type
             for node in candidates[1:]
-        ):
-            continue
+        )
+        if different:
+            first = _compatible_final_axis_pack(parameter, candidates)
+            if first is None:
+                continue
         restore_op, restore_attrs = _inverse_transform(first, parameter)
         inputs[index] = _InputLayout(
             index,
@@ -608,6 +620,7 @@ def _discover_internal_layout(
             restore_attrs,
             first.op,
             restore_op,
+            frozenset(node.id for node in candidates if node.type != first.type),
         )
 
     outputs: dict[int, _OutputLayout] = {}
@@ -712,6 +725,31 @@ def _discover_caller_output_demand(
             restore_op=restore_op,
         )
     return outputs
+
+
+def _compatible_final_axis_pack(parameter, candidates):
+    """Prove one dense scalar order for differently factored packet consumers."""
+    source = tensor_of(parameter.type)
+    if source.rank == 0 or source.layout != TensorLayout():
+        return None
+    for node in candidates:
+        if node.op != "tensors.pack":
+            return None
+        axes = node.attrs.get("axes", (node.attrs.get("axis", -1),) * len(node.attrs["lanes"]))
+        if any(axis != source.rank - 1 for axis in normalize_axes(axes, source.rank)):
+            return None
+    first = max(candidates, key=lambda node: tensor_of(node.type).dtype.itemsize)
+    canonical = replace(parameter, type=first.type)
+    bitcast = get_definition("tensors.bitcast")
+    for node in candidates:
+        attrs = {"dtype": data_type_to_data(tensor_of(node.type).dtype)}
+        try:
+            inferred = bitcast.infer_type((canonical,), attrs)
+        except IRSchemaError:
+            return None
+        if inferred != node.type or bitcast.zero_copy_input_index((canonical,), attrs, inferred) != 0:
+            return None
+    return first
 
 
 def _select_layouts(

@@ -39,7 +39,11 @@ def {{ call.symbol }}({{ call.signature }}):
         gated_norm_apply_variance -= gated_norm_apply_mean * gated_norm_apply_mean
 {% endif %}
         gated_norm_apply_variance = tl.maximum(gated_norm_apply_variance, 0.0)
+{% if call.inverse_std_algorithm == "sqrt_div" %}
+        gated_norm_apply_inverse_std = 1.0 / tl.sqrt(
+{% else %}
         gated_norm_apply_inverse_std = tl.rsqrt(
+{% endif %}
             gated_norm_apply_variance + {{ call.epsilon }}
         )
         gated_norm_apply_value = tl.load(

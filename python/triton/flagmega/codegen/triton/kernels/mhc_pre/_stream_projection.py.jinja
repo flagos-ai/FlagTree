@@ -1,0 +1,79 @@
+@triton.jit
+def _flagmega_mhc_ordered_warps(values):
+    parts = tl.sum(tl.reshape(values, values.shape[:-1] + (4, 32)), len(values.shape))
+    axis: tl.constexpr = len(parts.shape) - 1
+    result = tl.zeros(parts.shape[:-1], tl.float32)
+    for warp in tl.static_range(4):
+        value = tl.sum(tl.gather(parts, tl.full(parts.shape[:-1] + (1,), warp, tl.int32), axis), axis)
+        result = libdevice.add_rn(result, value)
+    return result
+
+
+@triton.jit
+def _flagmega_mhc_ordered_splits(values, SPLITS: tl.constexpr):
+    axis: tl.constexpr = len(values.shape) - 1
+    result = tl.zeros(values.shape[:-1], tl.float32)
+    for split in tl.static_range(SPLITS):
+        value = tl.sum(tl.gather(values, tl.full(values.shape[:-1] + (1,), split, tl.int32), axis), axis)
+        result = libdevice.add_rn(result, value)
+    return result
+
+
+@triton.jit(noinline=True)
+def _flagmega_mhc_project_pair(
+    streams, projection, row_start,
+    HC: tl.constexpr, HIDDEN: tl.constexpr, SPLITS: tl.constexpr,
+    STREAM_STRIDE: tl.constexpr, HIDDEN_STRIDE: tl.constexpr,
+    PROJECTION_ROW_STRIDE: tl.constexpr, PROJECTION_HIDDEN_STRIDE: tl.constexpr,
+    DOT_LAYOUT: tl.constexpr, SOURCE_LAYOUT: tl.constexpr,
+):
+    COUNT: tl.constexpr = HC * (HC + 2)
+    width: tl.constexpr = HIDDEN // SPLITS
+    rows = row_start + tl.arange(0, 2)
+    accumulator = tle.gpu.set_layout(tl.zeros((2, SPLITS, 128), tl.float32), DOT_LAYOUT)
+    for iteration in tl.range(width // 128):
+        hidden = tle.gpu.set_layout(tl.arange(0, SPLITS)[:, None] * width
+                                   + iteration * 128 + tl.arange(0, 128)[None, :], SOURCE_LAYOUT)
+        for stream in tl.static_range(HC):
+            value = tl.load(streams + stream * STREAM_STRIDE + hidden * HIDDEN_STRIDE).to(tl.float32)
+            weight = tl.load(projection + rows[:, None, None] * PROJECTION_ROW_STRIDE
+                             + (stream * HIDDEN + hidden[None, :, :]) * PROJECTION_HIDDEN_STRIDE,
+                             mask=(rows < COUNT)[:, None, None], other=0.).to(tl.float32)
+            weight = tle.gpu.set_layout(weight, DOT_LAYOUT)
+            accumulator = tl.fma(weight, value[None, :, :], accumulator)
+    result = _flagmega_mhc_ordered_splits(_flagmega_mhc_ordered_warps(accumulator), SPLITS)
+    first = tl.sum(tl.gather(result, tl.full((1,), 0, tl.int32), 0), 0)
+    second = tl.sum(tl.gather(result, tl.full((1,), 1, tl.int32), 0), 0)
+    return first, second
+
+
+@triton.jit
+def _flagmega_mhc_stream_projection(
+    streams, projection,
+    HC: tl.constexpr, HIDDEN: tl.constexpr, SPLITS: tl.constexpr,
+    STREAM_STRIDE: tl.constexpr, HIDDEN_STRIDE: tl.constexpr,
+    PROJECTION_ROW_STRIDE: tl.constexpr, PROJECTION_HIDDEN_STRIDE: tl.constexpr,
+    DOT_LAYOUT: tl.constexpr, SOURCE_LAYOUT: tl.constexpr, MIX_LAYOUT: tl.constexpr,
+):
+    tl.static_assert(HIDDEN % (SPLITS * 128) == 0)
+    COUNT: tl.constexpr = HC * (HC + 2)
+    MIX_LANES: tl.constexpr = triton.next_power_of_2(COUNT)
+    width: tl.constexpr = HIDDEN // SPLITS
+    square = tle.gpu.set_layout(tl.zeros((SPLITS, 128), tl.float32), SOURCE_LAYOUT)
+    for iteration in tl.range(width // 128):
+        hidden = tle.gpu.set_layout(tl.arange(0, SPLITS)[:, None] * width
+                                   + iteration * 128 + tl.arange(0, 128)[None, :], SOURCE_LAYOUT)
+        for stream in tl.static_range(HC):
+            value = tl.load(streams + stream * STREAM_STRIDE + hidden * HIDDEN_STRIDE).to(tl.float32)
+            square = tl.fma(value, value, square)
+    square_sum = _flagmega_mhc_ordered_splits(_flagmega_mhc_ordered_warps(square), SPLITS)
+    mixes = tle.gpu.set_layout(tl.zeros((MIX_LANES,), tl.float32), MIX_LAYOUT)
+    for start in tl.range(0, COUNT, 2):
+        first, second = _flagmega_mhc_project_pair(
+            streams, projection, start, HC, HIDDEN, SPLITS,
+            STREAM_STRIDE, HIDDEN_STRIDE, PROJECTION_ROW_STRIDE, PROJECTION_HIDDEN_STRIDE,
+            DOT_LAYOUT, SOURCE_LAYOUT,
+        )
+        mixes = tl.where(tl.arange(0, MIX_LANES) == start, first, mixes)
+        mixes = tl.where(tl.arange(0, MIX_LANES) == start + 1, second, mixes)
+    return mixes, square_sum

@@ -87,7 +87,7 @@ def stage_module(definition, *, dtype="bfloat16", packed=False, distribution=Non
     return Graph(dialect="nn", stage="frozen_constants", entry="main", metadata=metadata).build()
 
 
-def execute_and_reference(module, tmp_path, torch, *, checkpoint=None):
+def execute_and_reference(module, tmp_path, torch, *, checkpoint=None, overrides=None):
     compiled = Compiler().compile(module).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True,
                               checkpoint=checkpoint)
@@ -116,6 +116,7 @@ def execute_and_reference(module, tmp_path, torch, *, checkpoint=None):
             value = (torch.randint(-16, 17,
                                    (*shape, *lanes), generator=generator).float() / 16).to(getattr(torch, dtype.value))
         values[node_id] = value
+    values.update(overrides or {})
     resolver = CheckpointWeightResolver(checkpoint) if checkpoint is not None else DictWeightResolver({})
     expected = TorchEvaluator(resolver).run(module, values)[0]
     arguments = tuple(values[node_id].cuda() for node_id in module.function_map[module.entry].parameters)

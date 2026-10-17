@@ -20,7 +20,11 @@ def {{ call.symbol }}({{ call.signature }}):
         _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
         _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=-float("inf")).to(tl.float32)
 {% if call.scoring == "sigmoid" %}
+{% if call.arithmetic == "tanh_scaled_reciprocal" %}
+        _fm_probabilities = tl.fma(libdevice.tanh(_fm_values * 0.5), 0.5, 0.5)
+{% else %}
         _fm_probabilities = tl.sigmoid(_fm_values)
+{% endif %}
 {% else %}
         _fm_numerator = tl.exp(_fm_values - tl.max(_fm_values, 0))
         _fm_probabilities = _fm_numerator / tl.sum(_fm_numerator, 0)
@@ -46,12 +50,19 @@ def {{ call.symbol }}({{ call.signature }}):
             _fm_selected_indices = tl.where(_fm_selected_offsets == _fm_selection, _fm_winner_index.to(tl.int64), _fm_selected_indices)
             _fm_available = _fm_available & (_fm_offsets != _fm_winner_index)
 {% if call.normalize %}
+{% if call.arithmetic == "tanh_scaled_reciprocal" %}
+        _fm_denominator = tl.sum(_fm_selected_values, 0) + 1e-20
+        _fm_weights = _fm_selected_values * tl.div_rn({{ call.scaling }}, _fm_denominator)
+{% else %}
         _fm_denominator = tl.full((), 0, tl.float32) + tl.sum(_fm_selected_values, 0)
         _fm_weights = tl.div_rn(_fm_selected_values, _fm_denominator)
+{% endif %}
 {% else %}
         _fm_weights = _fm_selected_values
 {% endif %}
+{% if not call.normalize or call.arithmetic != "tanh_scaled_reciprocal" %}
         _fm_weights = _fm_weights * {{ call.scaling }}
+{% endif %}
         _fm_write_mask = (_fm_selected_offsets < {{ call.k }}) & ({{ call.outer_active }})
         tl.store({{ call.values_pointer }} + ({{ call.values_offset }}), _fm_weights, mask=_fm_write_mask & ({{ call.values_active }}))
         tl.store({{ call.indices_pointer }} + ({{ call.indices_offset }}), _fm_selected_indices, mask=_fm_write_mask & ({{ call.indices_active }}))

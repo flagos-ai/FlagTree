@@ -5,16 +5,14 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
-from typing import Mapping
 from typing import TYPE_CHECKING
 
-from triton.flagmega.errors import ArtifactError
-from triton.flagmega.importer.checkpoint import Checkpoint
-from triton.flagmega.ir import IRModule, companion_suffix, emit_module, load_module, text_source, verify_module
-from triton.flagmega.artifacts.rdata import RDATA_COMPOSITE_DIGEST_KINDS, pack_rdata, verify_rdata
-from triton.flagmega.artifacts.source_layout import SOURCE_LAYOUT_DIGEST
 from triton.flagmega.artifacts.manifest import (
     ARTIFACT_SCHEMA,
     module_abi,
@@ -26,8 +24,21 @@ from triton.flagmega.artifacts.manifest import (
     verify_sections,
     write_json_atomic,
 )
+from triton.flagmega.artifacts.rdata import RDATA_COMPOSITE_DIGEST_KINDS, pack_rdata, verify_rdata
+from triton.flagmega.artifacts.source_layout import SOURCE_LAYOUT_DIGEST
 from triton.flagmega.codegen.triton import render_triton_package
 from triton.flagmega.codegen.triton.diagnostics import dump_schedules
+from triton.flagmega.errors import ArtifactError, IRSchemaError
+from triton.flagmega.importer.checkpoint import Checkpoint
+from triton.flagmega.ir import (
+    IRModule,
+    KernelDefinition,
+    companion_suffix,
+    emit_module,
+    load_module,
+    text_source,
+    verify_module,
+)
 from triton.flagmega.ir.model import _to_data
 
 if TYPE_CHECKING:
@@ -200,6 +211,77 @@ def _render_codegen_package(
     return render_cpp_package_artifact(
         module, destination, target=target, dumper=dumper
     )
+
+
+def refresh_artifact_codegen(
+    path: str | Path, *, dumper: Dumper | None = None,
+    kernel_rewrite: Callable[[IRModule], Sequence[KernelDefinition]] | None = None,
+) -> Path:
+    """Re-render kernels while retaining the artifact's closed readonly snapshot.
+
+    Readonly bytes and their integrity descriptors are retained verbatim.
+    Payload checking remains at the runtime mapping boundary, as for ordinary
+    metadata loads. An optional rewrite may change kernel dispatch attributes
+    and schedules; graph, constants, buffer signatures, effects and workspaces
+    stay fixed. Such an edit publishes a new verified IR checkpoint as well.
+    This entry point accepts no replacement checkpoint or readonly data.
+    The caller owns publication to this directory; readers can keep using the
+    old source while a new content-addressed source is staged and the manifest
+    is replaced atomically.
+    """
+    artifact = Path(path).resolve()
+    manifest_path = artifact / "artifact.json"
+    before = manifest_path.read_bytes() if manifest_path.is_file() else None
+    manifest, module = load_artifact(artifact, verify_rdata_payload=False)
+    if (manifest.get("status") != "executable"
+            or manifest.get("codegen_backend", "triton") != "triton"
+            or manifest.get("flagmega_artifact_version") != ARTIFACT_VERSION):
+        raise ArtifactError("Codegen refresh requires a current executable Triton artifact.")
+    original_hash = module.semantic_hash
+    if kernel_rewrite is not None:
+        try:
+            definitions = tuple(kernel_rewrite(module))
+            originals = {value.name: value for value in module.kernel_definitions}
+            if (len(definitions) != len(originals) or {value.name for value in definitions} != set(originals)):
+                raise ArtifactError("Kernel rewrite must preserve the complete kernel ABI.")
+            for value in definitions:
+                old = originals[value.name]
+                expected = replace(old, dispatch=replace(old.dispatch, microkernel=value.dispatch.microkernel,
+                                                         semantic_attrs=value.dispatch.semantic_attrs))
+                if (value != expected
+                        or value.dispatch.microkernel.shared_workspaces != old.dispatch.microkernel.shared_workspaces
+                        or value.dispatch.microkernel.transfer_pipeline != old.dispatch.microkernel.transfer_pipeline):
+                    raise ArtifactError("Kernel rewrite must preserve kernel signatures, effects and workspace ABI.")
+            module = verify_module(replace(module, kernel_definitions=definitions))
+        except IRSchemaError as error:
+            raise ArtifactError(f"Kernel rewrite violates the verified kernel signature/ABI: {error}") from error
+    with tempfile.TemporaryDirectory(prefix=".flagmega-codegen-", dir=artifact) as staging:
+        staging = Path(staging)
+        replacement_sections = {}
+        if module.semantic_hash != original_hash:
+            final_ir = emit_module(module, staging / f"final-{module.semantic_hash}.py")
+            for file, name, kind in ((final_ir, "ir.python", "ir.python/v1"),
+                                     (final_ir.with_suffix(companion_suffix(module)), "ir.text", "ir.text/v1")):
+                destination = resolve_artifact_path(artifact, f"ir/{file.name}")
+                os.replace(file, destination)
+                replacement_sections[name] = record_section(artifact, destination, name=name, kind=kind).to_data()
+            manifest = {**manifest, "semantic_hash": module.semantic_hash,
+                        "final_ir": replacement_sections["ir.python"]["path"],
+                        "final_text": replacement_sections["ir.text"]["path"]}
+        codegen = render_triton_package(module, staging, dumper=dumper)
+        source = resolve_artifact_path(staging, str(codegen["source"]))
+        relative = f"codegen/{codegen['source_sha256']}.py"
+        destination = resolve_artifact_path(artifact, relative)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(source, destination)
+        replacement_sections["codegen.source"] = record_section(
+            artifact, destination, name="codegen.source", kind=_CODEGEN_SECTION_KINDS["triton"]).to_data()
+        codegen = {**codegen, "source": relative}
+        sections = [replacement_sections.get(value["name"], value) for value in manifest["sections"]]
+        if manifest_path.read_bytes() != before:
+            raise ArtifactError("Artifact manifest changed during codegen refresh; refusing to overwrite it.")
+        write_json_atomic(manifest_path, {**manifest, "codegen": codegen, "sections": sections})
+    return artifact
 
 
 def load_artifact(

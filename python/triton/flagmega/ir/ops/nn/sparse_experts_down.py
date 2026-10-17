@@ -6,8 +6,16 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import local_tensor_type
 from triton.flagmega.ir.local_shard import aggregate_active_elements
-from triton.flagmega.ir.model import DistributedType, SBP, SBPPartial, DType, tensor_type
-from triton.flagmega.ir.ops.core import OpCost, OpCostFactors, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
+from triton.flagmega.ir.model import SBP, DistributedType, DType, SBPPartial, tensor_type
+from triton.flagmega.ir.ops.core import (
+    OpCost,
+    OpCostFactors,
+    OpDefinition,
+    attribute_parameter,
+    input_parameter,
+    op_definition,
+    tensor_nbytes,
+)
 from triton.flagmega.ir.ops.nn._sparse_experts import (
     EXPERT_SCALE,
     ROUTER_IDS,
@@ -17,6 +25,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     expert_weight_tensor,
     floating_tensor,
     lanes,
+    normalize_sparse_quantization,
     pack_result,
     require_policies,
     require_shape,
@@ -26,6 +35,8 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     static_elements,
     unpack_value,
     validate_expert_ids,
+    verify_quantization_group_shards,
+    verify_sparse_quantization,
 )
 
 
@@ -41,19 +52,21 @@ class SparseExpertsDown(OpDefinition):
     round_projection = attribute_parameter(default=False)
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
+    activation_quantization = attribute_parameter(default="dynamic_fp8")
 
     @classmethod
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
         if type(attrs["round_projection"]) is not bool:
             raise IRSchemaError("SparseExpertsDown round_projection must be boolean")
-        return attrs
+        return normalize_sparse_quantization(attrs)
 
     @classmethod
     def infer_type(cls, inputs, attrs):
         types = {parameter.name: parameter.type_of(inputs) for parameter in cls.input_parameters}
         tensors = {name: tensor_of(value) for name, value in types.items()}
         activation, ids, down = (tensors[name] for name in ("activations", "router_expert_ids", "down_weight"))
+        verify_sparse_quantization(activation, down, tensors["down_proj_scale"], attrs)
         experts, hidden, intermediate = down.shape
         if down.dtype not in {element_type(activation.dtype), DType.FLOAT8_E4M3FN}:
             raise IRSchemaError("SparseExpertsDown weights must be BF16/FP8 and match each other.")
@@ -63,6 +76,7 @@ class SparseExpertsDown(OpDefinition):
         require_shape(ids, activation.shape[:2], "router_expert_ids")
         block_n = int(attrs["weight_block_n"])
         block_k = int(attrs["weight_block_k"])
+        verify_quantization_group_shards(types["down_weight"], tensors["down_proj_scale"], block_k)
         for name in ("down_input_scale", "down_proj_scale"):
             scale = tensors[name]
             if scale.rank == 2:
@@ -120,7 +134,8 @@ def evaluate_down(values, activation_type, output_type, attrs, context):
             projection = scaled_projection(activation[token, route], down[expert], values["down_input_scale"][expert],
                                            values["down_proj_scale"][expert],
                                            block_n=int(attrs["weight_block_n"]),
-                                           block_k=int(attrs["weight_block_k"]))
+                                           block_k=int(attrs["weight_block_k"]),
+                                           activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"))
             if attrs["round_projection"]:
                 projection = projection.to(dtype).float()
             output[token, route] = projection

@@ -13,9 +13,7 @@ aggregate (a ``Ref`` kernel operand, say) still applies to all of its leaves;
 from __future__ import annotations
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import DistributedType, IRModule, kernel_dispatch_of, logical_type
-from triton.flagmega.ir.model import TensorType
-from triton.flagmega.ir.types import VectorType
+from triton.flagmega.ir import DistributedType, IRModule, kernel_dispatch_of
 from triton.flagmega.ir.bufferization.leaves import buffer_leaf_names
 
 
@@ -53,26 +51,9 @@ def _declared_requirements(module):
         for leaf, parameter in zip(_result_leaves(module, node), _output_parameter_leaves(function), strict=True):
             if parameter.alignment_bytes is not None:
                 _add(requirements, leaf, parameter.alignment_bytes)
-    # A layout transform may be represented as a zero-copy alias while
-    # exposing a fixed-width vector element.  Propagate that element's
-    # alignment to both sides of the view so a vectorized alias cannot start
-    # at an under-aligned scalar base address.
-    for node in module.nodes:
-        if node.op not in {
-                "tensors.pack",
-                "tensors.unpack",
-                "tensors.permute",
-                "tensors.reshape",
-                "tensors.bitcast",
-                "distributed.sharded_view",
-                "tir.buffer_view",
-                "tir.buffer_subspan",
-        }:
-            continue
-        for value_id in (node.id, node.inputs[0]):
-            value_type = logical_type(module.node_map[value_id].type)
-            if isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType):
-                _add(requirements, value_id, value_type.dtype.itemsize)
+    # Vector lanes describe representation, not an address-alignment promise.
+    # Only the kernel ABI may require aligned accesses; views propagate that
+    # declared requirement without inventing one from their element width.
     return requirements
 
 

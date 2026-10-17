@@ -119,6 +119,7 @@ def test_multi_pool_call_frames_survive_execution_ir_and_call_abi():
         "memory_space": "block_data",
         "allocation": call.memory_pools[0].allocation,
         "offset": call.memory_pools[0].offset,
+        "alignment_bytes": 1,
         "scope_bytes": 64,
         "scope_count": 8,
     }]

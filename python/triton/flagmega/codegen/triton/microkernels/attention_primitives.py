@@ -20,6 +20,7 @@ _FAMILY_BY_OP = {
     "nn.update_paged_attention_kv_cache_pair": "update_paged_attention_kv_cache_pair",
     "nn.dsa_indexer": "dsa_indexer",
     "nn.dsa_paged_attention": "dsa_paged_attention",
+    "nn.mla_projection": "mla_projection",
     "ntt.vectorized_rope": "rope",
 }
 
@@ -30,6 +31,7 @@ _ARITY_BY_OP = {
     "nn.update_paged_attention_kv_cache_pair": (4, 1),
     "nn.dsa_indexer": (10, 1),
     "nn.dsa_paged_attention": (4, 1),
+    "nn.mla_projection": (3, 1),
     "ntt.vectorized_rope": (3, 1),
 }
 
@@ -103,7 +105,7 @@ def _validate_semantic_contract(
     if operation == "nn.update_paged_attention_kv_cache_pair":
         _attention_layout(attrs, operation)
         return
-    if operation in {"nn.dsa_indexer", "nn.dsa_paged_attention"}:
+    if operation in {"nn.dsa_indexer", "nn.dsa_paged_attention", "nn.mla_projection"}:
         try:
             get_definition(operation).normalize_attrs(attrs)
         except IRSchemaError as error:

@@ -24,6 +24,7 @@ from triton.flagmega.ir.model import SBP, DistributedType, IRType, Node, tensor_
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
+    attribute_parameter,
     input_parameter,
     op_definition,
     tensor_nbytes,
@@ -43,7 +44,11 @@ class MhcPost(OpDefinition):
         ``post``     ``(tokens, hc_mult)`` FP32 per-stream share of ``value``.
         ``comb``     ``(tokens, hc_mult, hc_mult)`` FP32 doubly-stochastic mix.
 
-    Emits ``(tokens, hc_mult, hidden)`` in the residual dtype.
+    Emits ``(tokens, hc_mult, hidden)`` in the residual dtype by default.
+    ``output_dtype`` controls only the final store. The optional
+    ``value_fma_first`` accumulation starts with the rounded first residual
+    product, adds the value branch by FP32 FMA, then incorporates the remaining
+    residual streams in ascending source order by FP32 FMA.
     """
 
     const_evaluable = True
@@ -51,6 +56,31 @@ class MhcPost(OpDefinition):
     residual = input_parameter(is_tensor())
     post = input_parameter(is_tensor())
     comb = input_parameter(is_tensor())
+    output_dtype = attribute_parameter(default=None)
+    accumulation_mode = attribute_parameter(default="residual_then_value")
+
+    @classmethod
+    def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
+        attrs = super().normalize_attrs(attributes)
+        dtype = attrs["output_dtype"]
+        if dtype is not None:
+            try:
+                dtype = DType(dtype)
+            except (ValueError, TypeError) as error:
+                raise IRSchemaError("MhcPost output_dtype must be float16, bfloat16 or float32.") from error
+            if dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}:
+                raise IRSchemaError("MhcPost output_dtype must be float16, bfloat16 or float32.")
+            attrs["output_dtype"] = dtype.value
+        if not isinstance(attrs["accumulation_mode"], str) or attrs["accumulation_mode"] not in {
+                "residual_then_value", "value_fma_first"}:
+            raise IRSchemaError("MhcPost accumulation_mode must be residual_then_value or value_fma_first.")
+        return attrs
+
+    @classmethod
+    def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
+        return {key: value for key, value in attrs.items()
+                if (key != "output_dtype" or value is not None)
+                and (key != "accumulation_mode" or value != "residual_then_value")}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -69,7 +99,8 @@ class MhcPost(OpDefinition):
         if comb.dtype != DType.FLOAT32 or comb.rank != 3 \
                 or comb.shape[1].fixed_value != hc or comb.shape[2].fixed_value != hc:
             raise IRSchemaError("MhcPost comb must be an FP32 (tokens, hc_mult, hc_mult) mixing matrix.")
-        output = tensor_type(residual.dtype, (tokens, hc, hidden))
+        dtype = DType(attrs["output_dtype"]) if attrs.get("output_dtype") is not None else residual.dtype
+        output = tensor_type(dtype, (tokens, hc, hidden))
         if not isinstance(residual_source, DistributedType):
             return output
         if residual_source.partial is not None or any(policy != SBP.broadcast()
@@ -90,8 +121,21 @@ class MhcPost(OpDefinition):
         post = cls.post.read(arguments).float()
         comb = cls.comb.read(arguments).float()
         # out[t, j, h] = sum_i comb[t, i, j] * residual[t, i, h] + post[t, j] * value[t, h]
-        mixed = context.torch.einsum("tij,tih->tjh", comb, residual.float())
-        return (mixed + post.unsqueeze(-1) * value.unsqueeze(-2)).to(residual.dtype)
+        if node.attrs.get("accumulation_mode", "residual_then_value") == "value_fma_first":
+            if residual.shape[-2]:
+                initial = comb[:, 0, :, None] * residual[:, 0, None, :].float()
+                output = context.torch.addcmul(initial, post.unsqueeze(-1), value.unsqueeze(-2))
+            else:
+                output = post.unsqueeze(-1) * value.unsqueeze(-2)
+            for source in range(1, residual.shape[-2]):
+                output = context.torch.addcmul(output, comb[:, source, :, None],
+                                               residual[:, source, None, :].float())
+        else:
+            mixed = context.torch.einsum("tij,tih->tjh", comb, residual.float())
+            output = mixed + post.unsqueeze(-1) * value.unsqueeze(-2)
+        dtype = (getattr(context.torch, node.attrs["output_dtype"])
+                 if node.attrs.get("output_dtype") is not None else residual.dtype)
+        return output.to(dtype)
 
     @classmethod
     def cost(cls, node):

@@ -31,6 +31,17 @@ _OPTIONAL_TENSOR = is_tensor() | is_none()
 @op_definition("nn.staged_routing", namespace="nn", functional_name="staged_routing",
                display_name="NN.StagedRouting")
 class StagedRouting(OpDefinition):
+    """Select unbiased scores with a stable bias-corrected ordering.
+
+    ``tanh_scaled_reciprocal`` uses FP32 ``fma(tanhf(x/2), .5, .5)``;
+    the selected scores are zero-padded and summed in a descending butterfly
+    (at most 32 entries). Normalization multiplies each score by the FP32
+    round-to-nearest division ``scaling / (sum + 1e-20)``. Without
+    normalization it only multiplies by scaling. Selection and tie rules are
+    unchanged. The implemented device contract is CUDA libdevice tanhf;
+    CPU transcendental evaluation is diagnostic rather than a bitwise oracle.
+    """
+
     const_evaluable = True
     value = input_parameter(is_tensor())
     bias = input_parameter(_OPTIONAL_TENSOR)
@@ -40,6 +51,7 @@ class StagedRouting(OpDefinition):
     scoring = attribute_parameter(default="softmax")
     normalize = attribute_parameter(default=True)
     scaling = attribute_parameter(default=1.0)
+    arithmetic = attribute_parameter(default="standard")
 
     @classmethod
     def normalize_attrs(cls, attributes):
@@ -55,7 +67,16 @@ class StagedRouting(OpDefinition):
             raise IRSchemaError("StagedRouting k must be a positive integer.")
         if attrs["index_dtype"] not in {"int32", "int64"}:
             raise IRSchemaError("StagedRouting index_dtype must be int32 or int64.")
+        if attrs["arithmetic"] not in {"standard", "tanh_scaled_reciprocal"}:
+            raise IRSchemaError("StagedRouting arithmetic must be standard or tanh_scaled_reciprocal.")
+        if attrs["arithmetic"] == "tanh_scaled_reciprocal" and (attrs["scoring"] != "sigmoid" or attrs["k"] > 32):
+            raise IRSchemaError("StagedRouting tanh_scaled_reciprocal requires sigmoid scoring and k <= 32.")
         return attrs
+
+    @classmethod
+    def ir_attrs(cls, attrs):
+        # Existing checkpoints retain their canonical attributes and hashes.
+        return {key: value for key, value in attrs.items() if key != "arithmetic" or value != "standard"}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
@@ -99,12 +120,25 @@ class StagedRouting(OpDefinition):
         scores = logits.float()
         if node.attrs["scoring"] == "softmax":
             scores = context.torch.softmax(scores, dim=axis)
+        elif node.attrs.get("arithmetic", "standard") == "tanh_scaled_reciprocal":
+            scores = context.torch.tanh(scores * 0.5) * 0.5 + 0.5
         else:
             scores = context.torch.sigmoid(scores)
         choice = scores if bias is None else scores + bias.float()
         order = context.torch.argsort(choice, dim=axis, descending=True, stable=True).narrow(axis, 0, k)
         selected = scores.gather(axis, order)
         weights = selected
+        if node.attrs.get("arithmetic", "standard") == "tanh_scaled_reciprocal":
+            # Descending butterfly over a zero-padded power-of-two tile.
+            # CPU tanh is diagnostic; the CUDA contract uses libdevice tanhf.
+            total = context.torch.nn.functional.pad(selected, (0, (1 << (k - 1).bit_length()) - k))
+            while total.shape[-1] > 1:
+                half = total.shape[-1] // 2
+                total = total[..., :half] + total[..., half:]
+            scale = float(node.attrs["scaling"])
+            if node.attrs["normalize"]:
+                scale = context.torch.full_like(total, scale) / (total + 1e-20)
+            return weights * scale, order.to(getattr(context.torch, node.attrs["index_dtype"]))
         if node.attrs["normalize"]:
             weights = weights / weights.sum(dim=axis, keepdim=True)
         weights = weights * float(node.attrs["scaling"])

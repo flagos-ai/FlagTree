@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import gcd
 
 from triton.flagmega.codegen.triton.physical_access import emit_triton_scalar_type
 from triton.flagmega.errors import CodegenError
@@ -51,14 +52,18 @@ def plan_function_pool_abis(bindings: Mapping[str, Mapping],
                 continue
             candidates.append((str(argument["name"]), origins[0][0], origins[0][2],
                                [origin[3] for origin in origins],
-                               origins[0][4] if len(origins[0]) > 4 else 0))
+                               origins[0][4], gcd(*(origin[5] for origin in origins)),
+                               argument.get("runtime_value_kind", "pointer")))
         roots = sorted({candidate[1] for candidate in candidates})
         if len(candidates) < 2:
             continue
         fields = []
         groups = []
-        for formal, storage, dtype, offsets, row_stride in candidates:
-            field = {"formal": formal, "storage": storage, "scalar_dtype": dtype}
+        for formal, storage, dtype, offsets, row_stride, alignment, value_kind in candidates:
+            field = {"formal": formal, "storage": storage, "scalar_dtype": dtype,
+                     "alignment_bytes": gcd(alignment, row_stride) if row_stride else alignment}
+            if value_kind == "scalar":
+                field["value_kind"] = "scalar"
             if row_stride:
                 # A parameter-bank row: the callee is invoked once per
                 # loop trip against one binding, so its address is the
@@ -121,6 +126,7 @@ def _origin(caller: Mapping, argument: Mapping, event: Mapping,
         if itemsize <= 0 or offset % itemsize:
             raise CodegenError("Function pool ABI requires scalar-aligned byte offsets.")
         stride = int((row_strides or {}).get(str(abi.get("physical_buffer")), 0))
+        alignment = abi.get("alignment_bytes", 1)
     else:
         storage = str(argument["storage"])
         pool = pools.get(storage)
@@ -132,9 +138,14 @@ def _origin(caller: Mapping, argument: Mapping, event: Mapping,
         offset = int(frame["offset"]) if frame is not None else 0
         # A pool frame is not a bank row, so it has no per-row stride.
         stride = 0
+        # Old records contain no frame-alignment proof. Do not infer one
+        # from an offset or borrow it from a neighboring tensor.
+        alignment = frame.get("alignment_bytes", 1) if frame is not None else 1
+    if type(alignment) is not int or alignment <= 0 or alignment & (alignment - 1):
+        raise CodegenError("Function pool ABI alignment must be a positive power of two.")
     if not 0 <= offset < 2**63:
         raise CodegenError("Function pool ABI displacement does not fit signed i64.")
-    return storage, str(pool["name"]), dtype, offset, stride
+    return storage, str(pool["name"]), dtype, offset, stride, alignment
 
 
 def pool_parameter(storage: str) -> str:
@@ -161,9 +172,15 @@ def function_pool_aliases(plan: Mapping | None) -> dict[str, str]:
                       else f"({offset} + {displacement})")
         base = f"{pool_parameter(field['storage'])}.to(tl.pointer_type(tl.uint8))"
         pointer = base if offset == "0" else f"({base} + {offset})"
-        aliases[str(field["formal"])] = (
+        alignment = int(field.get("alignment_bytes", 1))
+        if alignment > 1:
+            pointer = f"tl.multiple_of({pointer}, {alignment})"
+        alias = (
             f"{pointer}.to(tl.pointer_type({emit_triton_scalar_type(str(field['scalar_dtype']))}))"
         )
+        # A pooled address can back a by-value scalar formal. Preserve that
+        # formal's value ABI when folding its physical allocation into a pool.
+        aliases[str(field["formal"])] = f"tl.load({alias})" if field.get("value_kind") == "scalar" else alias
     return aliases
 
 

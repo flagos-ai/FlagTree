@@ -6,7 +6,7 @@ from math import isfinite
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import DType, SBP, DistributedType
+from triton.flagmega.ir.model import SBP, DistributedType, DType
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -25,6 +25,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     floating_tensor,
     lanes,
     normalize_numerics,
+    normalize_sparse_quantization,
     output_tensor,
     pack_result,
     python_dtype_call,
@@ -36,6 +37,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     static_elements,
     unpack_value,
     validate_expert_ids,
+    verify_sparse_quantization,
 )
 
 
@@ -58,6 +60,7 @@ class SparseExpertsGateUp(OpDefinition):
     up_clamp = attribute_parameter(default=None)
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
+    activation_quantization = attribute_parameter(default="dynamic_fp8")
 
     @classmethod
     def normalize_attrs(cls, attributes):
@@ -67,7 +70,7 @@ class SparseExpertsGateUp(OpDefinition):
             if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
                                       or not isfinite(value) or not value > 0):
                 raise IRSchemaError(f"SparseExpertsGateUp {name} must be a finite positive number or None.")
-        return attrs
+        return normalize_sparse_quantization(attrs)
 
     @classmethod
     def python_call(cls, node):
@@ -78,6 +81,8 @@ class SparseExpertsGateUp(OpDefinition):
         types = {parameter.name: parameter.type_of(inputs) for parameter in cls.input_parameters}
         tensors = {name: tensor_of(value) for name, value in types.items()}
         q, ids, gate, up = (tensors[name] for name in ("dispatched", "router_expert_ids", "gate_weight", "up_weight"))
+        for name, weight in (("gate", gate), ("up", up)):
+            verify_sparse_quantization(q, weight, tensors[f"{name}_proj_scale"], attrs)
         if gate != up or gate.dtype not in {element_type(q.dtype), DType.FLOAT8_E4M3FN}:
             raise IRSchemaError("SparseExpertsGateUp gate/up weights must match each other and be BF16/FP8.")
         experts, intermediate, hidden = gate.shape
@@ -149,10 +154,12 @@ def evaluate_gate_up(values, q_type, output_type, attrs, context):
             expert = int(ids[token, route])
             gate = scaled_projection(q[token, route], gate_weight[expert], values["gate_input_scale"][expert],
                                      values["gate_proj_scale"][expert],
-                                     block_n=int(attrs["weight_block_n"]), block_k=int(attrs["weight_block_k"]))
+                                     block_n=int(attrs["weight_block_n"]), block_k=int(attrs["weight_block_k"]),
+                                     activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"))
             up = scaled_projection(q[token, route], up_weight[expert], values["up_input_scale"][expert],
                                    values["up_proj_scale"][expert],
-                                   block_n=int(attrs["weight_block_n"]), block_k=int(attrs["weight_block_k"]))
+                                   block_n=int(attrs["weight_block_n"]), block_k=int(attrs["weight_block_k"]),
+                                   activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"))
             if attrs["round_projections"]:
                 gate, up = gate.to(dtype).float(), up.to(dtype).float()
             if attrs["gate_clamp_max"] is not None:

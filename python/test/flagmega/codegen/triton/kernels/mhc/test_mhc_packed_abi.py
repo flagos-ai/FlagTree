@@ -65,3 +65,16 @@ def test_packed_collapsed_support_does_not_relax_coefficient_layout():
     raw["outputs"][0]["buffers"][0]["abi"].update(scalar_lane_shape=(2,), scalar_lane_count=2)
     with pytest.raises(CodegenError, match="post.*vector lanes"):
         mhc_pre_call(raw)
+
+
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
+def test_explicit_collapsed_dtype_controls_physical_storage(lanes):
+    raw = _raw(lanes)
+    raw["semantic_attrs"]["collapsed_dtype"] = "float32"
+    with pytest.raises(CodegenError, match="collapsed dtype"):
+        mhc_pre_call(raw)
+    raw["outputs"][2]["buffers"][0]["abi"]["scalar_dtype"] = "float32"
+    rendered = mhc_pre_call(raw)
+    assert rendered["collapsed_type"] == "tl.float32"
+    for hidden in range(72):
+        assert eval(rendered["collapsed_offset"], {"_fm_token": 1, "_fm_hidden": hidden}) == 72 + hidden

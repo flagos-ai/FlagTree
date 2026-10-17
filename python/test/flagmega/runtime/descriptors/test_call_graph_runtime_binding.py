@@ -55,7 +55,7 @@ def _runtime(monkeypatch, descriptor_spec):
     result = GeneratedTirCallGraphModule(
         artifact=None,
         manifest={"codegen": codegen},
-        ir_module=SimpleNamespace(),
+        ir_module=SimpleNamespace(metadata={}),
         kernel=object(),
     )
     result._mark_loaded("cpu")

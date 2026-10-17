@@ -1,48 +1,86 @@
-{% for call in render_calls %}
-{% if call.family == "dsa_paged_attention" and call.variant == "decode" %}
-@triton.jit(noinline=True)
-def {{ call.symbol }}({{ call.signature }}):
-    query_dim = tl.arange(0, {{ call.head_dim }})
-    topk_offsets = tl.arange(0, {{ call.token_tile }})
-    for head in tl.range(0, {{ call.num_query_heads }}):
-        query_offset = head * {{ call.query_head_stride }} + (query_dim // {{ call.query_dim_stride }}) * {{ call.query_dim_stride }} + query_dim % {{ call.query_dim_stride }}
-        query_value = tl.load({{ call.query }} + query_offset, mask=query_dim < {{ call.head_dim }}, other=0.0).to(tl.float32)
-        kv_head = head // ({{ call.num_query_heads }} // {{ call.num_kv_heads }})
-        running_max = -float("inf")
-        running_sum = 0.0
-        accumulator = tl.zeros(({{ call.head_dim }},), tl.float32)
-        for token_start in tl.range(0, {{ call.topk_width }}, {{ call.token_tile }}):
+{% macro score_tile(call) %}
             token_slot = token_start + topk_offsets
-            valid_slot = token_slot < {{ call.topk_width }}
-            logical_token = tl.load({{ call.topk }} + token_slot, mask=valid_slot, other=-1).to(tl.int32)
-            valid_token = valid_slot & (logical_token >= 0)
+            logical_token = tl.load({{ call.topk }} + token_slot * {{ call.topk_stride }},
+                                    mask=token_slot < {{ call.topk_width }}, other=-1).to(tl.int32)
+            valid_token = (token_slot < {{ call.topk_width }}) & (logical_token >= 0) & (logical_token <= query_position)
             logical_block = logical_token // {{ call.block_size }}
             block_offset = logical_token % {{ call.block_size }}
             physical_block = tl.load({{ call.block_table }} + logical_block, mask=valid_token, other=0).to(tl.int32)
             cache_base = (
-                ((((physical_block * {{ call.num_layers }} + {{ call.layer_id }}) * 2) * {{ call.block_size }}
-                  + block_offset) * {{ call.num_kv_heads }} + kv_head) * {{ call.head_dim }}
+                physical_block * {{ call.cache_strides[0] }} + {{ call.layer_id }} * {{ call.cache_strides[1] }}
+                + block_offset * {{ call.cache_strides[3] }} + kv_head * {{ call.cache_strides[4] }}
             )
             key = tl.load(
-                {{ call.kv_cache }} + cache_base[:, None] + query_dim[None, :] * 1,
-                mask=valid_token[:, None] & (query_dim[None, :] < {{ call.head_dim }}), other=0.0,
+                {{ call.kv_cache }} + cache_base[:, None] + query_dim[None, :],
+                mask=valid_token[:, None], other=0.0,
             ).to(tl.float32)
             score = tl.sum(key * query_value[None, :], axis=1) * {{ call.scale }}
             score = tl.where(valid_token, score, -float("inf"))
+{% endmacro %}
+{% for call in render_calls %}
+{% if call.family == "dsa_paged_attention" and call.variant == "decode" %}
+{% if call.decode_schedule == "bf16_mma" %}
+{% include "kernels/dsa_paged_attention/platforms/nvidia/sm90/online_mma.py.jinja" %}
+{% else %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    query_dim = tl.arange(0, {{ call.head_dim }})
+    topk_offsets = tl.arange(0, {{ call.token_tile }})
+    query_position = tl.load({{ call.slot_mapping }}).to(tl.int32)
+    for head in tl.range(0, {{ call.num_query_heads }}):
+        query_offset = head * {{ call.query_head_stride }} + (query_dim // {{ call.query_dim_stride }}) * {{ call.query_dim_stride }} + query_dim % {{ call.query_dim_stride }}
+        query_value = tl.load({{ call.query }} + query_offset).to(tl.float32)
+        kv_head = head // ({{ call.num_query_heads }} // {{ call.num_kv_heads }})
+{% if call.probability_rounding == "online_bf16" %}
+        running_max = -float("inf")
+        running_sum = 0.0
+        accumulator = tl.zeros(({{ call.head_dim }},), tl.float32)
+        for token_start in tl.range(0, {{ call.topk_width }}, {{ call.token_tile }}):
+{{ score_tile(call) }}
+            updated_max = tl.maximum(running_max, tl.max(score, axis=0))
+            origin = tl.where(updated_max == -float("inf"), 0.0, updated_max)
+            previous_scale = tl.where(running_sum > 0.0, tl.exp2((running_max - origin) * 1.4426950408889634), 0.0)
+            probability = tl.where(valid_token, tl.exp2(score * 1.4426950408889634 - origin * 1.4426950408889634), 0.0)
+            running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
+            rounded_probability = probability.to(tl.bfloat16).to(tl.float32)
+            value = tl.load(
+                {{ call.kv_cache }} + cache_base[:, None] + {{ call.cache_strides[2] }} + query_dim[None, :],
+                mask=valid_token[:, None], other=0.0,
+            ).to(tl.float32)
+            accumulator = accumulator * previous_scale + tl.sum(rounded_probability[:, None] * value, axis=0)
+            running_max = updated_max
+        result_offset = head * {{ call.result_head_stride }} + (query_dim // {{ call.result_dim_stride }}) * {{ call.result_dim_stride }} + query_dim % {{ call.result_dim_stride }}
+        tl.store({{ call.result }} + result_offset, accumulator / tl.maximum(running_sum, 1e-20), mask={{ call.writer_active }})
+{% else %}
+        running_max = -float("inf")
+        running_sum = 0.0
+        for token_start in tl.range(0, {{ call.topk_width }}, {{ call.token_tile }}):
+{{ score_tile(call) }}
             tile_max = tl.max(score, axis=0)
             updated_max = tl.maximum(running_max, tile_max)
-            previous_scale = tl.exp(running_max - updated_max)
-            probability = tl.where(valid_token, tl.exp(score - updated_max), 0.0)
-            value_base = cache_base + {{ call.block_size }} * {{ call.num_kv_heads }} * {{ call.head_dim }}
-            value = tl.load(
-                {{ call.kv_cache }} + value_base[:, None] + query_dim[None, :],
-                mask=valid_token[:, None] & (query_dim[None, :] < {{ call.head_dim }}), other=0.0,
-            ).to(tl.float32)
-            accumulator = accumulator * previous_scale + tl.sum(probability[:, None] * value, axis=0)
+            # Empty leading tiles have no normalization origin yet.
+            origin = tl.where(updated_max == -float("inf"), 0.0, updated_max)
+            previous_scale = tl.where(running_sum > 0.0, tl.exp(running_max - origin), 0.0)
+            probability = tl.where(valid_token, tl.exp(score - origin), 0.0)
             running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
             running_max = updated_max
-        normalized = accumulator / tl.maximum(running_sum, 1e-20)
+        # The semantic op rounds globally normalized probabilities to the
+        # query dtype before the value product. A second score walk retains
+        # that boundary with bounded registers and no materialized score tensor.
+        accumulator = tl.zeros(({{ call.head_dim }},), tl.float32)
+        for token_start in tl.range(0, {{ call.topk_width }}, {{ call.token_tile }}):
+{{ score_tile(call) }}
+            probability = tl.where(valid_token, tl.exp(score - running_max) / tl.maximum(running_sum, 1e-20), 0.0)
+            rounded_probability = probability.to({{ call.query_value_type }}).to(tl.float32)
+            value = tl.load(
+                {{ call.kv_cache }} + cache_base[:, None] + {{ call.cache_strides[2] }} + query_dim[None, :],
+                mask=valid_token[:, None], other=0.0,
+            ).to(tl.float32)
+            accumulator += tl.sum(rounded_probability[:, None] * value, axis=0)
         result_offset = head * {{ call.result_head_stride }} + (query_dim // {{ call.result_dim_stride }}) * {{ call.result_dim_stride }} + query_dim % {{ call.result_dim_stride }}
-        tl.store({{ call.result }} + result_offset, normalized, mask=query_dim < {{ call.head_dim }})
+        tl.store({{ call.result }} + result_offset, accumulator)
+{% endif %}
+{% endif %}
 {% endif %}
 {% endfor %}

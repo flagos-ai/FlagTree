@@ -189,18 +189,29 @@ class TorchEvaluator:
                 return tuple(evaluate_node(output) for output in function.outputs)
             finally:
                 active_calls.pop()
+                # The recursive visitor closes over itself and its memo.
+                # Break that cycle at the call boundary instead of retaining
+                # a layer's tensors until an unrelated cyclic-GC collection.
+                evaluate_node = None
+                local.clear()
 
         entry = module.function_map[module.entry]
         entry_arguments = tuple(
             context.input_value(node_map[parameter]) for parameter in entry.parameters
         )
-        outputs = evaluate_function(module.entry, entry_arguments)
-        trace = {
-            node.id: context.values[node.id]
-            for node in module.nodes
-            if node.id in context.values
-        }
-        return EvaluationResult(outputs, trace)
+        try:
+            outputs = evaluate_function(module.entry, entry_arguments)
+            trace = {
+                node.id: context.values[node.id]
+                for node in module.nodes
+                if node.id in context.values
+            }
+            return EvaluationResult(outputs, trace)
+        finally:
+            # This visitor is recursive too. Releasing its closure drops the
+            # run context even when evaluation raises; a returned trace owns
+            # its independent mapping and intentionally retains its values.
+            evaluate_function = None
 
 
 def materialize_constant_assets(module: IRModule, weights: WeightResolver) -> Mapping[str, Any]:

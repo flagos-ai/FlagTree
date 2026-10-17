@@ -1,60 +1,99 @@
 # flagmega-kernel: block_fp8/mma platform=nvidia architecture=sm90
 {% set block_fp8_variant = "mma" %}
+{% include "kernels/_activation_quantization.py.jinja" %}
+{% include "kernels/_fp8_wgmma_row_dot.py.jinja" %}
+import triton.experimental.tle.language as tle
+_flagmega_block_dequant_mma_layout = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [1, {{ num_warps }}], [16, 8]))
+_flagmega_block_dequant_lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, _flagmega_block_dequant_mma_layout, 2))
+_flagmega_block_dequant_rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, _flagmega_block_dequant_mma_layout, 2))
 @triton.jit
 def _flagmega_block_linear_local_tile(
     source, weight, weight_scale, destination,
     weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,
     K: tl.constexpr, BLOCK_K: tl.constexpr,
+    ACTIVATION_QUANTIZATION: tl.constexpr, WEIGHT_DEQUANT_DTYPE: tl.constexpr,
+    DEQUANT_MMA_SPLITS: tl.constexpr = 1,
+    SCALED_ACCUMULATION: tl.constexpr = "compensated",
 ):
     """Compute one dense local-N tile using physical row offsets from the ABI."""
     accumulator = tl.zeros(({{ tn }},), tl.float32)
     compensation = tl.zeros(({{ tn }},), tl.float32)
-    SCALE_K: tl.constexpr = (K + BLOCK_K - 1) // BLOCK_K
-    for k_start in tl.range(0, K, BLOCK_K):
-        k_offsets = k_start + tl.arange(0, BLOCK_K)
-        source_value = tl.load(
-            source + k_offsets, mask=k_offsets < K, other=0.0,
-        ).to(tl.float32)
-        maximum = tl.max(tl.abs(source_value), axis=0)
-        activation_scale = tl.where(maximum == 0.0, 1.0, maximum / 448.0)
-        quantized = tl.maximum(
-            tl.minimum(source_value / activation_scale, 448.0), -448.0,
-        ).to(tl.float8e4nv)
-        scale = tl.load(
-            weight_scale + scale_row_offsets + (k_start // BLOCK_K),
-            mask=n_mask,
-            other=0.0,
-        ).to(tl.float32)
-        if BLOCK_K >= 16:
-            activation_matrix = tl.broadcast_to(quantized[None, :], (16, BLOCK_K))
-            weight_matrix = tl.load(
-                weight + k_offsets[:, None] + weight_row_offsets[None, :],
-                mask=(k_offsets[:, None] < K) & n_mask[None, :],
-                other=0.0,
-            )
-            partial = (
-                tl.sum(
-                    tl.dot(activation_matrix, weight_matrix, out_dtype=tl.float32),
-                    axis=0,
-                )
-                * 0.0625
-                * activation_scale
-                * scale
-            )
-        else:
-            dequantized = quantized.to(tl.float32) * activation_scale
-            weight_value = tl.load(
-                weight + weight_row_offsets[:, None] + k_offsets[None, :],
-                mask=n_mask[:, None] & (k_offsets[None, :] < K),
+    partitions: tl.constexpr = DEQUANT_MMA_SPLITS if ACTIVATION_QUANTIZATION == "none" else 1
+    partition_k: tl.constexpr = triton.cdiv(K, partitions)
+    for partition in tl.range(0, partitions):
+        if ACTIVATION_QUANTIZATION == "none":
+            # Weight scales select how each block is decoded. They do not restart
+            # the BF16 GEMM's FP32 MMA accumulation at each scale boundary.
+            mma_accumulator = tle.gpu.set_layout(tl.zeros((16, {{ tn }}), tl.float32),
+                                                 _flagmega_block_dequant_mma_layout)
+        for local_k_start in tl.range(0, partition_k, BLOCK_K):
+            k_start = partition * partition_k + local_k_start
+            k_offsets = k_start + tl.arange(0, BLOCK_K)
+            source_value = tl.load(
+                source + k_offsets, mask=k_offsets < K, other=0.0,
+            ).to(tl.float32)
+            if ACTIVATION_QUANTIZATION != "none":
+                quantized, activation_scale = _flagmega_quantize_block_fp8(source_value, ACTIVATION_QUANTIZATION)
+            scale = tl.load(
+                weight_scale + scale_row_offsets + (k_start // BLOCK_K),
+                mask=n_mask,
                 other=0.0,
             ).to(tl.float32)
-            partial = tl.sum(
-                weight_value * dequantized[None, :], axis=1,
-            ) * scale
-        corrected = partial - compensation
-        updated = accumulator + corrected
-        compensation = (updated - accumulator) - corrected
-        accumulator = updated
+            if ACTIVATION_QUANTIZATION == "none":
+                # Candidate and ABI validation require matching 16-bit operands.
+                activation_matrix = tl.broadcast_to(source_value[None, :], (16, BLOCK_K)).to(WEIGHT_DEQUANT_DTYPE)
+                weight_matrix = tl.load(
+                    weight + k_offsets[:, None] + weight_row_offsets[None, :],
+                    mask=(k_offsets[:, None] < K) & n_mask[None, :], other=0.,
+                ).to(tl.float32)
+                weight_matrix = (weight_matrix * scale[None, :]).to(WEIGHT_DEQUANT_DTYPE)
+                activation_matrix = tle.gpu.set_layout(activation_matrix, _flagmega_block_dequant_lhs_layout)
+                weight_matrix = tle.gpu.set_layout(weight_matrix, _flagmega_block_dequant_rhs_layout)
+                mma_accumulator = tl.dot(activation_matrix, weight_matrix, mma_accumulator)
+            elif ACTIVATION_QUANTIZATION == "dynamic_fp8_sm90" and BLOCK_K >= 32:
+                raw_partial = _flagmega_fp8_wgmma_row_dot(
+                    quantized, weight, weight_row_offsets, k_offsets, n_mask, K,
+                )
+                if SCALED_ACCUMULATION == "fma":
+                    accumulator = tl.fma(raw_partial, activation_scale * scale, accumulator)
+                else:
+                    partial = raw_partial * activation_scale * scale
+            elif BLOCK_K >= 16:
+                activation_matrix = tl.broadcast_to(quantized[None, :], (16, BLOCK_K))
+                weight_matrix = tl.load(
+                    weight + k_offsets[:, None] + weight_row_offsets[None, :],
+                    mask=(k_offsets[:, None] < K) & n_mask[None, :],
+                    other=0.0,
+                )
+                partial = (
+                    tl.sum(
+                        tl.dot(activation_matrix, weight_matrix, out_dtype=tl.float32),
+                        axis=0,
+                    )
+                    * 0.0625
+                    * activation_scale
+                    * scale
+                )
+            else:
+                dequantized = quantized.to(tl.float32) * activation_scale
+                weight_value = tl.load(
+                    weight + weight_row_offsets[:, None] + k_offsets[None, :],
+                    mask=n_mask[:, None] & (k_offsets[None, :] < K),
+                    other=0.0,
+                ).to(tl.float32)
+                partial = tl.sum(
+                    weight_value * dequantized[None, :], axis=1,
+                ) * scale
+            if ACTIVATION_QUANTIZATION != "none" and SCALED_ACCUMULATION != "fma":
+                corrected = partial - compensation
+                updated = accumulator + corrected
+                compensation = (updated - accumulator) - corrected
+                accumulator = updated
+        if ACTIVATION_QUANTIZATION == "none":
+            # Select one repeated GEMV row only after the complete dot. Summing
+            # redundant rows could overflow even when the actual output is finite.
+            partial = tl.reshape(tl.gather(mma_accumulator, tl.full((1, {{ tn }}), 0, tl.int32), 0), ({{ tn }},))
+            accumulator = libdevice.add_rn(accumulator, partial)
     tl.store(
         destination + destination_offsets,
         accumulator.to(destination.dtype.element_ty),

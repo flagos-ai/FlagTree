@@ -114,12 +114,16 @@ def emit_remote_storage_pointer(
     *,
     peer: str,
     device_context: str = "device_dptr",
+    window_byte_offset: str | None = None,
 ) -> str:
     """Return a peer chip's base pointer for one pooled buffer ABI.
 
     Every chip owns a private instance of the pool at the same offsets, so the
     peer's copy of this buffer is addressed by the identical element offset
-    inside the symmetric window.  Only the pool itself is registered with
+    inside the symmetric window. ``window_byte_offset`` supplies the complete
+    displacement when the buffer belongs to a function-relative pool frame;
+    ``pool_byte_offset`` alone is relative to that frame, not the window.
+    Only the pool itself is registered with
     FlagCX, so a buffer whose base depends on local state (a per-block
     replication scope or a runtime-indexed view) has no peer-side equivalent.
     """
@@ -153,9 +157,11 @@ def emit_remote_storage_pointer(
             "A runtime-indexed view offset is local state; remote reads "
             "require a statically addressed pool buffer."
         )
+    offset = (str(byte_offset // itemsize) if window_byte_offset is None else
+              f"({window_byte_offset}) // {itemsize}")
     return (
         f'tle.remote({device_context}, space="device", dtype={scalar_dtype}, '
-        f"shard_id={peer}, offset={byte_offset // itemsize})"
+        f"shard_id={peer}, offset={offset})"
     )
 
 

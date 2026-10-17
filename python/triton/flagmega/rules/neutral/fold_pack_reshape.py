@@ -2,18 +2,15 @@
 # SPDX-License-Identifier: MIT
 """Move Pack through a reshape using nncase's complete shape map."""
 
-from math import prod
-
 from triton.flagmega.ir import IRModule, Node, get_definition, try_div_exactly
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.ops.tensors.pack import normalize_axes
+from triton.flagmega.ir.ops.tensors.pack import axis_lane_products, normalize_axes
 from triton.flagmega.ir.ops.tensors.reshape import (
     _complete_shape_map,
     _reshape_shape_map_matrix,
 )
 from triton.flagmega.pattern_match import F, MatchResult, wildcard
 from triton.flagmega.rules import RewriteResult, RewriteRule
-
 
 _INPUT = wildcard("input")
 _PATTERN = F.tensors.is_pack(
@@ -45,14 +42,20 @@ def _plan(pack: Node, reshape: Node, source: Node):
         else (int(pack.attrs["axis"]),) * len(lanes)
     )
     axes = normalize_axes(raw_axes, len(output_shape))
-    input_axes: list[int] = []
-    input_lanes: list[int] = []
+    mapped_axes: dict[int, int] = {}
     rewritten_shape = list(output_shape)
 
     # This is the same two-sided complete-map algorithm as nncase's
     # FoldPackReshape.  A lane may move through a split/merge only when it is
     # on the final effective row-major axis of that mapping.
-    for axis, lane in zip(axes, lanes):
+    # Pack divides an axis by the product of all its lanes. Plan that group
+    # once: independently processing repeated axes overwrites the new extent
+    # and can also skip an input axis that still owns subsequent lane factors.
+    for axis, lane in axis_lane_products(lanes, axes).items():
+        quotient = try_div_exactly(tensor_of(reshape.type).shape[axis], lane)
+        if quotient is None or not quotient.is_fixed:
+            return None
+        rewritten_shape[axis] = quotient.fixed_value
         for input_axis, output_axes in forward.items():
             if axis not in output_axes:
                 continue
@@ -61,39 +64,28 @@ def _plan(pack: Node, reshape: Node, source: Node):
                 output_shape[value] != 1 for value in output_axes[position + 1:]
             ):
                 return None
-            quotient = try_div_exactly(tensor_of(reshape.type).shape[axis], lane)
-            if quotient is None or not quotient.is_fixed:
-                return None
-            input_axes.append(input_axis)
-            input_lanes.append(lane)
-            rewritten_shape[axis] = quotient.fixed_value
+            mapped_axes[axis] = input_axis
+            break
+
+        if axis in mapped_axes:
+            continue
 
         mapped_inputs = backward.get(axis)
         if mapped_inputs is None:
             continue
-        found = False
-        reversed_inputs = tuple(reversed(mapped_inputs))
-        for position, input_axis in enumerate(reversed_inputs):
-            if input_axis in input_axes:
-                found = True
-                continue
+        for input_axis in reversed(mapped_inputs):
             if input_shape[input_axis] == 1:
                 continue
             if input_shape[input_axis] % lane:
                 return None
-            input_axes.append(input_axis)
-            input_lanes.append(lane)
-            rewritten_shape[axis] = (
-                input_shape[input_axis] // lane
-            ) * prod(input_shape[value] for value in reversed_inputs[position + 1:])
-            found = True
+            mapped_axes[axis] = input_axis
             break
-        if not found:
+        if axis not in mapped_axes:
             return None
 
-    if len(input_lanes) != len(lanes):
+    if any(axis not in mapped_axes for axis in axes):
         return None
-    return tuple(input_axes), tuple(input_lanes), tuple(rewritten_shape)
+    return tuple(mapped_axes[axis] for axis in axes), lanes, tuple(rewritten_shape)
 
 
 def _rewrite(result: MatchResult, _module: IRModule) -> RewriteResult:

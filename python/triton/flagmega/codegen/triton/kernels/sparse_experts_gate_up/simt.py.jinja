@@ -1,8 +1,12 @@
 # flagmega-kernel: sparse_experts_gate_up/simt platform=generic
 {% if render_calls is defined %}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/_expert_quantization_group.py.jinja" as quant %}
 {% for call in render_calls %}
 {% if call.family == "sparse_experts_gate_up" and call.variant == "simt" %}
+{% if call.attrs.activation_quantization | default("dynamic_fp8") == "dynamic_fp8_ue8m0" %}
+{% include "kernels/_ue8m0_quantization.py.jinja" %}
+{% endif %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -25,24 +29,37 @@ def {{ call.symbol }}({{ call.signature }}):
    cast to a narrow float: FP8 E4M3 rejects it outright. Fill every value load
    with a floating zero so the pointee dtype stays free. #}
                     _fm_input = tl.load({{ call.input_pointer }} + ({{ call.q_offset }}), mask=_fm_k_mask, other=0.0).to(tl.float32)
-{% if call.block_scale_loads.gate_proj_scale is defined %}{% if call.groups_per_tile > 1 %}{# The weight scale is a per-K-group contract, so the activation it
+{% if call.block_scale_loads.gate_proj_scale is defined %}{% if call.weight_block_k > call.block_k %}
+{{ quant.complete_group(call, call.input_pointer, call.q_offset, "(_fm_k < " ~ call.scalar_k ~ ") & (" ~ call.k_active ~ ") & (" ~ call.slot_active ~ ")", "_fm_input_quantized") | indent(20, first=True) }}
+{% elif call.attrs.activation_quantization | default("dynamic_fp8") == "dynamic_fp8_ue8m0" %}
+{% if call.groups_per_tile > 1 %}
+                    _fm_input_groups = tl.reshape(_fm_input, ({{ call.groups_per_tile }}, {{ call.weight_block_k }}))
+                    _fm_quantized_groups, _fm_group_scale = _flagmega_quantize_ue8m0(_fm_input_groups, 1)
+                    _fm_input_quantized = tl.reshape(_fm_quantized_groups, ({{ call.block_k }},))
+                    _fm_activation_scale = tl.reshape(tl.broadcast_to(_fm_group_scale, ({{ call.groups_per_tile }}, {{ call.weight_block_k }})), ({{ call.block_k }},))
+{% else %}
+                    _fm_input_quantized, _fm_activation_scale = _flagmega_quantize_ue8m0(_fm_input, 0)
+{% endif %}
+{% else %}{% if call.groups_per_tile > 1 %}{# The weight scale is a per-K-group contract, so the activation it
    multiplies has to be quantized over the same groups. A tile wider than one
    group reduces per group and broadcasts each scale back over its own lanes. #}
                     _fm_input_groups = tl.reshape(_fm_input, ({{ call.groups_per_tile }}, {{ call.weight_block_k }}))
                     _fm_input_abs_max = tl.max(tl.abs(_fm_input_groups), axis=1, keep_dims=True)
-                    _fm_group_scale = tl.where(_fm_input_abs_max == 0.0, 1.0, _fm_input_abs_max / 448.0)
+                    _fm_group_scale = tl.where(_fm_input_abs_max == 0.0, 1.0, tl.div_rn(_fm_input_abs_max, 448.0))
                     _fm_activation_scale = tl.reshape(tl.broadcast_to(_fm_group_scale, ({{ call.groups_per_tile }}, {{ call.weight_block_k }})), ({{ call.block_k }},))
 {% else %}                    _fm_input_abs_max = tl.max(tl.abs(_fm_input), axis=0)
-                    _fm_activation_scale = tl.where(_fm_input_abs_max == 0.0, 1.0, _fm_input_abs_max / 448.0)
-{% endif %}                    _fm_input_quantized = tl.maximum(tl.minimum(_fm_input / _fm_activation_scale, 448.0), -448.0).to(tl.float8e4nv).to(tl.float32)
-{% endif %}                    _fm_gate = tl.load({{ call.pointers.gate_weight }} + ({{ call.gate_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0.0).to(tl.float32)
+                    _fm_activation_scale = tl.where(_fm_input_abs_max == 0.0, 1.0, tl.div_rn(_fm_input_abs_max, 448.0))
+{% endif %}                    _fm_input_quantized = tl.maximum(tl.minimum(tl.div_rn(_fm_input, _fm_activation_scale), 448.0), -448.0).to(tl.float8e4nv).to(tl.float32)
+{% endif %}{% endif %}                    _fm_gate = tl.load({{ call.pointers.gate_weight }} + ({{ call.gate_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0.0).to(tl.float32)
                     _fm_up = tl.load({{ call.pointers.up_weight }} + ({{ call.up_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0.0).to(tl.float32)
 {% if call.block_scale_loads.gate_proj_scale is defined %}
                     _fm_gate_block_scale = {{ call.block_scale_loads.gate_proj_scale }}
                     _fm_up_block_scale = {{ call.block_scale_loads.up_proj_scale }}
 {% endif %}
-                    _fm_gate_partial += {% if call.block_scale_loads.gate_proj_scale is defined %}(_fm_input_quantized * _fm_activation_scale)[None, :] * _fm_gate * _fm_gate_block_scale{% else %}{% if call.unit_scales.gate_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_gate_input_scale){% endif %}[None, :] * _fm_gate{% endif %}{{ "\n" }}
-                    _fm_up_partial += {% if call.block_scale_loads.up_proj_scale is defined %}(_fm_input_quantized * _fm_activation_scale)[None, :] * _fm_up * _fm_up_block_scale{% else %}{% if call.unit_scales.up_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_up_input_scale){% endif %}[None, :] * _fm_up{% endif %}{{ "\n" }}
+{# The matmul operand is round_fp32(weight * block_scale). Keep that
+   rounding before the product/FMA, as in the block-scaled IR evaluator. #}
+                    _fm_gate_partial += {% if call.block_scale_loads.gate_proj_scale is defined %}(_fm_input_quantized * _fm_activation_scale)[None, :] * libdevice.mul_rn(_fm_gate, _fm_gate_block_scale){% else %}{% if call.unit_scales.gate_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_gate_input_scale){% endif %}[None, :] * _fm_gate{% endif %}{{ "\n" }}
+                    _fm_up_partial += {% if call.block_scale_loads.up_proj_scale is defined %}(_fm_input_quantized * _fm_activation_scale)[None, :] * libdevice.mul_rn(_fm_up, _fm_up_block_scale){% else %}{% if call.unit_scales.up_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_up_input_scale){% endif %}[None, :] * _fm_up{% endif %}{{ "\n" }}
                 _fm_gate_result = tl.sum(_fm_gate_partial, 1) * _fm_gate_input_scale * _fm_gate_scale
                 _fm_up_result = tl.sum(_fm_up_partial, 1) * _fm_up_input_scale * _fm_up_scale
 {% if call.attrs.round_projections %}

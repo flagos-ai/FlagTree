@@ -69,6 +69,7 @@ class DsaIndexer(OpDefinition):
     index_kpool = attribute_parameter()
     always_select_tail = attribute_parameter()
     epsilon = attribute_parameter()
+    state_layer_ids = attribute_parameter(default=())
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -85,6 +86,13 @@ class DsaIndexer(OpDefinition):
         if epsilon <= 0:
             raise IRSchemaError("DSA indexer epsilon must be positive.")
         attrs["epsilon"] = epsilon
+        layer_ids = attrs["state_layer_ids"]
+        if (not isinstance(layer_ids, (tuple, list))
+                or any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+                       for value in layer_ids)
+                or len(set(layer_ids)) != len(layer_ids)):
+            raise IRSchemaError("DSA state_layer_ids must be unique non-negative integers.")
+        attrs["state_layer_ids"] = tuple(layer_ids)
         return attrs
 
     @classmethod
@@ -94,6 +102,12 @@ class DsaIndexer(OpDefinition):
         state = cls.state.type_of(inputs)
         if not isinstance(q_source, (TensorType, DistributedType)) or not isinstance(state, RefType):
             raise IRSchemaError("DSA indexer requires tensor q input and a state reference.")
+        if attrs["state_layer_ids"]:
+            packed = dict(state.fields).get("packed_states")
+            if (not isinstance(packed, TensorType) or len(packed.shape) != 3
+                    or not packed.shape[0].is_fixed
+                    or packed.shape[0].fixed_value != len(attrs["state_layer_ids"])):
+                raise IRSchemaError("DSA state_layer_ids must describe every packed cache layer.")
         tokens = q.shape[0]
         width = int(attrs["index_topk"]) + (int(attrs["index_kpool"]) - 1 if attrs["always_select_tail"] else 0)
         plain = TensorType(DType.INT32, (tokens, width))
@@ -123,6 +137,8 @@ class DsaIndexer(OpDefinition):
         state = cls.state.read(arguments)
         if not isinstance(state, DsaIndexerState):
             raise EvaluationError("DSA indexer state must evaluate to DsaIndexerState.")
+        if node.attrs.get("state_layer_ids") and tuple(node.attrs["state_layer_ids"]) != state.config.layer_ids:
+            raise EvaluationError("DSA state_layer_ids disagree with the runtime state contract.")
         layer = _scalar_int(cls.layer_id.read(arguments))
         advance = _scalar_bool(cls.advance_sequence.read(arguments))
         d = int(node.attrs["index_head_dim"])

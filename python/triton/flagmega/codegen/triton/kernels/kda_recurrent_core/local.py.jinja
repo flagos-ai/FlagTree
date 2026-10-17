@@ -16,6 +16,9 @@ def {{ call.symbol }}({{ call.signature }}):
         _fm_q = _fm_q / tl.sqrt(tl.sum(_fm_q * _fm_q) + {{ call.epsilon }})
         _fm_k = _fm_k / tl.sqrt(tl.sum(_fm_k * _fm_k) + {{ call.epsilon }})
 {% endif %}
+{% if call.query_scale != 1.0 %}
+        _fm_q = _fm_q * {{ call.query_scale }}
+{% endif %}
         _fm_decay_exp = tl.exp(_fm_decay)[:, None]
         for _fm_v_chunk in tl.range(0, {{ call.value_chunks }}):
             _fm_offsets_v = _fm_v_chunk * 32 + tl.arange(0, 32)

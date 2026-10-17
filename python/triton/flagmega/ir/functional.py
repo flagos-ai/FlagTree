@@ -56,6 +56,7 @@ from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.kda import KdaConvolution, KdaRecurrentCore
 from triton.flagmega.ir.ops.nn.kda_gated_recurrent_core import KdaGatedRecurrentCore
+from triton.flagmega.ir.ops.nn.kda_gated_step import KdaGatedStep
 from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.layer_norm import LayerNorm
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
@@ -66,9 +67,11 @@ from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulG
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_qwen3_paged_attention import PackedQwen3PagedAttention
 from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
+from triton.flagmega.ir.ops.nn.partitioned_sparse_experts_down import PartitionedSparseExpertsDown
 from triton.flagmega.ir.ops.nn.qkv_parallel_linear import QKVParallelLinear
 from triton.flagmega.ir.ops.nn.qkv_rope_with_cache import QKVRoPEWithCache
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import Qwen3PagedAttention
+from triton.flagmega.ir.ops.nn.requantize_block_scaled_fp8 import RequantizeBlockScaledFP8
 from triton.flagmega.ir.ops.nn.rms_norm import RMSNorm
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
@@ -80,6 +83,7 @@ from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.mhc_post import MhcPost
 from triton.flagmega.ir.ops.nn.mhc_pre import MhcPre
+from triton.flagmega.ir.ops.nn.mla_projection import MlaProjection
 from triton.flagmega.ir.ops.nn.staged_routing import StagedRouting
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
     UpdatePagedAttentionKVCache,
@@ -326,6 +330,8 @@ class _math:
         weight_encoding: str | None = None,
         output_data_type: str | None = None,
         output_lanes: tuple[int, ...] = (),
+        activation_quantization: str = "dynamic_fp8",
+        weight_dequant_dtype: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -340,6 +346,8 @@ class _math:
             weight_encoding=weight_encoding,
             output_data_type=output_data_type,
             output_lanes=output_lanes,
+            activation_quantization=activation_quantization,
+            weight_dequant_dtype=weight_dequant_dtype,
             name=name,
             metadata=metadata,
         )
@@ -358,6 +366,8 @@ class _math:
         packed_layout: str = "n_major_k_packed",
         weight_encoding: str | None = None,
         output_lanes: tuple[int, ...] = (),
+        activation_quantization: str = "dynamic_fp8",
+        weight_dequant_dtype: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -374,6 +384,8 @@ class _math:
             packed_layout=packed_layout,
             weight_encoding=weight_encoding,
             output_lanes=output_lanes,
+            activation_quantization=activation_quantization,
+            weight_dequant_dtype=weight_dequant_dtype,
             name=name,
             metadata=metadata,
         )
@@ -440,30 +452,48 @@ class _nn:
     @_op_function(StagedRouting)
     def staged_routing(value: Node, bias: Node | None, *, k: int, axis: int = -1,
                        index_dtype: DType | str = "int64", scoring: str = "softmax", normalize: bool = True,
-                       scaling: float = 1.0, name: str | None = None, metadata: Metadata = None) -> Node:
+                       scaling: float = 1.0, arithmetic: str = "standard",
+                       name: str | None = None, metadata: Metadata = None) -> Node:
         """Score, select top-k with stable ties, and normalize in one stage."""
         return StagedRouting.construct(value, bias, k=k, axis=axis, index_dtype=index_dtype, scoring=scoring,
-                                       normalize=normalize, scaling=scaling, name=name, metadata=metadata)
+                                       normalize=normalize, scaling=scaling, arithmetic=arithmetic,
+                                       name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(MhcPre)
     def mhc_pre(streams: Node, projection: Node, base: Node, scale: Node, *, epsilon: float,
                 sinkhorn_iterations: int, sinkhorn_epsilon: float, post_multiplier: float = 2.0,
-                output_lanes: tuple[int, ...] = (),
+                output_lanes: tuple[int, ...] = (), collapsed_dtype: DType | str | None = None,
+                collapse_input_dtype: DType | str | None = None, collapse_reduction: str = "sum",
+                projection_reduction: str = "parallel", projection_splits: int = 1,
                 name: str | None = None, metadata: Metadata = None) -> Node:
         """Collapse hyper-connection streams and emit the mixing coefficients."""
         return MhcPre.construct(streams, projection, base, scale, epsilon=epsilon,
                                 sinkhorn_iterations=sinkhorn_iterations,
                                 sinkhorn_epsilon=sinkhorn_epsilon, post_multiplier=post_multiplier,
-                                output_lanes=output_lanes,
+                                output_lanes=output_lanes, collapsed_dtype=collapsed_dtype,
+                                collapse_input_dtype=collapse_input_dtype, collapse_reduction=collapse_reduction,
+                                projection_reduction=projection_reduction, projection_splits=projection_splits,
                                 name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(RequantizeBlockScaledFP8)
+    def requantize_block_scaled_fp8(weight: Node, scale: Node, *, block_n: int, block_k: int,
+                                    minimum_amax: float = 1e-4, scale_division: str = "rn", name: str | None = None,
+                                    metadata: Metadata = None) -> Node:
+        """Produce new FP8 codes and power-of-two scales in a constant recipe."""
+        return RequantizeBlockScaledFP8.construct(weight, scale, block_n=block_n, block_k=block_k,
+                                                minimum_amax=minimum_amax, scale_division=scale_division,
+                                                name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(MhcPost)
     def mhc_post(value: Node, residual: Node, post: Node, comb: Node, *,
+                 output_dtype: DType | str | None = None, accumulation_mode: str = "residual_then_value",
                  name: str | None = None, metadata: Metadata = None) -> Node:
         """Mix residual streams and add the sublayer result's per-stream share."""
-        return MhcPost.construct(value, residual, post, comb, name=name, metadata=metadata)
+        return MhcPost.construct(value, residual, post, comb, output_dtype=output_dtype,
+                                 accumulation_mode=accumulation_mode, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(KdaConvolution)
@@ -484,11 +514,13 @@ class _nn:
     @_op_function(KdaRecurrentCore)
     def kda_recurrent_core(query: Node, key: Node, value: Node, decay: Node, beta: Node, state: Node, *,
                            epsilon: float = 1e-6, l2norm_in_kernel: bool = True,
+                           query_scale: float = 1.0,
                            output_lanes: tuple[int, ...] = (),
                            name: str | None = None, metadata: Metadata = None) -> Node:
         """One KDA recurrent step with per-channel decay and a delta write."""
         return KdaRecurrentCore.construct(query, key, value, decay, beta, state, epsilon=epsilon,
-                                          l2norm_in_kernel=l2norm_in_kernel, output_lanes=output_lanes,
+                                          l2norm_in_kernel=l2norm_in_kernel, query_scale=query_scale,
+                                          output_lanes=output_lanes,
                                           name=name, metadata=metadata)
 
     @staticmethod
@@ -496,17 +528,38 @@ class _nn:
     def kda_gated_recurrent_core(query: Node, key: Node, value: Node, gate: Node, decay_rate: Node,
                                 gate_bias: Node, beta_logits: Node, state: Node, *,
                                 lower_bound: float, epsilon: float = 1e-6,
-                                l2norm_in_kernel: bool = True, output_lanes: tuple[int, ...] = (),
+                                l2norm_in_kernel: bool = True, query_scale: float = 1.0,
+                                output_lanes: tuple[int, ...] = (),
+                                arithmetic: str = "recurrent",
+                                decay_input: str = "rate",
                                 name: str | None = None,
                                 metadata: Metadata = None) -> Node:
         """One KDA recurrent step whose forget gate and beta sigmoid are in-kernel."""
         return KdaGatedRecurrentCore.construct(
             query, key, value, gate, decay_rate, gate_bias, beta_logits, state,
             lower_bound=lower_bound, epsilon=epsilon, l2norm_in_kernel=l2norm_in_kernel,
+            query_scale=query_scale,
+            arithmetic=arithmetic,
+            decay_input=decay_input,
             output_lanes=output_lanes,
             name=name, metadata=metadata)
 
 
+
+    @staticmethod
+    @_op_function(KdaGatedStep)
+    def kda_gated_step(query: Node, key: Node, value: Node, gate: Node, decay_rate: Node,
+                       gate_bias: Node, beta_logits: Node, state: Node, prefill: Node, *,
+                       lower_bound: float, epsilon: float = 1e-6, l2norm_in_kernel: bool = True,
+                       query_scale: float = 1.0, output_lanes: tuple[int, ...] = (),
+                       decay_input: str = "rate",
+                       name: str | None = None, metadata: Metadata = None) -> Node:
+        """One KDA token with an explicit broadcast request phase."""
+        return KdaGatedStep.construct(
+            query, key, value, gate, decay_rate, gate_bias, beta_logits, state, prefill,
+            lower_bound=lower_bound, epsilon=epsilon, l2norm_in_kernel=l2norm_in_kernel,
+            query_scale=query_scale, output_lanes=output_lanes, decay_input=decay_input,
+            name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(SparseExperts)
@@ -534,6 +587,7 @@ class _nn:
         up_clamp: float | None = None,
         weight_block_n: int = 128,
         weight_block_k: int = 128,
+        activation_quantization: str = "dynamic_fp8",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -570,6 +624,7 @@ class _nn:
             up_clamp=up_clamp,
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
+            activation_quantization=activation_quantization,
             name=name,
             metadata=metadata,
         )
@@ -593,6 +648,7 @@ class _nn:
         up_clamp: float | None = None,
         weight_block_n: int = 128,
         weight_block_k: int = 128,
+        activation_quantization: str = "dynamic_fp8",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -613,6 +669,7 @@ class _nn:
             up_clamp=up_clamp,
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
+            activation_quantization=activation_quantization,
             name=name,
             metadata=metadata,
         )
@@ -629,6 +686,7 @@ class _nn:
         round_projection: bool = False,
         weight_block_n: int = 128,
         weight_block_k: int = 128,
+        activation_quantization: str = "dynamic_fp8",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -642,6 +700,7 @@ class _nn:
             round_projection=round_projection,
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
+            activation_quantization=activation_quantization,
             name=name,
             metadata=metadata,
         )
@@ -650,6 +709,19 @@ class _nn:
     @_op_function(SparseExpertsDispatch)
     def sparse_experts_dispatch(value: Node, router_expert_ids: Node, *, name=None, metadata: Metadata = None) -> Node:
         return SparseExpertsDispatch.construct(value, router_expert_ids, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(PartitionedSparseExpertsDown)
+    def partitioned_sparse_experts_down(activations: Node, router_expert_ids: Node, down_input_scale: Node,
+                                        down_weight: Node, down_proj_scale: Node, *, weight_block_n: int = 128,
+                                        weight_block_k: int = 128, activation_quantization: str = "dynamic_fp8",
+                                        round_projection: bool = False, output_lanes: tuple[int, ...] = (),
+                                        name: str | None = None, metadata: Metadata = None) -> Node:
+        """Retain material [partition, token, route, hidden] FP32 projections."""
+        return PartitionedSparseExpertsDown.construct(activations, router_expert_ids, down_input_scale,
+            down_weight, down_proj_scale, weight_block_n=weight_block_n, weight_block_k=weight_block_k,
+            activation_quantization=activation_quantization, round_projection=round_projection,
+            output_lanes=output_lanes, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(SparseExpertsCombine)
@@ -948,6 +1020,7 @@ class _nn:
         up_weight_encoding: str | None = None,
         gate_clamp_max: float | None = None,
         up_clamp: float | None = None,
+        activation_quantization: str = "dynamic_fp8",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -966,6 +1039,7 @@ class _nn:
             up_weight_encoding=up_weight_encoding,
             gate_clamp_max=gate_clamp_max,
             up_clamp=up_clamp,
+            activation_quantization=activation_quantization,
             name=name,
             metadata=metadata,
         )
@@ -989,6 +1063,7 @@ class _nn:
         up_weight_encoding: str | None = None,
         gate_clamp_max: float | None = None,
         up_clamp: float | None = None,
+        activation_quantization: str = "dynamic_fp8",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1010,6 +1085,7 @@ class _nn:
             up_weight_encoding=up_weight_encoding,
             gate_clamp_max=gate_clamp_max,
             up_clamp=up_clamp,
+            activation_quantization=activation_quantization,
             name=name,
             metadata=metadata,
         )
@@ -1279,10 +1355,26 @@ class _nn:
     @_op_function(DsaPagedAttention)
     def dsa_paged_attention(q: Node, topk: Node, state: Node, layer_id: Node, *, scale: float,
                             layout: tuple[str, ...], hidden_size: int, lanes: int = 8,
+                            probability_rounding: str = "normalized",
+                            index_traversal: str = "slots",
                             name: str | None = None, metadata: Metadata = None) -> Node:
         return DsaPagedAttention.construct(q, topk, state, layer_id, scale=scale, layout=layout,
                                            hidden_size=hidden_size, lanes=lanes,
+                                           probability_rounding=probability_rounding,
+                                           index_traversal=index_traversal,
                                            name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(MlaProjection)
+    def mla_projection(value: Node, weight: Node, scale: Node, *, direction: str,
+                       qk_head_dim: int, value_head_dim: int, latent_dim: int,
+                       weight_block_n: int = 128, weight_block_k: int = 128,
+                       output_lanes: tuple[int, ...] = (), name: str | None = None,
+                       metadata: Metadata = None) -> Node:
+        return MlaProjection.construct(value, weight, scale, direction=direction,
+            qk_head_dim=qk_head_dim, value_head_dim=value_head_dim, latent_dim=latent_dim,
+            weight_block_n=weight_block_n, weight_block_k=weight_block_k,
+            output_lanes=output_lanes, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(DsaIndexer)
@@ -1291,13 +1383,14 @@ class _nn:
         advance_sequence: Node, k_norm_weight: Node, k_norm_bias: Node, compress_ape: Node,
         *, index_topk: int, index_head_dim: int, index_n_heads: int, index_kpool: int,
         always_select_tail: bool = True, epsilon: float = 1e-6, name: str | None = None,
-        metadata: Metadata = None,
+        metadata: Metadata = None, state_layer_ids: tuple[int, ...] = (),
     ) -> Node:
         return DsaIndexer.construct(
             q, key, gate, weights, state, layer_id, advance_sequence, k_norm_weight,
             k_norm_bias, compress_ape, index_topk=index_topk, index_head_dim=index_head_dim,
             index_n_heads=index_n_heads, index_kpool=index_kpool,
-            always_select_tail=always_select_tail, epsilon=epsilon, name=name, metadata=metadata)
+            always_select_tail=always_select_tail, epsilon=epsilon, state_layer_ids=state_layer_ids,
+            name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(PagedAttention)
@@ -1693,11 +1786,13 @@ class _ntt:
                                   gate_proj_scale: Node, up_input_scale: Node, up_weight: Node, up_proj_scale: Node,
                                   *, output_dtype=None, round_projections=False, round_activation=False,
                                   gate_clamp_max: float | None = None, up_clamp: float | None = None,
+                                  weight_block_n: int = 128, weight_block_k: int = 128,
                                   name=None, metadata: Metadata = None) -> Node:
         return DispatchedExpertsGateUp.construct(q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
                                                 up_input_scale, up_weight, up_proj_scale, output_dtype=output_dtype,
                                                 round_projections=round_projections, round_activation=round_activation,
                                                 gate_clamp_max=gate_clamp_max, up_clamp=up_clamp,
+                                                weight_block_n=weight_block_n, weight_block_k=weight_block_k,
                                                 name=name, metadata=metadata)
 
     @staticmethod
@@ -1705,11 +1800,13 @@ class _ntt:
     def sparse_experts_down_combine(activations: Node, router_expert_ids: Node, down_input_scale: Node, down_weight: Node,
                                    down_proj_scale: Node, router_expert_weights: Node, *, round_projection=False,
                                    output_dtype=None, round_weighted_output=False, cast_output=False,
+                                   weight_block_n: int = 128, weight_block_k: int = 128,
                                    name=None, metadata: Metadata = None) -> Node:
         return SparseExpertsDownCombine.construct(activations, router_expert_ids, down_input_scale, down_weight,
                                                  down_proj_scale, router_expert_weights, round_projection=round_projection,
                                                  output_dtype=output_dtype, round_weighted_output=round_weighted_output,
-                                                 cast_output=cast_output, name=name, metadata=metadata)
+                                                 cast_output=cast_output, weight_block_n=weight_block_n,
+                                                 weight_block_k=weight_block_k, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(GatherReduceAddNormApply)

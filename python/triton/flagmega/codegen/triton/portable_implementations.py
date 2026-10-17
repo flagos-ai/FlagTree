@@ -23,8 +23,10 @@ def portable_sparse_experts_implementations() -> tuple[TritonImplementation, ...
             f"tir.{family}.simt", family, "simt",
             {"block_n": 8, "block_k": 128},
             {"indexing": "local", "rounding": "explicit"},
+            requires=("fp8",) if family == "partitioned_sparse_experts_down" else (),
             facts={"portable_triton": True},
-        ) for family in ("sparse_experts_gate_up", "sparse_experts_down", "sparse_experts_dispatch", "sparse_experts_weighted_sum"))
+        ) for family in ("sparse_experts_gate_up", "sparse_experts_down", "sparse_experts_dispatch", "sparse_experts_weighted_sum",
+                         "partitioned_sparse_experts_down"))
 
 
 def portable_tensor_transform_implementations() -> tuple[TritonImplementation, ...]:
@@ -100,6 +102,10 @@ def portable_mhc_implementations() -> tuple[TritonImplementation, ...]:
     return (
         TritonImplementation("tir.mhc_pre.local", "mhc_pre", "local",
                              {"elements_per_program": 256}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+        TritonImplementation("tir.mhc_pre.stream_fma", "mhc_pre", "stream_fma",
+                             {"elements_per_program": 256, "compute_num_warps": 4},
+                             {"indexing": "local", "projection_reduction": "stream_fma_128"},
                              facts={"portable_triton": True}),
         TritonImplementation("tir.mhc_post.local", "mhc_post", "local",
                              {"elements_per_program": 256}, {"indexing": "local"},

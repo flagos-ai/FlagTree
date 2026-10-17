@@ -11,7 +11,6 @@ from typing import Protocol
 from triton.flagmega.ir import (
     DistributedType,
     IRType,
-    SBPSplit,
     TensorType,
     boxing_crossing_chip_axes,
     is_local_shard_subview,
@@ -71,8 +70,9 @@ class NttDistributedReshardRealizationPolicy:
 
         Subclasses override ``_classify_realization``, so the peer-addressing
         constraint below holds for every NTT policy.  It is applied to the
-        answer rather than to the request because only a Boxing reads the
-        source's bytes; a view of the same types reads nothing remote.
+        answer rather than to the request because a proven chip-local view
+        needs no peer addressing. A view cannot replace a required gather:
+        its consumer would read bytes absent from the local chip instance.
         """
 
         realization = self._classify_realization(context)
@@ -88,7 +88,6 @@ class NttDistributedReshardRealizationPolicy:
         context: DistributedReshardRealizationContext,
     ) -> DistributedReshardRealization:
         from triton.flagmega.passes.auto_distributed.reshard import can_box
-        from triton.flagmega.ir import TensorType
 
         if not can_box(context.source_type, context.target_type):
             return DistributedReshardRealization.UNSUPPORTED
@@ -157,7 +156,7 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
         target_type = context.target_type
         if (
             is_local_shard_subview(source_type, target_type)
-            and _preserves_non_block_owners(source_type, target_type)
+            and _can_materialize_canonical_chip_view(source_type, target_type)
         ):
             return DistributedReshardRealization.SHARDED_VIEW
         if context.source_kind != DistributedReshardSourceKind.INTERNAL:
@@ -189,22 +188,13 @@ def reads_unaddressable_peer_instance(
     return bool(boxing_crossing_chip_axes(context.source_type, context.target_type))
 
 
-def _placement_axis_owners(value: DistributedType) -> tuple[int, ...] | None:
-    owners = [-1] * value.placement.rank
-    for tensor_axis, policy in enumerate(value.axis_policies):
-        if not isinstance(policy, SBPSplit):
-            continue
-        for placement_axis in policy.hierarchy_axes:
-            if placement_axis >= len(owners) or owners[placement_axis] >= 0:
-                return None
-            owners[placement_axis] = tensor_axis
-    return tuple(owners)
-
-
 def _is_exclusive_transition(source_type: IRType, target_type: IRType) -> bool:
-    if isinstance(target_type, DistributedType) and target_type.exclusive is not None:
-        if isinstance(source_type, TensorType):
-            return True
+    if (
+        isinstance(target_type, DistributedType)
+        and target_type.exclusive is not None
+        and isinstance(source_type, TensorType)
+    ):
+        return True
     return (
         isinstance(source_type, DistributedType)
         and isinstance(target_type, DistributedType)
@@ -213,22 +203,9 @@ def _is_exclusive_transition(source_type: IRType, target_type: IRType) -> bool:
         and target_type.partial is None
         and source_type.exclusive != target_type.exclusive
         and (source_type.exclusive is not None or target_type.exclusive is not None)
-    )
-
-
-def _preserves_non_block_owners(
-    source_type: DistributedType,
-    target_type: DistributedType,
-) -> bool:
-    source_owners = _placement_axis_owners(source_type)
-    target_owners = _placement_axis_owners(target_type)
-    if source_owners is None or target_owners is None:
-        return False
-    return all(
-        source_type.placement.hierarchy[axis] <= 1
-        or source_type.placement.is_physical_block_axis(axis)
-        or source_owners[axis] == target_owners[axis]
-        for axis in range(source_type.placement.rank)
+        # Exclusive changes participation, not which bytes reside on a chip.
+        # In particular, Sc -> E(block) and E(chip) -> B still need a gather.
+        and not boxing_crossing_chip_axes(source_type, target_type)
     )
 
 
@@ -236,7 +213,9 @@ def _can_materialize_canonical_chip_view(
     source_type: DistributedType,
     target_type: DistributedType,
 ) -> bool:
-    return _preserves_non_block_owners(source_type, target_type)
+    # Comparing only the tensor axis that owns each chip misses changes to
+    # split granularity/stages. Prove actual per-chip region containment.
+    return not boxing_crossing_chip_axes(source_type, target_type)
 
 
 class CanonicalStorageReshardRealizationPolicy(PyNttDistributedReshardRealizationPolicy):

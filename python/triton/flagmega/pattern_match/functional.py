@@ -42,6 +42,7 @@ from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.partitioned_sparse_experts_down import PartitionedSparseExpertsDown
 from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
 from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp, SparseExpertsDownCombine
@@ -56,6 +57,7 @@ from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
 from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
+from triton.flagmega.ir.ops.nn.mla_projection import MlaProjection
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_qwen3_paged_attention import PackedQwen3PagedAttention
@@ -630,6 +632,19 @@ class _math:
 
 
 class _nn:
+    @staticmethod
+    @_op_pattern_function(MlaProjection)
+    def is_mla_projection(value: PatternInput = None, weight: PatternInput = None, scale: PatternInput = None,
+                          *, direction: str | None = None, qk_head_dim: int | None = None,
+                          value_head_dim: int | None = None, latent_dim: int | None = None,
+                          weight_block_n: int | None = None, weight_block_k: int | None = None,
+                          output_lanes: tuple[int, ...] | None = None, target_name: str | None = None,
+                          call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(MlaProjection, (value, weight, scale), attributes={
+            'direction': direction, 'qk_head_dim': qk_head_dim, 'value_head_dim': value_head_dim,
+            'latent_dim': latent_dim, 'weight_block_n': weight_block_n, 'weight_block_k': weight_block_k,
+            'output_lanes': output_lanes}, target_name=target_name, call_name=call_name, condition=condition)
+
 
     @staticmethod
     @_op_pattern_function(L2Normalization)
@@ -798,6 +813,18 @@ class _nn:
     def is_sparse_experts_dispatch(value=None, router_expert_ids=None, *, target_name=None, call_name=None, condition=None):
         return _call_pattern(SparseExpertsDispatch, (value, router_expert_ids), target_name=target_name,
                              call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(PartitionedSparseExpertsDown)
+    def is_partitioned_sparse_experts_down(activations=None, router_expert_ids=None, down_input_scale=None,
+            down_weight=None, down_proj_scale=None, *, weight_block_n=None, weight_block_k=None,
+            activation_quantization=None, round_projection=None, output_lanes=None,
+            target_name=None, call_name=None, condition=None):
+        return _call_pattern(PartitionedSparseExpertsDown,
+            (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale),
+            attributes={"weight_block_n": weight_block_n, "weight_block_k": weight_block_k,
+                        "activation_quantization": activation_quantization, "round_projection": round_projection,
+                        "output_lanes": output_lanes}, target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(SparseExpertsCombine)

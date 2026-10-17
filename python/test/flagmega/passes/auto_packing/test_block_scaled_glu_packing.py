@@ -35,17 +35,15 @@ def _module(*, k: int = 128) -> fm.IRModule:
         key="up_scale",
         id="up_scale",
     )
-    output = builder.call(
-        "nn.matmul_glu",
-        (value, gate, up, gate_scale, up_scale),
-        fm.tensor_type("bfloat16", (2, 64)),
-        id="output",
-        attrs={
+    call = fm.get_definition("nn.matmul_glu").prepare(
+        (value, gate, up, gate_scale, up_scale), {
             "activation": "silu",
             "weight_block_n": 128,
             "weight_block_k": 128,
         },
     )
+    output = builder.call("nn.matmul_glu", call.inputs, call.result_type, id="output", attrs=call.attrs,
+                          effect=call.effect)
     builder.function("main", (value,), (output,))
     return fm.verify_module(builder.build(entry="main"))
 

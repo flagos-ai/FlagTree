@@ -41,6 +41,15 @@ def vectorization_contract(node: Node) -> dict[str, object]:
             return {"kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
                     "source_candidate": "fused-typed-ir"}
     candidate = node.metadata.get("selected_vectorization")
+    value_type = logical_type(node.type)
+    if (node.op == "tensors.cast" and candidate is None
+            and isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType)):
+        # Plain numeric casts preserve the shape of each vector element.
+        # The lanes are physical typed IR, independent of any tensor packing
+        # axes or agent choice (including a rank-zero outer tensor).
+        lanes = tuple(value_type.dtype.lanes)
+        return {"kind": "typed_elements", "axes": (), "lanes": lanes,
+                "lane_count": prod(lanes), "source_candidate": "typed-ir"}
     # Explicit/propagated VectorizedCast is physical typed IR, not a scalar
     # equality witness. It can be authored without an AutoVectorize choice.
     # Its operation attributes and result type own the lane mapping.

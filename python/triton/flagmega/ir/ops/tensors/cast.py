@@ -4,6 +4,7 @@
 
 from typing import Mapping, Sequence
 
+from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.model import DistributedType, IRType, Node, tensor_type
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
@@ -29,8 +30,11 @@ class Cast(OpDefinition):
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value = cls.value.type_of(inputs)
         tensor = tensor_of(value)
+        dtype = data_type_from_data(attrs["dtype"])
+        if tuple(getattr(tensor.dtype, "lanes", ())) != tuple(getattr(dtype, "lanes", ())):
+            raise IRSchemaError("Cast must preserve vector lanes; use an explicit vectorized_cast for repacking.")
         output = tensor_type(
-            data_type_from_data(attrs["dtype"]), tensor.shape, layout=tensor.layout
+            dtype, tensor.shape, layout=tensor.layout
         )
         if not isinstance(value, DistributedType):
             return output

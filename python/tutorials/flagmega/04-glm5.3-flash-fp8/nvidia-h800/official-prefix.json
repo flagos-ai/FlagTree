@@ -1,0 +1,43 @@
+{
+  "versions": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130",
+    "cuda": "13.0",
+    "cuda_visible_devices": "0,1,2,3",
+    "checkpoint_revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"
+  },
+  "requests": [
+    {
+      "request": 0,
+      "tokens": [
+        3847,
+        284,
+        1373,
+        8282,
+        4218,
+        3755,
+        947,
+        906
+      ],
+      "seconds": 1.3967628789978335
+    },
+    {
+      "request": 1,
+      "tokens": [
+        3847,
+        284,
+        1373,
+        8282,
+        4218,
+        3755,
+        947,
+        906
+      ],
+      "seconds": 0.8321715729980497
+    }
+  ],
+  "seconds": 90.71024786699854,
+  "scope": "official full45/E288/top8/context4096 TP4, token11 greedy8 x2 independent requests",
+  "observer_preserves_previous_native_sequences": true,
+  "flagmega_token_acceptance_proven": false
+}

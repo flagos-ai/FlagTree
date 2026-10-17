@@ -1,0 +1,40 @@
+@triton.jit
+def _flagmega_mhc_contiguous_projection(
+    streams, projection,
+    HC: tl.constexpr, HIDDEN: tl.constexpr, SPLITS: tl.constexpr,
+    STREAM_STRIDE: tl.constexpr, HIDDEN_STRIDE: tl.constexpr,
+    PROJECTION_ROW_STRIDE: tl.constexpr, PROJECTION_HIDDEN_STRIDE: tl.constexpr,
+    DOT_LAYOUT: tl.constexpr, SOURCE_LAYOUT: tl.constexpr, MIX_LAYOUT: tl.constexpr,
+):
+    COUNT: tl.constexpr = HC * (HC + 2)
+    width: tl.constexpr = HC * HIDDEN // SPLITS
+    mixes = tle.gpu.set_layout(tl.zeros((32,), tl.float32), MIX_LAYOUT)
+    square_sum = tl.full((), 0., tl.float32)
+    rows = tl.arange(0, 64)
+    cols = tl.arange(0, 32)
+    lanes = tl.arange(0, 4)
+    for split in tl.range(SPLITS):
+        accumulator = tl.zeros((64, 32), tl.float32)
+        square = tl.zeros((4,), tl.float32)
+        for block in tl.range(width // 64):
+            flat = split * width + block * 64 + tl.arange(0, 64)
+            source = (flat // HIDDEN) * STREAM_STRIDE + (flat % HIDDEN) * HIDDEN_STRIDE
+            a = tl.load(streams + source[None, :] + tl.zeros((64, 1), tl.int32),
+                        mask=rows[:, None] == 0, other=0.).to(tl.float32)
+            b = tl.load(projection + cols[None, :] * PROJECTION_ROW_STRIDE
+                        + flat[:, None] * PROJECTION_HIDDEN_STRIDE,
+                        mask=cols[None, :] < COUNT, other=0.).to(tl.float32)
+            accumulator = tl.dot(a, b, accumulator, input_precision="tf32")
+            for pair in tl.static_range(8):
+                first = split * width + block * 64 + pair * 8 + lanes
+                second = first + 4
+                x = tl.load(streams + (first // HIDDEN) * STREAM_STRIDE
+                            + (first % HIDDEN) * HIDDEN_STRIDE).to(tl.float32)
+                y = tl.load(streams + (second // HIDDEN) * STREAM_STRIDE
+                            + (second % HIDDEN) * HIDDEN_STRIDE).to(tl.float32)
+                square = libdevice.add_rn(square, tl.fma(x, x, y * y))
+        partial = tl.sum(tl.where(rows[:, None] == 0, accumulator, 0.), 0)
+        partial = tle.gpu.set_layout(partial, MIX_LAYOUT)
+        mixes = libdevice.add_rn(mixes, partial)
+        square_sum = libdevice.add_rn(square_sum, tl.sum(square, 0))
+    return mixes, square_sum

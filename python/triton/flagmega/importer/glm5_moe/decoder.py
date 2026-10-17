@@ -75,7 +75,7 @@ def apply_hyper_connection(value, residual, post, comb, config, *, stage, prefix
 
 def build_mla_attention(value, state, layer_id, advance, weights, config, *, prefix,
                         dsa_state=None, dsa_layer_id=None, dsa_advance=None, topk=None,
-                        indexer_kind=None):
+                        indexer_kind=None, dsa_layer_ids=()):
     """Unabsorbed nope MLA over the paged KV cache.
 
     The compressed latent is expanded per head through ``kv_b_proj`` before the
@@ -142,7 +142,7 @@ def build_mla_attention(value, state, layer_id, advance, weights, config, *, pre
                 w("indexer.index_kpool_compress_ape"), index_topk=c.index_topk,
                 index_head_dim=c.index_head_dim, index_n_heads=c.index_n_heads,
                 index_kpool=c.index_kpool, always_select_tail=c.index_kpool_always_select_tail,
-                epsilon=c.epsilon, name=f"{prefix}_dsa_indexer")
+                epsilon=c.epsilon, state_layer_ids=dsa_layer_ids, name=f"{prefix}_dsa_indexer")
             updated_dsa = dsa_state
         attended = F.nn.dsa_paged_attention(
             packed_q, output_topk, state, layer_id, scale=c.qk_nope_head_dim ** -0.5,
@@ -200,9 +200,12 @@ def build_kda_attention(value, conv_state, recurrent_state, weights, config, *, 
     # ``use_beta_sigmoid_in_kernel=True``.
     beta_logits = projection(value, weights, "self_attn.b_proj.weight", c, prefix=prefix)
 
+    # fused_recurrent_kda scales q by 1/sqrt(head_dim) after L2 normalization;
+    # normalization does not replace the model's attention readout scale.
     recurrent = F.nn.kda_gated_recurrent_core(
         q, k, v, gate_heads, w("decay_rate_map"), w("dt_bias_map"), beta_logits, recurrent_state,
         lower_bound=c.kda_gate_lower_bound, epsilon=1e-6, l2norm_in_kernel=True,
+        query_scale=dim ** -0.5,
         name=f"{prefix}_recurrent")
     core_out, recurrent_state_out = F.tensors.get_items(recurrent, 0, 1, name_prefix=f"{prefix}_recurrent")
     # The published module is FusedRMSNormGated(o_norm)(core_out, g), whose

@@ -126,6 +126,13 @@ class DenseMatmulCandidateProvider:
                 )
                 if output_extent is not None
                 and reduction_extent is not None
+                and (implementation.contract.get("required_input_dtype", _scalar_dtype(input_type).value)
+                     == _scalar_dtype(input_type).value)
+                and (implementation.contract.get("required_output_dtype", _scalar_dtype(output_type).value)
+                     == _scalar_dtype(output_type).value)
+                and (not implementation.contract.get("requires_unpartitioned_reduction", False)
+                     or not isinstance(context.module.node_map[node.inputs[0]].type, DistributedType)
+                     or isinstance(context.module.node_map[node.inputs[0]].type.axis_policies[-1], SBPBroadCast))
                 and _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type)
                 and (
                     implementation.parameters.get("descriptor_kind") != "table"

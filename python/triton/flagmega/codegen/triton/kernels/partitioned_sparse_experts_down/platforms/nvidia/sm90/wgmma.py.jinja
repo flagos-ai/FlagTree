@@ -1,0 +1,33 @@
+# flagmega-kernel: partitioned_sparse_experts_down/wgmma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% include "kernels/_ue8m0_quantization.py.jinja" %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "partitioned_sparse_experts_down" and call.variant == "wgmma" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_partition in tl.range(0, {{ call.partitions }}):
+        for _fm_token in tl.range(0, {{ call.tokens }}):
+            for _fm_route in tl.range(0, {{ call.routes }}):
+                _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }}), mask={{ call.slot_active }}, other=0).to(tl.int64)
+                _fm_input_scale = {{ call.scale_loads.down_input_scale }}
+                for _fm_n_start in tl.range(0, {{ call.scalar_n }}, 64):
+                    _fm_n = _fm_n_start + tl.arange(0, 64)
+                    _fm_n_mask = (_fm_n < {{ call.scalar_n }}) & ({{ call.n_active }}) & ({{ call.slot_active }})
+                    _fm_acc = tl.zeros((64, 16), tl.float32)
+                    for _fm_k_start in tl.range(0, {{ call.scalar_k }}, 128):
+                        _fm_k = _fm_k_start + tl.arange(0, 128)
+                        _fm_k_mask = (_fm_k < {{ call.scalar_k }}) & ({{ call.k_active }}) & ({{ call.slot_active }})
+                        _fm_input = tl.load({{ call.pointers.activations }} + ({{ call.activation_offset }}), mask=_fm_k_mask, other=0.).to(tl.float32)
+                        _fm_quantized, _fm_activation_scale = _flagmega_quantize_ue8m0(_fm_input, 0)
+                        _fm_a = tl.broadcast_to(_fm_quantized.to(tl.float8e4nv)[:, None], (128, 16))
+                        _fm_weight = tl.load({{ call.pointers.down_weight }} + ({{ call.weight_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0.)
+                        _fm_scale = {{ call.block_scale_loads.down_proj_scale }}
+                        _fm_acc += tl.dot(_fm_weight, _fm_a) * _fm_scale * _fm_activation_scale
+                    _fm_projection = tl.reshape(tl.gather(_fm_acc, tl.full((64, 1), 0, tl.int32), 1), (64,)) * _fm_input_scale
+{% if call.attrs.round_projection %}
+                    _fm_projection = _fm_projection.to({{ call.activation_dtype }}).to(tl.float32)
+{% endif %}
+                    tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_projection, mask=_fm_n_mask & ({{ call.route_active }}) & ({{ call.writer_active }}))
+{% endif %}
+{% endfor %}

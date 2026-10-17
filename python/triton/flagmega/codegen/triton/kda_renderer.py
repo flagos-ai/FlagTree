@@ -122,6 +122,7 @@ def kda_recurrent_call(raw):
         "value_chunks": (state_shape[3] + 31) // 32,
         "epsilon": repr(float(raw["semantic_attrs"]["epsilon"])),
         "l2norm_in_kernel": bool(raw["semantic_attrs"]["l2norm_in_kernel"]),
+        "query_scale": float(raw["semantic_attrs"].get("query_scale", 1.0)),
         "query": _pointer(query),
         "key": _pointer(key),
         "value": _pointer(value),
@@ -155,6 +156,7 @@ def kda_gated_recurrent_call(raw):
         _buffer,
         _canonical_writer_active,
         _pointer,
+        _scalar_expression,
     )
 
     buffers = {
@@ -166,6 +168,20 @@ def kda_gated_recurrent_call(raw):
     new_state = _buffer(raw, "outputs", "result_1")
     _verify_recurrent_output(raw, out, buffers["state"])
     state_shape = tuple(int(dim) for dim in buffers["state"]["abi"]["local_capacity_shape"])
+    reduction_layout = str(raw.get("parameters", {}).get("reduction_layout", "default"))
+    if reduction_layout not in {"default", "warp_k"}:
+        raise CodegenError(f"Unknown KDA reduction_layout {reduction_layout!r}.")
+    if reduction_layout == "warp_k" and state_shape[2:] != (128, 128):
+        raise CodegenError("KDA warp_k currently requires head_k = head_v = 128.")
+    request_prefill = None
+    if raw["semantic_op"] == "nn.kda_gated_step":
+        phase = _buffer(raw, "inputs", "prefill")
+        abi = phase["abi"]
+        if (abi["scalar_dtype"] != "bool" or tuple(abi["logical_shape"])
+                or int(abi["scalar_lane_count"]) != 1):
+            raise CodegenError("KDA request phase requires one scalar BOOL value.")
+        request_prefill = (_scalar_expression(phase) if abi.get("storage") == "scalar"
+                           else f"tl.load({_pointer(phase)} + ({emit_local_scalar_offset(abi, ())}))")
     return {
         "internal_grid_barriers": 0,
         "heads": emit_active_extent(buffers["state"]["abi"], 1),
@@ -174,7 +190,13 @@ def kda_gated_recurrent_call(raw):
         "value_chunks": (state_shape[3] + 31) // 32,
         "epsilon": repr(float(raw["semantic_attrs"]["epsilon"])),
         "lower_bound": repr(float(raw["semantic_attrs"]["lower_bound"])),
+        "gate_scale_log2": repr(float(raw["semantic_attrs"]["lower_bound"]) * 1.4426950408889634),
+        "request_prefill": request_prefill,
+        "arithmetic": raw["semantic_attrs"].get("arithmetic", "recurrent"),
+        "decay_input": raw["semantic_attrs"].get("decay_input", "rate"),
+        "kda_reduction_layout": reduction_layout,
         "l2norm_in_kernel": bool(raw["semantic_attrs"]["l2norm_in_kernel"]),
+        "query_scale": float(raw["semantic_attrs"].get("query_scale", 1.0)),
         **{name: _pointer(buffer) for name, buffer in buffers.items()},
         **{f"{name}_head_offset": _head_offset(buffer["abi"])
            for name, buffer in buffers.items()},

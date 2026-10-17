@@ -5,10 +5,9 @@ from dataclasses import replace
 
 import pytest
 import torch
-
 from triton.flagmega import ir as fm
-from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.constants import freeze_constant_islands
 from triton.flagmega.passes.functions import lift_parameter_constant_transforms
 
@@ -105,6 +104,34 @@ def test_lifted_call_graph_preserves_reference_evaluation():
 
     torch.testing.assert_close(outputs[0], first.reshape(2, 2, 2, 2))
     torch.testing.assert_close(outputs[1], second.reshape(2, 2, 2, 2))
+
+
+@pytest.mark.parametrize('retain_raw', [False, True])
+def test_shared_parameter_can_supply_multiple_offline_representations(retain_raw):
+    source = _module()
+    original_root = source.node_map['pack_physical']
+    other = fm.Node('pack_other', 'tensors.permute', (original_root.id,), original_root.type,
+                    attrs={'axes': (3, 2, 1, 0)}, metadata={'packed_from': 'pack_weight',
+                    'packed_layout': 'unit_other'})
+    output_ids = (original_root.id, other.id, *(('pack_weight',) if retain_raw else ()))
+    result_type = fm.TupleType(tuple((source.node_map | {other.id: other})[name].type for name in output_ids))
+    nodes = []
+    for node in source.nodes:
+        nodes.append(replace(node, type=result_type) if node.op == 'builtin.call' else node)
+        if node.id == original_root.id:
+            nodes.append(other)
+    source = fm.verify_module(replace(source, nodes=tuple(nodes), functions=tuple(
+        replace(f, outputs=output_ids) if f.name == 'pack' else f for f in source.functions)))
+    lifted = fm.verify_module(lift_parameter_constant_transforms(source))
+    parameters = lifted.function_map['pack'].parameters
+    assert len(parameters) == 2 + int(retain_raw)
+    assert ('pack_weight' in lifted.node_map) == retain_raw
+    # The shared prefix is cloned once at each call, never twice with one id.
+    assert sum(n.id == 'first_call.pack_physical' for n in lifted.nodes) == 1
+    first = torch.arange(16, dtype=torch.bfloat16).reshape(4, 4)
+    weights = DictWeightResolver({'layers.0.weight': first, 'layers.1.weight': first + 32})
+    evaluator = TorchEvaluator(weights)
+    torch.testing.assert_close(evaluator.run(lifted, {}), evaluator.run(source, {}), rtol=0, atol=0)
 
 
 def _multi_source_module() -> fm.IRModule:

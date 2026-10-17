@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Reviewed Triton candidate-family providers."""
 
+from triton.flagmega.targets.nvidia.mla import NvidiaMlaProjectionSemanticTIRCandidateProvider
+
 from .add_norm_stats import AddNormStatsCandidateProvider
 from .attention_primitives import AttentionPrimitiveSemanticTIRCandidateProvider
 from .core import (
@@ -70,6 +72,7 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             PackedQKVSemanticTIRCandidateProvider(),
             PagedAttentionSplitSemanticTIRCandidateProvider(),
             AttentionPrimitiveSemanticTIRCandidateProvider(),
+            NvidiaMlaProjectionSemanticTIRCandidateProvider(),
             QKVRoPEWithCacheSemanticTIRCandidateProvider(),
             GatherReduceNormApplySemanticTIRCandidateProvider(),
             GatherReduceAddNormApplyCandidateProvider(),

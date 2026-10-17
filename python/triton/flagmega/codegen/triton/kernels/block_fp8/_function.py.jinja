@@ -30,6 +30,11 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ call.value }}, {{ call.weight }}, {{ call.scale }}, {{ call.result }},
             weight_rows, scale_rows, destination_offsets, n_mask,
             {{ call.k }}, {{ call.block_k }},
+            "{{ call.activation_quantization }}", {{ call.weight_dequant_type }},
+{% if call.variant == "mma" %}
+            {{ call.dequant_mma_splits }},
+            "{{ call.scaled_accumulation | default('compensated') }}",
+{% endif %}
         )
 {% endif %}
 

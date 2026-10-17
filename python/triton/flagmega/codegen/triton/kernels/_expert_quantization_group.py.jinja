@@ -1,0 +1,16 @@
+{% macro complete_group(call, pointer, offset, mask, output) -%}
+# The quantization group is semantic; a smaller compute tile still needs
+# the maximum of the entire group before selecting its own FP8 lanes.
+_fm_group_k = (_fm_k_start // {{ call.weight_block_k }}) * {{ call.weight_block_k }} + tl.arange(0, {{ call.weight_block_k }})
+_fm_group_input = tl.load({{ pointer }} + ({{ offset | replace('_fm_k', '_fm_group_k') }}),
+    mask=({{ mask | replace('_fm_k', '_fm_group_k') }}), other=0.).to(tl.float32)
+{% if call.attrs.activation_quantization | default("dynamic_fp8") == "dynamic_fp8_ue8m0" %}
+_fm_group_codes, _fm_group_scale = _flagmega_quantize_ue8m0(_fm_group_input, 0)
+{% else %}
+_fm_group_maximum = tl.max(tl.abs(_fm_group_input), 0)
+_fm_group_scale = tl.where(_fm_group_maximum == 0., 1., tl.div_rn(_fm_group_maximum, 448.))
+_fm_group_codes = tl.clamp(tl.div_rn(_fm_group_input, _fm_group_scale), -448., 448.).to(tl.float8e4nv).to(tl.float32)
+{% endif %}
+{{ output }} = tl.gather(_fm_group_codes, (_fm_k_start % {{ call.weight_block_k }}) + tl.arange(0, {{ call.block_k }}), 0)
+_fm_activation_scale = tl.reshape(_fm_group_scale, ())
+{%- endmacro %}

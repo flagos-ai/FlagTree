@@ -13,14 +13,19 @@ from dataclasses import dataclass
 from math import prod
 
 from triton.flagmega.artifacts import read_rdata_index, verify_rdata
+from triton.flagmega.codegen.triton.runtime_binding import (
+    DEVICE_CONTEXT_ABI, DEVICE_CONTEXT_ARGUMENTS, DEVICE_CONTEXT_HANDLES,
+)
 from triton.flagmega.errors import ArtifactError, EvaluationError, IRSchemaError, RuntimeContractError
 from triton.flagmega.ir import (
     DType,
+    DistributedType,
     RefType,
     TensorType,
     TupleType,
     VectorType,
     logical_type,
+    tensor_type,
     verify_buffer_plan,
 )
 from triton.flagmega.ir.ops.nn._gdn_state import (
@@ -330,17 +335,28 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self._needs_device_dptr = bool(
             self.codegen.get("distributed_device_dptr", False)
         )
+        context_abi = self.codegen.get("device_context_abi")
+        if context_abi not in (None, "runtime-handles/v1", DEVICE_CONTEXT_ABI):
+            raise ArtifactError(f"Unsupported distributed device context ABI: {context_abi!r}.")
+        if context_abi is not None and not self._needs_device_dptr:
+            raise ArtifactError("A distributed device context ABI requires a device context.")
+        self._context_argument_names = (
+            DEVICE_CONTEXT_ARGUMENTS if context_abi == DEVICE_CONTEXT_ABI else
+            DEVICE_CONTEXT_HANDLES if context_abi == "runtime-handles/v1" else ("device_dptr",)
+        ) if self._needs_device_dptr else ()
+        if set(descriptor_names).intersection(("device_dptr", *self._context_argument_names)):
+            raise ArtifactError("Host tensor descriptor name conflicts with a device context argument.")
         self._function_offset_specs = validate_function_offset_tables(
             self.codegen.get("function_offset_tables", ()),
-            existing_names=(*expected, "device_dptr", *descriptor_names),
+            existing_names=(*expected, "device_dptr", *self._context_argument_names, *descriptor_names),
         )
         verify_function_offset_source(
             kernel, self._function_offset_specs,
-            existing_names=(*expected, "device_dptr", *descriptor_names),
+            existing_names=(*expected, "device_dptr", *self._context_argument_names, *descriptor_names),
         )
         expected_codegen_signature = (
             *expected,
-            *(("device_dptr",) if self._needs_device_dptr else ()),
+            *self._context_argument_names,
             *descriptor_names,
             *(spec["name"] for spec in self._function_offset_specs),
         )
@@ -355,7 +371,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                 "host tensor descriptors and function offset tables."
             )
         external_names = {str(value["name"]) for value in arguments}
-        descriptor_base = len(expected) + (1 if self._needs_device_dptr else 0)
+        descriptor_base = len(expected) + len(self._context_argument_names)
         self._dynamic_descriptor_indices = tuple(
             index
             for index, spec in enumerate(self._descriptor_specs)
@@ -608,7 +624,15 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                 raise RuntimeContractError(
                     "Chip/node launch requires an initialized distributed device context."
                 )
-            arguments = (*arguments, self._device_dptr)
+            context_arguments = (self._device_dptr,)
+            if self._context_argument_names in (DEVICE_CONTEXT_HANDLES, DEVICE_CONTEXT_ARGUMENTS):
+                context_arguments = self._device_dptr.get_packed_data()
+                if self._context_argument_names == DEVICE_CONTEXT_ARGUMENTS:
+                    # Injection changes the compiled entry and launcher ABI.
+                    # Keep that decision in the specialization key even though
+                    # process-local handle addresses remain runtime data.
+                    context_arguments = (*context_arguments, bool(self._device_dptr.is_lite_mode))
+            arguments = (*arguments, *context_arguments)
         arguments = (*arguments, *descriptors, *self._function_offset_values)
         contract = _resource_contract(
             self.codegen, self.manifest.get("target"),
@@ -719,7 +743,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         # the scope follows what the image actually publishes.
         scope = chip if (isinstance(published.get("segment_sha256"), list)
                          or published.get("digest_kind") == "sha256-source-layout/v1") else None
-        index = verify_rdata(assets, module=self.ir_module, segment=scope)
+        index = verify_rdata(assets, module=self.ir_module, segment=scope, reuse_source_proofs=True)
         if index.get("digest_kind") == "sha256-source-layout/v1":
             from triton.flagmega.runtime.source_rdata import load_source_rdata
             if int(index["segment_nbytes"]) != expected_nbytes:
@@ -1255,6 +1279,17 @@ class GeneratedTirCompositeModelModule(GeneratedTirCallGraphModule):
         except KeyError as error:
             raise ArtifactError(f"Composite ABI references an unknown entry value: {error}") from error
         self._input_type = logical_type(ir_module.node_map[self._input_id].type)
+        self._prefill_id = None
+        if "prefill_input" in abi:
+            try:
+                self._prefill_id = by_name[str(abi["prefill_input"])]
+            except KeyError as error:
+                raise ArtifactError("Composite ABI references an unknown prefill input.") from error
+            phase_type = ir_module.node_map[self._prefill_id].type
+            if (logical_type(phase_type) != tensor_type(DType.BOOL, ())
+                    or isinstance(phase_type, DistributedType)
+                    and (phase_type.partial is not None or phase_type.exclusive is not None)):
+                raise ArtifactError("Composite prefill input must be a replicated rank-zero bool tensor.")
         self._state_specs: dict[object, tuple[TensorType, TensorType]] = {}
         self._state_inputs: dict[object, tuple[object, object]] = {}
         self._state_outputs: dict[object, tuple[object, object]] = {}
@@ -1339,7 +1374,7 @@ class GeneratedTirCompositeModelModule(GeneratedTirCallGraphModule):
             _allocate_tensor(torch, logical_type(self.ir_module.node_map[self._token_id].type), self._device),
         )
 
-    def prepare(self, input_ids, state: CompositeModelState, *, logits=None, next_token=None):
+    def prepare(self, input_ids, state: CompositeModelState, *, logits=None, next_token=None, prefill=False):
         self._require_loaded()
         self._validate_state(input_ids, state)
         logits_type = logical_type(self.ir_module.node_map[self._logits_id].type)
@@ -1351,29 +1386,33 @@ class GeneratedTirCompositeModelModule(GeneratedTirCallGraphModule):
             next_token = _allocate_tensor(torch, token_type, self._device)
         _validate_ir_tensor("logits", logits, logits_type, self._device)
         _validate_ir_tensor("next_token", next_token, token_type, self._device)
-        self._prepare_bound(self._entry_buffer_values(input_ids, state, logits, next_token))
+        self._prepare_bound(self._entry_buffer_values(input_ids, state, logits, next_token, prefill=prefill))
         return self
 
-    def run_into(self, logits, next_token, input_ids, state: CompositeModelState, *, stream=None):
+    def run_into(self, logits, next_token, input_ids, state: CompositeModelState, *, stream=None, prefill=False):
         self._validate_state(input_ids, state)
         logits_type = logical_type(self.ir_module.node_map[self._logits_id].type)
         token_type = logical_type(self.ir_module.node_map[self._token_id].type)
         _validate_ir_tensor("logits", logits, logits_type, self._device)
         _validate_ir_tensor("next_token", next_token, token_type, self._device)
         self._launch_bound(
-            self._entry_buffer_values(input_ids, state, logits, next_token), stream=stream
+            self._entry_buffer_values(input_ids, state, logits, next_token, prefill=prefill), stream=stream
         )
         # The generated KDA outputs are separate buffers. Carry the complete
         # state object after the launch, just like the GDN state adapter does.
         state.kda.convolution.copy_(state.next_kda.convolution)
         state.kda.recurrent.copy_(state.next_kda.recurrent)
 
-    def run(self, input_ids, state: CompositeModelState, *, stream=None):
+    def run(self, input_ids, state: CompositeModelState, *, stream=None, prefill=False):
         logits, next_token = self.create_outputs()
-        self.run_into(logits, next_token, input_ids, state, stream=stream)
+        self.run_into(logits, next_token, input_ids, state, stream=stream, prefill=prefill)
         return logits, next_token, state
 
-    def _entry_buffer_values(self, input_ids, state, logits, next_token):
+    def _entry_buffer_values(self, input_ids, state, logits, next_token, *, prefill=False):
+        if type(prefill) is not bool:
+            raise RuntimeContractError("Composite prefill must be a Python bool, supplied explicitly by the caller.")
+        if prefill and self._prefill_id is None:
+            raise RuntimeContractError("This composite artifact has no request-phase input.")
         plan = self.buffer_plan.function_map[self.ir_module.entry]
         values: dict[str, object] = {}
         for value, buffers in plan.parameters:
@@ -1390,6 +1429,11 @@ class GeneratedTirCompositeModelModule(GeneratedTirCallGraphModule):
                 if len(buffers) != 1:
                     raise RuntimeContractError("Composite input binding must contain one buffer.")
                 values[buffers[0]] = input_ids
+                continue
+            if value == self._prefill_id:
+                if len(buffers) != 1:
+                    raise RuntimeContractError("Composite prefill input must contain one buffer.")
+                values[buffers[0]] = prefill
                 continue
             matched = False
             for state_id, input_values in self._state_inputs.items():
@@ -1549,7 +1593,7 @@ def tir_runtime_type(ir_module):
 
     function = ir_module.function_map[ir_module.entry]
     if _is_composite_model_entry(ir_module):
-        return GeneratedTirCompositeModelModule(artifact, manifest, ir_module, kernel)
+        return GeneratedTirCompositeModelModule
     if any(
         isinstance(ir_module.node_map[value].type, TupleType)
         for value in (*function.parameters, *function.outputs)

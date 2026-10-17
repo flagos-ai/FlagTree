@@ -1,6 +1,13 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "norm_stats" and call.variant == "local" %}
+{% if call.norm_stats_reduction_algorithm == "fma_1024" %}
+{% include "kernels/norm_stats/platforms/nvidia/sm90/ordered_rms.py.jinja" %}
+{% else %}
+{% if call.norm_stats_reduction_layout == "contiguous_8" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__sum_layout = tl.constexpr(tle.gpu.BlockEncoding([8], [32], [{{ num_warps }}], [0]))
+{% endif %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -9,6 +16,12 @@ def {{ call.symbol }}({{ call.signature }}):
         norm_sum = tl.zeros(({{ call.tile }},), tl.float32)
 {% endif %}
         norm_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
+{% if call.norm_stats_reduction_layout == "contiguous_8" %}
+        norm_square_sum = tle.gpu.set_layout(norm_square_sum, {{ call.symbol }}__sum_layout)
+{% if call.use_mean %}
+        norm_sum = tle.gpu.set_layout(norm_sum, {{ call.symbol }}__sum_layout)
+{% endif %}
+{% endif %}
         for norm_reduction_start in tl.range(
             0, {{ call.reduction_capacity }}, {{ call.tile }}
         ):
@@ -22,6 +35,9 @@ def {{ call.symbol }}({{ call.signature }}):
             norm_value = _flagmega_norm_stats_load(
                 {{ call.source }} + ({{ call.source_offset }}), norm_mask,
             )
+{% if call.norm_stats_reduction_layout == "contiguous_8" %}
+            norm_value = tle.gpu.set_layout(norm_value, {{ call.symbol }}__sum_layout)
+{% endif %}
 {% if call.use_mean %}
             norm_sum += tl.where(norm_mask, norm_value, 0.0)
 {% endif %}
@@ -49,5 +65,6 @@ def {{ call.symbol }}({{ call.signature }}):
 {% endif %}
 
 
+{% endif %}
 {% endif %}
 {% endfor %}

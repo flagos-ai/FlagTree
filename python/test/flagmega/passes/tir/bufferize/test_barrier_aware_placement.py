@@ -4,9 +4,18 @@
 
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.bufferization import (
-    AllocationStrategy, BufferPlan, MemoryAllocationScope, MemorySharingScope, MemorySpace,
+    AllocationStrategy,
+    BufferPlan,
+    MemoryAllocationScope,
+    MemorySharingScope,
+    MemorySpace,
 )
-from triton.flagmega.passes.tir.bufferize import BufferPlanner, BufferizationOptions, plan_buffers, plan_memory_synchronization
+from triton.flagmega.passes.tir.bufferize import (
+    BufferizationOptions,
+    BufferPlanner,
+    plan_buffers,
+    plan_memory_synchronization,
+)
 
 
 def _case(scope=MemorySharingScope.CHIP, intrinsic=False):
@@ -64,3 +73,17 @@ def test_intrinsic_collective_dependency_must_remain_synchronized():
     module, options = _case(intrinsic=True)
     selected = plan_buffers(module, options=options)
     assert any(value.before == "late" for value in _grids(module, selected))
+
+
+def test_a_required_collective_cut_does_not_add_an_unhelpful_reuse_preference():
+    from triton.flagmega.passes.tir.bufferize.reuse_preferences import collect_reuse_preferences
+
+    module, options = _case(intrinsic=True)
+    baseline = BufferPlanner(module, options).run()
+    assert any(value.before == "late" for value in _grids(module, baseline))
+    produced = baseline.buffer_map["produced"].mem_span.buffer.id
+    late = baseline.buffer_map["late"].mem_span.buffer.id
+    preferences = collect_reuse_preferences(module, baseline).get(("main", "workspace"), ())
+    # Relocating these allocations cannot remove the collective's true data
+    # dependency. Pricing that pair sends SAT after a barrier it cannot remove.
+    assert tuple(sorted((produced, late))) not in preferences

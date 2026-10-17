@@ -1,0 +1,15 @@
+@triton.jit
+def _flagmega_fp8_wgmma_row_dot(quantized, weight, row_offsets, k_offsets, n_mask, K: tl.constexpr):
+    """Keep weight rows on WGMMA's M axis, including owner-local N tails."""
+    N: tl.constexpr = row_offsets.shape[0]
+    ROWS: tl.constexpr = 64 if N < 64 else N
+    padded_rows = tl.arange(0, ROWS)
+    rows = tl.gather(row_offsets, padded_rows % N, 0)
+    active = tl.gather(n_mask, padded_rows % N, 0) & (padded_rows < N)
+    matrix = tl.load(weight + rows[:, None] + k_offsets[None, :],
+                     mask=active[:, None] & (k_offsets[None, :] < K), other=0.)
+    activation = tl.broadcast_to(quantized[:, None], (quantized.shape[0], 16))
+    product = tl.dot(matrix, activation, out_dtype=tl.float32)
+    product = tl.reshape(tl.gather(product, tl.full((ROWS, 1), 0, tl.int32), 1), (ROWS,))
+    return tl.gather(product, tl.arange(0, N), 0)
+

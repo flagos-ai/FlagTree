@@ -22,6 +22,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     expert_weight_tensor,
     floating_tensor,
     normalize_numerics,
+    normalize_sparse_quantization,
     python_dtype_call,
 )
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
@@ -55,6 +56,7 @@ class SparseExperts(OpDefinition):
     up_clamp = attribute_parameter(default=None)
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
+    activation_quantization = attribute_parameter(default="dynamic_fp8")
 
     @classmethod
     def normalize_attrs(cls, attributes):
@@ -66,7 +68,7 @@ class SparseExperts(OpDefinition):
                                       or not isfinite(value) or not value > 0):
                 raise IRSchemaError(f"SparseExperts {name} must be a finite positive number or None.")
         attrs["intermediate_dtype"] = normalize_numerics({"output_dtype": attrs["intermediate_dtype"]})["output_dtype"]
-        return attrs
+        return normalize_sparse_quantization(attrs)
 
     @classmethod
     def python_call(cls, node):
@@ -91,6 +93,7 @@ class SparseExperts(OpDefinition):
                 "up_clamp": attrs["up_clamp"],
                 "weight_block_n": attrs["weight_block_n"],
                 "weight_block_k": attrs["weight_block_k"],
+                "activation_quantization": attrs.get("activation_quantization", "dynamic_fp8"),
             })
         gate_node = Node(f"{name}.gate_up", SparseExpertsGateUp.op_name, tuple(value.id for value in gate.inputs),
                          gate.result_type, gate.effect, gate.attrs, metadata or {})
@@ -101,6 +104,7 @@ class SparseExperts(OpDefinition):
                 "round_projection": attrs["round_down_projection"],
                 "weight_block_n": attrs["weight_block_n"],
                 "weight_block_k": attrs["weight_block_k"],
+                "activation_quantization": attrs.get("activation_quantization", "dynamic_fp8"),
             })
         down_node = Node(f"{name}.down", SparseExpertsDown.op_name, tuple(value.id for value in down.inputs), down.result_type,
                          down.effect, down.attrs, metadata or {})

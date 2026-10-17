@@ -27,7 +27,7 @@ NAMES = ("q", "k", "v", "gate", "decay_rate", "gate_bias", "beta", "state")
 
 
 def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=True,
-            placement=None, head_policy=None):
+            placement=None, head_policy=None, query_scale=1.0, l2norm=True, request_phase=False, **gated_attrs):
     activation = fm.tensor_type("bfloat16", (1, heads, dim))
     weight_map = fm.tensor_type("float32", (1, heads, dim))
     state_type = fm.tensor_type("float32", (1, heads, dim, dim))
@@ -40,13 +40,23 @@ def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=T
                                                *(fm.SBP.broadcast() for _ in range(kind.rank - 2))), placement)
                       for kind in types)
 
+    if request_phase:
+        phase_type = fm.tensor_type("bool", ())
+        if placement is not None:
+            phase_type = fm.DistributedType(phase_type, (), placement)
+        types = (*types, phase_type)
+        names = (*names, "prefill")
+
     class Graph(fm.Module):
         def forward(self):
             operands = tuple(self.input(name, value_type, id=name)
                              for name, value_type in zip(names, types))
-            pair = (fm.F.nn.kda_gated_recurrent_core(
-                *operands, lower_bound=LOWER_BOUND, epsilon=1e-6, output_lanes=output_lanes, name="rec") if gated else
-                fm.F.nn.kda_recurrent_core(*operands, epsilon=1e-6, output_lanes=output_lanes, name="rec"))
+            operation = fm.F.nn.kda_gated_step if request_phase else fm.F.nn.kda_gated_recurrent_core
+            pair = (operation(
+                *operands, lower_bound=LOWER_BOUND, epsilon=1e-6, output_lanes=output_lanes,
+                query_scale=query_scale, l2norm_in_kernel=l2norm, name="rec", **gated_attrs) if gated else
+                fm.F.nn.kda_recurrent_core(*operands, epsilon=1e-6, output_lanes=output_lanes,
+                    query_scale=query_scale, l2norm_in_kernel=l2norm, name="rec"))
             output, new_state = fm.F.tensors.get_items(pair, 0, 1, name_prefix="rec")
             if consumer_lanes:
                 output = fm.F.tensors.pack(output, consumer_lanes, axes=(-1,) * len(consumer_lanes))

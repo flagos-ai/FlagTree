@@ -21,7 +21,7 @@ def routing_call(raw):
     bias = _buffer(raw, "inputs", "bias")
     values = _buffer(raw, "outputs", "result_0")
     indices = _buffer(raw, "outputs", "result_1")
-    attrs = raw["semantic_attrs"]
+    attrs = StagedRouting.normalize_attrs(raw["semantic_attrs"])
     source_type = _tensor_type(source["abi"])
     bias_type = None if bias is None else _tensor_type(bias["abi"])
     result_type = TupleType((_tensor_type(values["abi"]), _tensor_type(indices["abi"])))
@@ -38,6 +38,7 @@ def routing_call(raw):
     return {
         **domain, "k": attrs["k"], "scoring": attrs["scoring"], "normalize": attrs["normalize"],
         "scaling": repr(float(attrs["scaling"])),
+        "arithmetic": attrs["arithmetic"],
         "has_bias": bias is not None,
         "selected_tile": 1 << (attrs["k"] - 1).bit_length(),
         "source": _pointer(source), "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),

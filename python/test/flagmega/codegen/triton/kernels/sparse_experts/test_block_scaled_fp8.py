@@ -12,11 +12,11 @@ of a narrow weight only fails to compile once the pointee is FP8.
 import re
 
 import pytest
-
 from triton.flagmega.codegen.triton import render_triton_package
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
+
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import (
     execute_and_reference,
     stage_module,
@@ -71,7 +71,8 @@ def test_multi_group_k_tile_indexes_the_scale_per_lane(tmp_path, definition):
     assert scale_loads, "the block-scaled stage must emit at least one scale load"
     for load in scale_loads:
         assert "_fm_k_start // 16" not in load, f"per-tile group index on a multi-group tile: {load.strip()}"
-        assert "_fm_k[None, :] // 16" in load, f"scale is not indexed per K lane: {load.strip()}"
+        assert re.search(r"_fm_k\[None, :\]\)*\s*// 16", load), (
+            f"scale is not indexed per K lane: {load.strip()}")
     assert "_fm_group_scale" in source, "the activation abs-max must reduce per weight scale group"
 
 
@@ -93,3 +94,38 @@ def test_block_scaled_fp8_device_matches_evaluator(tmp_path, definition, weight_
     actual, expected, _ = execute_and_reference(_fp8_module(definition, weight_block), tmp_path, torch)
     # FP32 accumulation order differs between the tiled kernel and torch.matmul.
     torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize("definition", DEFINITIONS)
+@pytest.mark.parametrize("sign", (-1, 1))
+def test_activation_quantization_preserves_round_to_even_ties(tmp_path, definition, sign):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("SM90 CUDA required")
+    from triton.flagmega import ir as fm
+
+    module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn",
+                          block_scaled=True, weight_block=128, hidden=128, intermediate=128, tokens=1)
+    values = {}
+    activation = definition.input_parameters[0].name
+    for name in module.function_map[module.entry].parameters:
+        tensor = fm.logical_type(module.node_map[name].type)
+        shape = tuple(dim.fixed_value for dim in tensor.shape)
+        if name == "router_expert_ids":
+            value = torch.zeros(shape, dtype=torch.int32)
+        elif name.endswith("_scale"):
+            value = torch.ones(shape)
+        elif name == activation:
+            value = torch.zeros(shape, dtype=torch.bfloat16)
+            value[..., 0], value[..., 1] = 1.203125, sign * .81640625
+        else:
+            value = torch.zeros(shape)
+            value[..., 1] = 1.0
+            value = value.to(getattr(torch, tensor.dtype.value))
+        values[name] = value
+    actual, expected, runtime = execute_and_reference(module, tmp_path, torch, overrides=values)
+    try:
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert runtime.resource_report["spill_bytes"] == 0
+    finally:
+        runtime.close()

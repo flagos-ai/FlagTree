@@ -12,8 +12,8 @@ can materialize one asset per actual weight set.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Mapping
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import Function, IRModule, Node
@@ -30,11 +30,15 @@ class _Transform:
 def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
     node_map = module.node_map
     node_indices = {node.id: index for index, node in enumerate(module.nodes)}
+    users: dict[str, set[str]] = {}
+    for node in module.nodes:
+        for value in node.inputs:
+            users.setdefault(value, set()).add(node.id)
     transforms_by_function: dict[str, tuple[_Transform, ...]] = {}
+    retained_by_function: dict[str, set[str]] = {}
     for function in module.functions:
         parameter_set = set(function.parameters)
         transforms: list[_Transform] = []
-        claimed_sources: set[str] = set()
         for root in module.nodes:
             packed_from = root.metadata.get("packed_from")
             if isinstance(packed_from, str):
@@ -45,12 +49,6 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
                 continue
             if not set(sources).issubset(parameter_set):
                 continue
-            if claimed_sources.intersection(sources):
-                raise IRVerificationError(
-                    f"Overlapping lifted parameter transforms in @{function.name}.",
-                    stage=module.stage,
-                    node_id=root.id,
-                )
             closure = _transform_closure(root, set(sources), node_map, module.stage)
             parameter = Node(
                 id=f"{root.id}.parameter",
@@ -65,12 +63,28 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
                 },
             )
             transforms.append(_Transform(root, sources, closure, parameter))
-            claimed_sources.update(sources)
         if transforms:
             transforms.sort(
                 key=lambda value: min(function.parameters.index(source) for source in value.sources)
             )
             transforms_by_function[function.name] = tuple(transforms)
+            # A source may feed several physical representations, and may
+            # still have ordinary users. Remove only the union of exclusively
+            # lifted nodes; keep the dependency closure of every raw use.
+            roots = {transform.root.id for transform in transforms}
+            closure = {node.id for transform in transforms for node in transform.nodes}
+            sources = {source for transform in transforms for source in transform.sources}
+            candidates = closure | sources
+            pending = [value for value in candidates - roots
+                       if users.get(value, set()) - closure or value in function.outputs]
+            retained: set[str] = set()
+            while pending:
+                value = pending.pop()
+                if value in retained or value in roots or value not in candidates:
+                    continue
+                retained.add(value)
+                pending.extend(node_map[value].inputs)
+            retained_by_function[function.name] = retained
     if not transforms_by_function:
         return module
 
@@ -83,18 +97,13 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
         if not transforms:
             functions.append(function)
             continue
-        by_source = {
-            source: transform
-            for transform in transforms
-            for source in transform.sources
-        }
+        sources = {source for transform in transforms for source in transform.sources}
+        retained = retained_by_function[function.name]
         parameters: list[str] = []
         for source in function.parameters:
-            transform = by_source.get(source)
-            if transform is None:
+            if source not in sources or source in retained:
                 parameters.append(source)
-            elif source == transform.sources[0]:
-                parameters.append(transform.parameter.id)
+            parameters.extend(transform.parameter.id for transform in transforms if source == transform.sources[0])
         root_parameters = {
             transform.root.id: transform.parameter.id for transform in transforms
         }
@@ -104,8 +113,8 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             outputs=tuple(root_parameters.get(value, value) for value in function.outputs),
         ))
         for transform in transforms:
-            removed.update(node.id for node in transform.nodes)
-            removed.update(transform.sources)
+            removed.update(node.id for node in transform.nodes if node.id not in retained)
+            removed.update(source for source in transform.sources if source not in retained)
             replacement_inputs[transform.root.id] = transform.parameter.id
         # A function's builtin.var parameters are normally grouped near its
         # start, but imported graphs may contain late-created parameters such
@@ -133,6 +142,7 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             if node.id in calls_by_id:
                 function, transforms = calls_by_id[node.id]
                 clone_roots: dict[str, Node] = {}
+                clone_indices: dict[str, int] = {}
                 actual_by_parameter = dict(zip(function.parameters, node.inputs))
                 for transform in transforms:
                     clone_roots[transform.root.id] = _clone_transform(
@@ -141,19 +151,16 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
                         actual_by_parameter,
                         node_map,
                         result_nodes,
+                        clone_indices,
                     )
-                by_source = {
-                    source: transform
-                    for transform in transforms
-                    for source in transform.sources
-                }
+                sources = {source for transform in transforms for source in transform.sources}
+                retained = retained_by_function[function.name]
                 inputs: list[str] = []
                 for parameter_id, actual_id in zip(function.parameters, node.inputs):
-                    transform = by_source.get(parameter_id)
-                    if transform is None:
+                    if parameter_id not in sources or parameter_id in retained:
                         inputs.append(actual_id)
-                    elif parameter_id == transform.sources[0]:
-                        inputs.append(clone_roots[transform.root.id].id)
+                    inputs.extend(clone_roots[transform.root.id].id for transform in transforms
+                                  if parameter_id == transform.sources[0])
                 result_nodes.append(replace(
                     node,
                     inputs=tuple(inputs),
@@ -229,6 +236,7 @@ def _clone_transform(
     actual_by_parameter: Mapping[str, str],
     node_map: Mapping[str, Node],
     output: list[Node],
+    clone_indices: dict[str, int],
 ) -> Node:
     redirects = {source: actual_by_parameter[source] for source in transform.sources}
     actual_sources = tuple(redirects[source] for source in transform.sources)
@@ -252,9 +260,14 @@ def _clone_transform(
             inputs=tuple(redirects[value] for value in original.inputs),
             metadata=metadata,
         )
-        output.append(clone)
+        if original.id in clone_indices:
+            if original.id == transform.root.id:
+                output[clone_indices[original.id]] = clone
+        else:
+            clone_indices[original.id] = len(output)
+            output.append(clone)
         redirects[original.id] = clone.id
-    return output[-1]
+    return output[clone_indices[transform.root.id]]
 
 
 def _combined_rdata_group(

@@ -5,12 +5,14 @@
 from triton.flagmega.passes.rewriter import DataflowPass
 from triton.flagmega.passes.tir.fuse_attention_gate import fuse_attention_gate
 from triton.flagmega.passes.tir.lower_sparse_experts import lower_sparse_experts
+from triton.flagmega.passes.tir.promote_partial_matmul import promote_partial_matmul
 from triton.flagmega.rules.ntt.fuse_gather_reduce_add_norm_apply import fuse_gather_reduce_add_norm_apply_rule
 from triton.flagmega.rules.ntt.fuse_gather_reduce_norm_apply import fuse_gather_reduce_norm_apply_rule
 from triton.flagmega.rules.ntt.fuse_gather_reduce_qkv_rope_with_cache import fuse_gather_reduce_qkv_rope_with_cache_rule
 
 
 def fuse_distributed_ops(module, *, fusion_rules=()):
+    module = promote_partial_matmul(module)
     rewritten = DataflowPass(
         "FuseDistributedOps",
         (fuse_gather_reduce_qkv_rope_with_cache_rule(),

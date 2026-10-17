@@ -9,7 +9,6 @@ from dataclasses import dataclass, replace
 from math import gcd, isfinite, prod
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir.dim_expr import DimVar, dim
 from triton.flagmega.ir.bufferization import (
     AliasInfo,
     AliasKind,
@@ -29,6 +28,8 @@ from triton.flagmega.ir.bufferization import (
     PhysicalBuffer,
 )
 from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
+from triton.flagmega.ir.bufferization.leaves import buffer_leaves
+from triton.flagmega.ir.dim_expr import DimVar, dim
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
     SBPSplit,
@@ -48,19 +49,9 @@ from triton.flagmega.ir.model import (
     RefType,
     TensorType,
     TupleType,
+    VectorType,
     logical_type,
 )
-from triton.flagmega.ir.types import VectorType
-from triton.flagmega.ir.bufferization.leaves import buffer_leaves
-from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
-from triton.flagmega.ir.distributed_type import (
-    is_fully_replicated,
-    is_fully_sharded_across_placement,
-    is_local_shard_subview,
-    local_shape,
-    placement_owner_count,
-)
-from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
 from triton.flagmega.passes.tir.bufferize.alias_analysis import AliasAnalysis
 from triton.flagmega.passes.tir.bufferize.alignment import (
     effective_alignment,
@@ -72,7 +63,8 @@ from triton.flagmega.passes.tir.bufferize.call_input_ownership import non_consum
 from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
 from triton.flagmega.passes.tir.bufferize.readonly_groups import ReadonlyGroupResolver
 from triton.flagmega.passes.tir.shared_workspace import (
-    shared_workspace_buffer_id, )
+    shared_workspace_buffer_id,
+)
 
 
 @dataclass(frozen=True)
@@ -175,6 +167,7 @@ class BufferPlanner:
         self.bindings: dict[str, tuple[str, ...]] = {}
         self.physical_buffers: dict[str, PhysicalBuffer] = {}
         self.function_plans: dict[str, FunctionBufferPlan] = {}
+        self.readonly_result_views: dict[str, frozenset[tuple[str, str]]] = {}
         self.rdata_offset = 0
         self._physical_serial = 0
         # Tensor-descriptor transfers address a module-global tensor map.  A
@@ -546,7 +539,9 @@ class BufferPlanner:
             ids = []
             for buffer_id, value_type, field in _leaf_types(node.id, node.type):
                 shape = _maximum_shape(value_type, self.module.stage, node.id)
-                scalar = not shape
+                # A rank-zero tensor of vectors still owns all element lanes
+                # in memory; it cannot be passed as one scalar SSA value.
+                scalar = not shape and not isinstance(logical_type(value_type).dtype, VectorType)
                 storage = "scalar" if scalar else (
                     "state" if isinstance(logical_type(node.type), RefType) and function.name == self.module.entry
                     else "input" if function.name == self.module.entry
@@ -931,6 +926,11 @@ class BufferPlanner:
                 self.descriptors[parameter].mem_span
             )
         )
+        self.readonly_result_views[function.name] = frozenset(
+            (result, parameter) for result, parameter in result_aliases
+            if result != parameter and all(node.effect.is_pure for node in nodes)
+            and self._readonly_view_path(result, parameter)
+        )
         self.function_plans[function.name] = FunctionBufferPlan(
             name=function.name,
             parameters=parameters,
@@ -1153,6 +1153,19 @@ class BufferPlanner:
             tuple(bindings),
         )
 
+    def _readonly_view_path(self, result: str, parameter: str) -> bool:
+        """Reuse a callee's verified full-span view proof at the call boundary."""
+        current, visited = result, set()
+        while current != parameter:
+            if current in visited:
+                return False
+            visited.add(current)
+            alias = self.descriptors[current].alias
+            if alias is None or alias.kind not in {AliasKind.VIEW, AliasKind.IDENTITY}:
+                return False
+            current = alias.source
+        return self.descriptors[result].mem_span.must_alias(self.descriptors[parameter].mem_span)
+
     def _plan_call(
         self,
         function,
@@ -1214,11 +1227,16 @@ class BufferPlanner:
             actual_node_for_formal.update((formal, actual_id) for formal in formal_leaves)
         formal_to_actual = dict(arguments)
         alias_results = {}
+        readonly_views = self.readonly_result_views[callee_name]
+        view_results = set()
         for result, parameter in callee_plan.result_aliases:
             actual = formal_to_actual[parameter]
             descriptor = self.descriptors[actual]
             actual_node = actual_node_for_formal[parameter]
-            identity_passthrough = result == parameter
+            readonly_view = (result, parameter) in readonly_views
+            if readonly_view:
+                view_results.add(result)
+            identity_passthrough = result == parameter or readonly_view
             if (
                 not identity_passthrough
                 and descriptor.storage not in {"parameter", "state"}
@@ -1277,8 +1295,10 @@ class BufferPlanner:
                     prefix=buffer_id,
                     field=field,
                     alias=alias,
+                    reinterpret=formal_result in view_results,
                     alias_kind=(
-                        AliasKind.RESULT if alias is not None else None
+                        AliasKind.VIEW if formal_result in view_results
+                        else AliasKind.RESULT if alias is not None else None
                     ),
                     role=(
                         "function_argument"
@@ -2210,16 +2230,7 @@ class BufferPlanner:
 
     def _required_alignment(self, node_id, *, leaf: str | None = None) -> int:
         """Declared contract for a value, or for one of its buffer leaves."""
-        result = effective_alignment(self.required_alignments, node_id, leaf)
-        # A vector tensor is passed to Triton as one fixed-width element.  Its
-        # physical allocation must honor that element width even when the
-        # selected kernel has no transfer-pipeline alignment declaration.  The
-        # formal ABI binder already applies this rule; applying it here keeps
-        # caller allocations compatible with the formal vector view.
-        value_type = logical_type(self.module.node_map[node_id].type)
-        if isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType):
-            result = max(result, value_type.dtype.itemsize)
-        return result
+        return effective_alignment(self.required_alignments, node_id, leaf)
 
     def _allocation(self, physical_id):
         return self.physical_buffers[physical_id]

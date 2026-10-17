@@ -18,6 +18,13 @@ def {{ call.symbol }}({{ call.signature }}):
                            other=0.).to(tl.float32)
         _fm_post = tl.load({{ call.post }} + ({{ call.post_offset }}),
                            mask=_fm_sink_active, other=0.).to(tl.float32)
+{% if call.value_first_fma %}
+{% for source in range(call.hc) %}
+        _fm_comb_{{ source }} = tl.reshape(tl.gather(
+            _fm_comb, tl.full((1, {{ call.stream_lanes }}), {{ source }}, tl.int32), 0),
+            ({{ call.stream_lanes }},))
+{% endfor %}
+{% endif %}
         for _fm_start in tl.range(0, {{ call.hidden }}, {{ call.tile }}):
             _fm_hidden = _fm_start + tl.arange(0, {{ call.tile }})
             _fm_hidden_active = _fm_hidden < ({{ call.hidden_active }})
@@ -28,8 +35,30 @@ def {{ call.symbol }}({{ call.signature }}):
             _fm_value = tl.load({{ call.value }} + ({{ call.value_offset }}),
                                 mask=_fm_hidden_active, other=0.).to(tl.float32)
             # out[j, h] = sum_i comb[i, j] * residual[i, h] + post[j] * value[h]
+{% if call.value_first_fma %}
+{% if call.hc > 0 %}
+            _fm_source_0 = tl.reshape(tl.gather(
+                _fm_residual, tl.full((1, {{ call.tile }}), 0, tl.int32), 0),
+                ({{ call.tile }},))
+            _fm_out = libdevice.mul_rn(_fm_comb_0[:, None], _fm_source_0[None, :])
+            _fm_out = tl.fma(_fm_post[:, None], _fm_value[None, :], _fm_out)
+{% else %}
+            _fm_out = libdevice.mul_rn(_fm_post[:, None], _fm_value[None, :])
+{% endif %}
+{% for source in range(1, call.hc) %}
+            _fm_source_{{ source }} = tl.reshape(tl.gather(
+                _fm_residual, tl.full((1, {{ call.tile }}), {{ source }}, tl.int32), 0),
+                ({{ call.tile }},))
+            _fm_out = tl.fma(_fm_comb_{{ source }}[:, None], _fm_source_{{ source }}[None, :], _fm_out)
+{% endfor %}
+{% else %}
             _fm_mixed = tl.sum(_fm_comb[:, :, None] * _fm_residual[:, None, :], 0)
-            _fm_out = _fm_mixed + _fm_post[:, None] * _fm_value[None, :]
+            # The evaluator rounds the FP32 branch product before adding the
+            # residual. Contraction into an FMA changes the final BF16 choice
+            # at a midpoint, especially after cancellation.
+            _fm_branch = libdevice.mul_rn(_fm_post[:, None], _fm_value[None, :])
+            _fm_out = _fm_mixed + _fm_branch
+{% endif %}
             tl.store({{ call.result }} + ({{ call.result_offset }}),
                      _fm_out.to({{ call.result_type }}),
                      mask=_fm_sink_active[:, None] & _fm_hidden_active[None, :]

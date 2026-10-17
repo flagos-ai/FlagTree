@@ -1,5 +1,6 @@
 # flagmega-kernel: sparse_experts_down/simt_tma_pipeline
 {% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/_expert_quantization_group.py.jinja" as quant %}
 {% import "kernels/sparse_experts_gate_up/_pipeline.py.jinja" as pipe with context %}
 {% for call in render_calls | default(()) %}
 {% if call.family == "sparse_experts_down" and call.variant == "simt_tma_pipeline" %}
@@ -27,19 +28,21 @@ def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.si
                     for _fm_k_start in tl.range(0, {{ call.active_k }}, {{ call.block_k }}):
                         _fm_k = _fm_k_start + tle.gpu.set_layout(tl.arange(0, {{ call.block_k }}), {{ call.symbol }}__k_layout)
                         _fm_activation = tl.load({{ call.pointers.activations }} + ({{ call.activation_offset }}), mask=_fm_k < ({{ call.active_k }}), other=0.0).to(tl.float32)
-{% if call.block_scale_loads.down_proj_scale is defined %}{% if call.groups_per_tile > 1 %}{# The weight scale is a per-K-group contract, so the activation it
+{% if call.block_scale_loads.down_proj_scale is defined %}{% if call.weight_block_k > call.block_k %}
+{{ quant.complete_group(call, call.pointers.activations, call.activation_offset, "_fm_k < (" ~ call.active_k ~ ")", "_fm_activation_quantized") | indent(24, first=True) }}
+{% else %}{% if call.groups_per_tile > 1 %}{# The weight scale is a per-K-group contract, so the activation it
    multiplies has to be quantized over the same groups. #}
                         _fm_activation_groups = tl.reshape(_fm_activation, ({{ call.groups_per_tile }}, {{ call.weight_block_k }}))
                         _fm_activation_abs_max = tl.max(tl.abs(_fm_activation_groups), axis=1, keep_dims=True)
-                        _fm_group_scale = tl.where(_fm_activation_abs_max == 0.0, 1.0, _fm_activation_abs_max / 448.0)
+                        _fm_group_scale = tl.where(_fm_activation_abs_max == 0.0, 1.0, tl.div_rn(_fm_activation_abs_max, 448.0))
                         _fm_activation_scale = tl.reshape(tl.broadcast_to(_fm_group_scale, ({{ call.groups_per_tile }}, {{ call.weight_block_k }})), ({{ call.block_k }},))
 {% else %}                        _fm_activation_abs_max = tl.max(tl.abs(_fm_activation), axis=0)
-                        _fm_activation_scale = tl.where(_fm_activation_abs_max == 0.0, 1.0, _fm_activation_abs_max / 448.0)
-{% endif %}                        _fm_activation_quantized = tl.maximum(tl.minimum(_fm_activation / _fm_activation_scale, 448.0), -448.0).to(tl.float8e4nv).to(tl.float32)
-{% endif %}                        _fm_ready = {{ reader }}.wait(_fm_step)
+                        _fm_activation_scale = tl.where(_fm_activation_abs_max == 0.0, 1.0, tl.div_rn(_fm_activation_abs_max, 448.0))
+{% endif %}                        _fm_activation_quantized = tl.maximum(tl.minimum(tl.div_rn(_fm_activation, _fm_activation_scale), 448.0), -448.0).to(tl.float8e4nv).to(tl.float32)
+{% endif %}{% endif %}                        _fm_ready = {{ reader }}.wait(_fm_step)
                         _fm_weight = {{ call.symbol }}__load_weight(_fm_ready.slot.down)
                         _fm_block_scale = {{ call.block_scale_loads.down_proj_scale if call.block_scale_loads.down_proj_scale is defined else "1.0" }}
-                        _fm_partial += {% if call.block_scale_loads.down_proj_scale is defined %}(_fm_activation_quantized * _fm_activation_scale)[None, :] * _fm_weight * _fm_block_scale{% else %}{% if call.unit_scales.down_input_scale %}_fm_activation{% else %}tl.div_rn(_fm_activation, _fm_input_scale){% endif %}[None, :] * _fm_weight{% endif %}{{ "\n" }}
+                        _fm_partial += {% if call.block_scale_loads.down_proj_scale is defined %}(_fm_activation_quantized * _fm_activation_scale)[None, :] * libdevice.mul_rn(_fm_weight, _fm_block_scale){% else %}{% if call.unit_scales.down_input_scale %}_fm_activation{% else %}tl.div_rn(_fm_activation, _fm_input_scale){% endif %}[None, :] * _fm_weight{% endif %}{{ "\n" }}
                         {{ reader }}.release(_fm_step)
                         _fm_step += 1
                     _fm_projection = tl.sum(_fm_partial, 1) * _fm_input_scale * _fm_scale

@@ -8,12 +8,8 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, split_policy, tensor_of
-from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, SBPPartial, tensor_type
 from triton.flagmega.ir.distributed_type import scale_split_units
-from triton.flagmega.ir.type_pattern import has_rank, is_tensor
-from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear, normalize_output_lanes
-from triton.flagmega.ir.ops.math._quantized import matrix_width
-from triton.flagmega.ir.types import DType, VectorType
+from triton.flagmega.ir.model import SBP, DistributedType, IRType, Node, SBPPartial, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -22,6 +18,15 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
     tensor_nbytes,
 )
+from triton.flagmega.ir.ops.math._block_scaled import (
+    block_scaled_linear,
+    normalize_block_scaled_precision,
+    normalize_output_lanes,
+    verify_block_scaled_precision_inputs,
+)
+from triton.flagmega.ir.ops.math._quantized import matrix_width
+from triton.flagmega.ir.type_pattern import has_rank, is_tensor
+from triton.flagmega.ir.types import DType, VectorType
 
 
 @op_definition(
@@ -31,6 +36,14 @@ from triton.flagmega.ir.ops.core import (
     display_name="Math.BlockScaledMatMul",
 )
 class BlockScaledMatMul(OpDefinition):
+    """Project from FP8 storage with explicit operand quantization/rounding.
+
+    ``activation_quantization='none'`` preserves the original activation.
+    ``weight_dequant_dtype`` optionally rounds FP32(code * block_scale) to
+    F16/BF16 before multiplication, independently of the stored FP8 dtype.
+    Defaults retain dynamic activation quantization and unrounded weights.
+    """
+
     const_evaluable = True
     value = input_parameter(is_tensor() & has_rank(2))
     weight = input_parameter(is_tensor() & has_rank(2))
@@ -40,6 +53,8 @@ class BlockScaledMatMul(OpDefinition):
     weight_encoding = attribute_parameter(default=None)
     output_data_type = attribute_parameter(default=None)
     output_lanes = attribute_parameter(default=())
+    activation_quantization = attribute_parameter(default="dynamic_fp8")
+    weight_dequant_dtype = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -57,6 +72,7 @@ class BlockScaledMatMul(OpDefinition):
             result["weight_encoding"] = encoding
         if attrs.get("output_data_type") is not None:
             result["output_data_type"] = DType(attrs["output_data_type"]).value
+        result.update(normalize_block_scaled_precision(attrs, "BlockScaledMatMul"))
         return result
 
     @classmethod
@@ -72,6 +88,7 @@ class BlockScaledMatMul(OpDefinition):
         weight = tensor_of(weight_type)
         if isinstance(value.dtype, VectorType) or isinstance(weight.dtype, VectorType):
             raise IRSchemaError("BlockScaledMatMul value/weight must use scalar element types.")
+        verify_block_scaled_precision_inputs(value, weight, tensor_of(scale_type), attrs, "BlockScaledMatMul")
         if value.shape[1] != matrix_width(weight, attrs.get("weight_encoding")):
             raise IRSchemaError("BlockScaledMatMul value/weight K dimensions must match.")
         lanes = tuple(attrs.get("output_lanes", ()))
@@ -115,6 +132,8 @@ class BlockScaledMatMul(OpDefinition):
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
             output_dtype=context.torch_dtype(dtype.elem_type if isinstance(dtype, VectorType) else dtype),
+            activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"),
+            weight_dequant_dtype=node.attrs.get("weight_dequant_dtype"),
         )
         lanes = tuple(node.attrs.get("output_lanes", ()))
         return output.reshape(output.shape[0], output.shape[1] // prod(lanes), *lanes)

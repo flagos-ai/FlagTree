@@ -1,66 +1,86 @@
 # flagmega-kernel: gather_reduce_norm_apply/sum platform=generic
 {% import "entrypoints/_common.py.jinja" as entry with context %}
+{% macro reduce_statistic(call, offset, accumulator) %}
+for norm_partial_start in tl.range(
+    0, {{ call.partial_owner_count }}, {{ call.reduction_width }}
+):
+    norm_partial_lane = norm_partial_start + tl.arange(0, {{ call.reduction_width }})
+    norm_partial_mask = (
+        (norm_partial_lane < {{ call.partial_owner_count }}) & ({{ call.outer_active }})
+    )
+    norm_partial_owner = {{ call.partial_owner }}
+    {{ accumulator }} += tl.sum(
+        tl.load(
+            {{ call.remote_source | default(call.partial_stats) }}
+            + norm_partial_owner * {{ call.owner_stride }} + ({{ offset }}),
+            mask=norm_partial_mask, other=0.0,
+        ).to(tl.float32), axis=0,
+    )
+{% endmacro %}
+{% macro reduce_statistics(call) %}
+{% if call.use_mean %}
+{{ reduce_statistic(call, call.partial_stats_sum_offset, "norm_apply_mean_sum") }}
+{% endif %}
+{{ reduce_statistic(call, call.partial_stats_square_sum_offset, "norm_apply_square_sum") }}
+{% endmacro %}
+{% macro global_reduce_statistic(call, offset, accumulator) %}
+norm_global_lane = tl.arange(0, {{ call.global_reduction_width }})
+norm_partial_values = tl.zeros(({{ call.global_reduction_width }},), tl.float32)
+{% if call.remote_source is defined %}
+for norm_partial_peer in tl.static_range({{ call.remote_peers }}):
+    norm_partial_lane = norm_global_lane % {{ call.partial_owner_count }}
+    norm_partial_mask = (norm_global_lane // {{ call.partial_owner_count }} == norm_partial_peer) & ({{ call.outer_active }})
+    norm_partial_owner = {{ call.partial_owner }}
+    norm_loaded_partial = tl.load({{ call.remote_source }} + norm_partial_owner * {{ call.owner_stride }} + ({{ offset }}), mask=norm_partial_mask, other=0.0).to(tl.float32)
+    norm_partial_values = tl.where(norm_partial_mask, norm_loaded_partial, norm_partial_values)
+{% else %}
+norm_partial_lane = norm_global_lane
+norm_partial_owner = {{ call.partial_owner }}
+norm_partial_values = tl.load({{ call.partial_stats }} + norm_partial_owner * {{ call.owner_stride }} + ({{ offset }}), mask=(norm_partial_lane < {{ call.partial_owner_count }}) & ({{ call.outer_active }}), other=0.0).to(tl.float32)
+{% endif %}
+{{ accumulator }} = tl.sum(tle.gpu.set_layout(norm_partial_values, {{ call.symbol }}__partial_layout), 0)
+{% endmacro %}
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "gather_reduce_norm_apply" and call.variant == "sum" %}
+{% if call.norm_partial_reduction == "global_tree" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__partial_layout = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [{{ num_warps }}], [0]))
+{% endif %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
-    norm_partial_member_count = (
-        tl.num_programs(0) * {{ call.partial_owner_count }}
-        // {{ call.placement_owner_count }}
+{% if call.remote_source is defined %}
+    norm_partial_window_base = tle.remote(
+        device_dptr, space="device", dtype=tl.uint8,
+        shard_id=_flagmega_device_rank.to(tl.int32), offset=0,
     )
+    norm_partial_byte_offset = (
+        ({{ call.remote_local_base }}).to(tl.uint64) - norm_partial_window_base.to(tl.uint64)
+    ).to(tl.int64)
+{% endif %}
     for norm_outer_index in tl.range(0, {{ call.local_outer_capacity }}):
         norm_apply_inner_count = {{ call.normalization_size }} + 0.0
 {% if call.use_mean %}
         norm_apply_mean_sum = 0.0
-        for norm_partial_start in tl.range(
-            0, norm_partial_member_count, {{ call.reduction_width }}
-        ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, {{ call.reduction_width }}
-            )
-            norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & ({{ call.outer_active }})
-            )
-            norm_partial_owner = {{ call.partial_owner }}
-            norm_apply_mean_sum += tl.sum(
-                tl.load(
-                    {{ call.partial_stats }}
-                    + norm_partial_owner * {{ call.owner_stride }}
-                    + ({{ call.partial_stats_sum_offset }}),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
-            )
+{% endif %}
+        norm_apply_square_sum = 0.0
+{% if call.norm_partial_reduction == "global_tree" %}
+{% if call.use_mean %}
+{{ global_reduce_statistic(call, call.partial_stats_sum_offset, "norm_apply_mean_sum") | indent(8, true) }}
+{% endif %}
+{{ global_reduce_statistic(call, call.partial_stats_square_sum_offset, "norm_apply_square_sum") | indent(8, true) }}
+{% elif call.remote_source is defined %}
+        for norm_partial_peer in tl.static_range({{ call.remote_peers }}):
+{{ reduce_statistics(call) | indent(12, true) }}
+{% else %}
+{{ reduce_statistics(call) | indent(8, true) }}
+{% endif %}
+{% if call.use_mean %}
         norm_apply_mean = norm_apply_mean_sum / norm_apply_inner_count
 {% else %}
         norm_apply_mean = 0.0
 {% endif %}
-        norm_apply_square_sum = 0.0
-        for norm_partial_start in tl.range(
-            0, norm_partial_member_count, {{ call.reduction_width }}
-        ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, {{ call.reduction_width }}
-            )
-            norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & ({{ call.outer_active }})
-            )
-            norm_partial_owner = {{ call.partial_owner }}
-            norm_apply_square_sum += tl.sum(
-                tl.load(
-                    {{ call.partial_stats }}
-                    + norm_partial_owner * {{ call.owner_stride }}
-                    + ({{ call.partial_stats_square_sum_offset }}),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
-            )
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
 {% if call.use_mean %}
         norm_apply_variance -= norm_apply_mean * norm_apply_mean

@@ -125,7 +125,11 @@ def test_the_fused_gate_matches_the_published_forget_gate_bit_for_bit():
     delta = (value.float() - (expected_state * normalized[1].unsqueeze(-1)).sum(-2)) \
         * beta.unsqueeze(-1)
     expected_state = expected_state + normalized[1].unsqueeze(-1) * delta.unsqueeze(-2)
-    expected = (expected_state * normalized[0].unsqueeze(-1)).sum(-2).to(torch.bfloat16)
+    # The native fused_recurrent_kda default still scales the query after L2
+    # normalization. Omitting 1/sqrt(head_dim) changes the attention readout,
+    # while the recurrent-state update itself remains independent of queries.
+    scaled_query = normalized[0] * query.shape[-1] ** -0.5
+    expected = (expected_state * scaled_query.unsqueeze(-1)).sum(-2).to(torch.bfloat16)
 
     torch.testing.assert_close(observed, expected, rtol=0, atol=0)
     torch.testing.assert_close(observed_state, expected_state, rtol=0, atol=0)

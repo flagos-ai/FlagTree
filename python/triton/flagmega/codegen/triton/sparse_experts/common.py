@@ -5,6 +5,7 @@
 from triton.flagmega.codegen.triton.physical_access import (
     emit_active_extent,
     emit_local_scalar_offset,
+    emit_logical_coordinate,
     emit_triton_scalar_type,
 )
 from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
@@ -28,8 +29,8 @@ def _axis_capacity_is_active(value_type, axis, capacity):
     return extent.is_fixed and extent.fixed_value == capacity
 
 
-def stage_context(raw, definition, weight_parameter):
-    from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer, _pointer, _canonical_writer_active
+def stage_context(raw, definition, weight_parameter, *, partitioned=False):
+    from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer, _canonical_writer_active, _pointer
 
     operands = {parameter.name: _buffer(raw, "inputs", parameter.name) for parameter in definition.input_parameters}
     inputs = tuple(
@@ -39,9 +40,19 @@ def stage_context(raw, definition, weight_parameter):
     attrs = raw["semantic_attrs"]
     if definition.prepare(inputs, attrs).result_type != _tensor_type(result["abi"]):
         raise CodegenError("Sparse expert result ABI disagrees with its typed sharding and rounding contract.")
+    if raw.get("variant") == "wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.mma import supports_block_fp8_wgmma
+        if (not supports_block_fp8_wgmma(raw["semantic_op"], {
+                parameter.name: value.type
+                for parameter, value in zip(definition.input_parameters, inputs, strict=True)
+        }, attrs) or raw["parameters"]["block_n"] != 64 or raw["parameters"]["block_k"] != 128):
+            raise CodegenError("Expert WGMMA requires BF16/FP8, complete K, UE8M0 and 128x128 block scales.")
     activation = operands[definition.input_parameters[0].name]["abi"]
     weight = operands[weight_parameter]["abi"]
     output = result["abi"]
+    token_axis = 1 if partitioned else 0
+    weight_n_axis = 2 if partitioned else 1
+    weight_k_axis = 3 if partitioned else 2
     scalar_n = int(output["local_capacity_shape"][-1]) * int(output["scalar_lane_count"])
     scalar_k = int(activation["local_capacity_shape"][-1]) * int(activation["scalar_lane_count"])
     if tuple(weight["local_capacity_shape"][-2:]) != (scalar_n, scalar_k):
@@ -70,11 +81,24 @@ def stage_context(raw, definition, weight_parameter):
         scale_rank = len(binding["abi"]["local_capacity_shape"])
         if scale_rank == 2:
             scale_offsets[name] = emit_local_scalar_offset(binding["abi"], ("_fm_expert", "0"))
-        elif scale_rank == 3:
-            row, column = ((f"(_fm_n[:, None] // {weight_block_n})", f"(_fm_k[None, :] // {weight_block_k})")
+        elif scale_rank == 3 or (partitioned and scale_rank == 4):
+            # Weights are compact owner slices; their scales are broadcast
+            # global tables. Recover the logical weight coordinates before
+            # selecting a scale block, including split-N and split-K owners.
+            coordinates = (("_fm_expert", "_fm_n[:, None]", "_fm_k[None, :]")
                            if groups_per_tile > 1 else
-                           (f"(_fm_n // {weight_block_n})", f"(_fm_k_start // {weight_block_k})"))
-            scale_offset = emit_local_scalar_offset(binding["abi"], ("_fm_expert", row, column))
+                           ("_fm_expert", "_fm_n", "_fm_k_start"))
+            if partitioned:
+                coordinates = (coordinates[0], "_fm_partition", *coordinates[1:])
+            logical_row = emit_logical_coordinate(weight, weight_n_axis, coordinates)
+            logical_column = emit_logical_coordinate(weight, weight_k_axis, coordinates)
+            row = f"({logical_row} // {weight_block_n})"
+            column = f"({logical_column} // {weight_block_k})"
+            scale_coordinates = ("_fm_expert", row, column)
+            if partitioned:
+                logical_partition = emit_logical_coordinate(weight, 1, coordinates)
+                scale_coordinates = ("_fm_expert", logical_partition, row, column)
+            scale_offset = emit_local_scalar_offset(binding["abi"], scale_coordinates)
             # Either form multiplies an (N, K) weight tile, so the per-tile
             # column keeps the trailing broadcast the per-lane form has already.
             block_scale_loads[name] = (f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{group_mask}}, other=1)"
@@ -91,11 +115,11 @@ def stage_context(raw, definition, weight_parameter):
         "activation_dtype": emit_triton_scalar_type(activation["scalar_dtype"]),
         "block_n": block_n,
         "block_k": block_k,
-        "tokens": int(output["local_capacity_shape"][0]),
+        "tokens": int(output["local_capacity_shape"][token_axis]),
         "routes": routes,
         "scalar_n": scalar_n,
         "scalar_k": scalar_k,
-        "token_active": f"(_fm_token < ({emit_active_extent(output, 0)}))",
+        "token_active": f"(_fm_token < ({emit_active_extent(output, token_axis)}))",
         "route_active": "True" if full_routes else f"(_fm_route < ({emit_active_extent(routes_abi, 1)}))",
         "n_active":
         f"(_fm_n < (({emit_active_extent(output, len(output['local_capacity_shape']) - 1)}) * {output['scalar_lane_count']}))",
@@ -108,6 +132,9 @@ def stage_context(raw, definition, weight_parameter):
         "weight_block_k": weight_block_k,
         "groups_per_tile": groups_per_tile,
     }
+    if partitioned:
+        context["partitions"] = int(output["local_capacity_shape"][0])
+        context["token_active"] += f" & (_fm_partition < ({emit_active_extent(output, 0)}))"
     context["slot_active"] = (context["token_active"] if full_routes else
                               f"({context['token_active']}) & ({context['route_active']})")
     context["scale_loads"] = {
@@ -122,7 +149,8 @@ def stage_context(raw, definition, weight_parameter):
     # predicate is the weight tile's, not the scalar slot's.
     group_mask = f"_fm_n_mask[:, None] & _fm_k_mask[None, :]" if groups_per_tile > 1 else context["slot_active"]
     context["block_scale_loads"] = {
-        name: expression.replace("{slot_active}", context["slot_active"]).replace("{group_mask}", group_mask)
+        name: expression.replace("{slot_active}", "_fm_n_mask" if raw.get("variant") == "wgmma"
+                                 else context["slot_active"]).replace("{group_mask}", group_mask)
         for name, expression in context["block_scale_loads"].items()
     }
     # div_rn is lowered as an explicit correctly-rounded operation, so even

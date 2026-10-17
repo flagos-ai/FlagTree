@@ -19,20 +19,24 @@ from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.kda import KdaConvolution, KdaRecurrentCore
 from triton.flagmega.ir.ops.nn.kda_gated_recurrent_core import KdaGatedRecurrentCore
+from triton.flagmega.ir.ops.nn.kda_gated_step import KdaGatedStep
 from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.layer_norm import LayerNorm
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.mhc_post import MhcPost
 from triton.flagmega.ir.ops.nn.mhc_pre import MhcPre
+from triton.flagmega.ir.ops.nn.mla_projection import MlaProjection
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_qwen3_paged_attention import PackedQwen3PagedAttention
 from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
+from triton.flagmega.ir.ops.nn.partitioned_sparse_experts_down import PartitionedSparseExpertsDown
 from triton.flagmega.ir.ops.nn.qkv_parallel_linear import QKVParallelLinear
 from triton.flagmega.ir.ops.nn.qkv_rope_with_cache import QKVRoPEWithCache
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import Qwen3PagedAttention
+from triton.flagmega.ir.ops.nn.requantize_block_scaled_fp8 import RequantizeBlockScaledFP8
 from triton.flagmega.ir.ops.nn.rms_norm import RMSNorm
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
@@ -55,8 +59,10 @@ __all__ = [
     "DeltaRuleBlockUpdate",
     "DeltaRuleLogPrefix",
     "DeltaRuleCoefficients",
-    "Softmax", "KdaConvolution", "KdaRecurrentCore", "KdaGatedRecurrentCore", "StagedRouting",
+    "Softmax", "KdaConvolution", "KdaRecurrentCore", "KdaGatedRecurrentCore", "KdaGatedStep", "StagedRouting",
     "MhcPre", "MhcPost",
+    "MlaProjection",
+    "RequantizeBlockScaledFP8",
     "Embedding",
     "DenseMatMulGlu",
     "DsaIndexer",
@@ -71,6 +77,7 @@ __all__ = [
     "SparseExperts",
     "SparseExpertsGateUp",
     "SparseExpertsDown",
+    "PartitionedSparseExpertsDown",
     "SparseExpertsDispatch",
     "SparseExpertsCombine",
     "SparseExpertsWeightedSum",

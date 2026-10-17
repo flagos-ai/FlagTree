@@ -5,15 +5,15 @@
 from __future__ import annotations
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir.tir.execution_function import ExecutionFunction
 from triton.flagmega.ir.tir.barrier import Barrier
+from triton.flagmega.ir.tir.execution_function import ExecutionFunction
+from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_of
+from triton.flagmega.ir.tir.kernel_invoke import KernelInvoke
 from triton.flagmega.ir.tir.pipeline_stage import PipelineStage
 from triton.flagmega.ir.tir.prim_function_call import PrimFunctionCall
-from triton.flagmega.ir.tir.kernel_invoke import KernelInvoke
 from triton.flagmega.ir.tir.producer_consumer_region import ProducerConsumerRegion
-from triton.flagmega.ir.tir.visitor import iter_tir_children
-from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_of
 from triton.flagmega.ir.tir.shared_call_abi import verify_shared_call_abi
+from triton.flagmega.ir.tir.visitor import iter_tir_children
 
 
 def execution_calls_of(function: ExecutionFunction) -> tuple[PrimFunctionCall | KernelInvoke, ...]:
@@ -124,11 +124,11 @@ def verify_execution_functions(module) -> None:
                 for _, buffers in function_plan.parameters
                 for buffer_id in buffers
             )
-            expected_results = tuple(
+            expected_results = tuple(dict.fromkeys(
                 buffer_id
                 for _, buffers in function_plan.outputs
                 for buffer_id in buffers
-            )
+            ))
             if function.parameters != expected_parameters or function.results != expected_results:
                 raise IRVerificationError(
                     f"ExecutionFunction @{function.name} signature differs from "

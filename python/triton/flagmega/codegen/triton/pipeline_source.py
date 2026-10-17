@@ -145,10 +145,7 @@ def build_pipeline_source_schedule(
             "symbol": f"_flagmega_function_{_identifier(name)}",
             "signature_arguments": source_signature,
             "logical_signature_arguments": list(signature),
-            "typed_signature_arguments": [
-                "device_dptr: tl.constexpr" if value == "device_dptr" else value
-                for value in source_signature
-            ],
+            "typed_signature_arguments": list(source_signature),
             "function_pool_abi": pool_abi,
             "host_tensor_descriptor_specs": builder.descriptor_specs,
             "schedule": schedule,

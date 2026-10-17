@@ -87,6 +87,15 @@ def _bind(raw, groups: Mapping[str, Sequence[str]]) -> dict[str, Mapping[str, ob
             for group, formals in groups.items() for formal in formals}
 
 
+def _rounding_dtype(attrs, name, default=None):
+    value = attrs.get(name)
+    if value is None:
+        return default
+    if not isinstance(value, str) or value not in {"float16", "bfloat16", "float32"}:
+        raise CodegenError(f"mHC {name} must be float16, bfloat16 or float32.")
+    return value
+
+
 def mhc_pre_call(raw):
     """Render coefficient generation, Sinkhorn normalization and the collapse.
 
@@ -113,11 +122,30 @@ def mhc_pre_call(raw):
     lanes = tuple(raw["semantic_attrs"].get("output_lanes", ()))
     lane_count = prod(lanes)
     collapsed_abi = abis["collapsed"]
+    collapsed_dtype = _rounding_dtype(raw["semantic_attrs"], "collapsed_dtype", abis["streams"]["scalar_dtype"])
+    collapse_input_dtype = _rounding_dtype(raw["semantic_attrs"], "collapse_input_dtype")
+    collapse_reduction = raw["semantic_attrs"].get("collapse_reduction", "sum")
+    if not isinstance(collapse_reduction, str) or collapse_reduction not in {"sum", "sequential_fma"}:
+        raise CodegenError("mHC collapse_reduction must be sum or sequential_fma.")
     if (tuple(collapsed_abi.get("scalar_lane_shape", ())) != lanes
             or int(collapsed_abi.get("scalar_lane_count", 1)) != lane_count
-            or collapsed_abi["scalar_dtype"] != abis["streams"]["scalar_dtype"]
+            or collapsed_abi["scalar_dtype"] != collapsed_dtype
             or lane_count <= 0 or hidden % lane_count):
-        raise CodegenError("mHC collapsed output ABI disagrees with output_lanes or stream dtype.")
+        raise CodegenError("mHC collapsed output ABI disagrees with output_lanes or collapsed dtype.")
+    projection_reduction = raw["semantic_attrs"].get("projection_reduction", "parallel")
+    splits = raw["semantic_attrs"].get("projection_splits", 1)
+    variants = {"parallel": "local", "stream_fma_128": "stream_fma", "contiguous_tf32": "contiguous_tf32"}
+    if projection_reduction not in variants:
+        raise CodegenError("mHC projection_reduction must be parallel, stream_fma_128 or contiguous_tf32.")
+    if type(splits) is not int or splits <= 0 or splits & (splits - 1):
+        raise CodegenError("mHC projection_splits must be a positive power of two.")
+    variant = variants[projection_reduction]
+    if raw.get("variant", "local") != variant:
+        raise CodegenError("mHC selected variant does not implement its projection_reduction contract.")
+    if (projection_reduction == "parallel" and splits != 1
+            or projection_reduction == "stream_fma_128" and hidden % (128 * splits)
+            or projection_reduction == "contiguous_tf32" and (not 1 <= hc <= 4 or hc * hidden % (64 * splits))):
+        raise CodegenError("mHC projection_splits disagrees with its algorithm or hidden capacity.")
     coefficients = (2 + hc) * hc
     if _capacity(abis["projection"], "projection") != (coefficients, hc * hidden):
         raise CodegenError(
@@ -134,6 +162,15 @@ def mhc_pre_call(raw):
     requested = int(raw["parameters"]["elements_per_program"])
     return {
         "internal_grid_barriers": 0,
+        "projection_reduction": projection_reduction,
+        "projection_splits": splits,
+        "projection_coefficient_lanes": _lanes(coefficients),
+        "streams_fma_token_offset": emit_local_scalar_offset(abis["streams"], ("_fm_token", "0", "0")),
+        "streams_fma_stream_stride": int(abis["streams"]["scalar_storage_strides"][1]),
+        "streams_fma_hidden_stride": int(abis["streams"]["scalar_storage_strides"][2]),
+        "projection_fma_base_offset": emit_local_scalar_offset(abis["projection"], ("0", "0")),
+        "projection_fma_row_stride": int(abis["projection"]["scalar_storage_strides"][0]),
+        "projection_fma_hidden_stride": int(abis["projection"]["scalar_storage_strides"][1]),
         "tokens": tokens,
         "hc": hc,
         "stream_lanes": stream_lanes,
@@ -182,6 +219,8 @@ def mhc_pre_call(raw):
             ("_fm_token", f"(_fm_hidden // {lane_count})" if lane_count > 1 else "_fm_hidden"),
             lane_coordinate=f"(_fm_hidden % {lane_count})" if lane_count > 1 else None),
         "collapsed_type": emit_triton_scalar_type(str(abis["collapsed"]["scalar_dtype"])),
+        "collapse_input_type": emit_triton_scalar_type(collapse_input_dtype) if collapse_input_dtype is not None else None,
+        "collapse_sequential_fma": collapse_reduction == "sequential_fma",
         "post_writer_active": _canonical_writer_active(abis["post"]),
         "comb_writer_active": _canonical_writer_active(abis["comb"]),
         "collapsed_writer_active": _canonical_writer_active(abis["collapsed"]),
@@ -216,6 +255,12 @@ def mhc_post_call(raw):
         raise CodegenError("mHC post coefficients disagree with the residual capacity.")
     if _capacity(abis["result"], "result") != (tokens, hc, hidden):
         raise CodegenError("mHC post result must match the residual stream capacity.")
+    dtype = _rounding_dtype(raw["semantic_attrs"], "output_dtype", abis["residual"]["scalar_dtype"])
+    if abis["result"]["scalar_dtype"] != dtype:
+        raise CodegenError("mHC post result ABI disagrees with output_dtype or residual dtype.")
+    mode = raw["semantic_attrs"].get("accumulation_mode", "residual_then_value")
+    if not isinstance(mode, str) or mode not in {"residual_then_value", "value_fma_first"}:
+        raise CodegenError("mHC accumulation_mode must be residual_then_value or value_fma_first.")
 
     stream_lanes = _lanes(hc)
     return {
@@ -241,6 +286,7 @@ def mhc_post_call(raw):
         "result_offset": emit_local_scalar_offset(
             abis["result"], ("_fm_token", "_fm_j[:, None]", "_fm_hidden[None, :]")),
         "result_type": emit_triton_scalar_type(str(abis["result"]["scalar_dtype"])),
+        "value_first_fma": mode == "value_fma_first",
         "writer_active": _canonical_writer_active(abis["result"]),
     }
 

@@ -56,7 +56,7 @@ def test_pipeline_ragged_tiles_and_numerical_boundaries(definition, dtype, packe
     source = (tmp_path / "artifact/generated_kernels.py").read_text()
     assert "simt_tma_pipeline" in source
     assert "def _flagmega_main_call_0_expert_stage__producer(" in source
-    assert runtime._prepared.compiled_kernel.n_spills == 0
+    assert runtime.resource_report["spill_bytes"] == 0
 
 
 def distributed_stage(definition, dtype, partition):
@@ -100,7 +100,7 @@ def test_pipeline_ragged_owners_and_explicit_partial(definition, partition, dtyp
     actual, expected, runtime = helpers.execute_and_reference(distributed_stage(definition, dtype, partition), tmp_path, torch)
     torch.testing.assert_close(actual, expected, rtol=0.016 if dtype == "bfloat16" else 1e-5, atol=1e-5)
     assert "simt_tma_pipeline" in (tmp_path / "artifact/generated_kernels.py").read_text()
-    assert runtime._prepared.compiled_kernel.n_spills == 0
+    assert runtime.resource_report["spill_bytes"] == 0
 
 
 @pytest.mark.parametrize("definition", (SparseExpertsGateUp, SparseExpertsDown))

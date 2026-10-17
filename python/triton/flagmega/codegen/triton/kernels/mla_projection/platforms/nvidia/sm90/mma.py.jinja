@@ -1,0 +1,44 @@
+# flagmega-kernel: mla_projection/mma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+import triton.experimental.tle.language as tle
+{% for call in render_calls %}
+{% if call.family == "mla_projection" and call.variant == "mma" %}
+{{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [1, {{ num_warps }}], [16, 8]))
+{{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_mla_head in tl.range({{ call.heads }}):
+        for _fm_mla_start in tl.range(0, {{ call.output }}, {{ call.tile_n }}):
+            _fm_mla_columns = _fm_mla_start + tl.arange(0, {{ call.tile_n }})
+            _fm_mla_accumulator = tle.gpu.set_layout(tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout)
+            for _fm_mla_reduction_start in tl.range(0, {{ call.reduction }}, {{ call.reduction_tile }}):
+                _fm_mla_reduction = _fm_mla_reduction_start + tl.arange(0, {{ call.reduction_tile }})
+                _fm_mla_x_offset = _fm_mla_head * {{ call.source_head_stride }} + (_fm_mla_reduction // {{ call.source_lanes }}) * {{ call.source_dim_stride }} + _fm_mla_reduction % {{ call.source_lanes }}
+                _fm_mla_x = tl.load({{ call.value }} + _fm_mla_x_offset, mask=_fm_mla_reduction < {{ call.reduction }}, other=0.).to(tl.bfloat16)
+{% if call.direction == "absorb_query" %}
+                _fm_mla_weight_row = _fm_mla_head * ({{ call.qk_dim }} + {{ call.value_dim }}) + _fm_mla_reduction[:, None]
+                _fm_mla_weight_col = _fm_mla_columns[None, :]
+{% else %}
+                _fm_mla_weight_row = _fm_mla_head * ({{ call.qk_dim }} + {{ call.value_dim }}) + {{ call.qk_dim }} + _fm_mla_columns[None, :]
+                _fm_mla_weight_col = _fm_mla_reduction[:, None]
+{% endif %}
+                _fm_mla_mask = (_fm_mla_reduction[:, None] < {{ call.reduction }}) & (_fm_mla_columns[None, :] < {{ call.output }})
+                _fm_mla_w = tl.load({{ call.weight }} + _fm_mla_weight_row * {{ call.weight_row_stride }} + _fm_mla_weight_col * {{ call.weight_col_stride }}, mask=_fm_mla_mask, other=0.)
+{% if call.quantized %}
+                _fm_mla_scale = tl.load({{ call.scale }} + (_fm_mla_weight_row // {{ call.block_n }}) * {{ call.scale_row_stride }} + (_fm_mla_weight_col // {{ call.block_k }}) * {{ call.scale_col_stride }}, mask=_fm_mla_mask, other=0.)
+                _fm_mla_w = (_fm_mla_w.to(tl.float32) * _fm_mla_scale).to(tl.bfloat16)
+{% else %}
+                _fm_mla_w = _fm_mla_w.to(tl.bfloat16)
+{% endif %}
+                _fm_mla_a = tle.gpu.set_layout(tl.broadcast_to(_fm_mla_x[None, :], (16, {{ call.reduction_tile }})), {{ call.symbol }}__lhs_layout)
+                _fm_mla_b = tle.gpu.set_layout(_fm_mla_w, {{ call.symbol }}__rhs_layout)
+                _fm_mla_accumulator = tl.dot(_fm_mla_a, _fm_mla_b, _fm_mla_accumulator)
+            _fm_mla_output = tl.reshape(tl.gather(_fm_mla_accumulator, tl.full((1, {{ call.tile_n }}), 0, tl.int32), 0), ({{ call.tile_n }},))
+            _fm_mla_output_offset = _fm_mla_head * {{ call.result_head_stride }} + (_fm_mla_columns // {{ call.result_lanes }}) * {{ call.result_dim_stride }} + _fm_mla_columns % {{ call.result_lanes }}
+            tl.store({{ call.result }} + _fm_mla_output_offset, _fm_mla_output.to(tl.bfloat16), mask=(_fm_mla_columns < {{ call.output }}) & ({{ call.writer_active }}))
+{% endif %}
+{% endfor %}
+{% endif %}

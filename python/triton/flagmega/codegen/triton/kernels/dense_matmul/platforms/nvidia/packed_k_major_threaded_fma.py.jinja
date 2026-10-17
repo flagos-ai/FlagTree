@@ -1,0 +1,49 @@
+# flagmega-kernel: dense_matmul/packed_k_major_threaded_fma platform=nvidia
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "packed_k_major_threaded_fma" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__dot_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 1], [1, 32], [{{ num_warps // call.dot_warps }}, {{ call.dot_warps }}], [1, 0],
+))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
+        for dense_local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
+            dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+            dense_global_n = {{ call.global_n }}
+            dense_n_mask = ((dense_local_n_offsets < {{ call.local_n_capacity }})
+                            & ({{ call.result_active }}))
+            dense_accumulator = tle.gpu.set_layout(
+                tl.zeros(({{ call.tile_n }}, {{ call.dot_lanes }}), tl.float32), {{ call.symbol }}__dot_layout,
+            )
+            for dense_local_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
+                for dense_vector_index in tl.range({{ call.values_per_lane }}, loop_unroll_factor=2):
+                    dense_local_k_offsets = (dense_local_k_start
+                        + tl.arange(0, {{ call.dot_lanes }}) * {{ call.values_per_lane }} + dense_vector_index)
+                    dense_global_k = {{ call.global_k }}
+                    dense_source_value = tl.load({{ call.source }} + ({{ call.source_offset }})).to(tl.float32)
+                    dense_weight_value = tl.load({{ call.weight }} + ({{ call.weight_offset }}),
+                                                 mask=dense_n_mask[:, None], other=0.).to(tl.float32)
+                    dense_weight_value = tle.gpu.set_layout(dense_weight_value, {{ call.symbol }}__dot_layout)
+                    dense_accumulator = tl.fma(dense_weight_value, dense_source_value[None, :], dense_accumulator)
+            dense_warp_partials = tl.sum(tl.reshape(
+                dense_accumulator, ({{ call.tile_n }}, {{ call.dot_warps }}, 32),
+            ), 2)
+            dense_result = tl.reshape(tl.gather(
+                dense_warp_partials, tl.full(({{ call.tile_n }}, 1), 0, tl.int32), 1,
+            ), ({{ call.tile_n }},))
+{% for warp in range(1, call.dot_warps) %}
+            dense_partial = tl.reshape(tl.gather(
+                dense_warp_partials, tl.full(({{ call.tile_n }}, 1), {{ warp }}, tl.int32), 1,
+            ), ({{ call.tile_n }},))
+            dense_result = libdevice.add_rn(dense_result, dense_partial)
+{% endfor %}
+            tl.store({{ call.result }} + ({{ call.result_offset }}), dense_result, mask=dense_n_mask)
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

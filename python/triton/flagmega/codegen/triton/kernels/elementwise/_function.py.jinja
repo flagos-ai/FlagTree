@@ -10,13 +10,13 @@ def {{ call.symbol }}({{ call.signature }}):
             (local_offsets < {{ call.local_capacity }}) & ({{ call.active }})
         )
         lhs_value = tl.load(
-            {{ call.lhs }} + ({{ call.lhs_offset }}),
+            {{ call.lhs }} + (({{ call.lhs_offset }}) + tl.zeros_like(local_offsets)),
             mask=local_mask,
             other=0.0,
         )
 {% if call.variant in ("add", "mul", "div") %}
         rhs_value = tl.load(
-            {{ call.rhs }} + ({{ call.rhs_offset }}),
+            {{ call.rhs }} + (({{ call.rhs_offset }}) + tl.zeros_like(local_offsets)),
             mask=local_mask,
             other=0.0,
         )
@@ -25,7 +25,7 @@ def {{ call.symbol }}({{ call.signature }}):
         {{ line }}
 {% endfor %}
         tl.store(
-            {{ call.result }} + ({{ call.result_offset }}),
+            {{ call.result }} + (({{ call.result_offset }}) + tl.zeros_like(local_offsets)),
 {% if call.fusion_lines %}
             {{ call.fusion_value }},
 {% elif call.variant == "add" %}

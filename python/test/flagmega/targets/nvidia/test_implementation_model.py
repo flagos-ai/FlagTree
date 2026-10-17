@@ -135,7 +135,9 @@ def test_sm90_package_grid_excludes_chip_and_node_axes():
         },
     )
 
-    package = sm90_codegen_package_plan(module, (kernel,), None, None)
+    package = sm90_codegen_package_plan(
+        module, (kernel,), NvidiaSm90Target().machine.capability, None,
+    )
 
     assert package["launch"]["grid"] == (8 * 16, 1, 1)
     assert package["launch"]["mesh_hierarchy"] == (4, 8, 16)

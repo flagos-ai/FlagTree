@@ -1,0 +1,10 @@
+@triton.jit
+def _flagmega_quantize_ue8m0(value, AXIS: tl.constexpr):
+    maximum = tl.max(tl.where(value == value, tl.abs(value), 0.), axis=AXIS, keep_dims=True)
+    raw = tl.maximum(tl.div_rn(maximum, 448.), 1e-10)
+    scale = ((raw.to(tl.int32, bitcast=True) + 0x7fffff) & 0x7f800000).to(tl.float32, bitcast=True)
+    normalized = tl.div_rn(value, scale)
+    # fmax/fmin clamp NaNs to the finite lower bound, as the source CUDA op.
+    normalized = tl.where(normalized == normalized, normalized, -448.)
+    return tl.minimum(tl.maximum(normalized, -448.), 448.).to(tl.float8e4nv).to(tl.float32), scale
+
