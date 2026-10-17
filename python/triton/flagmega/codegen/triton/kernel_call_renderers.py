@@ -2402,7 +2402,7 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
             partial_abi, partial_axes, "0"
         ),
         "stats_partial_owner": _group_owner_expression_for_axes(
-            stats_abi, stats_reduction_axes, "gather_stats_lane"
+            stats_abi, stats_reduction_axes, "gather_stats_lane", allow_empty=True
         ),
         "stats_reduction_count": stats_reduction_count,
         "stats_reduction_width": _bounded_vector_tile(
@@ -6848,8 +6848,15 @@ def _group_owner_expression_for_axes(
     member: str,
     *,
     preserved_coordinates: tuple[str, ...] | None = None,
+    allow_empty: bool = False,
 ) -> str:
-    """Map a dense group member to a placement owner, preserving other axes."""
+    """Map a dense group member to a placement owner, preserving other axes.
+
+    With ``allow_empty`` the reduction group may span no axes (every placement
+    axis preserved): the member is unused and the expression resolves to this
+    CTA's own owner, so the degenerate one-element reduction reads its own
+    partial.
+    """
 
     distributed = abi.get("distributed_type")
     if not isinstance(distributed, Mapping):
@@ -6858,10 +6865,23 @@ def _group_owner_expression_for_axes(
     if not isinstance(placement, Mapping):
         raise CodegenError("Owner group buffer has no placement ABI.")
     hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
-    if (
-        not axes
-        or tuple(sorted(set(axes))) != axes
-        or any(axis < 0 or axis >= len(hierarchy) for axis in axes)
+    if not axes:
+        if not allow_empty:
+            raise CodegenError(
+                "Owner group axes must be sorted, unique, and inside the placement."
+            )
+        # No axis is reduced (all preserved): the one-element reduction group
+        # reads this CTA's own partial. Broadcast the constant self-owner over
+        # the (masked) reduction lane so the gather load keeps a block pointer
+        # that matches its block mask -- every lane resolves to the same valid
+        # self address and only lane 0 survives the mask.
+        self_owner = _linear_owner_expression(
+            list(preserved_coordinates or _mesh_coordinates(len(hierarchy))),
+            hierarchy,
+        )
+        return f"({self_owner} + 0 * ({member}))"
+    if tuple(sorted(set(axes))) != axes or any(
+        axis < 0 or axis >= len(hierarchy) for axis in axes
     ):
         raise CodegenError(
             "Owner group axes must be sorted, unique, and inside the placement."

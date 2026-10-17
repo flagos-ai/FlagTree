@@ -40,6 +40,7 @@ add_triton_library(TritonAMDGPUToLLVM
     ScalarizePackedFOps.cpp
     TDMUtility.cpp
     BarrierOpToLLVM.cpp
+    ../../tle/DistributedBarrierOpToLLVM.cpp
 
     DEPENDS
     TritonAMDGPUConversionPassIncGen
@@ -53,3 +54,8 @@ add_triton_library(TritonAMDGPUToLLVM
     LLVMSupport
     ${_TLE_LIBS}
 )
+
+# The TLE primitive lowering lives under third_party/amd/tle (kept out of the
+# upstream backend sources) but compiles into this library under __TLE__; add
+# this dir so its "PatternTritonGPUOpToLLVM.h" include resolves.
+target_include_directories(TritonAMDGPUToLLVM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

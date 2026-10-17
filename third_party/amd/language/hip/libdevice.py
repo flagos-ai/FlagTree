@@ -183,6 +183,32 @@ def cos(arg0, _semantic=None):
         }, is_pure=True, _semantic=_semantic)
 
 
+# NVIDIA's libdevice exposes fast_cosf/fast_sinf (fp32 fast-math); RDNA has no
+# dedicated fast symbol, so map to the accurate OCML fp32 routine. The name
+# parity lets platform-neutral kernel templates resolve on both backends.
+@core.extern
+def fast_cosf(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ocml_cos_f32", core.dtype("fp32")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+@core.extern
+def fast_sinf(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ocml_sin_f32", core.dtype("fp32")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+# NVIDIA maps mul_rn to __nv_fmul_rn; RDNA's native IEEE multiply already rounds
+# to nearest, so a plain fmul is the correct round-to-nearest product.
+@core.extern
+def mul_rn(arg0, arg1, _semantic=None):
+    return _semantic.mul(arg0, arg1, False)
+
+
 @core.extern
 def tan(arg0, _semantic=None):
     return core.extern_elementwise(
