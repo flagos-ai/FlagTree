@@ -51,6 +51,50 @@ static Value stripConvertLayouts(Value value) {
   return current;
 }
 
+// A full-shaped pointer tensor is a full view only if each index is the
+// corresponding logical coordinate. Shape equality alone also admits scatters.
+static bool isFullViewIndex(Value index, unsigned axis,
+                            ArrayRef<int64_t> shape) {
+  index = stripConvertLayouts(index);
+  auto type = dyn_cast<RankedTensorType>(index.getType());
+  if (!type || type.getShape() != shape || axis >= shape.size())
+    return false;
+  if (auto range = index.getDefiningOp<tt::MakeRangeOp>())
+    return shape.size() == 1 && range.getStart() == 0 &&
+           range.getEnd() == shape.front();
+  if (auto broadcast = index.getDefiningOp<tt::BroadcastOp>()) {
+    auto sourceType = cast<RankedTensorType>(broadcast.getSrc().getType());
+    if (sourceType.getRank() != type.getRank())
+      return false;
+    for (unsigned dim = 0; dim < shape.size(); ++dim)
+      if (sourceType.getShape()[dim] != (dim == axis ? shape[dim] : 1))
+        return false;
+    return isFullViewIndex(broadcast.getSrc(), axis, sourceType.getShape());
+  }
+  if (auto expand = index.getDefiningOp<tt::ExpandDimsOp>()) {
+    unsigned expandedAxis = expand.getAxis();
+    if (expandedAxis == axis)
+      return false;
+    auto sourceType = cast<RankedTensorType>(expand.getSrc().getType());
+    return isFullViewIndex(expand.getSrc(), axis - (expandedAxis < axis),
+                           sourceType.getShape());
+  }
+  return false;
+}
+
+static bool isFullView(tle::LocalPointersOp pointers,
+                       ArrayRef<int64_t> shape) {
+  auto indices = pointers.getIndices();
+  if (indices.empty())
+    return true;
+  if (indices.size() != shape.size())
+    return false;
+  for (unsigned axis = 0; axis < indices.size(); ++axis)
+    if (!isFullViewIndex(indices[axis], axis, shape))
+      return false;
+  return true;
+}
+
 static Value stripValueWrappers(Value value) {
   Value current = value;
   while (true) {
@@ -323,6 +367,8 @@ class OptimizeLocalPointerStoresPass
       if (valueTy.getShape() != memDescTy.getShape())
         continue;
       if (valueTy.getElementType() != memDescTy.getElementType())
+        continue;
+      if (!isFullView(localPointers, memDescTy.getShape()))
         continue;
 
       OpBuilder builder(store);

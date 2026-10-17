@@ -63,14 +63,14 @@ static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
   return func;
 }
 
-// The frontend passes the FlagCX global memory/communication pointer as an
-// integer. Convert it back to an LLVM pointer in global address space (AS1)
-// before passing it to device/runtime functions.
+// FlagCX C device-library functions take generic pointers. Their declarations
+// must match the bitcode ABI exactly; AS1 parameters produce mismatched calls
+// after linking and prevent inlining of the runtime implementations.
 static inline Value getFlagcxMemOrCommPtr(mlir::Location loc,
                                           ConversionPatternRewriter &rewriter,
                                           Value memPtrInt) {
   auto ctx = rewriter.getContext();
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   return rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, memPtrInt);
 }
 
@@ -81,7 +81,7 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto func = createFuncInstance(
       runtimeNames.lookup("getNumPesFunction").data(), module, {PtrTy}, i32Ty);
@@ -99,7 +99,7 @@ LLVM::CallOp getWorldRankFuncCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto func =
       createFuncInstance(runtimeNames.lookup("getWorldRankFunction").data(),
@@ -119,7 +119,7 @@ LLVM::CallOp getUnifiedBarrierFuncCall(
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
   StringRef funcName;
@@ -158,7 +158,7 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto func = createFuncInstance(
       runtimeNames.lookup("getLocalPeFunction").data(), module, {PtrTy}, i32Ty);
@@ -179,7 +179,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
@@ -229,7 +229,7 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx);
   auto I32Ty = IntegerType::get(ctx, 32);
   auto I64Ty = IntegerType::get(ctx, 64);
   auto VoidTy = LLVM::LLVMVoidType::get(ctx);

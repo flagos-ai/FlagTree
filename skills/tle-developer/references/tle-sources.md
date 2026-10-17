@@ -105,6 +105,32 @@ Run:
 
 ## 2. Current TLE Semantics Baseline (No External File Needed)
 
+### Runtime communication handles
+
+Device-space operations accept a two-scalar Triton tuple as `device_dptr`:
+`(device_mem_ptr, device_comm_ptr)`. These are runtime scalar i64 handles;
+the tuple's first field addresses the symmetric memory context and its second
+field addresses the communicator. Pass the fields as ordinary entry arguments
+and construct the tuple inside the kernel. A process-local address must not be
+made `tl.constexpr` when the executable is intended to work across processes
+or communicator lifetimes.
+
+The host `DistributedRtContext(comm, mem)` constructor and its legacy constexpr
+source view remain supported. `get_packed_data()` explicitly returns `(mem,
+comm)` for the runtime tuple. Do not infer kernel-field order from constructor
+argument order or from the separate lite-mode injected launcher ABI.
+
+FlagMega records the generated ABI as `device_context_abi=runtime-handles/v2`:
+two runtime entry scalars and a `device_context_mode: tl.constexpr` precede
+tensor descriptors and function offset tables. The mode comes from
+`DistributedRtContext.is_lite_mode`; it separates kernels with and without
+injected launcher arguments in the compilation key. It must be specialized,
+unlike the handle addresses. Version v1 retains its two-scalar binding, and
+older artifacts without a marker retain one constexpr context argument;
+unknown declared ABI versions fail validation. Check compilation hashes in
+fresh processes with distinct handles, inspect PTX for address literals, and
+run actual multi-device communication before claiming executable reuse.
+
 ### 2.1 `local_ptr` Contract (Current Code)
 API form:
 ```python

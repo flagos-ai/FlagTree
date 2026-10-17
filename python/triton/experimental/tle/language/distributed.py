@@ -76,9 +76,18 @@ def _lite_mode_supplies_device_handle() -> bool:
 
 
 def _parse_src_arg(builder, src, index=0):
+    src = tl._unwrap_if_constexpr(src)
+    if isinstance(src, tl.tuple):
+        # Scalar runtime memory/communication handles already have IR values;
+        # no process-local address needs to become a compiler constant.
+        if len(src) != 2:
+            raise ValueError("a runtime device context requires two handles")
+        handle = src[index]
+        if not isinstance(handle, tl.tensor) or handle.shape or handle.dtype not in (tl.int64, tl.uint64):
+            raise TypeError("a runtime device context requires scalar i64 handles")
+        return handle.handle
     try:
         from triton.runtime import DistributedRtContext
-        src = tl._unwrap_if_constexpr(src)
         if isinstance(src, DistributedRtContext):
             return builder.get_int64(src[index])
         elif src:

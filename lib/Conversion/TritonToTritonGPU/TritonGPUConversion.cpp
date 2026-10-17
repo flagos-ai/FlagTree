@@ -237,6 +237,34 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     return sourceEncoding && resultEncoding &&
            inferDstEncoding(op, sourceEncoding) == resultEncoding;
   });
+  // Hints can pre-encode an operation without satisfying its intrinsic layout
+  // relation. Keep such uses illegal so their patterns materialize the edge.
+  addDynamicallyLegalOp<triton::ExpandDimsOp>([&](triton::ExpandDimsOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    auto source = dyn_cast_or_null<triton::gpu::SliceEncodingAttr>(
+        op.getSrc().getType().getEncoding());
+    return source && source.getDim() == op.getAxis() &&
+           source.getParent() == op.getType().getEncoding();
+  });
+  addDynamicallyLegalOp<triton::ReduceOp>([&](triton::ReduceOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    for (auto [operand, result] :
+         llvm::zip(op.getOperands(), op.getResults())) {
+      auto resultType = dyn_cast<RankedTensorType>(result.getType());
+      if (!resultType)
+        continue;
+      auto sourceType = cast<RankedTensorType>(operand.getType());
+      auto source = cast<triton::gpu::DistributedEncodingTrait>(
+          sourceType.getEncoding());
+      auto expected = triton::gpu::SliceEncodingAttr::get(
+          op.getContext(), op.getAxis(), source);
+      if (resultType.getEncoding() != expected)
+        return false;
+    }
+    return true;
+  });
   addDynamicallyLegalDialect<triton::tle::TleDialect>([&](Operation *op) {
     bool hasLegalRegions = true;
     for (auto &region : op->getRegions()) {

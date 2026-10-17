@@ -261,6 +261,12 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
             return isa<RankedTensorType>(type);
           }))
         continue;
+      // Expanding a different slice axis needs a conversion at that use;
+      // it cannot inherit the source encoding as a view.
+      if (auto expand = dyn_cast<triton::ExpandDimsOp>(op))
+        if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(info.encoding))
+          if (slice.getDim() != expand.getAxis())
+            continue;
       Attribute dstEncoding = inferDstEncoding(op, info.encoding);
       if (!dstEncoding)
         continue;
@@ -546,6 +552,24 @@ struct TritonExpandDimsPattern
       return failure();
 #ifdef __TLE__
     Value source = adaptor.getSrc();
+    if (getTleExplicitValueEncoding(op.getResult())) {
+      auto targetType = cast<RankedTensorType>(
+          getTypeConverter()->convertType(op.getResult()));
+      auto sourceType = argType.cloneWithEncoding(
+          triton::gpu::SliceEncodingAttr::get(
+              getContext(), op.getAxis(),
+              cast<DistributedEncodingTrait>(targetType.getEncoding())));
+      if (argType != sourceType)
+        source =
+            ConvertLayoutOp::create(rewriter, op.getLoc(), sourceType, source);
+      auto expanded = triton::ExpandDimsOp::create(
+          rewriter, op.getLoc(), source, adaptor.getAxis());
+      addNamedAttrs(expanded, adaptor.getAttributes());
+      setTleExplicitResultEncoding(cast<OpResult>(expanded.getResult()),
+                                   targetType.getEncoding());
+      rewriter.replaceOp(op, expanded.getResult());
+      return success();
+    }
     if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(_argEncoding)) {
       if (slice.getDim() == op.getAxis()) {
         addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
@@ -902,6 +926,32 @@ struct TritonReducePattern : public OpConversionPattern<triton::ReduceOp> {
     auto &newCombineOp = newReduce.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
                                newCombineOp.end());
+#ifdef __TLE__
+    // Reduction results have the input's slice encoding. An explicit consumer
+    // layout is a separate conversion, not a different reduction result type.
+    SmallVector<Value> results;
+    for (auto [original, reduced] :
+         llvm::zip(op.getResults(), newReduce.getResults())) {
+      Value result = reduced;
+      if (getTleExplicitValueEncoding(original)) {
+        auto targetType = getTypeConverter()->convertType(original);
+        auto reducedType = cast<RankedTensorType>(reduced.getType());
+        setTleExplicitResultEncoding(cast<OpResult>(reduced),
+                                     reducedType.getEncoding());
+        if (reducedType != targetType) {
+          auto conversion =
+              ConvertLayoutOp::create(rewriter, op.getLoc(), targetType, reduced);
+          setTleExplicitResultEncoding(cast<OpResult>(conversion.getResult()),
+                                      cast<RankedTensorType>(targetType)
+                                          .getEncoding());
+          result = conversion;
+        }
+      }
+      results.push_back(result);
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+#endif
     rewriter.replaceOp(op, newReduce.getResult());
     return success();
   }

@@ -192,13 +192,13 @@ def get_mem_pool():
 
 
 def allocate_dist_tensor(shape, *, dtype, device):
-    """Allocate a native CUDA tensor suitable for a FlagCX symmetric window.
+    """Allocate a CUDA-allocation-root tensor for a FlagCX symmetric window.
 
-    ``flagcxMemAlloc`` is useful for ordinary distributed buffers, but the
-    current symmetric-window implementation requires the registered base
-    address to be page aligned.  The pluggable allocator may return a
-    512-byte-aligned address, so window payloads use the native CUDA allocator
-    and an explicitly aligned view instead.
+    IPC imports the underlying CUDA allocation, including when the exported
+    pointer was a caching-allocator suballocation. An aligned view within a
+    cached block therefore gives remote peers a different byte origin from
+    the local tensor. A fresh private pool's first allocation starts at its
+    native CUDA allocation root; no other tensor can consume a prefix.
     """
     if not enabled:
         raise RuntimeError("FlagCX/TLE is unavailable")
@@ -206,16 +206,12 @@ def allocate_dist_tensor(shape, *, dtype, device):
     shape = (shape,) if isinstance(shape, int) else tuple(int(value) for value in shape)
     if not shape or any(value <= 0 for value in shape):
         raise ValueError(f"symmetric tensor shape must be positive, got {shape}")
-    element_size = torch.empty((), dtype=dtype, device=device).element_size()
-    numel = 1
-    for value in shape:
-        numel *= value
-    extra = (_FLAGCX_WINDOW_ALIGNMENT + element_size - 1) // element_size
-    raw = torch.empty(numel + extra, dtype=dtype, device=device)
-    offset = 0
-    while (raw.data_ptr() + offset * element_size) % _FLAGCX_WINDOW_ALIGNMENT:
-        offset += 1
-    return raw.narrow(0, offset, numel).reshape(shape)
+    pool = torch.cuda.MemPool()
+    with torch.cuda.device(device), torch.cuda.use_mem_pool(pool):
+        tensor = torch.empty(shape, dtype=dtype, device=device)
+    # Retain the allocation domain as long as the registered tensor lives.
+    tensor._tle_window_pool = pool
+    return tensor
 
 
 def _cleanup_flagcx_mem_pool():
@@ -286,10 +282,12 @@ def init_communicator():
     else:
         id_bytes = b"\x00" * 256
 
-    # Broadcast unique_id bytes via torch distributed
-    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
-    dist.broadcast(id_tensor, src=0)
-    id_bytes = id_tensor.cpu().numpy().tobytes()
+    # Bootstrap bytes are host data. Using the CUDA default group here would
+    # initialize an otherwise unused NCCL communicator and retain its device
+    # buffers for the lifetime of this FlagCX-only execution.
+    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8)
+    dist.broadcast(id_tensor, src=0, group=_sync_group)
+    id_bytes = id_tensor.numpy().tobytes()
 
     if rank != 0:
         unique_id = flagcx.unique_id_from_bytes(id_bytes)
@@ -316,15 +314,13 @@ def create_dist_tensor(buf_tensor):
             f"got {buf_ptr:#x}. Use tle.allocate_dist_tensor(...)."
         )
 
-    # Keep the NCCL rendezvous before symmetric-window registration.  Once
-    # FlagCX has published its CUDA window, re-entering the caller's NCCL
-    # communicator is invalid on this backend; before registration it is the
-    # device-side rendezvous that makes every rank enter window setup together.
-    # All local validation above must complete first so one malformed rank
-    # cannot leave its peers blocked in this collective.
+    # Publish completed local CUDA writes before the host rendezvous. A host
+    # barrier alone cannot order peer reads after initialization on this GPU.
+    # Keep the caller's default process group untouched: window setup needs no
+    # CUDA NCCL collective, including before FlagCX registers the window.
+    torch.cuda.synchronize(buf_tensor.device)
     if dist.is_initialized():
-        local_rank = int(os.environ.get("LOCAL_RANK", torch.cuda.current_device()))
-        dist.barrier(device_ids=[local_rank])
+        _distributed_barrier()
 
     # Register buffer with symmetric window for LSA
     win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
