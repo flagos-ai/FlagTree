@@ -775,6 +775,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kwargs = {**kwargs, "inplace_alias_pairs": inplace_alias_pairs}
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
+        # Include live RLC policy changes in the in-memory kernel cache.
+        key = f"{key}-{backend.hash()}"
         kernel = kernel_cache.get(key, None)
 
         # Kernel is not cached; we have to compile.

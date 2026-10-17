@@ -669,6 +669,28 @@ class musa_knobs(base_knobs):
     replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
     replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
     libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
+    # Compile the portable RLC phases into MThreads builds, but keep them
+    # disabled until MUSA-specific IR, correctness, and performance gates pass.
+    rlc_enhance: env_bool = env_bool("FLAGTREE_MUSA_RLC_ENHANCE", False)
+    rlc_phase_mask: env_int = env_int("FLAGTREE_MUSA_RLC_PHASE_MASK", 0xF)
+    # Positive integers override C++ RlcBackendPolicy defaults via module attrs.
+    # Zero leaves the inherited conservative defaults in place.
+    rlc_minimum_writeback_bits: env_int = env_int("FLAGTREE_MUSA_RLC_MIN_WRITEBACK_BITS", 0)
+    rlc_convert_minimum_elements: env_int = env_int("FLAGTREE_MUSA_RLC_CONVERT_MIN_ELEMENTS", 0)
+    rlc_convert_minimum_element_bits: env_int = env_int("FLAGTREE_MUSA_RLC_CONVERT_MIN_ELEMENT_BITS", 0)
+    rlc_convert_cost_per_byte: env_int = env_int("FLAGTREE_MUSA_RLC_CONVERT_COST_PER_BYTE", 0)
+    rlc_cached_load_cost_per_byte: env_int = env_int("FLAGTREE_MUSA_RLC_CACHED_LOAD_COST_PER_BYTE", 0)
+    rlc_expensive_math_cost_per_byte: env_int = env_int("FLAGTREE_MUSA_RLC_EXPENSIVE_MATH_COST_PER_BYTE", 0)
+    rlc_inter_warp_reduce_cost: env_int = env_int("FLAGTREE_MUSA_RLC_INTER_WARP_REDUCE_COST", 0)
+    # MUSA scalarizes atomic tensor elements in one thread. Keep Phase 2 from
+    # increasing that per-thread atomic count; the RLC master switch remains
+    # default-off, and Phase 3 MMA atomic rematerialization is unaffected.
+    rlc_atomic_writeback_max_elements_per_thread_ratio: env_int = env_int(
+        "FLAGTREE_MUSA_RLC_ATOMIC_WRITEBACK_MAX_ELEMS_PER_THREAD_RATIO", 1)
+    # MUSA scalar and vector int-to-fp paths are not bit-identical at every
+    # rounding boundary. Phase 2 must not change that per-thread vector width.
+    rlc_preserve_int_to_fp_contiguity: env_bool = env_bool(
+        "FLAGTREE_MUSA_RLC_PRESERVE_INT_TO_FP_CONTIGUITY", True)
 
 
 # flagtree ppu
