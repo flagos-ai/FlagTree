@@ -77,8 +77,11 @@ override_dh_strip:
 	# 724 MB to 187 MB; lintian still counts the kept .symtab as "unstripped",
 	# which the package's lintian-overrides file documents.
 	dh_strip --no-automatic-dbgsym -X libtriton -X libproton
-	find debian/$(PKG) \( -name 'libtriton.*.so' -o -name 'libproton.*.so' \) \
+	find debian/$(PKG) \( -name 'libtriton*.so' -o -name 'libproton*.so' \) \
 		-exec strip --strip-debug {} +
+	# A pattern that matches nothing strips nothing and fails nothing: the
+	# 0.7.0 deb shipped at 263 MB that way. Require the module to be found.
+	test -n "$$(find debian/$(PKG) -name 'libtriton*.so')"
 
 override_dh_dwz:
 	# dwz would place its multifile under usr/lib/debug/.dwz/ inside the
