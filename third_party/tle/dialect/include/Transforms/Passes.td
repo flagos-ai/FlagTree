@@ -387,6 +387,26 @@ def TritonTleLowerPipeToNvws
                            "mlir::triton::nvws::NVWSDialect"];
 }
 
+def TritonTleLowerPipeToRDNA
+    : Pass<"triton-tle-lower-pipe-to-rdna", "mlir::ModuleOp"> {
+  let summary = "lower CTA SMEM TLE pipe operations to AMD/RDNA mbarrier ops";
+
+  let description = [{
+    RDNA analogue of triton-tle-lower-pipe-to-nvws. Lowers the CTA-scoped SMEM
+    pipe IR produced by tle.pipe to the AMD hardware mbarrier ops
+    (triton::amdgpu::{Init,Arrive,Wait}BarrierOp): a per-stage full/empty
+    mbarrier pair with whole-CTA participant counts, correctness-first (no warp
+    specialization or async transport). The amd dialect is loaded at run time, so
+    it is not declared as a dependent dialect here (the pass is a no-op on builds
+    without the amd backend).
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::gpu::GPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def TritonTleRestorePipeFunctionCalls
     : Pass<"triton-tle-restore-pipe-function-calls", "mlir::ModuleOp"> {
   let summary = "restore noinline pipe helper calls after NVWS state materialization";

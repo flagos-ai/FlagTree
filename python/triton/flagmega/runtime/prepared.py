@@ -214,7 +214,12 @@ class _ScratchBufferView:
     arrival, and the steady-state counter value stays in ``{0, 0x80000000}``.
     Returning a view without those methods skips the redundant per-launch
     clear while keeping the storage alive through the kept buffer reference.
+    ``pre_zeroed`` marks the buffer as already zero-initialized so a cooperative
+    launcher can distinguish this intentional opt-out from an allocator that
+    simply forgot to clear its scratch (which must be refused, not skipped).
     """
+
+    pre_zeroed = True
 
     def __init__(self, buffer, nbytes: int) -> None:
         self._buffer = buffer
