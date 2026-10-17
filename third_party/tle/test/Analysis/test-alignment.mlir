@@ -21,9 +21,11 @@
 
 // RUN: triton-opt %s -test-print-alignment -split-input-file -verify-diagnostics=only-expected -o /dev/null
 
+// Native MakeRange axis info uses gcd(start, span): gcd(0, 128) = 128.
+
 // TLE-specific axis-info coverage for remote pointer propagation.
 tt.func @tle_remote_pointers_axis_info(%arg0: !tt.ptr<f16, 3> {tt.divisibility = 16 : i32}) {
-  // expected-remark @below {{contiguity = [128], divisibility = [1073741824], constancy = [1], constant_value = <none>}}
+  // expected-remark @below {{contiguity = [128], divisibility = [128], constancy = [1], constant_value = <none>}}
   %0 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
   // expected-remark @below {{contiguity = [1], divisibility = [16], constancy = [128], constant_value = <none>}}
   %1 = tt.splat %arg0 : !tt.ptr<f16, 3> -> tensor<128x!tt.ptr<f16, 3>>
