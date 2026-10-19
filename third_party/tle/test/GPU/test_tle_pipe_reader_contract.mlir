@@ -1,4 +1,5 @@
 // RUN: triton-opt %s -split-input-file -triton-tle-lower-pipe-to-nvws -verify-diagnostics
+// RUN: triton-opt %s -split-input-file -triton-tle-lower-pipe-to-rdna -verify-diagnostics
 
 // Wait validates the reader during lifecycle lowering; release validates it
 // during drain analysis. Both phases must use the same declaration contract.
