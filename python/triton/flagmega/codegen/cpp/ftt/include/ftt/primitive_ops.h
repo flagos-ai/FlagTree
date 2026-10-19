@@ -244,6 +244,43 @@ FTT_DEVICE_INLINE bf16_run_t<Count> load_run(const bfloat16_t *source) {
     return value;
 }
 
+// One adjacent bf16 pair as a single 4-byte transaction.
+//
+// `dot2_step` reads `bf16_run_t::word`, and a run is a whole number of 16-byte
+// loads (`Count % 8 == 0`), so it cannot express a lone pair. A walk that
+// gives each thread two adjacent elements rather than eight needs this: the
+// pair is already packed in memory, so the load is the whole conversion, and
+// the result feeds `arch::bf16_pair_dot` directly for one instruction per two
+// multiply-accumulates instead of two converts and two FMAs.
+//
+// The pointer must be 4-byte aligned, which an even element index gives.
+//
+// This is a pointer cast rather than a `__builtin_memcpy` of four bytes, which
+// is not a stylistic choice: memcpy here compiles to *two* `ml_lsa_load_ushort`
+// plus packing moves rather than one `ml_lsa_load_dword` on this target,
+// verified on an isolated kernel holding both forms. Emitting the pair as two
+// 2-byte loads defeats the entire point, and it is invisible in the generated
+// C++ -- only the device assembly shows it.
+FTT_DEVICE_INLINE unsigned int load_pair(const bfloat16_t *source) {
+    return *reinterpret_cast<const unsigned int *>(source);
+}
+
+// Two multiply-accumulates from a pair of packed bf16 pairs.
+//
+// The same arithmetic and the same rounding as `dot2_step`, for callers
+// holding bare packed words rather than a `bf16_run_t`.
+FTT_DEVICE_INLINE float pair_dot_step(unsigned int lhs, unsigned int rhs,
+                                      float accumulator) {
+#if defined(FTT_DEVICE_PASS) && defined(FTT_ARCH_ILUVATAR)
+    return ftt::arch::bf16_pair_dot(lhs, rhs, accumulator);
+#else
+    bf16_run_t<8> l{}, r{};
+    l.word[0] = lhs;
+    r.word[0] = rhs;
+    return accumulator + l.at(0) * r.at(0) + l.at(1) * r.at(1);
+#endif
+}
+
 // Same run, loaded as 4-byte transactions instead of one 16-byte transaction.
 //
 // Load *width* and loads *in flight* are separate knobs on this device and

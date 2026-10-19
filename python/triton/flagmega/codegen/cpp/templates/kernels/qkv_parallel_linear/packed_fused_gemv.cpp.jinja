@@ -52,8 +52,217 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
        and call.weight_n_group_stride == call.n_lane * call.k_lane
        and (output.local_n_capacity * call.k_lane) % chunk == 0
        and output.local_n_capacity * call.k_lane < block_threads * chunk %}
+{# Give each thread an adjacent K *pair* and reduce it with one packed dot.
+
+   The scalar walk advances `qkv_payload` by one thread per step, so a thread's
+   consecutive K elements are `k_lane` apart -- strided, never adjacent -- and
+   the packed dot needs two neighbours. That is why this site alone still
+   emits `to_float(weight) * to_float(source)` per element while every other
+   GEMV family uses `dot2_step`, and it is why it measures lowest: 405 GB/s,
+   49.5% of peak.
+
+   Pairing halves the work items, so it is only legal where the walk can
+   afford it. Here `N * k_lane / 2` is exactly `block_threads`, i.e. one item
+   per thread and residency unchanged at 100%; at a pair of 4 it would drop to
+   50%, which is the residency cliff the notes in dense_matmul_glu record. The
+   guard below demands the halved item count still fill the block.
+
+   Both operands are adjacent in memory: the packed address ends in
+   `(n % n_lane) * k_lane + k % k_lane`, so `k` and `k+1` are consecutive
+   weight addresses within a lane run, and the activation is contiguous in K.
+   An off-device oracle confirms the paired walk multiplies the identical
+   (weight, source) multiset for all 128 outputs with every pair adjacent. #}
+{% set pair = 2 %}
+{% set paired = qkv_pair and (not tiled)
+       and call.k_lane % pair == 0
+       and call.k_predicate_redundant
+       and (output.local_n_capacity * call.k_lane) % pair == 0
+       and ((output.local_n_capacity * call.k_lane) // pair) >= block_threads
+       and (((output.local_n_capacity * call.k_lane) // pair)
+            % block_threads == 0) %}
 {% set step = chunk if tiled else 1 %}
 {% set coop = (call.k_lane // chunk) if tiled else call.k_lane %}
+{# One thread's payload items all land on the same `k_in_lane`, so they read a
+   byte-identical activation element and differ only in N.
+
+   `qkv_payload` advances by `ftt_threads`, which is a whole multiple of
+   `k_lane`, so every item a thread owns has the same `payload % k_lane`. The
+   scalar walk below re-issues that activation load once per item per K group;
+   hoisting it to the N tile's outer level loads it once and reuses it across
+   every item. This is the same fix that took GLU from 10.38 to 10.22 ms/token
+   (see the note in dense_matmul_glu/_function.cpp.jinja), applied to the site
+   that needs it most: QKV runs at 405 GB/s, 49.5% of peak, the lowest of any
+   GEMV site, and every one of its loads counts toward that.
+
+   Not to be confused with the N-direction *weight* tile above (`qkv_tiled`),
+   which was measured twice as a loss -- 9.391 against 9.245 -- because a
+   chunk of 8 triples the live registers of a kernel that writes three fused
+   outputs. This changes no load width and adds no live run, so that objection
+   does not apply: the emitted count per thread per output per layer drops from
+   `items * groups * 2` to `groups * (items + 1)`, i.e. 512 -> 288 at N=512.
+
+   The index algebra is unchanged -- the same `(payload)` base is computed per
+   item and the same `(weight, source)` pair is multiplied -- so the oracle in
+   the round notes reports an identical multiset for all 512 outputs. #}
+{% set qkv_items = ((output.local_n_capacity * call.k_lane) // block_threads)
+       if ((output.local_n_capacity * call.k_lane) % block_threads == 0)
+       else 1 %}
+{# Requires the K predicate to be provably redundant. The hoisted load is
+   issued once for the whole tile, before the per-step guard the scalar walk
+   applies, so a predicate that actually excludes a K offset would change
+   which elements are read. When it is not redundant the renderer also drops
+   `k_streams` to 1, so there is nothing to hoist across anyway. #}
+{% set hoist = qkv_hoist and (not tiled) and qkv_items > 1
+       and call.k_predicate_redundant
+       and (block_threads % call.k_lane == 0) %}
+{% if paired %}
+        for (ftt::dim_t qkv_item = ftt_thread;
+             qkv_item < {{ (output.local_n_capacity * call.k_lane) // pair }}LL;
+             qkv_item += ftt_threads) {
+            const ftt::dim_t qkv_payload = qkv_item * {{ pair }}LL;
+            const ftt::dim_t qkv_local_n_offsets =
+                qkv_payload / {{ call.k_lane }}LL;
+            const ftt::dim_t qkv_k_in_lane = qkv_payload % {{ call.k_lane }}LL;
+            if (!({{ output.active | cppexpr }})) {
+                continue;
+            }
+            const ftt::dim_t qkv_n = qkv_local_n_offsets;
+            float qkv_partial[{{ kg }}] = {};
+            for (ftt::dim_t qkv_group_base = 0;
+                 qkv_group_base < {{ groups }}LL;
+                 qkv_group_base += {{ kg }}LL) {
+                FTT_UNROLL
+                for (ftt::dim_t qkv_stream = 0; qkv_stream < {{ kg }}LL;
+                     ++qkv_stream) {
+                    const ftt::dim_t qkv_local_k_offsets =
+                        (qkv_group_base + qkv_stream) * {{ call.k_lane }}LL
+                        + qkv_k_in_lane;
+                    const ftt::dim_t qkv_weight_offsets =
+                        shard_index * {{ call.weight_owner_stride }}LL
+                        + (qkv_local_k_offsets / {{ call.k_lane }}LL)
+                            * {{ call.weight_k_group_stride }}LL
+                        + ({{ output.weight_group_start }}LL
+                           + qkv_n / {{ call.n_lane }}LL)
+                            * {{ call.weight_n_group_stride }}LL
+                        + (qkv_n % {{ call.n_lane }}LL) * {{ call.k_lane }}LL
+                        + qkv_local_k_offsets % {{ call.k_lane }}LL;
+{# One 4-byte load per operand and one packed dot, replacing two 2-byte loads,
+   two converts and two FMAs. Products and accumulation stay in fp32, so the
+   rounding contract is the one `test_bf16_product_precision` asserts. #}
+                    qkv_partial[(int)qkv_stream] = ftt::pair_dot_step(
+                        ftt::load_pair(&ftt_weight[qkv_weight_offsets]),
+                        ftt::load_pair(
+                            &ftt_source[{{ call.source_offset | cppexpr }}]),
+                        qkv_partial[(int)qkv_stream]);
+                }
+            }
+            float qkv_accumulator = 0.0f;
+            FTT_UNROLL
+            for (int qkv_stream = 0; qkv_stream < {{ kg }}; ++qkv_stream)
+                qkv_accumulator += qkv_partial[qkv_stream];
+{# `pair` adjacent K elements are now reduced inside one thread, so the
+   cooperating group that folds them is `pair` times smaller. #}
+{% if (coop // pair) > 1 %}
+            qkv_accumulator = ftt::arch::lane_group_reduce_sum<
+                {{ coop // pair }}>(qkv_accumulator);
+{% endif %}
+            if (qkv_k_in_lane == 0) {
+                ftt_result[{{ output.result_offset | cppexpr }}] =
+                    ftt::store_as(ftt_result, qkv_accumulator);
+            }
+        }
+{% elif hoist %}
+        for (ftt::dim_t qkv_base = ftt_thread;
+             qkv_base < {{ output.local_n_capacity }}LL * {{ call.k_lane }}LL;
+             qkv_base += ftt_threads * {{ qkv_items }}LL) {
+            const ftt::dim_t qkv_k_in_lane = qkv_base % {{ call.k_lane }}LL;
+            ftt::dim_t qkv_item_n[{{ qkv_items }}];
+            bool qkv_item_live[{{ qkv_items }}];
+            FTT_UNROLL
+            for (int qkv_item = 0; qkv_item < {{ qkv_items }}; ++qkv_item) {
+                const ftt::dim_t qkv_payload =
+                    qkv_base + qkv_item * ftt_threads;
+                qkv_item_n[qkv_item] = qkv_payload / {{ call.k_lane }}LL;
+{# `output.active` is written against `qkv_local_n_offsets`, the name the
+   scalar walk binds per payload step, so bind it per item here. #}
+                const ftt::dim_t qkv_local_n_offsets = qkv_item_n[qkv_item];
+                qkv_item_live[qkv_item] =
+                    (qkv_payload
+                         < {{ output.local_n_capacity }}LL * {{ call.k_lane }}LL)
+                    && ({{ output.active | cppexpr }});
+            }
+            float qkv_partial[{{ qkv_items }}][{{ kg }}] = {};
+            for (ftt::dim_t qkv_group_base = 0;
+                 qkv_group_base < {{ groups }}LL;
+                 qkv_group_base += {{ kg }}LL) {
+{# The shared activation values: one load per K stream for the whole tile,
+   held widened in registers. `bf16_run_t` is not the right container here --
+   it packs a contiguous 16-byte run, while these are `kg` elements strided by
+   `k_lane` -- so this is a plain float array, which is also what the inner
+   multiply consumes. #}
+                float qkv_source_value[{{ kg }}];
+                FTT_UNROLL
+                for (int qkv_stream = 0; qkv_stream < {{ kg }};
+                     ++qkv_stream) {
+                    const ftt::dim_t qkv_local_k_offsets =
+                        (qkv_group_base + qkv_stream) * {{ call.k_lane }}LL
+                        + qkv_k_in_lane;
+                    qkv_source_value[qkv_stream] = ftt::to_float(
+                        ftt_source[{{ call.source_offset | cppexpr }}]);
+                }
+                FTT_UNROLL
+                for (int qkv_item = 0; qkv_item < {{ qkv_items }}; ++qkv_item) {
+                    if (!qkv_item_live[qkv_item]) {
+                        continue;
+                    }
+                    const ftt::dim_t qkv_n = qkv_item_n[qkv_item];
+                    FTT_UNROLL
+                    for (ftt::dim_t qkv_stream = 0; qkv_stream < {{ kg }}LL;
+                         ++qkv_stream) {
+                        const ftt::dim_t qkv_local_k_offsets =
+                            (qkv_group_base + qkv_stream) * {{ call.k_lane }}LL
+                            + qkv_k_in_lane;
+                        const ftt::dim_t qkv_weight_offsets =
+                            shard_index * {{ call.weight_owner_stride }}LL
+                            + (qkv_local_k_offsets / {{ call.k_lane }}LL)
+                                * {{ call.weight_k_group_stride }}LL
+                            + ({{ output.weight_group_start }}LL
+                               + qkv_n / {{ call.n_lane }}LL)
+                                * {{ call.weight_n_group_stride }}LL
+                            + (qkv_n % {{ call.n_lane }}LL) * {{ call.k_lane }}LL
+                            + qkv_local_k_offsets % {{ call.k_lane }}LL;
+                        qkv_partial[qkv_item][(int)qkv_stream] +=
+                            ftt::to_float(ftt_weight[qkv_weight_offsets])
+                            * qkv_source_value[(int)qkv_stream];
+                    }
+                }
+            }
+            FTT_UNROLL
+            for (int qkv_item = 0; qkv_item < {{ qkv_items }}; ++qkv_item) {
+                if (!qkv_item_live[qkv_item]) {
+                    continue;
+                }
+                float qkv_accumulator = 0.0f;
+                FTT_UNROLL
+                for (int qkv_stream = 0; qkv_stream < {{ kg }}; ++qkv_stream)
+                    qkv_accumulator +=
+                        qkv_partial[qkv_item][qkv_stream];
+{# Same fold and store guard as the scalar walk: `coop` lanes each reduced a
+   slice of this output's K axis, so they fold through the lane group and only
+   the lane holding `k_in_lane == 0` stores. Every item of the tile shares one
+   `k_in_lane`, so the predicate is uniform across the tile. #}
+{% if coop > 1 %}
+                qkv_accumulator = ftt::arch::lane_group_reduce_sum<
+                    {{ coop }}>(qkv_accumulator);
+{% endif %}
+                if (qkv_k_in_lane == 0) {
+                    const ftt::dim_t qkv_local_n_offsets = qkv_item_n[qkv_item];
+                    ftt_result[{{ output.result_offset | cppexpr }}] =
+                        ftt::store_as(ftt_result, qkv_accumulator);
+                }
+            }
+        }
+{% else %}
         for (ftt::dim_t qkv_payload = ftt_thread * {{ step }}LL;
              qkv_payload < {{ output.local_n_capacity }}LL * {{ call.k_lane }}LL;
              qkv_payload += ftt_threads * {{ step }}LL) {
@@ -125,6 +334,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     ftt::store_as(ftt_result, qkv_accumulator);
             }
         }
+{% endif %}
     }
 {% endfor %}
 }

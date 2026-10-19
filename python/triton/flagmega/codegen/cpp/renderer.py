@@ -125,6 +125,45 @@ CPP_SME_PAD = int(os.environ.get("FLAGMEGA_CPP_SME_PAD", "0"))
 # live outputs per loop, not a wider payload walk.
 CPP_QKV_TILED = os.environ.get("FLAGMEGA_CPP_QKV_TILED", "0") == "1"
 
+# Hold the QKV activation element in a register across the payload items one
+# thread owns, instead of reloading it per item.
+#
+# The premise holds: a thread's items are `block_threads` apart and that is a
+# whole multiple of `k_lane`, so every item it owns reads a byte-identical
+# activation element, and an off-device oracle confirms the hoisted walk
+# multiplies the identical (weight, source) multiset for all 128 outputs while
+# emitting 25% fewer loads. It is still a measured loss -- 10.31 against 9.56
+# ms/token, reproduced in both orders on one card -- so it is off.
+#
+# The reason is why it matters, because it bounds the whole family: moving the
+# activation out of the step loop puts the N items *inside* the unrolled body,
+# and the compiler fully unrolls `items * kg` instead of `kg`. That doubled
+# body measured +3584 `ml_fma_f32` and +3584 `ml_cvt_f32_bf16`, 27% more
+# arithmetic, with spills unchanged at 2386 and address arithmetic unchanged at
+# 3 `ml_mad_u32_u16`. The loads it removed were L2 hits on a 4 KB activation,
+# while the instructions it added occupy the issue slots this kernel is
+# actually limited by -- so it trades cheap loads for expensive issue.
+#
+# This is the same ordering that makes `CPP_QKV_TILED` lose, by a different
+# mechanism: that one widens the weight load and pays in registers, this one
+# narrows the load count and pays in issue slots. The site is at 405 GB/s
+# (49.5% of peak) because its scalar walk converts each 2-byte weight
+# separately -- `ftt::to_float(weight) * ftt::to_float(source)`, no packed
+# dot -- and neither knob addresses that.
+CPP_QKV_HOIST = os.environ.get("FLAGMEGA_CPP_QKV_HOIST", "0") == "1"
+
+# Reduce an adjacent K pair per thread in the fused QKV GEMV, so the packed
+# bf16 dot applies there too.
+#
+# The scalar walk advances one thread per K element, so a thread's consecutive
+# elements are `k_lane` apart and never adjacent -- which is why this is the
+# one GEMV family still emitting `to_float(w) * to_float(s)` per element after
+# the packed dot landed everywhere else, and why it measures lowest at
+# 405 GB/s (49.5% of peak). Pairing halves the work items, and here that is
+# exactly `block_threads`, so residency stays at 100% rather than falling off
+# the cliff a pair of 4 would reach.
+CPP_QKV_PAIR = os.environ.get("FLAGMEGA_CPP_QKV_PAIR", "1") == "1"
+
 # Group-loop unroll in the SME consumer, which sets how many activation runs
 # a lane holds in registers at once. In the SME path the activation is the
 # only global read left in the consumer (weights arrive via shared), and it is
@@ -225,6 +264,8 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "sme_unroll": CPP_SME_UNROLL,
         "sme_pad": CPP_SME_PAD,
         "qkv_tiled": CPP_QKV_TILED,
+        "qkv_hoist": CPP_QKV_HOIST,
+        "qkv_pair": CPP_QKV_PAIR,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
         "sme_arena_elems": _sme_arena_elems(
             descriptor, CPP_BLOCK_THREADS // _target_warp_size(architecture)),
