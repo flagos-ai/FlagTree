@@ -10,6 +10,7 @@ from triton.flagmega.artifacts import load_artifact, write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.errors import RuntimeContractError
 from triton.flagmega import ir as fm
+from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import PreparedKernel, ResourceContract, load, prepare_jit_kernel
 
 
@@ -183,6 +184,17 @@ def test_prepared_direct_c_launcher_executes_without_second_jit():
     torch.cuda.synchronize()
 
     torch.testing.assert_close(output, torch.full_like(output, 5.0))
+
+
+@pytest.mark.parametrize("target", ["nvidia-sm89", "nvidia-sm90", "nvidia-sm120"])
+def test_nvidia_tir_artifact_loads_without_device(tmp_path, target):
+    compiled = Compiler(CompileOptions(target=target)).compile(_add_module()).module
+    artifact = write_artifact(compiled, tmp_path / "add-artifact", target=target, emit_executable=True)
+
+    runtime = load(artifact)
+
+    assert runtime.manifest["target"] == target
+    assert runtime.manifest["codegen"]["kind"] == "tir_call_graph/v1"
 
 
 def test_executable_artifact_load_prepare_run_into_on_h800(tmp_path):

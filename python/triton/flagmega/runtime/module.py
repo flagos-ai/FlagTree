@@ -108,6 +108,16 @@ def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False
             # a future kernel change) will still raise.
             spill_tolerance_bytes=128,
         )
+    if target == "nvidia-sm89":
+        # Ada (sm_89) exposes a 99 KB opt-in shared-memory limit
+        # (Sm89Capability.max_shared_memory_bytes = 101376), not Hopper's
+        # 227,328-byte ResourceContract default. Use the matching capacity so
+        # the resource check rejects a kernel whose smem would overflow Ada.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            shared_memory_capacity_bytes=101376,
+        )
     return ResourceContract(
         compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
         requires_grid_wide_sync=requires_grid_wide_sync,
@@ -2039,7 +2049,11 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
-    expected = {"nvidia-sm90": (9, 0), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
+    # Each target pins an exact compute capability. nvidia-sm89 is Ada (8, 9)
+    # specifically: the Sm89Capability resource model (99 KB opt-in smem, Ada
+    # register file) does not describe other 8.x parts (e.g. A100 sm_80), so a
+    # loose 8.x match would admit a device the artifact was not built for.
+    expected = {"nvidia-sm90": (9, 0), "nvidia-sm89": (8, 9), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
     if expected is None:
         raise RuntimeContractError(f"Unsupported executable FlagMega target {target!r}.")
     if capability != expected:

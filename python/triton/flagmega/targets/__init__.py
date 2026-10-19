@@ -15,10 +15,12 @@ from triton.flagmega.targets.iluvatar_bi_v150 import (
     IluvatarBiV150Machine,
     IluvatarBiV150Target,
 )
+from triton.flagmega.targets.nvidia_sm89 import NvidiaSm89Target
 
 register_target(NvidiaSm90Target())
 register_target(NvidiaSm120Target())
 register_target(IluvatarBiV150Target())
+register_target(NvidiaSm89Target())
 
 __all__ = [
     "IluvatarBiV150Capability",
