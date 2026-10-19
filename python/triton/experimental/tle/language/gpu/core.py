@@ -1244,6 +1244,7 @@ def copy(
     is_async: bool = False,
     eviction_policy: str = "",
     mask=None,
+    input_stride=None,
     _semantic: TLESemantic | None = None,
 ) -> None:
     """
@@ -1393,6 +1394,22 @@ def copy(
         # rejects `other` without a mask before reaching here.
         if direction == CopyDirection.GM_TO_LOCAL and mask is not None:
             other = _semantic.to_tensor(0.0 if other is None else other)
+        # The SME row stride, as a value the Iluvatar load path can consume.
+        # It is only meaningful on that path: every other backend's `load` has
+        # no stride slot to put it in, and an asynchronous copy lowers through
+        # `create_async_copy_global_to_local`, which takes no stride either.
+        sme_stride = None
+        if input_stride is not None:
+            if not iluvatar_enabled:
+                raise RuntimeError(
+                    "copy(input_stride=...) selects the Iluvatar SME load path, "
+                    "which this backend does not provide")
+            stride_value = tl._unwrap_if_constexpr(input_stride)
+            sme_stride = (
+                stride_value if hasattr(stride_value, "handle")
+                else _semantic.to_tensor(stride_value)
+            )
+
         boundary_check = ()
         padding_option = ""
         cache_modifier = ""
@@ -1404,20 +1421,47 @@ def copy(
                     if not hasattr(_semantic.builder, "create_async_copy_global_to_local"):
                         raise RuntimeError(
                             "copy(is_async=True) requires a Triton build with explicit TLE async-copy support")
-                    _semantic.builder.create_async_copy_global_to_local(
-                        dst.handle,
-                        src.handle,
-                        ir.value() if mask is None else mask.handle,
-                        ir.value() if mask is None else _semantic.full(src.type.shape, 0, dst.dtype).handle,
-                        _semantic._str_to_load_cache_modifier(cache_modifier),
-                        _semantic._str_to_eviction_policy(eviction_policy),
-                        volatile,
+                    mask_handle = ir.value() if mask is None else mask.handle
+                    other_handle = (
+                        ir.value() if mask is None
+                        else _semantic.full(src.type.shape, 0, dst.dtype).handle
                     )
+                    if sme_stride is not None:
+                        if not hasattr(
+                                _semantic.builder,
+                                "create_async_copy_global_to_local_with_stride"):
+                            raise RuntimeError(
+                                "copy(input_stride=..., is_async=True) requires a "
+                                "Triton build with strided TLE async-copy support")
+                        _semantic.builder.create_async_copy_global_to_local_with_stride(
+                            dst.handle,
+                            src.handle,
+                            mask_handle,
+                            other_handle,
+                            sme_stride.handle,
+                            _semantic._str_to_load_cache_modifier(cache_modifier),
+                            _semantic._str_to_eviction_policy(eviction_policy),
+                            volatile,
+                        )
+                    else:
+                        _semantic.builder.create_async_copy_global_to_local(
+                            dst.handle,
+                            src.handle,
+                            mask_handle,
+                            other_handle,
+                            _semantic._str_to_load_cache_modifier(cache_modifier),
+                            _semantic._str_to_eviction_policy(eviction_policy),
+                            volatile,
+                        )
                 elif iluvatar_enabled:
-                    # Iluvatar's semantic.load carries an extra `stride` (SME) slot
-                    # right after `other`; TLE copy never uses the SME path.
-                    tt_load = _semantic.load(src, mask, other, None, boundary_check, padding_option, cache_modifier,
-                                             eviction_policy, volatile)
+                    # Iluvatar's semantic.load carries an extra `stride` (SME)
+                    # slot right after `other`. A caller that passes
+                    # `input_stride` is asking for exactly that path: the
+                    # source rows are `input_stride` elements apart, which is
+                    # what `create_sme_load` needs and what a plain load
+                    # cannot express.
+                    tt_load = _semantic.load(src, mask, other, sme_stride, boundary_check, padding_option,
+                                             cache_modifier, eviction_policy, volatile)
                 else:
                     # None fills the FlagTree hints slot; TLE copy has no hints to pass.
                     load_extra_args = () if mthreads_enabled else (None, )
@@ -1556,8 +1600,15 @@ def copy(
     if cache_policy is not None and (is_normcopy or direction != CopyDirection.GM_TO_LOCAL):
         raise ValueError("copy cache_policy is only supported for descriptor-to-shared copies")
     if is_async:
-        if mthreads_enabled or iluvatar_enabled:
-            raise ValueError("copy(is_async=True) is currently supported only by the NVIDIA TLE backend")
+        # Iluvatar implements this: its builder exposes
+        # `create_async_copy_global_to_local{,_with_stride}`, and the SME G2S
+        # engine is precisely an asynchronous global-to-shared copy. The
+        # strided form is what an `input_stride` caller needs, because the SME
+        # source rows are a fixed element stride apart.
+        if mthreads_enabled:
+            raise ValueError(
+                "copy(is_async=True) is currently supported only by the NVIDIA "
+                "and Iluvatar TLE backends")
         if not is_normcopy or direction != CopyDirection.GM_TO_LOCAL:
             raise ValueError(
                 "copy(is_async=True) supports only a tl.tensor of global pointers copied to a shared-memory "
