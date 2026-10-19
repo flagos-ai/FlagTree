@@ -75,12 +75,22 @@ def build_pipeline_source_schedule(
     encoded_calls: Mapping[str, list[dict[str, object]]],
     kernel_event_factory: KernelEventFactory,
     descriptor_instantiator: Callable,
+    *,
+    pool_function_arguments: bool = True,
 ) -> dict[str, object] | None:
     """Project the entry's explicit TIR region into producer/consumer source.
 
     This is intentionally a visitor over ``ProducerConsumerRegion`` rather
     than a scan for implementation names. Each ExecutionFunction has one
     formal role body; calls instantiate only its physical resource interface.
+
+    ``pool_function_arguments`` selects the reusable-function calling
+    convention. When set, a callee's buffer formals whose origin is provable
+    at every call site are folded into a pool base plus a displacement read
+    from a generated offset table. A consumer whose own device-function ABI
+    passes one pointer per buffer -- the C++ backend -- clears it, because
+    those formals would otherwise arrive as pool arithmetic it cannot type or
+    emit. The default preserves the pooled convention.
     """
 
     execution = module.execution_function_map.get(module.entry)
@@ -91,8 +101,9 @@ def build_pipeline_source_schedule(
     definitions: dict[tuple[str, bool], dict[str, object]] = {}
     active: list[str] = []
     row_strides = bank_row_strides(module, verify_buffer_plan(module))
-    pool_abis, offset_tables = plan_function_pool_abis(
-        bindings, row_strides, entry=module.entry
+    pool_abis, offset_tables = (
+        plan_function_pool_abis(bindings, row_strides, entry=module.entry)
+        if pool_function_arguments else ({}, [])
     )
 
     def build_function(name, in_loop=False):

@@ -49,8 +49,16 @@ from .kernel_programs import describe_kernel_programs
 TIR_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.triton-package-descriptor/v1"
 
 
-def describe_tir_package(module: IRModule) -> dict[str, object]:
-    """Derive source-generation facts solely from executable TIR contracts."""
+def describe_tir_package(
+    module: IRModule, *, pool_function_arguments: bool = True
+) -> dict[str, object]:
+    """Derive source-generation facts solely from executable TIR contracts.
+
+    ``pool_function_arguments`` forwards the reusable-function calling
+    convention to the source schedule; see
+    ``build_pipeline_source_schedule``. A backend whose device functions take
+    one pointer per buffer clears it.
+    """
 
     try:
         verify_module(module)
@@ -145,6 +153,7 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
             )
         ),
         _instantiate_descriptor_requests,
+        pool_function_arguments=pool_function_arguments,
     )
     pipeline_schedule = source_schedule if source_schedule and source_schedule["stages"] else None
     if source_schedule is not None:

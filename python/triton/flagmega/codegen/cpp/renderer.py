@@ -170,7 +170,14 @@ def _target_warp_size(architecture: str) -> int:
 def describe_cpp_package(module: IRModule) -> dict[str, object]:
     """Extend the shared TIR descriptor with the C++ package's own facts."""
 
-    descriptor = dict(describe_tir_package(module))
+    # The C++ device-function ABI passes one pointer per buffer and types every
+    # formal from the ABI of the kernel call that binds it. The pooled calling
+    # convention instead folds provable buffer formals into a pool base plus a
+    # displacement read from a generated offset table, which leaves those
+    # formals with no binding to be typed from and adds a table argument that
+    # is not a buffer at all. Ask the shared descriptor for the unpooled
+    # convention rather than teaching every template to undo it.
+    descriptor = dict(describe_tir_package(module, pool_function_arguments=False))
     platform = str(descriptor.get("platform", ""))
     architecture = str(descriptor.get("target_architecture", ""))
     registry = CppTemplateRegistry()
