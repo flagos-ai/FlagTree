@@ -40,6 +40,16 @@ def corex_triton_implementation_model():
          "producer_warps": 4, "producer_registers": 64,
          "consumer_warps": 16, "worker_width": 64, "compute_num_warps": 16,
          "descriptor_kind": "pointer",
+         # This variant stages only the weight: its template reads the
+         # activation with a plain `tl.load` inside the consumer rather than
+         # through a pipeline slot, so it declares one shared workspace, not
+         # two. Without this the renderer rejects it for missing an LHS stage.
+         "direct_lhs": True,
+         # The template walks `num_n_tiles`, so a block_n smaller than the
+         # owner-local N extent is tiled rather than a mismatch. block_n is
+         # tunable down to 16 against a 256-wide shard, so this is the normal
+         # case here, not a tail.
+         "n_tiling": True,
          # Two physical Shared slots let layer i+1 overlap layer i; the
          # source scheduler retains the lifetime drain before slot i is reused.
          "inter_stage_buffer_slots": 2},

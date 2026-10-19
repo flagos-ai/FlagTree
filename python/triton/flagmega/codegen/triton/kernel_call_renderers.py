@@ -5087,7 +5087,17 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
             ),
         })
         return result
-    if variant not in {"packed_mma_smem_pipeline", "packed_gemv_smem_pipeline"}:
+    # `packed_pointer_smem_pipeline` shares this ABI: it reads a strict subset
+    # of the fields computed below, taking the weight as a plain pointer rather
+    # than a descriptor, which is what its target registration asks for
+    # (`descriptor_kind: "pointer"`). It is registered by the BI-V150 target
+    # and has a template, so omitting it here rejected a variant the catalog
+    # offers.
+    if variant not in {
+        "packed_mma_smem_pipeline",
+        "packed_gemv_smem_pipeline",
+        "packed_pointer_smem_pipeline",
+    }:
         raise CodegenError(
             f"PackedQKV variant {variant!r} has no local-shard template ABI."
         )
@@ -5128,13 +5138,43 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         or block_n % 8
         or block_k % 16
         or num_stages <= 0
-        or consumer_warps != 8
-        or worker_width != 32
+        or consumer_warps <= 0
+        or worker_width <= 0
+        # The consumer partition must divide, but its literal width is the
+        # target's warp geometry, not a constant: BI-V150 warps are 64 lanes
+        # and that target registers 16 consumer warps of width 64 where sm90
+        # registers 8 of width 32. Pinning 8x32 here rejected a variant the
+        # catalog offers, and the sibling dense paths above validate the same
+        # partition by divisibility alone.
+        or worker_width & (worker_width - 1)
     ):
         raise CodegenError(
             "PackedQKV pipeline requires a full owner-local N tile, declared masked tail or N tiling, complete K16 "
-            "tiles (or declared direct LHS tails), eight consumer warps, and 32 threads per warp."
+            "tiles (or declared direct LHS tails), and a consumer partition that divides its payload."
         )
+    if variant == "packed_pointer_smem_pipeline":
+        # Everything below describes the MMA operand path: an (8,2,8) lane
+        # shape, an owner-major [owner,K/16,N/8] backing, and a host tensor
+        # map whose Shared box reshapes to an MMA [N,K] operand. This variant
+        # has no `tl.dot` -- it multiplies elementwise and folds with
+        # `tl.sum` -- and takes the weight as a plain pointer, so none of
+        # those contracts apply to it. It needs the pipeline fields only.
+        result.update({
+            "pipeline_contract": dict(pipeline),
+            "shared_workspaces": tuple(workspaces),
+            "pipeline_channel_field_names": {"weight": ("weight",)},
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": num_stages,
+            "direct_lhs": direct_lhs,
+            "num_k_tiles": (source_domain["capacity"] + block_k - 1) // block_k,
+            "num_n_tiles": (local_n + block_n - 1) // block_n,
+            "consumer_warps": consumer_warps,
+            "worker_width": worker_width,
+            "producer_warps": int(parameters["producer_warps"]),
+            "producer_registers": int(parameters["producer_registers"]),
+        })
+        return result
     if lane_shape != (8, 2, 8):
         raise CodegenError(
             "PackedQKV MMA requires VectorType(N8,KPack2,KVector8) weights."
