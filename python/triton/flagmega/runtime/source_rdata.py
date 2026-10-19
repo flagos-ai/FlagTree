@@ -42,31 +42,46 @@ def byte_addresses(program, shape, maps, start, count):
 
 
 class _RegisteredFile:
-    """Read-only file pages mapped into CUDA, with explicit pin lifetime."""
+    """Read-only file pages mapped into the GPU, with explicit pin lifetime."""
     def __init__(self, path):
         import numpy as np
+        import torch
         self.array = np.memmap(path, dtype=np.uint8, mode="r")
-        self.driver = ctypes.CDLL("libcuda.so.1")
-        self.driver.cuMemHostRegister_v2.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint)
-        self.driver.cuMemHostGetDevicePointer_v2.argtypes = (ctypes.POINTER(ctypes.c_uint64), ctypes.c_void_p, ctypes.c_uint)
-        self.driver.cuMemHostUnregister.argtypes = (ctypes.c_void_p,)
+        # ROCm's torch reports device type "cuda" but ships no libcuda; the HIP
+        # host-register API mirrors the CUDA one, so route by build. Mapped
+        # (0x02) is required before a device pointer can be taken on either.
+        if getattr(torch.version, "hip", None):
+            self.driver = ctypes.CDLL("libamdhip64.so")
+            register = self.driver.hipHostRegister
+            get_pointer = self.driver.hipHostGetDevicePointer
+            self._unregister = self.driver.hipHostUnregister
+            register_flags = 0x01 | 0x02
+        else:
+            self.driver = ctypes.CDLL("libcuda.so.1")
+            register = self.driver.cuMemHostRegister_v2
+            get_pointer = self.driver.cuMemHostGetDevicePointer_v2
+            self._unregister = self.driver.cuMemHostUnregister
+            register_flags = 0x01 | 0x02 | 0x08
+        register.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint)
+        get_pointer.argtypes = (ctypes.POINTER(ctypes.c_uint64), ctypes.c_void_p, ctypes.c_uint)
+        self._unregister.argtypes = (ctypes.c_void_p,)
         self.address = int(self.array.ctypes.data)
-        result = self.driver.cuMemHostRegister_v2(self.address, self.array.nbytes, 0x01 | 0x02 | 0x08)
+        result = register(self.address, self.array.nbytes, register_flags)
         if result:
             self.array._mmap.close()
-            raise ArtifactError(f"CUDA cannot register readonly source pages: driver status {result}.")
+            raise ArtifactError(f"GPU cannot register readonly source pages: driver status {result}.")
         pointer = ctypes.c_uint64()
-        result = self.driver.cuMemHostGetDevicePointer_v2(ctypes.byref(pointer), self.address, 0)
+        result = get_pointer(ctypes.byref(pointer), self.address, 0)
         if result:
             self.close()
-            raise ArtifactError(f"CUDA cannot map readonly source pages: driver status {result}.")
+            raise ArtifactError(f"GPU cannot map readonly source pages: driver status {result}.")
         self.device_pointer = pointer.value
 
     def close(self):
-        result = self.driver.cuMemHostUnregister(self.address)
+        result = self._unregister(self.address)
         self.array._mmap.close()
         if result:
-            raise ArtifactError(f"CUDA cannot unregister readonly source pages: driver status {result}.")
+            raise ArtifactError(f"GPU cannot unregister readonly source pages: driver status {result}.")
 
 
 def load_source_rdata(root, index, module, *, chip, device):
