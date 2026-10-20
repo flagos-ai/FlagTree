@@ -307,9 +307,19 @@ def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
             continue
         # `CPP_SME_SLOTS` ring slots per projection the kernel stages.
         projections = 2 if family == "dense_matmul_glu" else 1
+        if family == "dense_matmul" and tiles < warps:
+            # A site whose k-group holds fewer tiles than there are warps
+            # stages several groups at once instead, so that every warp owns a
+            # tile: `warps // tiles` groups concurrently, `warps` tiles in all.
+            # Sizing this from `tiles` alone would under-allocate the arena,
+            # and an undersized arena does not fail the launch -- it silently
+            # reads garbage.
+            staged = (warps // tiles) * tiles
+        else:
+            staged = tiles
         largest = max(
             largest,
-            tiles * CPP_SME_SLOTS * projections * (512 + CPP_SME_PAD))
+            staged * CPP_SME_SLOTS * projections * (512 + CPP_SME_PAD))
     return largest
 
 
