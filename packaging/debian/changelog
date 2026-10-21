@@ -1,3 +1,14 @@
+flagtree (0.6.1-3) unstable; urgency=medium
+
+  * Build one package per backend from packaging/backends.conf: render
+    debian/control for the backend being built instead of carrying a single
+    hand-written stanza, and take the wheel either from the source build or
+    from the index where the backend's delivery workflow published it.
+  * Conflict with the virtual python3-flagtree the packages provide, so a new
+    backend no longer has to be added to every other backend's Conflicts.
+
+ -- FlagOS Contributors <contact@flagos.io>  Tue, 21 Oct 2026 12:00:00 +0900
+
 flagtree (0.6.1-2) unstable; urgency=medium
 
   * Name the triton module _C/libtriton.so after unpacking the wheel; the

@@ -18,18 +18,23 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# Dockerfile to build the FlagTree wheel, then assemble a Debian package.
+# Dockerfile to obtain the FlagTree wheel, then assemble a Debian package.
 #
-# Two-stage:
-#   1. wheel-builder: heavy stage with CMake/Ninja/LLVM that compiles the
-#      flagtree wheel from source. Produces /wheels/flagtree-*.whl.
-#   2. deb-assembler: light stage that runs dpkg-buildpackage to wrap the
-#      pre-built wheel into a .deb. The deb stage does NOT recompile.
+# Three stages, two of which produce /wheels/flagtree-*.whl; which one runs is
+# decided by FLAGTREE_WHEEL_STAGE, from the backend's "wheel" column in
+# packaging/backends.conf. BuildKit only builds the stage the assembler
+# actually copies from, so an index build never pays for the compile.
+#   1a. wheel-builder: heavy stage with CMake/Ninja/LLVM that compiles the
+#       flagtree wheel from source (~36 min).
+#   1b. wheel-index:   light stage that downloads the wheel the backend's own
+#       delivery workflow published, for backends built on vendor hardware
+#       this packaging has no access to.
+#   2.  deb-assembler: light stage that renders debian/control for the backend
+#       and runs dpkg-buildpackage to wrap the wheel into a .deb. It does NOT
+#       recompile.
 #
-# Build:
-#   docker build -f packaging/debian/build-helpers/Dockerfile.deb \
-#     --target deb-output \
-#     -t flagtree-deb-nvidia .
+# Build (through the helper, which fills the build args from backends.conf):
+#   bash packaging/debian/build-helpers/build-flagtree.sh nvidia
 #
 # COPY-narrowing: the wheel-builder COPYs only the paths the build
 # needs (python/, third_party/, include/, lib/, cmake/, bin/,
@@ -58,6 +63,18 @@ ARG MAX_JOBS=4
 # plain changelog version, so an unsuffixed package already installed from an
 # earlier build upgrades cleanly. Empty keeps the changelog version.
 ARG DEB_VERSION_SUFFIX=auto
+
+# Backend to package: selects the binary package name, the rendered
+# debian/control and, through FLAGTREE_WHEEL_STAGE, where the wheel comes
+# from. build-flagtree.sh fills all of these from packaging/backends.conf.
+ARG FLAGTREE_BACKEND=nvidia
+ARG FLAGTREE_WHEEL_STAGE=wheel-builder
+# Index to download a published wheel from, and an optional exact local
+# version to pin (e.g. metax3.6); see build-helpers/fetch-wheel.sh.
+ARG FLAGTREE_PYPI_INDEX=
+ARG FLAGTREE_WHEEL_LOCAL=
+# Path fragments to keep away from dpkg-shlibdeps; see debian/rules.
+ARG SHLIBDEPS_EXCLUDE=
 
 # ---------- Stage 1: build the wheel ----------
 FROM ${DEB_BASE_IMAGE} AS wheel-builder
@@ -132,11 +149,56 @@ RUN unset FLAGTREE_BACKEND && \
     test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)" && \
     rm -rf /src/build /root/.triton
 
+# ---------- Stage 1b: download a published wheel ----------
+# For backends whose wheel is built by their own delivery workflow on vendor
+# hardware. Nothing here needs a vendor SDK; the wheel is taken as published
+# and its sha256 is checked against the index.
+FROM ${DEB_BASE_IMAGE} AS wheel-index
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG PYTHON_VERSION
+ARG FLAGTREE_BACKEND
+ARG FLAGTREE_PYPI_INDEX
+ARG FLAGTREE_WHEEL_LOCAL
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 curl ca-certificates software-properties-common gnupg \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# fetch-wheel.sh accepts only a wheel tagged for the python3 it runs under, so
+# the interpreter has to be the packaging one before the download, not after.
+RUN if [ -n "${PYTHON_VERSION}" ] && ! python3 --version 2>&1 | grep -q " ${PYTHON_VERSION}\."; then \
+        add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && \
+        apt-get install -y --no-install-recommends python${PYTHON_VERSION} && \
+        update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi && python3 --version
+
+COPY packaging/debian/build-helpers/fetch-wheel.sh /ctx/fetch-wheel.sh
+
+# Declared last so a version bump invalidates only the download. A wheel
+# re-published under an unchanged name is not noticed by the layer cache;
+# the sha256 the index served is echoed into the build log either way.
+ARG FLAGTREE_WHEEL_VERSION=
+RUN FLAGTREE_PYPI_INDEX="${FLAGTREE_PYPI_INDEX}" \
+    FLAGTREE_WHEEL_LOCAL="${FLAGTREE_WHEEL_LOCAL}" \
+    bash /ctx/fetch-wheel.sh \
+        "${FLAGTREE_BACKEND}" "${FLAGTREE_WHEEL_VERSION}" /wheels
+
+# ---------- The wheel the assembler uses ----------
+# Aliasing the selected stage keeps the choice in one build arg: a FROM reads
+# the global ARG in every builder, where a COPY --from does not, and only the
+# stage named here gets built.
+FROM ${FLAGTREE_WHEEL_STAGE} AS wheel-src
+
 # ---------- Stage 2: assemble the .deb ----------
 FROM ${DEB_BASE_IMAGE} AS deb-assembler
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG PYTHON_VERSION
 ARG DEB_VERSION_SUFFIX
+ARG FLAGTREE_BACKEND
+ARG SHLIBDEPS_EXCLUDE
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_ROOT_USER_ACTION=ignore
@@ -165,11 +227,30 @@ RUN if [ -n "${PYTHON_VERSION}" ] && ! python3 --version 2>&1 | grep -q " ${PYTH
     fi && python3 --version && python3 -m pip --version
 
 WORKDIR /build
+COPY packaging/backends.conf /build/backends.conf
 COPY packaging/debian /build/debian
-COPY --from=wheel-builder /wheels /build/dist
+COPY --from=wheel-src /wheels /build/dist
+
+# debian/control and the package's lintian overrides are rendered here rather
+# than committed, so the backend name lives in exactly one place.
+RUN bash debian/build-helpers/render-packaging.sh "${FLAGTREE_BACKEND}"
+
+# The wheel's cp tag decides the package's python dependency and must match the
+# interpreter the .deb is assembled and smoke-tested with. Fail here, where the
+# base image is still nameable, rather than at import time.
+RUN wheel="$(ls -1 /build/dist/flagtree-*.whl | head -1)" && \
+    want="$(python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])')" && \
+    case "$(basename "${wheel}")" in \
+        *-"${want}"-"${want}"-*) echo "wheel matches ${want}: $(basename "${wheel}")" ;; \
+        *) echo "ERROR: $(basename "${wheel}") is not built for ${want};" >&2; \
+           echo "       set PYTHON_VERSION / the backend's base image in packaging/backends.conf" >&2; \
+           exit 1 ;; \
+    esac
 
 # debian/source/format = "3.0 (native)" -> no orig.tar.gz needed.
 ENV WHEEL_DIR=/build/dist
+ENV FLAGTREE_BACKEND=${FLAGTREE_BACKEND}
+ENV SHLIBDEPS_EXCLUDE=${SHLIBDEPS_EXCLUDE}
 
 # Per-release version suffix (see DEB_VERSION_SUFFIX above).
 RUN if [ "${DEB_VERSION_SUFFIX}" = "auto" ]; then \

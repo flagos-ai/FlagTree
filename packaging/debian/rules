@@ -1,8 +1,19 @@
 #!/usr/bin/make -f
 export DH_VERBOSE = 1
 
-# FlagTree backend selected at build time. Only "nvidia" is wired up for now.
+# FlagTree backend selected at build time; one of the rows in
+# packaging/backends.conf. It picks the binary package name below, and
+# build-helpers/render-packaging.sh has already rendered debian/control for it.
 FLAGTREE_BACKEND ?= nvidia
+
+# Path fragments kept away from dpkg-shlibdeps, from the backend's "excludes"
+# column. A vendor wheel may bundle .so files linked against that vendor's
+# runtime, which no build host carries: dpkg-shlibdeps then aborts with
+# "cannot find library", and --ignore-missing-info does not help -- it only
+# covers a library found without dependency information. The missing sonames
+# are supplied by the vendor's own installation at deploy time, exactly as for
+# libcuda.so on the nvidia package.
+SHLIBDEPS_EXCLUDE ?=
 
 # Path to the pre-built wheel produced by helpers/build-flagtree.sh.
 # Defaulted so debuild without -e still works when WHEEL_DIR is exported.
@@ -61,7 +72,7 @@ override_dh_shlibdeps:
 	# triton/_C/*.so link against libcuda.so etc. Those libs are not present
 	# at packaging time and cannot be expressed via shlibs anyway, so skip
 	# automatic ${shlibs:Depends} lookup for them.
-	dh_shlibdeps -- --ignore-missing-info
+	dh_shlibdeps $(foreach frag,$(SHLIBDEPS_EXCLUDE),-X$(frag)) -- --ignore-missing-info
 
 # triton computes its compile-cache key by hashing _C/libtriton.so
 # (python/triton/runtime/cache.py, triton_key). The wheel ships that name,

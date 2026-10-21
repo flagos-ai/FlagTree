@@ -41,11 +41,13 @@ concurrency:
 
 jobs:
   build-deb:
-    # WARNING: this builds the full FlagTree LLVM/MLIR wheel from source
-    # (~36 min on a 4-core builder) and peaks well above 4 GB RAM. The
-    # public `ubuntu-latest` runner (4 vCPU / ~16 GB RAM) is on the edge
-    # of OOM; consider promoting to a self-hosted runner (FlagCX uses
-    # `runs-on: h20`) once one is wired up.
+    # WARNING: a row whose backend builds the wheel from source compiles the
+    # full FlagTree LLVM/MLIR wheel (~36 min on a 4-core builder) and peaks
+    # well above 4 GB RAM. The public `ubuntu-latest` runner (4 vCPU / ~16 GB
+    # RAM) is on the edge of OOM; consider promoting to a self-hosted runner
+    # (FlagCX uses `runs-on: h20`) once one is wired up. Rows whose backend
+    # packages a published wheel (wheel=index in packaging/backends.conf) only
+    # download and assemble, and finish in minutes.
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -55,6 +57,7 @@ jobs:
           # Original row; artifact name unchanged so downstream collectors
           # keep working.
           - target: ubuntu2404
+            backend: nvidia
             base_image: ubuntu:24.04
             python_version: ""
             artifact: flagtree-nvidia-packages
@@ -62,9 +65,19 @@ jobs:
           # A 22.04 build also installs on 24.04; the reverse does not hold
           # (GLIBC_2.38 / GLIBCXX_3.4.32), see #798.
           - target: ubuntu2204
+            backend: nvidia
             base_image: ubuntu:22.04
             python_version: "3.12"
             artifact: flagtree-nvidia-ubuntu2204-packages
+          # First row packaging a wheel this workflow does not build: the
+          # metax wheel is published by metax3.6-delivery.yml from vendor
+          # hardware. The base image's python3 (3.12) has to match the
+          # published wheel's cp tag; fetch-wheel.sh enforces that.
+          - target: ubuntu2404
+            backend: metax
+            base_image: ubuntu:24.04
+            python_version: ""
+            artifact: flagtree-metax-packages
     env:
       DEB_BASE_IMAGE: ${{ matrix.base_image }}
       PYTHON_VERSION: ${{ matrix.python_version }}
@@ -89,8 +102,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build .deb (${{ matrix.target }})
-        run: bash packaging/debian/build-helpers/build-flagtree.sh
+      - name: Build .deb (${{ matrix.backend }} / ${{ matrix.target }})
+        run: bash packaging/debian/build-helpers/build-flagtree.sh ${{ matrix.backend }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
