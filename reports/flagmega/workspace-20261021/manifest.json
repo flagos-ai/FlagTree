@@ -1,0 +1,14 @@
+{
+  "tests-before-merge.log": {
+    "uncompressed_sha256": "db2ed1da15147649141c344d0e1b47e3a069c883b423bea84283b3dbe153c428",
+    "uncompressed_bytes": 181
+  },
+  "tests-after-merge.log": {
+    "uncompressed_sha256": "321fca30afaa076087c44e3ec696878f4b9ae85d3e52c5e401ef1db0cd1382f8",
+    "uncompressed_bytes": 2995
+  },
+  "existing-target-failures-before-merge.log": {
+    "uncompressed_sha256": "bfb5eece5da7aebe69ae81750e424125f483060caa2b65d9603e4d6223922a2f",
+    "uncompressed_bytes": 2966
+  }
+}
