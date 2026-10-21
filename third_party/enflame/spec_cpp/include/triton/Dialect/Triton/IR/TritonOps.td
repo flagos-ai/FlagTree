@@ -249,6 +249,31 @@ def TT_AdvanceOp : TT_Op<"advance",
     let hasFolder = 1;
 }
 
+//keep-in-sync: include/triton/Dialect/Triton/IR/TritonOps.td
+def TT_StructGepOp : TT_Op<"struct_gep", [Pure]> {
+    let summary = "Compute the address of a named field of a struct pointer";
+
+    let arguments = (ins TT_PtrLike:$ptr, StrAttr:$field);
+
+    let results = (outs TT_PtrLike:$result);
+
+    let assemblyFormat = "$ptr `,` $field attr-dict `:` type($ptr) `->` type($result)";
+
+    let hasVerifier = 1;
+}
+
+def TT_ArrayGepOp : TT_Op<"array_gep", [Pure]> {
+    let summary = "Compute the address of an element of an array pointer";
+
+    let arguments = (ins TT_PtrLike:$ptr, TT_Int:$index);
+
+    let results = (outs TT_PtrLike:$result);
+
+    let assemblyFormat = "$ptr `,` $index attr-dict `:` type($ptr) `,` type($index) `->` type($result)";
+
+    let hasVerifier = 1;
+}
+
 //
 // Load/Store Ops
 //
