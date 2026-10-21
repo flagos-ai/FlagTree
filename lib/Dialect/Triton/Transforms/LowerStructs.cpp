@@ -4,6 +4,12 @@
 // and rewrites pointer types whose pointee is a struct/array into opaque byte
 // pointers, so that no custom aggregate type reaches a backend.
 //
+// Custom aggregates are accepted in **global memory only**: the host builds the
+// bytes and the kernel reaches the fields through an absolute address, which
+// only exists for global memory.  In any other address space that address is
+// meaningless, so such pointers are rejected instead of silently addressing
+// global memory.
+//
 // See docs/custom-types/RFC.md.
 //
 //===----------------------------------------------------------------------===//
@@ -64,6 +70,27 @@ Type fieldStorageType(Type resultTy, MLIRContext *ctx) {
   if (ptrTy && isa<PointerType>(ptrTy.getPointeeType()))
     return PointerType::get(IntegerType::get(ctx, 64), ptrTy.getAddressSpace());
   return resultTy;
+}
+
+// `tt.ptr`'s default address space; the only one where a host-provided byte
+// address is meaningful.
+constexpr int kGlobalAddressSpace = 1;
+
+// Diagnoses an aggregate pointer that does not live in global memory.  The
+// lowering below reaches fields through `ptr_to_int`/`int_to_ptr`, i.e. through
+// an absolute address; for a non-global address space that would quietly become
+// a global access, so reject it up front instead of miscompiling.
+LogicalResult checkGlobalAddressSpace(Operation *op, Value ptr) {
+  auto ptrTy = dyn_cast<PointerType>(ptr.getType());
+  if (!ptrTy)
+    return success();
+  int addressSpace = ptrTy.getAddressSpace();
+  if (addressSpace == kGlobalAddressSpace)
+    return success();
+  return op->emitOpError() << "custom struct/array types are supported in "
+                              "global memory only, but "
+                              "this pointer is in address space "
+                           << addressSpace;
 }
 
 // struct_gep %p, "field" -> int_to_ptr(ptr_to_int(%p) + offsetof(field))
@@ -240,6 +267,23 @@ struct LowerStructs
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
     IRRewriter rewriter(ctx);
+
+    // 0. Custom aggregates are global-memory only; reject anything else before
+    //    rewriting, so the diagnostic points at the original operation.
+    bool badAddressSpace = false;
+    mod.walk([&](Operation *op) {
+      Value ptr;
+      if (auto sGep = dyn_cast<StructGepOp>(op))
+        ptr = sGep.getPtr();
+      else if (auto aGep = dyn_cast<ArrayGepOp>(op))
+        ptr = aGep.getPtr();
+      else
+        return;
+      if (failed(checkGlobalAddressSpace(op, ptr)))
+        badAddressSpace = true;
+    });
+    if (badAddressSpace)
+      return signalPassFailure();
 
     // 1. Lower the address ops to byte arithmetic.
     SmallVector<Operation *> geps;

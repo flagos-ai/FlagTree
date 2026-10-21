@@ -414,6 +414,18 @@ reaches the backend is a plain `!tt.ptr<i8>`, so the Ascend memref-tuple handlin
 sees an ordinary byte pointer. (An actual NPU launch still has to be exercised
 with CANN.)
 
+**Global memory only.** A custom aggregate pointer must be in `tt.ptr`'s global
+address space (1). The field-access lowering reaches a field through
+`ptr_to_int`/`int_to_ptr`, i.e. through an absolute address; for any other
+address space (shared / UB / L1 / ...) that address is meaningless, and the
+Ascend lowering would additionally mark the rebuilt pointer as `GM`. The pass
+therefore rejects a `struct_gep`/`array_gep` whose base is not in the global
+address space instead of silently addressing global memory. Supporting on-chip
+aggregates would require an address-space-preserving lowering (byte-offset
+`addptr` + pointer `bitcast`) and matching support in flir's pointer analysis;
+that is out of scope, since a struct in local memory has no host-visible address
+to interoperate with in the first place.
+
 ---
 
 ## 9. Implementation status
@@ -447,6 +459,9 @@ Deferred (per §2.2/§12): value semantics and by-value kernel arguments.
 - `test/Triton/lower-structs.mlir` — lit test for `--triton-lower-structs`:
   scalar field at offset 0 and non-zero, nested struct, array element, and array
   of struct; asserts that no `!tt.struct`/`!tt.array` remains.
+- `test/Triton/lower-structs-invalid.mlir` — lit diagnostic test: a
+  `struct_gep`/`array_gep` whose base is not in the global address space is
+  rejected with “supported in global memory only” (see §8.2).
 - `python/test/unit/language/test_custom_types.py` — pytest: layout and
   signature, field read/write/nested/pointer, array element read / dynamic
   index / write, array-of-struct, host `to_device()`/`StructView`/`mangle_type`,
