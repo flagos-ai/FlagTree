@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, 
 from .. import knobs, language
 from flagtree import _flagprism  # FlagPrism
 from .._C.libtriton import ir, gluon_ir
-from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple
+from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple, _custom_types
 from ..language.core import _unwrap_if_constexpr, base_value, base_type
 # ideally we wouldn't need any runtime component
 from ..runtime.jit import get_jit_fn_file_line, get_full_name, JITCallable, BoundConstexprFunction, ConstexprFunction, JITFunction
@@ -748,6 +748,9 @@ class CodeGenerator(ast.NodeVisitor):
                 self.assignTarget(target, value.values[i])
             return
         if isinstance(target, ast.Attribute):
+            base = self.visit(target.value)
+            if isinstance(base, _custom_types.struct_pointer):
+                return self.semantic.struct_field_store(base, target.attr, value)
             raise NotImplementedError("Attribute assignment is not supported in triton")
         assert isinstance(target, ast.Name)
         self.set_value(self.visit(target), value)
@@ -1247,6 +1250,10 @@ class CodeGenerator(ast.NodeVisitor):
         return lhs[slices]
 
     def visit_Subscript_Store(self, node, value):
+        lhs = self.visit(node.value)
+        if isinstance(lhs, _custom_types.array_pointer):
+            slices = self.visit(node.slice)
+            return self.semantic.array_element_store(lhs, slices, value)
         raise NotImplementedError("__setitem__ is not supported in triton")
 
     def visit_Subscript(self, node):
@@ -1729,6 +1736,8 @@ class CodeGenerator(ast.NodeVisitor):
 
     def visit_Attribute(self, node):
         lhs = self.visit(node.value)
+        if isinstance(lhs, _custom_types.struct_pointer):
+            return self.semantic.struct_field(lhs, node.attr)
         if isinstance(lhs, ModuleType):
             # follow module_map until reaching fixed-point:
             while (name := lhs.__name__) in self.builder.module_map:
