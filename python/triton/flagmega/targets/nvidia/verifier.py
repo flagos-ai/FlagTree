@@ -119,6 +119,9 @@ def verify_sm90_module(
             )
         snapshot = module.metadata.get("target_capability")
         try:
+            # Class-agnostic: parse the snapshot with the active capability's own
+            # schema (Sm90Capability for NV, AmdCapability for RDNA) so this
+            # verifier can serve any NttTargetMachine, not just SM90.
             snapshot_capability = (
                 type(capability).from_data(snapshot)
                 if isinstance(snapshot, Mapping)

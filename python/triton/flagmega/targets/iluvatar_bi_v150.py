@@ -224,8 +224,14 @@ class IluvatarBiV150Machine(NvidiaSm90Machine):
             verify_shared_workspaces(implementation_model)
         self._implementation_model = implementation_model
 
-    def triton_implementation_model(self):
-        return self._implementation_model or corex_triton_implementation_model()
+    def triton_implementation_model(self, supplied=None):
+        # A caller-supplied model takes precedence over the machine's own, then
+        # the Corex default; no extra invariants here, so it is returned as-is.
+        return (
+            supplied
+            or self._implementation_model
+            or corex_triton_implementation_model()
+        )
 
     def default_ntt_options(self) -> NttTargetOptions:
         return NttTargetOptions(

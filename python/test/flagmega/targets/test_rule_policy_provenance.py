@@ -37,8 +37,8 @@ class _PortableTestMachine:
             packing_k_pack=4,
         )
 
-    def triton_implementation_model(self):
-        return TritonImplementationModel(name="portable-test/v1")
+    def triton_implementation_model(self, supplied=None):
+        return supplied if supplied is not None else TritonImplementationModel(name="portable-test/v1")
 
     def bufferization_options(self):
         return BufferizationOptions.generic(alignment=64)
