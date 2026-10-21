@@ -165,6 +165,8 @@ def make_ttir(mod, metadata, options):
     passes.ttir.add_loop_unroll(pm)
     _major, _minor = _triton_version()
     if (_major, _minor) == (3, 5):
+        # custom-types: lower !tt.struct/!tt.array to byte offsets before leaving TTIR.
+        passes.ttir.add_lower_structs(pm)
         pm.run(mod)
     else:
         pm.run(mod, "ttir")

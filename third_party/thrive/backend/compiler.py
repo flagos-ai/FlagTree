@@ -179,6 +179,8 @@ class ThriveBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_licm(pm)
         passes.common.add_symbol_dce(pm)
+        # custom-types: lower !tt.struct/!tt.array to byte offsets before leaving TTIR.
+        passes.ttir.add_lower_structs(pm)
         pm.run(mod, 'make_ttir')
         metadata["name"] = mod.get_entry_func_name()
         _save_content_to_tmp(mod, metadata["name"], "output_ttir.mlir")
