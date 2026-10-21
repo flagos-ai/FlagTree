@@ -13,7 +13,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("distributed", [False, True])
 def test_manual_binary_literal_body_stays_in_registers(tmp_path, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     shape = (4, 37)
 

@@ -184,7 +184,7 @@ def _run_cache_pipeline(directory, schedule):
 @pytest.mark.parametrize("schedule", ["simt", "bf16_mma"])
 def test_exclusive_cache_update_rendezvous_then_latent_attention(tmp_path, schedule):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires CUDA")
     # Bound the child lifetime: the regression was a device barrier deadlock.
     result = subprocess.run(

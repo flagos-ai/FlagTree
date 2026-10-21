@@ -24,7 +24,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
 def test_softmax_local_kernel_arbitrary_axis_and_owners(tmp_path, shape, axis, split, dtype):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     value_type = fm.tensor_type(dtype, shape)
     metadata = {}

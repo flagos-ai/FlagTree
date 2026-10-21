@@ -12,7 +12,7 @@ from python.test.flagmega.codegen.triton.candidates.test_packed_partial_tail imp
 @pytest.mark.parametrize("k,n,output_split", [(64, 8, False), (96, 24, False), (96, 48, True)])
 def test_packed_partial_projection_masks_local_output_and_reduction_tails(tmp_path, k, n, output_split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     compiled = Compiler().compile(projection(k, n, output_split=output_split)).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)

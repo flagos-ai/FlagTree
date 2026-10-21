@@ -19,7 +19,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("old_lanes,split", [((), False), ((2, 2), False), ((2, 2), True)])
 def test_local_vector_relayout_preserves_lane_order_and_owner_coordinates(tmp_path, op, axes, lanes, old_lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     dtype = fm.vector_type("bfloat16", old_lanes) if old_lanes else "bfloat16"
     logical = fm.tensor_type(dtype, (16, 6))

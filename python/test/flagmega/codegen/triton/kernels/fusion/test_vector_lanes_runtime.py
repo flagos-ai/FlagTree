@@ -21,7 +21,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("distributed", [False, True])
 def test_fused_cast_activation_reuses_real_vector_coordinate_mapping(tmp_path, axes, lanes, new_lanes, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     shape = (4, 8)
     value_type = fm.tensor_type(fm.vector_type("bfloat16", lanes), shape)

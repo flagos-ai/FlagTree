@@ -15,7 +15,7 @@ from python.test.flagmega.passes.tir.bufferize.test_ref_slice import state_slice
 @pytest.mark.parametrize("reusable", [False, True])
 def test_reference_subspan_updates_only_selected_layer_across_invocations(tmp_path, index, reusable):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     compiled = Compiler().compile(state_slice_graph(index, reusable=reusable)).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)

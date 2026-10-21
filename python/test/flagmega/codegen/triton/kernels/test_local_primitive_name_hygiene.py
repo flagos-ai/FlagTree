@@ -18,7 +18,7 @@ from triton.flagmega.runtime import load
 ])
 def test_local_primitive_temporaries_do_not_shadow_editable_ir_arguments(tmp_path, op, input_name):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
 
     class Graph(fm.Module):

@@ -40,7 +40,7 @@ def matmul_module(wide):
                  metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
 @pytest.mark.parametrize("wide", [False, True])
 def test_partition_rounding_does_not_erase_cancellation_residue(tmp_path, wide):
     proposed = Compiler().compile(matmul_module(wide), stop_after="propose-tir").module

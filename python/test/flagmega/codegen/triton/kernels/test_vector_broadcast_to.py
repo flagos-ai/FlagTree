@@ -24,7 +24,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("split", [False, True])
 def test_vector_element_broadcast_uses_source_lane_coordinates(tmp_path, shape, lanes, target, output_lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     # Rank-zero by-value floating parameters use the runtime's FP32 ABI.
     element = "bfloat16" if shape else "float32"

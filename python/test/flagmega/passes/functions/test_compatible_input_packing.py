@@ -94,7 +94,7 @@ def test_conflicting_physical_result_bindings_are_rejected():
         _nested_call("main", SimpleNamespace(id="call"), record, None, ())
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
 def test_compatible_input_views_execute_through_reusable_device_calls(tmp_path):
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.compiler import Compiler

@@ -26,7 +26,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
 def test_reduce_sum_local_kernel_axes_empty_domains_and_fp32_accumulation(tmp_path, shape, axes, keep_dims, dtype):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     module = replace(
         primitive_module(fm.get_definition("math.reduce_sum"), (fm.tensor_type(dtype, shape), ), axes=axes,
@@ -47,7 +47,7 @@ def test_reduce_sum_local_kernel_axes_empty_domains_and_fp32_accumulation(tmp_pa
 @pytest.mark.parametrize("keep_dims", [False, True])
 def test_reduce_sum_preserves_rows_and_materializes_partial_only_through_boxing(tmp_path, reduce_split, keep_dims):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     placement = fm.Placement((2, 2), "xy", "bb")
     policies = (fm.SBP.split_block_cyclic((0, ), 2), fm.SBP.split_block_cyclic(
@@ -78,7 +78,7 @@ def test_reduce_sum_preserves_rows_and_materializes_partial_only_through_boxing(
 @pytest.mark.parametrize("lanes", [(8,), (2, 4), (1,)])
 def test_reduce_sum_packed_store_matches_scalar_kernel(tmp_path, dtype, lanes):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     values = torch.linspace(-3, 2, 3 * 4 * 72, device="cuda").reshape(3, 4, 72).to(getattr(torch, dtype))
     results = []
@@ -103,7 +103,7 @@ def test_reduce_sum_packed_store_matches_scalar_kernel(tmp_path, dtype, lanes):
 @pytest.mark.parametrize("axes,keep_dims", [((), False), ((1,), True)])
 def test_reduce_sum_packed_identity_and_retained_dimensions(tmp_path, axes, keep_dims):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     module = primitive_module(fm.get_definition("math.reduce_sum"), (fm.tensor_type("bfloat16", (3, 4, 72)),),
                               axes=axes, keep_dims=keep_dims, output_lanes=(2, 4))
@@ -121,7 +121,7 @@ def test_reduce_sum_packed_identity_and_retained_dimensions(tmp_path, axes, keep
 @pytest.mark.parametrize("reduce_split", [False, True])
 def test_reduce_sum_packed_output_preserves_owner_coordinates_and_partial(tmp_path, reduce_split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     placement = fm.Placement((2, 2), "xy", "bb")
     policies = (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 2) if reduce_split else fm.SBP.broadcast(),

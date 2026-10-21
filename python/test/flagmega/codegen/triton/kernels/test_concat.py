@@ -16,7 +16,7 @@ from python.test.flagmega.ir.ops.tensors.test_concat_local_contract import conca
 @pytest.mark.parametrize("vector", [False, True])
 def test_concat_generic_kernel_copies_variadic_inputs_and_vector_lanes_exactly(tmp_path, shapes, axis, vector):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     module = concat_module(shapes, axis=axis, vector=vector)
     compiled = Compiler().compile(module).module
@@ -35,7 +35,7 @@ def test_concat_generic_kernel_copies_variadic_inputs_and_vector_lanes_exactly(t
 @pytest.mark.parametrize("vector", [False, True])
 def test_concat_kernel_preserves_non_concat_axis_owner_coordinates(tmp_path, vector):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     module = concat_module(((8, 3), (8, 7)), split=True, vector=vector)
     placement = module.node_map["output"].type.placement

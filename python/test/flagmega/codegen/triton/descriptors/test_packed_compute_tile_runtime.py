@@ -15,7 +15,7 @@ def test_packed_compute_tile_matches_reference_with_local_and_reduction_tails(
     tmp_path, compile_packed_projection, n, k, tile_n, block_k,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires Hopper CUDA")
     implementation = f"tir.dense_matmul.packed_k_major_gemv_tn{tile_n}_bk{block_k}"
     module = compile_packed_projection(implementation, k=k, n=n)

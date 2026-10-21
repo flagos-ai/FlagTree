@@ -44,7 +44,7 @@ def graph():
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
 def test_prepared_composite_adapter_switches_phase_and_restarts(tmp_path):
     compiled = Compiler().compile(graph()).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)

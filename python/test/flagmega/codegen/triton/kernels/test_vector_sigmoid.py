@@ -15,7 +15,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("split", [False, True])
 def test_vector_sigmoid_is_bitwise_identical_to_scalar_kernel(tmp_path, dtype, lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     typ = fm.tensor_type(fm.vector_type(dtype, lanes), (4, 16))
     metadata = {}

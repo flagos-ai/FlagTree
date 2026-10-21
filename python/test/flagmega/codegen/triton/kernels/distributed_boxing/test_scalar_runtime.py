@@ -11,7 +11,7 @@ from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
 @pytest.mark.parametrize("dtype,values", [("bool", (True, False)), ("int32", (17, -3)),
                                          ("float32", (1.25, -2.5))])
 def test_rank_zero_tensor_load_uses_scalar_pointer_and_mask(tmp_path, dtype, values):

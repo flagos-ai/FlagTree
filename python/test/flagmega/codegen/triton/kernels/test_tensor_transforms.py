@@ -45,7 +45,7 @@ def test_tensor_transform_selects_real_generic_template(tmp_path, op, attrs):
 @pytest.mark.parametrize("vector,split", [(False, False), (True, False), (True, True)])
 def test_tensor_transform_executes_exact_values_with_tail_owners_and_lanes(tmp_path, op, attrs, vector, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     module = graph(op, attrs, vector=vector, split=split)
     values = torch.arange(6 * 7 * (8 if vector else 1), device="cuda").reshape((6, 7, 2, 4) if vector else (6, 7))

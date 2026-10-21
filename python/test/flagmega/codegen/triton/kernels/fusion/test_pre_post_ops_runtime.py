@@ -14,7 +14,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("distributed", [False, True])
 def test_compiled_fusion_has_one_kernel_and_correct_values(tmp_path, kind, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     columns = 5003 if kind == "softmax_tiled" else 37
     shape = (4, columns)

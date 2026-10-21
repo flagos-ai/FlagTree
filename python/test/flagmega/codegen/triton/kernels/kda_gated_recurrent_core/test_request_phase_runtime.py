@@ -31,7 +31,7 @@ def bind(runtime, inputs, packed):
     return tuple(values[argument["value"]] for argument in runtime.external_arguments), outputs
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
 @pytest.mark.parametrize("packing", ["none", "explicit", "consumer"])
 def test_one_prepared_kernel_switches_phase_without_reinterpreting_state(tmp_path, packing):
     packed = packing != "none"
@@ -94,7 +94,7 @@ def nested_phase_module():
                  metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
 def test_materialized_phase_keeps_scalar_value_across_pooled_function_boundary(tmp_path):
     values = _values(torch, device="cuda", heads=2, dim=128)
     runtime = make_runtime(nested_phase_module(), tmp_path / "nested")

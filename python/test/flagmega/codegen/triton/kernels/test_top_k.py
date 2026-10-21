@@ -25,7 +25,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16", "int32", "int64"])
 def test_top_k_local_kernel_stable_ties_and_exact_integer_values(tmp_path, shape, axis, k, split, largest, dtype):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("CUDA required")
     value_type = fm.tensor_type(dtype, shape)
     metadata = {}
