@@ -120,6 +120,8 @@ static PyObject *nvTmaDesc_str = nullptr;
 
 static PyObject *base_attr = nullptr;
 static PyObject *data_ptr_attr = nullptr;
+static PyObject *struct_type_attr = nullptr;
+static PyObject *signature_attr = nullptr;
 static PyObject *dtype_attr = nullptr;
 static PyObject *cache_key_attr = nullptr;
 static PyObject *_fields_attr = nullptr;
@@ -168,6 +170,8 @@ void init_interned_strings() {
 
   base_attr = intern_from_string("base");
   data_ptr_attr = intern_from_string("data_ptr");
+  struct_type_attr = intern_from_string("struct_type");
+  signature_attr = intern_from_string("signature");
   dtype_attr = intern_from_string("dtype");
   cache_key_attr = intern_from_string("cache_key");
   _fields_attr = intern_from_string("_fields");
@@ -330,6 +334,24 @@ std::pair<py::object, py::object> handle_long_type(PyObject *backend,
     return {from_borrowed_ref(type_str), py::none()};
   }
   return {from_borrowed_ref(type_str), from_borrowed_ref(key_obj)};
+}
+
+// A StructView carries a custom C-interoperable aggregate type.  Its type
+// string is the struct's own signature (there is nothing to specialize: the
+// value is a raw device pointer, so no alignment key either).
+std::pair<py::object, py::object> handle_struct_view(PyObject *arg) {
+  auto st = from_new_ref(PyObject_GetAttr(arg, struct_type_attr));
+  if (!st)
+    return {};
+  auto sig = from_new_ref(PyObject_CallMethodNoArgs(st.ptr(), signature_attr));
+  if (!sig)
+    return {};
+  const char *s = PyUnicode_AsUTF8(sig.ptr());
+  if (!s)
+    return {};
+  std::string type_str = "*";
+  type_str += s;
+  return {from_new_ref(PyUnicode_FromString(type_str.c_str())), py::none()};
 }
 
 std::pair<py::object, py::object> handle_tensor(PyObject *backend,
@@ -573,6 +595,11 @@ std::pair<py::object, py::object> specialize_arg(PyObject *backend,
 
   if (PyObject_IsInstance(arg, jit_callable_cls)) {
     return handle_jit_callable(backend, arg, is_const, specialize_value, align);
+  }
+
+  // custom C-interoperable struct by reference (see docs/custom-types)
+  if (PyObject_HasAttr(arg, struct_type_attr)) {
+    return handle_struct_view(arg);
   }
 
   // fallback paths checking attributes directly
