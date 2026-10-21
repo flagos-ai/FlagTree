@@ -17,6 +17,7 @@ silently producing a mixed package nobody asked for.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import ast
 import os
 import hashlib
 from pathlib import Path
@@ -94,17 +95,15 @@ CPP_BLOCK_THREADS = int(os.environ.get("FLAGMEGA_CPP_BLOCK_THREADS", "1024"))
 CPP_TILED_DEPTH = int(os.environ.get("FLAGMEGA_CPP_TILED_DEPTH", "2"))
 
 # Use the SME G2S engine with a batched producer/consumer loop in the GEMV
-# kernels. Off by default until it beats the vectorized scalar path end to end.
-CPP_USE_SME = os.environ.get("FLAGMEGA_CPP_SME", "0") == "1"
+# kernels. Target selection below additionally requires the flat SME engine.
+CPP_USE_SME = os.environ.get("FLAGMEGA_CPP_SME", "1") == "1"
 
-# Staging slots per tile in the SME pipeline. `slots - 1` groups stay in
-# flight, and the engine responds strongly to that depth: measured 619 GB/s at
-# depth 2 (2 slots) against 662 at depth 4 (3 slots) and 667 at depth 8, on a
-# 16-CTA 1024-thread launch. 3 slots costs 72 KB of the ~112 KB of static
-# shared the device actually allows -- `sharedMemPerBlock` is 128 KB, not the
-# 64 KB an earlier comment here assumed, verified by launching static arrays
-# up to 120 KB.
-CPP_SME_SLOTS = int(os.environ.get("FLAGMEGA_CPP_SME_SLOTS", "3"))
+# Two disjoint batches of staging slots. G2S count waits complete the oldest
+# batch while retaining the newer one in flight; a full drain after each tile
+# loses that issue depth. Four slots hold two groups per batch and cost 96 KB
+# at the largest GLU site, within its 112 KB staging budget. Each lane also
+# completes its shared reads before the producer may overwrite consumed slots.
+CPP_SME_SLOTS = int(os.environ.get("FLAGMEGA_CPP_SME_SLOTS", "4"))
 
 # Padding elements appended to each staged tile, to shift its bank alignment.
 # A standalone probe showed +53% on this access pattern from padding, but that
@@ -164,13 +163,6 @@ CPP_QKV_HOIST = os.environ.get("FLAGMEGA_CPP_QKV_HOIST", "0") == "1"
 # the cliff a pair of 4 would reach.
 CPP_QKV_PAIR = os.environ.get("FLAGMEGA_CPP_QKV_PAIR", "1") == "1"
 
-# Group-loop unroll in the SME consumer, which sets how many activation runs
-# a lane holds in registers at once. In the SME path the activation is the
-# only global read left in the consumer (weights arrive via shared), and it is
-# about half its cost. Measured on an isolated consumer: 1 run 0.0337 ms,
-# 2 runs 0.0180, saturating at 2.
-CPP_SME_UNROLL = int(os.environ.get("FLAGMEGA_CPP_SME_UNROLL", "2"))
-
 # Load the packed weight runs as 4-byte transactions instead of 16-byte ones.
 #
 # On BI-V150 a 128-bit load is issue-capped near one per cycle per MP (~46% of
@@ -204,6 +196,15 @@ def _target_warp_size(architecture: str) -> int:
         f"No registered target reports a warp size for architecture "
         f"{architecture!r}; the C++ reductions cannot size their shared buffers."
     )
+
+
+def _target_capability(architecture: str):
+    from triton.flagmega.targets import get_target, target_names
+    for name in target_names():
+        target = get_target(name)
+        if str(getattr(target, "codegen_architecture", "")) == architecture:
+            return target.capability
+    raise CodegenError(f"No registered C++ capability for {architecture!r}.")
 
 
 def describe_cpp_package(module: IRModule) -> dict[str, object]:
@@ -245,6 +246,43 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
     # Derive the per-call GEMV knobs first: the arena size below reads the
     # weight group stride this fills in.
     _gemv_k_streams(descriptor)
+    from triton.flagmega.codegen.cpp.readonly_layout import select_readonly_layouts
+    # The flat SME ISA and FIFO count waits are an ivcore11 capability.
+    capability = _target_capability(architecture)
+    use_sme = CPP_USE_SME and getattr(capability, "supports_flat_sme_count_wait", False)
+    if use_sme:
+        descriptor.update(block_threads=CPP_BLOCK_THREADS, warp_size=_target_warp_size(architecture),
+                          sme_slots=CPP_SME_SLOTS, sme_pad=CPP_SME_PAD)
+        descriptor["readonly_device_layout"] = select_readonly_layouts(module, descriptor)
+        for call in descriptor.get("render_calls", ()):
+            if call.get("cpp_shard_major_weight") and call.get("variant") == "packed_k_major_gemv_norm_stats":
+                groups = call["local_k_capacity"] // call["weight_k_lane"]
+                tiles = call["local_n_capacity"] * call["weight_k_lane"] // 512
+                concurrency = CPP_BLOCK_THREADS // _target_warp_size(architecture) // tiles
+                if groups % (6 * concurrency) == 0:
+                    call["sme_slots"] = 6
+            if call.get("family") == "qkv_parallel_linear":
+                outputs = call.get("outputs", ())
+                source_walk = _affine_source_walk(call.get("source_offset", ""), "qkv_local_k_offsets")
+                if source_walk is not None:
+                    call["cpp_sme_source_base"], call["cpp_sme_source_stride"] = source_walk
+                call["cpp_fused_sme"] = (
+                    CPP_BLOCK_THREADS == 1024 and CPP_SME_PAD == 0
+                    and call.get("k_lane") == 16
+                    and call.get("n_lane") == 4
+                    and [o["local_n_capacity"] for o in outputs] == [128, 64, 64]
+                    and [o["weight_group_start"] for o in outputs] == [0, 32, 48]
+                    and call.get("k_predicate_redundant")
+                    and call.get("local_k_capacity", 0) % 256 == 0
+                    and call.get("weight_n_group_stride") == 64
+                    and call.get("weight_k_group_stride") == 4096
+                    and source_walk is not None and source_walk[1] == 1
+                    and call.get("weight_owner_stride") == (call.get("local_k_capacity", 0) // 16) * 4096)
+        # A schedule barrier immediately after the call drains every CTA's
+        # partial readers before any following call can reuse shared storage.
+        # Standalone calls and schedules without that proof retain the exit
+        # rendezvous in the fused template.
+        _mark_shared_exit_barriers(descriptor)
     descriptor.update({
         "schema": CPP_PACKAGE_DESCRIPTOR_SCHEMA,
         "kernel_templates": tuple(registry.resolve(spec) for spec in specs),
@@ -259,9 +297,8 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         # mis-sizing the buffers.
         "warp_size": _target_warp_size(architecture),
         "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
-        "sme": CPP_USE_SME,
+        "sme": use_sme,
         "sme_slots": CPP_SME_SLOTS,
-        "sme_unroll": CPP_SME_UNROLL,
         "sme_pad": CPP_SME_PAD,
         "qkv_tiled": CPP_QKV_TILED,
         "qkv_hoist": CPP_QKV_HOIST,
@@ -274,18 +311,157 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "grid_barrier_group_bases": _barrier_group_bases(descriptor),
         "argument_types": _argument_types(descriptor, module),
     })
+    if use_sme and descriptor["sme_arena_elems"]:
+        descriptor["shared_arena_reuse"] = True
+        _select_attention_staging(descriptor, capability)
+        shared_floats = max((
+            int(call.get("cpp_attention_shared_bytes", 0)) // 4
+            or (2 * int(call.get("token_tile", 0)) + 4 + CPP_BLOCK_THREADS)
+            for call in descriptor["render_calls"] if call["family"] == "paged_attention_partial"), default=0)
+        if any(call["family"] == "greedy_sample" for call in descriptor["render_calls"]):
+            shared_floats = max(shared_floats, 3 * CPP_BLOCK_THREADS)
+        descriptor["sme_arena_elems"] = max(descriptor["sme_arena_elems"], 2 * shared_floats)
+        if descriptor["sme_arena_elems"] * 2 > capability.max_shared_memory_bytes:
+            raise CodegenError("C++ shared arena exceeds the target per-block memory budget.")
+    if not use_sme:
+        descriptor["sme_arena_elems"] = 0
     return descriptor
+
+
+def _select_attention_staging(descriptor, capability):
+    """Prove the uniform single-query, contiguous GQA-pair staging domain.
+
+    Four head groups share a CTA and its barriers. Pair members cooperate on
+    one KV tile, so neither differing query lengths nor a split through a KV
+    head's query group is legal. Other domains use the general scalar template.
+    """
+    if descriptor["block_threads"] != 1024 or descriptor["warp_size"] != 64:
+        return
+
+    def affine(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value, {}
+        if isinstance(node, ast.Name):
+            return 0, {node.id: 1}
+        if isinstance(node, ast.BinOp):
+            a, av = affine(node.left)
+            b, bv = affine(node.right)
+            if isinstance(node.op, ast.Add):
+                merged = dict(av)
+                for key, value in bv.items():
+                    merged[key] = merged.get(key, 0) + value
+                return a + b, merged
+            if isinstance(node.op, ast.Mult) and not (av and bv):
+                return a * b, {key: value * b for key, value in av.items()} | {
+                    key: value * a for key, value in bv.items()}
+        raise ValueError
+
+    for call in descriptor["render_calls"]:
+        if call["family"] != "paged_attention_partial":
+            continue
+        if (call["variant"] != "decode_t16" or call["token_tile"] != 16
+                or call["head_dim"] != 128 or call["query_dim_stride"] != call["query_lanes"]
+                or call["query_lanes"] % 4 or call["num_query_heads"] != 2 * call["num_kv_heads"]
+                or tuple(call["semantic_attrs"]["layout"]) != ("seq", "head", "dim")):
+            continue
+        inputs = {group["formal"]: group["buffers"] for group in call["inputs"]}
+        query = inputs["q"][0]["abi"]
+        cache = inputs["state"][0]["abi"]
+        state = call["outputs"][0]["buffers"][0]["abi"]
+        shape = tuple(state["local_capacity_shape"])
+        if (query["scalar_dtype"] != "bfloat16" or query["logical_shape"][0] != 1
+                or cache["scalar_dtype"] != "bfloat16" or shape[0] != 1 or shape[2] != 1
+                or shape[1] % 4 or call["local_capacity"] != shape[1]):
+            continue
+        scalar_shape = list(cache["logical_shape"])
+        scalar_shape[-1] *= cache["scalar_lane_count"]
+        strides, stride = [], 1
+        for extent in reversed(scalar_shape):
+            strides.append(stride)
+            stride *= extent
+        # Packed dimension strides count physical vectors; scalar lanes fill
+        # the final vector. The other dimensions are scalar storage strides.
+        strides[0] = cache["scalar_lane_count"]
+        if tuple(reversed(strides)) != tuple(cache["scalar_storage_strides"]):
+            continue
+        try:
+            origin, coefficients = affine(ast.parse(
+                state["logical_coordinate_expressions"][1], mode="eval").body)
+        except (ValueError, SyntaxError):
+            continue
+        if (origin % 2 or coefficients.pop("local_coord_1", 0) != 1
+                or any(value % 2 for value in coefficients.values())):
+            continue
+        heads, tile, padding, groups = 4, 64, 32, 8
+        shared_bytes = 4 * (heads * (2 * tile + 16 + 2 * groups * 128)) + (
+            heads // 2 * 2 * tile * (128 + padding) * 2)
+        if shared_bytes > capability.max_shared_memory_bytes:
+            continue
+        call["cpp_attention_staging"] = {
+            "heads": heads, "token_tile": tile, "padding": padding,
+            "groups": groups, "gqa": 2, "softmax_tile": 16,
+            "value_buffers": 2,
+        }
+        call["cpp_attention_shared_bytes"] = shared_bytes
+
+
+def _affine_source_walk(expression: str, variable: str) -> tuple[int, int] | None:
+    """Prove an entire source expression is base + stride * local K."""
+    def affine(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value, 0
+        if isinstance(node, ast.Name) and node.id == variable:
+            return 0, 1
+        if not isinstance(node, ast.BinOp):
+            raise ValueError
+        a, b = affine(node.left), affine(node.right)
+        if isinstance(node.op, ast.Add):
+            return a[0] + b[0], a[1] + b[1]
+        if isinstance(node.op, ast.Mult) and not (a[1] and b[1]):
+            return a[0] * b[0], a[1] * b[0] + b[1] * a[0]
+        raise ValueError
+    try:
+        base, stride = affine(ast.parse(expression.strip(), mode="eval").body)
+        return (base, stride) if base >= 0 and base % 8 == 0 and stride > 0 else None
+    except (SyntaxError, ValueError, AttributeError):
+        return None
+
+
+def _mark_shared_exit_barriers(descriptor):
+    """Merge an exit rendezvous only when every enclosing call reaches one."""
+    functions = {f["function"]: f for f in descriptor.get("device_functions", ())}
+    schedules = [(None, descriptor["entry_events"]), *(
+        (name, f["schedule"]["consumer_events"]) for name, f in functions.items())]
+
+    def follows_barrier(events, index, enclosing, seen=()):
+        if index + 1 < len(events):
+            return events[index + 1].get("kind") == "barrier"
+        if enclosing is None or enclosing in seen:
+            return False
+        callers = [(owner, events, i) for owner, events in schedules
+                   for i, event in enumerate(events)
+                   if event.get("kind") == "function_call" and event.get("callee") == enclosing]
+        return bool(callers) and all(follows_barrier(events, i, owner, (*seen, enclosing))
+                                     for owner, events, i in callers)
+
+    for call in descriptor["render_calls"]:
+        if not (call.get("cpp_fused_sme") or (
+                call.get("family") == "dense_matmul"
+                and call.get("variant") == "packed_k_major_gemv_norm_stats")):
+            continue
+        uses = [(owner, events, i) for owner, events in schedules
+                for i, event in enumerate(events) if event.get("symbol") == call["symbol"]]
+        if uses and all(follows_barrier(events, i, owner) for owner, events, i in uses):
+            call["cpp_shared_exit_barrier_in_schedule"] = True
 
 
 def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
     """Elements the shared SME staging arena needs, or 0 if unused.
 
     Sized for the largest single staging site rather than the sum: the sites
-    are separated by grid barriers, so they never hold staged data at the same
-    time and can share one allocation. Summing them instead reached 96.8 KB of
-    a 64 KB budget, which does not fail the launch -- it silently reads
-    garbage, and the oversized kernel also pushed `llc` into a multi-minute
-    compile.
+    are separated by schedule barriers, so their live staging data can share
+    one allocation. The completed arena is checked against the registered
+    target's per-block shared-memory budget.
     """
 
     if not CPP_USE_SME:
@@ -293,6 +469,21 @@ def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
     largest = 0
     for call in descriptor.get("render_calls", ()):
         family = call.get("family")
+        slots = int(call.get("sme_slots", CPP_SME_SLOTS))
+        if family == "qkv_parallel_linear":
+            if call.get("cpp_fused_sme"):
+                largest = max(largest, warps * 8 * 512)
+            # Q, K and V stage concurrently across K even when the package
+            # contains no dense/GLU site to supply an arena on their behalf.
+            lane = int(call.get("k_lane") or 0)
+            for output in call.get("outputs", ()):
+                group = int(output.get("local_n_capacity") or 0) * lane
+                if group and group % 512 == 0:
+                    tiles = group // 512
+                    if tiles < warps and warps % tiles == 0:
+                        largest = max(
+                            largest, warps * CPP_SME_SLOTS * (512 + CPP_SME_PAD))
+            continue
         if family not in {"dense_matmul", "dense_matmul_glu"}:
             continue
         lane = int(call.get("weight_k_lane") or 0)
@@ -300,7 +491,10 @@ def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
         if not lane or not capacity or not call.get("weight_group_stride"):
             continue
         group = capacity * lane
-        if group % 512:
+        if group % 512 or (family == "dense_matmul" and group // 512 > warps):
+            # Large N may contain complete tiles plus a bounded tail.
+            if family == "dense_matmul" and group >= 512:
+                largest = max(largest, warps * CPP_SME_SLOTS * (512 + CPP_SME_PAD))
             continue
         tiles = group // 512
         if tiles > warps:
@@ -319,7 +513,7 @@ def _sme_arena_elems(descriptor: Mapping[str, object], warps: int) -> int:
             staged = tiles
         largest = max(
             largest,
-            staged * CPP_SME_SLOTS * projections * (512 + CPP_SME_PAD))
+            staged * slots * projections * (512 + CPP_SME_PAD))
     return largest
 
 

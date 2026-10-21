@@ -15,17 +15,19 @@
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == "packed_k_major_gemv_norm_stats" %}
+{% set sme_slots = call.sme_slots | default(sme_slots) %}
 static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
-    {# Only one slot per warp is written: the warp-shuffle stage folds inside each
-   warp and just the lane-0 thread publishes, so this needs `block_threads /
-   warp_size` floats rather than one per thread. That matters because shared
-   memory is a single budget for the whole inlined megakernel -- every device
-   function's declaration is co-resident -- and oversizing these five buffers
-   cost 40 KB of a 64 KB budget. Exceeding it does not fail the launch, it
-   silently reads garbage. #}
-__shared__ float ftt_dense_stats_partial[{{ warps }}];
+{# The warp fold publishes one FP32 statistic per warp. With shared reuse,
+   these slots occupy the arena's final words, disjoint from all cross-warp
+   projection partials still being read below. #}
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_dense_stats_partial =
+        reinterpret_cast<float *>(_ftt_sme_arena) + {{ sme_arena_elems // 2 - warps }};
+{% else %}
+    __shared__ float ftt_dense_stats_partial[{{ warps }}];
+{% endif %}
     auto *const ftt_source = {{ call.source | cppexpr }};
     auto *const ftt_weight = {{ call.weight | cppexpr }};
     auto *const ftt_residual = {{ call.residual | cppexpr }};
@@ -98,13 +100,15 @@ __shared__ float ftt_dense_stats_partial[{{ warps }}];
 {% set sme_gsize = call.local_n_capacity * lane %}
 {% set sme_tiles = (sme_gsize // 512) if sme_gsize % 512 == 0 else 0 %}
 {% set sme_gconc = (warps // sme_tiles) if sme_tiles else 0 %}
-{% set sme_stage = sme and chunk == 8 and lane and sme_tiles
+{% set sme_batch = sme_slots // 2 %}
+{% set sme_stage = sme and sme_slots >= 2 and chunk == 8 and lane and sme_tiles
        and call.weight_group_stride
        and sme_gconc > 1
        and sme_tiles * sme_gconc == warps
-       and kgroups % sme_gconc == 0
+       and kgroups >= 2 * sme_gconc * sme_batch
+       and kgroups % (sme_gconc * sme_batch) == 0
        and call.weight_block_n and call.weight_block_k == lane
-       and (warps * 512 * 2 * sme_slots) <= 114688 %}
+       and (warps * (512 + sme_pad) * 2 * sme_slots) <= 114688 %}
 {% if sme_stage %}
 {# Views into the module-scope arena: every device function is inlined into one
    megakernel, so each `__shared__` declaration is co-resident and the budget
@@ -132,6 +136,13 @@ __shared__ float ftt_dense_stats_partial[{{ warps }}];
         (void)dense_global_k;
         dense_sme_shard_base = {{ call.weight_offset | cppexpr }};
     }
+{% if call.cpp_shard_major_weight | default(false) %}
+    dense_sme_shard_base =
+        (dense_sme_shard_base / {{ call.canonical_weight_group_stride }}LL)
+            * {{ call.weight_group_stride }}LL
+        + (dense_sme_shard_base % {{ call.canonical_weight_group_stride }}LL)
+            * {{ call.weight_layout_k_groups }}LL;
+{% endif %}
     const auto dense_sme_source = ftt::arch::sme_source_for(
         &ftt_weight[dense_sme_shard_base + dense_sme_tile * 512LL], 64);
 {# This lane's run inside the staged tile, and the (n, k) it therefore owns. #}
@@ -154,61 +165,23 @@ __shared__ float ftt_dense_stats_partial[{{ warps }}];
         (void)dense_global_k;
         dense_sme_act = &ftt_source[{{ call.source_offset | cppexpr }}];
     }
-    ftt::dim_t dense_sme_slot = 0;
-    ftt::dim_t dense_sme_issue = {{ (sme_slots - 1) % sme_slots }}LL;
-{% macro dense_issue(group_expr, slot) -%}
-            ftt::arch::sme_copy_block_from(
-                &dense_sme_buf[dense_sme_warp][{{ slot }}][0],
-                dense_sme_source,
-                ({{ group_expr }}) * dense_sme_group_stride * 2LL);
-{%- endmacro %}
-    if (dense_sme_lane == 0) {
-{% for slot in range(sme_slots - 1) %}
-{{ dense_issue("dense_sme_goff + %dLL" % (slot * sme_gconc), "%dLL" % slot) }}
-{% endfor %}
-        ftt::arch::sme_drain();
-    }
-{# Walk the groups this warp owns: it advances by `sme_gconc` because the other
-   concurrent groups belong to the other warps. #}
-    for (ftt::dim_t dense_sme_g = 0; dense_sme_g < {{ kgroups }}LL;
-         dense_sme_g += {{ sme_gconc }}LL) {
-        const ftt::dim_t dense_sme_cur = dense_sme_slot;
-        dense_sme_slot = (dense_sme_slot + 1LL == {{ sme_slots }}LL)
-                             ? 0LL : dense_sme_slot + 1LL;
-        if (dense_sme_lane == 0
-                && dense_sme_g + {{ (sme_slots - 1) * sme_gconc }}LL
-                       + dense_sme_goff < {{ kgroups }}LL) {
-{{ dense_issue("dense_sme_g + dense_sme_goff + %dLL" % ((sme_slots - 1) * sme_gconc),
-               "dense_sme_issue") }}
-        }
-        const auto dense_sme_src = ftt::{{ run_load }}<{{ chunk }}>(dense_sme_act);
-        dense_sme_act += {{ sme_gconc * lane }}LL;
-        const auto dense_sme_w = ftt::load_run<{{ chunk }}>(
-            &dense_sme_buf[dense_sme_warp][dense_sme_cur][dense_sme_run]);
-{# Two elements per instruction; products and accumulation stay in fp32. #}
-        FTT_UNROLL
-        for (int dense_sme_pair = 0; dense_sme_pair < {{ chunk // 2 }};
-             ++dense_sme_pair) {
-            dense_sme_acc = ftt::dot2_step(dense_sme_w, dense_sme_src,
-                                           dense_sme_pair, dense_sme_acc);
-        }
-        if (dense_sme_lane == 0
-                && dense_sme_g + {{ (sme_slots - 1) * sme_gconc }}LL
-                       + dense_sme_goff < {{ kgroups }}LL) {
-            ftt::arch::sme_drain();
-        }
-        dense_sme_issue = (dense_sme_issue + 1LL == {{ sme_slots }}LL)
-                              ? 0LL : dense_sme_issue + 1LL;
-    }
+{% with sme_issuer_lane="dense_sme_lane", sme_buffer="dense_sme_buf", sme_warp="dense_sme_warp",
+        sme_goff="dense_sme_goff", sme_groups=kgroups, sme_concurrency=sme_gconc, sme_lane=lane,
+        sme_stride="dense_sme_group_stride", sme_act="dense_sme_act",
+        sme_run="dense_sme_run", sme_projections=1,
+        sme_sources=["dense_sme_source"], sme_accumulators=["dense_sme_acc"] %}
+{% include "kernels/_sme_batches.cpp.jinja" %}
+{% endwith %}
 {# Fold the `lane / chunk` lanes sharing an N, then the `sme_gconc` warps that
    covered the other concurrent groups of the same N. The warp fold is a
    shuffle; the cross-warp fold goes through shared memory because those lanes
    are in different warps. #}
     dense_sme_acc =
         ftt::arch::lane_group_reduce_sum<{{ lane // chunk }}>(dense_sme_acc);
-    __shared__ float dense_sme_cross[{{ warps }}][{{ 512 // lane }}];
+{# Staged weights are dead after the completed pipeline; reuse each warp's
+   first slot for its FP32 partials rather than adding another shared array. #}
     if (dense_sme_k_in_lane == 0) {
-        dense_sme_cross[dense_sme_warp][dense_sme_run / {{ lane }}LL] =
+        reinterpret_cast<float *>(&dense_sme_buf[dense_sme_warp][0][0])[dense_sme_run / {{ lane }}LL] =
             dense_sme_acc;
     }
     ftt::arch::cta_sync();
@@ -227,7 +200,7 @@ __shared__ float ftt_dense_stats_partial[{{ warps }}];
             const ftt::dim_t w = dense_gi * {{ sme_tiles }}LL
                                + (dense_out * {{ lane }}LL) / 512LL;
             dense_accumulator +=
-                dense_sme_cross[w][(dense_out * {{ lane }}LL % 512LL) / {{ lane }}LL];
+                reinterpret_cast<float *>(&dense_sme_buf[w][0][0])[(dense_out * {{ lane }}LL % 512LL) / {{ lane }}LL];
         }
 {# Falls through to the shared epilogue below, which owns the rounding
    boundaries and the statistic, with `dense_accumulator` and
@@ -432,7 +405,9 @@ __shared__ float ftt_dense_stats_partial[{{ warps }}];
                 ftt::store_as(ftt_stats, dense_stats_square_sum);
         }
     }
+{% if not call.cpp_shared_exit_barrier_in_schedule | default(false) %}
     ftt::arch::cta_sync();
+{% endif %}
 }
 
 

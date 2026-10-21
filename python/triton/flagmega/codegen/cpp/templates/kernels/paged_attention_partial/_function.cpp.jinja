@@ -24,10 +24,20 @@
 static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
+{% if call.cpp_attention_staging | default(false) %}
+{% include "kernels/paged_attention_partial/_staged.cpp.jinja" %}
+{% else %}
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_attention_score = reinterpret_cast<float *>(_ftt_sme_arena);
+    auto *const ftt_attention_probability = ftt_attention_score + {{ call.token_tile }};
+    auto *const ftt_attention_reduce = ftt_attention_probability + {{ call.token_tile }};
+    auto *const ftt_attention_value_partial = ftt_attention_reduce + 4;
+{% else %}
     __shared__ float ftt_attention_score[{{ call.token_tile }}];
     __shared__ float ftt_attention_probability[{{ call.token_tile }}];
     __shared__ float ftt_attention_reduce[4];
     __shared__ float ftt_attention_value_partial[{{ block_threads }}];
+{% endif %}
     const ftt::dim_t attention_context_shard = {{ call.context_shard | cppexpr }};
     const ftt::dim_t attention_layer_id = {{ call.layer_id | cppexpr }};
 {# The query and partial-state pointers are rebased per local head, so they
@@ -235,6 +245,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
         ftt::arch::cta_sync();
     }
+{% endif %}
 }
 
 

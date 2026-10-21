@@ -1,0 +1,38 @@
+{
+  "prompt_length": 32,
+  "contexts": "33..95",
+  "requests_per_variant": 3,
+  "decode_samples_per_variant": 189,
+  "tokens_exact": true,
+  "means_ms": {
+    "native": {
+      "engine_host_ms": 10.697789055359348,
+      "graph_device_ms": 7.355332659665869,
+      "graph_host_launch_ms": 0.042626451301787584,
+      "before_graph_device_timeline_ms": 0.8235727542488979,
+      "after_graph_device_timeline_ms": 2.5095693396512795,
+      "sampler_device_interval_ms": 0.08046133449626347,
+      "sampler_host_launch_ms": 0.47284716163717566,
+      "logits_device_interval_ms": 0.9573372022184745,
+      "logits_host_launch_ms": 0.18943471294487751,
+      "outside_graph_residual_ms": 3.3424563956934783,
+      "model_device_ms": 8.312669861884343,
+      "outside_model_residual_ms": 2.3851191934750045
+    },
+    "flagmega": {
+      "engine_host_ms": 9.95237032498514,
+      "graph_device_ms": 6.524746069832454,
+      "graph_host_launch_ms": 0.021175057602622522,
+      "before_graph_device_timeline_ms": 0.0653198006410132,
+      "after_graph_device_timeline_ms": 3.3589311081659856,
+      "sampler_device_interval_ms": 0.07910805849959611,
+      "sampler_host_launch_ms": 0.32396210116092805,
+      "logits_device_interval_ms": 0.001070512846733133,
+      "logits_host_launch_ms": 0.0011655267958760893,
+      "outside_graph_residual_ms": 3.4276242551526854,
+      "model_device_ms": 6.524746069832454,
+      "outside_model_residual_ms": 3.4276242551526854
+    }
+  },
+  "note": "Diagnostic paired means, not published chart medians. Native graph excludes logits head; C++ graph includes logits and staging. Residual includes CPU/GPU overlap, sampler, transfers and output processing; it is not isolated pure CPU time."
+}

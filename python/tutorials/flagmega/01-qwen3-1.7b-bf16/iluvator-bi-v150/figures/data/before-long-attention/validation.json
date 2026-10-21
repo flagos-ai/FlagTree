@@ -1,0 +1,26 @@
+{
+  "tutorial_tests": {
+    "command": "CUDA_VISIBLE_DEVICES=8 conda run -n flagtree python -m pytest python/test/flagmega/tutorials -q",
+    "passed": 32
+  },
+  "formal_requests": 144,
+  "formal_output_tokens": 9216,
+  "exact_native_tokens": true,
+  "fused_decode_input_calls": 4536,
+  "graph_replays": 4536,
+  "sampling_scenarios": [
+    "one_token_prefill",
+    "page_boundary",
+    "penalties",
+    "logprobs_min_tokens",
+    "allowed_tokens",
+    "random_seeded"
+  ],
+  "sampling_requests_per_variant": 12,
+  "performance_gate": {
+    "before_passed": false,
+    "after_passed": true
+  },
+  "raw_report_hashes_verified": 6,
+  "svg_structures_verified": 3
+}

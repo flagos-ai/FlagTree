@@ -1,0 +1,50 @@
+{
+  "test-tail-gpu.log": {
+    "sha256": "0dd3ddd6bd7a15edebbfb4c57b2ca41a888efd6889191a7a1a9f5a6e129f3f39",
+    "uncompressed_bytes": 6465
+  },
+  "test-tail-gpu-after.log": {
+    "sha256": "3907b4f861bf66561760f2f61b40a8167a823392618caee6115ffb2dd38e21c4",
+    "uncompressed_bytes": 114
+  },
+  "test-qkv-fused-fail-before.log": {
+    "sha256": "c7b8cc8daf7833918edbc5dc086f0aa584c151682f49be3381bf3ed663d09b1e",
+    "uncompressed_bytes": 5935
+  },
+  "test-qkv-fused-exit.log": {
+    "sha256": "baf30f3053cdff7e638120667e304772769afd84239bb9ff7815fcd65644f5f5",
+    "uncompressed_bytes": 113
+  },
+  "test-argmax-arena.log": {
+    "sha256": "8fd9f0e56e083c570eb298dcbac444b042a36cf262bc0964e7e3853f341a797f",
+    "uncompressed_bytes": 113
+  },
+  "test-cpp-final.log": {
+    "sha256": "c244cfbdf0ed048cdf69bfef37648a3e40120834a877bb3adbf5f72a70fdcfa6",
+    "uncompressed_bytes": 100
+  },
+  "test-source-cuda-alone.log": {
+    "sha256": "8bd06c285d88d86ee3e4891b7dbd7f25ffe5fbd59506ad492c6dfd994ce8144e",
+    "uncompressed_bytes": 3559
+  },
+  "test-source-cpu-final.log": {
+    "sha256": "e46ccab0b913391bd65e8a4da588e3abe14f1b8ec2f040584f972fc5e8cbcab9",
+    "uncompressed_bytes": 114
+  },
+  "sites-formal-tail-gig-all.log": {
+    "sha256": "9f3db33349ebb6e21877c023d6264d37a77e1405c57243cac7a5cae7058eeda9",
+    "uncompressed_bytes": 1358
+  },
+  "sites-formal-tail-gig-repeat.log": {
+    "sha256": "3a71e520a8eb2e7f3062c11b27eaf436b20b7a1e5dc866d452b6794d95c25237",
+    "uncompressed_bytes": 1354
+  },
+  "validate-final-aligned-long.log": {
+    "sha256": "678cb5f36fb46f301648ba15af42c9cbe841b059bce3e3af546fc8a269dc522a",
+    "uncompressed_bytes": 3840
+  },
+  "final-metrics.json": {
+    "sha256": "9b29ae7d71e404c558ab3b244772a8a87279f5a53ab32765e14e5e3a0ea9340e",
+    "uncompressed_bytes": 3742
+  }
+}

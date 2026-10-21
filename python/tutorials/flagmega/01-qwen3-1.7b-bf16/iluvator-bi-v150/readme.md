@@ -1,45 +1,53 @@
 # Qwen3-1.7B BF16 / Iluvatar BI-V150
 
-本教程在**一张 BI-V150** 上使用 FlagMega 编译完整 28 层 Qwen3-1.7B decode。
-按照本任务确认的比较口径，参考实现是 **vLLM 0.24.0 + FlagOS/FlagGems 插件**。
-vLLM 负责原生 prefill、调度、页分配和采样；FlagMega 执行每个生成步的完整模型。
-4×4 mesh 表示16个 CTA，不是16张GPU。
+This tutorial uses FlagMega to compile decode for the complete 28-layer Qwen3-1.7B
+model on **one BI-V150 GPU**. The reference implementation is
+**vLLM 0.24.0 with the FlagOS/FlagGems plugin**. vLLM handles native prefill,
+scheduling, page allocation and sampling; FlagMega executes the complete model
+at each decode step. The 4×4 mesh represents 16 CTAs on one GPU.
 
-## 环境与正确性前提
+## Environment and correctness prerequisites
 
-验证环境为 COREX 4.5.0.20260509、PyTorch 2.10.0+corex.4.5.0.20260509、Python 3.12。
-使用本 checkout 的可编辑 FlagTree，不能用上游 NVIDIA Triton/PyTorch 替换。
-本次源码版本：
+The validated environment uses COREX 4.5.0.20260509,
+PyTorch 2.10.0+corex.4.5.0.20260509 and Python 3.12. Use the editable FlagTree
+installation from this checkout. Upstream NVIDIA Triton or PyTorch packages
+cannot replace the COREX-compatible packages. The source revisions are:
 
-| 项目 | commit |
+| Component | Commit |
 |---|---|
 | vLLM | `ee0da84ab9e04ac7610e28580af62c365e898389` |
 | vllm-plugin-FL | `ce3a43b28423bad54f832bf3b8a347a47244bcea` |
-| FlagGems | `b550ddb996939ee1a30ba4a4b8f8b2d0556703a3`，加下述补丁 |
+| FlagGems | `b550ddb996939ee1a30ba4a4b8f8b2d0556703a3`, with the patch below |
 | Qwen3-1.7B checkpoint | `70d244cc86ccca08cf5af4e1e306ecf908b1ad5e` |
 
-本 checkout 的 Iluvatar 编译器包含两个必要修复：
+The Iluvatar compiler in this checkout includes two required correctness fixes:
 
-- grid barrier 在所有生产线程完成 device fence 后才报告 CTA 到达，确保跨 SM 的数据可见；
-- MMA reduction 循环优化正确保留 accumulator 初值的逐轮缩放。
+- The grid barrier reports CTA arrival only after all producer threads complete
+  their device fences, ensuring data visibility across SMs.
+- The MMA reduction loop optimization preserves the per-iteration scaling of
+  the accumulator's initial value.
 
-编译器修改后运行仓库本地脚本 `./build-iluvator.sh` 重建原生扩展。
-对未修复的上述 FlagGems checkout，应用
-[patches/flaggems-correctness.patch](patches/flaggems-correctness.patch)：
+After compiler changes, rebuild the native extension with the repository-local
+`./build-iluvator.sh` script. For the FlagGems revision above, apply
+[patches/flaggems-correctness.patch](patches/flaggems-correctness.patch) if those
+fixes are absent:
 
 ```bash
 git -C /path/to/FlagGems apply --check "$TUTORIAL/patches/flaggems-correctness.patch"
 git -C /path/to/FlagGems apply "$TUTORIAL/patches/flaggems-correctness.patch"
 ```
 
-补丁修复 empty unique 和 inplace RoPE 跨 warp 的 partner 读取竞态。
-已经有等价修复的 checkout 不应重复应用。双方比较必须使用同一份修复后的依赖。
-本环境还按已有部署保留 `sort,sort_stable` 的 COREX 实现；双方配置相同。
+The patch fixes empty unique and a cross-warp partner-read race in in-place RoPE.
+Do not apply it again to a checkout with equivalent fixes. Both implementations
+must use the same corrected dependencies. The existing deployment also retains
+the COREX implementations of `sort,sort_stable`, with identical configuration
+for both variants.
 
-## 从原始模型复现
+## Reproduce from the original model
 
-以下命令在 FlagTree 根目录运行。`vllm-iluvatar` 是本机已准备的 FlagOS 环境；
-其他机器需提供同等依赖。先用 `ixsmi` 选择空闲GPU。
+Run these commands from the FlagTree repository root. `vllm-iluvatar` is the
+prepared local FlagOS environment; other machines need equivalent dependencies.
+Use `ixsmi` to select an idle GPU first.
 
 ```bash
 source /root/miniconda3/etc/profile.d/conda.sh
@@ -57,17 +65,21 @@ python "$TUTORIAL/reproduce_flagos.py" \
   --rounds 3 --repeats 3
 ```
 
-使用新的 work/results 目录。该命令从 checkpoint 构建严格 FlagOS 数值 profile，验证
-artifact，再交替执行 native→FlagMega、FlagMega→native、native→FlagMega 三轮比较。
-每轮旋转场景顺序，每场景一次预热、三次测量。所有预热和测量的完整 greedy token
-序列都必须与原生参考相同，任何失败会阻止结果发布。GPU原生编译和权重载入不计入
-请求时间。
+Use fresh work and results directories. This command builds the strict FlagOS
+numerical profile from the checkpoint, verifies the artifact, then compares
+native→FlagMega, FlagMega→native and native→FlagMega in three alternating rounds.
+Each round rotates the scenario order and runs one warmup and three measured
+requests per scenario. Every complete greedy token sequence, including warmups,
+must match the native reference; any failure blocks result publication. Native
+GPU compilation and weight loading are excluded from request timing.
 
-若已有通过验证的产物，可用 `--artifact /path/to/serving/artifact` 替代 `--work-dir`。
-产物必须包含 `final.py`、manifest、rdata 和生成源码；单独的
-[generated_kernels.py](generated_kernels.py) 仅是已验证源码参考，不包含权重。
+For an existing verified artifact, replace `--work-dir` with
+`--artifact /path/to/serving/artifact`. The artifact must contain `final.py`,
+a manifest, rdata and generated source. C++ artifacts also require the generated
+shared library. Generated source alone contains no weights and cannot replace
+the complete artifact.
 
-只编译模型：
+To compile the model without benchmarking:
 
 ```bash
 python "$TUTORIAL/optimize.py" --checkpoint "$CHECKPOINT" \
@@ -76,32 +88,41 @@ python "$TUTORIAL/optimize.py" --checkpoint "$CHECKPOINT" \
 python -m triton.flagmega artifact verify "$TUTORIAL/.local/model-build/serving/artifact"
 ```
 
-FlagOS profile明确保留独立RMSNorm乘weight前的BF16舍入、融合残差的FP32归一化、
-matmul输出以及QKV合并后的BF16边界。修改数值profile时必须从原始checkpoint重编译；
-后续IR的普通resume不会重新选择分布/TIR。历史 `vllm-493bd8323-inductor-level3` profile
-仍由 `optimize.py` 支持，但不用于本次FlagOS结果。
+The FlagOS profile explicitly preserves BF16 rounding before weight multiplication
+in standalone RMSNorm, FP32 normalization for fused residuals, and the BF16
+boundaries at matmul outputs and after QKV merging. Changing the numerical profile
+requires recompilation from the original checkpoint; a normal resume from later
+IR does not reselect distributions or TIR. `optimize.py` still supports the
+historical `vllm-493bd8323-inductor-level3` profile, but the FlagOS results here
+use the profile above.
 
-## 测量边界与优化
+## Measurement boundaries and optimizations
 
-固定 BF16、batch/concurrency=1、3072最大上下文、256-token KV page、16 pages；
-关闭双方prefix cache，独立请求使用32/128/1024/2048-token prompt，各生成64 tokens。
-默认基线为 eager；原生 FlagOS 还可以用 vLLM FULL CUDA Graph 做独立对照。测量包括
-scheduler、forward、sampler 和输出处理。decode、TTFT、完整请求和P95分别报告，不能
-把设备kernel时间当作请求延迟。
+The configuration fixes BF16, batch/concurrency=1, a maximum context of 3072,
+256-token KV pages and 16 pages. Prefix caching is disabled for both variants.
+Independent requests use 32/128/1024/2048-token prompts and generate 64 tokens
+each. The reproduction script defaults to an eager baseline; the updated charts
+below explicitly use native vLLM FULL CUDA Graph. Timing includes scheduling,
+forward execution, sampling and output processing. Decode, TTFT, complete request
+latency and P95 are reported separately. Device kernel time alone does not
+represent request latency.
 
-### 原生 FlagOS CUDA Graph 对照
+### Native FlagOS CUDA Graph baseline
 
-当前 vLLM 0.24.0 + FlagOS plugin 不使用旧版 vendor 镜像中的
-`VLLM_ENFORCE_CUDA_GRAPH` 环境变量。benchmark 通过 vLLM 配置显式选择
-`mode=0`（不走当前不兼容的 Inductor 路径）、`cudagraph_mode=FULL` 和
-`cudagraph_capture_sizes=[1]`；同时将 `enforce_eager` 设为 `False`。该模式只对
-原生 FlagOS 变体开放。FlagMega worker extension 仍保持 eager 合同，因为它在 vLLM
-初始化后的 RPC 阶段安装，不能把已完成的 native graph capture 自动替换成 FlagMega
-decode 图。
+vLLM 0.24.0 with the FlagOS plugin does not use the `VLLM_ENFORCE_CUDA_GRAPH`
+environment variable from older vendor images. The benchmark explicitly sets
+`mode=0` to avoid the currently incompatible Inductor path,
+`cudagraph_mode=FULL`, `cudagraph_capture_sizes=[1]` and `enforce_eager=False`
+for the native FlagOS variant. The FlagMega worker extension is installed after
+initialization, so the outer vLLM execution remains eager while decode runs
+through the adapter's CUDA Graph. That graph includes token, seq_len and page
+table updates together with the complete C++ megakernel. Both variants retain
+the same native prefill, scheduling and sampling.
 
-同一张 BI-V150、同一 Qwen3-1.7B checkpoint 的 2026-09-29 对照（1 次 warmup、3
-次测量、每次生成64 tokens）如下；完整原始 JSON/log 保存在
-`.local/perf-iteration/flagos-cuda-graph-20260929/`：
+The following comparison was measured on 2026-09-29 with the same BI-V150 and
+Qwen3-1.7B checkpoint: one warmup, three measured requests and 64 output tokens
+per request. Complete raw JSON reports and logs are retained in
+`.local/perf-iteration/flagos-cuda-graph-20260929/`.
 
 | prompt tokens | eager decode median | CUDA Graph decode median | decode speedup | eager request median | CUDA Graph request median |
 |---:|---:|---:|---:|---:|---:|
@@ -110,76 +131,320 @@ decode 图。
 | 1024 | 69.192 ms | 12.538 ms | 5.52× | 4443.7 ms | 828.4 ms |
 | 2048 | 68.931 ms | 13.124 ms | 5.25× | 4517.1 ms | 1038.9 ms |
 
-CUDA Graph 启动日志出现 `Capturing CUDA graphs (mixed prefill-decode, FULL)`，四个
-prompt 的完整 greedy token 序列与 eager reference 一致。该结果证明 BI-V150 上原生
-FlagOS graph 路径可用；它不等同于 FlagMega artifact 已完成 graph 集成验收。
+The CUDA Graph startup logs contain
+`Capturing CUDA graphs (mixed prefill-decode, FULL)`. Complete greedy token
+sequences for all four prompts match the eager reference. This validates the
+native FlagOS graph path on BI-V150. The C++ integration validation from
+2026-10-21 and the current charts are described below.
 
-工作负载选择在 [local_optimizations/](local_optimizations/) 内：
+Workload-specific choices are implemented in
+[local_optimizations/](local_optimizations/):
 
-- 为MLP down projection选择能充分使用线程的tile，消除原8×16小块导致的大量串行归约；
-- QKV按packed weight的物理顺序读取，在FP32中积累，保留最后的输出舍入；
-- QKV GEMV在BI-V150上采用`block_k=64`、32 warps，减少K归约的CTA同步；其他GEMV保留已验收的大tile配置；
-- 使用 logits-only serving ABI，由vLLM统一采样。
+- Select an MLP down-projection tile that uses the available threads, eliminating
+  the many serial reductions caused by the original 8×16 tile.
+- Read QKV in the packed weights' physical order, accumulate in FP32 and preserve
+  the final output rounding.
+- Use `block_k=64` and 32 warps for QKV GEMV on BI-V150 to reduce CTA synchronization
+  during K reduction. Other GEMVs retain their validated large-tile configurations.
+- Use the logits-only serving ABI, with vLLM handling sampling.
 
-[flagos_adapter.py](flagos_adapter.py) 通过vLLM worker extension API安装。
-原生TRITON_ATTN的KV读写接收runtime stride，因此可以共享
-`[page, layer, KV, token, head, dimension]` 存储的逐层视图；decode不复制KV，
-不执行参考模型forward，不按结果切换回原生模型。
+[flagos_adapter.py](flagos_adapter.py) installs through the vLLM worker extension
+API. Native TRITON_ATTN KV reads and writes accept runtime strides, allowing
+per-layer views of shared `[page, layer, KV, token, head, dimension]` storage.
+Decode executes without KV copies or reference-model forward calls and does
+not select the native model based on generated results.
 
-## 独立 chat CLI
+## C++ backend
+
+The C++ backend uses the COREX compiler to generate the complete decode
+megakernel. On the current BI-V150, the default SME weight pipeline uses FIFO
+counter waits; each lane completes its shared-memory reads before the slot is
+reused. After loading and validation, GLU/down read-only weights are arranged
+in device memory by CTA shard. The original IR, artifact assets and source-layout
+program remain canonical. Device reordering is excluded from steady-state
+decode timing. SME selection checks the physical layout, address alignment and
+shared-memory budget, while QKV and shared-memory reuse retain the required
+synchronization.
+
+For an existing `bufferized_tir`, the Python API can create a separate C++
+artifact:
+
+```python
+from triton.flagmega.artifacts import write_artifact
+from triton.flagmega.importer import DirectoryCheckpoint
+from triton.flagmega.ir import load_module
+
+write_artifact(
+    load_module("/path/to/final.py"),
+    "/path/to/new-cpp-artifact",
+    target="iluvatar-bi-v150",
+    checkpoint=DirectoryCheckpoint("/path/to/Qwen3-1.7B"),
+    emit_executable=True,
+    codegen_backend="cpp",
+)
+```
+
+Measurements on GPU 8 with the same model on 2026-10-20 showed net bandwidth
+utilization of 80.0115%–80.0878% across five matmul families: GLU, down, QKV,
+attention output and logits. This diagnostic uses a fixed 819 GB/s denominator
+and subtracts the shell time from each isolated family measurement in the same
+round. At context=1, standalone CUDA Graph execution took approximately
+6.39–6.40 ms/token, measured as `append + synchronize`. It includes C++ logits
+and greedy argmax, while vLLM scheduling and output processing are excluded.
+Its timing boundary differs from the complete vLLM decode intervals below.
+All 151936 logits across 600 steps matched the original C++ numerical reference
+bit-for-bit. Iterations, rejected candidates, failing regressions and raw log
+locations are recorded in the
+[local iteration notes (Chinese)](.local/perf-iteration/cpp-backend-iteration.zh.md).
+
+## Standalone chat CLI
 
 ```bash
 python -m triton.flagmega.serving.chat_cli \
   --artifact "$TUTORIAL/.local/model-build/serving/artifact" \
   --checkpoint "$CHECKPOINT" --ctx-size 3072 --n-predict 64 \
-  --chat-template-kwargs '{"enable_thinking": false}' --prompt '请用一句话介绍你自己。'
+  --chat-template-kwargs '{"enable_thinking": false}' --prompt 'Introduce yourself in one sentence.'
 ```
 
-独立CLI不依赖vLLM forward。它的prefill仍是逐token扫描，与上面的原生batched prefill
-有不同的TTFT和完整请求边界；本次vLLM集成性能表不代表该路径的prefill速度。
+The standalone CLI runs both prefill and decode through the same complete C++
+artifact, without importing vLLM. Its measurements appear in the three charts
+below. Timing includes graph execution, greedy sampling, host token delivery and
+incremental text decoding. Model loading, warmup, terminal output and user input
+wait are excluded. The CLI's token-scan prefill and vLLM's batched prefill have
+different TTFT and complete request costs.
 
-## 图表
+For the same raw token prompt, native batched prefill and the CLI produce
+different first tokens. Configuring the same native FlagOS vLLM with
+`max_num_batched_tokens=1` produces the same sequence as the CLI's token-scan
+path. This independent native reference is used only for correctness checks;
+the vLLM performance charts still use FULL graph with batched prefill.
+Changing native prefill chunking alone reproduces the output difference, but
+the responsible native operator has not been isolated. Token-scan and batched
+prefill therefore cannot be claimed to produce bit-identical outputs.
+The old and new C++ artifacts, in eager and graph modes, produce bit-identical
+full-vocabulary logits after the 32-token prompt. See the
+[CLI measurement records](figures/data/chat-cli/README.md) for evidence and
+reproduction details.
 
-[figures/](figures/) 由 `render_flagos_results.py` 从 `reproduce_flagos.py`
-的原始数据生成(3 轮交替 × 每场景 3 次测量 × 4 个 prompt 长度,GPU 13)。
-出图前通过完整正确性闸门:每一次 warmup 和测量的 greedy token 序列都与原生
-vLLM 参考逐 token 一致,`accepted: true`;任何不一致都会阻止出图。
+Collect the native token-scan reference in `vllm-iluvatar`, then measure the CLI
+in `flagtree`:
 
-![FlagOS vLLM 与 FlagMega 的 decode 延迟](figures/decode_latency.svg)
+```bash
+python "$TUTORIAL/check_chat_cli_reference.py" --checkpoint "$CHECKPOINT" \
+  --output /tmp/chat-native-reference.json
+conda activate flagtree
+python "$TUTORIAL/benchmark_chat_cli.py" --checkpoint "$CHECKPOINT" \
+  --artifact /path/to/final/artifact --native-reference /tmp/chat-native-reference.json \
+  --results /tmp/chat-results --rounds 1 --round-offset 0 --repeats 5 --warmups 1 \
+  --max-start-temperature 70 --cuda-graph
+```
 
-![原生 prefill + 64 个生成 token 的完整请求延迟](figures/request_latency.svg)
+## Charts and CUDA Graph comparison
 
-| prompt tokens | FlagOS vLLM decode | FlagMega decode | decode 加速 | 请求加速 |
+Collect all three variants serially from `vllm-iluvatar`; the CLI subprocess
+uses the separate `flagtree` environment:
+
+```bash
+CUDA_VISIBLE_DEVICES=8 python "$TUTORIAL/reproduce_flagos.py" \
+  --checkpoint "$CHECKPOINT" --artifact /path/to/final/artifact \
+  --results /tmp/three-way-results --rounds 3 --repeats 5 --cuda-graph \
+  --max-start-temperature 70 \
+  --chat-python /root/miniconda3/envs/flagtree/bin/python \
+  --chat-native-reference /tmp/chat-native-reference.json \
+  --figure-dir "$TUTORIAL/figures"
+```
+
+The current [figures/](figures/) compare native vLLM FULL CUDA Graph,
+FlagMega-vLLM integration and standalone chat CLI using the same final C++
+artifact on GPU 8. The charts follow the 1200×690 grouped bars, colors and metric
+definitions in the [H800 figures](../nvidia-h800/figures/):
+32/128/1024/2048-token inputs, 64 output tokens per request,
+batch/concurrency=1 and prefix caching disabled. Measurements here were collected
+on BI-V150; H800 measurements remain in their own directory.
+
+The three rounds rotate serially through native→FlagMega→CLI,
+FlagMega→CLI→native and CLI→native→FlagMega. Each variant uses a fresh process
+per round and rotates the scenario order. Before each scenario, the GPU cools
+to at most 70°C outside request timing, followed by one warmup and five measured
+requests. Starting temperature and clocks are recorded. Initialization, weight
+loading, read-only weight reordering and graph capture are excluded from
+steady-state timing. Every warmup and measured vLLM integration request matches
+the native batched-prefill reference. Each C++ integration process captures one
+graph and replays it for every decode step, sharing native prefill KV storage
+without cache copies.
+
+![Decode step latency](figures/decode_latency.svg)
+
+![Decode throughput](figures/decode_throughput.svg)
+
+![Request throughput including prefill](figures/request_throughput.svg)
+
+| prompt tokens | vLLM FULL graph decode | C++ worker graph decode | decode speedup | request speedup |
 |---:|---:|---:|---:|---:|
-| 32 | 69.53 ms | 14.42 ms | 4.82× | 4.84× |
-| 128 | 69.36 ms | 15.41 ms | 4.50× | 4.54× |
-| 1024 | 69.32 ms | 22.88 ms | 3.03× | 3.04× |
-| 2048 | 69.40 ms | 26.68 ms | 2.60× | 2.33× |
+| 32 | 11.812 ms | 7.231 ms | 1.63× | 1.37× |
+| 128 | 11.901 ms | 7.300 ms | 1.63× | 1.42× |
+| 1024 | 12.798 ms | 8.301 ms | 1.54× | 1.39× |
+| 2048 | 13.630 ms | 9.444 ms | 1.44× | 1.28× |
 
-原生基线为 eager 模式;`VLLM_FL_FLAGOS_BLACKLIST_APPEND=sort,sort_stable`
-保留 COREX 排序,与[环境前提](#环境与正确性前提)一致。原生 vLLM 的 decode
-延迟与 prompt 长度基本无关(69.3–69.5 ms),FlagMega 随上下文增长,所以加速比
-在长 prompt 下收窄。完整 JSON 与逐轮日志见
-`.local/flagos-figure-summary.json`。
-
-这些数字对应本分支修复 SME descriptor 缺陷(`8e1c66efb`)之后的状态。在该修复
-之前原生 vLLM 对任意 prompt 都输出全零 token,无法作为基线 —— 且
-`benchmark_flagos.py` 的 token 闸门会在 prompt32/128 上**通过**(全零对全零天然
-一致),反而把产出真实 token 的 FlagMega 判成不匹配。
-
-## 结果与原始证据
-
-最终表格与图由 `render_flagos_results.py` 从通过完整token检查的原始数据生成。
-每份结果包含模型文件hash、编译器hash、生成源码hash、依赖commit/diff hash、实际
-FlagMega调用次数和全部时间样本。Trial111 的三轮交替验收结果如下：
-
-| prompt tokens | FlagOS decode | FlagMega decode | FlagMega request | request speedup |
+| prompt tokens | vLLM decode tokens/s | C++ decode tokens/s | vLLM request tokens/s | C++ request tokens/s |
 |---:|---:|---:|---:|---:|
-| 32 | 69.88 ms | 20.65 ms | 1344.7 ms | 3.34× |
-| 128 | 69.58 ms | 21.99 ms | 1347.0 ms | 3.32× |
-| 1024 | 69.54 ms | 29.54 ms | 1924.5 ms | 2.33× |
-| 2048 | 69.65 ms | 38.13 ms | 2599.8 ms | 1.76× |
+| 32 | 98.60 | 141.88 | 87.46 | 120.08 |
+| 128 | 92.63 | 139.01 | 83.00 | 118.08 |
+| 1024 | 83.20 | 123.29 | 72.90 | 101.53 |
+| 2048 | 75.84 | 108.17 | 55.89 | 71.27 |
 
-中文逐轮记录在
-[.local/perf-iteration/ITERATION.md](.local/perf-iteration/ITERATION.md)，包括所有失败试验
-及被后续证据推翻的结论。`.local/` 为本机实验目录，不是复现脚本的输入依赖。
+The standalone chat CLI uses 15 independent measured requests per input length
+across three rounds. All three implementations use the same process lifecycle
+and scenario start-temperature conditions.
+
+| prompt tokens | CLI decode median | P95 | decode tokens/s | request tokens/s | prefill | TTFT |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 6.585 ms | 6.640 ms | 151.39 | 102.54 | 207.9 ms | 208.0 ms |
+| 128 | 6.688 ms | 6.712 ms | 149.48 | 50.91 | 835.7 ms | 836.0 ms |
+| 1024 | 7.704 ms | 7.732 ms | 129.82 | 8.36 | 7167.5 ms | 7168.0 ms |
+| 2048 | 8.825 ms | 8.930 ms | 113.28 | 3.99 | 15488.1 ms | 15488.6 ms |
+
+CLI decode includes per-step sampling, synchronization, host token delivery and
+text decoding. All 4608 output tokens from 72 warmup and measured requests match
+the native token-scan reference. Warmups for all four scenarios in every round
+are retained, and all measured samples contribute to the aggregate.
+The thermal drift observed during earlier continuous long prefill is retained
+as a separate diagnostic; see the
+[measurement audit (Chinese)](figures/data/chat-cli/measurement-audit.zh.md).
+CLI outputs differ from the batched-prefill outputs in the charts, and its
+long-input token-scan prefill significantly increases complete request time.
+Decode latency ratios therefore do not establish an end-to-end speedup for
+identical output sequences.
+
+The vLLM integration improves both decode and complete request latency over
+native FULL graph for all four context lengths. The average of the two
+short-context decode speedup ratios is approximately 1.63×; the ratios for
+1024/2048 are approximately 1.54×/1.44×, with gaps of about 5.5%/11.6% relative
+to the short-context average. Complete C++ step time at 2048 fell from
+19.881 ms before optimization to 9.444 ms, including scheduling and sampling.
+The 80% net bandwidth utilization across five matmul families is an independent
+diagnostic and is not used to derive request speedups.
+
+The main long-context bottleneck was the serial head loop and repeated KV
+reads in C++ attention. `_select_attention_staging` checks the single-query
+configuration, contiguous BF16 KV storage, GQA=2, head sharding and shared-memory
+budget. It selects four concurrent heads, cooperative GQA-pair loading of each
+KV block once, 64-token load blocks and a padded shared-memory layout. The
+invariant query stays in registers to avoid reloading it for each KV block.
+Four 16-token online softmax updates and ordered probability/value reductions
+preserve the original computation order; critical accumulations use explicit
+FMA. Two alternating value buffers reduce synchronization. Actual temporary
+storage is 116992 bytes within the existing 128 KiB arena. See the
+[attention root-cause records (Chinese)](figures/data/attention-root-cause.zh.md)
+for numerical analysis, rejected candidates and regression evidence.
+
+Decode latency is the median of all `63 × 15` host-visible decode intervals,
+excluding the first output token. Decode throughput is the median of per-request
+`63 / total decode time`; request throughput is the median of
+`64 / complete request time`, including prefill. Throughput is not computed as
+the reciprocal of the median decode latency.
+
+A 32-token prompt decodes at context lengths of approximately 33–95 tokens.
+The historical approximately 6.4 ms measurement times the complete standalone
+C++ model as `append + synchronize`. The approximately 10 ms measurement before
+input preparation fusion times the complete vLLM step. After the long-context
+optimization, current short-request decode steps take approximately 7.2 ms.
+Graph and outside-graph diagnostics use means; the formal charts use medians
+of host-visible decode intervals. These measurement boundaries are recorded
+separately.
+
+Input preparation for single-request decode is now fused. The root cause was
+native `ModelRunnerFL._prepare_inputs`, which uploaded several small tensors
+for one query and separately executed index, cast, add, copy and slot-mapping
+operations, taking approximately 2.51 ms/step of CPU submission time.
+[decode_inputs.py](decode_inputs.py) packs the position, token source, discard
+flag and latest physical page table into one pinned CPU buffer, uploads it once
+asynchronously, then writes the native GPU buffers with one kernel. Submission
+time falls to approximately 0.14 ms. The native scheduler still allocates pages
+at every step, and asynchronous tokens still come from the native sampler's GPU
+output. Consecutive requests and page transitions do not assume contiguous
+physical pages. vLLM's existing input-preparation event protects pinned-buffer
+reuse.
+
+The following same-GPU diagnostic uses a 32-token prompt, three requests and
+189 decode steps per implementation. The decomposition uses **means**, unlike
+the medians in the formal charts:
+
+| Timing component | Native vLLM FULL graph | Final C++ worker graph |
+|---|---:|---:|
+| Complete engine.step | 10.606 ms | 7.228 ms |
+| Graph device execution | 7.355 ms | 6.107 ms |
+| Outside-graph residual | 3.252 ms | 1.121 ms |
+| Outside-graph vocabulary projection | 0.957 ms | Included in graph |
+| Residual after subtracting model computation | 2.294 ms | 1.121 ms |
+
+Native FULL graph returns hidden states and executes the LM head outside the
+graph; the C++ graph includes logits. The native outside-graph residual in this
+diagnostic is approximately 3.25 ms, compared with 3.34 ms in the historical
+same-GPU diagnostic, with approximately 0.96 ms attributable to the LM head.
+The residual is host elapsed time minus device computation and includes CPU/GPU
+overlap, sampling, transfers and output processing. It is not an isolated
+measurement of pure CPU time. Before input fusion, the historical C++ graph took
+6.526 ms and the complete step took 9.945 ms. After fusion, the graph took
+6.524 ms and the step took 7.641 ms; graph timing after the long-context attention
+optimization is shown in the table above. Raw data and aggregates are in
+[boundary-summary.json](figures/data/boundary-summary.json). Older decompositions
+are retained in [before-long-attention/](figures/data/before-long-attention/) and
+[before-input-fusion/](figures/data/before-input-fusion/).
+
+GPU buffer regressions cover synchronous and asynchronous token sources,
+31/255/256/511/512/3071 positions, noncontiguous physical pages and slot padding.
+Complete request checks cover every output token for all four prompt lengths.
+Additional checks cover one-token prefill, the 255-token page transition,
+repeated requests, penalties, logprobs/min_tokens, allowed tokens and random
+sampling with a fixed seed; native and C++ output tokens match in every case.
+Fusion applies only to the supported single-request text decode ABI; prefill
+continues through the native implementation. Other models, batches, CP,
+hybrid configurations and speculation are outside this ABI.
+
+Reproduce the decomposition and performance checks with fresh output files:
+
+```bash
+python "$TUTORIAL/benchmark_graph_boundary.py" --variant native \
+  --checkpoint "$CHECKPOINT" --output /tmp/native-boundary.json
+python "$TUTORIAL/benchmark_graph_boundary.py" --variant flagmega \
+  --checkpoint "$CHECKPOINT" --artifact /path/to/final-cpp-artifact \
+  --reference /tmp/native-boundary.json --require-outside-no-worse \
+  --output /tmp/cpp-boundary.json
+```
+
+[figures/data/](figures/data/) retains six compressed raw vLLM JSON reports,
+aggregates and acquisition identities, with the standalone CLI reports in its
+`chat-cli/` subdirectory. Before plotting, `render_flagos_results.py` rechecks
+complete token sequences, scenarios, execution modes, environments and the
+actual C++ source/library hashes, rejecting incomplete or inconsistent results.
+Rebuild the three current SVGs directly from the saved data:
+
+```bash
+python "$TUTORIAL/render_flagos_results.py" \
+  --results "$TUTORIAL/figures/data" \
+  --chat-results "$TUTORIAL/figures/data/chat-cli" \
+  --chat-native-reference "$TUTORIAL/figures/data/chat-cli/native-reference.json.gz" \
+  --figure-dir "$TUTORIAL/figures"
+```
+
+To remeasure a compiled and verified final C++ artifact in a fresh directory:
+
+```bash
+python "$TUTORIAL/reproduce_flagos.py" \
+  --checkpoint "$CHECKPOINT" --artifact /path/to/final-cpp-artifact \
+  --cuda-graph --rounds 3 --repeats 5 --max-start-temperature 70 \
+  --results "$TUTORIAL/.local/fresh-cpp-graph-results" \
+  --figure-dir "$TUTORIAL/figures"
+```
+
+Logs for the current three-way comparison with matching temperature conditions
+are in `.local/chat-cli-audit/controlled/`. Earlier compiler optimization
+validation logs are in
+`.local/perf-iteration/round36-long-attention/formal-hoisted-query/`.
+Chart data before the long-context optimization are retained in
+[before-long-attention/](figures/data/before-long-attention/), and historical data
+before input fusion are in
+[before-input-fusion/](figures/data/before-input-fusion/).
+The development history is recorded in the
+[local C++ iteration notes (Chinese)](.local/perf-iteration/cpp-backend-iteration.zh.md).

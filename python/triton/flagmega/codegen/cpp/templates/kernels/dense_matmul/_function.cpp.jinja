@@ -63,6 +63,20 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    for why this is independent of `k_streams`. #}
 {% set depth = tiled_depth | default(8) %}
 {% set kg_streams = depth if groups % depth == 0 else streams %}
+{% set sme_batch = sme_slots // 2 %}
+{% set sme_tile_n = (512 // lane) if lane and 512 % lane == 0 else 0 %}
+{% set sme_full_n = call.local_n_capacity %}
+{% set sme_payload = sme and sme_slots >= 2 and chunk == 8 and sme_tile_n
+       and call.weight_group_stride and call.weight_group_stride % 32 == 0
+       and call.k_predicate_redundant
+       and call.local_n_capacity % sme_tile_n == 0
+       and groups >= 2 * sme_batch and groups % sme_batch == 0
+       and warps * sme_slots * (512 + sme_pad) * 2 <= 114688 %}
+{% if sme_payload %}
+{% set sme_keep_streams = kg_streams %}
+{% include "kernels/dense_matmul/_sme_payload.cpp.jinja" %}
+{% else %}
+
     for (ftt::dim_t dense_chunk = ftt_thread;
          dense_chunk < {{ chunks }}LL;
          dense_chunk += ftt_threads) {
@@ -119,6 +133,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                 ftt::store_as(ftt_result, dense_accumulator);
         }
     }
+{% endif %}{# sme_payload #}
 {% if call.local_m_capacity != 1 %}
     }
 {% endif %}
@@ -149,52 +164,30 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    load width. Do not re-try widening without re-measuring this comparison. #}
 {% set groups = (call.local_k_capacity // lane) %}
 {% set kg_streams = streams if groups % streams == 0 else 1 %}
-    for (ftt::dim_t dense_payload = ftt_thread;
-         dense_payload < {{ call.local_n_capacity }}LL * {{ lane }}LL;
-         dense_payload += ftt_threads) {
-        const ftt::dim_t dense_local_n_offsets = dense_payload / {{ lane }}LL;
-        const ftt::dim_t dense_k_in_lane = dense_payload % {{ lane }}LL;
-        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
-        (void)dense_global_n;
-{# `result_active` depends on N only, so it is uniform across a lane group and
-   the group still reaches its shuffle convergently. #}
-        if (!({{ call.result_active | cppexpr }})) {
-            continue;
-        }
-        float dense_partial[{{ kg_streams }}] = {};
-        for (ftt::dim_t dense_group_base = 0;
-             dense_group_base < {{ groups }}LL;
-             dense_group_base += {{ kg_streams }}LL) {
-            FTT_UNROLL
-            for (ftt::dim_t dense_stream = 0;
-                 dense_stream < {{ kg_streams }}LL; ++dense_stream) {
-                const ftt::dim_t dense_local_k_offsets =
-                    (dense_group_base + dense_stream) * {{ lane }}LL
-                    + dense_k_in_lane;
-                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
-                (void)dense_global_k;
-{% if not call.k_predicate_redundant %}
-                if (!({{ call.source_active | cppexpr }})) {
-                    continue;
-                }
+{% set sme_batch = sme_slots // 2 %}
+{% set sme_tile_n = (512 // lane) if lane and 512 % lane == 0 else 0 %}
+{% set sme_full_n = (call.local_n_capacity // sme_tile_n) * sme_tile_n if sme_tile_n else 0 %}
+{% set sme_payload = sme and sme_slots >= 2 and chunk == 8 and sme_full_n
+       and call.weight_group_stride and call.weight_group_stride % 32 == 0
+       and call.weight_block_n
+       and call.weight_block_k == lane and call.k_predicate_redundant
+       and groups >= 2 * sme_batch and groups % sme_batch == 0
+       and warps * sme_slots * (512 + sme_pad) * 2 <= 114688 %}
+{% set tail_overlap = false %}
+{% if sme_payload and warp_size % lane == 0 %}
+{% set tail_last_round = ((sme_full_n - 1) // (warps * sme_tile_n)) * (warps * sme_tile_n) %}
+{% set tail_first_warp = (sme_full_n - tail_last_round) // sme_tile_n %}
+{% set tail_overlap = call.local_n_capacity > sme_full_n
+       and (call.local_n_capacity - sme_full_n) * lane <= (warps - tail_first_warp) * warp_size %}
 {% endif %}
-                dense_partial[(int)dense_stream] +=
-                    ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
-                    * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
-            }
-        }
-        float dense_accumulator = 0.0f;
-        FTT_UNROLL
-        for (int dense_stream = 0; dense_stream < {{ kg_streams }};
-             ++dense_stream)
-            dense_accumulator += dense_partial[dense_stream];
-        dense_accumulator =
-            ftt::arch::lane_group_reduce_sum<{{ lane }}>(dense_accumulator);
-        if (dense_k_in_lane == 0) {
-            ftt_result[{{ call.result_offset | cppexpr }}] =
-                ftt::store_as(ftt_result, dense_accumulator);
-        }
-    }
+{% if sme_payload %}
+{% set sme_keep_streams = 0 %}
+{% include "kernels/dense_matmul/_sme_payload.cpp.jinja" %}
+{% endif %}
+
+{% if not tail_overlap %}
+{% include "kernels/dense_matmul/_scalar_payload.cpp.jinja" %}
+{% endif %}
 {% if call.local_m_capacity != 1 %}
     }
 {% endif %}

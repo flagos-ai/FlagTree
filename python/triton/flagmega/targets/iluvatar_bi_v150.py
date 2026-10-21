@@ -122,6 +122,7 @@ class IluvatarBiV150Capability:
     supports_fp8_mma: bool = False
     supports_fp8: bool = True
     supports_async_copy: bool = True
+    supports_flat_sme_count_wait: bool = True
     supports_cooperative_grid: bool = True
     supports_tma: bool = True
     supports_warp_specialize: bool = True

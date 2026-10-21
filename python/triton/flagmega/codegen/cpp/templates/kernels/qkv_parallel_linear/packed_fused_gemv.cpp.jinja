@@ -17,6 +17,9 @@
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "qkv_parallel_linear" and call.variant == "packed_fused_gemv" %}
+{% if call.cpp_fused_sme | default(false) %}
+{% include "kernels/qkv_parallel_linear/_fused_sme.cpp.jinja" %}
+{% else %}
 static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
@@ -138,13 +141,15 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% set qkv_group = output.local_n_capacity * call.k_lane %}
 {% set qkv_tiles = (qkv_group // 512) if qkv_group % 512 == 0 else 0 %}
 {% set qkv_gconc = (warps // qkv_tiles) if qkv_tiles else 0 %}
-{% set qkv_sme = sme and chunk == 8 and qkv_tiles
+{% set sme_batch = sme_slots // 2 %}
+{% set qkv_sme = sme and sme_slots >= 2 and chunk == 8 and qkv_tiles
        and qkv_gconc > 1
        and qkv_tiles * qkv_gconc == warps
        and call.k_predicate_redundant
-       and groups % qkv_gconc == 0
+       and groups >= 2 * qkv_gconc * sme_batch
+       and groups % (qkv_gconc * sme_batch) == 0
        and call.weight_n_group_stride == call.n_lane * call.k_lane
-       and (warps * 512 * 2 * sme_slots) <= 114688 %}
+       and (warps * (512 + sme_pad) * 2 * sme_slots) <= 114688 %}
 {% if qkv_sme %}
         {
     auto *const qkv_sme_buf =
@@ -175,56 +180,20 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
             qkv_sme_goff * {{ call.k_lane }}LL + qkv_sme_k_in;
         qkv_sme_act = &ftt_source[{{ call.source_offset | cppexpr }}];
     }
-    ftt::dim_t qkv_sme_slot = 0;
-    ftt::dim_t qkv_sme_issue = {{ (sme_slots - 1) % sme_slots }}LL;
-{% macro qkv_issue(group_expr, slot) -%}
-            ftt::arch::sme_copy_block_from(
-                &qkv_sme_buf[qkv_sme_warp][{{ slot }}][0],
-                qkv_sme_source,
-                ({{ group_expr }}) * {{ call.weight_k_group_stride }}LL * 2LL);
-{%- endmacro %}
-    if (qkv_sme_lane == 0) {
-{% for slot in range(sme_slots - 1) %}
-{{ qkv_issue("qkv_sme_goff + %dLL" % (slot * qkv_gconc), "%dLL" % slot) }}
-{% endfor %}
-        ftt::arch::sme_drain();
-    }
-    for (ftt::dim_t qkv_sme_g = 0; qkv_sme_g < {{ groups }}LL;
-         qkv_sme_g += {{ qkv_gconc }}LL) {
-        const ftt::dim_t qkv_sme_cur = qkv_sme_slot;
-        qkv_sme_slot = (qkv_sme_slot + 1LL == {{ sme_slots }}LL)
-                           ? 0LL : qkv_sme_slot + 1LL;
-        if (qkv_sme_lane == 0
-                && qkv_sme_g + {{ (sme_slots - 1) * qkv_gconc }}LL
-                       + qkv_sme_goff < {{ groups }}LL) {
-{{ qkv_issue("qkv_sme_g + qkv_sme_goff + %dLL" % ((sme_slots - 1) * qkv_gconc),
-             "qkv_sme_issue") }}
-        }
-        const auto qkv_sme_src = ftt::{{ run_load }}<{{ chunk }}>(qkv_sme_act);
-        qkv_sme_act += {{ qkv_gconc * call.k_lane }}LL;
-        const auto qkv_sme_w = ftt::load_run<{{ chunk }}>(
-            &qkv_sme_buf[qkv_sme_warp][qkv_sme_cur][qkv_sme_run]);
-        FTT_UNROLL
-        for (int qkv_sme_pair = 0; qkv_sme_pair < {{ chunk // 2 }};
-             ++qkv_sme_pair) {
-            qkv_sme_acc = ftt::dot2_step(qkv_sme_w, qkv_sme_src,
-                                         qkv_sme_pair, qkv_sme_acc);
-        }
-        if (qkv_sme_lane == 0
-                && qkv_sme_g + {{ (sme_slots - 1) * qkv_gconc }}LL
-                       + qkv_sme_goff < {{ groups }}LL) {
-            ftt::arch::sme_drain();
-        }
-        qkv_sme_issue = (qkv_sme_issue + 1LL == {{ sme_slots }}LL)
-                            ? 0LL : qkv_sme_issue + 1LL;
-    }
+{% with sme_issuer_lane="qkv_sme_lane", sme_buffer="qkv_sme_buf", sme_warp="qkv_sme_warp",
+        sme_goff="qkv_sme_goff", sme_groups=groups, sme_concurrency=qkv_gconc, sme_lane=call.k_lane,
+        sme_stride=(call.weight_k_group_stride|string) + "LL", sme_act="qkv_sme_act",
+        sme_run="qkv_sme_run", sme_projections=1,
+        sme_sources=["qkv_sme_source"], sme_accumulators=["qkv_sme_acc"] %}
+{% include "kernels/_sme_batches.cpp.jinja" %}
+{% endwith %}
 {# Fold the `k_lane / chunk` lanes sharing an N inside the warp, then the
    `qkv_gconc` warps holding the other concurrent groups of that N. #}
     qkv_sme_acc = ftt::arch::lane_group_reduce_sum<
         {{ call.k_lane // chunk }}>(qkv_sme_acc);
-    __shared__ float qkv_sme_cross[{{ warps }}][{{ 512 // call.k_lane }}];
+{# Weights are dead; reuse the first slot per warp for reduction partials. #}
     if (qkv_sme_k_in == 0) {
-        qkv_sme_cross[qkv_sme_warp][qkv_sme_run / {{ call.k_lane }}LL] =
+        reinterpret_cast<float *>(&qkv_sme_buf[qkv_sme_warp][0][0])[qkv_sme_run / {{ call.k_lane }}LL] =
             qkv_sme_acc;
     }
     ftt::arch::cta_sync();
@@ -239,12 +208,15 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         for (int qkv_gi = 0; qkv_gi < {{ qkv_gconc }}; ++qkv_gi) {
             const ftt::dim_t qkv_w = qkv_gi * {{ qkv_tiles }}LL
                 + (qkv_out * {{ call.k_lane }}LL) / 512LL;
-            qkv_accumulator += qkv_sme_cross[qkv_w][
+            qkv_accumulator += reinterpret_cast<float *>(&qkv_sme_buf[qkv_w][0][0])[
                 (qkv_out * {{ call.k_lane }}LL % 512LL) / {{ call.k_lane }}LL];
         }
         ftt_result[{{ output.result_offset | cppexpr }}] =
             ftt::store_as(ftt_result, qkv_accumulator);
     }
+{# Other warps may finish before the output reducers. Complete their reads
+   from the shared partials before any warp stages the next output there. #}
+    ftt::arch::cta_sync();
         }
 {% elif paired %}
         for (ftt::dim_t qkv_item = ftt_thread;
@@ -471,6 +443,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 }
 
 
+{% endif %}
 {% endif %}
 {% endfor %}
 {% endif %}

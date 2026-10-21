@@ -15,11 +15,22 @@ def main():
     parser.add_argument('--results', type=Path, required=True)
     parser.add_argument('--rounds', type=int, default=3)
     parser.add_argument('--repeats', type=int, default=3)
+    parser.add_argument('--max-start-temperature', type=int,
+                        help='Equalize scenario start temperature outside request timing (BI-V150)')
+    parser.add_argument('--chat-python', type=Path,
+                        help='Standalone FlagTree interpreter; collect CLI in the same rotated rounds')
+    parser.add_argument('--chat-native-reference', type=Path,
+                        help='Accepted native token-scan correctness reference for CLI')
+    parser.add_argument('--cuda-graph', action=argparse.BooleanOptionalAction, default=False,
+                        help='Compare native vLLM FULL graph with the FlagMega worker decode graph')
+    parser.add_argument('--figure-dir', type=Path, help='Publish verified SVGs to this directory')
     args = parser.parse_args()
     if args.rounds < 1 or args.repeats < 1:
         parser.error('Require positive rounds/repeats')
     if args.artifact is None and args.work_dir is None:
         parser.error('Provide --artifact or a fresh --work-dir for compilation')
+    if bool(args.chat_python) != bool(args.chat_native_reference):
+        parser.error('--chat-python and --chat-native-reference must be provided together')
     args.results.mkdir(parents=True, exist_ok=False)
     tutorial = Path(__file__).resolve().parent
     env = dict(os.environ)
@@ -45,18 +56,44 @@ def main():
     reference = args.results/'round00.native.json'
     for round_id in range(args.rounds):
         order = ('native', 'flagmega') if round_id % 2 == 0 else ('flagmega', 'native')
+        if args.chat_python:
+            variants = ('native', 'flagmega', 'chat_cli')
+            rotation = round_id % len(variants)
+            order = variants[rotation:] + variants[:rotation]
         for variant in order:
+            if variant == 'chat_cli':
+                output = args.results/'chat-cli'/f'process{round_id:02d}'
+                cmd = [str(args.chat_python), str(tutorial/'benchmark_chat_cli.py'),
+                       '--checkpoint', str(args.checkpoint), '--artifact', str(artifact),
+                       '--native-reference', str(args.chat_native_reference), '--results', str(output),
+                       '--rounds', '1', '--round-offset', str(round_id),
+                       '--repeats', str(args.repeats), '--warmups', '1', '--cuda-graph']
+                if args.max_start_temperature is not None:
+                    cmd.extend(['--max-start-temperature', str(args.max_start_temperature)])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                run(cmd, output.parent/f'round{round_id:02d}.chat_cli.log')
+                raw = output/f'round{round_id:02d}.chat_cli.json'
+                (output.parent/raw.name).write_bytes(raw.read_bytes())
+                print(f'Completed round {round_id} chat_cli', flush=True)
+                continue
             output = args.results/f'round{round_id:02d}.{variant}.json'
             cmd = [sys.executable, str(tutorial/'benchmark_flagos.py'), '--checkpoint', str(args.checkpoint),
                    '--output', str(output), '--repeats', str(args.repeats), '--rotation', str(round_id)]
+            if args.max_start_temperature is not None:
+                cmd.extend(['--max-start-temperature', str(args.max_start_temperature)])
             if variant == 'flagmega': cmd.extend(['--artifact', str(artifact)])
+            if variant == 'native' and args.cuda_graph: cmd.append('--cuda-graph')
             if variant == 'flagmega' or round_id: cmd.extend(['--reference', str(reference)])
             run(cmd, output.with_suffix('.log'))
             report = json.loads(output.read_text())
             if not report['performance_valid']: raise AssertionError(f'Unaccepted result: {output}')
             print(f'Completed round {round_id} {variant}', flush=True)
-    run([sys.executable, str(tutorial/'render_flagos_results.py'), '--results', str(args.results)],
-        args.results/'render.log')
+    cmd = [sys.executable, str(tutorial/'render_flagos_results.py'), '--results', str(args.results)]
+    if args.chat_python:
+        cmd.extend(['--chat-results', str(args.results/'chat-cli'),
+                    '--chat-native-reference', str(args.chat_native_reference)])
+    if args.figure_dir: cmd.extend(['--figure-dir', str(args.figure_dir)])
+    run(cmd, args.results/'render.log')
 
 
 if __name__ == '__main__':

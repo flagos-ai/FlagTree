@@ -37,31 +37,11 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% set chunks = (call.local_n_capacity * lane) // chunk %}
 {% set groups = (call.local_k_capacity // lane) %}
 {% set coop = lane // chunk %}
-{# SME weight prefetch: producer warps stage the next K group global->shared
-   with the G2S engine while the other warps reduce the current one.
-
-   Two measured effects pay for this, neither of which is "shared reads are
-   cheap" -- that framing is wrong and an earlier attempt of mine died on it.
-
-     * SME crosses a ceiling the consumer path cannot. A 128-bit `load_run`
-       is capped near 373 GB/s (one load instruction per cycle per MP) and
-       this kernel already sits at it, measured 394 GB/s. The G2S engine moves
-       1 KB per instruction and reaches 511-552 GB/s.
-     * The transfer is free, because it overlaps synchronization already paid
-       for. A grid barrier is a spin loop where thread 0 polls an atomic while
-       the other 1023 threads idle; issuing 12 tiles before one and draining
-       after costs +0.36 us against +0.32 us serialized.
-
-   Issue throughput is per-WARP, not per-CTA, so this cannot be driven
-   TMA-style from one thread. Holding in-flight tiles and shared bytes
-   constant at 24 tiles / 48 KB and varying only the issuer count measured
-   198 / 177 / 467 / 511 / 548 GB/s for 1 / 2 / 3 / 4 / 8 issuing warps: the
-   knee is 3-4 warps each contributing one lane. Producers are dedicated
-   rather than part-time because issue capacity, not arithmetic, is scarce
-   (+13.8% dedicated against +11.1% when producers also consume).
-
-   Requires one K group to be a single contiguous run, which `k_major_n8_k16`
-   gives: `local_n_capacity * lane` consecutive elements. #}
+{# Each active warp stages and consumes its own 512-element tile. Two FIFO
+   batches overlap global-to-shared transfers with the current batch's BF16
+   dot chain. Count waits retain the newer batch; every lane completes its
+   shared reads before the issuer overwrites the consumed slots.
+   No dedicated producer warps or per-stage CTA barrier are needed. #}
 {# Ring depth comes from the renderer so the arena sizer and the template
    cannot disagree. #}
 {% set sme_group = call.local_n_capacity * lane %}
@@ -69,13 +49,14 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {# One instruction stages 512 elements = 64 runs = one run per lane, so a K
    group of `sme_tiles` tiles is owned by `sme_tiles` warps: each stages and
    consumes only its own tile, which is why no `cta_sync` is needed. #}
-{% set sme_stage = sme and chunk == 8 and lane
+{% set sme_batch = sme_slots // 2 %}
+{% set sme_stage = sme and sme_slots >= 2 and chunk == 8 and lane
        and call.weight_group_stride
        and sme_group % 512 == 0
        and sme_tiles <= (block_threads // warp_size)
        and call.weight_block_n and call.weight_block_k == lane
-       and (sme_group * 2 * sme_slots * 2) <= 114688
-       and groups > sme_slots %}
+       and (sme_tiles * (512 + sme_pad) * 2 * sme_slots * 2) <= 114688
+       and groups > sme_slots and groups % sme_batch == 0 %}
 {# Depth of the tiled K walk, independent of `k_streams`.
 
    `k_streams` is tuned for the scalar walk, where one stream is one 2-byte
@@ -159,40 +140,11 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% set ntile = 1 %}
 {% endif %}
 {% if sme_stage %}
-{# Software-pipelined SME staging: every warp stages the tile it will itself
-   consume, double buffered, and the only wait is its own `sl_waitcnt`.
-
-   Warp specialization was the wrong shape here and the measurement says so
-   plainly. Dedicating producer warps requires a `cta_sync` per stage to
-   publish their tiles to the consumers, and that barrier costs 0.193 us x
-   {{ groups }} groups x 28 layers = 0.69 ms/token -- more than the bandwidth
-   gain. Measured on an isolated k-group walk: warp-specialized **-12.1%**
-   against the vector-load baseline, software-pipelined **+22.2%**. Shared
-   memory cannot hold more than one K group per buffer (48 KB of the 64 KB
-   budget), so the handshake cannot be amortized away either.
-
-   Keeping producer and consumer in the same warp removes the barrier
-   entirely: a warp's staged tile is read only by its own lanes, and a warp is
-   synchronous with itself.
-
-   The tile geometry is exact. One SME instruction stages 512 elements = 64
-   runs of `chunk`, one per lane, spanning 512 / lane N values. A K group is
-   {{ sme_tiles }} tiles, so {{ sme_tiles }} of the {{ block_threads //
-   warp_size }} warps each own one tile per group and the rest sit out; every
-   (n, k) pair is covered exactly once, and the `coop` lanes sharing an N stay
-   adjacent so the final fold is still one shuffle.
-
-   `sme_copy_block` wraps `sme_load_1x16b64`, the flat warp-granularity form:
-   1 KB contiguous, laid out in shared exactly as in global, and independent of
-   the row stride that the 2-D forms silently corrupt below 64 bytes. The
-   swizzled variants exist for MMA dot operands, which is why the Triton
-   backend only exposes those. #}
-{# Views into the module-scope arena rather than a private buffer: every
-   device function is inlined into one megakernel, so each `__shared__`
-   declaration is co-resident and the 64 KB budget is global. Per-site buffers
-   summed to 96.8 KB, which does not fail the launch -- it silently reads
-   garbage. The staging sites are separated by grid barriers, so they share
-   one allocation sized for the largest of them. #}
+{# Every active warp owns one contiguous N tile across the entire K walk.
+   The shared ring is [warp][slot][projection][payload]; only that warp reads
+   or replaces its slots. A flat SME transaction preserves the 512-element
+   payload order, so lane*chunk selects the same packed BF16 run as the
+   canonical vector path. Schedule barriers separate this arena's consumers. #}
     auto *const dense_glu_sme_buf =
         reinterpret_cast<ftt::bfloat16_t (*)[{{ sme_slots }}][2][512 + {{ sme_pad }}]>(
             _ftt_sme_arena);
@@ -214,6 +166,11 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         (void)dense_glu_global_n;
         dense_glu_shard_base = {{ call.gate_weight_offset | cppexpr }};
     }
+{% if call.cpp_shard_major_weight | default(false) %}
+{# The layout proof requires the full K axis on every owner. At group zero
+   the canonical origin is within one group, so only its N owner is moved. #}
+    dense_glu_shard_base *= {{ call.weight_layout_k_groups }}LL;
+{% endif %}
 {# This warp's tile offset inside a group, and this lane's run inside it. #}
     const ftt::dim_t dense_glu_tile_off = dense_glu_warp * 512LL;
 {# Descriptors built once per kernel call. The base folds in the shard offset
@@ -229,19 +186,9 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
     const ftt::dim_t dense_glu_k_in_lane = dense_glu_elem % {{ lane }}LL;
     float dense_glu_gate_acc = 0.0f;
     float dense_glu_up_acc = 0.0f;
-{# Strength-reduce the two per-step index computations the compiler does not.
-   Both are pure rewrites of the same arithmetic, so results are unchanged.
-
-     * The activation offset is `(group + u) * lane + k_in_lane`, which the
-       compiler re-multiplies every step (`ml_mad_u32_u16` beside each global
-       load in the SASS -- 12 multiplies for 4 loads). `k_in_lane` is fixed
-       per lane, so the address is a pure induction variable: walk a pointer
-       by `lane` elements per group instead. An isolated consumer put this at
-       1.18 ms of the GLU phase -- 393 GB/s with a recomputed address against
-       573 with a fixed one.
-     * The ring slot is `step % sme_slots`, and `sme_slots` is 3, so it is a
-       real division rather than a mask -- paid three times per step (the
-       read slot plus two inside the issue). Rotate a counter instead. #}
+{# Walk the activation pointer by a constant K step and rotate the two
+   disjoint slot batches. Both transformations preserve the original address
+   and FP32 accumulator order. #}
 {# The base address at group 0: the call's own offset formula evaluated with
    `local_k_offsets = k_in_lane`, which is what group 0 reduces to. #}
     const ftt::bfloat16_t *dense_glu_act_ptr;
@@ -250,109 +197,17 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         dense_glu_act_ptr =
             &ftt_source[{{ call.source_offset | cppexpr }}];
     }
-    ftt::dim_t dense_glu_slot = 0;
-    ftt::dim_t dense_glu_issue_slot = {{ (sme_slots - 1) % sme_slots }}LL;
-{# One stage issue from the hoisted descriptors: only the byte offset varies,
-   which keeps the per-group cost to one add instead of rebuilding a 4-lane
-   descriptor and moving it to scalar registers. #}
-{% macro sme_issue(group_expr, slot) -%}
-            ftt::arch::sme_copy_block_from(
-                &dense_glu_sme_buf[dense_glu_warp][{{ slot }}][0][0],
-                dense_glu_gate_source,
-                ({{ group_expr }}) * dense_glu_group_stride * 2LL);
-            ftt::arch::sme_copy_block_from(
-                &dense_glu_sme_buf[dense_glu_warp][{{ slot }}][1][0],
-                dense_glu_up_source,
-                ({{ group_expr }}) * dense_glu_group_stride * 2LL);
-{%- endmacro %}
     if (dense_glu_active) {
-        if (dense_glu_lane == 0) {
-{# Fill the first `sme_slots - 1` groups so the steady-state loop always has
-   that many transactions outstanding. One drain covers them all: the wait is
-   per-thread and counts every transaction this thread issued. #}
-{% for slot in range(sme_slots - 1) %}
-{{ sme_issue("%dLL" % slot, "%dLL" % slot) }}
-{% endfor %}
-            ftt::arch::sme_drain();
-        }
-{# A warp is synchronous with itself, so lane 0's drain orders the tile for
-   the whole warp without a block-wide barrier. #}
-{# Unroll the group walk by `sme_unroll` and load that many activation runs
-   up front. A lane's activation run depends only on (group, k_in_lane), and
-   `k_in_lane` is fixed per lane, so the runs are independent loads that can
-   all be in flight before any is consumed. Measured on an isolated consumer:
-   1 run held 0.0337 ms, 2 runs 0.0180, and it saturates there -- the
-   activation is about half the consumer's cost in the SME path, because the
-   weights already come from shared and this is the only global read left.
-   Staging the activation in shared instead loses 6x (0.138 ms), the same way
-   it lost before the SME work; the win is register reuse, not a closer
-   cache. #}
-        for (ftt::dim_t dense_glu_group = 0;
-             dense_glu_group < {{ groups }}LL;
-             dense_glu_group += {{ sme_unroll }}LL) {
-            ftt::bf16_run_t<{{ chunk }}> dense_glu_act[{{ sme_unroll }}];
-            FTT_UNROLL
-            for (int dense_glu_u = 0; dense_glu_u < {{ sme_unroll }};
-                 ++dense_glu_u) {
-                dense_glu_act[dense_glu_u] =
-                    ftt::{{ run_load }}<{{ chunk }}>(
-                        dense_glu_act_ptr + dense_glu_u * {{ lane }}LL);
-            }
-            dense_glu_act_ptr += {{ sme_unroll * lane }}LL;
-            FTT_UNROLL
-            for (int dense_glu_u = 0; dense_glu_u < {{ sme_unroll }};
-                 ++dense_glu_u) {
-            const ftt::dim_t dense_glu_step_group =
-                dense_glu_group + dense_glu_u;
-            const ftt::dim_t dense_glu_cur = dense_glu_slot;
-            dense_glu_slot = (dense_glu_slot + 1LL == {{ sme_slots }}LL)
-                                 ? 0LL : dense_glu_slot + 1LL;
-{# Issue the group `sme_slots - 1` ahead. That keeps `2 * (sme_slots - 1)`
-   transactions in flight per warp -- the knob the engine actually responds
-   to: measured 619 GB/s at depth 2 against 662 at depth 4 and 667 at depth 8
-   (16 CTAs, 1024 threads). The ring is conflict-free because
-   `(i + sme_slots - 1) % sme_slots != i % sme_slots`. #}
-            if (dense_glu_lane == 0
-                    && dense_glu_step_group + {{ sme_slots - 1 }}LL
-                           < {{ groups }}LL) {
-{{ sme_issue("dense_glu_step_group + %dLL" % (sme_slots - 1),
-             "dense_glu_issue_slot") }}
-            }
-            const auto &dense_glu_source_run = dense_glu_act[dense_glu_u];
-            const auto dense_glu_gate_run =
-                ftt::load_run<{{ chunk }}>(
-                    &dense_glu_sme_buf[dense_glu_warp][dense_glu_cur][0]
-                                      [dense_glu_run_off]);
-            const auto dense_glu_up_run =
-                ftt::load_run<{{ chunk }}>(
-                    &dense_glu_sme_buf[dense_glu_warp][dense_glu_cur][1]
-                                      [dense_glu_run_off]);
-{# Accumulate two elements per instruction. `at()` per element makes the
-   compiler emit a bf16->fp32 convert and a separate FMA for each, which in
-   this megakernel came to 7653 converts beside 6802 FMAs and not one packed
-   dot; `dot2_step` maps onto the device's packed form instead. Products and
-   accumulation stay in fp32, so the rounding contract is unchanged (verified
-   bit-exact). #}
-            FTT_UNROLL
-            for (int dense_glu_pair = 0;
-                 dense_glu_pair < {{ chunk // 2 }}; ++dense_glu_pair) {
-                dense_glu_gate_acc = ftt::dot2_step(
-                    dense_glu_gate_run, dense_glu_source_run,
-                    dense_glu_pair, dense_glu_gate_acc);
-                dense_glu_up_acc = ftt::dot2_step(
-                    dense_glu_up_run, dense_glu_source_run,
-                    dense_glu_pair, dense_glu_up_acc);
-            }
-            if (dense_glu_lane == 0
-                    && dense_glu_step_group + {{ sme_slots - 1 }}LL
-                           < {{ groups }}LL) {
-                ftt::arch::sme_drain();
-            }
-            dense_glu_issue_slot =
-                (dense_glu_issue_slot + 1LL == {{ sme_slots }}LL)
-                    ? 0LL : dense_glu_issue_slot + 1LL;
-            }
-        }
+{% with sme_issuer_lane="dense_glu_lane", sme_buffer="dense_glu_sme_buf", sme_warp="dense_glu_warp",
+        sme_goff="0LL", sme_groups=groups, sme_concurrency=1, sme_lane=lane,
+        sme_stride="dense_glu_group_stride", sme_act="dense_glu_act_ptr",
+        sme_run="dense_glu_run_off", sme_projections=2,
+        sme_sources=["dense_glu_gate_source", "dense_glu_up_source"],
+        sme_accumulators=["dense_glu_gate_acc", "dense_glu_up_acc"],
+        sme_group_copy=("ftt::arch::sme_copy_group_from<" + (call.weight_group_stride | string) + "LL>")
+            if call.cpp_shard_major_weight | default(false) else none %}
+{% include "kernels/_sme_batches.cpp.jinja" %}
+{% endwith %}
         float dense_glu_gate_sum =
             ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_gate_acc);
         float dense_glu_up_sum =

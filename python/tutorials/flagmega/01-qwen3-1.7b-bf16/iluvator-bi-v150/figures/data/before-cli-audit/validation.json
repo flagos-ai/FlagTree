@@ -1,0 +1,104 @@
+{
+  "tutorial_tests": {
+    "command": "CUDA_VISIBLE_DEVICES=8 conda run -n flagtree python -m pytest python/test/flagmega/tutorials -q",
+    "passed": 32
+  },
+  "formal_requests": 144,
+  "formal_output_tokens": 9216,
+  "exact_native_tokens": true,
+  "fused_decode_input_calls": 4536,
+  "graph_replays": 4536,
+  "sampling_scenarios": [
+    "one_token",
+    "page_boundary",
+    "penalties",
+    "logprobs",
+    "allowed_tokens",
+    "random_seeded",
+    "long_random_seeded"
+  ],
+  "sampling_requests_per_variant": 14,
+  "performance_gate": {
+    "before_passed": false,
+    "after_passed": true,
+    "scope": "Historical input-fusion outside-model residual comparison; long-context speedup ratios are recorded separately in attention-performance.json."
+  },
+  "raw_report_hashes_verified": 6,
+  "svg_structures_verified": 3,
+  "regression_tests": {
+    "passed": 126,
+    "command": "CUDA_VISIBLE_DEVICES=8 python -m pytest python/test/flagmega/codegen/cpp python/test/flagmega/tutorials/test_flagos_codegen_identity.py python/test/flagmega/tutorials/test_flagos_decode_inputs.py python/test/flagmega/tutorials/test_flagos_results.py -q"
+  },
+  "attention_gpu_tests": {
+    "passed": 22,
+    "fp32_partial_bitexact": true,
+    "unaligned_cache_tested": true
+  },
+  "model_logits": {
+    "steps": 2112,
+    "vocabulary": 151936,
+    "bitexact": true,
+    "max_abs": 0
+  },
+  "artifact_codegen": {
+    "backend": "cpp",
+    "library": "libflagmega_generated.so",
+    "library_sha256": "994933306440921e319842f2fe8516b68660a270da2e9e8f8b9bf5d400bb4c4a",
+    "source": "generated_kernels.cpp",
+    "source_sha256": "230467c9a3020251d48df1bc03b139273e88756da1ff90725fea131f17251f90"
+  },
+  "evidence": [
+    {
+      "path": "boundary-native.json.gz",
+      "uncompressed_sha256": "5271443364f1f15ca93cdb7ed8d2fa80b879729e06e8127a9ffbfe7937b108c1"
+    },
+    {
+      "path": "boundary-flagmega.json.gz",
+      "uncompressed_sha256": "3c44eceb2253a24fca336cfb3fc6245dfe1b661173b314d182e20e8a8d06e69d"
+    },
+    {
+      "path": "final.boundary.log.gz",
+      "uncompressed_sha256": "1eb26fbf970048d76d5aefa0619bfe16a2c85398ea1194d6575e24d759f7b0d9"
+    },
+    {
+      "path": "sampling.cpp.json.gz",
+      "uncompressed_sha256": "567f0fe8457f76eb97853e934214aaeaf5f9d080693a9f3b3d10c96572d16eaf"
+    },
+    {
+      "path": "sampling.final.json.gz",
+      "uncompressed_sha256": "567f0fe8457f76eb97853e934214aaeaf5f9d080693a9f3b3d10c96572d16eaf"
+    },
+    {
+      "path": "sampling.native.json.gz",
+      "uncompressed_sha256": "f249ae78b5e428516b2b9d2bf5d3912acccbc8612f6b0d7d094fba59168df7b7"
+    },
+    {
+      "path": "sampling-long.cpp.log.gz",
+      "uncompressed_sha256": "9230f157d82288636c04bdc1c5cd43023ccadd763b5bcc6a336fab93d16acbaa"
+    },
+    {
+      "path": "tests-final.log.gz",
+      "uncompressed_sha256": "5fe77121541c5b78559c769f1bb9c25b5dd87995cb797081c26e639519dced69"
+    },
+    {
+      "path": "validate-final-bitexact.log.gz",
+      "uncompressed_sha256": "50789221d0c9ed50d5c6e45441552d6fe6ab9d1aaeecf904c56ea5f1fe6eeda3"
+    }
+  ],
+  "chat_cli": {
+    "measured_requests": 60,
+    "warmup_requests": 4,
+    "output_tokens": 4096,
+    "native_token_scan_exact": true,
+    "native_batched_exact": false,
+    "artifact_codegen": {
+      "backend": "cpp",
+      "source": "generated_kernels.cpp",
+      "source_sha256": "230467c9a3020251d48df1bc03b139273e88756da1ff90725fea131f17251f90",
+      "library": "libflagmega_generated.so",
+      "library_sha256": "994933306440921e319842f2fe8516b68660a270da2e9e8f8b9bf5d400bb4c4a"
+    },
+    "data": "chat-cli/provenance.json",
+    "regression_tests_passed": 51
+  }
+}

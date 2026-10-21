@@ -26,7 +26,8 @@ struct iluvatar_bi_v150 {
     static constexpr int sm_count = 16;
 
     // Shared memory per CTA, in bytes.
-    static constexpr int shared_memory_bytes = 64 * 1024;
+    static constexpr int shared_memory_bytes = 128 * 1024;
+    static constexpr bool has_flat_sme_count_wait = true;
 
     // BI-V150 has no inter-SM L1 coherence, so cross-CTA publication needs an
     // explicit writeback-invalidate on the release side.  Recorded here

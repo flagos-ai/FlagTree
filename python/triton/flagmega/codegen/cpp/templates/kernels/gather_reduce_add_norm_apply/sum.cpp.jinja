@@ -24,9 +24,17 @@ static FTT_DEVICE void {{ call.symbol }}__partials({{ entry.device_signature(cal
    function's declaration is co-resident -- and oversizing these five buffers
    cost 40 KB of a 64 KB budget. Exceeding it does not fail the launch, it
    silently reads garbage. #}
-__shared__ float ftt_gather_square_partial[{{ warps }}];
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_gather_square_partial = reinterpret_cast<float *>(_ftt_sme_arena);
+{% else %}
+    __shared__ float ftt_gather_square_partial[{{ warps }}];
+{% endif %}
 {% if call.use_mean %}
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_gather_mean_partial = reinterpret_cast<float *>(_ftt_sme_arena) + {{ warps }};
+{% else %}
     __shared__ float ftt_gather_mean_partial[{{ warps }}];
+{% endif %}
 {% endif %}
     float gather_square_sum = 0.0f;
 {% if call.use_mean %}

@@ -1,0 +1,90 @@
+{
+  "schema": "flagmega.cudagraph-figure-provenance/v1",
+  "measurement_date": "2026-10-21",
+  "flagtree_revision": "8da3816deaa4a525647e52492f68ba4342c655fa",
+  "flagtree_dirty": true,
+  "gpu": "Iluvatar BI-V150",
+  "physical_gpu": 8,
+  "driver": "4.5.0",
+  "corex": "4.5.0.20260509",
+  "sm_clock_mhz": 1500,
+  "memory_clock_mhz": 1600,
+  "artifact_path_at_measurement": "/tmp/r33_formal_tail_gig_aligned",
+  "artifact_semantic_hash": "8bdc3d519f1cf5e13e6d6575c1383e672f7bde293868fb658a11ddd34ac7e7f6",
+  "artifact_codegen": {
+    "backend": "cpp",
+    "library": "libflagmega_generated.so",
+    "library_sha256": "9daece071922ddf3d552cef018d1597a647e45f6503c5128a2f1455f35d73e5b",
+    "source": "generated_kernels.cpp",
+    "source_sha256": "40a2541bb982005be7685150a7e0e04c4ee953d516e824fc01202a61c5694ca9"
+  },
+  "artifact_ir_sha256": "fe61cf99cd4afe08ccbe2d1f172b57dc32d5c41b5aa0821c7a60685aedd4d507",
+  "artifact_rdata": {
+    "image": "assets/rdata.bin",
+    "index": "assets/rdata.index.json",
+    "nbytes": 4063488256,
+    "sha256": "61cd6eb36029e49e1324545c6bdb325089e57e5919aa59f166ca8af6517459db"
+  },
+  "corex_extra_flags": [
+    "-mllvm",
+    "-iluvatar-extra-load-latency=80",
+    "-mllvm",
+    "-iluvatar-extra-latency-post-ra=40"
+  ],
+  "command": "CUDA_VISIBLE_DEVICES=8 python reproduce_flagos.py --checkpoint /root/models/Qwen3-1.7B --artifact /tmp/r33_formal_tail_gig_aligned --cuda-graph --rounds 3 --repeats 5 --results <fresh-results>",
+  "environment": {
+    "VLLM_PLUGINS": "fl",
+    "FLAGOS_DEVICE_CONTROL_ENV_VAR": "CUDA_VISIBLE_DEVICES",
+    "VLLM_FL_FLAGOS_BLACKLIST_APPEND": "sort,sort_stable",
+    "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
+    "CUDA_MODULE_LOADING": "0"
+  },
+  "native_graph": {
+    "mode": 0,
+    "cudagraph_mode": "FULL",
+    "cudagraph_capture_sizes": [
+      1
+    ],
+    "enforce_eager": false
+  },
+  "flagmega_graph": "Extension-owned staging+complete C++ decode graph; eager native prefill and Python handshake; one capture per process",
+  "boundary": "engine.step scheduler+forward+sampler+output processing; weight loading, device reordering, initialization and graph capture excluded",
+  "metrics": {
+    "decode_latency": "Median of 945 decode intervals per variant/scenario, excludes first output token",
+    "decode_throughput": "Median over 15 requests of 63*1000/sum(decode_step_ms)",
+    "request_throughput": "Median over 15 requests of 64*1000/e2e_ms, including prefill"
+  },
+  "correctness": "All 144 warmup/measured requests (9216 output tokens) match native reference exactly; 4536 C++ decode graph replays and fused decode input calls; zero KV copy bytes per decode. Adjacent sampling checks also match native tokens.",
+  "raw_reports": [
+    {
+      "path": "round00.flagmega.json.gz",
+      "uncompressed_sha256": "6e3ac8aa499279030e32102129fa522cca8dd9da9b2f75d7b85da2abe9f9f9c5"
+    },
+    {
+      "path": "round00.native.json.gz",
+      "uncompressed_sha256": "7a496520fe085590e65f1e04390533f06246f435778ca326aa07a78e3aac2ccc"
+    },
+    {
+      "path": "round01.flagmega.json.gz",
+      "uncompressed_sha256": "664cc789548a8a6b17f7756d9d72436987339863da5d30d0b4245841ca5c55ea"
+    },
+    {
+      "path": "round01.native.json.gz",
+      "uncompressed_sha256": "691555c150ad756585a5e29a5a200fc2d0712b8217e0110e55be4f6f1b93d2cf"
+    },
+    {
+      "path": "round02.flagmega.json.gz",
+      "uncompressed_sha256": "38912f0a9d3e9e2f153a526e23c8a5748a77e1578129b9fefa74cc048dfd07d4"
+    },
+    {
+      "path": "round02.native.json.gz",
+      "uncompressed_sha256": "20d9eb65caf8f27b21e1ae1c2acfa8b2b7e96648798aa812b62b3afd1b3927d3"
+    }
+  ],
+  "optimization": "Fuse one-request decode input upload and scalar/index/page-table preparation into one kernel; native scheduling, metadata and sampling preserved",
+  "decode_inputs_sha256": "f5b9d6ae23ce6e406d02381b140c760154e71a180d1be65fbe02dc3b39db8869",
+  "adapter_sha256": "5b85fb2b5ae5988cea84f1ae93f6d492d01e516f3c99b46d2bf18be57fc26d42",
+  "previous_measurements": "before-input-fusion/",
+  "boundary_data": "boundary-summary.json",
+  "regression": "before.performance-gate.json.gz fails nonmodel residual bound; after.performance-gate.json.gz passes"
+}

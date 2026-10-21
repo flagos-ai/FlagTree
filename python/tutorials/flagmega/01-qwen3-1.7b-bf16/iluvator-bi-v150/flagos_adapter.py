@@ -1,16 +1,20 @@
 """FlagOS vLLM worker extension for native prefill and FlagMega decode.
 
 Native attention and the compiled entry share strided views of one packed KV
-allocation. This measured ABI supports BF16, one request, eager execution, and
-TRITON_ATTN. Sampling, scheduling and page allocation stay with vLLM.
+allocation. This measured ABI supports BF16, one request, eager vLLM execution,
+and TRITON_ATTN. Sampling, scheduling and page allocation stay with vLLM.
+
+vLLM stays eager because its own capture cannot drive this path (see
+`_record`); decode instead replays a graph this extension records and owns, so
+the device work is prerecorded while the Python handshake still runs per step.
 """
 from pathlib import Path
-import hashlib
 
 import torch
 
 from triton.flagmega.runtime import load
 from cache_bridge import semantic_layer_views
+from decode_inputs import FusedDecodeInputs
 
 
 class FlagMegaExecutor:
@@ -36,9 +40,15 @@ class FlagMegaExecutor:
         self.logits = self.model.create_outputs()
         self.placeholder = torch.empty((1, hf.hidden_size), dtype=torch.bfloat16, device=device)
         self.active = False
+        self.prepared_decode = False
+        self.graph = None
+        self.graph_key = None
+        self.graph_replays = 0
+        self.graph_recordings = 0
         self.decode_calls = 0
         self.prefill_calls = 0
-        self.source_hash = hashlib.sha256((Path(artifact)/'generated_kernels.py').read_bytes()).hexdigest()
+        self.codegen_identity = artifact_codegen_identity(artifact, self.model.manifest)
+        self.source_hash = self.codegen_identity['source_sha256']
 
     def bind(self, runner):
         from vllm.model_executor.models.utils import extract_layer_index
@@ -84,19 +94,88 @@ class FlagMegaExecutor:
         width = metadata.block_table.shape[1]
         if metadata.block_table.shape[0] != 1 or width > self.config.num_blocks:
             raise ValueError('Native page table exceeds compiled ABI')
-        self.tokens.copy_(tokens)
-        torch.sub(metadata.seq_lens, 1, out=self.state.seq_lens)
-        self.state.block_table.zero_()
-        self.state.block_table[:, :width].copy_(metadata.block_table)
-        self.model.run_into(self.logits, self.tokens, self.state)
+        # Replaying requires every address the recording touches to be the one
+        # it was recorded against: vLLM's three source tensors plus the page
+        # table width. A changed key re-records rather than replaying stale
+        # addresses.
+        key = (tokens.data_ptr(), metadata.seq_lens.data_ptr(),
+               metadata.block_table.data_ptr(), width)
+        if self.graph is None or self.graph_key != key:
+            # Recording is one-way: `_record` rebinds the compiler global
+            # scratch to its capture stream, after which an eager `run_into`
+            # on vLLM's default stream raises RuntimeContractError. There is
+            # no eager fallback once this has run.
+            self._record(tokens, metadata, width, key)
+        self.graph.replay()
+        self.graph_replays += 1
         self.decode_calls += 1
         self.active = True
         return self.placeholder
 
+    def _stage(self, tokens, metadata, width):
+        self.tokens.copy_(tokens)
+        torch.sub(metadata.seq_lens, 1, out=self.state.seq_lens)
+        self.state.block_table.zero_()
+        self.state.block_table[:, :width].copy_(metadata.block_table)
+
+    def _record(self, tokens, metadata, width, key):
+        # Staging is four single-element kernels whose launch cost (0.46 ms) is
+        # comparable to a quarter of the megakernel itself at this scale, so
+        # the recording covers staging and the launch together.
+        #
+        # This graph is owned here rather than taken from vLLM's capture
+        # because vLLM returns a weak ref to the capture-time output on every
+        # replay and never re-enters Python, which strands both the
+        # `placeholder`/`active` handshake and the native logits head. Driving
+        # the replay from inside `decode` keeps that handshake intact: Python
+        # still runs per step, only the device work is prerecorded.
+        #
+        # Replay is faster than eager launching at every measured context, and
+        # at prompt 2048 it is faster in both of the two latency modes that
+        # workload exhibits (-0.8 ms/request in the fast mode, -5.8 in the
+        # slow one). The modes themselves are a device-side bistability
+        # present without this recording; both paths reach the same ~1678 ms
+        # floor, but eager happens to enter it more often at 2048, so the
+        # aggregate median there favours eager. See ITERATION.md section 98.
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            # Compiler global scratch holds the TLE grid-barrier counters and
+            # binds to its first launch stream, so it must be prepared on the
+            # stream that will own the recording. `prepare` also allocates and
+            # synchronizes, neither of which is legal while capturing.
+            self.model.prepare(self.tokens, self.state, output=self.logits)
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            self._stage(tokens, metadata, width)
+            self.model.run_into(self.logits, self.tokens, self.state)
+        self.graph, self.graph_key = graph, key
+        self.graph_recordings += 1
+        torch.cuda.synchronize()
+
     def stats(self):
         return {'decode_calls': self.decode_calls, 'native_prefill_calls': self.prefill_calls,
+                'graph_replays': self.graph_replays,
+                'graph_recordings': self.graph_recordings,
+                'fused_decode_input_calls': getattr(getattr(self, 'decode_inputs', None), 'calls', 0),
+                'codegen': self.codegen_identity,
                 'source_sha256': self.source_hash, 'semantic_hash': self.model.manifest['semantic_hash'],
                 'resource': self.model.resource_report, 'kv_copy_bytes_per_decode': 0}
+
+
+def artifact_codegen_identity(artifact, manifest):
+    """Identify the source and library actually selected by the loader."""
+    from triton.flagmega.artifacts.manifest import hash_file, resolve_artifact_path
+    root = Path(artifact)
+    codegen = manifest['codegen']
+    identity = {'backend': manifest['codegen_backend'], 'source': codegen['source'],
+                'source_sha256': hash_file(resolve_artifact_path(root, codegen['source']))}
+    if codegen.get('library'):
+        identity.update(library=codegen['library'],
+                        library_sha256=hash_file(resolve_artifact_path(root, codegen['library'])))
+    return identity
 
 
 class FlagMegaExtension:
@@ -115,7 +194,8 @@ class FlagMegaExtension:
             metadata = get_forward_context().attn_metadata
             tokens = kwargs.get('input_ids', args[0] if args else None)
             executor.active = False
-            if metadata and tokens is not None and tokens.numel() == 1:
+            if (metadata and tokens is not None and tokens.numel() == 1
+                    and executor.prepared_decode):
                 first = next(iter(metadata.values())) if isinstance(metadata, dict) else metadata
                 return executor.decode(tokens, first)
             executor.prefill_calls += 1
@@ -126,6 +206,16 @@ class FlagMegaExtension:
 
         runner.model.forward = forward
         runner.model.compute_logits = logits
+        executor.decode_inputs = FusedDecodeInputs(runner)
+        native_prepare_inputs = runner._prepare_inputs
+
+        def prepare_inputs(scheduler_output, num_scheduled_tokens):
+            executor.prepared_decode = executor.decode_inputs.supports(scheduler_output)
+            if executor.prepared_decode:
+                return executor.decode_inputs.prepare(scheduler_output, num_scheduled_tokens)
+            return native_prepare_inputs(scheduler_output, num_scheduled_tokens)
+
+        runner._prepare_inputs = prepare_inputs
         return executor.stats()
 
     def flagmega_stats(self):

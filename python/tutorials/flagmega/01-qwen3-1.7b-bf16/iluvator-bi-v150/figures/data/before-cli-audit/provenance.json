@@ -1,0 +1,107 @@
+{
+  "schema": "flagmega.cudagraph-figure-provenance/v1",
+  "measurement_date": "2026-10-21",
+  "flagtree_revision": "8da3816deaa4a525647e52492f68ba4342c655fa",
+  "flagtree_dirty": true,
+  "gpu": "Iluvatar BI-V150",
+  "physical_gpu": 8,
+  "driver": "4.5.0",
+  "corex": "4.5.0.20260509",
+  "sm_clock_mhz": 1500,
+  "memory_clock_mhz": 1600,
+  "artifact_path_at_measurement": "/tmp/r36_final_hoisted_query",
+  "artifact_semantic_hash": "8bdc3d519f1cf5e13e6d6575c1383e672f7bde293868fb658a11ddd34ac7e7f6",
+  "artifact_codegen": {
+    "backend": "cpp",
+    "library": "libflagmega_generated.so",
+    "library_sha256": "994933306440921e319842f2fe8516b68660a270da2e9e8f8b9bf5d400bb4c4a",
+    "source": "generated_kernels.cpp",
+    "source_sha256": "230467c9a3020251d48df1bc03b139273e88756da1ff90725fea131f17251f90"
+  },
+  "artifact_ir_sha256": "fe61cf99cd4afe08ccbe2d1f172b57dc32d5c41b5aa0821c7a60685aedd4d507",
+  "artifact_rdata": {
+    "image": "assets/rdata.bin",
+    "index": "assets/rdata.index.json",
+    "nbytes": 4063488256,
+    "sha256": "61cd6eb36029e49e1324545c6bdb325089e57e5919aa59f166ca8af6517459db"
+  },
+  "corex_extra_flags": [
+    "-mllvm",
+    "-iluvatar-extra-load-latency=80",
+    "-mllvm",
+    "-iluvatar-extra-latency-post-ra=40"
+  ],
+  "command": "CUDA_VISIBLE_DEVICES=8 python reproduce_flagos.py --checkpoint /root/models/Qwen3-1.7B --artifact /tmp/r36_final_hoisted_query --cuda-graph --rounds 3 --repeats 5 --results <fresh-results>",
+  "environment": {
+    "VLLM_PLUGINS": "fl",
+    "FLAGOS_DEVICE_CONTROL_ENV_VAR": "CUDA_VISIBLE_DEVICES",
+    "VLLM_FL_FLAGOS_BLACKLIST_APPEND": "sort,sort_stable",
+    "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
+    "CUDA_MODULE_LOADING": "0"
+  },
+  "native_graph": {
+    "mode": 0,
+    "cudagraph_mode": "FULL",
+    "cudagraph_capture_sizes": [
+      1
+    ],
+    "enforce_eager": false
+  },
+  "flagmega_graph": "Extension-owned staging+complete C++ decode graph; eager native prefill and Python handshake; one capture per process",
+  "boundary": "engine.step scheduler+forward+sampler+output processing; weight loading, device reordering, initialization and graph capture excluded",
+  "metrics": {
+    "decode_latency": "Median of 945 decode intervals per variant/scenario, excludes first output token",
+    "decode_throughput": "Median over 15 requests of 63*1000/sum(decode_step_ms)",
+    "request_throughput": "Median over 15 requests of 64*1000/e2e_ms, including prefill"
+  },
+  "correctness": "All 144 warmup/measured requests (9216 output tokens) match native exactly; 4536 decode graph replays and fused input calls; zero KV copies. Additionally 2112 steps x 151936 logits match previous canonical C++ artifact bit-for-bit, and 14 adjacent sampling requests per variant match native.",
+  "raw_reports": [
+    {
+      "path": "round00.flagmega.json.gz",
+      "uncompressed_sha256": "2d202a24f3eba7c0298a631bf7e6135731db424653c0de9d44af1c2ca8bf71d7"
+    },
+    {
+      "path": "round00.native.json.gz",
+      "uncompressed_sha256": "97438d181e1a151ea8d53d7d914e862212afe58293ffa0e8afabd2de5a83cf5a"
+    },
+    {
+      "path": "round01.flagmega.json.gz",
+      "uncompressed_sha256": "23af10006adda0b5c4602b66318984290eb395d9c9809fb209b64bc7e2daa7c2"
+    },
+    {
+      "path": "round01.native.json.gz",
+      "uncompressed_sha256": "6ca3f595b5817a1301bda3288ef5b2c7315e4c8dbe331f9fd51962fc569d427c"
+    },
+    {
+      "path": "round02.flagmega.json.gz",
+      "uncompressed_sha256": "108e92f9f76e043dac9536c5c5dab5975cc19ad537f654cc2d9e17ea18f86122"
+    },
+    {
+      "path": "round02.native.json.gz",
+      "uncompressed_sha256": "ac011268484411ff638b10c4537d9444eed4f79749a421fb96ed337efa6024ad"
+    }
+  ],
+  "optimization": "Four concurrent query heads, cooperative GQA KV staging in 64-token batches, canonical 16-token online softmax and ordered value folds, explicit FMA and alternating value partial buffers; fused decode inputs and SME weight pipeline retained; invariant query retained in registers across KV batches",
+  "decode_inputs_sha256": "f5b9d6ae23ce6e406d02381b140c760154e71a180d1be65fbe02dc3b39db8869",
+  "adapter_sha256": "5b85fb2b5ae5988cea84f1ae93f6d492d01e516f3c99b46d2bf18be57fc26d42",
+  "previous_measurements": "before-long-attention/",
+  "boundary_data": "boundary-summary.json",
+  "regression": "rejected-warp-softmax/ retains failing generation and FP32 contraction probes; final preserves canonical reduction and explicit FMA",
+  "attention_selection": {
+    "heads": 4,
+    "staging_tokens": 64,
+    "softmax_tokens": 16,
+    "gqa": 2,
+    "padding": 32,
+    "groups": 8,
+    "value_buffers": 2,
+    "shared_bytes": 116992
+  },
+  "validation_data": "validation.json",
+  "chat_cli_data": "chat-cli/provenance.json",
+  "chart_variants": [
+    "native",
+    "flagmega",
+    "chat_cli"
+  ]
+}
