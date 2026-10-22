@@ -42,25 +42,27 @@ def _run_parser(kernel_fn, args):
     return run_parser(kernel_fn, args=args, target=_parser_target())
 
 
-def _compile_ttir(kernel_fn, args):
-    """Compile ``kernel_fn`` through the real backend pipeline, return its TTIR."""
-    from triton.compiler import ASTSource, make_backend
-    from triton.runtime.jit import create_function_from_signature
-    target = _parser_target()
-    backend = make_backend(target)
-    binder = create_function_from_signature(kernel_fn.signature, kernel_fn.params, backend)
-    kwargs = {"sanitize_overflow": False}
-    bound_args, specialization, options = binder(*args, **kwargs)
-    _, signature, constexprs, attrs = kernel_fn._pack_args(backend, kwargs, bound_args, specialization, options)
-    src = ASTSource(kernel_fn, signature, constexprs, attrs)
-    try:
-        return triton.compile(src, target=target).asm["ttir"]
-    except RuntimeError as e:
-        # No device and no matching assembler (e.g. a CPU-only box without
-        # ptxas-blackwell): the pipeline itself is fine, we just cannot finish.
-        if "Cannot find" in str(e):
-            pytest.skip(str(e))
-        raise
+def _backend_ttir(kernel_fn, args):
+    """Run ``kernel_fn`` through the backend's *own* TTIR stage, return its IR.
+
+    Only the TTIR stage: that is where ``tt-lower-structs`` has to run, before
+    anything backend-specific happens, and stopping there keeps the test
+    independent of each vendor's later pipeline (enflame's, for one, cannot
+    lower the pointer <-> integer arithmetic the pass emits).
+    """
+    import inspect
+    from triton.backends.compiler import Language
+    from triton.compiler import make_backend
+    backend = make_backend(_parser_target())
+    options = backend.parse_options({})
+    stages = {}
+    if len(inspect.signature(backend.add_stages).parameters) >= 3:
+        backend.add_stages(stages, options, Language.TRITON)
+    else:
+        backend.add_stages(stages, options)  # backends on the older signature
+    module = _run_parser(kernel_fn, args)
+    out = stages["ttir"](module, {})
+    return out.str_nodebug() if hasattr(out, "str_nodebug") else str(out)
 
 
 @tl.struct_type
@@ -275,16 +277,16 @@ def test_backend_exposes_lower_structs_pass():
 def test_backend_ttir_lowers_custom_types():
     """The backend's TTIR stage must run ``tt-lower-structs``.
 
-    Compiles a kernel that reads and writes a struct field through the real
-    backend pipeline and checks that the TTIR it produced no longer mentions the
-    custom types, i.e. the pass ran before any backend lowering.
+    Runs a kernel that reads and writes a struct field through that backend's
+    own TTIR stage and checks the IR it produced no longer mentions the custom
+    types, i.e. the pass ran before anything backend-specific.
     """
 
     @triton.jit
     def kernel(x_view):
         x_view.ndim = x_view.ndim + 1
 
-    ttir = _compile_ttir(kernel, (_view(TensorView), ))
+    ttir = _backend_ttir(kernel, (_view(TensorView), ))
     # The write is a side effect, so its address arithmetic survives DCE - the
     # assertions below are checking something real rather than an empty module.
     assert "tt.store" in ttir
