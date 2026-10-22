@@ -167,3 +167,17 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+
+      - name: Custom types (struct/array) lit tests
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          # These pin tt-lower-structs: the types must be gone from the TTIR and
+          # the non-global address space case must keep diagnosing.
+          BUILD_DIR=$(ls -d build/cmake.linux-x86_64-cpython-3.* | head -1)
+          OPT="$BUILD_DIR/bin/triton-opt"
+          FC=$(python3 -c 'import os, triton; print(os.path.join(os.path.dirname(triton.__file__), "FileCheck"))')
+          "$OPT" test/Triton/lower-structs.mlir --triton-lower-structs --split-input-file \
+            | "$FC" test/Triton/lower-structs.mlir --implicit-check-not "!tt.struct" --implicit-check-not "!tt.array"
+          "$OPT" test/Triton/lower-structs-invalid.mlir --triton-lower-structs --split-input-file -verify-diagnostics

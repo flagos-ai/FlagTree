@@ -90,3 +90,4 @@ jobs:
           # TLE tutorials unit tests
           python3 python/tutorials/tle/01-fft.py --only_unit_test
           python3 python/tutorials/tle/03-topk.py --only_unit_test
+          python3 -m pytest -s python/test/unit/language/test_custom_types.py

@@ -1,7 +1,9 @@
 """Frontend tests for C-interoperable custom types (structs).
 
-These run the AST -> TTIR path only (via ``run_parser``); the ``tt-lower-structs``
-pass that removes the custom types is covered by ``test/Triton/lower-structs.mlir``.
+These run the AST -> TTIR path (via ``run_parser``), the interpreter, and - when a
+device is present - the backend's own TTIR stage, which must run
+``tt-lower-structs`` so that no custom aggregate type reaches the backend.  The
+pass itself is also covered by ``test/Triton/lower-structs.mlir``.
 """
 
 import ctypes
@@ -33,6 +35,36 @@ def _parser_target():
 
 def _run_parser(kernel_fn, args):
     return run_parser(kernel_fn, args=args, target=_parser_target())
+
+
+def _device_target():
+    """The active device's target, or None when no device is available."""
+    try:
+        from triton._internal_testing import get_current_target
+        return get_current_target()
+    except Exception:
+        return None
+
+
+def _compile_ttir(kernel_fn, args):
+    """Compile ``kernel_fn`` through the real backend pipeline, return its TTIR."""
+    from triton.compiler import ASTSource, make_backend
+    from triton.runtime.jit import create_function_from_signature
+    target = _device_target() or _parser_target()
+    backend = make_backend(target)
+    binder = create_function_from_signature(kernel_fn.signature, kernel_fn.params, backend)
+    kwargs = {"sanitize_overflow": False}
+    bound_args, specialization, options = binder(*args, **kwargs)
+    _, signature, constexprs, attrs = kernel_fn._pack_args(backend, kwargs, bound_args, specialization, options)
+    src = ASTSource(kernel_fn, signature, constexprs, attrs)
+    try:
+        return triton.compile(src, target=target).asm["ttir"]
+    except RuntimeError as e:
+        # No device and no matching assembler (e.g. a CPU-only box without
+        # ptxas-blackwell): the pipeline itself is fine, we just cannot finish.
+        if "Cannot find" in str(e):
+            pytest.skip(str(e))
+        raise
 
 
 @tl.struct_type
@@ -228,6 +260,41 @@ def test_structview_signature():
     sig = mangle_type(view)
     assert sig.startswith("*struct<")
     assert "ndim:u32@72" in sig
+
+
+# --- backends ---------------------------------------------------------------------
+
+
+def test_backend_exposes_lower_structs_pass():
+    """Every backend's TTIR stage must expose the ``add_lower_structs`` binding.
+
+    Backends that override ``python/src/passes.cc`` replace the whole pass
+    binding list, so a missing binding makes ``make_ttir`` raise for *every*
+    kernel, not just ones using custom types.  This runs without a device.
+    """
+    from triton._C.libtriton import passes
+    assert hasattr(passes.ttir, "add_lower_structs")
+
+
+def test_backend_ttir_lowers_custom_types():
+    """The backend's TTIR stage must run ``tt-lower-structs``.
+
+    Compiles a kernel that reads and writes a struct field through the real
+    backend pipeline and checks that the TTIR it produced no longer mentions the
+    custom types, i.e. the pass ran before any backend lowering.
+    """
+
+    @triton.jit
+    def kernel(x_view):
+        x_view.ndim = x_view.ndim + 1
+
+    ttir = _compile_ttir(kernel, (_view(TensorView), ))
+    # The write is a side effect, so its address arithmetic survives DCE - the
+    # assertions below are checking something real rather than an empty module.
+    assert "tt.store" in ttir
+    assert "tt.struct_gep" not in ttir
+    assert "!tt.struct" not in ttir
+    assert "!tt.array" not in ttir
 
 
 # --- interpreter -----------------------------------------------------------------
