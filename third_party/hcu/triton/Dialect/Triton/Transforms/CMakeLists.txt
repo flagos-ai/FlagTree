@@ -11,6 +11,7 @@ add_triton_library(TritonTransforms
   ReorderBroadcast.cpp
   RewriteTensorPointer.cpp
   RewriteTensorDescriptorToPointer.cpp
+  LowerStructs.cpp
   ArithTypeConversion.cpp
   FunctionTypeConversion.cpp
 
@@ -23,5 +24,6 @@ add_triton_library(TritonTransforms
   MLIRTransformUtils
   MLIRTransforms
   MLIRSCFToControlFlow
+  MLIRArithDialect
   TritonIR
 )
