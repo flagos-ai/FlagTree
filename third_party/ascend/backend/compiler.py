@@ -140,6 +140,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_canonicalizer(pm)
 
         # commonir: lower tile.* ops and inline unresolved !tile.buf signatures.
+        ascend.passes.ttir.add_commonir_tv_ptr_legalize(pm)
         ascend.passes.ttir.add_commonir_to_hivm(pm)
         passes.common.add_inliner(pm)
         passes.common.add_canonicalizer(pm)

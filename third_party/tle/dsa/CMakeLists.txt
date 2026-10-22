@@ -14,12 +14,19 @@ if(FLAGTREE_BACKEND STREQUAL "ascend")
     CommonIRTableGen
     CommonIRAttrDefsIncGen
     CommonIRTypesIncGen
+    # tle_ir.cc includes the TensorView dialect/type/attr headers.
+    TensorViewTableGen
+    TensorViewTypesIncGen
+    TensorViewAttrsIncGen
+    TensorViewInterfacesIncGen
     PARENT_SCOPE)
   set(TLE_DSA_IR_DEPENDS TleDSATableGen PARENT_SCOPE)
   set(TLE_DSA_IR_LINK_LIBS TleDSAIR PARENT_SCOPE)
   set(TLE_DSA_PLUGIN_LINK_LIBS
     TleIR
     CommonIRIR
+    # tle_ir.cc builds tv.make_tensor_view and the view encodings.
+    TensorViewIR
     PARENT_SCOPE)
   set(TLE_DSA_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/third_party/flir/include

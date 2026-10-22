@@ -1,6 +1,13 @@
 from . import backends
 
 from . import language
+from .language import (
+    make_partition_view,
+    make_strided_view,
+    make_gather_scatter_view,
+    tile_load,
+    tile_store,
+)
 
 try:
     from . import raw
@@ -200,6 +207,11 @@ __all__ = [
     "dsa",
     "pipe",
     "scope",
+    "make_partition_view",
+    "make_strided_view",
+    "make_gather_scatter_view",
+    "tile_load",
+    "tile_store",
     *backends.ops(),
 ]
 

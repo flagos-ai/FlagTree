@@ -24,6 +24,9 @@
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
 #include "incubated/Conversion/TritonToUnstructureIncubated/Passes.h"
 #include "mlir-ext/Dialect/CommonIR/Transforms/Passes.h"
+// Only the dialect registration below needs TensorView here; the construction
+// API moved to third_party/tle/dsa/tle_ir.cc.
+#include "triton-shared/Dialect/TensorView/IR/TensorViewDialect.h"
 
 #include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
 #include "ascend/include/DynamicCVPipeline/Passes.h"
@@ -337,7 +340,12 @@ void init_triton_ascend_ir(py::module &&m) {
              auto annotationOp = self.create<triton::ascend::AnnotationOp>(ptr);
              annotationOp->setAttr(self.getBuilder().getStringAttr(attrKey),
                                    attrVal);
-           });
+           })
+      // The `tle.tensor_view` construction API lives in
+      // third_party/tle/dsa/tle_ir.cc, next to the tile.load / tile.store
+      // overloads that access those views. Both files extend the same
+      // TritonOpBuilder pybind class, so the Python side is unaffected.
+      ;
 }
 
 void init_triton_ascend_passes_ttir(py::module &&m) {
@@ -405,6 +413,10 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
   });
 
 #ifdef __TLE_DSA__
+  m.def("add_commonir_tv_ptr_legalize", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createCommonIRTvPtrLegalizePass());
+  });
+
   m.def("add_commonir_to_hivm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createCommonIRToHIVMPass());
   });
@@ -453,7 +465,8 @@ void init_triton_ascend(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
-    registry.insert<mlir::triton::ascend::TritonAscendDialect>();
+    registry.insert<mlir::triton::ascend::TritonAscendDialect,
+                    mlir::triton::tv::TensorViewDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

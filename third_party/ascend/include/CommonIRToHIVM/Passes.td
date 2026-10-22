@@ -28,6 +28,18 @@
 
 include "mlir/Pass/PassBase.td"
 
+def CommonIRTvPtrLegalize
+    : Pass<"commonir-tv-ptr-legalize", "mlir::ModuleOp"> {
+  let summary = "Legalize view base pointer kernel arguments to memref<?xT, GM>";
+  let constructor = "triton::createCommonIRTvPtrLegalizePass()";
+  let dependentDialects = [
+    "hivm::HIVMDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::triton::tv::TensorViewDialect",
+    "mlir::triton::TritonDialect",
+  ];
+}
+
 def CommonIRToHIVM : Pass<"commonir-to-hivm", "mlir::ModuleOp"> {
   let summary = "Convert CommonIR dialect to HIVM dialect";
   let constructor = "triton::createCommonIRToHIVMPass()";

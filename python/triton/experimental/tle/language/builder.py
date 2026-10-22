@@ -66,5 +66,7 @@ def setup_unified_builder_with_tle_builder(main_builder, buffer_builder):
         'create_tile_gm_offset',
         'create_tile_cube_launch',
         'create_tile_cube_wait',
+        'create_tile_load',
+        'create_tile_store',
     ]
     attach_builder_methods_with_tle_builder(main_builder, buffer_builder, buffer_methods)
