@@ -15,6 +15,26 @@ import triton.language as tl
 from triton._filecheck import run_parser
 
 
+def _parser_target():
+    """Target for the AST->TTIR tests.
+
+    run_parser's default is a CUDA stub target, which resolves to no backend on
+    the non-CUDA backends (amd, iluvatar, xpu, ...).  Prefer the active backend;
+    fall back to the stub when no device is available so the test still runs on
+    a CPU-only machine.
+    """
+    try:
+        from triton._internal_testing import get_current_target
+        return get_current_target()
+    except Exception:
+        from triton._filecheck import stub_target
+        return stub_target
+
+
+def _run_parser(kernel_fn, args):
+    return run_parser(kernel_fn, args=args, target=_parser_target())
+
+
 @tl.struct_type
 class TensorView(ctypes.Structure):
     _fields_ = [
@@ -73,7 +93,7 @@ def test_read_scalar_field():
     def kernel(x_view):
         return x_view.ndim
 
-    module = run_parser(kernel, args=(_view(TensorView), ))
+    module = _run_parser(kernel, args=(_view(TensorView), ))
     text = module.str_nodebug()
     assert "tt.struct_gep" in text
     assert '"ndim"' in text
@@ -89,7 +109,7 @@ def test_write_scalar_field():
         x_view.ndim = n + 1
         return n
 
-    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     # One gep for the read and one for the write.
     assert text.count("tt.struct_gep") == 2
     assert "tt.store" in text
@@ -101,7 +121,7 @@ def test_nested_field():
     def kernel(o):
         return o.inner.a
 
-    text = run_parser(kernel, args=(_view(Outer), )).str_nodebug()
+    text = _run_parser(kernel, args=(_view(Outer), )).str_nodebug()
     # A gep for the nested struct, then a gep into it.
     assert text.count("tt.struct_gep") == 2
 
@@ -112,7 +132,7 @@ def test_pointer_field():
     def kernel(x_view):
         return x_view.base
 
-    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     assert "tt.struct_gep" in text
     assert '"base"' in text
 
@@ -124,7 +144,7 @@ def test_unknown_field_raises():
         return x_view.nope
 
     with pytest.raises(Exception):
-        run_parser(kernel, args=(_view(TensorView), ))
+        _run_parser(kernel, args=(_view(TensorView), ))
 
 
 def test_array_element_read():
@@ -133,7 +153,7 @@ def test_array_element_read():
     def kernel(x_view):
         return x_view.shape[0]
 
-    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     # struct_gep for the "shape" field, then array_gep for the element.
     assert "tt.struct_gep" in text
     assert "tt.array_gep" in text
@@ -145,7 +165,7 @@ def test_array_element_dynamic_index():
     def kernel(x_view, i):
         return x_view.shape[i]
 
-    text = run_parser(kernel, args=(_view(TensorView), 0)).str_nodebug()
+    text = _run_parser(kernel, args=(_view(TensorView), 0)).str_nodebug()
     assert "tt.array_gep" in text
 
 
@@ -155,7 +175,7 @@ def test_array_element_write():
     def kernel(x_view):
         x_view.shape[0] = 7
 
-    text = run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
     assert "tt.array_gep" in text
     assert "tt.store" in text
 
@@ -166,7 +186,7 @@ def test_array_of_struct_element():
     def kernel(o, i):
         return o.arr[i].b
 
-    text = run_parser(kernel, args=(_view(WithArray), 0)).str_nodebug()
+    text = _run_parser(kernel, args=(_view(WithArray), 0)).str_nodebug()
     # struct_gep for "arr", array_gep for the element, struct_gep for "b".
     assert text.count("tt.struct_gep") == 2
     assert "tt.array_gep" in text
