@@ -15,6 +15,10 @@
    measurement and for why Trial 55's reversal no longer applies. #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m != 1 %}
+    for dense_glu_local_m in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
     for dense_glu_local_n_start in tl.range(
         0, {{ call.local_n_capacity }}, {{ call.tile_n }}
     ):
@@ -129,6 +133,7 @@ def {{ call.symbol }}({{ call.signature }}):
             dense_glu_value.to({{ call.output_type }}),
         )
         {% endif %}
+{% endfilter %}
 
 
 {% endif %}

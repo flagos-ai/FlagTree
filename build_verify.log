@@ -1,0 +1,18 @@
+Obtaining file:///home/work/FlagTree
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: flagtree
+  Building editable for flagtree (pyproject.toml): started
+  Building editable for flagtree (pyproject.toml): still running...
+  Building editable for flagtree (pyproject.toml): still running...
+  Building editable for flagtree (pyproject.toml): finished with status 'done'
+  Created wheel for flagtree: filename=flagtree-0.6.0+git7507ddfb-0.editable-cp312-cp312-linux_x86_64.whl size=9979 sha256=d415c82b1dfd8b90106abb8d38db5db115df8dabddabaee2a5301bb4a9120c99
+  Stored in directory: /tmp/pip-ephem-wheel-cache-qiho683s/wheels/b1/22/7f/9f10831450d6934689d085de06790a1255707a594d65861909
+Successfully built flagtree
+Installing collected packages: flagtree
+Successfully installed flagtree-0.6.0+git7507ddfb
+
+[notice] A new release of pip is available: 26.1.1 -> 26.2.1
+[notice] To update, run: pip install --upgrade pip

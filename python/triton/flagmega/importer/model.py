@@ -23,15 +23,19 @@ importer_registry = ModelImporterRegistry()
 
 
 def _register_builtin_importers() -> None:
-    importer_registry.register(
-        ModelImporterSpec(
-            "qwen3",
-            frozenset({"Qwen3ForCausalLM"}),
-            frozenset({"qwen3"}),
-            lambda source, layer, revision: Qwen3LayerImporter(source, layer=layer, revision=revision).import_module(),
-            lambda source, revision: Qwen3ModelImporter(source, revision=revision).import_module(),
-            numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_qwen3_vllm_profile},
-        ))
+    importer_registry.register(ModelImporterSpec(
+        "qwen3",
+        frozenset({"Qwen3ForCausalLM"}),
+        frozenset({"qwen3"}),
+        lambda source, layer, revision, **options: Qwen3LayerImporter(
+            source, layer=layer, revision=revision, **options
+        ).import_module(),
+        lambda source, revision, **options: Qwen3ModelImporter(
+            source, revision=revision, **options
+        ).import_module(),
+        execution_modes=frozenset({"decode-1", "prefill"}),
+        numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_qwen3_vllm_profile},
+    ))
     importer_registry.register(
         ModelImporterSpec(
             "qwen3.5",

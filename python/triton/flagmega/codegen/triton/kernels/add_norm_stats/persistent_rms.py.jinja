@@ -3,20 +3,25 @@
 @triton.jit
 def _flagmega_add_norm_stats_persistent_rms(
     source, residual, destination, stats_output,
-    ELEMENTS: tl.constexpr, TILE: tl.constexpr,
+    ELEMENTS: tl.constexpr, NORM_SIZE: tl.constexpr, TILE: tl.constexpr,
 ):
-    square_sum = tl.zeros((TILE,), tl.float32)
-    for start in tl.range(0, ELEMENTS, TILE):
-        offsets = start + tl.arange(0, TILE)
-        mask = offsets < ELEMENTS
-        value = (
-            tl.load(source + offsets, mask=mask, other=0.0)
-            + tl.load(residual + offsets, mask=mask, other=0.0)
-        ).to(destination.dtype.element_ty)
-        tl.store(destination + offsets, value, mask=mask)
-        value_fp32 = value.to(tl.float32)
-        square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)
-    tl.store(stats_output, tl.sum(square_sum, axis=0))
+    # The dimensions before the normalized axis are independent outer rows
+    # (tokens); each reduces its own contiguous NORM_SIZE suffix into one
+    # statistic. ELEMENTS // NORM_SIZE == 1 recovers the single-row form.
+    for norm_row in tl.range(0, ELEMENTS // NORM_SIZE):
+        square_sum = tl.zeros((TILE,), tl.float32)
+        for start in tl.range(0, NORM_SIZE, TILE):
+            lane = start + tl.arange(0, TILE)
+            mask = lane < NORM_SIZE
+            offsets = norm_row * NORM_SIZE + lane
+            value = (
+                tl.load(source + offsets, mask=mask, other=0.0)
+                + tl.load(residual + offsets, mask=mask, other=0.0)
+            ).to(destination.dtype.element_ty)
+            tl.store(destination + offsets, value, mask=mask)
+            value_fp32 = value.to(tl.float32)
+            square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)
+        tl.store(stats_output + norm_row, tl.sum(square_sum, axis=0))
 {% if render_calls is defined %}
 {% include "kernels/add_norm_stats/_function.py.jinja" %}
 {% endif %}

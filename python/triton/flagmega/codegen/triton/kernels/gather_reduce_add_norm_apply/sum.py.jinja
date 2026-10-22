@@ -6,6 +6,10 @@
 @triton.jit(noinline=True)
 def {{ call.symbol }}__partials({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m != 1 %}
+    for apply_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
     gather_mean_sum = tl.zeros(({{ call.tile }},), tl.float32)
     gather_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
     if {{ call.participant_active }}:
@@ -65,22 +69,32 @@ def {{ call.symbol }}__partials({{ call.signature }}):
             gather_square_sum += tl.where(
                 gather_mask, gather_value_fp32 * gather_value_fp32, 0.0,
             )
+    # Every owner publishes its own square sum at its full-mesh slot (a
+    # non-participant contributes a zero that the reduction ignores), so the
+    # finalize can combine exactly the group that shares this token's outer
+    # shard coordinate without reading another token's statistics.
 {% if call.use_mean %}
-        tl.store(
-            {{ call.stats_partials }} + {{ call.stats_writer_index }},
-            tl.sum(gather_mean_sum, axis=0),
-        )
+    tl.store(
+        {{ call.stats_partials }}
+        + {% if call.local_m != 1 %}apply_row * {{ call.row_stats_stride }} + {% endif %}shard_index,
+        tl.sum(gather_mean_sum, axis=0),
+    )
 {% endif %}
-        tl.store(
-            {{ call.stats_partials }}
-            + {{ call.stats_square_base }} + {{ call.stats_writer_index }},
-            tl.sum(gather_square_sum, axis=0),
-        )
+    tl.store(
+        {{ call.stats_partials }}
+        + {% if call.local_m != 1 %}apply_row * {{ call.row_stats_stride }} + {% endif %}{{ call.stats_square_base }} + shard_index,
+        tl.sum(gather_square_sum, axis=0),
+    )
+{% endfilter %}
 
 
 @triton.jit(noinline=True)
 def {{ call.symbol }}__finalize({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m != 1 %}
+    for apply_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
 {% if call.use_mean %}
     norm_mean_sum = 0.0
 {% endif %}
@@ -92,10 +106,15 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
             0, {{ call.reduction_width }}
         )
         norm_owner_mask = norm_owner_offsets < {{ call.stats_owner_count }}
+        # Map the dense reduction lane to the full-mesh owner that shares this
+        # CTA's token (outer) shard coordinate, so only owners of THIS token's
+        # suffix are combined.
+        norm_stats_owner = {{ call.stats_partial_owner }}
 {% if call.use_mean %}
         norm_mean_sum += tl.sum(
             tl.load(
-                {{ call.stats_partials }} + norm_owner_offsets,
+                {{ call.stats_partials }}
+                + {% if call.local_m != 1 %}apply_row * {{ call.row_stats_stride }} + {% endif %}norm_stats_owner,
                 mask=norm_owner_mask,
                 other=0.0,
             ),
@@ -105,7 +124,7 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
         norm_square_sum += tl.sum(
             tl.load(
                 {{ call.stats_partials }}
-                + {{ call.stats_square_base }} + norm_owner_offsets,
+                + {% if call.local_m != 1 %}apply_row * {{ call.row_stats_stride }} + {% endif %}{{ call.stats_square_base }} + norm_stats_owner,
                 mask=norm_owner_mask,
                 other=0.0,
             ),
@@ -165,6 +184,7 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
                 norm_output.to({{ call.norm_input_type }}).to({{ call.norm_output_type }}),
                 mask=gather_mask,
             )
+{% endfilter %}
 
 
 {{ entry.phase_schedule(call, ("partials", "finalize")) }}

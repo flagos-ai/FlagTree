@@ -52,14 +52,6 @@ class GatherReduceAddNormApplyCandidateProvider:
             return None
         if any(not dimension.is_fixed for dimension in value.shape):
             return None
-        outer_rows = prod(
-            (dimension.fixed_value for dimension in value.shape[:axis]),
-            start=1,
-        )
-        if outer_rows != 1:
-            # This implementation owns one decode row.  Batched prefill uses
-            # a separately reviewable row-indexed workspace/launch contract.
-            return None
         placement = value_type.placement
         partial_axes = tuple(source_type.partial.axes)
         owner_count = prod(placement.hierarchy)
@@ -71,7 +63,7 @@ class GatherReduceAddNormApplyCandidateProvider:
             reduction="sum",
             axis_kind="suffix",
             supports_mean=True,
-            outer_rows="single",
+            outer_rows="batched",
         )
         implementations = tuple(
             implementation

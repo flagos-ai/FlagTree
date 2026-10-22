@@ -53,12 +53,22 @@ class Qwen3LayerConfig:
         return self.num_key_value_heads * self.head_dim
 
 
+def _validate_execution(execution_phase: str, num_tokens: int) -> int:
+    """Return the validated token count; decode must be exactly one token."""
+    if type(num_tokens) is not int or num_tokens <= 0:
+        raise ImporterError("num_tokens must be a positive integer.")
+    if execution_phase != "prefill" and num_tokens != 1:
+        raise ImporterError("decode-1 requires exactly one token.")
+    return num_tokens
+
+
 def _build_rotary_embedding(builder, *, prefix, value, state, config):
     """Token-step position embeddings shared by all decoder invocations."""
     def node_id(suffix):
         return f"{prefix}_{suffix}" if prefix else suffix
 
-    rotary_type = tensor_type(DType.FLOAT32, (1, 1, config.head_dim))
+    tokens = value.type.shape[0].fixed_value
+    rotary_type = tensor_type(DType.FLOAT32, (tokens, 1, config.head_dim))
     rotary = builder.call(
         "nn.rotary_embedding",
         [value, state],
@@ -112,6 +122,8 @@ def _build_attention_dataflow(
     def node_id(suffix: str) -> str:
         return f"{prefix}_{suffix}" if prefix else suffix
 
+    tokens = value.type.shape[0].fixed_value
+
     def transpose_weight(role: str, weight, output_size: int):
         return builder.call(
             "tensors.permute",
@@ -126,9 +138,9 @@ def _build_attention_dataflow(
     v_weight_kn = transpose_weight("v", v_weight, config.kv_size)
     none = builder.call("builtin.none", [], NoneType(), id=node_id("qkv_none"))
     projected_type = TupleType((
-        tensor_type(DType.BFLOAT16, (1, config.query_size)),
-        tensor_type(DType.BFLOAT16, (1, config.kv_size)),
-        tensor_type(DType.BFLOAT16, (1, config.kv_size)),
+        tensor_type(DType.BFLOAT16, (tokens, config.query_size)),
+        tensor_type(DType.BFLOAT16, (tokens, config.kv_size)),
+        tensor_type(DType.BFLOAT16, (tokens, config.kv_size)),
     ))
     projected = builder.call(
         "nn.qkv_parallel_linear",
@@ -168,9 +180,9 @@ def _build_attention_dataflow(
         return builder.call(
             "tensors.reshape",
             [flat],
-            tensor_type(DType.BFLOAT16, (1, heads, config.head_dim)),
+            tensor_type(DType.BFLOAT16, (tokens, heads, config.head_dim)),
             id=node_id(role),
-            attrs={"shape": (1, heads, config.head_dim)},
+            attrs={"shape": (tokens, heads, config.head_dim)},
         )
 
     query = projection("query", 0, config.num_attention_heads)
@@ -265,14 +277,14 @@ def _build_attention_dataflow(
     merged = builder.call(
         "tensors.reshape",
         [attended],
-        tensor_type(DType.BFLOAT16, (1, config.query_size)),
+        tensor_type(DType.BFLOAT16, (tokens, config.query_size)),
         id=node_id("attention_merged"),
-        attrs={"shape": (1, config.query_size)},
+        attrs={"shape": (tokens, config.query_size)},
     )
     output = builder.call(
         "math.matmul",
         [merged, output_weight],
-        tensor_type(DType.BFLOAT16, (1, config.hidden_size)),
+        tensor_type(DType.BFLOAT16, (tokens, config.hidden_size)),
         id=output_id or node_id("attention_output"),
         attrs={"transpose_a": False, "transpose_b": True},
     )
@@ -294,9 +306,13 @@ class Qwen3LayerImporter:
         block_size: int = 256,
         num_blocks: int = 16,
         revision: str | None = None,
+        execution_phase: str = "decode-1",
+        num_tokens: int = 1,
     ) -> None:
         if layer != 0:
             raise ImporterError("Qwen3 single-layer P0 currently imports exactly layer 0.")
+        self.execution_phase = execution_phase
+        self.num_tokens = _validate_execution(execution_phase, num_tokens)
         self.checkpoint = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
         self.layer = layer
         self.block_size = block_size
@@ -323,7 +339,8 @@ class Qwen3LayerImporter:
                 "model_type": "qwen3",
                 "layer": self.layer,
                 "num_layers": 1,
-                "mode": "decode-1",
+                "mode": self.execution_phase,
+                "tokens_per_call": self.num_tokens,
                 "output_boundary": "final_norm_hidden_fp32",
                 "revision": self.revision,
                 "layer_prefix": self.layer_prefix,
@@ -349,11 +366,12 @@ class Qwen3LayerImporter:
                 },
             },
         )
-        hidden_type = tensor_type(DType.BFLOAT16, [1, config.hidden_size])
-        intermediate_type = tensor_type(DType.BFLOAT16, [1, config.intermediate_size])
-        output_type = tensor_type(DType.FLOAT32, [1, config.hidden_size])
+        tokens = self.num_tokens
+        hidden_type = tensor_type(DType.BFLOAT16, [tokens, config.hidden_size])
+        intermediate_type = tensor_type(DType.BFLOAT16, [tokens, config.intermediate_size])
+        output_type = tensor_type(DType.FLOAT32, [tokens, config.hidden_size])
         state_type = self.state_config.ref_type
-        input_ids = builder.var("input_ids", tensor_type(DType.INT32, [1]), id="input_ids")
+        input_ids = builder.var("input_ids", tensor_type(DType.INT32, [tokens]), id="input_ids")
         state = builder.var("paged_attention_kv_cache", state_type, id="paged_attention_kv_cache")
 
         def weight_at(name: str, key: str, shape: tuple[int, ...]):
@@ -506,7 +524,11 @@ class Qwen3ModelImporter:
         block_size: int = 256,
         num_blocks: int = 16,
         revision: str | None = None,
+        execution_phase: str = "decode-1",
+        num_tokens: int = 1,
     ) -> None:
+        self.execution_phase = execution_phase
+        self.num_tokens = _validate_execution(execution_phase, num_tokens)
         self.checkpoint = (
             DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
         )
@@ -545,8 +567,13 @@ class Qwen3ModelImporter:
                 "model_type": "qwen3",
                 "layer": None,
                 "num_layers": config.num_hidden_layers,
-                "mode": "decode-1",
-                "output_boundary": "logits_fp32_and_greedy_token",
+                "mode": self.execution_phase,
+                "tokens_per_call": self.num_tokens,
+                "output_boundary": (
+                    "logits_fp32"
+                    if self.execution_phase == "prefill"
+                    else "logits_fp32_and_greedy_token"
+                ),
                 "revision": self.revision,
                 "layer_prefixes": self.layer_prefixes,
                 "model_prefix": self.model_prefix,
@@ -572,13 +599,14 @@ class Qwen3ModelImporter:
                 },
             },
         )
-        hidden_type = tensor_type(DType.BFLOAT16, [1, config.hidden_size])
-        intermediate_type = tensor_type(DType.BFLOAT16, [1, config.intermediate_size])
-        logits_bf16_type = tensor_type(DType.BFLOAT16, [1, config.vocab_size])
-        logits_type = tensor_type(DType.FLOAT32, [1, config.vocab_size])
+        tokens = self.num_tokens
+        hidden_type = tensor_type(DType.BFLOAT16, [tokens, config.hidden_size])
+        intermediate_type = tensor_type(DType.BFLOAT16, [tokens, config.intermediate_size])
+        logits_bf16_type = tensor_type(DType.BFLOAT16, [tokens, config.vocab_size])
+        logits_type = tensor_type(DType.FLOAT32, [tokens, config.vocab_size])
         token_type = tensor_type(DType.INT32, [1])
         state_type = self.state_config.ref_type
-        input_ids = builder.var("input_ids", tensor_type(DType.INT32, [1]), id="input_ids")
+        input_ids = builder.var("input_ids", tensor_type(DType.INT32, [tokens]), id="input_ids")
         state = builder.var(
             "paged_attention_kv_cache", state_type, id="paged_attention_kv_cache"
         )
@@ -870,10 +898,29 @@ class Qwen3ModelImporter:
             (config.hidden_size,),
             node_id="w_norm_weight",
         )
+        head_input = hidden
+        head_hidden_type = hidden_type
+        head_logits_bf16_type = logits_bf16_type
+        head_logits_type = logits_type
+        if self.execution_phase == "prefill" and tokens > 1:
+            # Only the last token's logits drive next-token prediction, so slice
+            # it out before the final norm + LM head: they then run at M=1 rather
+            # than M=num_tokens, dropping the 152K-vocab LM head's (fixed) cost
+            # ~num_tokens-fold. The per-layer work still covers every token.
+            head_hidden_type = tensor_type(DType.BFLOAT16, [1, config.hidden_size])
+            head_logits_bf16_type = tensor_type(DType.BFLOAT16, [1, config.vocab_size])
+            head_logits_type = tensor_type(DType.FLOAT32, [1, config.vocab_size])
+            head_input = builder.call(
+                "tensors.slice",
+                [hidden],
+                head_hidden_type,
+                id="prefill_last_hidden",
+                attrs={"starts": (tokens - 1,), "ends": (tokens,), "axes": (0,), "steps": (1,)},
+            )
         final_hidden = builder.call(
             "nn.rms_norm",
-            [hidden, final_norm_weight],
-            hidden_type,
+            [head_input, final_norm_weight],
+            head_hidden_type,
             id="final_norm",
             attrs={"epsilon": config.epsilon, "weight_bias": 0.0},
         )
@@ -889,23 +936,27 @@ class Qwen3ModelImporter:
         logits_bf16 = builder.call(
             "math.matmul",
             [final_hidden, lm_head_weight],
-            logits_bf16_type,
+            head_logits_bf16_type,
             id="lm_head",
             attrs={"transpose_a": False, "transpose_b": True},
         )
         logits = builder.call(
             "tensors.cast",
             [logits_bf16],
-            logits_type,
+            head_logits_type,
             id="logits",
             attrs={"dtype": DType.FLOAT32.value},
         )
-        next_token = builder.call(
-            "nn.greedy_sample", [logits], token_type, id="next_token"
-        )
-        builder.function(
-            "main", [input_ids, entry_state], [logits, next_token, state]
-        )
+        if self.execution_phase == "prefill":
+            # Prefill emits only the last token's logits (next-token prediction).
+            builder.function("main", [input_ids, entry_state], [logits, state])
+        else:
+            next_token = builder.call(
+                "nn.greedy_sample", [logits], token_type, id="next_token"
+            )
+            builder.function(
+                "main", [input_ids, entry_state], [logits, next_token, state]
+            )
         builder.function(
             "decode_layer",
             decode_parameters,
@@ -949,12 +1000,16 @@ def import_qwen3_model(
     block_size: int = 256,
     num_blocks: int = 16,
     revision: str | None = None,
+    execution_phase: str = "decode-1",
+    num_tokens: int = 1,
 ) -> IRModule:
     return Qwen3ModelImporter(
         checkpoint,
         block_size=block_size,
         num_blocks=num_blocks,
         revision=revision,
+        execution_phase=execution_phase,
+        num_tokens=num_tokens,
     ).import_module()
 
 

@@ -15,6 +15,12 @@ def {{ call.symbol }}__write({{ call.signature }}):
 {% set intermediate_type = head.intermediate_type | default(head.input_type) %}
 {% set prefix = "qkv_q" if loop.first else "qkv_k" %}
     for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
+        # Per-token cache slot: chunk base plus this token's sequence position.
+        {{ prefix }}_cache_token = qkv_cache_position + ({{ head.cache_seq }})
+        {{ prefix }}_cache_block_offset = {{ prefix }}_cache_token % {{ call.block_size }}
+        {{ prefix }}_cache_physical_block = tl.load(
+            {{ call.block_table }} + {{ prefix }}_cache_token // {{ call.block_size }}
+        ).to(tl.int64)
 {% if head.stats is defined %}
 {% if head.use_mean %}
         {{ prefix }}_mean_sum = tl.load(
@@ -181,6 +187,15 @@ def {{ call.symbol }}__write({{ call.signature }}):
             (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
             & ({{ call.v.compute_active }})
         )
+        # The per-token V-cache mapping is referenced by the cache store below in
+        # both V-load branches, so define it before either branch -- the partial
+        # input path (headwise_partial false) also stores to the paged cache.
+        qkv_v_cache_token = qkv_cache_position + ({{ call.v.cache_seq }})
+        qkv_v_cache_block_offset = qkv_v_cache_token % {{ call.block_size }}
+        qkv_v_cache_physical_block = tl.load(
+            {{ call.block_table }} + qkv_v_cache_token // {{ call.block_size }},
+            mask=qkv_v_mask, other=0,
+        ).to(tl.int64)
 {% if call.v.partial_input is defined %}
 {{ headwise.load_partial(call.v.partial_input, "qkv_v", "qkv_v_mask", "        ") }}
 {% else %}

@@ -609,6 +609,8 @@ def _embedding_call(raw) -> dict[str, object]:
     local_shape = _static_shape(result_abi, "local_capacity_shape")
     if len(local_shape) != 2:
         raise CodegenError("TIR embedding requires token and feature axes.")
+    local_m = local_shape[0]
+    row_coordinate = "embedding_row" if local_m != 1 else "0"
     lanes = int(result_abi.get("scalar_lane_count", 1))
     if (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
         raise CodegenError("Embedding weight and output must have identical vector element lanes.")
@@ -639,6 +641,7 @@ def _embedding_call(raw) -> dict[str, object]:
             "Embedding lookup requires a canonical or chip-local vocabulary "
             f"table, got coordinate space {weight_space!r}."
         )
+    indices_abi = indices["abi"]
     padding_idx = raw.get("semantic_attrs", {}).get("padding_idx")
     encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
     if encoding not in (None, "IQ4_XS", "Q4_K"):
@@ -658,6 +661,8 @@ def _embedding_call(raw) -> dict[str, object]:
         "row_active": f"(embedding_row < ({emit_active_extent(result_abi, 0)}))",
         "weight": _pointer(weight),
         "result": _pointer(result),
+        "local_m": local_m,
+        "indices_offset": emit_local_scalar_offset(indices_abi, (row_coordinate,)),
         "local_capacity": local_shape[-1] * lanes,
         "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
         "weight_offset": weight_offset,
@@ -2039,6 +2044,22 @@ def _unflattened_coordinates(shape: tuple[int, ...], flat: str) -> tuple[str, ..
     return tuple(result)
 
 
+def _flatten_leading_logical_row(
+    global_shape: tuple[int, ...], logical_coordinates: tuple[str, ...]
+) -> str:
+    """Flatten the leading (non-last) logical coordinates into a single global
+    row index, matching a token-replicated per-owner partials workspace whose
+    row dimension counts the flattened leading extents of the logical shape."""
+    leading = global_shape[:-1]
+    terms = []
+    stride = 1
+    for axis in range(len(leading) - 1, -1, -1):
+        if leading[axis] != 1:
+            terms.append(f"(({logical_coordinates[axis]}) * {stride})")
+        stride *= leading[axis]
+    return " + ".join(terms) if terms else "0"
+
+
 def _gdn_convolution_call(raw) -> dict[str, object]:
     qkv = _buffer(raw, "inputs", "qkv")
     state = _buffer(raw, "inputs", "state", 0)
@@ -2275,16 +2296,44 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
             if isinstance(stats_distributed, Mapping)
             else None
         )
-        if (
-            not isinstance(stats_partial, Mapping)
-            or stats_partial.get("reduce_op") != "sum"
-        ):
+        # The owner-local square sum is a Sum-partial only when the RMS reduction
+        # axis is split across owners. When the whole normalized feature axis is
+        # owner-local, NormStats materializes the statistics (partial is None):
+        # the same local square sum is then already the complete per-token
+        # statistic and is written straight to the output's own (token-sharded)
+        # slot. Reject only a non-Sum partial, which this kernel cannot combine.
+        if isinstance(stats_partial, Mapping) and stats_partial.get("reduce_op") != "sum":
             raise CodegenError(
-                "AddNormStats local_partial_rms requires an explicit Sum-partial "
+                "AddNormStats local_partial_rms can only combine a Sum-partial "
                 "statistics result."
             )
-        domain = _scalar_local_domain(result_abi, "add_stats_local_offsets")
+        # M==1 (decode) flattens one owner-local row; M>1 (prefill) iterates an
+        # explicit row loop (add_stats_row) with one RMS partial statistic per
+        # leading row.
+        result_local_shape = _static_shape(result_abi, "local_capacity_shape")
+        local_m = prod(result_local_shape[:-1], start=1)
+        row_coordinate = "add_stats_row" if local_m != 1 else None
+        domain = _scalar_local_domain(
+            result_abi, "add_stats_local_offsets", row_coordinate=row_coordinate
+        )
         local_capacity = int(domain["capacity"])
+        # A token-sharded result pads its owner-local rows: a non-divisible token
+        # count leaves inactive rows on some owners, and -- with fewer tokens than
+        # token owners -- a single-capacity shard (local_m == 1) may own no token
+        # at all. The per-element value stores are masked, but the once-per-row
+        # statistics store is not, so an inactive row would publish its zero
+        # square sum past the canonical statistics buffer. Gate that store on the
+        # row's active extent too, indexing the loop row for M>1 and local row 0
+        # for the single-capacity case.
+        stats_row_active = " & ".join(
+            f"(({coordinate}) < ({emit_active_extent(result_abi, index)}))"
+            for index, coordinate in enumerate(
+                _unflattened_coordinates(
+                    result_local_shape[:-1],
+                    "add_stats_row" if local_m != 1 else "0",
+                )
+            )
+        ) or "True"
         for name, abi in (("input", source_abi), ("addend", residual_abi)):
             if (
                 int(abi.get("scalar_lane_count", 1)) != lane_count
@@ -2297,11 +2346,16 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
                 )
         lane_coordinate = domain["lane_coordinate"]
         stats_shape = _static_shape(stats_abi, "local_capacity_shape")
-        if prod(stats_shape, start=1) != 1:
+        if prod(stats_shape, start=1) != local_m:
             raise CodegenError(
-                "AddNormStats local_partial_rms currently requires one local "
-                "statistics element."
+                "AddNormStats local_partial_rms requires one local statistics "
+                "element per result row."
             )
+        stats_coordinates = (
+            _unflattened_coordinates(stats_shape, "add_stats_row")
+            if local_m != 1
+            else ("0",) * len(stats_shape)
+        )
         return {
             "source": _pointer(source),
             "residual": _pointer(residual),
@@ -2309,6 +2363,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
             "stats": _pointer(stats),
             "partials": None,
             "mode": "local_partial_rms",
+            "local_m": local_m,
             "local_capacity": local_capacity,
             "active": domain["active"],
             "source_offset": _access_in_result_domain(
@@ -2325,9 +2380,10 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
                 lane_coordinate=lane_coordinate,
             ),
             "stats_offset": emit_local_scalar_offset(
-                stats_abi, ("0",) * len(stats_shape)
+                stats_abi, stats_coordinates
             ),
             "stats_writer_active": _canonical_writer_active(stats_abi),
+            "stats_row_active": stats_row_active,
             "tile": _bounded_vector_tile(
                 raw["parameters"]["tile"],
                 local_capacity,
@@ -2345,6 +2401,14 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
         raise CodegenError(
             "AddNormStats participant_scope must be all_programs or single_program."
         )
+    attrs = raw.get("semantic_attrs", {})
+    axis = int(attrs.get("axis", -1))
+    axis = axis + len(shape) if axis < 0 else axis
+    # One RMS statistic per OUTER row: the dimensions before `axis` are
+    # independent normalization groups (tokens), while the suffix shape[axis:]
+    # is reduced per row. elements // norm_size is the owner-local outer-row
+    # count; a single-outer-row input keeps norm_size == elements.
+    norm_size = prod(shape[axis:], start=1) * lane_count
     owner_index, local_owner_count = _chip_local_owner_group(result_abi, owner_count)
     return {
         "source": _pointer(source),
@@ -2353,6 +2417,7 @@ def _add_norm_stats_call(raw) -> dict[str, object]:
         "stats": _pointer(stats),
         "partials": None if partials is None else _pointer(partials),
         "elements": prod(shape) * lane_count,
+        "norm_size": norm_size,
         "tile": int(raw["parameters"]["tile"]),
         "owner_count": local_owner_count,
         "owner_index": owner_index,
@@ -2377,6 +2442,31 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
     result_abi = result["abi"]
     stats_abi = stats["abi"]
     logical_shape = _static_shape(partial_abi, "logical_shape")
+    # M==1 (decode) reduces one owner-local row; M>1 (prefill) iterates an
+    # explicit row loop (gather_row), one RMS partial per (owner, row).
+    partial_local_shape = _static_shape(partial_abi, "local_capacity_shape")
+    local_m = prod(partial_local_shape[:-1], start=1)
+    row_coordinate = "gather_row" if local_m != 1 else None
+    # The partials workspace holds one RMS partial per (owner, global token):
+    # the partial input is token-replicated, so its local_m rows span the full
+    # token axis. The statistics OUTPUT, however, is token-sharded, with only
+    # stats_local_m local tokens per owner. The finalize must therefore iterate
+    # the OUTPUT's local tokens and, for each, read the partial at that token's
+    # global index -- not reuse the partial's row count (which would wrap).
+    stats_local_shape = _static_shape(stats_abi, "local_capacity_shape")
+    stats_local_m = prod(stats_local_shape[:-1], start=1)
+    # The finalize reads the partial for each OUTPUT token at its global index.
+    # With multiple output rows the token comes from the gather_stats_row loop;
+    # with a single-row (token-sharded) output there is no loop, so the one row
+    # is local row 0 -- its logical coordinate still names the owned token.
+    stats_finalize_row = "gather_stats_row" if stats_local_m != 1 else "0"
+    stats_finalize_domain = _scalar_local_domain(
+        stats_abi, "0", row_coordinate=stats_finalize_row
+    )
+    stats_partial_token = _flatten_leading_logical_row(
+        _static_shape(stats_abi, "logical_shape"),
+        stats_finalize_domain["logical_coordinates"],
+    )
     if bool(raw.get("semantic_attrs", {}).get("use_mean", False)):
         raise CodegenError("GatherReduceAddNormStats sum_rms does not implement mean.")
     if str(partial_abi.get("storage_kind")) != "compact_per_owner":
@@ -2546,6 +2636,14 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
         "work_partition_index": work_partition_index,
         "work_partition_count": work_partition_count,
         "local_capacity": scalar_capacity,
+        "local_m": local_m,
+        "stats_local_m": stats_local_m,
+        "stats_partial_token": stats_partial_token,
+        "stats_partials_store_offset": (
+            "shard_index" if local_m == 1
+            else f"shard_index * {local_m} + gather_row"
+        ),
+        "stats_partials_owner_stride": local_m,
         "active": active,
         "partial_offset": emit_local_scalar_offset(
             partial_abi,
@@ -2610,11 +2708,6 @@ def _gather_reduce_add_norm_apply_call(raw) -> dict[str, object]:
             f"GatherReduceAddNormApply axis {attrs.get('axis')!r} is outside "
             f"rank {len(logical_shape)}."
         )
-    if prod(logical_shape[:axis], start=1) != 1:
-        raise CodegenError(
-            "GatherReduceAddNormApply sum requires one logical outer row; "
-            "select a row-indexed implementation for batched input."
-        )
     if str(partial_abi.get("storage_kind")) != "compact_per_owner":
         raise CodegenError(
             "GatherReduceAddNormApply requires compact per-owner partial input."
@@ -2658,14 +2751,35 @@ def _gather_reduce_add_norm_apply_call(raw) -> dict[str, object]:
         )
     use_mean = bool(attrs.get("use_mean", False))
     stats_components = 2 if use_mean else 1
+    # The statistics workspace carries one (components, owner) slab per leading
+    # token: a flat (components, owner) buffer for M==1 (decode), or a prepended
+    # row axis for M>1 (prefill), matching the kernel's apply_row loop. Both
+    # phases loop over the FINER of the partial-input / value-output local
+    # domains (by scalar capacity, selected below); equal total capacity need
+    # not mean equal outer-row count (a split-input / split-output reduce
+    # scatter), so size and validate the workspace from that selected domain,
+    # not the output, or the row-indexed store runs off the workspace.
+    _partial_local = _static_shape(partial_abi, "local_capacity_shape")
+    _value_local = _static_shape(value_abi, "local_capacity_shape")
+    _domain_local = (
+        _partial_local
+        if prod(_partial_local, start=1) <= prod(_value_local, start=1)
+        else _value_local
+    )
+    workspace_rows = prod(_domain_local[:axis], start=1)
+    expected_stats_shape = (
+        (stats_components, owner_count)
+        if workspace_rows == 1
+        else (workspace_rows, stats_components, owner_count)
+    )
     if (
-        _static_shape(stats_abi, "logical_shape") != (stats_components, owner_count)
+        _static_shape(stats_abi, "logical_shape") != expected_stats_shape
         or str(stats_abi.get("scalar_dtype")) != "float32"
         or int(stats_abi.get("scalar_lane_count", 1)) != 1
     ):
         raise CodegenError(
             "GatherReduceAddNormApply statistics workspace must be float32 "
-            f"[{stats_components}, {owner_count}]."
+            f"{list(expected_stats_shape)}."
         )
     lane_count = int(partial_abi.get("scalar_lane_count", 1))
     lane_shape = tuple(partial_abi.get("scalar_lane_shape", ()))
@@ -2707,19 +2821,22 @@ def _gather_reduce_add_norm_apply_call(raw) -> dict[str, object]:
         else value_abi
     )
     local_shape = _static_shape(domain_abi, "local_capacity_shape")
-    scalar_capacity = prod(local_shape, start=1) * lane_count
-    flat = "gather_local_offsets"
-    physical_flat = flat if lane_count == 1 else f"(({flat}) // {lane_count})"
-    lane_coordinate = None if lane_count == 1 else f"(({flat}) % {lane_count})"
-    local_coordinates = _unflattened_coordinates(local_shape, physical_flat)
-    logical_coordinates = tuple(
-        emit_logical_coordinate(domain_abi, index, local_coordinates)
-        for index in range(len(local_shape))
+    # Normalization is over the suffix shape[axis:]; the dimensions before axis
+    # are independent statistics rows (tokens). M==1 (decode) is one owner-local
+    # row; M>1 (prefill) iterates an explicit token loop (apply_row), one RMS per
+    # outer row, each reducing the WHOLE owner-local suffix (not just the last
+    # axis). The row-aware domain splits leading rows from the flattened suffix.
+    local_rows = prod(local_shape[:axis], start=1)
+    row_coordinate = "apply_row" if local_rows != 1 else None
+    gather_domain = _scalar_local_domain(
+        domain_abi, "gather_local_offsets",
+        row_coordinate=row_coordinate, reduction_axis=axis,
     )
-    active = " & ".join(
-        f"(({coordinate}) < ({emit_active_extent(domain_abi, index)}))"
-        for index, coordinate in enumerate(local_coordinates)
-    ) or "True"
+    scalar_capacity = int(gather_domain["capacity"])
+    lane_coordinate = gather_domain["lane_coordinate"]
+    local_coordinates = gather_domain["local_coordinates"]
+    logical_coordinates = gather_domain["logical_coordinates"]
+    active = gather_domain["active"]
     domain = {
         "local_coordinates": local_coordinates,
         "logical_coordinates": logical_coordinates,
@@ -2768,6 +2885,34 @@ def _gather_reduce_add_norm_apply_call(raw) -> dict[str, object]:
     stats_writer_index, stats_owner_count = _distributed_unique_writer_index(
         domain_abi, allow_redundant_axes=partition_axes,
     )
+    # A token's RMS reduces the square sums of every owner holding a DISTINCT
+    # piece of that token's normalized suffix -- the work-partitioned gather
+    # axes and any axes splitting the suffix shape[axis:] -- but NOT the axes
+    # that split the OUTER (token) rows, whose owners hold different tokens, nor
+    # the broadcast axes that merely replicate the same piece. A partial axis can
+    # itself become the output token split (a reduce-scatter result); that axis
+    # splits the domain, so it is excluded from partition_axes and must stay
+    # preserved. Using partition_axes (partial axes NOT splitting the domain)
+    # rather than every partial axis keeps that case correct. Each owner
+    # publishes its square sum at its own full-mesh slot; the finalize reduces
+    # the group sharing this CTA's token (outer) coordinate (mirrors the sibling
+    # stats kernel's preserved/reduction-axis reduction).
+    suffix_split_axes = {
+        int(mesh_axis)
+        for policy in domain_distributed["axis_policies"][axis:]
+        if isinstance(policy, Mapping) and policy.get("kind") == "split"
+        for stage in policy.get("stages", ())
+        for mesh_axis in stage.get("hierarchy_axes", ())
+    }
+    stats_reduction_axes = tuple(
+        sorted(set(partition_axes) | suffix_split_axes)
+    )
+    stats_reduction_count = prod(
+        (hierarchy[index] for index in stats_reduction_axes), start=1
+    )
+    stats_partial_owner = _group_owner_expression_for_axes(
+        domain_abi, stats_reduction_axes, "norm_owner_offsets", allow_empty=True,
+    )
     return {
         "partial": emit_storage_pointer(
             partial_abi, str(partial["runtime_argument"])
@@ -2791,7 +2936,8 @@ def _gather_reduce_add_norm_apply_call(raw) -> dict[str, object]:
         "work_partition_index": work_partition_index,
         "work_partition_count": work_partition_count,
         "stats_writer_index": stats_writer_index,
-        "stats_owner_count": stats_owner_count,
+        "stats_owner_count": stats_reduction_count,
+        "stats_partial_owner": stats_partial_owner,
         "local_capacity": scalar_capacity,
         "active": active,
         "partial_offset": partial_offset,
@@ -2835,6 +2981,10 @@ def _gather_reduce_add_norm_apply_call(raw) -> dict[str, object]:
         "epsilon": repr(float(attrs.get("epsilon", 0.0))),
         "use_mean": use_mean,
         "has_bias": bool(attrs.get("has_bias", True)),
+        "local_m": local_rows,
+        # Per-row block of the statistics workspace: one (components, owner_count)
+        # slab per leading token. M==1 keeps the flat single-row layout.
+        "row_stats_stride": (2 if use_mean else 1) * owner_count,
         "stats_square_base": owner_count if use_mean else 0,
         "round_before_scale": bool(attrs.get("round_before_scale", False)),
         "output_type": _triton_dtype(str(value_abi["scalar_dtype"])),
@@ -3866,9 +4016,82 @@ def _norm_stats_call(raw) -> dict[str, object]:
     }
 
 
+def _dense_matmul_mma_call(raw) -> dict[str, object]:
+    """Render a bf16 WMMA GEMM (M>1) dense_matmul: M is a tile, not a row loop,
+    so the weight tile is read once and reused across BM rows via tl.dot."""
+    source = _buffer(raw, "inputs", "lhs")
+    weight = _buffer_from_formals(raw, "inputs", ("rhs", "weight"))
+    result = _buffer(raw, "outputs", "result")
+    source_abi = source["abi"]
+    weight_abi = weight["abi"]
+    result_abi = result["abi"]
+    if raw["parameters"].get("packed_layout") is not None:
+        raise CodegenError("DenseMatMul mma requires a logical (unpacked) RHS.")
+    source_shape = _static_shape(source_abi, "local_capacity_shape")
+    result_shape = _static_shape(result_abi, "local_capacity_shape")
+    local_m = prod(source_shape[:-1], start=1)
+    local_k = source_shape[-1] * int(source_abi.get("scalar_lane_count", 1))
+    local_n = result_shape[-1] * int(result_abi.get("scalar_lane_count", 1))
+    global_k = _scalar_logical_axis_extent(source_abi, -1)
+    global_n = _scalar_logical_axis_extent(result_abi, -1)
+    weight_shape = _static_shape(weight_abi, "logical_shape")
+    transpose_b = bool(raw.get("semantic_attrs", {}).get("transpose_b", False))
+    expected = (global_n, global_k) if transpose_b else (global_k, global_n)
+    if len(weight_shape) != 2 or weight_shape != expected:
+        raise CodegenError("TIR DenseMatMul mma RHS shape disagrees with MxK@KxN contract.")
+    # 2D owner-local tile offsets: M as arange rows (dense_m_offsets[:, None]),
+    # the contracted/output axis as the last axis (dense_*_offsets[None, :]).
+    source_domain = _scalar_last_axis_domain(
+        source_abi, "dense_local_k_offsets[None, :]",
+        owner="DenseMatMul mma lhs", row_coordinate="dense_m_offsets[:, None]")
+    result_domain = _scalar_last_axis_domain(
+        result_abi, "dense_local_n_offsets[None, :]",
+        owner="DenseMatMul mma result", row_coordinate="dense_m_offsets[:, None]")
+    # M-independent (1D) global N/K coordinates for the weight tile (row=0).
+    global_k_axis = _scalar_last_axis_domain(
+        source_abi, "dense_local_k_offsets", owner="DenseMatMul mma lhs K", row_coordinate="0")
+    global_n_axis = _scalar_last_axis_domain(
+        result_abi, "dense_local_n_offsets", owner="DenseMatMul mma result N", row_coordinate="0")
+    weight_pointer, weight_offset = _dense_weight_access(
+        weight, packed_layout=None, transpose_b=transpose_b,
+        local_n="dense_local_n_offsets[:, None]",
+        local_k="dense_local_k_offsets[None, :]",
+        global_n="dense_global_n[:, None]",
+        global_k="dense_global_k[None, :]",
+    )
+    block_k = _bounded_vector_tile(raw["parameters"]["block_k"], local_k, name="mma K tile")
+    tile_n = _bounded_vector_tile(raw["parameters"]["tile_n"], local_n, name="mma N tile")
+    return {
+        "source": _pointer(source),
+        "weight": weight_pointer,
+        "result": _pointer(result),
+        "local_m_capacity": local_m,
+        # tl.arange / the accumulator shape must be a power of two, but M (prefill
+        # token rows, or a standalone matmul's M=3/M=17) need not be. Round the M
+        # tile up to the next power of two; m_mask (< m_active_extent) drops the
+        # padding rows on load and store, so results are unaffected.
+        "local_m_padded": 1 << (local_m - 1).bit_length(),
+        "local_k_capacity": local_k,
+        "local_n_capacity": local_n,
+        "tile_n": tile_n,
+        "block_k": block_k,
+        "source_offset": source_domain["offset"],
+        "result_offset": result_domain["offset"],
+        "weight_offset": weight_offset,
+        "global_n": global_n_axis["global_scalar"],
+        "global_k": global_k_axis["global_scalar"],
+        "m_active_extent": emit_active_extent(source_abi, 0),
+        "k_active_extent": emit_active_extent(source_abi, len(source_shape) - 1),
+        "n_active_extent": emit_active_extent(result_abi, len(result_shape) - 1),
+        "output_type": _triton_dtype(str(result_abi["scalar_dtype"])),
+    }
+
+
 def _dense_matmul_call(raw) -> dict[str, object]:
     if str(raw.get("semantic_op", "")) == "ntt.matmul_norm_stats":
         return _dense_matmul_norm_stats_call(raw)
+    if str(raw["variant"]) == "mma":
+        return _dense_matmul_mma_call(raw)
     source = _buffer(raw, "inputs", "lhs")
     weight = _buffer_from_formals(raw, "inputs", ("rhs", "weight"))
     result = _buffer(raw, "outputs", "result")
@@ -4453,31 +4676,39 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
     value_scalar_strides = _static_shape(
         value_abi, "scalar_storage_strides"
     )
-    if (
-        (variant != "packed_k_major_mma_norm_stats" and prod(value_shape[:-1], start=1) != 1)
-        or not value_scalar_strides
-        or value_scalar_strides[-1] != value_lane_count
-    ):
+    value_rows = prod(value_shape[:-1], start=1)
+    if not value_scalar_strides or value_scalar_strides[-1] != value_lane_count:
         raise CodegenError(
-            "Packed MatMulNormStats statistics reduction requires one row in "
-            "a contiguous result backing."
+            "Packed MatMulNormStats statistics reduction requires a contiguous "
+            "result backing."
         )
+    # M>1 (prefill) iterates the matmul's own row loop (dense_local_m); each row
+    # addresses its residual slice and writes its own statistic. The statistics
+    # are one-per-OWNER-LOCAL row, so they must match the matmul's local row
+    # count (not the logical M, which can be larger when rows are sharded).
+    local_m = int(result.get("local_m_capacity", 1))
+    stats_shape = _static_shape(stats_abi, "local_capacity_shape")
     if (
         int(stats_abi.get("scalar_lane_count", 1)) != 1
-        or prod(_static_shape(stats_abi, "local_capacity_shape"), start=1)
-        != (result["local_m_capacity"] if variant == "packed_k_major_mma_norm_stats" else 1)
+        or prod(stats_shape, start=1) != local_m
         or str(stats_abi.get("scalar_dtype")) != "float32"
     ):
         raise CodegenError(
-            "Packed MatMulNormStats requires one scalar F32 statistics result."
+            "Packed MatMulNormStats requires one scalar F32 statistic per "
+            "owner-local result row."
         )
+    row_coordinate = "dense_local_m" if local_m != 1 else None
     residual_domain = _scalar_last_axis_domain(
         residual_abi,
         "dense_local_n_offsets",
         owner="MatMulNormStats residual",
-        row_coordinate="dense_local_m" if variant == "packed_k_major_mma_norm_stats" else None,
+        row_coordinate=row_coordinate,
     )
-    stats_shape = _static_shape(stats_abi, "local_capacity_shape")
+    stats_coordinates = (
+        _unflattened_coordinates(stats_shape, "dense_local_m")
+        if local_m != 1
+        else ("0",) * len(stats_shape)
+    )
     result.update({
         "residual": _pointer(residual),
         # Projection precision belongs to the matmul, not the epilogue ABI.
@@ -4486,9 +4717,7 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
         "addend_cast_types": tuple(_triton_dtype(dtype) for dtype in attrs.get("addend_cast_dtypes", ())),
         "residual_offset": residual_domain["offset"],
         "stats": _pointer(stats),
-        "stats_offset": emit_local_scalar_offset(
-            stats_abi, ("0",) * len(stats_shape)
-        ),
+        "stats_offset": emit_local_scalar_offset(stats_abi, stats_coordinates),
         "result_writer_active": _canonical_writer_active(value_abi),
         "stats_writer_active": _canonical_writer_active(stats_abi),
     })
@@ -4574,13 +4803,18 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
     result = _buffer(raw, "outputs", "result")
     source_abi = source["abi"]
     result_abi = result["abi"]
-    local_m = prod(_static_shape(source_abi, "local_capacity_shape")[:-1], start=1)
-    row = "dense_glu_local_m" if variant == "ordered_mma" and local_m != 1 else None
+    # M==1 is decode; M>1 (prefill) wraps the fused gate/up gemv in a token-row
+    # loop (dense_glu_local_m); the gate/up weights are shared across rows.
+    source_local_shape = _static_shape(source_abi, "local_capacity_shape")
+    local_m = prod(source_local_shape[:-1], start=1)
+    row_coordinate = "dense_glu_local_m" if local_m != 1 else None
     source_domain = _scalar_last_axis_domain(
-        source_abi, "dense_glu_local_k_offsets", owner="DenseMatMulGlu input", row_coordinate=row
+        source_abi, "dense_glu_local_k_offsets", owner="DenseMatMulGlu input",
+        row_coordinate=row_coordinate,
     )
     result_domain = _scalar_last_axis_domain(
-        result_abi, "dense_glu_local_n_offsets", owner="DenseMatMulGlu result", row_coordinate=row
+        result_abi, "dense_glu_local_n_offsets", owner="DenseMatMulGlu result",
+        row_coordinate=row_coordinate,
     )
     global_k = _scalar_logical_axis_extent(source_abi, -1)
     global_n = _scalar_logical_axis_extent(result_abi, -1)
@@ -4662,6 +4896,7 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
         "gate_weight": gate_weight_pointer,
         "up_weight": up_weight_pointer,
         "result": _pointer(result),
+        "local_m": local_m,
         "local_k_capacity": source_domain["capacity"],
         "local_n_capacity": result_domain["capacity"],
         "source_active": source_domain["active"],
@@ -4991,14 +5226,19 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
     )
     source_abi = source["abi"]
     weight_abi = weight["abi"]
-    variant = str(raw.get("variant", ""))
-    row_coordinate = "qkv_local_m" if variant in {"packed_fused_gemv", "packed_ordered_mma"} else None
+    # M==1 is decode; M>1 (prefill) wraps the fused gemv in a token-row loop
+    # (qkv_local_m), each row reading its own input slice and writing its q/k/v.
+    source_local_shape = _static_shape(source_abi, "local_capacity_shape")
+    local_m = prod(source_local_shape[:-1], start=1)
+    row_coordinate = "qkv_local_m" if local_m != 1 else None
     source_domain = _scalar_last_axis_domain(
-        source_abi, "qkv_local_k_offsets", owner="PackedQKV input", row_coordinate=row_coordinate,
+        source_abi, "qkv_local_k_offsets", owner="PackedQKV input",
+        row_coordinate=row_coordinate,
     )
     output_domains = tuple(
         _scalar_last_axis_domain(
-            output["abi"], "qkv_local_n_offsets", owner=f"PackedQKV output {index}", row_coordinate=row_coordinate,
+            output["abi"], "qkv_local_n_offsets", owner=f"PackedQKV output {index}",
+            row_coordinate=row_coordinate,
         )
         for index, output in enumerate(outputs)
     )
@@ -5057,6 +5297,7 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         "rows": prod(_static_shape(source_abi, "local_capacity_shape")[:-1]),
         "ordered_mma": raw.get("semantic_attrs", {}).get("reduction_order", "relaxed") == "mma_k16",
         "source": _pointer(source),
+        "local_m": local_m,
         "source_offset": source_domain["offset"],
         "source_active": source_domain["active"],
         "local_k_capacity": source_domain["capacity"],
@@ -5442,23 +5683,28 @@ def _encode_qkv_rope_with_cache(
         )
 
     layer_expression = _scalar_expression(layer_id)
-    cache_block = "qkv_cache_physical_block"
-    cache_offset = "qkv_cache_block_offset"
+    # The query chunk may carry more than one token (prefill). Each token writes
+    # its K/V to a distinct cache slot (chunk base + its own sequence position),
+    # so the physical block and in-block offset are computed per token in the
+    # kernel (see cache_seq). Decode (one token, seq coordinate 0) is unchanged.
+    q_context["cache_seq"] = q_context["apply_domain"]["global_by_kind"]["seq"]
+    k_context["cache_seq"] = k_context["apply_domain"]["global_by_kind"]["seq"]
+    v_context["cache_seq"] = v_context["global_by_kind"]["seq"]
     k_context["cache_offset"] = _paged_cache_scalar_offset(
         cache_abi,
         k_context["apply_domain"],
         cache_index=0,
         layer=layer_expression,
-        physical_block=cache_block,
-        block_offset=cache_offset,
+        physical_block="qkv_k_cache_physical_block",
+        block_offset="qkv_k_cache_block_offset",
     )
     v_context["cache_offset"] = _paged_cache_scalar_offset(
         cache_abi,
         v_context,
         cache_index=1,
         layer=layer_expression,
-        physical_block=cache_block,
-        block_offset=cache_offset,
+        physical_block="qkv_v_cache_physical_block",
+        block_offset="qkv_v_cache_block_offset",
     )
     v_context.update({
         "input": _pointer(v),
@@ -7673,13 +7919,25 @@ def _local_domain(
 
 
 def _scalar_local_domain(
-    abi: Mapping[str, object], flat_coordinate: str
+    abi: Mapping[str, object],
+    flat_coordinate: str,
+    *,
+    row_coordinate: str | None = None,
+    reduction_axis: int | None = None,
 ) -> dict[str, object]:
     """Build an owner-local domain whose induction variable counts scalars.
 
     ``local_capacity_shape`` describes physical vector elements.  Kernels that
     perform scalar arithmetic must additionally iterate the element-type lanes
     and pass the lane coordinate to physical addressing.
+
+    With ``row_coordinate`` the domain splits the leading rows (indexed by the
+    caller's ``row_coordinate`` loop variable) from a flattened reduction suffix
+    (``capacity`` covers one such suffix). The split falls at ``reduction_axis``
+    -- the last axis when unset (single-axis normalization), or an earlier axis
+    for suffix normalization, so the whole ``shape[reduction_axis:]`` contributes
+    to one row's reduction. ``_unflattened_coordinates`` is the identity on a
+    single-axis suffix, so the default stays byte-identical to the last-axis form.
     """
 
     shape = _static_shape(abi, "local_capacity_shape")
@@ -7696,6 +7954,26 @@ def _scalar_local_domain(
         if lane_count == 1
         else f"(({flat_coordinate}) % {lane_count})"
     )
+    if row_coordinate is not None:
+        split = len(shape) - 1 if reduction_axis is None else reduction_axis
+        row_coordinates = _unflattened_coordinates(shape[:split], row_coordinate)
+        suffix_coordinates = _unflattened_coordinates(shape[split:], physical_flat)
+        local_coordinates = (*row_coordinates, *suffix_coordinates)
+        active = " & ".join(
+            f"(({coordinate}) < ({emit_active_extent(abi, axis)}))"
+            for axis, coordinate in enumerate(local_coordinates)
+        ) or "True"
+        logical_coordinates = tuple(
+            emit_logical_coordinate(abi, axis, local_coordinates)
+            for axis in range(len(shape))
+        )
+        return {
+            "capacity": prod(shape[split:], start=1) * lane_count,
+            "local_coordinates": local_coordinates,
+            "logical_coordinates": logical_coordinates,
+            "lane_coordinate": lane_coordinate,
+            "active": active,
+        }
     local_coordinates = _unflattened_coordinates(shape, physical_flat)
     active = " & ".join(
         f"(({coordinate}) < ({emit_active_extent(abi, axis)}))"

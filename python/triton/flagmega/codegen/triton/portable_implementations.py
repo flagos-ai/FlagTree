@@ -421,7 +421,7 @@ def portable_normalization_implementations() -> tuple[TritonImplementation, ...]
                 "reduction": "sum",
                 "axis_kind": "suffix",
                 "supports_mean": True,
-                "outer_rows": "single",
+                "outer_rows": "batched",
             },
             requires=("cooperative_grid",),
             facts={

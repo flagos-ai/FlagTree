@@ -197,11 +197,15 @@ def test_renderer_materializes_private_stats_with_one_grid_barrier(
     assert "axis=1" in source
     assert "for gather_partial_member in tl.range" not in source
     assert "tl.sum(gather_square_sum, axis=0)" in source
-    assert call["stats_writer_index"] == "((shard_y) * 16 + (shard_x))"
     assert call["work_partition_count"] == 128
-    assert (
-        f"+ {128 if use_mean else 0} + {call['stats_writer_index']}" in source
-    )
+    # Each owner publishes its square sum at its own full-mesh slot (shard_index),
+    # outside the participant election, so the finalize can reduce exactly the
+    # group that shares a token's outer shard. This fusion is not token-sharded,
+    # so the reduction spans every owner and the lane maps to itself.
+    assert call["stats_owner_count"] == 128
+    assert call["stats_partial_owner"] == "(norm_owner_offsets)"
+    assert f"+ {128 if use_mean else 0} + shard_index" in source
+    assert f"+ {128 if use_mean else 0} + norm_stats_owner" in source
     if use_mean:
         assert "tl.sum(gather_mean_sum, axis=0)" in source
     assert "collective" not in call
@@ -372,3 +376,32 @@ def test_renderer_rejects_materialized_partial_storage():
 
     with pytest.raises(CodegenError, match="compact per-owner"):
         _gather_reduce_add_norm_apply_call(raw)
+
+
+def test_renderer_sizes_statistics_from_the_selected_iteration_domain():
+    # A split input and split output can tie in scalar capacity while differing
+    # in outer-row count. The renderer selects the finer-or-equal (here the
+    # input) domain and loops over ITS outer rows, so the statistics workspace
+    # must be sized from that domain, not the output. Before the fix the
+    # workspace-shape check used the output's rows and rejected the correctly
+    # sized (input-row) workspace (and the allocator undersized it, overrunning
+    # the buffer at runtime).
+    partial = _abi(
+        (4, 4),
+        storage_kind="compact_per_owner",
+        coordinate_space="local",
+        partial_axes=(0, 1),
+        owner_stride=4,
+    )
+    value = _abi((4, 8), local_shape=(2, 8))
+    parameter = _abi((8,))
+    workspace = _abi((4, 1, 128), dtype="float32")
+    raw = _raw(partial=partial, value=value, parameter=parameter)
+    raw["semantic_attrs"]["axis"] = 1
+    raw["workspaces"] = (_parameter("norm_stats_partials", workspace),)
+
+    call = _gather_reduce_add_norm_apply_call(raw)
+
+    # The iteration domain is the equal-capacity partial input (4 outer rows),
+    # not the output's 2; the workspace is validated and indexed by those rows.
+    assert call["local_m"] == 4

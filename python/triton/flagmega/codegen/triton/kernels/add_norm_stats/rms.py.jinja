@@ -3,42 +3,52 @@
 @triton.jit
 def _flagmega_add_norm_stats_rms(
     source, residual, destination, stats_partials, stats_output,
-    shard_index, ELEMENTS: tl.constexpr, OWNER_COUNT: tl.constexpr,
-    TILE: tl.constexpr,
+    shard_index, ELEMENTS: tl.constexpr, NORM_SIZE: tl.constexpr,
+    OWNER_COUNT: tl.constexpr, TILE: tl.constexpr,
 ):
-    square_sum = tl.zeros((TILE,), tl.float32)
-    for start in tl.range(
-        shard_index * TILE, ELEMENTS, OWNER_COUNT * TILE,
-    ):
-        offsets = start + tl.arange(0, TILE)
-        mask = offsets < ELEMENTS
-        value = (
-            tl.load(source + offsets, mask=mask, other=0.0)
-            + tl.load(residual + offsets, mask=mask, other=0.0)
-        ).to(destination.dtype.element_ty)
-        tl.store(destination + offsets, value, mask=mask)
-        value_fp32 = value.to(tl.float32)
-        square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)
-    # The value output is partitioned only across the physical block owners
-    # present in this chip-local workspace. Device/node placement axes are
-    # replicated workspace instances, not additional local partial owners.
-    tl.store(stats_partials + shard_index, tl.sum(square_sum, axis=0))
+    # One RMS partial per (outer row, block owner): the dimensions before the
+    # normalized axis are independent outer rows (tokens); each reduces its own
+    # contiguous NORM_SIZE suffix, partitioned across the chip-local block
+    # owners. The value output is partitioned only across those block owners;
+    # device/node placement axes are replicated workspace instances, not
+    # additional local partial owners. ELEMENTS // NORM_SIZE == 1 recovers the
+    # single-statistic form.
+    for norm_row in tl.range(0, ELEMENTS // NORM_SIZE):
+        square_sum = tl.zeros((TILE,), tl.float32)
+        for start in tl.range(
+            shard_index * TILE, NORM_SIZE, OWNER_COUNT * TILE,
+        ):
+            lane = start + tl.arange(0, TILE)
+            mask = lane < NORM_SIZE
+            offsets = norm_row * NORM_SIZE + lane
+            value = (
+                tl.load(source + offsets, mask=mask, other=0.0)
+                + tl.load(residual + offsets, mask=mask, other=0.0)
+            ).to(destination.dtype.element_ty)
+            tl.store(destination + offsets, value, mask=mask)
+            value_fp32 = value.to(tl.float32)
+            square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)
+        tl.store(
+            stats_partials + norm_row * OWNER_COUNT + shard_index,
+            tl.sum(square_sum, axis=0),
+        )
 {% if distributed_entry %}
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 {% else %}
     tl.debug_barrier()
 {% endif %}
     if shard_index == 0:
-        owner_offsets = tl.arange(0, triton.next_power_of_2(OWNER_COUNT))
-        total = tl.sum(
-            tl.load(
-                stats_partials + owner_offsets,
-                mask=owner_offsets < OWNER_COUNT,
-                other=0.0,
-            ),
-            axis=0,
-        )
-        tl.store(stats_output, total)
+        for norm_row in tl.range(0, ELEMENTS // NORM_SIZE):
+            owner_offsets = tl.arange(0, triton.next_power_of_2(OWNER_COUNT))
+            total = tl.sum(
+                tl.load(
+                    stats_partials + norm_row * OWNER_COUNT + owner_offsets,
+                    mask=owner_offsets < OWNER_COUNT,
+                    other=0.0,
+                ),
+                axis=0,
+            )
+            tl.store(stats_output + norm_row, total)
 {% if render_calls is defined %}
 {% include "kernels/add_norm_stats/_function.py.jinja" %}
 {% endif %}

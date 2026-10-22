@@ -116,9 +116,66 @@ def test_local_partial_rms_uses_only_owner_local_offsets_and_one_partial_stat():
     assert call["output_type"] == "tl.bfloat16"
 
 
-def test_local_partial_rms_rejects_a_materialized_statistics_result():
-    with pytest.raises(CodegenError, match="explicit Sum-partial"):
-        _add_norm_stats_call(_raw(stats_partial=None))
+def test_local_partial_rms_accepts_a_materialized_statistics_result():
+    # A materialized statistics result (partial is None) means the RMS reduction
+    # axis is fully owner-local: the owner-local square sum is already the
+    # complete statistic, written straight to the output's own slot. Only a
+    # non-Sum partial is rejected.
+    call = _add_norm_stats_call(_raw(stats_partial=None))
+    assert call["mode"] == "local_partial_rms"
+    assert call["stats_writer_active"] == "True"
+    # Even a single owner-local row is gated on its own active extent (local row
+    # 0), not hardcoded active -- a token-starved shard with capacity one may own
+    # no token. Here the one row is active so the predicate is trivially true.
+    assert "add_stats_row" not in call["stats_row_active"]
+    assert "0" in call["stats_row_active"]
+
+
+def test_local_partial_rms_masks_the_single_row_of_a_token_starved_shard():
+    # With fewer tokens than token owners a shard has local capacity one but an
+    # active extent of zero (it owns no token). local_m == 1, yet its elected
+    # statistics writer must not store its zero square sum past the canonical
+    # buffer, so the once-per-row store is still gated on local row 0's activity.
+    raw = _raw(stats_partial=None)
+    for role, formal in (("inputs", "input"), ("inputs", "addend"), ("outputs", "result_0")):
+        for parameter in raw[role]:
+            if parameter["buffers"][0]["formal"] == formal:
+                abi = parameter["buffers"][0]["abi"]
+                # One local row, but this shard owns no active token.
+                abi["active_shape_expressions"] = ("0", "16")
+
+    call = _add_norm_stats_call(raw)
+    assert call["local_m"] == 1
+    # The single-row store is predicated on local row 0's active extent, which is
+    # zero here, so the inactive shard writes nothing.
+    assert call["stats_row_active"] != "True"
+    assert "add_stats_row" not in call["stats_row_active"]
+
+
+def test_local_partial_rms_masks_inactive_padded_statistics_rows():
+    # A token-sharded result with a non-divisible token count pads its last
+    # owner-local rows. The once-per-row statistics store must gate on the row's
+    # active extent so an inactive (padding) row does not publish its zero square
+    # sum past the canonical statistics buffer.
+    raw = _raw(stats_partial=None)
+    for role, formal in (("inputs", "input"), ("inputs", "addend"), ("outputs", "result_0")):
+        for parameter in raw[role]:
+            if parameter["buffers"][0]["formal"] == formal:
+                abi = parameter["buffers"][0]["abi"]
+                abi["local_capacity_shape"] = (2, 16)
+                abi["logical_shape"] = (2, 16)
+                # Two owner-local rows, but only one active token on this shard.
+                abi["active_shape_expressions"] = ("1", "16")
+    stats = raw["outputs"][1]["buffers"][0]["abi"]
+    stats["local_capacity_shape"] = (2, 1, 1)
+    stats["logical_shape"] = (2, 1, 1)
+
+    call = _add_norm_stats_call(raw)
+    assert call["local_m"] == 2
+    # The per-row statistics store gates on the row's active extent, not just the
+    # canonical writer election.
+    assert call["stats_row_active"] != "True"
+    assert "add_stats_row" in call["stats_row_active"]
 
 
 def test_local_partial_rms_rejects_mismatched_local_value_mappings():
