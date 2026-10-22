@@ -906,22 +906,80 @@ void DSLRegionOp::getEffects(
   // alias operands or deferred-only once materialize is implemented.
   effects.emplace_back(MemoryEffects::Read::get());
   effects.emplace_back(MemoryEffects::Write::get());
+  for (OpOperand &operand : getOperation()->getOpOperands()) {
+    if (isa<triton::gpu::MemDescType>(operand.get().getType())) {
+      effects.emplace_back(MemoryEffects::Read::get(), &operand);
+      effects.emplace_back(MemoryEffects::Write::get(), &operand);
+    }
+  }
 }
 
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();
-  const uint32_t numArguments = body.getNumArguments(),
-                 numOperands = getNumOperands();
-  if (numArguments != numOperands) {
-    return emitOpError() << "expects number of operands (" << numArguments
-                         << ") to match number of region arguments ("
-                         << numOperands << ")";
+  const unsigned numOperands = getNumOperands();
+  auto indices = getOutputOperandIndices();
+
+  auto sourceAttr = (*this)->getAttr("tle_raw.source_id");
+  auto sourceId = dyn_cast_if_present<StringAttr>(sourceAttr);
+  if (sourceAttr && (!sourceId || sourceId.getValue().empty()))
+    return emitOpError("tle_raw.source_id must be a non-empty string");
+
+  auto wrapperAttr = (*this)->getAttr("tle_raw.wrapper_symbol");
+  auto wrapper = dyn_cast_if_present<FlatSymbolRefAttr>(wrapperAttr);
+  if (wrapperAttr && (!wrapper || wrapper.getValue().empty()))
+    return emitOpError(
+        "tle_raw.wrapper_symbol must be a non-empty flat symbol reference");
+
+  auto infosAttr = (*this)->getAttr("tle_raw.arg_info_list");
+  auto infos = dyn_cast_if_present<ArrayAttr>(infosAttr);
+  if (infosAttr && !infos)
+    return emitOpError("tle_raw.arg_info_list must be an array");
+  if (wrapper && !infos)
+    return emitOpError("wrapper calls require argument metadata");
+
+  if (indices.size() != getNumResults())
+    return emitOpError("output indices must match the number of results");
+  for (auto [i, idx] : llvm::enumerate(indices)) {
+    if (idx < 0 || static_cast<unsigned>(idx) >= numOperands)
+      return emitOpError("output operand index is out of range for result ")
+             << i << ": " << idx;
   }
-  for (auto [arg, operand] : llvm::zip(body.getArguments(), getOperands())) {
+
+  if (infos) {
+    if (infos.size() != numOperands)
+      return emitOpError("arg_info_list must match the number of operands");
+    for (auto [i, attr] : llvm::enumerate(infos)) {
+      if (!isa<StringAttr>(attr))
+        return emitOpError("arg_info_list must contain only strings");
+    }
+  }
+
+  if (body.empty()) {
+    if (!sourceId && !wrapper)
+      return emitOpError("empty body requires a deferred source or wrapper");
+    for (auto [i, idx] : llvm::enumerate(indices)) {
+      if (getResult(i).getType() != getOperand(idx).getType())
+        return emitOpError("deferred result must have its aliased operand "
+                           "type; result ")
+               << i << " has type " << getResult(i).getType() << ", operand "
+               << idx << " has type " << getOperand(idx).getType();
+    }
+    return success();
+  }
+
+  unsigned numArguments = body.front().getNumArguments();
+  if (numArguments != numOperands) {
+    return emitOpError() << "expects number of operands (" << numOperands
+                         << ") to match number of region arguments ("
+                         << numArguments << ")";
+  }
+  for (auto [arg, operand] :
+       llvm::zip(body.front().getArguments(), getOperands())) {
     if (arg.getType() != operand.getType()) {
-      return emitOpError() << "expects region argument type (" << arg.getType()
-                           << ") to match operand type (" << operand.getType()
-                           << ")";
+      return emitOpError() << "expects the type of region argument "
+                           << arg.getArgNumber() << " (" << arg.getType()
+                           << ") to match the corresponding operand type ("
+                           << operand.getType() << ")";
     }
   }
   return success();

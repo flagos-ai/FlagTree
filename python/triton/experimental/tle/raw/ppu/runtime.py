@@ -66,15 +66,10 @@ class PPUJITFunction(RawJITFunction):
             extra={"source_file": self.source_file},
         )
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_deferred(
-            source_id,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = "",
+                               arg_info_list=None):
+        return builder.create_tle_raw_region_deferred(source_id, self.region_dialect, self.arg_dialect, handles,
+                                                      alias_indices, hint=hint, arg_info_list=arg_info_list)
 
     def make_llvm(self, mlir_context) -> str:
         build = subprocess.run(

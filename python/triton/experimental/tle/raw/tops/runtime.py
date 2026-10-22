@@ -204,17 +204,11 @@ class TOPSJITFunction(RawJITFunction):
         payload = f"{self.region_dialect}\0{self.extern_func_name or ''}\0{self.file_name}".encode()
         return hashlib.sha256(payload).hexdigest()
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_deferred(
-            source_id,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-            self.file_name,
-            self.extern_func_name,
-        )
+    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = "",
+                               arg_info_list=None):
+        return builder.create_tle_raw_region_deferred(source_id, self.region_dialect, self.arg_dialect, handles,
+                                                      alias_indices, hint, self.file_name, self.extern_func_name,
+                                                      arg_info_list=arg_info_list)
 
     def make_llvm(self, mlir_context) -> str:
         llvm_ir_text = self._compile_tops_to_llvm_ir()

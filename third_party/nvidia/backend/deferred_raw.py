@@ -1,12 +1,8 @@
 """NVIDIA backend hook: materialize deferred tle_raw DSL regions at make_llir.
 
-This module exists mainly to validate the deferred materialization pipeline end-to-end:
-trace registers pending sources, make_llir compiles them and runs the C++ pass to fill
-stub dsl_region bodies before dsl_region_inline.
-
 For now CUDA and MLIR support live together here and both reuse the existing eager
 compile paths at make_llir time (CUDAJITFunction.make_llvm / MLIRJITFunction.make_llvm)
-rather than dedicated deferred-only compilers. Can be replaced with separate compile hooks.
+rather than dedicated deferred-only compilers.
 """
 
 from __future__ import annotations
@@ -14,30 +10,26 @@ from __future__ import annotations
 from typing import Any
 
 from triton._C.libtriton import nvidia
-from triton.experimental.tle.raw.source_store import (
-    clear_pending_sources,
-    list_pending_sources,
-)
+from triton.experimental.tle.raw.source_store import clear_pending_sources, list_pending_sources
 
 
+# Compile pending sources to LLVM IR, dispatching by region_dialect.
 def _compile_pending_raw_sources(mod: Any, pending: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Compile pending sources to LLVM IR, dispatching by region_dialect.
-
-    CUDA and MLIR compile helpers live in their own runtime modules; this function
-    only routes to them. Both paths temporarily call the same make_llvm() used by eager
-    mode.
-    """
     from triton._C.libtriton import tle
 
     context = mod.context
     tle.load_dialects(context)
 
     compiled: dict[str, dict[str, Any]] = {}
+    wrappers_to_gen = {}
+    for wrapper_metadata in nvidia.passes.tle_raw.register_raw_wrappers(mod):
+        wrappers_to_gen.setdefault(wrapper_metadata["source_id"], []).append(wrapper_metadata)
     for source_id, entry in pending.items():
         payload = dict(entry)
         region_dialect = payload.get("region_dialect")
         if region_dialect == "cuda":
             from triton.experimental.tle.raw.cuda.runtime import compile_deferred_pending_source
+            payload["required_wrappers"] = wrappers_to_gen.get(source_id)
             payload["llvm_ir"] = compile_deferred_pending_source(payload, context=context)
         elif region_dialect == "mlir":
             from triton.experimental.tle.raw.mlir.runtime import compile_deferred_pending_source

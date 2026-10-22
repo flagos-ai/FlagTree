@@ -21,8 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/Transforms/ConvertArgToMemDesc.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
@@ -30,6 +29,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/WalkPatternRewriteDriver.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TleUtility.h"
@@ -84,11 +84,20 @@ TleArgConversion::TleArgConversion(MLIRContext *context)
 LogicalResult
 TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
                                   PatternRewriter &rewriter) const {
+  auto infos = op->getAttrOfType<ArrayAttr>("tle_raw.arg_info_list");
+  auto isFragment = [&](unsigned i) {
+    return infos && cast<StringAttr>(infos[i]).getValue().starts_with(
+                        "tensor_fragment_");
+  };
   SmallVector<Value> newOperands;
   IRMapping mapper;
   bool hasConversion = false;
   bool needSync = false;
-  for (const auto &operand : op->getOperands()) {
+  for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
+    if (isFragment(i)) {
+      newOperands.push_back(operand);
+      continue;
+    }
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(operand.getType())) {
       PatternRewriter::InsertionGuard guard(rewriter);
@@ -113,10 +122,14 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   if (needSync) {
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(op);
-    rewriter.create<NVVM::Barrier0Op>(op.getLoc());
+    rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
   }
   SmallVector<Type> newRetTys;
-  for (auto result : op.getResults()) {
+  for (auto [i, result] : llvm::enumerate(op.getResults())) {
+    if (isFragment(op.getOutputOperandIndices()[i])) {
+      newRetTys.push_back(result.getType());
+      continue;
+    }
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(result.getType())) {
       newRetTys.push_back(getPlainMemDesc(tensorTy));
@@ -126,6 +139,9 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
     }
   }
   if (!hasConversion) {
+    if (needSync) {
+      return success();
+    }
     return failure();
   }
   tle::DSLRegionOp newOp = rewriter.create<tle::DSLRegionOp>(
@@ -134,44 +150,50 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
       op->getAttrOfType<StringAttr>("hint"));
   newOp->setAttrs(op->getAttrs());
   PatternRewriter::InsertionGuard guard(rewriter);
-  for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
-    Block *newBlock = nullptr;
-    if (idx == 0) {
-      newBlock = rewriter.createBlock(
-          &newOp.getBody(), {}, newOp->getOperandTypes(),
-          SmallVector<Location>(newOp->getNumOperands(), op.getLoc()));
-    } else {
-      newBlock = rewriter.createBlock(
-          &newOp.getBody(), {}, oldBlock.getArgumentTypes(),
-          SmallVector<Location>(oldBlock.getNumArguments(), op.getLoc()));
-    }
-    for (auto [oldArg, newArg] :
-         llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
-      mapper.map(oldArg, newArg);
-    }
-    mapper.map(&oldBlock, newBlock);
-  }
-  for (auto [oldBlock, newBlock] :
-       llvm::zip(op.getBody().getBlocks(), newOp.getBody().getBlocks())) {
-    rewriter.setInsertionPointToEnd(&newBlock);
-    for (Operation &operation : oldBlock.getOperations()) {
-      if (tle::PackOp packOp = dyn_cast<tle::PackOp>(operation)) {
-        if (auto tensorTy =
-                dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
-          tle::PackOp newPackOp = rewriter.create<tle::PackOp>(
-              packOp.getLoc(), getPlainMemDesc(tensorTy),
-              mapper.lookup(packOp.getInput()));
-          mapper.map(packOp.getOutput(), newPackOp.getOutput());
-          continue;
-        }
+  if (!op.getBody().empty()) {
+    for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
+      Block *newBlock = nullptr;
+      if (idx == 0) {
+        newBlock = rewriter.createBlock(
+            &newOp.getBody(), {}, newOp->getOperandTypes(),
+            SmallVector<Location>(newOp->getNumOperands(), op.getLoc()));
+      } else {
+        newBlock = rewriter.createBlock(
+            &newOp.getBody(), {}, oldBlock.getArgumentTypes(),
+            SmallVector<Location>(oldBlock.getNumArguments(), op.getLoc()));
       }
-      rewriter.clone(operation, mapper);
+      for (auto [oldArg, newArg] :
+           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+        mapper.map(oldArg, newArg);
+      }
+      mapper.map(&oldBlock, newBlock);
+    }
+    for (auto [oldBlock, newBlock] :
+         llvm::zip(op.getBody().getBlocks(), newOp.getBody().getBlocks())) {
+      rewriter.setInsertionPointToEnd(&newBlock);
+      for (Operation &operation : oldBlock.getOperations()) {
+        if (tle::PackOp packOp = dyn_cast<tle::PackOp>(operation)) {
+          if (auto tensorTy =
+                  dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
+            tle::PackOp newPackOp = rewriter.create<tle::PackOp>(
+                packOp.getLoc(), getPlainMemDesc(tensorTy),
+                mapper.lookup(packOp.getInput()));
+            mapper.map(packOp.getOutput(), newPackOp.getOutput());
+            continue;
+          }
+        }
+        rewriter.clone(operation, mapper);
+      }
     }
   }
   rewriter.setInsertionPointAfter(newOp);
   SmallVector<Value> results;
   for (auto [oldResult, newResult] :
        llvm::zip(op.getResults(), newOp.getResults())) {
+    if (isFragment(op.getOutputOperandIndices()[oldResult.getResultNumber()])) {
+      results.push_back(newResult);
+      continue;
+    }
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(oldResult.getType())) {
       ttg::LocalLoadOp loadOp =
@@ -185,15 +207,14 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   return success();
 }
 
-void mlir::triton::tle::populateConvertArgToMemDescPatterns(
-    RewritePatternSet &patterns) {
-  patterns.add<TleArgConversion>(patterns.getContext());
-}
-
 void TleConvertArgToMemDesc::runOnOperation() {
   RewritePatternSet patterns(&getContext());
-  tle::populateConvertArgToMemDescPatterns(patterns);
-  if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+  patterns.add<TleArgConversion>(patterns.getContext());
+  walkAndApplyPatterns(getOperation(),
+                       FrozenRewritePatternSet(std::move(patterns)));
+  if (failed(applyPatternsGreedily(
+          getOperation(),
+          FrozenRewritePatternSet(RewritePatternSet(&getContext()))))) {
     signalPassFailure();
   }
 }
