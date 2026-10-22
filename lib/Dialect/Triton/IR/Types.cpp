@@ -234,7 +234,6 @@ namespace mlir {
 
 namespace triton {
 
-
 Type getI1SameShape(Type type) {
   auto i1Type = IntegerType::get(type.getContext(), 1);
   if (auto tensorTy = dyn_cast<RankedTensorType>(type))

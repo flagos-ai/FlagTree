@@ -1061,7 +1061,7 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Type &type, int addrSpace) -> Type {
              return PointerType::get(type, addrSpace);
            })
-//keep-in-sync: python/src/ir.cc
+      // keep-in-sync: python/src/ir.cc
       .def("get_array_ty",
            [](TritonOpBuilder &self, Type &elementType, int64_t count) -> Type {
              return ArrayType::get(self.getContext(), elementType, count);
@@ -1400,7 +1400,7 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &ptr, Value &offset) -> Value {
              return self.create<AddPtrOp>(ptr.getType(), ptr, offset);
            })
-//keep-in-sync: python/src/ir.cc
+      // keep-in-sync: python/src/ir.cc
       .def("create_struct_gep",
            [](TritonOpBuilder &self, Value &ptr,
               const std::string &field) -> Value {
