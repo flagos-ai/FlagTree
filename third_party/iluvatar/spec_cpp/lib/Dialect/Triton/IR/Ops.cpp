@@ -1176,7 +1176,7 @@ LogicalResult FpToFpOp::verify() {
 }
 
 //-- BitcastOp --
-//keep-in-sync: lib/Dialect/Triton/IR/Ops.cpp
+// keep-in-sync: lib/Dialect/Triton/IR/Ops.cpp
 //-- StructGepOp --
 LogicalResult StructGepOp::verify() {
   auto ptrTy = dyn_cast<PointerType>(getPtr().getType());
