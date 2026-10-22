@@ -477,6 +477,40 @@ Deferred (per §2.2/§12): value semantics and by-value kernel arguments.
 
 ## 10. Testing
 
+### Backend support
+
+The frontend, the IR types/ops and `tt-lower-structs` are shared, so every
+backend has them; what differs is whether a backend can lower the *result*. A
+field access becomes a byte offset, and since no backend's pointer element type
+can hold a pointer, the pass has to round-trip through an integer
+(`tt.ptr_to_int` → `arith.addi` → `tt.int_to_ptr`). Backend pointer analyses that
+insist on a pointer tracing back to a kernel argument reject that shape.
+
+| Backend | Status | Notes |
+| --- | --- | --- |
+| nvidia, amd | tested | run `python/test/unit/language` (this module included) plus the lit step |
+| hcu, iluvatar, metax, mthreads, ppu, rpu, sunrise, spacemit | tested | this module is wired into their `*-build-and-test` workflow |
+| enflame, xpu | **not supported** | frontend, IR and pass work; their post-TTIR lowering does not |
+
+enflame and xpu are listed in `UNSUPPORTED_BACKENDS` in the test module, which
+skips it there, and their CI does not run it. Both fail *after* our pass has
+done its job (the IR they reject contains no `!tt.struct`):
+
+* **enflame** — `PtrAnalysis`
+  (`third_party/enflame/triton_gcu/triton_gcu300/lib/Analysis/PtrAnalysis.cpp`)
+  accepts only pointers tracing back to a base pointer, so the field address is
+  opaque to it; the pipeline aborts with “PassManager execution failed”, without
+  the MLIR diagnostic.
+* **xpu** — `make_llir` fails in `ConvertTritonXPUToLLVM` on the same IR shape,
+  and its frontend hook returns an empty module for these kernels.
+
+Making them work needs either those analyses to see through
+`int_to_ptr(add(ptr_to_int(base), offset))`, or the pass to emit
+address-space-preserving pointer arithmetic instead. The latter was tried first
+on Ascend and rejected there (`Casting pointers with unmatched bitwidth!`, then
+an assertion in flir's `BlockPtrAnalysis::getScalarMemRef`), so the two are not
+interchangeable.
+
 ### Test locations
 
 - `test/Triton/lower-structs.mlir` — lit test for `--triton-lower-structs`:
@@ -488,8 +522,11 @@ Deferred (per §2.2/§12): value semantics and by-value kernel arguments.
 - `python/test/unit/language/test_custom_types.py` — pytest: layout and
   signature, field read/write/nested/pointer, array element read / dynamic
   index / write, array-of-struct, host `to_device()`/`StructView`/`mangle_type`,
-  and (CPU) interpreter execution of scalar, array, nested, array-of-struct, and
-  pointer-field kernels.
+  (CPU) interpreter execution of scalar, array, nested, array-of-struct, and
+  pointer-field kernels, plus two backend checks: that the built libtriton
+  exposes `passes.ttir.add_lower_structs`, and that the *backend's own* TTIR
+  stage (`add_stages(...)["ttir"]`) removes the custom types. The latter stops
+  before backend lowering on purpose — see “Backend support” above.
 - `third_party/ascend/tutorials/10-struct-types.py` — runnable Ascend tutorial
   (also executed by the 910B and 910C CI workflows): describes an input tensor
   with a `ctypes` struct, passes it by reference, loads a block through the

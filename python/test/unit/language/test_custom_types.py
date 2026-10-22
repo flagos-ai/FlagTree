@@ -1,12 +1,16 @@
 """Frontend tests for C-interoperable custom types (structs).
 
-These run the AST -> TTIR path (via ``run_parser``), the interpreter, and - when a
-device is present - the backend's own TTIR stage, which must run
-``tt-lower-structs`` so that no custom aggregate type reaches the backend.  The
-pass itself is also covered by ``test/Triton/lower-structs.mlir``.
+These run the AST -> TTIR path (via ``run_parser``), the interpreter, and the
+backend's own TTIR stage, which must run ``tt-lower-structs`` so that no custom
+aggregate type reaches the backend.  The pass itself is also covered by
+``test/Triton/lower-structs.mlir``.
+
+See ``docs/custom-types/RFC.md`` ("Backend support") for which backends are
+tested here and why the others are skipped.
 """
 
 import ctypes
+import functools
 import os
 import subprocess
 import sys
@@ -15,6 +19,36 @@ import pytest
 import triton
 import triton.language as tl
 from triton._filecheck import run_parser
+
+# Backends that cannot lower the code these tests produce yet, so running them
+# would only report a limitation of the backend rather than a regression here:
+#
+#   enflame - PtrAnalysis in triton_gcu/lib/Analysis only accepts pointers that
+#             trace back to a base pointer; the field addresses the pass emits
+#             (tt.ptr_to_int -> arith.addi -> tt.int_to_ptr) are opaque to it.
+#   xpu     - make_llir fails in ConvertTritonXPUToLLVM on the same IR shape,
+#             and its frontend hook returns an empty module for these kernels.
+#
+# The frontend half (types, ops, tt-lower-structs) is in place for both; only
+# their post-TTIR pipelines are missing.  Their CI therefore does not run this
+# module.
+UNSUPPORTED_BACKENDS = ("enflame", "xpu")
+
+
+@functools.lru_cache
+def _backend_name():
+    """Name of the backend these tests would compile for, e.g. ``nvidia``."""
+    from triton.compiler import make_backend
+    module = type(make_backend(_parser_target())).__module__  # triton.backends.<name>.compiler
+    parts = module.split(".")
+    return parts[2] if len(parts) > 2 and parts[:2] == ["triton", "backends"] else module
+
+
+@pytest.fixture(autouse=True)
+def _require_supported_backend():
+    name = _backend_name()
+    if name in UNSUPPORTED_BACKENDS:
+        pytest.skip(f"custom struct/array types are not supported on the {name} backend yet")
 
 
 def _parser_target():
