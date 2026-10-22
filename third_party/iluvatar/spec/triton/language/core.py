@@ -656,7 +656,8 @@ class pointer_type(dtype):
     def __init__(self, element_ty: base_type, address_space: int = 1, const: bool = False):
         element_ty = _unwrap_if_constexpr(element_ty)
         if not isinstance(element_ty, base_type):
-            raise TypeError(f'element_ty has type `{type(element_ty).__name__}`; expected `dtype`.')
+            raise TypeError(
+                f'element_ty has type `{type(element_ty).__name__}`; expected `dtype` or an aggregate type.')
         self.element_ty = element_ty
         self.address_space = address_space
         self.const = const
