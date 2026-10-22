@@ -103,3 +103,6 @@ jobs:
                   test_cache_builtin_as_global or \
                   test_no_cache_callable or \
                   test_memory_leak"
+
+          cd "$GITHUB_WORKSPACE"
+          python3 -m pytest -s python/test/unit/language/test_custom_types.py
