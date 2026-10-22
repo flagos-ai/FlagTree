@@ -20,37 +20,33 @@ from triton._filecheck import run_parser
 def _parser_target():
     """Target for the AST->TTIR tests.
 
-    run_parser's default is a CUDA stub target, which resolves to no backend on
-    the non-CUDA backends (amd, iluvatar, xpu, ...).  Prefer the active backend;
-    fall back to the stub when no device is available so the test still runs on
-    a CPU-only machine.
+    ``run_parser`` defaults to a CUDA stub target, which resolves to zero
+    backends on the non-CUDA ones, so prefer what the active driver reports.
+    Deliberately not ``triton._internal_testing.get_current_target()``: that
+    imports torch, which not every backend's CI image has.
     """
     try:
-        from triton._internal_testing import get_current_target
-        return get_current_target()
+        from triton.runtime import driver
+        target = driver.active.get_current_target()
+        if target is not None:
+            return target
     except Exception:
-        from triton._filecheck import stub_target
-        return stub_target
+        pass
+    # No driver that can activate itself (e.g. a CPU backend whose is_active()
+    # is always False): use the target the backend's spec package provides.
+    from triton._filecheck import stub_target
+    return stub_target
 
 
 def _run_parser(kernel_fn, args):
     return run_parser(kernel_fn, args=args, target=_parser_target())
 
 
-def _device_target():
-    """The active device's target, or None when no device is available."""
-    try:
-        from triton._internal_testing import get_current_target
-        return get_current_target()
-    except Exception:
-        return None
-
-
 def _compile_ttir(kernel_fn, args):
     """Compile ``kernel_fn`` through the real backend pipeline, return its TTIR."""
     from triton.compiler import ASTSource, make_backend
     from triton.runtime.jit import create_function_from_signature
-    target = _device_target() or _parser_target()
+    target = _parser_target()
     backend = make_backend(target)
     binder = create_function_from_signature(kernel_fn.signature, kernel_fn.params, backend)
     kwargs = {"sanitize_overflow": False}
