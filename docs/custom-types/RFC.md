@@ -21,6 +21,12 @@
 >   (`native_specialize_impl`), so the `StructView` case is handled in
 >   `python/src/specialize.cc` (mirrored for iluvatar and xpu) rather than in
 >   `runtime/jit.py`.
+> * xpu does not use `python/triton/spec/`; it ships a full frontend shadow at
+>   `third_party/xpu/python/triton/` that is overlaid at build time, so the
+>   Python side is mirrored there as well (`language/core.py`,
+>   `language/semantic.py`, `compiler/code_generator.py`,
+>   `runtime/interpreter.py`, `language/__init__.py`, and its own
+>   `language/_custom_types.py`).
 > * No Ascend hardware verification on this branch; there is no NPU in its CI.
 
 ---
