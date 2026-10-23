@@ -31,6 +31,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'packaging/backends.conf'
       - 'packaging/debian/**'
       - '.github/workflows/build-deb.yml'
   workflow_dispatch:
@@ -78,6 +79,50 @@ jobs:
             base_image: ubuntu:24.04
             python_version: ""
             artifact: flagtree-metax-packages
+          # The remaining backends whose wheel the index publishes for
+          # CPython 3.12, which is what ubuntu:24.04 ships.
+          - target: ubuntu2404
+            backend: amd
+            base_image: ubuntu:24.04
+            python_version: ""
+            artifact: flagtree-amd-packages
+          - target: ubuntu2404
+            backend: enflame
+            base_image: ubuntu:24.04
+            python_version: ""
+            artifact: flagtree-enflame-packages
+          - target: ubuntu2404
+            backend: ppu
+            base_image: ubuntu:24.04
+            python_version: ""
+            artifact: flagtree-ppu-packages
+          - target: ubuntu2404
+            backend: tileir
+            base_image: ubuntu:24.04
+            python_version: ""
+            artifact: flagtree-tileir-packages
+          # Backends whose published wheel is tagged cp310: ubuntu:22.04
+          # ships python3.10, so these rows need no extra interpreter.
+          - target: ubuntu2204
+            backend: hcu
+            base_image: ubuntu:22.04
+            python_version: ""
+            artifact: flagtree-hcu-packages
+          - target: ubuntu2204
+            backend: mthreads
+            base_image: ubuntu:22.04
+            python_version: ""
+            artifact: flagtree-mthreads-packages
+          - target: ubuntu2204
+            backend: tsingmicro
+            base_image: ubuntu:22.04
+            python_version: ""
+            artifact: flagtree-tsingmicro-packages
+          - target: ubuntu2204
+            backend: xpu
+            base_image: ubuntu:22.04
+            python_version: ""
+            artifact: flagtree-xpu-packages
     env:
       DEB_BASE_IMAGE: ${{ matrix.base_image }}
       PYTHON_VERSION: ${{ matrix.python_version }}

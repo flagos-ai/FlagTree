@@ -10,7 +10,7 @@
 
 BACKENDS_CONF="${BACKENDS_CONF:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/backends.conf}"
 
-_backend_columns="backend arch wheel base python vendor excludes runtime"
+_backend_columns="backend arch wheel base python vendor excludes runtime smoke"
 
 # backend_field <backend> <column> -- print one field, or fail if the backend
 # is not in the table. An empty field prints nothing and succeeds.

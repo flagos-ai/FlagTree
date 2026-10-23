@@ -31,6 +31,9 @@ override_dh_auto_configure:
 override_dh_auto_build:
 override_dh_auto_test:
 
+# pip learned --break-system-packages in 23.0; ubuntu:22.04 ships 22.0.2,
+# which has no PEP 668 marker to override either. Probe for the option so the
+# same recipe assembles on both base images.
 override_dh_auto_install:
 	@wheel="$$(ls -1 $(WHEEL_DIR)/flagtree-*.whl 2>/dev/null | head -1)"; \
 	if [ -z "$$wheel" ]; then \
@@ -39,8 +42,11 @@ override_dh_auto_install:
 		exit 1; \
 	fi; \
 	mkdir -p $(PYDIR); \
-	python3 -m pip install --no-deps --no-compile --no-index \
-		--break-system-packages \
+	pipopts=""; \
+	if python3 -m pip install --help 2>/dev/null | grep -q -- --break-system-packages; then \
+		pipopts=--break-system-packages; \
+	fi; \
+	python3 -m pip install --no-deps --no-compile --no-index $$pipopts \
 		--target=$(PYDIR) "$$wheel"
 	# Move console scripts out of dist-packages/bin into /usr/bin
 	if [ -d $(PYDIR)/bin ]; then \

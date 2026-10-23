@@ -13,7 +13,15 @@ row each. The row's `wheel` column says where the wheel comes from:
 | `index` | downloaded from the FlagOS Python index, where the backend's own `<backend>N.N-delivery.yml` workflow published it | minutes, needs neither a vendor SDK nor vendor hardware |
 
 - nvidia: `source` (DEB + RPM).
-- metax: `index`.
+- metax, amd, enflame, ppu, tileir: `index`; their wheels are tagged `cp312`,
+  which is what `ubuntu:24.04` ships.
+- hcu, mthreads, tsingmicro, xpu: `index`; their wheels are tagged `cp310`,
+  which is what `ubuntu:22.04` ships.
+- ascend: the index publishes it for `cp311` on aarch64 only, so it needs an
+  arm64 builder and has no row yet.
+- iluvatar: no row. Its published `cp312` wheel carries
+  `triton/_C/iluvatarTritonPlugin.so` linked against `libpython3.10.so.1.0`
+  (0.6.1 and 0.7.0 alike), which no `cp312` distribution can satisfy.
 - A backend whose delivery workflow already publishes a wheel needs a row and
   a build row in `.github/workflows/build-deb.yml`, nothing more. One whose
   wheel has to be compiled here also needs a build container carrying its
@@ -103,6 +111,10 @@ a virtual package it provides does not conflict with itself (Debian Policy
 2. If the backend's wheel bundles vendor `.so` files, list the path fragments
    in the row's `excludes` column so `dpkg-shlibdeps` leaves them alone; the
    vendor's own installation supplies those sonames at deploy time.
-3. Add a build row to `.github/workflows/build-deb.yml`.
-4. Verify on the backend's hardware: these packages are assembled and
-   import-tested without it, which does not exercise a single kernel.
+3. Build it once. If the backend's `compiler.py` reaches for the vendor SDK or
+   for `torch` while `triton` is being imported, the build host cannot import
+   it at all; set the row's `smoke` column to `install` so the build asserts
+   the install and stops there.
+4. Add a build row to `.github/workflows/build-deb.yml`.
+5. Verify on the backend's hardware: these packages are assembled, and at
+   most imported, without it, which does not exercise a single kernel.

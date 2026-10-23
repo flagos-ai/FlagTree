@@ -275,9 +275,19 @@ RUN lintian --info --display-info /python3-flagtree-*.deb || true
 # Smoke test: install the freshly built deb and import the package.
 # Catches the "installs fine, fails at import" class (missing libs,
 # bad rpath, glibc mismatch) that dpkg-buildpackage alone cannot see.
+# triton's backend discovery imports the compiler module of every installed
+# backend, so a backend whose module reaches for its vendor SDK or for torch
+# there cannot be imported here at all; its row sets smoke=install and only
+# the install is asserted (see packaging/backends.conf).
+ARG FLAGTREE_SMOKE=import
 RUN apt-get update && \
     apt-get install -y --no-install-recommends /python3-flagtree-*.deb && \
-    python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))" && \
+    if [ "${FLAGTREE_SMOKE}" = install ]; then \
+        python3 -c "import importlib.util as u; print('triton installed at', u.find_spec('triton').submodule_search_locations[0])" && \
+        echo "smoke=install: importing triton needs prerequisites the ${FLAGTREE_BACKEND} backend brings in"; \
+    else \
+        python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))"; \
+    fi && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------- Stage 3: just the .deb output ----------

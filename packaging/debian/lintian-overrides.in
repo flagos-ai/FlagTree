@@ -7,5 +7,5 @@
 # (strip --strip-debug in debian/rules); lintian counts a present .symtab as
 # "unstripped". Globbed because a backend ships whichever of the two its
 # wheel was built with.
-unstripped-binary-or-object [usr/lib/python3/dist-packages/triton/_C/libtriton*.so]
-unstripped-binary-or-object [usr/lib/python3/dist-packages/triton/_C/libproton*.so]
+unstripped-binary-or-object usr/lib/python3/dist-packages/triton/_C/libtriton*.so
+unstripped-binary-or-object usr/lib/python3/dist-packages/triton/_C/libproton*.so

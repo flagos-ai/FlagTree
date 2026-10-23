@@ -54,6 +54,8 @@ PYTHON_VERSION="${PYTHON_VERSION:-$(backend_field "$BACKEND" python)}"
 MAX_JOBS="${MAX_JOBS:-4}"
 DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-auto}"
 SHLIBDEPS_EXCLUDE="${SHLIBDEPS_EXCLUDE:-$(backend_field "$BACKEND" excludes)}"
+FLAGTREE_SMOKE="${FLAGTREE_SMOKE:-$(backend_field "$BACKEND" smoke)}"
+FLAGTREE_SMOKE="${FLAGTREE_SMOKE:-import}"
 # Only consulted for wheel=index backends; see build-helpers/fetch-wheel.sh.
 FLAGTREE_PYPI_INDEX="${FLAGTREE_PYPI_INDEX:-}"
 FLAGTREE_WHEEL_LOCAL="${FLAGTREE_WHEEL_LOCAL:-}"
@@ -78,6 +80,7 @@ docker build \
     --build-arg FLAGTREE_PYPI_INDEX="${FLAGTREE_PYPI_INDEX}" \
     --build-arg FLAGTREE_WHEEL_LOCAL="${FLAGTREE_WHEEL_LOCAL}" \
     --build-arg SHLIBDEPS_EXCLUDE="${SHLIBDEPS_EXCLUDE}" \
+    --build-arg FLAGTREE_SMOKE="${FLAGTREE_SMOKE}" \
     -f packaging/debian/build-helpers/Dockerfile.deb \
     --build-arg FLAGTREE_WHEEL_VERSION="${WHEEL_VERSION}" \
     --target deb-output \
