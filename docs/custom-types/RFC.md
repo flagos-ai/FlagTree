@@ -493,8 +493,8 @@ insist on a pointer tracing back to a kernel argument reject that shape.
 enflame and xpu are **dropped**, not half-supported:
 
 * The frontend refuses. `python/triton/language/_custom_types.py` holds
-  `UNSUPPORTED_BACKENDS = ("enflame", "xpu")` and `struct_type()` /
-  `parse_signature()` raise
+  `UNSUPPORTED_BACKENDS = ("enflame", "xpu")`; `struct_type()`,
+  `parse_signature()` and the public `check_backend_supported()` raise
 
   ```
   RuntimeError: custom struct/array types are not supported on the <backend>
@@ -505,6 +505,15 @@ enflame and xpu are **dropped**, not half-supported:
   so a user learns it at decoration time instead of in a backend pass. The list
   is the single source of truth: the test module imports it and skips itself at
   import on those backends.
+
+  The two reach that check differently, because they differ in how much frontend
+  they own: **enflame has no frontend overrides at all**, so it gets the shared
+  `language/__init__.py` (which exports `struct_type` and the `struct…`/`array…`
+  signature branch) and the check fires directly. **xpu ships its own frontend**
+  (~110 files overlaid from `third_party/xpu/python/triton/`), so the shared
+  module is never consulted for the DSL and `tl.struct_type` would simply not
+  exist; its `language/__init__.py` therefore carries a small `struct_type` stub
+  that calls `check_backend_supported()` and raises the same message.
 * `make_ttir` does not call `tt-lower-structs` there, so the pass never runs.
 * xpu's Python frontend copy (`third_party/xpu/python/triton/...`) and its
   `specialize.cc` `StructView` hook are gone again; enflame never had any.

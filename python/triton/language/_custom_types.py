@@ -48,7 +48,7 @@ def unsupported_backend_name():
     return backend if backend in UNSUPPORTED_BACKENDS else None
 
 
-def _check_backend_supported() -> None:
+def check_backend_supported() -> None:
     """Reject creating custom types on a backend that cannot lower them."""
     backend = unsupported_backend_name()
     if backend is not None:
@@ -397,7 +397,7 @@ class _SigParser:
 
 def parse_signature(text: str) -> "_core.base_type":
     """Parse a struct/array signature produced by :meth:`_struct_type.signature`."""
-    _check_backend_supported()
+    check_backend_supported()
     parser = _SigParser(text)
     ty = parser.parse_type()
     if parser.pos != len(text):
@@ -424,7 +424,7 @@ def struct_type(cls):
 
         view_dev = view.to_device("npu")   # -> StructView
     """
-    _check_backend_supported()
+    check_backend_supported()
     if not _is_structure(cls):
         raise TypeError("@struct_type can only be applied to a ctypes.Structure subclass")
     fields, size, align = _struct_layout(cls, cls.__name__)
