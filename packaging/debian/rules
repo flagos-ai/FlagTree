@@ -97,7 +97,12 @@ override_dh_strip:
 	# and the nvidia driver load fine afterwards). This takes libtriton from
 	# 724 MB to 187 MB; lintian still counts the kept .symtab as "unstripped",
 	# which the package's lintian-overrides file documents.
-	dh_strip --no-automatic-dbgsym -X libtriton -X libproton
+	# dh_strip's -X matches the item anywhere in the path, so a bare
+	# "libtriton" also excludes a backend's own libtriton_*.so -- that is why
+	# the enflame wheel's libtriton_gcu300/400_core.so (1.7 GB together, ~60%
+	# of it DWARF) shipped unstripped. Exclude the two files by path instead.
+	dh_strip --no-automatic-dbgsym \
+		-X triton/_C/libtriton.so -X triton/_C/libproton.so
 	find debian/$(PKG) \( -name 'libtriton*.so' -o -name 'libproton*.so' \) \
 		-exec strip --strip-debug {} +
 	# A pattern that matches nothing strips nothing and fails nothing: the
