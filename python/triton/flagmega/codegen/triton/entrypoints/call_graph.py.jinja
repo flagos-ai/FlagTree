@@ -1,6 +1,7 @@
 {# The entrypoint owns only call/event scheduling and shared pipeline resource
    construction.  Selected TIR templates own every algorithm wrapper. #}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_amd_prefetch.py.jinja" as amd_prefetch %}
 
 {% macro stage_barrier(axis_group_key=none) -%}{{ entry.stage_barrier(axis_group_key) }}{%- endmacro %}
 
@@ -46,6 +47,8 @@
         {{ event.symbol }}({{ event.arguments }})
 {% else %}    {{ event.symbol }}({{ event.arguments }})
 {% endif %}
+{% elif event.kind == "prefetch" %}
+{{ amd_prefetch.prefetch_event(event) }}
 {% elif event.kind == "loop" %}
     # control.for @{{ event.body_function }} over [{{ event.start }}, {{ event.stop }}) step {{ event.step }}
     for {{ event.loop_var }} in tl.range({{ event.start }}, {{ event.stop }}, {{ event.step }}):

@@ -35,6 +35,9 @@ def _flagmega_block_scope_base(pool, scope_nbytes: tl.constexpr):
 def _flagmega_silu(value):
     return value * tl.sigmoid(value)
 {% endif %}
+{% if amd_prefetch | default(false) %}
+{% include "entrypoints/_amd_prefetch.py.jinja" %}
+{% endif %}
 
 
 {% for kernel_template in kernel_templates %}
