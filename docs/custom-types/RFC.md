@@ -19,14 +19,12 @@
 >   `keep-in-sync` marker.
 > * Triton 3.6 moved argument specialization from Python to C++
 >   (`native_specialize_impl`), so the `StructView` case is handled in
->   `python/src/specialize.cc` (mirrored for iluvatar and xpu) rather than in
->   `runtime/jit.py`.
+>   `python/src/specialize.cc` (mirrored for iluvatar; xpu is dropped) rather
+>   than in `runtime/jit.py`.
 > * xpu does not use `python/triton/spec/`; it ships a full frontend shadow at
->   `third_party/xpu/python/triton/` that is overlaid at build time, so the
->   Python side is mirrored there as well (`language/core.py`,
->   `language/semantic.py`, `compiler/code_generator.py`,
->   `runtime/interpreter.py`, `language/__init__.py`, and its own
->   `language/_custom_types.py`).
+>   `third_party/xpu/python/triton/` that is overlaid at build time. Since xpu is
+>   dropped, that tree has no custom-types code at all — the shared
+>   `_custom_types.py` refuses to run there (see “Backend support”).
 > * No Ascend hardware verification on this branch; there is no NPU in its CI.
 
 ---
@@ -490,11 +488,36 @@ insist on a pointer tracing back to a kernel argument reject that shape.
 | --- | --- | --- |
 | nvidia, amd | tested | run `python/test/unit/language` (this module included) plus the lit step |
 | hcu, iluvatar, metax, mthreads, ppu, rpu, sunrise, spacemit | tested | this module is wired into their `*-build-and-test` workflow |
-| enflame, xpu | **not supported** | frontend, IR and pass work; their post-TTIR lowering does not |
+| enflame, xpu | **dropped** | frontend refuses, no lowering, no tests |
 
-enflame and xpu are listed in `UNSUPPORTED_BACKENDS` in the test module, which
-skips it there, and their CI does not run it. Both fail *after* our pass has
-done its job (the IR they reject contains no `!tt.struct`):
+enflame and xpu are **dropped**, not half-supported:
+
+* The frontend refuses. `python/triton/language/_custom_types.py` holds
+  `UNSUPPORTED_BACKENDS = ("enflame", "xpu")` and `struct_type()` /
+  `parse_signature()` raise
+
+  ```
+  RuntimeError: custom struct/array types are not supported on the <backend>
+  backend: its pipeline cannot lower the pointer arithmetic that field/element
+  access compiles to.  See docs/custom-types/RFC.md ("Backend support").
+  ```
+
+  so a user learns it at decoration time instead of in a backend pass. The list
+  is the single source of truth: the test module imports it and skips itself at
+  import on those backends.
+* `make_ttir` does not call `tt-lower-structs` there, so the pass never runs.
+* xpu's Python frontend copy (`third_party/xpu/python/triton/...`) and its
+  `specialize.cc` `StructView` hook are gone again; enflame never had any.
+
+The IR *definitions* stay in those backends' trees on purpose: the shared
+`lib/Dialect/Triton/IR/{Types,Ops}.cpp` and the pass in
+`lib/Dialect/Triton/Transforms/` are built for every backend and reference
+`StructType`, `ArrayType`, `struct_gep` and `array_gep`, so the backends that
+override `TritonOps.td` / `TritonTypes.td` / `Ops.cpp` must keep declaring them
+or their build breaks. Declared-but-never-produced is harmless; letting the user
+create the types is not.
+
+Why they cannot lower it, for whoever picks this up:
 
 * **enflame** — `PtrAnalysis`
   (`third_party/enflame/triton_gcu/triton_gcu300/lib/Analysis/PtrAnalysis.cpp`)
@@ -504,7 +527,7 @@ done its job (the IR they reject contains no `!tt.struct`):
 * **xpu** — `make_llir` fails in `ConvertTritonXPUToLLVM` on the same IR shape,
   and its frontend hook returns an empty module for these kernels.
 
-Making them work needs either those analyses to see through
+Supporting them needs either those analyses to see through
 `int_to_ptr(add(ptr_to_int(base), offset))`, or the pass to emit
 address-space-preserving pointer arithmetic instead. The latter was tried first
 on Ascend and rejected there (`Casting pointers with unmatched bitwidth!`, then

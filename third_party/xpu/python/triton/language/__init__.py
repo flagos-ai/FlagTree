@@ -31,8 +31,6 @@ from .core import (
     TRITON_MAX_TENSOR_NUMEL,
     load_tensor_descriptor,
     store_tensor_descriptor,
-    StructView,
-    struct_type,
     make_tensor_descriptor,
     tensor_descriptor,
     tensor_descriptor_type,
@@ -281,8 +279,6 @@ __all__ = [
     "xor_sum",
     "zeros",
     "zeros_like",
-    "StructView",
-    "struct_type",
 ]
 
 
@@ -301,10 +297,6 @@ def str_to_ty(name, c):
             const = True
         ty = str_to_ty(name, c)
         return pointer_type(element_ty=ty, const=const)
-
-    if name.startswith("struct") or name.startswith("array"):
-        from . import _custom_types
-        return _custom_types.parse_signature(name)
 
     if name.startswith("tensordesc"):
         inner = name.split("<")[1].rstrip(">")
