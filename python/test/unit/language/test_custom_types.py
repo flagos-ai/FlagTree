@@ -87,15 +87,19 @@ def _backend_ttir(kernel_fn, args):
     import inspect
     from triton.backends.compiler import Language
     from triton.compiler import make_backend
-    backend = make_backend(_parser_target())
+    target = _parser_target()
+    backend = make_backend(target)
     options = backend.parse_options({})
     stages = {}
     if len(inspect.signature(backend.add_stages).parameters) >= 3:
         backend.add_stages(stages, options, Language.TRITON)
     else:
         backend.add_stages(stages, options)  # backends on the older signature
+    # Same metadata compile() seeds the stages with: some TTIR stages read it
+    # (spacemit's make_ttir does metadata['target'].num_threads).
+    metadata = {"hash": "custom-types-test", "target": target, **vars(options)}
     module = _run_parser(kernel_fn, args)
-    out = stages["ttir"](module, {})
+    out = stages["ttir"](module, metadata)
     return out.str_nodebug() if hasattr(out, "str_nodebug") else str(out)
 
 
