@@ -1411,10 +1411,9 @@ def copy(
         # inside a local buffer, so it is meaningless for the other three
         # combinations. Reject instead of silently dropping it.
         if not is_normcopy or direction != CopyDirection.GM_TO_LOCAL:
-            raise ValueError(
-                "copy pad_value is only supported for standard pointer-tensor "
-                f"global-to-local copies, got direction={direction.value} "
-                f"src={type(src).__name__} dst={type(dst).__name__}")
+            raise ValueError("copy pad_value is only supported for standard pointer-tensor "
+                             f"global-to-local copies, got direction={direction.value} "
+                             f"src={type(src).__name__} dst={type(dst).__name__}")
 
     if pad_value is not None and mask is None:
         # `pad_value` becomes the `other` operand of the masked load. Triton
