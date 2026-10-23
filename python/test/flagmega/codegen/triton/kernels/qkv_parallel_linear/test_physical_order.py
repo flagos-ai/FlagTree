@@ -8,12 +8,19 @@ import pytest
 from triton.flagmega.codegen.triton.templates import KernelTemplateSpec, TritonTemplateRegistry
 
 
+_GENERIC = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv")
+_AMD = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", "amd", "gfx1201")
+
+
+@pytest.mark.parametrize("template_spec", [_GENERIC, _AMD], ids=["generic", "amd"])
 @pytest.mark.parametrize("k,active_k,capacities,tile_n,block_k", [
     (32, 32, (16, 8, 8), 16, 32),
     (48, 43, (24, 8, 16), 16, 32),
     (16, 13, (8, 8, 8), 32, 64),
+    # Qwen3-1.7B decode, one of 128 owners: the AMD form caps tile_n at 64.
+    (256, 256, (128, 64, 64), 128, 64),
 ])
-def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capacities, tile_n, block_k):
+def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, active_k, capacities, tile_n, block_k):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("requires a GPU")
@@ -28,15 +35,16 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capac
         start += capacity // 8
     call = {"family": "qkv_parallel_linear", "variant": "packed_fused_gemv",
             "symbol": "run", "signature": "X, W, Y0, Y1, Y2",
-            "source": "X", "weight": "W", "source_offset": "qkv_local_k_offsets",
+            "source": "X", "weight": "W", "local_m": 1, "source_offset": "qkv_local_k_offsets",
             "source_active": f"qkv_local_k_offsets < {active_k}", "local_k_capacity": k,
             "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8,
             "weight_owner_stride": k * total_n, "weight_k_group_stride": total_n * 16,
             "weight_n_group_stride": 128, "outputs": outputs, "output_type": "tl.bfloat16"}
     body = TritonTemplateRegistry().render_kernel(
-        KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv"),
+        template_spec,
         {"render_calls": [call], "distributed_entry": False, "mesh_hierarchy": (1, 1)},
     ).source
+    assert f"platform={template_spec.platform or 'generic'}" in body.splitlines()[0]
     path = tmp_path / "packed_qkv_physical.py"
     path.write_text("import triton\nimport triton.language as tl\n" + body)
     spec = importlib.util.spec_from_file_location("packed_qkv_physical", path)
@@ -54,3 +62,15 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capac
         torch.testing.assert_close(result[:active], expected[start:start + active], rtol=0, atol=0)
         torch.testing.assert_close(result[active:], torch.full_like(result[active:], 777.), rtol=0, atol=0)
         start += capacity
+
+
+@pytest.mark.parametrize("platform,architecture,expected", [
+    ("amd", "gfx1100", "kernels/qkv_parallel_linear/platforms/amd/packed_fused_gemv.py.jinja"),
+    ("amd", "gfx1201", "kernels/qkv_parallel_linear/platforms/amd/packed_fused_gemv.py.jinja"),
+    ("nvidia", "sm90", "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja"),
+    ("corex", "bi_v150", "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja"),
+    (None, None, "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja"),
+])
+def test_packed_qkv_rdna_template_is_amd_only(platform, architecture, expected):
+    spec = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", platform, architecture)
+    assert TritonTemplateRegistry().resolve(spec) == expected
