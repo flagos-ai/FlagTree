@@ -6362,16 +6362,28 @@ def _paged_attention_combine_call(raw) -> dict[str, object]:
         raise CodegenError(
             "Paged-attention combine ABI disagrees with its split axis."
         )
-    max_coordinates = _attention_partial_state_coordinates(
-        max_abi, layout, domain, statistics=True
-    )
-    sum_coordinates = _attention_partial_state_coordinates(
-        partial_sum["abi"], layout, domain, statistics=True
-    )
-    accumulator_coordinates = _attention_partial_state_coordinates(
-        partial_accumulator["abi"], layout, domain, statistics=False
-    )
-    owner = _partial_group_owner_expression(max_abi, "attention_part")
+    def state_access(abi, statistics):
+        # The state may shard heads differently from the result, so derive its
+        # owner and local index from the element's logical coordinates.
+        hierarchy = tuple(int(v) for v in abi["distributed_type"]["placement"]["hierarchy"])
+        owners = list(_mesh_coordinates(len(hierarchy)))
+        owners[partial_axis] = "attention_part"
+        local = []
+        for kind, extent, policy in zip(
+            layout, _static_shape(abi, "logical_shape"),
+            abi["distributed_type"]["axis_policies"], strict=True,
+        ):
+            coordinate = "0" if statistics and kind == "dim" else str(domain["global_by_kind"][kind])
+            coordinate, axis_owners = _invert_split_axis(coordinate, str(extent), policy, hierarchy)
+            local.append(coordinate)
+            for axis, value in axis_owners:
+                if axis != partial_axis:
+                    owners[axis] = value
+        return tuple(local), _linear_owner_expression(owners, hierarchy)
+
+    max_coordinates, owner = state_access(max_abi, True)
+    sum_coordinates, _ = state_access(partial_sum["abi"], True)
+    accumulator_coordinates, _ = state_access(partial_accumulator["abi"], False)
     return {
         "partial_max": emit_storage_pointer(
             max_abi, str(partial_max["runtime_argument"])
@@ -6425,40 +6437,6 @@ def _paged_attention_gated_combine_call(raw) -> dict[str, object]:
     gate_offset, _ = _attention_result_access(gate["abi"], layout, domain)
     return {**result, "gate": _pointer(gate), "gate_offset": gate_offset,
             "output_dtype": _triton_dtype(str(output["abi"]["scalar_dtype"]))}
-
-
-def _attention_partial_state_coordinates(
-    abi: Mapping[str, object],
-    layout: tuple[str, ...],
-    output_domain: Mapping[str, object],
-    *,
-    statistics: bool,
-) -> tuple[str, ...]:
-    """Remap a distributed output lane into its partial-state component.
-
-    PagedAttentionCombine may further shard the result dimension while the
-    online-softmax accumulator keeps that dimension broadcast within every
-    partial owner.  In that case the state address needs the output's logical
-    coordinate, not its owner-local coordinate.  Axes that remain sharded in
-    the state (normally query-head) keep the local coordinate because the
-    selected owner base has already been applied separately.
-    """
-
-    logical_shape = _static_shape(abi, "logical_shape")
-    local_shape = _static_shape(abi, "local_capacity_shape")
-    if len(layout) != len(logical_shape) or len(local_shape) != len(logical_shape):
-        raise CodegenError(
-            "Paged-attention partial-state rank differs from its semantic layout."
-        )
-    coordinates = []
-    for axis, kind in enumerate(layout):
-        if statistics and kind == "dim":
-            coordinates.append("0")
-        elif local_shape[axis] == logical_shape[axis]:
-            coordinates.append(str(output_domain["global_by_kind"][kind]))
-        else:
-            coordinates.append(str(output_domain["local_by_kind"][kind]))
-    return tuple(coordinates)
 
 
 def _dsa_indexer_call(raw) -> dict[str, object]:
