@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import itertools
 import keyword
 import re
 from collections.abc import Mapping
@@ -4115,6 +4116,13 @@ def _dense_matmul_call(raw) -> dict[str, object]:
         "global_k_size": global_k,
         "global_n_size": global_n,
         "weight_offset": weight_offset,
+        "weight_k_contiguity": (
+            _k_major_n8_k16_k_contiguity(
+                weight_abi, source_abi,
+                local_k_capacity=source_domain["capacity"], block_k=block_k,
+            )
+            if packed_layout == "k_major_n8_k16" else 1
+        ),
         "packed_layout": None if packed_layout is None else str(packed_layout),
         "accumulate_helper": accumulate_helper,
         "block_k": block_k,
@@ -6929,6 +6937,69 @@ def _dense_weight_access(
             f"({payload}) % {payload_width}",
         ),
     )
+
+
+def _k_major_n8_k16_k_contiguity(
+    weight_abi: Mapping[str, object],
+    source_abi: Mapping[str, object],
+    *,
+    local_k_capacity: int,
+    block_k: int,
+) -> int:
+    """Return 16 when every 16-aligned K run of a k_major_n8_k16 weight tile is
+    provably one contiguous, 16-element-aligned run of storage, else 1.
+
+    The K coordinate used to address canonical storage is checked by
+    evaluating the source's local-to-logical mapping for every owner, so a
+    template may only assert this to the compiler when it actually holds.
+    """
+
+    run = 16
+    if local_k_capacity % run or block_k % run:
+        return 1
+    lanes = tuple(int(value) for value in weight_abi.get("scalar_lane_shape", ()))
+    if lanes:
+        if lanes != (8, 2, 8):
+            return 1
+    else:
+        shape = _static_shape(weight_abi, "logical_shape")
+        strides = tuple(int(value) for value in weight_abi.get("scalar_storage_strides", ()))
+        if (len(shape) != 4 or len(strides) != 4 or strides[3] != 1
+                or strides[2] != shape[3] or strides[0] % run or strides[1] % run):
+            return 1
+    coordinate_space = str(weight_abi.get("coordinate_space"))
+    if coordinate_space == "local":
+        return run
+    if coordinate_space != "canonical_global":
+        return 1
+    if int(source_abi.get("scalar_lane_count", 1)) != 1:
+        return 1
+    rank = len(_static_shape(source_abi, "local_capacity_shape"))
+    distributed = source_abi.get("distributed_type")
+    placement = distributed.get("placement") if isinstance(distributed, Mapping) else None
+    hierarchy = (
+        tuple(int(value) for value in placement.get("hierarchy", ()))
+        if isinstance(placement, Mapping) else ()
+    )
+    shard_names = tuple(f"__shard{axis}" for axis in range(len(hierarchy)))
+    try:
+        expression = emit_logical_coordinate(
+            source_abi, rank - 1, (*("0",) * (rank - 1), "__k"),
+            shard_coordinates=shard_names or None,
+        )
+        code = compile(expression, "<k_major_n8_k16 K coordinate>", "eval")
+        for shard in itertools.product(*(range(extent) for extent in hierarchy)):
+            names = {"__builtins__": {}, **dict(zip(shard_names, shard))}
+            for start in range(0, local_k_capacity, run):
+                first = eval(code, names, {"__k": start})
+                if first % run:
+                    return 1
+                for offset in range(1, run):
+                    if eval(code, names, {"__k": start + offset}) != first + offset:
+                        return 1
+    except Exception:
+        return 1
+    return run
 
 
 def _verify_k_major_n8_k16_weight(

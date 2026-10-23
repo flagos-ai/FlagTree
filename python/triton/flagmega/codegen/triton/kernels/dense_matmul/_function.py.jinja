@@ -15,6 +15,10 @@
    template and dense_matmul_glu carry it. #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% set dense_weight_offset = call.weight_offset %}
+{% if dense_matmul_weight_k_hint is defined and dense_matmul_weight_k_hint and call.weight_k_contiguity > 1 %}
+{% set dense_weight_offset = "tl.max_contiguous(tl.multiple_of(" ~ call.weight_offset ~ ", [1, " ~ call.weight_k_contiguity ~ "]), [1, " ~ call.weight_k_contiguity ~ "])" %}
+{% endif %}
 {% if call.local_m_capacity != 1 %}
     for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
 {% endif %}
@@ -78,24 +82,24 @@ def {{ call.symbol }}({{ call.signature }}):
             {% endif %}
             {% if dense_n_masked and dense_k_masked %}
             dense_weight_value = tl.load(
-                {{ call.weight }} + ({{ call.weight_offset }}),
+                {{ call.weight }} + ({{ dense_weight_offset }}),
                 mask=dense_n_mask[:, None] & dense_k_mask[None, :],
                 other=0.0,
             )
             {% elif dense_n_masked %}
             dense_weight_value = tl.load(
-                {{ call.weight }} + ({{ call.weight_offset }}),
+                {{ call.weight }} + ({{ dense_weight_offset }}),
                 mask=dense_n_mask[:, None],
                 other=0.0,
             )
             {% elif dense_k_masked %}
             dense_weight_value = tl.load(
-                {{ call.weight }} + ({{ call.weight_offset }}),
+                {{ call.weight }} + ({{ dense_weight_offset }}),
                 mask=dense_k_mask[None, :],
                 other=0.0,
             )
             {% else %}
-            dense_weight_value = tl.load({{ call.weight }} + ({{ call.weight_offset }}))
+            dense_weight_value = tl.load({{ call.weight }} + ({{ dense_weight_offset }}))
             {% endif %}
             dense_accumulator += (
                 dense_weight_value.to(tl.float32) * dense_source_value[None, :].to(tl.float32)
