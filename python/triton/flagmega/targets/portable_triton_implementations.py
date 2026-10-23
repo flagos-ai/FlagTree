@@ -568,7 +568,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
         # is incompatible with this candidate's logical/canonical contract, so
         # propose-tir never offers it today. Wiring that GEMM-shaped distribution
         # path (plus an M>1 cost-model preference) completes automatic selection;
-        # until then the standalone amd-r9700 tutorial kernel (prefill_wmma.py)
+        # until then the standalone amd-rdna tutorial kernel (prefill_wmma.py)
         # is the proven ~10-30x microkernel.
         _implementation(
             "tir.dense_matmul.mma",
