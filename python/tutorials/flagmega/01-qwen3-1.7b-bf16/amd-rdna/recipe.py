@@ -17,6 +17,8 @@ nvidia-h800 tutorial, and the one recipe serves both RDNA3 (gfx1100) and RDNA4
   3. The H800 TMA kernel recipe (``local_optimizations.kernel_recipe.select_tir``)
      is SKIPPED. RDNA has no TMA/tensor-descriptor, so the default TIR selection
      picks the portable ``packed_k_major_gemv`` variants already supported here.
+     The one exception is the paged-attention partial, pinned to ``decode_t32``
+     (see ``_ATTENTION_PARTIAL``).
 
 Put this directory on PYTHONPATH (the sibling nvidia-h800 directory is added
 automatically) and call ``recipe_compile`` on an imported Qwen3-1.7B module.
@@ -157,13 +159,35 @@ def select_distribution(module, target, *, residual_layout="sharded-casts",
     )
 
 
+# The default preference is decode_t16, which is fastest only at very short
+# context. On both RDNA parts decode_t32 is within 2% there and wins from 1K up
+# (8K: -14% R9700, -15% W7900); t128/t256 spill registers on RDNA.
+_ATTENTION_PARTIAL = "tir.paged_attention_partial.decode_t32"
+
+
+def _select_attention_partial(module):
+    choices = [
+        (point.id, _ATTENTION_PARTIAL)
+        for point in module.selection_points
+        if any(candidate.id == _ATTENTION_PARTIAL for candidate in point.candidates)
+    ]
+    if not choices:
+        raise ValueError(f"{_ATTENTION_PARTIAL} is not offered at any microkernel point")
+    return override_plan(module, choices, rationale="RDNA paged-attention partial: decode_t32")
+
+
 def recipe_compile(module, compiler, target):
     """Compile an imported Qwen3-1.7B module to bufferized_tir with the AMD recipe.
 
-    Distribution is pinned by the recipe; TIR selection is left to the default
-    policy, which picks the RDNA-portable packed_k_major_gemv kernels.
+    Distribution is pinned by the recipe. TIR selection is left to the default
+    policy (the RDNA-portable packed_k_major_gemv kernels) except for the
+    paged-attention partial, which is pinned to ``_ATTENTION_PARTIAL``.
     """
     module = compiler.compile(module, stop_after="propose-distribution").module
     plan = select_distribution(module, target)
     module = compiler.run_stage(module, "auto-distributed", plan=plan).module
+    module = compiler.compile(module, stop_after="propose-microkernels").module
+    module = compiler.run_stage(
+        module, "select-microkernels", plan=_select_attention_partial(module)
+    ).module
     return compiler.compile(module).module
