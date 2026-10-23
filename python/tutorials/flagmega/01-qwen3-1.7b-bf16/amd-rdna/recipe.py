@@ -11,9 +11,13 @@ nvidia-h800 tutorial, and the one recipe serves both RDNA3 (gfx1100) and RDNA4
      tile/reduction sizes, not NV hardware features). The gfx target machine is
      the only difference between the two RDNA parts.
   2. ``residual_layout="sharded-casts"`` + ``norm_layout="replicated-residual"``
-     keep the residual/norm shards full-mesh contiguous, which avoids the
-     gather-reduce owner-group codegen path that the default auto-distribution
-     hits at realistic (hidden=2048) shapes.
+     keep the residual/norm shards full-mesh contiguous. The norm layout is the
+     load-bearing one: under the default auto-distribution the solver gives the
+     fused ``gather_reduce_add_norm_apply`` a block-cyclic partial input, which
+     its renderer rejects ("Cross-layout partial access requires contiguous
+     source shards"). The residual pin alone is no longer required, but lifting
+     it changes the reduction order (logits not bitwise) and removes no grid
+     barrier.
   3. The H800 TMA kernel recipe (``local_optimizations.kernel_recipe.select_tir``)
      is SKIPPED. RDNA has no TMA/tensor-descriptor, so the default TIR selection
      picks the portable ``packed_k_major_gemv`` variants already supported here.
