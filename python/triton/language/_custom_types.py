@@ -27,6 +27,35 @@ from . import core as _core
 # here so struct/array value objects can resolve field/element access.
 _default_semantic = None
 
+# Backends that have no lowering for these types.  The frontend is shared, so it
+# cannot be split per backend; instead of shipping half-support (types that can
+# be declared but never compiled) the entry points below refuse with an explicit
+# error naming the backend.  The IR definitions stay in those backends' trees
+# because the shared Types.cpp/Ops.cpp and the tt-lower-structs pass are built
+# for every backend and reference them.  See RFC.md, "Backend support".
+UNSUPPORTED_BACKENDS = ("enflame", "xpu")
+
+
+def unsupported_backend_name():
+    """The configured backend's name if it cannot support these types, else None."""
+    try:
+        from .._flagtree_backend import get_active_backend_name
+        backend = get_active_backend_name()
+    except Exception:
+        # No configured/active backend to judge by (e.g. a development build):
+        # do not block here, let the compiler report what it cannot handle.
+        return None
+    return backend if backend in UNSUPPORTED_BACKENDS else None
+
+
+def _check_backend_supported() -> None:
+    """Reject creating custom types on a backend that cannot lower them."""
+    backend = unsupported_backend_name()
+    if backend is not None:
+        raise RuntimeError(f"custom struct/array types are not supported on the {backend} backend: its pipeline "
+                           "cannot lower the pointer arithmetic that field/element access compiles to. "
+                           "See docs/custom-types/RFC.md (\"Backend support\").")
+
 
 def set_default_semantic(semantic) -> None:
     global _default_semantic
@@ -368,6 +397,7 @@ class _SigParser:
 
 def parse_signature(text: str) -> "_core.base_type":
     """Parse a struct/array signature produced by :meth:`_struct_type.signature`."""
+    _check_backend_supported()
     parser = _SigParser(text)
     ty = parser.parse_type()
     if parser.pos != len(text):
@@ -394,6 +424,7 @@ def struct_type(cls):
 
         view_dev = view.to_device("npu")   # -> StructView
     """
+    _check_backend_supported()
     if not _is_structure(cls):
         raise TypeError("@struct_type can only be applied to a ctypes.Structure subclass")
     fields, size, align = _struct_layout(cls, cls.__name__)
