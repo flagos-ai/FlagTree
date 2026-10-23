@@ -14,9 +14,10 @@ recipe (see recipe.py), renders the megakernel, loads it on cuda:0 (ROCm maps
 HIP devices through the cuda namespace), and runs a single-token decode.
 
 ``--benchmark`` times decode at each ``--context-lengths`` entry (tokens
-already in the KV cache, default 1024,4096,8192). The cache is filled with
-real decode steps, and every timed step appends one more token, so each
-result covers ``L .. L+warmup+iters``.
+already in the KV cache, default 1024,4096,8192). Every step greedily decodes
+from the previous step's token, so the cache holds a real generated sequence;
+each timed step appends one more token, so each result covers
+``L .. L+warmup+iters``.
 """
 
 import argparse
@@ -105,21 +106,28 @@ def main():
     torch.cuda.synchronize()
     print(f"next_token={int(next_token.item())}  logits_finite={bool(torch.isfinite(logits).all())}", flush=True)
 
+    def decode_step():
+        # Feed the greedy token back on device, so the cache holds a real
+        # generated sequence rather than one token repeated (which makes every
+        # key identical and hides attention errors).
+        input_ids.copy_(next_token.reshape(input_ids.shape).to(input_ids.dtype))
+        runtime.run_into(logits, next_token, input_ids, state)
+
     position = 1  # tokens in the KV cache after the correctness step above
     for length in lengths:
         if length > position:
             print(f"Filling KV cache to {length} tokens...", flush=True)
             for _ in range(length - position):
-                runtime.run_into(logits, next_token, input_ids, state)
+                decode_step()
             torch.cuda.synchronize()
             position = length
         start = position
         for _ in range(_WARMUP_STEPS):
-            runtime.run_into(logits, next_token, input_ids, state)
+            decode_step()
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         for _ in range(args.iters):
-            runtime.run_into(logits, next_token, input_ids, state)
+            decode_step()
         torch.cuda.synchronize()
         us = (time.perf_counter() - t0) / args.iters * 1e6
         position += _WARMUP_STEPS + args.iters
