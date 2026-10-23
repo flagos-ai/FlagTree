@@ -21,6 +21,19 @@ _flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
     )
 )
 {% endif %}
+{% set paged_attention_partial_value_with_key = paged_attention_partial_issue_value_with_key | default(false) %}
+{% macro paged_attention_partial_value_load() %}
+            value_value = tl.load(
+                kv_cache + value_base[:, None] + dimension[None, :],
+                mask=valid[:, None],
+                other=0.0,
+            ).to(tl.float32)
+{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") %}
+            value_value = tle.gpu.set_layout(
+                value_value, _flagmega_paged_attention_partial_reduction_layout
+            )
+{% endif %}
+{% endmacro %}
 @triton.jit
 def _flagmega_paged_attention_partial(
     query,
@@ -106,22 +119,18 @@ def _flagmega_paged_attention_partial(
                 key_value, _flagmega_paged_attention_partial_reduction_layout
             )
 {% endif %}
+{% if paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() }}
+{%- endif %}
             score = tl.sum(key_value * query_value[None, :], axis=1) * scale
             score = tl.where(valid, score, -float("inf"))
             tile_max = tl.max(score, axis=0)
             updated_max = tl.maximum(running_max, tile_max)
             previous_scale = tl.exp(running_max - updated_max)
             probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
-            value_value = tl.load(
-                kv_cache + value_base[:, None] + dimension[None, :],
-                mask=valid[:, None],
-                other=0.0,
-            ).to(tl.float32)
-{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") %}
-            value_value = tle.gpu.set_layout(
-                value_value, _flagmega_paged_attention_partial_reduction_layout
-            )
-{% endif %}
+{% if not paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() }}
+{%- endif %}
             accumulator = (
                 accumulator * previous_scale
                 + tl.sum(probability[:, None] * value_value, axis=0)
