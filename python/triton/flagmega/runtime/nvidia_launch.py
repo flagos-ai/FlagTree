@@ -3,6 +3,8 @@
 """Translate the prepared residency contract into backend compilation bounds."""
 
 import os
+from contextlib import contextmanager
+from typing import Iterator
 
 from triton.flagmega.runtime.prepared import ResourceContract
 
@@ -32,4 +34,28 @@ def compilation_options(contract: ResourceContract, target: str = "nvidia-sm90")
     return options
 
 
-__all__ = ["compilation_options"]
+@contextmanager
+def compilation_knobs(target: str = "nvidia-sm90") -> Iterator[None]:
+    """Process-wide compiler knobs to hold while compiling a megakernel.
+
+    gfx1201: ConvertToBufferOps turns the megakernel's small-phase loads into
+    buffer loads, but their base pointers arrive as noinline-call arguments in
+    VGPRs, so each one becomes a serial readfirstlane waterfall loop. The
+    GEMVs use int64 offsets and never take the buffer path, so disabling it
+    only removes those waterfalls. Not on gfx1100: there the same build is no
+    longer bitwise reproducible run to run. The knob mirrors itself into
+    AMDGCN_USE_BUFFER_OPS, a cache-invalidating variable, so the cache key
+    stays correct; the scope restores both afterwards.
+    """
+    # An explicit AMDGCN_USE_BUFFER_OPS from the user wins over this default.
+    if target != "amd-gfx1201" or "AMDGCN_USE_BUFFER_OPS" in os.environ:
+        yield
+        return
+    from triton import knobs
+
+    with knobs.amd.scope():
+        knobs.amd.use_buffer_ops = False
+        yield
+
+
+__all__ = ["compilation_knobs", "compilation_options"]

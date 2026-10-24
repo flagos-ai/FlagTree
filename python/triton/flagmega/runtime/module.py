@@ -49,7 +49,7 @@ from triton.flagmega.ir.ops.nn._paged_attention_state import (
     create_paged_attention_state,
 )
 from triton.flagmega.runtime.prepared import ResourceContract, prepare_jit_kernel
-from triton.flagmega.runtime.nvidia_launch import compilation_options
+from triton.flagmega.runtime.nvidia_launch import compilation_knobs, compilation_options
 from triton.flagmega.runtime.lifecycle import RuntimeModule
 from triton.flagmega.runtime.tensor_descriptor import TensorDescriptorCache
 from triton.flagmega.runtime.function_offsets import (
@@ -665,17 +665,19 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             device=self._device,
         )
         specs = self._kernel_launch_specs()
-        self._prepared = tuple(
-            prepare_jit_kernel(
-                kernel,
-                arguments,
-                spec["dynamic_argument_indices"],
-                grid=spec["grid"],
-                contract=contract,
-                **compilation_options(contract, self.manifest.get("target", "")),
+        target = self.manifest.get("target", "")
+        with compilation_knobs(target):
+            self._prepared = tuple(
+                prepare_jit_kernel(
+                    kernel,
+                    arguments,
+                    spec["dynamic_argument_indices"],
+                    grid=spec["grid"],
+                    contract=contract,
+                    **compilation_options(contract, target),
+                )
+                for kernel, spec in zip(self.kernels, specs, strict=True)
             )
-            for kernel, spec in zip(self.kernels, specs, strict=True)
-        )
         self.prepare_count += 1
         self._mark_prepared()
 
