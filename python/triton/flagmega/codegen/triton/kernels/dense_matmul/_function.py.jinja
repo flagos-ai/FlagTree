@@ -19,6 +19,12 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if dense_matmul_weight_k_hint is defined and dense_matmul_weight_k_hint and call.weight_k_contiguity > 1 %}
 {% set dense_weight_offset = "tl.max_contiguous(tl.multiple_of(" ~ call.weight_offset ~ ", [1, " ~ call.weight_k_contiguity ~ "]), [1, " ~ call.weight_k_contiguity ~ "])" %}
 {% endif %}
+{% set dense_prefetch = call.weight_tile_prefetch if (dense_matmul_weight_prefetch is defined and dense_matmul_weight_prefetch and call.weight_tile_prefetch is defined and call.local_m_capacity == 1) else none %}
+{% if dense_prefetch %}
+{% for tile in range([dense_prefetch.distance, dense_prefetch.tiles] | min) %}
+    _flagmega_amd_prefetch_slab({{ call.weight }} + ({{ dense_prefetch.base }} + {{ (tile % dense_prefetch.k_tiles) * dense_prefetch.k_tile_stride + (tile // dense_prefetch.k_tiles) * dense_prefetch.n_tile_stride }}), {{ dense_prefetch.chunks }})
+{% endfor %}
+{% endif %}
 {% if call.local_m_capacity != 1 %}
     for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
 {% endif %}
@@ -56,6 +62,11 @@ def {{ call.symbol }}({{ call.signature }}):
         ):
             dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
             dense_global_k = {{ call.global_k }}
+            {% if dense_prefetch %}
+            dense_prefetch_tile = (dense_local_n_start // {{ call.tile_n }}) * {{ dense_prefetch.k_tiles }} + dense_local_k_start // {{ call.block_k }} + {{ dense_prefetch.distance }}
+            if dense_prefetch_tile < {{ dense_prefetch.tiles }}:
+                _flagmega_amd_prefetch_slab({{ call.weight }} + ({{ dense_prefetch.base }} + (dense_prefetch_tile % {{ dense_prefetch.k_tiles }}) * {{ dense_prefetch.k_tile_stride }} + (dense_prefetch_tile // {{ dense_prefetch.k_tiles }}) * {{ dense_prefetch.n_tile_stride }}), {{ dense_prefetch.chunks }})
+            {% endif %}
             {% set dense_k_masked = (call.local_k_capacity % call.block_k != 0) or (call.source_active != "True") %}
             {% if dense_k_masked or dense_matmul_uses_descriptor %}
             dense_k_mask = (

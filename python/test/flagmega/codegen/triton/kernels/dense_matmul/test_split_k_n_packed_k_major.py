@@ -77,3 +77,22 @@ def test_amd_split_k_n_asserts_only_a_proven_k_run():
     unproven = _render(amd, _split_k_n_call(1))
     assert "max_contiguous" not in unproven
     assert unproven.splitlines()[1:] == _render(generic, _split_k_n_call(1)).splitlines()[1:]
+
+
+def test_weight_tile_prefetch_renders_only_in_the_amd_template():
+    plan = {"distance": 2, "tiles": 4, "k_tiles": 2, "base": "shard_coord1 * 4096",
+            "k_tile_stride": 4864, "n_tile_stride": 128, "chunks": 1}
+    call = {**_split_k_n_call(16), "local_n_capacity": 128, "local_k_capacity": 128,
+            "result_active": "True", "weight_tile_prefetch": plan}
+    generic = KernelTemplateSpec("dense_matmul", "split_k_n_packed_k_major_gemv")
+    amd = KernelTemplateSpec("dense_matmul", "split_k_n_packed_k_major_gemv", "amd", "gfx1201")
+    planned = _render(amd, call)
+    compile(planned, "amd_split_k_n_prefetch.py", "exec")
+    # Prologue for the first `distance` tiles, then `distance` ahead in the loop.
+    assert "_flagmega_amd_prefetch_slab(W + (shard_coord1 * 4096 + 0), 1)" in planned
+    assert "_flagmega_amd_prefetch_slab(W + (shard_coord1 * 4096 + 4864), 1)" in planned
+    assert "dense_prefetch_tile = (dense_local_n_start // 64) * 2 + dense_local_k_start // 64 + 2" in planned
+    assert "if dense_prefetch_tile < 4:" in planned
+    unplanned = {key: value for key, value in call.items() if key != "weight_tile_prefetch"}
+    assert "prefetch" not in _render(amd, unplanned)
+    assert _render(generic, call) == _render(generic, unplanned)

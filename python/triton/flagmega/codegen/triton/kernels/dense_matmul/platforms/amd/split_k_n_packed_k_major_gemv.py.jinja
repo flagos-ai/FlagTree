@@ -6,6 +6,10 @@
     coordinate (lm_head) and falls back to 16-bit loads; assert the run the
     renderer proved (call.weight_k_contiguity) so it emits 128-bit loads. #}
 {% set dense_matmul_weight_k_hint = true %}
+{#- gfx1201: when the renderer planned it (call.weight_tile_prefetch), each
+    owner of a mesh row prefetches its share of the row's weight tile a few K
+    steps ahead (s_prefetch_data). #}
+{% set dense_matmul_weight_prefetch = true %}
 {% include "kernels/dense_matmul/_local_accumulate.py.jinja" %}
 {% if render_calls is defined %}
 {% include "kernels/dense_matmul/_function.py.jinja" %}

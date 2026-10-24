@@ -4124,6 +4124,10 @@ def _dense_matmul_call(raw) -> dict[str, object]:
             if packed_layout == "k_major_n8_k16" else 1
         ),
         "packed_layout": None if packed_layout is None else str(packed_layout),
+        # weight_offset counts scalar elements, also for typed-vector storage.
+        "weight_itemsize": (
+            int(weight_abi["scalar_itemsize"]) if "scalar_itemsize" in weight_abi else None
+        ),
         "accumulate_helper": accumulate_helper,
         "block_k": block_k,
         "tile_n": tile_n,

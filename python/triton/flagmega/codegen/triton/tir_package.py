@@ -8,7 +8,10 @@ import re
 from collections.abc import Mapping
 from math import prod
 
-from triton.flagmega.codegen.triton.amd_prefetch import add_next_invocation_qkv_prefetch
+from triton.flagmega.codegen.triton.amd_prefetch import (
+    add_next_invocation_qkv_prefetch,
+    add_split_k_weight_tile_prefetch,
+)
 from triton.flagmega.codegen.triton.function_call import (
     emit_function_call_arguments,
 )
@@ -221,6 +224,10 @@ def describe_tir_package(
         platform=platform,
         architecture=architecture,
     )
+    if cooperative:
+        amd_prefetch = add_split_k_weight_tile_prefetch(
+            wrappers, mesh, platform=platform, architecture=architecture,
+        ) or amd_prefetch
     if (platform != "nvidia" or architecture != "sm90") and any(
         call.get("decode_schedule") == "bf16_mma" for calls in encoded_calls.values() for call in calls
     ):
