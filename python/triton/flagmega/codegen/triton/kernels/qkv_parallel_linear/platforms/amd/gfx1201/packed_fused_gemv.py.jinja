@@ -1,0 +1,7 @@
+# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv platform=amd architecture=gfx1201
+{# Each owner's weight slab is contiguous, so owners in lockstep all read the
+    same slab offset; starting each owner on a different N tile spreads them
+    over DRAM (R9700 qkv 31.5 -> 28.4 us/layer). Rows are independent, so values
+    are unchanged. W7900 (gfx1100) measured ~1% slower end to end. #}
+{% set qkv_rotate_owner_n_tiles = true %}
+{% include "kernels/qkv_parallel_linear/platforms/amd/_packed_fused_gemv.py.jinja" %}
