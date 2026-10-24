@@ -165,10 +165,11 @@ def select_distribution(module, target, *, residual_layout="sharded-casts",
     )
 
 
-# The default preference is decode_t16, which is fastest only at very short
-# context. On both RDNA parts decode_t32 is within 2% there and wins from 1K up
-# (8K: -14% R9700, -15% W7900); t128/t256 spill registers on RDNA.
-_ATTENTION_PARTIAL = "tir.paged_attention_partial.decode_t32"
+# On AMD decode_t16 renders the per-token-row online softmax
+# (platforms/amd/decode_t16), which beats the shared-state decode_t32 from 1K up
+# (W7900 8K partial 71 -> 63 us/layer) without raising the megakernel's VGPRs.
+# A per-row 32-token tile is faster still but raises VGPRs; t128/t256 spill.
+_ATTENTION_PARTIAL = "tir.paged_attention_partial.decode_t16"
 
 # The default gate+up tile (tile_n 16) sweeps each CTA's 48 GLU rows in three
 # passes over K, splitting every contiguous 1.5 KB weight run into three reads

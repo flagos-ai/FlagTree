@@ -22,6 +22,10 @@ _flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
 )
 {% endif %}
 {% set paged_attention_partial_value_with_key = paged_attention_partial_issue_value_with_key | default(false) %}
+{#- Per-token-row online softmax: each tile row keeps its own max/sum/accumulator
+    so the loop has no cross-warp reduction; the rows are merged once at the
+    end. Changes the fp32 summation order. #}
+{% set paged_attention_partial_row_softmax = paged_attention_partial_per_row_softmax | default(false) %}
 {% macro paged_attention_partial_value_load() %}
             value_value = tl.load(
                 kv_cache + value_base[:, None] + dimension[None, :],
@@ -78,9 +82,15 @@ def _flagmega_paged_attention_partial(
         query_value = tl.load(query + query_offset).to(tl.float32)
         kv_head = head // (num_query_heads // num_kv_heads)
         active_layer = layer_id
+{% if paged_attention_partial_row_softmax %}
+        row_max = tl.full((token_tile,), -float("inf"), tl.float32)
+        row_sum = tl.zeros((token_tile,), tl.float32)
+        row_accumulator = tl.zeros((token_tile, head_dim), tl.float32)
+{% else %}
         running_max = -float("inf")
         running_sum = 0.0
         accumulator = tl.zeros((head_dim,), tl.float32)
+{% endif %}
         for token_start in tl.range(token_begin, token_end, token_tile):
             token = token_start + token_lane
             valid = token < token_end
@@ -124,6 +134,20 @@ def _flagmega_paged_attention_partial(
 {%- endif %}
             score = tl.sum(key_value * query_value[None, :], axis=1) * scale
             score = tl.where(valid, score, -float("inf"))
+{% if paged_attention_partial_row_softmax %}
+            updated_max = tl.maximum(row_max, score)
+            safe_max = tl.where(updated_max == -float("inf"), 0.0, updated_max)
+            previous_scale = tl.exp(row_max - safe_max)
+            probability = tl.where(valid, tl.exp(score - safe_max), 0.0)
+{% if not paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() }}
+{%- endif %}
+            row_accumulator = (
+                row_accumulator * previous_scale[:, None] + probability[:, None] * value_value
+            )
+            row_sum = row_sum * previous_scale + probability
+            row_max = updated_max
+{% else %}
             tile_max = tl.max(score, axis=0)
             updated_max = tl.maximum(running_max, tile_max)
             previous_scale = tl.exp(running_max - updated_max)
@@ -137,6 +161,14 @@ def _flagmega_paged_attention_partial(
             )
             running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
             running_max = updated_max
+{% endif %}
+{% if paged_attention_partial_row_softmax %}
+        running_max = tl.max(row_max, axis=0)
+        safe_running_max = tl.where(running_max == -float("inf"), 0.0, running_max)
+        row_weight = tl.exp(row_max - safe_running_max)
+        running_sum = tl.sum(row_sum * row_weight, axis=0)
+        accumulator = tl.sum(row_accumulator * row_weight[:, None], axis=0)
+{% endif %}
         # Each pointer is already rebased to this physical owner's compact
         # partial-state component by the call ABI.  The component contains one
         # local head, so both context_shard and the global head coordinate have
