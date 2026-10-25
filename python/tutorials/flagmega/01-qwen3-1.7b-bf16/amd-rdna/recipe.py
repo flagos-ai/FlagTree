@@ -167,8 +167,10 @@ def select_distribution(module, target, *, residual_layout="sharded-casts",
 
 # On AMD decode_t16 renders the per-token-row online softmax
 # (platforms/amd/decode_t16), which beats the shared-state decode_t32 from 1K up
-# (W7900 8K partial 71 -> 63 us/layer) without raising the megakernel's VGPRs.
-# A per-row 32-token tile is faster still but raises VGPRs; t128/t256 spill.
+# without raising the megakernel's VGPRs. On gfx1100 the long-context partial is
+# latency-bound, so platforms/amd/gfx1100 also loads branch-free clamped tiles
+# and the next tile's block ids with this tile's K/V (W7900 8K partial 65 -> 50
+# us/layer). Per-row 32-token tiles raise VGPRs; t128/t256 spill.
 _ATTENTION_PARTIAL = "tir.paged_attention_partial.decode_t16"
 
 # The default gate+up tile (tile_n 16) sweeps each CTA's 48 GLU rows in three

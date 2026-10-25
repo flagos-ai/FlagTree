@@ -26,11 +26,20 @@ _flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
     so the loop has no cross-warp reduction; the rows are merged once at the
     end. Changes the fp32 summation order. #}
 {% set paged_attention_partial_row_softmax = paged_attention_partial_per_row_softmax | default(false) %}
+{#- Tile rows past token_end address the last in-context token instead of
+    being masked, so the block-id and K/V loads need no exec-mask branches;
+    their scores are still -inf and their probabilities 0. Bitwise-identical. #}
+{% set paged_attention_partial_clamped_tiles = paged_attention_partial_unmasked_tiles | default(false) %}
+{#- Load the next tile's block ids together with this tile's K/V, so each tile
+    costs one dependent memory round trip instead of two. Bitwise-identical. #}
+{% set paged_attention_partial_next_block_ids = paged_attention_partial_prefetch_block_ids | default(false) %}
 {% macro paged_attention_partial_value_load() %}
             value_value = tl.load(
                 kv_cache + value_base[:, None] + dimension[None, :],
+{% if not paged_attention_partial_clamped_tiles %}
                 mask=valid[:, None],
                 other=0.0,
+{% endif %}
             ).to(tl.float32)
 {% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") %}
             value_value = tle.gpu.set_layout(
@@ -91,11 +100,25 @@ def _flagmega_paged_attention_partial(
         running_sum = 0.0
         accumulator = tl.zeros((head_dim,), tl.float32)
 {% endif %}
+{% if paged_attention_partial_clamped_tiles or paged_attention_partial_next_block_ids %}
+        token_last = tl.maximum(token_end - 1, 0)
+{% endif %}
+{% if paged_attention_partial_next_block_ids %}
+        next_physical_block = tl.load(
+            block_table + tl.minimum(token_begin + token_lane, token_last) // block_size
+        )
+{% endif %}
         for token_start in tl.range(token_begin, token_end, token_tile):
             token = token_start + token_lane
             valid = token < token_end
+{% if paged_attention_partial_clamped_tiles %}
+            address_token = tl.minimum(token, token_last)
+            logical_block = address_token // block_size
+            block_offset = address_token % block_size
+{% else %}
             logical_block = token // block_size
             block_offset = token % block_size
+{% endif %}
             # ``token < token_end`` bounds which tokens are logically part of
             # the sequence, but not whether ``block_table`` has actually been
             # refreshed out to ``logical_block`` for *this* call -- the host
@@ -108,7 +131,13 @@ def _flagmega_paged_attention_partial(
             # faulted program never reaches its barrier and every other
             # program spins forever). Clamp to the cache's real block count
             # so a stale entry can only select a physically valid line.
+{% if paged_attention_partial_next_block_ids %}
+            physical_block = next_physical_block
+{% elif paged_attention_partial_clamped_tiles %}
+            physical_block = tl.load(block_table + logical_block)
+{% else %}
             physical_block = tl.load(block_table + logical_block, mask=valid, other=0)
+{% endif %}
             physical_block = tl.minimum(tl.maximum(physical_block, 0), num_blocks - 1)
             key_base = (
                 ((((physical_block * num_layers + active_layer) * 2) * block_size
@@ -121,8 +150,10 @@ def _flagmega_paged_attention_partial(
             value_base = key_base + block_size * num_kv_heads * head_dim
             key_value = tl.load(
                 kv_cache + key_base[:, None] + dimension[None, :],
+{% if not paged_attention_partial_clamped_tiles %}
                 mask=valid[:, None],
                 other=0.0,
+{% endif %}
             ).to(tl.float32)
 {% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") %}
             key_value = tle.gpu.set_layout(
@@ -132,6 +163,11 @@ def _flagmega_paged_attention_partial(
 {% if paged_attention_partial_value_with_key %}
 {{ paged_attention_partial_value_load() }}
 {%- endif %}
+{% if paged_attention_partial_next_block_ids %}
+            next_physical_block = tl.load(
+                block_table + tl.minimum(token + token_tile, token_last) // block_size
+            )
+{% endif %}
             score = tl.sum(key_value * query_value[None, :], axis=1) * scale
             score = tl.where(valid, score, -float("inf"))
 {% if paged_attention_partial_row_softmax %}

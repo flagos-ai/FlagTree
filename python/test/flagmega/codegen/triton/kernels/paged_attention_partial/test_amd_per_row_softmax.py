@@ -26,7 +26,9 @@ def _loop(source):
 @pytest.mark.parametrize("arch", sorted(_AMD))
 def test_amd_decode_t16_renders_per_row_state(arch):
     assert TritonTemplateRegistry().resolve(_AMD[arch]) == (
-        "kernels/paged_attention_partial/platforms/amd/decode_t16.py.jinja"
+        "kernels/paged_attention_partial/platforms/amd/gfx1100/decode_t16.py.jinja"
+        if arch == "gfx1100"
+        else "kernels/paged_attention_partial/platforms/amd/decode_t16.py.jinja"
     )
     amd = _render(_AMD[arch])
     compile(amd, "amd_decode_t16.py", "exec")
