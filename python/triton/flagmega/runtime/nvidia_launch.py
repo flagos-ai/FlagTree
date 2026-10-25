@@ -42,8 +42,11 @@ def compilation_knobs(target: str = "nvidia-sm90") -> Iterator[None]:
     buffer loads, but their base pointers arrive as noinline-call arguments in
     VGPRs, so each one becomes a serial readfirstlane waterfall loop. The
     GEMVs use int64 offsets and never take the buffer path, so disabling it
-    only removes those waterfalls. Not on gfx1100: there the same build is no
-    longer bitwise reproducible run to run. The knob mirrors itself into
+    only removes those waterfalls. Not on gfx1100: with FlagTree's LLVM 22,
+    the rope function's gfx1100 code under that schedule corrupts one 4-lane
+    quad of the query nondeterministically. LLVM 23 avoids it only by changing
+    codegen (llvm #142716, #168169, #182446), so revisit after an LLVM bump
+    with a multi-process reproducibility check. The knob mirrors itself into
     AMDGCN_USE_BUFFER_OPS, a cache-invalidating variable, so the cache key
     stays correct; the scope restores both afterwards.
     """
