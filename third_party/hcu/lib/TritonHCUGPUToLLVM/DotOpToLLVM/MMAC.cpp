@@ -25,6 +25,7 @@
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -82,8 +83,6 @@ struct DotOpMFMAConversionHelper {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value zeroFlag = b.i32_val(0);
     auto resType = valC.getType();
-    OperationState loweredOp(loc, intrinsicName);
-    loweredOp.addTypes(resType);
     Value i32Flag = b.i32_val(0);
     Value i1Flag = b.false_val();
     bool isMmacLTS = mmacLayout == MmacLayout::TRANSPOSE ||
@@ -92,6 +91,15 @@ struct DotOpMFMAConversionHelper {
                      mmacLayout == MmacLayout::INTERLEAVE_TRANSPOSE;
     Value ltsFlag = isMmacLTS ? b.true_val() : b.false_val();
     Value litFlag = isMmacLIT ? b.true_val() : b.false_val();
+    if (intrinsicName == "llvm.hcu.mmac.16x16x4.f64") {
+      // The bundled LLVM exposes this intrinsic without a matching ROCDL op.
+      return LLVM::createLLVMIntrinsicCallOp(
+                 rewriter, loc, intrinsicName, resType,
+                 ValueRange{valA, valB, valC, i32Flag, ltsFlag})
+          .getResult(0);
+    }
+    OperationState loweredOp(loc, intrinsicName);
+    loweredOp.addTypes(resType);
     if (intrinsicName.compare("rocdl.mmac.16x16x4.f32") == 0) {
       loweredOp.addOperands({valA, valB, valC, i32Flag, ltsFlag});
     } else if (intrinsicName.compare("rocdl.mmac.16x16x8.f32") == 0 ||
@@ -513,7 +521,7 @@ struct DotOpMFMAConversionHelper {
                 tb.extract_element(type, rawElems, tb.i32_val(0));
 #endif
             /* HCU support: add mmac_f32_m16n16k8_f32 support */
-            if (kWidth == 1) {
+            if (kBase == 1) {
               dotOpVals[{b, nonK, kBaseVec}] =
                   tb.extract_element(type, rawElems, tb.i32_val(0));
             } else {

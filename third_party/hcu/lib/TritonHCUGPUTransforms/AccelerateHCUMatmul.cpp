@@ -868,6 +868,10 @@ public:
 
     Type aElemType = oldAType.getElementType();
     Type bElemType = oldBType.getElementType();
+    if ((aElemType.isF64() || bElemType.isF64()) &&
+        !(features & HCUISAFeature::MMAC_FP64))
+      return failure();
+
     bool withScale =
         mfmaVersion == 4 && isF8F6F4(aElemType) && isF8F6F4(bElemType);
 

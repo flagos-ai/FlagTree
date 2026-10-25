@@ -159,6 +159,10 @@ MfmaDatabase::MfmaDatabase(MLIRContext *context) {
   auto fp4T = b.getType<Float4E2M1FNType>();
 
   mfmaMap = {
+      // f64 inputs (direct LLVM lowering; no matching ROCDL op).
+      {{3, 16, 16, f64T.getTypeID(), f64T.getTypeID()},
+       {{"llvm.hcu.mmac.16x16x4.f64", 4, 1}}},
+
       // f32 inputs
       // mmac_f32_16x16x8f32
       TRITON_MMAC(16, 16, f32T, f32T, mmac_f32_16x16x8f32, 8, 2),

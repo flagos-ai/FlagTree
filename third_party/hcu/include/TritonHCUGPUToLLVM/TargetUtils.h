@@ -50,6 +50,7 @@ enum class HCUISAFeature : uint64_t {
   MLS = 1 << 4,
   CVT_FP8F32 = 1 << 5,
   CVT_FP8F16 = 1 << 6,
+  MMAC_FP64 = 1ULL << 7,
 };
 
 inline constexpr bool operator&(HCUISAFeature lhs, HCUISAFeature rhs) {
