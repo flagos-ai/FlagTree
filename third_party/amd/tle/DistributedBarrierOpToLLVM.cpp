@@ -98,16 +98,31 @@ struct DistributedBarrierOpConversion
     auto i32PtrTy = LLVM::LLVMPointerType::get(ctx, basePtrTy.getAddressSpace());
 
     ModuleOp mod = op->getParentOfType<ModuleOp>();
-    auto gridDim = [&](mlir::gpu::Dimension d) -> Value {
-      Value g = mlir::gpu::GridDimOp::create(rewriter, loc, d);
-      return arith::TruncIOp::create(rewriter, loc, i32Ty, g);
+    // Triton never launches a partial workgroup, so the workgroup count is
+    // exactly hidden_block_count_{x,y,z} (code object v5 implicit args 0/4/8).
+    // gpu.grid_dim lowers to __ockl_get_num_groups, which also reads the
+    // unaligned hidden_remainder_* fields with vector loads; each barrier's
+    // acquire invalidates L0/GL1, so on gfx1100 the first barrier of every
+    // call stalled ~5 us on that reload. Invariant aligned loads stay scalar.
+    auto constPtrTy = LLVM::LLVMPointerType::get(ctx, 4);
+    Value implicitArgs =
+        LLVM::createLLVMIntrinsicCallOp(rewriter, loc,
+                                        "llvm.amdgcn.implicitarg.ptr",
+                                        TypeRange{constPtrTy}, ValueRange{})
+            .getResult(0);
+    auto gridDim = [&](int32_t index) -> Value {
+      Value ptr = b.gep(constPtrTy, i32Ty, implicitArgs, b.i32_val(index));
+      return LLVM::LoadOp::create(rewriter, loc, i32Ty, ptr, /*alignment=*/4,
+                                  /*isVolatile=*/false,
+                                  /*isNonTemporal=*/false,
+                                  /*isInvariant=*/true);
     };
     Value blockIdX = targetInfo.programId(rewriter, loc, mod, ProgramIDDim::X);
     Value blockIdY = targetInfo.programId(rewriter, loc, mod, ProgramIDDim::Y);
     Value blockIdZ = targetInfo.programId(rewriter, loc, mod, ProgramIDDim::Z);
-    Value gridDimX = gridDim(mlir::gpu::Dimension::x);
-    Value gridDimY = gridDim(mlir::gpu::Dimension::y);
-    Value gridDimZ = gridDim(mlir::gpu::Dimension::z);
+    Value gridDimX = gridDim(0);
+    Value gridDimY = gridDim(1);
+    Value gridDimZ = gridDim(2);
 
     // A grid_axis barrier decomposes the linear block id using the declared
     // group_domain_shape. If that product disagrees with the actual launch grid
