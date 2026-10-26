@@ -101,9 +101,10 @@ def test_unsupported_error_names_backend_and_primitive(monkeypatch):
         tle.require_tle(tle.language.gpu.alloc)
 
 
-def test_tileir_build_gates_tileir_whitelist_on_env(monkeypatch):
-    # TileIR builds leave FLAGTREE_BACKEND empty. TileIR's tle_supported
-    # whitelist is only merged when FLAGTREE_USE_TILEIR=1 (same opt-in as routing).
+def test_tileir_build_checks_whitelist_of_routed_backend(monkeypatch):
+    # TileIR builds leave FLAGTREE_BACKEND empty. Like the router, a primitive
+    # set goes to TileIR only with FLAGTREE_USE_TILEIR=1 and when TileIR's
+    # whitelist covers it; otherwise it is checked against NVIDIA's whitelist.
     monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "")
     whitelists = {
         "nvidia": SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=["gpu.wgmma"]),
@@ -111,17 +112,28 @@ def test_tileir_build_gates_tileir_whitelist_on_env(monkeypatch):
     }
     monkeypatch.setattr(tle, "_backend_config_module", whitelists.get)
     monkeypatch.setattr(backend_registry, "backends", {"nvidia": object(), "tileir": object()})
-
-    monkeypatch.delenv("FLAGTREE_USE_TILEIR", raising=False)
-    assert tle.get_supported_primitives() == frozenset({"gpu.wgmma"})
-    assert not tle.is_tle_supported("make_view")
-    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
-        tle.require_tle("make_view")
+    t, n = ["make_view"], ["gpu.wgmma"]
 
     monkeypatch.setenv("FLAGTREE_USE_TILEIR", "1")
     assert tle.get_supported_primitives() == frozenset({"gpu.wgmma", "make_view"})
-    assert tle.is_tle_supported("make_view")
-    assert tle.is_tle_supported("gpu.wgmma")
+    assert tle.is_tle_supported(t)
+    assert tle.is_tle_supported(n)
+    assert not tle.is_tle_supported(t + n)
+    tle.require_tle(t)
+    tle.require_tle(n)
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
+        tle.require_tle(t + n)
+
+    monkeypatch.delenv("FLAGTREE_USE_TILEIR")
+    assert tle.get_supported_primitives() == frozenset({"gpu.wgmma"})
+    assert not tle.is_tle_supported(t)
+    assert tle.is_tle_supported(n)
+    assert not tle.is_tle_supported(t + n)
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
+        tle.require_tle(t)
+    tle.require_tle(n)
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
+        tle.require_tle(t + n)
 
 
 @pytest.mark.parametrize("backend_name", ["hcu", "amd", "mthreads", "iluvatar"])

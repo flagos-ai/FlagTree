@@ -54,9 +54,9 @@ def _kernel_name(jit_fn) -> str:
 
 
 def _tileir_supported_tle_primitives() -> frozenset[str]:
-    from triton.experimental.tle import _supported_primitives
+    from triton.experimental.tle import supported_primitives
 
-    return _supported_primitives("tileir")
+    return supported_primitives("tileir")
 
 
 def kernel_tle_usage(jit_fn) -> TLEUsage:

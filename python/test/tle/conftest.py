@@ -30,6 +30,5 @@ def pytest_runtest_setup(item):
     required_list = _get_required_primitives_list(item)
     if not required_list:  # no required_list primitives declared
         return
-    missing = sorted(primitive for primitive in required_list if not is_tle_supported(primitive))
-    if missing:
-        pytest.skip(f"current backend does not support tle required_list: {', '.join(missing)}")
+    if not is_tle_supported(required_list):
+        pytest.skip(f"current backend does not support tle required_list: {', '.join(sorted(required_list))}")

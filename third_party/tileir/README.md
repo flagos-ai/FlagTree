@@ -95,8 +95,9 @@ non-`cuda` Triton target                      -> unchanged
 `cuda` target, other or unknown TLE usage     -> native NVIDIA
 ```
 
-The same env also controls whether `is_tle_supported` / `require_tle` merge
-TileIR's `backend/tle_supported.py` whitelist with NVIDIA's.
+`is_tle_supported` / `require_tle` take the list of TLE primitives a kernel
+uses, pick the backend that list routes to by the same rules, and check it
+against that backend's `backend/tle_supported.py` whitelist.
 
 For routing diagnostics:
 
