@@ -7,6 +7,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _module(*, round_before_scale=False):
@@ -51,7 +52,7 @@ def test_generic_norm_apply_source_consumes_mean_bias_and_outer_rows(tmp_path):
 
 def test_generic_norm_apply_matches_torch_on_h800(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module()).module
     artifact = write_artifact(
@@ -76,7 +77,7 @@ def test_generic_norm_apply_matches_torch_on_h800(tmp_path):
 @pytest.mark.parametrize("round_before_scale", [False, True])
 def test_norm_apply_rounding_policy_is_executed_exactly(tmp_path, round_before_scale):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module(round_before_scale=round_before_scale)).module
     artifact = write_artifact(module, tmp_path / "rounding", target="nvidia-sm90", emit_executable=True)

@@ -9,6 +9,7 @@ from triton.flagmega.codegen.triton import describe_tir_package, render_tir_pack
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType, emit_module, load_module
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("n", (1024, 3072))
@@ -19,7 +20,7 @@ from triton.flagmega.runtime import load
 ))
 def test_glu_tail_roundtrip_exact_output_and_full_pipe_close(tmp_path, n, suffix):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu." + suffix, output_extent=n)
     path = tmp_path / "tail.py"

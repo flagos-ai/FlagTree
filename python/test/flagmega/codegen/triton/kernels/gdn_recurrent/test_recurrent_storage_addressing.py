@@ -6,13 +6,14 @@ import pytest
 
 from python.test.flagmega.codegen.triton.kernels.gdn_recurrent.helpers import execute_recurrent
 from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent_reference
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("local_z", [False, True])
 @pytest.mark.parametrize("local_result", [False, True])
 def test_gate_and_result_have_independent_storage_contracts(tmp_path, local_z, local_result):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     config, attrs, types, values = recurrent_case(qk_norm_mode="add", qk_norm_epsilon=1e-6, round_core=True)
     expected, expected_states = recurrent_reference(values, attrs)

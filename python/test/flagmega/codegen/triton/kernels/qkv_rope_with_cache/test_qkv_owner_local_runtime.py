@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.ir.ops.nn._rotary_distribution import has_remote_rotary_pairs
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _graph(lanes, use_mean, rotary, swap, external_stats, independent_v):
@@ -82,7 +83,7 @@ def test_pair_local_qkv_uses_explicit_stats_and_handles_tail_heads(
     tmp_path, lanes, use_mean, rotary, swap, external_stats, independent_v,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     source, config = _graph(lanes, use_mean, rotary, swap, external_stats, independent_v)
     compiled = Compiler().compile(source).module

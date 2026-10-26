@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 def exclusive_norm_module(lanes):
@@ -111,8 +112,8 @@ def _worker(artifact, lanes):
 
 @pytest.mark.parametrize("lanes", (1, 8))
 def test_exclusive_norm_gathers_peer_shards_before_reading_poisoned_workspace(tmp_path, lanes):
-    torch = pytest.importorskip("torch")
-    if torch.cuda.device_count() < 2 or any(torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(2)):
+    pytest.importorskip("torch")
+    if not has_nvidia_sm90_devices(2):
         pytest.skip("Two SM90 CUDA devices are required")
     from triton.flagmega.artifacts import write_artifact
 

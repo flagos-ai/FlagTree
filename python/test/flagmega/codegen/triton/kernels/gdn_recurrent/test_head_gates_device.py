@@ -7,6 +7,7 @@ import importlib.util
 import pytest
 
 from triton.flagmega.codegen.triton.templates import KernelTemplateSpec, TritonTemplateRegistry
+from python.test.flagmega.devices import is_nvidia_sm90
 
 _WRAPPER = '''
 @triton.jit
@@ -59,7 +60,7 @@ def gates_kernel(tmp_path):
 @pytest.mark.parametrize("warps", [4, 8])
 def test_cached_head_gates_match_original_formula_bitwise(gates_kernel, scalar, round_beta, warps):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     import triton
 

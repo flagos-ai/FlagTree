@@ -17,6 +17,7 @@ from triton.flagmega.passes.auto_distributed import AutoDistributedPass
 from triton.flagmega.passes.constants import ConstnessAnalysis, freeze_constant_islands, thaw_constant_islands
 from triton.flagmega.stages import next_stage
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _islands(*, depth=4, weight=True):
@@ -217,7 +218,7 @@ def test_pre_distribution_freeze_executes_readonly_asset_on_gpu(tmp_path):
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.runtime import load
 
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     weight = torch.arange(128, dtype=torch.float32).reshape(8, 16)
     checkpoint = MemoryCheckpoint({}, {"c": TensorInfo("c", fm.DType.FLOAT32, (8, 16), "memory")}, {"c": weight})

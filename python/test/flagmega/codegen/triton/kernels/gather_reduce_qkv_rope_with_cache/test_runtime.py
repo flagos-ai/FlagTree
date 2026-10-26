@@ -11,6 +11,7 @@ from triton.flagmega.evaluator import create_paged_attention_state
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from python.test.flagmega.passes.test_fuse_qkv_statistics import qkv_statistics_graph
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("head_dim,rotary_dim,use_mean,heads_tuple", [
@@ -19,7 +20,7 @@ from python.test.flagmega.passes.test_fuse_qkv_statistics import qkv_statistics_
 ])
 def test_compact_partial_qkv_query_cache_and_publication(tmp_path, head_dim, rotary_dim, use_mean, heads_tuple):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     source, config = qkv_statistics_graph(head_dim=head_dim, rotary_dim=rotary_dim, use_mean=use_mean,
                                          heads_tuple=heads_tuple)

@@ -14,6 +14,7 @@ from python.test.flagmega.codegen.triton.kernels.kda_gated_recurrent_core.test_k
     _module,
     _values,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize('packing', ['scalar', 'direct', 'demand', 'head_split'])
@@ -21,7 +22,7 @@ from python.test.flagmega.codegen.triton.kernels.kda_gated_recurrent_core.test_k
 @pytest.mark.parametrize('l2norm', [False, True])
 def test_chunk_device_numerics_and_abi(tmp_path, packing, initial_state, l2norm):
     torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip('SM90 CUDA is required')
     attrs = {'output_lanes': (2, 4)} if packing in ('direct', 'head_split') else {}
     if packing == 'demand':

@@ -7,6 +7,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 class _ConstantOnlyCheckpoint:
@@ -54,7 +55,7 @@ def test_generic_local_rms_norm_source_has_no_mesh_axis_reduction(tmp_path):
 
 def test_generic_local_rms_norm_matches_torch_on_h800(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module()).module
     artifact = write_artifact(

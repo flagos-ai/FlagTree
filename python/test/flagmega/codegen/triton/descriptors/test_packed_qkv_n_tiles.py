@@ -12,6 +12,7 @@ from triton.flagmega.codegen.triton.tir_package import describe_tir_package
 from triton.flagmega.targets import NvidiaSm90Target
 
 from .conftest import _packed_qkv_mma_pipeline_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def implementation_id(kind, descriptor):
@@ -87,7 +88,7 @@ def test_n_tiles_exact_coordinates_and_partial_boundary(kind, descriptor, widths
 
 def check_exact_coordinates_and_partials(module, identity, widths, input_extent, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.importer import MemoryCheckpoint, TensorInfo

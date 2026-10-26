@@ -8,6 +8,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.selection import apply_plan, override_plan
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _module(*, canonical_up=False, gate_limit=None, up_limit=None):
@@ -45,7 +46,7 @@ def _module(*, canonical_up=False, gate_limit=None, up_limit=None):
 @pytest.mark.parametrize("limits", ((None, None), (.75, .5)))
 def test_output_shards_use_compact_fp8_weight_rows(tmp_path, variant, canonical_up, limits):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     compiler = Compiler()
     proposed = compiler.compile(_module(canonical_up=canonical_up, gate_limit=limits[0], up_limit=limits[1]),

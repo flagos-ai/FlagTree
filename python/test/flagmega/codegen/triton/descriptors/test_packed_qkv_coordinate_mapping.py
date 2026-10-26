@@ -13,6 +13,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("module_fixture", (
@@ -22,7 +23,7 @@ from triton.flagmega.runtime import load
 ))
 def test_packed_qkv_exact_basis_coordinates(tmp_path, request, module_fixture):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = request.getfixturevalue(module_fixture)
     names = ("q_weight", "k_weight", "v_weight")

@@ -13,6 +13,7 @@ from triton.flagmega.ir.ops.nn._paged_attention_state import create_paged_attent
 from triton.flagmega.runtime import load
 
 from python.test.flagmega.importer.glm5_moe.helpers import REDUCED, checkpoint
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("past", [0, 7, 8])
@@ -44,7 +45,7 @@ def test_mla_evaluator_writes_both_cache_fields_at_the_original_position(past):
 @pytest.mark.cuda
 @pytest.mark.parametrize("graph_mode", [False, True])
 def test_mla_device_advances_once_across_page_boundary(tmp_path, graph_mode):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     source = checkpoint(REDUCED)
     importer = Glm5MoeImporter(source, block_size=8, num_blocks=3)

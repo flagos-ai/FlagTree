@@ -14,6 +14,7 @@ from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from python.test.flagmega.codegen.triton.kernels.sparse_experts import helpers
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.test_constant_scales import constant_scales_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("definition", [SparseExpertsGateUp, SparseExpertsDown])
@@ -63,7 +64,7 @@ def test_each_input_scale_requires_its_own_identity_proof(tmp_path, scale_name, 
 def test_float32_division_by_one_preserves_bits_at_numeric_boundaries():
     """Check the rewrite's number contract separately from expert GEMV tests."""
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     import triton
     import triton.language as tl

@@ -8,12 +8,13 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("extent,lanes,cyclic", [(3, 1, False), (257, 1, True), (6144, 1, False), (259, 8, True)])
 def test_tensor_boundary_transfer_preserves_scalar_and_vector_tails(tmp_path, extent, lanes, cyclic):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     dtype = fm.DType.BFLOAT16 if lanes == 1 else fm.vector_type("bfloat16", (lanes,))
     value_type = fm.tensor_type(dtype, (2, extent))

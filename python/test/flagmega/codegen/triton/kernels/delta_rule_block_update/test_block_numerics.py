@@ -9,13 +9,14 @@ from triton.flagmega.ir.ops.nn.delta_rule_block_update import delta_rule_block_u
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from python.test.flagmega.codegen.triton.kernels.delta_rule_block_update.helpers import execute_block_update
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("tokens,key_dim,value_dim", [(1, 16, 9), (33, 16, 16), (65, 128, 128)])
 @pytest.mark.parametrize("axes,packed,local", [((), False, False), ((0, 1), True, False), ((0, ), True, True)])
 def test_block_rounding_state_packing_and_local_operands(tmp_path, tokens, key_dim, value_dim, axes, packed, local):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(809)
     key = (torch.randint(-2, 3, (tokens, 4, key_dim), generator=generator).float() / 32).bfloat16()

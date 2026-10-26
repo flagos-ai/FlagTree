@@ -10,6 +10,7 @@ from triton.flagmega.codegen.triton.tir_package import describe_tir_package
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 _PARTITIONS = [
@@ -88,7 +89,7 @@ def test_collective_partition_preserves_values_stats_and_empty_owners(
     tmp_path, values, partial_axes, use_mean, output_dtype,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     built, owners = _build_collective(values, partial_axes, use_mean, output_dtype)
     module = Compiler().compile(built).module

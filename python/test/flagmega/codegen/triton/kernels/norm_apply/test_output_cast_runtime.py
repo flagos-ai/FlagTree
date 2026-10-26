@@ -10,13 +10,14 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("collective", [False, True])
 @pytest.mark.parametrize("source_dtype,output_dtype", [("float32", "bfloat16"), ("bfloat16", "float32")])
 def test_output_cast_preserves_input_rounding_and_uses_distinct_storage(tmp_path, collective, source_dtype, output_dtype):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     mesh = fm.Placement((8, 16), "yx", "bb")
     x_type = fm.tensor_type(source_dtype, (1, 1024))

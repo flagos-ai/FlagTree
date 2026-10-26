@@ -11,6 +11,7 @@ from triton.flagmega.evaluator import create_paged_attention_state
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionStateConfig
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _module(round_before_scale, rotary_dim=None, head_dim=64):
@@ -53,7 +54,7 @@ def _module(round_before_scale, rotary_dim=None, head_dim=64):
 @pytest.mark.parametrize("cosine,sine", [(1.0, 0.0), (0.75, 0.625)])
 def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before_scale, cosine, sine, rotary_dim, head_dim):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     source, config = _module(round_before_scale, rotary_dim, head_dim)
     extent = rotary_dim or head_dim

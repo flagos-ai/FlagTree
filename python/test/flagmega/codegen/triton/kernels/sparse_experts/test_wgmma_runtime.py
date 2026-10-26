@@ -14,6 +14,7 @@ from triton.flagmega.ir.ops.nn.partitioned_sparse_experts_down import Partitione
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def expert_module(family, packed=False, *, quantization="dynamic_fp8_ue8m0", block=128,
@@ -95,7 +96,7 @@ def cuda_projection(value, weight, scale):
                                          ("partitioned_sparse_experts_down", True)])
 @pytest.mark.parametrize("packed", [False, True])
 def test_wgmma_expert_projection_matches_cuda(tmp_path, family, rounded, packed):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = expert_module(family, packed, rounded=rounded)
     base = NvidiaSm90Target().triton_implementation_model

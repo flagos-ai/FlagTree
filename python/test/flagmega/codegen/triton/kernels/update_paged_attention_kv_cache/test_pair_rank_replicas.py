@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 def _worker(artifact):
@@ -56,8 +57,8 @@ def _worker(artifact):
 
 @pytest.mark.parametrize('levels', ['cbb', 'bcb'])
 def test_pair_publication_preserves_each_chip_cache_replica(tmp_path, levels):
-    torch = pytest.importorskip('torch')
-    if torch.cuda.device_count() < 2 or any(torch.cuda.get_device_capability(i) != (9, 0) for i in range(2)):
+    pytest.importorskip('torch')
+    if not has_nvidia_sm90_devices(2):
         pytest.skip('Two SM90 CUDA devices required')
     from triton.flagmega import ir as fm
     from triton.flagmega.artifacts import write_artifact

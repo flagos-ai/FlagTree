@@ -10,6 +10,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def graph(config, lanes, exported, block_cyclic=False):
@@ -78,7 +79,7 @@ def prepare(module, directory, query, gate, state, outputs):
 @pytest.mark.parametrize("lanes", [1, 8])
 @pytest.mark.parametrize("block_cyclic", [False, True])
 def test_fused_and_unfused_device_paths_match_with_resharded_output(tmp_path, lanes, block_cyclic):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     torch.manual_seed(39)
     config = PagedAttentionStateConfig(1, 2, 32, num_blocks=4)

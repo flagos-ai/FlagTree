@@ -8,6 +8,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
@@ -17,7 +18,7 @@ from triton.flagmega.runtime import load
 @pytest.mark.parametrize("head,rotary", [(24, 16), (256, 64)])
 def test_native_partial_rope_matches_prefix_math_and_copies_tail_bits(tmp_path, dtype, table_dtype, vector, split, head, rotary):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     lane = 8 if vector else 1
     value_type = fm.tensor_type(fm.vector_type(dtype, (lane, )) if vector else dtype, (2, 4, head // lane))

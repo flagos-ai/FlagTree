@@ -9,6 +9,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import load
 from .test_empty_call_frame import empty_chain
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("level", ["fast", "optimized"])
@@ -16,7 +17,7 @@ from .test_empty_call_frame import empty_chain
 @pytest.mark.parametrize("distributed", [False, True])
 def test_empty_call_frames_execute_without_access(tmp_path, level, nested, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     module = Compiler(CompileOptions(bufferize_opt_level=level)).compile(
         empty_chain(nested=nested, distributed=distributed)).module

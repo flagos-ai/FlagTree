@@ -14,6 +14,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.errors import CodegenError, IRVerificationError
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @triton.jit
@@ -66,7 +67,7 @@ def _compile(tmp_path, dtype, algorithm="sqrt_div"):
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
 def test_selected_sqrt_div_matches_independent_reference(tmp_path, dtype):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     generator = torch.Generator().manual_seed(20)
     values = {name: torch.randn((16, 128), generator=generator).bfloat16().cuda() for name in ("x", "gate")}

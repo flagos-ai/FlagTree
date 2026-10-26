@@ -23,6 +23,7 @@ from triton.flagmega.runtime import load
 
 from python.test.flagmega.importer.glm5_moe import helpers as glm_helpers
 from python.test.flagmega.importer.glm5_moe.helpers import PUBLISHED, REDUCED
+from python.test.flagmega.devices import is_nvidia_sm90
 
 ARTIFACT_TOLERANCE = {"atol": 0.05, "rtol": 0.05}
 
@@ -248,7 +249,7 @@ def test_glm_config_rejects_conflicting_gate_bound_locations():
 
 @pytest.mark.cuda
 def test_synthetic_glm_executable_matches_reference(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required for the GLM executable integration test")
     checkpoint = glm_helpers.checkpoint(REDUCED)
     importer = Glm5MoeImporter(checkpoint)
@@ -282,7 +283,7 @@ def test_synthetic_glm_executable_matches_reference(tmp_path):
 @pytest.mark.cuda
 def test_synthetic_glm_kda_layer_matches_reference(tmp_path):
     """The KDA (linear-attention) layer through the new kda operators."""
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required for the GLM executable integration test")
     checkpoint = glm_helpers.checkpoint(REDUCED, kind="kda")
     imported = Glm5MoeImporter(checkpoint, layer=4).import_module()

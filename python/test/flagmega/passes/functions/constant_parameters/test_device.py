@@ -9,6 +9,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import load
 from .helpers import module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("level", ["fast", "optimized"])
@@ -16,7 +17,7 @@ from .helpers import module
 @pytest.mark.parametrize("nested", [False, True])
 def test_offline_weights_and_reused_function_execute_exactly(tmp_path, level, distributed, nested):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     source = module(distributed=distributed, nested=nested)
     weights = {f"weight{i}": (torch.arange(8, dtype=torch.float32) * .017 + i).bfloat16() for i in range(2)}

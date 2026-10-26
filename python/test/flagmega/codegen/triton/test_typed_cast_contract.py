@@ -8,6 +8,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.vectorization import vectorization_contract
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.rules.neutral._utility import make_node
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 class TypedCastGraph(fm.Module):
@@ -46,7 +47,7 @@ def test_plain_vector_cast_executes_every_element_lane(tmp_path, shape, source, 
     from triton.flagmega.compiler import Compiler
     from triton.flagmega.runtime import load
 
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     graph = TypedCastGraph(shape=shape, source=source, target=target)
     compiled = Compiler().compile(graph.build()).module

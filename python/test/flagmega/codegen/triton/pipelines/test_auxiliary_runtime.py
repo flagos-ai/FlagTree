@@ -7,6 +7,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 _AUX_PIPELINE = (
     "tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv"
@@ -29,7 +30,7 @@ def test_auxiliary_pipeline_matches_torch_on_sm90(
     tmp_path, compile_pipeline_module, reusable,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
 
     first_weight = torch.randn((128, 128), dtype=torch.bfloat16) / 8

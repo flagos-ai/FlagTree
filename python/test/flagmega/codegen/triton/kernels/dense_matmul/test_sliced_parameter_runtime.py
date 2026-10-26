@@ -10,11 +10,12 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.importer import DirectoryCheckpoint
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize('k,n,parts', [(64,128,2), (8192,4096,4)])
 def test_offline_sliced_parameter_values_reach_each_projection(tmp_path,k,n,parts):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9,0):
+    if not is_nvidia_sm90():
         pytest.skip('SM90 CUDA is required')
     from safetensors.torch import save_file
 

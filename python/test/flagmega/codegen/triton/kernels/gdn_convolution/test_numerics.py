@@ -5,6 +5,7 @@
 import pytest
 
 from python.test.flagmega.codegen.triton.kernels.gdn_convolution.helpers import execute_convolution
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("kernel", [2, 4, 6])
@@ -13,7 +14,7 @@ from python.test.flagmega.codegen.triton.kernels.gdn_convolution.helpers import 
 def test_numerical_attributes_survive_python_resume_and_real_lowering(tmp_path, kernel, round_products,
                                                                       round_activation):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(214)
     inputs = torch.randn((3, 64), generator=generator).bfloat16()
@@ -41,7 +42,7 @@ def test_numerical_attributes_survive_python_resume_and_real_lowering(tmp_path, 
 @pytest.mark.parametrize("order,accumulator", [("current_first", 1.), ("chronological", 2.)])
 def test_explicit_order_is_observable_under_cancellation(tmp_path, order, accumulator):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     inputs = torch.ones((1, 64), dtype=torch.bfloat16)
     weight = torch.ones((64, 4), dtype=torch.bfloat16)

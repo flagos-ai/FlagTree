@@ -9,6 +9,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 from .conftest import _packed_norm_stats_pipeline_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("implementation", [
@@ -18,7 +19,7 @@ from .conftest import _packed_norm_stats_pipeline_module
 ])
 def test_f32_accumulator_survives_projection_and_residual_cancellation(tmp_path, implementation):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = _packed_norm_stats_pipeline_module(implementation, wide=True, projection_output_data_type="float32")
     weights = {

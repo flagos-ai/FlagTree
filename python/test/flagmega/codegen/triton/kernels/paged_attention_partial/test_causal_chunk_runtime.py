@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def chunk_attention(config, tokens, layout, token_split, local_input, *, query_heads=4, token_policy=None):
@@ -55,7 +56,7 @@ def chunk_attention(config, tokens, layout, token_split, local_input, *, query_h
 def test_attention_chunk_uses_per_row_causal_length(tmp_path, tokens, past, dimension, query_heads, block_size, layout,
                                                     token_split, local_input):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     config = PagedAttentionStateConfig(3, 2, dimension, block_size=block_size, num_blocks=4)
     token_policy = fm.SBP.split(fm.SplitStage((1, ), fm.ContiguousSplit())) if tokens == 2 else None

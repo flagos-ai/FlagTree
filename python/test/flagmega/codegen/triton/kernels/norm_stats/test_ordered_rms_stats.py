@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.errors import CodegenError, IRVerificationError
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _reference(value):
@@ -104,7 +105,7 @@ def test_resumed_ordered_rms_requires_sm90(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("shape", [(1, 4096), (3, 1025), (2, 128)], ids=["single_full", "multi_tail", "short"])
 def test_ordered_fma_rms_sum_matches_independent_reference(tmp_path, shape):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     generator = torch.Generator().manual_seed(0)
     host = torch.randn(shape, generator=generator)

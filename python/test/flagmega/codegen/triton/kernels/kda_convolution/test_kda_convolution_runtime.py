@@ -19,6 +19,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import is_nvidia_sm90
 
 HEADS, DIM, KERNEL = 2, 4, 4
 NAMES = ("q", "k", "v", "state", "weight")
@@ -88,7 +89,7 @@ def test_generated_source_keeps_the_parts_on_separate_buffers(tmp_path):
 
 def test_generated_kernel_matches_the_flat_channel_arithmetic(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     runtime = load(_artifact(tmp_path), device="cuda:0")
     values = _values(torch, device="cuda")

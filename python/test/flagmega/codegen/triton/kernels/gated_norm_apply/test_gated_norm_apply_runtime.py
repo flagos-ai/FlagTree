@@ -14,6 +14,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 TOKENS, HEADS, DIM = 2, 3, 5
 EPS = 1e-5
@@ -73,7 +74,7 @@ def test_generated_source_keeps_one_rounding_boundary(tmp_path):
 @pytest.mark.parametrize("activation", ["sigmoid", "silu"])
 def test_generated_kernel_is_bit_exact_against_the_reference(tmp_path, activation):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module(activation=activation)).module
     artifact = write_artifact(

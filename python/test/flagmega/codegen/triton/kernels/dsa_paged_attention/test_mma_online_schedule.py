@@ -16,6 +16,7 @@ from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_at
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.prepared import ResourceContract, _spill_resource_report
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _graph(config, width, *, probability="online_bf16", heads=None, index_traversal="slots"):
@@ -89,7 +90,7 @@ def _arguments(runtime, module, state, query, topk, output):
 @pytest.mark.parametrize("schedule", ["simt", "bf16_mma"])
 @pytest.mark.parametrize("slot", [0, 64])
 def test_two_key_cancellation_uses_selected_dot_accumulation(tmp_path, schedule, slot):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 32, num_blocks=2)
     module, artifact = _compile(_graph(config, 130), tmp_path, schedule)
@@ -120,7 +121,7 @@ def test_two_key_cancellation_uses_selected_dot_accumulation(tmp_path, schedule,
 
 @pytest.mark.parametrize("slots", [(0, 1, 2), (64, 65, 66), (0, 65, 129), ()])
 def test_mma_online_empty_tiles_and_partial_head_group(tmp_path, slots):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 48, num_blocks=2)
     module, artifact = _compile(_graph(config, 130, heads=17), tmp_path, "bf16_mma")
@@ -148,7 +149,7 @@ def test_mma_online_empty_tiles_and_partial_head_group(tmp_path, slots):
 
 @pytest.mark.parametrize("count", [5, 65])
 def test_compact_traversal_preserves_results_when_padding_moves_tokens(tmp_path, count):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 32, num_blocks=2)
     module, artifact = _compile(_graph(config, 2175, heads=16, index_traversal="compact"), tmp_path, "bf16_mma")
@@ -184,7 +185,7 @@ def test_compact_traversal_preserves_results_when_padding_moves_tokens(tmp_path,
 
 @pytest.mark.parametrize("count", [2, 3, 5, 6, 7, 65])
 def test_compact_traversal_reads_each_valid_cache_entry(tmp_path, count):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 32, num_blocks=2)
     module, artifact = _compile(_graph(config, 2175, heads=16, index_traversal="compact"), tmp_path, "bf16_mma")
@@ -214,7 +215,7 @@ def test_compact_traversal_reads_each_valid_cache_entry(tmp_path, count):
 
 
 def test_compact_traversal_preserves_duplicates_and_filters_future_indices(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 32, num_blocks=2)
     module, artifact = _compile(_graph(config, 2175, heads=16, index_traversal="compact"), tmp_path, "bf16_mma")
@@ -268,7 +269,7 @@ def test_resumed_mma_schedule_requires_sm90(tmp_path, monkeypatch):
 
 
 def test_mma_full_head_domain_stays_within_register_contract(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 512, num_blocks=2)
     module, artifact = _compile(_graph(config, 2175, heads=64), tmp_path, "bf16_mma")
@@ -304,7 +305,7 @@ def _attention_with_live_caller(saved, query, topk, s0, s1, s2, s3, s4, result, 
 
 @pytest.mark.parametrize("index_traversal", ["slots", "compact"])
 def test_mma_register_budget_includes_live_caller(tmp_path, index_traversal):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 512, num_blocks=2)
     module, artifact = _compile(_graph(config, 2175, heads=64, index_traversal=index_traversal), tmp_path, "bf16_mma")

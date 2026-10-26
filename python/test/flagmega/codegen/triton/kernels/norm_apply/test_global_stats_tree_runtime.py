@@ -18,6 +18,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.errors import CodegenError, IRVerificationError
 
 from python.test.flagmega.codegen.triton.kernels.norm_apply.test_cross_chip_stats_runtime import cross_chip_norm_module
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 @triton.jit
@@ -110,7 +111,7 @@ def test_resumed_global_statistics_tree_requires_sm90(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("use_mean", [False, True])
 def test_global_statistics_tree_matches_complete_reduction(tmp_path, use_mean):
-    if torch.cuda.device_count() < 4 or any(torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(4)):
+    if not has_nvidia_sm90_devices(4):
         pytest.skip("requires four SM90 devices")
     artifact = write_artifact(_selected_module(use_mean), tmp_path / "norm", target="nvidia-sm90", emit_executable=True)
     result = subprocess.run(

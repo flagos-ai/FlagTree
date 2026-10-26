@@ -14,6 +14,7 @@ from python.test.flagmega.ir.ops.nn.test_update_paged_attention_kv_cache_pair im
     physical_input,
     state_arguments,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize('lanes,layout,split_axis,block_cyclic,heads,advance,reusable', [
@@ -28,7 +29,7 @@ from python.test.flagmega.ir.ops.nn.test_update_paged_attention_kv_cache_pair im
 def test_pair_writes_all_scalar_lanes_without_touching_neighbors(
         tmp_path, lanes, layout, split_axis, block_cyclic, heads, advance, reusable):
     torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip('SM90 CUDA required')
     config = PagedAttentionStateConfig(3, heads, 32, block_size=16, num_blocks=4)
     source = PairModule(config, lanes=lanes, layout=layout, placement=fm.Placement((2, 2), 'yx', 'bb'),
@@ -76,7 +77,7 @@ def test_pair_writes_all_scalar_lanes_without_touching_neighbors(
 @pytest.mark.parametrize('variant', ['tir.block_fp8.simt', 'tir.block_fp8.mma'])
 def test_projection_reshape_pair_pipeline_keeps_packed_output_on_device(tmp_path, variant):
     torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip('SM90 CUDA required')
     from python.test.flagmega.codegen.triton.kernels.block_fp8.test_packed_output_runtime import (
         artifact,

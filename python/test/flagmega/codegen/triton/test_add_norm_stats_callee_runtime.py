@@ -9,11 +9,12 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from ...passes.auto_distributed.test_function_return_publication import residual_callee
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def test_distributed_residual_callee_returns_value_and_materialized_stats(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(residual_callee()).module
     artifact = write_artifact(module, tmp_path / "residual-callee", target="nvidia-sm90", emit_executable=True)

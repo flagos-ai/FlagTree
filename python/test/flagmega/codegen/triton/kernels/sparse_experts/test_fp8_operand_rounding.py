@@ -7,12 +7,13 @@ import torch
 from triton.flagmega import ir as fm
 
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import execute_and_reference
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("packed", (False, True))
 @pytest.mark.parametrize("kind", ("simt", "partitioned", "tma"))
 def test_block_scaled_down_rounds_weight_operand_before_product(tmp_path, monkeypatch, packed, kind):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     activation_dtype = fm.vector_type("bfloat16", (8,)) if packed else "bfloat16"
     partitioned = kind == "partitioned"
@@ -67,7 +68,7 @@ def test_block_scaled_down_rounds_weight_operand_before_product(tmp_path, monkey
 @pytest.mark.parametrize("packed", (False, True))
 @pytest.mark.parametrize("pipeline", (False, True))
 def test_block_scaled_gate_up_rounds_weight_before_swiglu(tmp_path, monkeypatch, packed, pipeline):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     from triton.flagmega.compiler import Compiler
     from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp

@@ -7,6 +7,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _module(shape, *, axis, use_mean):
@@ -66,7 +67,7 @@ def test_generic_norm_stats_matches_torch_on_h800(
     tmp_path, shape, axis, use_mean,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(
         _module(shape, axis=axis, use_mean=use_mean)

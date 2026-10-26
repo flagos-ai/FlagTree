@@ -5,6 +5,7 @@ import pytest
 
 from triton.flagmega import ir as fm
 from python.test.flagmega.codegen.triton.kernels.delta_rule_gates.helpers import execute_gates
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("token,head", (
@@ -18,7 +19,7 @@ from python.test.flagmega.codegen.triton.kernels.delta_rule_gates.helpers import
 @pytest.mark.parametrize("mode", ("fast", "accurate"))
 def test_gate_device_numerics_and_independent_storage(tmp_path, token, head, local_inputs, local_results, mode):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(917)
     values = {"a": torch.randn((17, 8), generator=generator).bfloat16(),

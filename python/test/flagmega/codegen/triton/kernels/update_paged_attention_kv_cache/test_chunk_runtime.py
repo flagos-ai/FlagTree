@@ -12,6 +12,7 @@ from triton.flagmega.runtime import load
 
 from python.test.flagmega.codegen.triton.kernels.update_paged_attention_kv_cache.test_packed_slots_runtime import (
     cache_update_module, )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("tokens", (3, 9))
@@ -22,7 +23,7 @@ from python.test.flagmega.codegen.triton.kernels.update_paged_attention_kv_cache
 ))
 def test_cache_chunk_writes_every_row(tmp_path, tokens, packed, layout, split_heads, advance):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     config = PagedAttentionStateConfig(3, 4, 32, block_size=16, num_blocks=4)
     source = cache_update_module(config, packed, layout, split_heads, advance, tokens=tokens)

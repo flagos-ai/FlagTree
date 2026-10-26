@@ -12,12 +12,13 @@ from triton.flagmega.runtime import load
 
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import execute_and_reference
 from python.test.flagmega.ir.ops.nn.test_partitioned_sparse_experts_down import PartitionedProjection, operands
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("packed,lanes", ((False, ()), (True, (2, 2))))
 @pytest.mark.parametrize("rounded", (False, True))
 def test_actual_partitioned_projection_keeps_each_result(tmp_path, packed, lanes, rounded):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     graph = PartitionedProjection(packed=packed, lanes=lanes, rounded=rounded)
     actual, expected, runtime = execute_and_reference(graph.build(), tmp_path, torch, overrides=operands(graph))
@@ -32,7 +33,7 @@ def test_actual_partitioned_projection_keeps_each_result(tmp_path, packed, lanes
 
 @pytest.mark.parametrize("lanes", ((), (2, 2)))
 def test_local_rounding_then_global_partition_sum(tmp_path, lanes):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     graph = PartitionedProjection(lanes=lanes, combine=True)
     module, values = graph.build(), operands(graph)
@@ -61,7 +62,7 @@ def test_local_rounding_then_global_partition_sum(tmp_path, lanes):
 @pytest.mark.parametrize("packed", (False, True))
 @pytest.mark.parametrize("mode", ("dynamic_fp8", "dynamic_fp8_ue8m0"))
 def test_partitioned_ragged_axes_and_multiple_quantization_groups(tmp_path, packed, mode):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     graph = PartitionedProjection(packed=packed, lanes=(2, 2), mode=mode, partitions=3, tokens=2,
                                   hidden=20, reduction=136, block=16)
@@ -81,7 +82,7 @@ def test_partitioned_ragged_axes_and_multiple_quantization_groups(tmp_path, pack
 def test_partitioned_readonly_fp8_weights_keep_their_representation(tmp_path, packed):
     from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     graph = PartitionedProjection(packed=packed, lanes=(2, 2), constants=True)
     module, values = graph.build(), operands(graph)
@@ -104,7 +105,7 @@ def test_partitioned_readonly_fp8_weights_keep_their_representation(tmp_path, pa
 @pytest.mark.parametrize("packed", (False, True))
 @pytest.mark.parametrize("cyclic", (False, True))
 def test_partition_and_hidden_owners_index_global_scale_tables(tmp_path, packed, cyclic):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     graph = PartitionedProjection(packed=packed, lanes=(2, 2), partitions=3 if cyclic else 4, tokens=2,
                                   hidden=64, reduction=128, block=16)

@@ -11,6 +11,7 @@ from triton.flagmega.ir.ops.nn._gdn_state import create_gdn_state
 from triton.flagmega.ir.ops.nn._paged_attention_state import create_paged_attention_state
 from triton.flagmega.ir.print_weights import WeightPrintAnalysis
 from python.test.flagmega.importer.qwen3_5_moe.helpers import checkpoint
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("tokens", [1, 3])
@@ -72,7 +73,7 @@ def test_native_projection_matches_four_way_reference_across_state_updates(profi
 
 
 def test_selected_native_qkv_and_gate_execute_exact_binary_fraction_inputs(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.compiler import Compiler

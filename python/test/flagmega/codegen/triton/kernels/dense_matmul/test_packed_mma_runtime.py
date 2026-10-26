@@ -17,6 +17,7 @@ from triton.flagmega.passes.auto_distributed.proposal_analysis import remember_p
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 class CanonicalTarget(NvidiaSm90Target):
@@ -51,7 +52,7 @@ class CanonicalTarget(NvidiaSm90Target):
 @pytest.mark.parametrize("m,k,n,large", [(1, 48, 24, False), (2, 256, 72, False),
                                       (1, 4096, 1024, False), (1, 4096, 16, True)])
 def test_packed_bf16_mma_matches_cuda_projection(tmp_path, m, k, n, large):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     from safetensors.torch import save_file
 

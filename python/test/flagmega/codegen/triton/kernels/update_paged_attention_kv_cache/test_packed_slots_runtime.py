@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def cache_update_module(config, packed, layout, split_heads, advance, tokens=1, *, placement=None):
@@ -50,7 +51,7 @@ def cache_update_module(config, packed, layout, split_heads, advance, tokens=1, 
 ])
 def test_cache_update_preserves_complete_paged_storage(tmp_path, packed, layout, split_heads, advance):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     config = PagedAttentionStateConfig(3, 4, 32, num_blocks=4)
     module = Compiler().compile(cache_update_module(config, packed, layout, split_heads, advance)).module

@@ -15,6 +15,7 @@ from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.passes.constants import freeze_constant_islands
 from python.test.flagmega.codegen.triton.kernels.sparse_experts import helpers
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 class ConstantOnlyCheckpoint:
@@ -60,7 +61,7 @@ def test_runtime_scales_are_not_assumed_to_be_one(tmp_path, definition):
 @pytest.mark.parametrize("constant", [1.0, 0.5])
 def test_constant_scales_device_matches_evaluator(tmp_path, definition, constant):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     actual, expected, _ = helpers.execute_and_reference(constant_scales_module(definition, constant), tmp_path, torch,
                                                        checkpoint=ConstantOnlyCheckpoint())
