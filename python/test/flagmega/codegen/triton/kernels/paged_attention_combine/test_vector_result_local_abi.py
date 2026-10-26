@@ -219,13 +219,9 @@ def test_dim_sharded_output_uses_global_dimension_for_broadcast_partial_state():
 
 
 
-@pytest.mark.parametrize("cyclic", [False, True])
-@pytest.mark.parametrize("gated", [False, True])
-def test_combine_resharded_heads_reads_source_owner_and_local_head(tmp_path, cyclic, gated):
-    import importlib.util
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("requires a GPU")
+def _resharded_heads_call(cyclic, gated):
+    # BI-V150-style 4x4 mesh: the result splits 16 heads over both mesh axes,
+    # while the partial state splits them 4-way over axis 1 only.
     mesh = (4, 4)
     source_split = {"kind": "split", "stages": [{"hierarchy_axes": (1,), "distribution": (
         {"kind": "block_cyclic", "block_size": 1} if cyclic else
@@ -250,10 +246,41 @@ def test_combine_resharded_heads_reads_source_owner_and_local_head(tmp_path, cyc
            "parameters": {"elements_per_program": 8}, "inputs": (
                _parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
            "outputs": (_parameter("result", result),), "workspaces": ()}
-    family = "paged_attention_gated_combine" if gated else "paged_attention_combine"
     if gated:
         raw["inputs"] = (*raw["inputs"], _parameter("gate", result))
-    call = (_paged_attention_gated_combine_call(raw) if gated else _paged_attention_combine_call(raw))
+    return mesh, (_paged_attention_gated_combine_call(raw) if gated else _paged_attention_combine_call(raw))
+
+
+@pytest.mark.parametrize("cyclic", [False, True])
+@pytest.mark.parametrize("gated", [False, True])
+def test_combine_resharded_heads_addresses_source_owner_and_local_head(cyclic, gated):
+    mesh, call = _resharded_heads_call(cyclic, gated)
+    for shard_y in range(mesh[0]):
+        for shard_x in range(mesh[1]):
+            for attention_part in range(call["context_shards"]):
+                for attention_output_offsets in range(call["local_capacity"]):
+                    scope = dict(shard_y=shard_y, shard_x=shard_x, attention_part=attention_part,
+                                 attention_output_offsets=attention_output_offsets)
+                    if not eval(call["active"], {}, scope):
+                        continue
+                    head = eval(call["head"], {}, scope)
+                    dimension = eval(call["dimension"], {}, scope)
+                    holder, local_head = (head % 4, head // 4) if cyclic else (head // 4, head % 4)
+                    assert eval(call["partial_owner"], {}, scope) == attention_part * 4 + holder
+                    assert eval(call["partial_accumulator_offset"], {}, scope) == local_head * 8 + dimension
+                    assert eval(call["partial_max_offset"], {}, scope) == local_head
+                    assert eval(call["partial_sum_offset"], {}, scope) == local_head
+
+
+@pytest.mark.parametrize("cyclic", [False, True])
+@pytest.mark.parametrize("gated", [False, True])
+def test_combine_resharded_heads_reads_source_owner_and_local_head(tmp_path, cyclic, gated):
+    import importlib.util
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("requires a GPU")
+    mesh, call = _resharded_heads_call(cyclic, gated)
+    family = "paged_attention_gated_combine" if gated else "paged_attention_combine"
     call.update(family=family, variant="decode", symbol="run",
                 signature="max_state, sum_state, acc_state, result" + (", gate" if gated else ""))
     body = TritonTemplateRegistry().render(f"kernels/{family}/decode.py.jinja", {
