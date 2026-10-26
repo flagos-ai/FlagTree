@@ -105,3 +105,28 @@ def test_function_offsets_reject_non_i64_values(value):
             [{"name": "_flagmega_function_offsets", "dtype": "int64", "values": [value]}],
             existing_names=(),
         )
+
+
+def _row_strided_plan(row_stride_bytes):
+    return {"bindings": [{"formal": "w", "storage": "s0", "row_stride_bytes": row_stride_bytes}],
+            "pools": [], "record_width": 0, "calls": []}
+
+
+def test_non_loop_call_passes_the_bank_row_as_a_tl_value():
+    from triton.flagmega.codegen.triton.function_pool_abi import function_pool_actuals
+    caller = {"function": "caller", "pools": []}
+    (row,) = function_pool_actuals(caller, None, _row_strided_plan(128), {}, has_tables=False)
+    # The callee folds this into ``(row).to(tl.int64) * stride``; a bare Python
+    # int literal has no ``.to`` and fails to compile.
+    expression = ast.parse(row, mode="eval").body
+    assert isinstance(expression, ast.Call) and ast.unparse(expression.func) == "tl.full"
+    assert ast.literal_eval(expression.args[1]) == 0
+    assert ast.unparse(expression.args[2]) == "tl.int64"
+
+
+def test_loop_call_and_unstrided_plan_keep_their_row_actuals():
+    from triton.flagmega.codegen.triton.function_pool_abi import function_pool_actuals
+    caller = {"function": "caller", "pools": []}
+    assert function_pool_actuals(caller, None, _row_strided_plan(128), {}, has_tables=False,
+                                 row_index="layer") == ["layer"]
+    assert function_pool_actuals(caller, None, _row_strided_plan(0), {}, has_tables=False) == []
