@@ -8,14 +8,14 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("kind", ["pointwise", "softmax", "softmax_tiled"])
 @pytest.mark.parametrize("distributed", [False, True])
 def test_compiled_fusion_has_one_kernel_and_correct_values(tmp_path, kind, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     columns = 5003 if kind == "softmax_tiled" else 37
     shape = (4, columns)
     value_type = fm.tensor_type("bfloat16", shape)

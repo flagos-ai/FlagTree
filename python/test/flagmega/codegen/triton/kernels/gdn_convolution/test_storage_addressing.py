@@ -11,6 +11,7 @@ from triton.flagmega.ir.ops.nn._gdn_state import GatedDeltaNetStateConfig, creat
 from triton.flagmega.ir.ops.nn.gdn_convolution import gated_delta_net_convolution
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("local_input", [False, True])
@@ -19,8 +20,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("tokens", [1, 3])
 def test_channel_shards_respect_each_operand_storage(tmp_path, local_input, local_weight, local_result, tokens):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     config = GatedDeltaNetStateConfig(1, 2, 4, 8, 8, 4, 32)
     channels = config.conv_dim
     placement = fm.Placement((2, 4), "yx", "bb")

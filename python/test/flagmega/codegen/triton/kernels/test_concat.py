@@ -10,14 +10,14 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from python.test.flagmega.ir.ops.tensors.test_concat_local_contract import concat_module
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("shapes,axis", [(((8, 3), (8, 5)), -1), (((8, 0), (8, 3), (8, 7)), 1), (((3, 5), (4, 5)), 0)])
 @pytest.mark.parametrize("vector", [False, True])
 def test_concat_generic_kernel_copies_variadic_inputs_and_vector_lanes_exactly(tmp_path, shapes, axis, vector):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     module = concat_module(shapes, axis=axis, vector=vector)
     compiled = Compiler().compile(module).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
@@ -35,8 +35,7 @@ def test_concat_generic_kernel_copies_variadic_inputs_and_vector_lanes_exactly(t
 @pytest.mark.parametrize("vector", [False, True])
 def test_concat_kernel_preserves_non_concat_axis_owner_coordinates(tmp_path, vector):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     module = concat_module(((8, 3), (8, 7)), split=True, vector=vector)
     placement = module.node_map["output"].type.placement
     module = replace(module, metadata={"auto_distribution": {"placement": placement.to_data()}})

@@ -13,6 +13,7 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 from python.test.flagmega.codegen.triton.kernels.sparse_experts import helpers
 from python.test.flagmega.sparse_experts.helpers import operand_types
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 def pipeline_target(*, block_k=None, stages=None):
@@ -45,8 +46,7 @@ def pipeline_target(*, block_k=None, stages=None):
 @pytest.mark.parametrize("packed", (False, True))
 def test_pipeline_ragged_tiles_and_numerical_boundaries(definition, dtype, packed, monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("requires SM90")
+    require_nvidia_sm90()
     compiler = Compiler()
     compiler.target = pipeline_target()
     monkeypatch.setattr(helpers, "Compiler", lambda: compiler)
@@ -92,8 +92,7 @@ def distributed_stage(definition, dtype, partition):
 @pytest.mark.parametrize("dtype", ("bfloat16", "float32"))
 def test_pipeline_ragged_owners_and_explicit_partial(definition, partition, dtype, monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("requires SM90")
+    require_nvidia_sm90()
     compiler = Compiler()
     compiler.target = pipeline_target()
     monkeypatch.setattr(helpers, "Compiler", lambda: compiler)
@@ -107,8 +106,7 @@ def test_pipeline_ragged_owners_and_explicit_partial(definition, partition, dtyp
 @pytest.mark.parametrize("dtype", ("bfloat16", "float32"))
 def test_pipeline_large_shared_tile_uses_multiple_tma_boxes(definition, dtype, monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("requires SM90")
+    require_nvidia_sm90()
     compiler = Compiler()
     compiler.target = pipeline_target(block_k=128, stages=2)
     monkeypatch.setattr(helpers, "Compiler", lambda: compiler)
@@ -120,8 +118,7 @@ def test_pipeline_large_shared_tile_uses_multiple_tma_boxes(definition, dtype, m
 @pytest.mark.parametrize("view_kind", ("materialized", "alias"))
 def test_pipeline_reads_router_ids_written_in_the_same_invocation(definition, view_kind, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("requires SM90")
+    require_nvidia_sm90()
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
     from triton.flagmega.runtime import load
@@ -207,8 +204,7 @@ def test_pipeline_reads_router_ids_written_in_the_same_invocation(definition, vi
 @pytest.mark.parametrize("shared_width", (16, 24))
 def test_pipeline_imported_moe_with_independent_shared_width(tokens, shared_width, monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("requires SM90")
+    require_nvidia_sm90()
     from python.test.flagmega.codegen.triton.kernels.sparse_experts.test_shared_groups import imported_moe
 
     graph, checkpoint = imported_moe(torch, tokens, shared_width)

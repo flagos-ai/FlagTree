@@ -8,6 +8,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
@@ -15,8 +16,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("split", [False, True])
 def test_vector_sigmoid_is_bitwise_identical_to_scalar_kernel(tmp_path, dtype, lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     typ = fm.tensor_type(fm.vector_type(dtype, lanes), (4, 16))
     metadata = {}
     if split:

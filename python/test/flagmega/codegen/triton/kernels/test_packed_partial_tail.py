@@ -7,13 +7,13 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from python.test.flagmega.codegen.triton.candidates.test_packed_partial_tail import projection
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("k,n,output_split", [(64, 8, False), (96, 24, False), (96, 48, True)])
 def test_packed_partial_projection_masks_local_output_and_reduction_tails(tmp_path, k, n, output_split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     compiled = Compiler().compile(projection(k, n, output_split=output_split)).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")

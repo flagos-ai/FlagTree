@@ -9,14 +9,14 @@ from triton.flagmega.ir.ops.nn._gdn_state import GatedDeltaNetStateConfig, creat
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from python.test.flagmega.passes.tir.bufferize.test_ref_slice import state_slice_graph
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("index", [None, 0, 1, 2])
 @pytest.mark.parametrize("reusable", [False, True])
 def test_reference_subspan_updates_only_selected_layer_across_invocations(tmp_path, index, reusable):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     compiled = Compiler().compile(state_slice_graph(index, reusable=reusable)).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")

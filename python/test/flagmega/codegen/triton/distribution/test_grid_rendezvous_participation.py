@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.kernel_call_renderers import _exclusive_participation_active
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("barriers", [0, 1, 2])
@@ -183,9 +184,8 @@ def _run_cache_pipeline(directory, schedule):
 
 @pytest.mark.parametrize("schedule", ["simt", "bf16_mma"])
 def test_exclusive_cache_update_rendezvous_then_latent_attention(tmp_path, schedule):
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("requires CUDA")
+    pytest.importorskip("torch")
+    require_nvidia_sm90()
     # Bound the child lifetime: the regression was a device barrier deadlock.
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), str(tmp_path), schedule],

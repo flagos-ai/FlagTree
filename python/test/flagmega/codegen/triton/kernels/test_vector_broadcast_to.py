@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("shape,lanes,target,output_lanes", [
@@ -24,8 +25,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("split", [False, True])
 def test_vector_element_broadcast_uses_source_lane_coordinates(tmp_path, shape, lanes, target, output_lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     # Rank-zero by-value floating parameters use the runtime's FP32 ABI.
     element = "bfloat16" if shape else "float32"
     dtype = fm.vector_type(element, lanes) if lanes else element

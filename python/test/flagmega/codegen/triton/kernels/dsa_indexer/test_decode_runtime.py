@@ -13,6 +13,7 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.ir.ops.nn._dsa_indexer_state import DsaIndexerState, DsaIndexerStateConfig
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import requires_nvidia_sm90
 
 
 def indexer_module(config, layer, *, state_layer_ids=None, placement=None, reusable=False,
@@ -77,7 +78,7 @@ def prepare(module, directory, inputs, state, output, *, target=None):
     return runtime, arguments
 
 
-@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
+@requires_nvidia_sm90
 def test_noncontiguous_logical_layers_and_first_token_tail(tmp_path):
     config = DsaIndexerStateConfig((3, 7), 8, 4, 5)
     # Valid tensor views retain larger backing storage as a write canary. The
@@ -108,7 +109,7 @@ def test_noncontiguous_logical_layers_and_first_token_tail(tmp_path):
         runtime.close()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
+@requires_nvidia_sm90
 @pytest.mark.parametrize("layer", [3, 7])
 @pytest.mark.parametrize("cooperative", [False, True])
 @pytest.mark.parametrize("reusable", [False, True])
@@ -147,7 +148,7 @@ def test_eight_updates_select_distinct_pools_and_keep_tail(tmp_path, layer, coop
         runtime.close()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0), reason="requires CUDA")
+@requires_nvidia_sm90
 def test_full_capacity_visibility_and_tail_in_reusable_worker(tmp_path):
     config = DsaIndexerStateConfig((3, 7), 4096, 128, 2051)
     packed = torch.zeros((2, 4096, 257), dtype=torch.bfloat16, device="cuda")
