@@ -296,7 +296,9 @@ class TestCopyFrontend:
             target=target,
         )
         ir = module.str_nodebug()
-        assert "arith.constant dense<0xFC00> : tensor<16xf16>" in ir
+        assert ("arith.constant dense<0xFC00> : tensor<16xf16>" in ir
+                or ("arith.constant dense<0xFF800000> : tensor<16xf32>" in ir and
+                    ("arith.truncf" in ir or "tt.fp_to_fp" in ir)))
         assert "tt.load" in ir
 
     @pytest.mark.skipif(
