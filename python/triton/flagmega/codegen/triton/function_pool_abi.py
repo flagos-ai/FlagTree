@@ -265,8 +265,10 @@ def function_pool_actuals(caller, call, plan: Mapping | None, actuals: Mapping[s
     if plan is not None and any(
             field.get("row_stride_bytes") for field in plan["bindings"]):
         # One call site serves every trip, so the row this invocation reads is
-        # only known from the loop's induction variable.
-        result.append(row_index if row_index is not None else "0")
+        # only known from the loop's induction variable. A non-loop call still
+        # reads row zero, but the callee casts this with ``.to(tl.int64)``, so
+        # it must arrive as a tl value rather than a bare Python ``int``.
+        result.append(row_index if row_index is not None else "tl.full((), 0, tl.int64)")
     if has_tables:
         result.append(actuals.get(OFFSET_TABLE, OFFSET_TABLE))
     if plan is None:
