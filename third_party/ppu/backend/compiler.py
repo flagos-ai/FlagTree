@@ -386,7 +386,7 @@ class PPUBackend(BaseBackend):
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.ppu.rlc_enhance, enable_rlc_enhance_store_layout_remat=True)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         if tle is not None:
             tle.passes.add_early_assign_memory_space(pm)
@@ -395,7 +395,7 @@ class PPUBackend(BaseBackend):
             tle.passes.add_optimize_local_pointer_loads(pm)
             tle.passes.add_optimize_local_pointer_stores(pm)
         ppu.passes.ttgpuir.add_accelerate_matmul(pm)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.ppu.rlc_enhance, enable_rlc_enhance_store_layout_remat=True)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         if tle is not None:
             tle.passes.add_promote_local_store_staging(pm)
@@ -419,7 +419,7 @@ class PPUBackend(BaseBackend):
         if tle is not None:
             tle.passes.add_downgrade_invalid_async_copy(pm)
         ppu.passes.ttppugpuir.add_aiu_lowering(pm)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.ppu.rlc_enhance, enable_rlc_enhance_store_layout_remat=True)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
         if tle is not None:
