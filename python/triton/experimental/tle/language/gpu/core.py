@@ -1247,9 +1247,8 @@ def copy(
         # contract NVIDIA cp.async implements directly). `other` needs the
         # mask: the load builder rejects a fill value without one, and `copy()`
         # rejects `other` without a mask before reaching here.
-        other_value = None
         if direction == CopyDirection.GM_TO_LOCAL and mask is not None:
-            other_value = _semantic.to_tensor(0.0 if other is None else other)
+            other = _semantic.to_tensor(0.0 if other is None else other)
         boundary_check = ()
         padding_option = ""
         cache_modifier = ""
@@ -1261,16 +1260,16 @@ def copy(
                 if iluvatar_enabled:
                     # Iluvatar's semantic.load carries an extra `stride` (SME) slot
                     # right after `other`; TLE copy never uses the SME path.
-                    tt_load = _semantic.load(src, mask, other_value, None, boundary_check, padding_option,
-                                             cache_modifier, eviction_policy, volatile)
+                    tt_load = _semantic.load(src, mask, other, None, boundary_check, padding_option, cache_modifier,
+                                             eviction_policy, volatile)
                 else:
                     # None fills the FlagTree hints slot; TLE copy has no hints to pass.
                     load_extra_args = () if mthreads_enabled else (None, )
-                    tt_load = _semantic.load(src, mask, other_value, boundary_check, padding_option, cache_modifier,
+                    tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
                                              eviction_policy, volatile, *load_extra_args)
                 local_ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
                 # Every local element is initialized. A false source mask is
-                # represented by the loaded fill value rather than by suppressing
+                # represented by the loaded other value rather than by suppressing
                 # the shared-memory store.
                 _semantic.store(local_ptrs, tt_load, None, boundary_check, cache_modifier, eviction_policy)
                 if hasattr(_semantic.builder, "mark_logical_pointer_copy"):
@@ -1408,19 +1407,12 @@ def copy(
 
     other = tl._unwrap_if_constexpr(other)
     if other is not None:
-        # The fill value describes how a global-memory tile is materialised
-        # inside a local buffer, so it is meaningless for the remaining
-        # combinations. Reject instead of silently dropping it.
         if not is_normcopy or direction != CopyDirection.GM_TO_LOCAL:
             raise ValueError("copy other is only supported for standard pointer-tensor "
                              f"global-to-local copies, got direction={direction.value} "
                              f"src={type(src).__name__} dst={type(dst).__name__}")
 
     if other is not None and mask is None:
-        # `other` is the fill value of the lanes the mask excludes. Triton's
-        # load builder rejects a fill value without a mask, so say it in terms
-        # of the option the user passed instead of leaking the load builder's
-        # raw "`other` cannot be provided without `mask`" error.
         raise ValueError("copy other requires a mask: it is the fill value of the lanes the mask excludes")
 
     if tle_semantic.COMMON_IR_ENABLED:
