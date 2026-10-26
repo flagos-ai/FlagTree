@@ -9,15 +9,14 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import executable_target
 
 
 def test_float32_residual_with_bf16_projection_cast(tmp_path):
     torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available():
-        pytest.skip('CUDA required')
-    target = {(9, 0): 'nvidia-sm90', (12, 0): 'nvidia-sm120'}.get(torch.cuda.get_device_capability())
+    target = executable_target()
     if target is None:
-        pytest.skip('requires an executable FlagMega CUDA target')
+        pytest.skip('requires a GPU with an executable FlagMega target')
 
     class Graph(fm.Module):
 

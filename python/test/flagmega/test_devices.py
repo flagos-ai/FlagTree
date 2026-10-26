@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from python.test.flagmega.devices import (has_nvidia_sm90_devices, is_nvidia_sm90, nvidia_capability,
-                                          require_nvidia_sm90)
+from python.test.flagmega.devices import (executable_target, has_nvidia_sm90_devices, is_nvidia_sm90,
+                                          nvidia_capability, require_nvidia_sm90)
 
 torch = pytest.importorskip("torch")
 
@@ -37,6 +37,21 @@ def test_require_nvidia_sm90_skips_on_rocm_gfx90a(monkeypatch):
     _device(monkeypatch, available=True, hip="6.2", capability=(9, 0))
     with pytest.raises(pytest.skip.Exception):
         require_nvidia_sm90()
+
+
+@pytest.mark.parametrize("available,hip,capability,arch,expected", [
+    (True, None, (9, 0), "", "nvidia-sm90"),
+    (True, None, (12, 0), "", "nvidia-sm120"),
+    (True, None, (8, 9), "", None),
+    (True, "7.2", (12, 0), "gfx1201", "amd-gfx1201"),  # R9700 also reports (12, 0)
+    (True, "7.2", (11, 0), "gfx1100:sramecc-:xnack-", "amd-gfx1100"),
+    (True, "6.2", (9, 0), "gfx90a:sramecc+:xnack-", None),  # no FlagMega target, never sm90
+    (True, "7.2", (9, 5), "gfx950", None),
+    (False, None, (9, 0), "", None),
+])
+def test_executable_target_never_maps_rocm_to_nvidia(monkeypatch, available, hip, capability, arch, expected):
+    _device(monkeypatch, available=available, hip=hip, capability=capability, arch=arch)
+    assert executable_target() == expected
 
 
 def test_nvidia_capability_is_none_on_rocm(monkeypatch):

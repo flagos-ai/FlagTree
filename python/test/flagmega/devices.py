@@ -6,6 +6,9 @@ import pytest
 
 NVIDIA_SM90_REASON = "requires an NVIDIA SM90 GPU"
 
+_NVIDIA_TARGETS = {(9, 0): "nvidia-sm90", (12, 0): "nvidia-sm120"}
+_AMD_TARGETS = {"gfx1100": "amd-gfx1100", "gfx1201": "amd-gfx1201"}
+
 
 def _cuda_torch():
     try:
@@ -36,6 +39,17 @@ def has_nvidia_sm90_devices(count: int) -> bool:
     if torch is None or torch.version.hip or torch.cuda.device_count() < count:
         return False
     return all(nvidia_capability(device) == (9, 0) for device in range(count))
+
+
+def executable_target():
+    """The FlagMega target that can run on this process's first GPU, or None."""
+    torch = _cuda_torch()
+    if torch is None:
+        return None
+    if torch.version.hip:
+        arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+        return _AMD_TARGETS.get(arch)
+    return _NVIDIA_TARGETS.get(nvidia_capability())
 
 
 def require_nvidia_sm90():
