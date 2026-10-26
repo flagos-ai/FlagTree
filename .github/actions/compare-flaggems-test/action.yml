@@ -34,11 +34,16 @@ inputs:
     required: false
     default: ''
   compare-script:
-    description: 'Path to the comparison script (relative to working-directory or absolute)'
-    required: true
-    default: 'tools/ci/compare_test_result.py'
+    description: >-
+      Comparison script. Defaults to the copy in the FlagTree checkout, which
+      takes every path as an argument and so runs in place -- it does not need
+      to be copied into the FlagGems clone.
+    required: false
+    default: ''
   working-directory:
-    description: 'Working directory for running the compare script'
+    description: >-
+      Working directory for the compare script. Only matters for relative
+      paths; the default script needs none.
     required: false
     default: '.'
   fail-on-missing-baseline:
@@ -90,8 +95,16 @@ runs:
           exit 1
         fi
 
+        COMPARE_SCRIPT="${{ inputs.compare-script }}"
+        COMPARE_SCRIPT="${COMPARE_SCRIPT:-${GITHUB_WORKSPACE}/.github/workflows/gems/ci/compare_test_result.py}"
+
+        if [ ! -f "$COMPARE_SCRIPT" ]; then
+          echo "::error::Comparison script not found: $COMPARE_SCRIPT"
+          exit 1
+        fi
+
         # Run comparison; --exit-code makes it return non-zero on regression
-        python ${{ inputs.compare-script }} \
+        python "$COMPARE_SCRIPT" \
           --baseline "$BASELINE_JSON" \
           --candidate "$CANDIDATE_JSON" \
           --exit-code || COMPARE_EXIT=$?

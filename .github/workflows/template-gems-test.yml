@@ -63,7 +63,17 @@ on:
         default: ''
     secrets:
       github-token:
+        description: 'Token for label lookups. Kept required for compatibility.'
         required: true
+      # Reporting credentials. Optional: when a caller does not forward them
+      # the reporting step finds no credentials and skips, which keeps this
+      # template usable from branches that have not been updated.
+      FLAGTREE_FEISHU_APP_ID:
+        required: false
+      FLAGTREE_FEISHU_APP_SECRET:
+        required: false
+      FLAGTREE_FEISHU_BITABLE_APP_TOKEN:
+        required: false
 
 env:
   FLAGGEMS_CI_DIR: '/root/flaggems_ci'
@@ -96,22 +106,23 @@ jobs:
           fi
 
       - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        uses: ./.github/actions/smart-checkout
         with:
           checkout_version: 'v6'
 
       - name: Check if backend-relevant files changed
         id: check_backend
         if: success()
-        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        uses: ./.github/actions/check-backend-changed
         with:
           backend: ${{ inputs.backend }}
 
       - name: Cleanup FlagTree Environment
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+        uses: ./.github/actions/cleanup-flagtree-env
 
       - name: Build FlagTree
+        id: build
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
@@ -119,7 +130,7 @@ jobs:
 
       - name: Clone FlagGems Repo
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        uses: ./.github/actions/git-clone-retry
         with:
           repo-url: 'https://github.com/flagos-ai/FlagGems.git'
           ref: ${{ inputs.flaggems-tag }}
@@ -128,35 +139,87 @@ jobs:
       - name: Clear cache if ClearCache label present
         id: clear_cache
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        uses: ./.github/actions/clear-cache-if-labeled
         with:
-          github-token: ${{ secrets.github-token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ${{ inputs.backend }}
 
       - name: Run FlagGems Test
         id: run-flaggems-test
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        uses: ./.github/actions/run-flaggems-test
         with:
           flaggems-path: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           gpus: '${{ steps.setup.outputs.gpus }}'
           output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/PR'
           pr-number: '${{ github.event.pull_request.number }}'
-          run-script: 'tools/ci/ci_run_tests.py'
-          skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'
           pre-command: ${{ inputs.flaggems-pre-command }}
+          flaggems-tag: ${{ inputs.flaggems-tag }}
+          backend: ${{ inputs.backend }}
 
       - name: Compare with Baseline
         id: compare-baseline
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        uses: ./.github/actions/compare-flaggems-test
         with:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
-          compare-script: 'tools/ci/compare_test_result.py'
-          working-directory: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           fail-on-missing-baseline: 'true'
+
+      # Runs even when the build or the test failed: those runs are exactly the
+      # ones worth recording. Never allowed to fail this PR gate.
+      - name: Collect FlagGems Record
+        id: collect
+        if: ${{ always() && steps.check_backend.outputs.should_skip != 'true' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          CTX_KIND: test
+          CTX_BACKEND: ${{ inputs.backend }}
+          CTX_RUNNER: ${{ inputs.runner }}
+          CTX_FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
+          CTX_FLAGTREE_SHA: ${{ github.event.pull_request.head.sha }}
+          CTX_FLAGTREE_BRANCH: ${{ github.base_ref }}
+          CTX_PR_NUMBER: ${{ github.event.pull_request.number }}
+          CTX_PR_URL: ${{ github.event.pull_request.html_url }}
+          CTX_ACTOR: ${{ github.actor }}
+          CTX_RUN_ID: ${{ github.run_id }}
+          CTX_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CTX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # outcome, not conclusion: continue-on-error rewrites conclusion
+          CTX_BUILD_OUTCOME: ${{ steps.build.outcome }}
+          CTX_TEST_OUTCOME: ${{ steps.run-flaggems-test.outcome }}
+          OUT_DIR: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          BASELINE_DIR: ${{ steps.setup.outputs.best_dir }}
+        run: |
+          if [[ -z "${OUT_DIR}" || ! -f "${OUT_DIR}/summary.json" ]]; then
+            echo "No summary.json under '${OUT_DIR}', nothing to collect."
+            exit 0
+          fi
+
+          # Run from the checkout, not the FlagGems clone, which the cleanup
+          # step below removes.
+          python3 "${GITHUB_WORKSPACE}/.github/workflows/gems/ci/collect_gems_record.py" \
+            --summary "${OUT_DIR}/summary.json" \
+            --baseline-dir "${BASELINE_DIR}" \
+            --ledger "${FLAGGEMS_CI_DIR}/Ledger/runs.jsonl" \
+            --op-ledger "${FLAGGEMS_CI_DIR}/Ledger/operators.jsonl"
+
+          echo "record-file=${OUT_DIR}/record.json" >> $GITHUB_OUTPUT
+
+      - name: Report Record to Feishu
+        if: ${{ always() && steps.collect.outputs.record-file != '' }}
+        continue-on-error: true
+        uses: ./.github/actions/report-feishu
+        with:
+          record: ${{ steps.collect.outputs.record-file }}
+          table-name: flaggems_runs
+          schema: ${{ github.workspace }}/.github/workflows/gems/ci/flaggems_runs.schema.json
+          dedup-field: record_id
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+          app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
 
       - name: Cleanup FlagGems Repo
         if: always()
