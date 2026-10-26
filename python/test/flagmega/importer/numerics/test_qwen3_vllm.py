@@ -193,3 +193,12 @@ def test_profile_ir_loads_and_runs_normal_passes_without_tutorial_imports(model,
         "assert sum(n.op == 'nn.dense_matmul_glu' for n in m.nodes) == 1; "
         "assert not any(n.startswith('local_optimizations') for n in sys.modules)"
     )], check=True)
+
+
+def test_prefill_slice_tracks_profile_dtype(checkpoint):
+    result = import_model(
+        checkpoint, mode="prefill", num_tokens=4,
+        numerical_profile=VLLM_INDUCTOR_LEVEL3,
+    )
+    assert result.node_map["prefill_last_hidden"].type.dtype == fm.DType.FLOAT32
+    fm.verify_module(result)
