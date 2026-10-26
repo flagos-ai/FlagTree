@@ -5,13 +5,13 @@ from triton.experimental.tle import (
     primitive_name,
 )
 
-_MARKER = "require_tle"
+_MARKER = "skip_if_tle_unsupported"
 
 
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        "require_tle(*primitives): run only when the active backend supports every named TLE primitive",
+        "skip_if_tle_unsupported(*primitives): skip when the active backend does not support every named TLE primitive",
     )
 
 
@@ -19,9 +19,9 @@ def _get_required_primitives_list(item):
     required_list = []
     for marker in item.iter_markers(name=_MARKER):
         if marker.kwargs:
-            raise pytest.UsageError("require_tle accepts primitive names as positional arguments only")
+            raise pytest.UsageError("skip_if_tle_unsupported accepts primitive names as positional arguments only")
         if not marker.args:
-            raise pytest.UsageError("require_tle requires at least one TLE primitive name")
+            raise pytest.UsageError("skip_if_tle_unsupported requires at least one TLE primitive name")
         required_list.extend(primitive_name(primitive) for primitive in marker.args)
     return frozenset(required_list)
 
