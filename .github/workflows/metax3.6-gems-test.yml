@@ -40,7 +40,7 @@ concurrency:
 jobs:
   metax36x:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
+    uses: ./.github/workflows/template-gems-test.yml
     with:
       runner: metax3.6
       backend: metax

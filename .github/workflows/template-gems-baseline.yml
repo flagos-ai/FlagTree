@@ -73,7 +73,9 @@ jobs:
   # generate FlagGems baseline (only on push)
   gems-baseline:
     runs-on: ${{ inputs.runner }}
-    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event_name == 'push' }}
+    # TEMP(pr-validation): also allow pull_request so the baseline flow is exercised
+    # before merge. Restore to `github.event_name == 'push'` only.
+    if: ${{ github.repository == 'flagos-ai/flagtree' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
     concurrency:
       group: ${{ github.workflow }}-${{ inputs.runner }}-${{ github.ref }}
       cancel-in-progress: false
@@ -114,13 +116,13 @@ jobs:
           fi
 
       - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        uses: ./.github/actions/smart-checkout
         with:
           checkout_version: 'v6'
 
       - name: Cleanup FlagTree Environment
         if: success()
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+        uses: ./.github/actions/cleanup-flagtree-env
 
       - name: Build FlagTree
         if: success()
@@ -130,7 +132,7 @@ jobs:
 
       - name: Clone FlagGems Repo
         if: success()
-        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        uses: ./.github/actions/git-clone-retry
         with:
           repo-url: 'https://github.com/flagos-ai/FlagGems.git'
           ref: ${{ inputs.flaggems-tag }}
@@ -139,16 +141,16 @@ jobs:
       - name: Run FlagGems Test for Baseline
         id: run-flaggems-test
         if: success()
-        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        uses: ./.github/actions/run-flaggems-test
         with:
           flaggems-path: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           gpus: '${{ steps.setup.outputs.gpus }}'
           output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/Baseline'
           output-subdir: '${{ steps.setup.outputs.date }}_${{ steps.setup.outputs.commit_id }}'
-          run-script: 'tools/ci/ci_run_tests.py'
-          skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'
           pre-command: ${{ inputs.flaggems-pre-command }}
+          flaggems-tag: ${{ inputs.flaggems-tag }}
+          backend: ${{ inputs.backend }}
 
       - name: Check Best Baseline Exists
         id: check-best
@@ -166,17 +168,18 @@ jobs:
         id: compare-with-best
         if: ${{ success() && steps.check-best.outputs.best_exists == 'true' }}
         continue-on-error: true
-        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        uses: ./.github/actions/compare-flaggems-test
         with:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
-          compare-script: 'tools/ci/compare_test_result.py'
-          working-directory: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           fail-on-missing-baseline: 'true'
 
       - name: Update Best Baseline
         id: update-best
-        if: ${{ success() && (steps.check-best.outputs.best_exists == 'false' || steps.compare-with-best.outputs.compare-exit-code == '0') }}
+        # TEMP(pr-validation): the `push` clause stops a PR run from replacing
+        # the shared best baseline that every other PR compares against.
+        # Remove this clause together with the relaxed guard above.
+        if: ${{ success() && github.event_name == 'push' && (steps.check-best.outputs.best_exists == 'false' || steps.compare-with-best.outputs.compare-exit-code == '0') }}
         shell: bash
         run: |
           DATE="${{ steps.setup.outputs.date }}"

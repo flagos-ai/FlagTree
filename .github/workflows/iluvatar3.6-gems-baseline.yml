@@ -23,6 +23,10 @@ name: Iluvatar3.6-Gems-Baseline
 on:
   push:
     branches: ["main", "triton_v3.6.x"]
+  # TEMP(pr-validation): remove before merge
+  pull_request:
+    branches: ["main", "triton_v3.6.x"]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -38,8 +42,9 @@ concurrency:
 
 jobs:
   iluvatar36x:
-    if: ${{ github.event_name == 'push' }}
-    uses: flagos-ai/FlagTree/.github/workflows/template-gems-baseline.yml@main
+    # TEMP(pr-validation): restore to `github.event_name == 'push'` before merge
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/template-gems-baseline.yml
     with:
       runner: iluvatar3.6
       backend: iluvatar
