@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
-import torch
 
 from python.test.flagmega.devices import is_nvidia_sm90, require_nvidia_sm90
+
+torch = pytest.importorskip("torch")
 
 
 def _device(monkeypatch, *, available, hip, capability):
