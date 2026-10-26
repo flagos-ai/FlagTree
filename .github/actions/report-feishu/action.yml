@@ -1,0 +1,166 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Report to Feishu Bitable'
+description: >-
+  Write flat JSON records to a Feishu Bitable table. Workflow-agnostic: any job
+  that can produce a flat JSON object (or JSONL) can report through it, with
+  each key mapped to the table field of the same name.
+
+inputs:
+  record:
+    description: 'Path to a flat JSON object (or array of objects) to report'
+    required: false
+    default: ''
+  jsonl:
+    description: 'Path to a JSONL file, one flat JSON object per line'
+    required: false
+    default: ''
+  table-name:
+    description: 'Target data table name inside the Bitable document'
+    required: true
+  schema:
+    description: >-
+      Path to a table schema JSON. When set, the table is created or repaired
+      before reporting, so a new field never needs to be added by hand.
+    required: false
+    default: ''
+  dedup-field:
+    description: >-
+      Field to deduplicate on. A row whose value matches is updated in place
+      instead of a duplicate being appended.
+    required: false
+    default: ''
+  app-id:
+    description: 'Feishu app id. Reporting is skipped when empty.'
+    required: false
+    default: ''
+  app-secret:
+    description: 'Feishu app secret. Reporting is skipped when empty.'
+    required: false
+    default: ''
+  app-token:
+    description: 'Bitable app token, the /base/<app_token> part of the URL'
+    required: false
+    default: ''
+  strict:
+    description: >-
+      Fail the step when reporting fails. Leave false inside a PR gate: losing
+      a dashboard row should not fail a PR.
+    required: false
+    default: 'false'
+  python:
+    description: 'Python interpreter to use'
+    required: false
+    default: 'python3'
+
+outputs:
+  reported:
+    description: "'true' when records were written to the table"
+    value: ${{ steps.report.outputs.reported }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Report to Feishu
+      id: report
+      shell: bash
+      env:
+        # Secrets travel as env vars, never on the command line, since argv is
+        # visible via `ps` on a shared self-hosted runner.
+        FEISHU_APP_ID: ${{ inputs.app-id }}
+        FEISHU_APP_SECRET: ${{ inputs.app-secret }}
+        FEISHU_BITABLE_APP_TOKEN: ${{ inputs.app-token }}
+        RECORD: ${{ inputs.record }}
+        JSONL: ${{ inputs.jsonl }}
+        TABLE_NAME: ${{ inputs.table-name }}
+        SCHEMA: ${{ inputs.schema }}
+        DEDUP_FIELD: ${{ inputs.dedup-field }}
+        STRICT: ${{ inputs.strict }}
+        PYTHON: ${{ inputs.python }}
+      run: |
+        set -uo pipefail
+
+        echo "reported=false" >> "$GITHUB_OUTPUT"
+
+        fail_or_skip() {
+          # Honour strict mode, but default to letting the job continue.
+          if [[ "${STRICT}" == "true" ]]; then
+            echo "::error::$1"
+            exit 1
+          fi
+          echo "::warning::$1"
+          exit 0
+        }
+
+        if [[ -z "${RECORD}" && -z "${JSONL}" ]]; then
+          fail_or_skip "report-feishu: one of 'record' or 'jsonl' is required"
+        fi
+
+        # Absent credentials are a normal state: this action can be wired into
+        # a workflow before the secrets are configured.
+        if [[ -z "${FEISHU_APP_ID}" || -z "${FEISHU_APP_SECRET}" ]]; then
+          echo "Feishu credentials not configured, skipping report."
+          exit 0
+        fi
+
+        if [[ -z "${FEISHU_BITABLE_APP_TOKEN}" ]]; then
+          fail_or_skip "report-feishu: 'app-token' is required when reporting"
+        fi
+
+        # Inputs may be absent when an earlier step failed; that is not an
+        # error worth surfacing, there is simply nothing to report.
+        for path in "${RECORD}" "${JSONL}"; do
+          if [[ -n "${path}" && ! -f "${path}" ]]; then
+            echo "Input '${path}' does not exist, nothing to report."
+            exit 0
+          fi
+        done
+
+        SCRIPTS="${GITHUB_ACTION_PATH}/scripts"
+
+        # Proxy settings live on the runner, not in the repo
+        if [[ -f ~/env.sh ]]; then
+          # shellcheck disable=SC1090
+          source ~/env.sh || true
+        fi
+
+        args=(--table-name "${TABLE_NAME}")
+        [[ -n "${RECORD}" ]] && args+=(--record "${RECORD}")
+        [[ -n "${JSONL}" ]] && args+=(--jsonl "${JSONL}")
+        [[ -n "${DEDUP_FIELD}" ]] && args+=(--dedup-field "${DEDUP_FIELD}")
+        [[ "${STRICT}" == "true" ]] && args+=(--strict)
+
+        # Create or repair the table first, so a schema that grew a field does
+        # not silently drop it on the way in.
+        if [[ -n "${SCHEMA}" ]]; then
+          if [[ -f "${SCHEMA}" ]]; then
+            "${PYTHON}" "${SCRIPTS}/bootstrap_feishu_table.py" \
+              --schema "${SCHEMA}" --table-name "${TABLE_NAME}" \
+              || fail_or_skip "report-feishu: table bootstrap failed"
+          else
+            fail_or_skip "report-feishu: schema '${SCHEMA}' not found"
+          fi
+        fi
+
+        "${PYTHON}" "${SCRIPTS}/report_feishu.py" "${args[@]}" \
+          || fail_or_skip "report-feishu: reporting failed"
+
+        echo "reported=true" >> "$GITHUB_OUTPUT"
