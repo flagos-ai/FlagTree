@@ -762,7 +762,10 @@ class CudaDriver(GPUDriver):
     def is_active():
         try:
             import torch
-            return torch.cuda.is_available() and (torch.version.hip is None)
+            # `torch.cuda.is_available()` can be faked by accelerator shims
+            # (torch_npu with TORCH_TRANSFER_TO_NPU=1 reports the NPU as CUDA);
+            # a real CUDA build always carries a non-None `torch.version.cuda`.
+            return (torch.cuda.is_available() and torch.version.cuda is not None and (torch.version.hip is None))
         except ImportError:
             return False
 
