@@ -1,9 +1,12 @@
 #ifndef TRITON_IR_TYPES_H_
 #define TRITON_IR_TYPES_H_
 
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeSupport.h"
 #include "mlir/IR/Types.h"
+#include <optional>
+#include <utility>
 
 #define GET_TYPEDEF_CLASSES
 #include "triton/Dialect/Triton/IR/Types.h.inc"
@@ -33,6 +36,10 @@ Type getI32SameShape(Type type);
 Type getPointerTypeSameShape(Type type);
 
 Type getPointerTypeToElement(Type type);
+
+// Returns the (size, align) in bytes of a custom-type field, or std::nullopt
+// if the type is not a supported struct/array field type.
+std::optional<std::pair<int64_t, int64_t>> getTypeSizeAlign(Type type);
 
 } // namespace triton
 
