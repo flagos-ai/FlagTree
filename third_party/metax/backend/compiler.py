@@ -1,6 +1,12 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, metax
 try:
+    from triton._C.libtriton import tle
+    from triton._common_ir import ENABLED as COMMON_IR_ENABLED
+except ImportError:
+    tle = None
+    COMMON_IR_ENABLED = False
+try:
     from triton._C.libtriton import distributed
     enable_dist = True
 except ImportError:
@@ -223,6 +229,9 @@ class MACABackend(BaseBackend):
 
     def load_dialects(self, ctx):
         metax.load_dialects(ctx)
+        if COMMON_IR_ENABLED and tle is not None:
+            tle.load_dialects(ctx)
+            tle.load_tile_dialects(ctx)
         if enable_mctle:
             mctle.load_dialects(ctx)
         if enable_dist:
@@ -233,6 +242,8 @@ class MACABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        if COMMON_IR_ENABLED and tle is not None:
+            tle.passes.commonir.add_to_ttgir(pm, False)  # CommonIR(tile.*) -> ttg.local_*
         passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)

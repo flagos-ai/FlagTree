@@ -1,3 +1,8 @@
+# [metax+CommonIR] Strip the global __TLE__ define: MetaX's own lowering is
+# compiled against its fork's non-TLE headers.
+remove_definitions(-D__TLE__)
+list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+
 # The shared Triton core targets are created by FlagTreeOptions.cmake. Keep
 # this backend CMake file focused on MetaX-only sources and plugins.
 target_sources(TritonTools PRIVATE

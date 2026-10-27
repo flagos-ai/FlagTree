@@ -90,7 +90,8 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
                scf::ReduceReturnOp>();
 
 #ifdef __TLE__
-  addDynamicallyLegalOp<triton::gpu::LocalAllocOp>(
+  addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
+                        triton::gpu::LocalLoadOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
   addDynamicallyLegalOp<mlir::triton::musa_tle::ExtractTileOp,
                         mlir::triton::musa_tle::InsertTileOp>(

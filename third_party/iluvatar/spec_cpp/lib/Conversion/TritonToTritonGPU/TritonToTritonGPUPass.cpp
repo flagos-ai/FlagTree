@@ -569,6 +569,10 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<triton::SplatOp>,
       GenericOpPattern<triton::UnsplatOp>,
       GenericOpPattern<triton::AddPtrOp>,
+#ifdef __FLAGTREE_COMMON_IR__
+      GenericOpPattern<triton::gpu::LocalLoadOp>,
+      GenericOpPattern<triton::gpu::LocalStoreOp>,
+#endif
       TritonBroadcastPattern,
       TritonCatPattern,
       TritonJoinOpPattern,

@@ -1,3 +1,8 @@
+# [metax+CommonIR] bin 工具剥掉全局 __TLE__：不注册未构建的 tle 方言（保留 CommonIR/tile）
+if("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax")
+  remove_definitions(-D__TLE__)
+  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+endif()
 get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
 
 find_package(Threads REQUIRED)

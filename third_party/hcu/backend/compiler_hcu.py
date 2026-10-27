@@ -1,5 +1,6 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
@@ -230,6 +231,8 @@ class HIPBackend(BaseBackend):
     def load_dialects(self, ctx):
         distributed.ir.load_dialects(ctx)
         hcu.load_dialects(ctx)
+        if COMMON_IR_ENABLED:
+            tle.load_tile_dialects(ctx)
         if HIPBackend.instrumentation:
             HIPBackend.instrumentation.load_dialects(ctx)
 
@@ -388,6 +391,8 @@ class HIPBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        if COMMON_IR_ENABLED:
+            tle.passes.commonir.add_to_ttgir(pm, False)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
         passes.common.add_canonicalizer(pm)
