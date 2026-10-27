@@ -40,10 +40,21 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
         float attention_merged_sum = 0.0f;
         float attention_merged_accumulator = 0.0f;
+{# Each state is read from its own source owner: a state with a unit Dim
+   extent (max, sum) can live on a different owner than the accumulator when
+   Dim is sharded. Owners equal to the max owner reuse attention_index. #}
+{% set sum_index = "attention_index" if call.partial_sum_owner == call.partial_owner else "attention_sum_index" %}
+{% set accumulator_index = "attention_index" if call.partial_accumulator_owner == call.partial_owner else "attention_accumulator_index" %}
         FTT_UNROLL
         for (ftt::dim_t attention_part = 0;
              attention_part < {{ call.context_shards }}LL; ++attention_part) {
             const ftt::dim_t attention_index = {{ call.partial_owner | cppexpr }};
+{% if sum_index != "attention_index" %}
+            const ftt::dim_t attention_sum_index = {{ call.partial_sum_owner | cppexpr }};
+{% endif %}
+{% if accumulator_index != "attention_index" %}
+            const ftt::dim_t attention_accumulator_index = {{ call.partial_accumulator_owner | cppexpr }};
+{% endif %}
             const float attention_factor = ftt::exp(
                 ftt::to_float(ftt_partial_max[
                     attention_index * {{ call.partial_max_owner_stride }}LL
@@ -51,12 +62,12 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                 - attention_merged_max);
             attention_merged_sum +=
                 ftt::to_float(ftt_partial_sum[
-                    attention_index * {{ call.partial_sum_owner_stride }}LL
+                    {{ sum_index }} * {{ call.partial_sum_owner_stride }}LL
                     + ({{ call.partial_sum_offset | cppexpr }})])
                 * attention_factor;
             attention_merged_accumulator +=
                 ftt::to_float(ftt_partial_accumulator[
-                    attention_index * {{ call.partial_accumulator_owner_stride }}LL
+                    {{ accumulator_index }} * {{ call.partial_accumulator_owner_stride }}LL
                     + ({{ call.partial_accumulator_offset | cppexpr }})])
                 * attention_factor;
         }
