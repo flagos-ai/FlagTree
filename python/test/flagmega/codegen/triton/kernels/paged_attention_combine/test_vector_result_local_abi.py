@@ -311,3 +311,92 @@ FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({"block": [("block_y",4),("blo
     if gated:
         expected *= .5
     torch.testing.assert_close(output.reshape(16, 8), expected, rtol=0, atol=0)
+
+
+def _dim_sharded_source_call(gated):
+    # 2x2 mesh, partial axis 0; every state and the result split Dim block-cyclically
+    # over axis 1. Stats have a unit Dim extent, so they live on owner 2 * part,
+    # while accumulator dim d lives on owner 2 * part + d % 2.
+    mesh = (2, 2)
+    dim_split = {"kind": "split", "stages": [{"hierarchy_axes": (1,), "distribution": {
+        "kind": "block_cyclic", "block_size": 1}}]}
+    stats = _abi((1, 1, 1), storage_kind="compact_per_owner", coordinate_space="local",
+                 owner_stride=1, partial=True)
+    accumulator = _abi((1, 1, 8), local_shape=(1, 1, 4), storage_kind="compact_per_owner",
+                       coordinate_space="local", owner_stride=4, partial=True)
+    accumulator["scalar_storage_strides"] = (4, 4, 1)
+    result = _abi((1, 1, 8), local_shape=(1, 1, 4), dtype="bfloat16", itemsize=2,
+                  logical_coordinates=("local_coord_0", "local_coord_1", "local_coord_2 * 2 + shard_coord_1"))
+    for abi in (stats, accumulator, result):
+        abi["distributed_type"]["placement"]["hierarchy"] = mesh
+        abi["distributed_type"]["axis_policies"] = ({"kind": "broadcast"}, {"kind": "broadcast"}, dim_split)
+    raw = {"semantic_attrs": {"layout": ("seq", "head", "dim"), "split_hierarchy_axis": 0, "split_count": 2},
+           "parameters": {"elements_per_program": 4}, "inputs": (
+               _parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
+           "outputs": (_parameter("result", result),), "workspaces": ()}
+    if gated:
+        raw["inputs"] = (*raw["inputs"], _parameter("gate", result))
+    return mesh, (_paged_attention_gated_combine_call(raw) if gated else _paged_attention_combine_call(raw))
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_combine_dim_sharded_states_read_each_state_from_its_own_owner(gated):
+    mesh, call = _dim_sharded_source_call(gated)
+    visited = set()
+    for shard_y in range(mesh[0]):
+        for shard_x in range(mesh[1]):
+            for attention_part in range(call["context_shards"]):
+                for attention_output_offsets in range(call["local_capacity"]):
+                    scope = dict(shard_y=shard_y, shard_x=shard_x, attention_part=attention_part,
+                                 attention_output_offsets=attention_output_offsets)
+                    if not eval(call["active"], {}, scope):
+                        continue
+                    dimension = eval(call["dimension"], {}, scope)
+                    visited.add(dimension)
+                    # The template falls back to the max owner for a state without its own.
+                    sum_owner = call.get("partial_sum_owner", call["partial_owner"])
+                    accumulator_owner = call.get("partial_accumulator_owner", call["partial_owner"])
+                    assert eval(call["partial_owner"], {}, scope) == 2 * attention_part
+                    assert eval(sum_owner, {}, scope) == 2 * attention_part
+                    assert eval(call["partial_max_offset"], {}, scope) == 0
+                    assert eval(call["partial_sum_offset"], {}, scope) == 0
+                    assert eval(accumulator_owner, {}, scope) == 2 * attention_part + dimension % 2
+                    assert eval(call["partial_accumulator_offset"], {}, scope) == dimension // 2
+    assert visited == set(range(8))
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_combine_dim_sharded_states_merge_on_gpu(tmp_path, gated):
+    import importlib.util
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("requires a GPU")
+    mesh, call = _dim_sharded_source_call(gated)
+    family = "paged_attention_gated_combine" if gated else "paged_attention_combine"
+    call.update(family=family, variant="decode", symbol="run",
+                signature="max_state, sum_state, acc_state, result" + (", gate" if gated else ""))
+    body = TritonTemplateRegistry().render(f"kernels/{family}/decode.py.jinja", {
+        "render_calls": [call], "distributed_entry": True,
+        "mesh_hierarchy": mesh, "mesh_axis_names": ("block_y", "block_x")})
+    path = tmp_path / "attention_dim_sharded.py"
+    path.write_text('''import triton
+import triton.language as tl
+import triton.experimental.tle.language as tle
+FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({"block": [("block_y",2),("block_x",2)]}))
+''' + body)
+    spec = importlib.util.spec_from_file_location("attention_dim_sharded", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    maximum = torch.zeros((4, 1), device="cuda", dtype=torch.float32)
+    total = torch.ones_like(maximum)
+    partial = torch.tensor([[0, 32, 64, 96], [16, 48, 80, 112], [2, 34, 66, 98], [18, 50, 82, 114]],
+                           device="cuda", dtype=torch.float32)
+    output = torch.full((1, 1, 8), -100., device="cuda", dtype=torch.bfloat16)
+    args = (maximum, total, partial, output)
+    if gated:
+        args = (*args, torch.zeros_like(output))
+    module.run[(4,)](*args)
+    expected = torch.tensor([1, 17, 33, 49, 65, 81, 97, 113], device="cuda", dtype=torch.float32)
+    if gated:
+        expected *= .5
+    torch.testing.assert_close(output.reshape(8).float(), expected, rtol=0, atol=0)
