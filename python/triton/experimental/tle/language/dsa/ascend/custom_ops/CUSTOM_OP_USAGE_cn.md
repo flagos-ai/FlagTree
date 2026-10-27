@@ -30,6 +30,8 @@ custom_ops/
 │   └── gather_mask.cpp             # 以内置固定模式对应的二进制或用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中
 ├── cast_ops/
 │   └── cast_int4_to_fp16.cpp       # packed signed INT4 → FP16
+├── math_ops/
+│   └── fused_mul_add.cpp           # vmla / vmadd / vmaddrelu / vaxpy
 ├── mask_ops/
 │   └── compare_scalar.cpp          # FP16/FP32 EQ/GT/GE → uint16 位掩码
 ├── reduction_ops/
@@ -486,6 +488,53 @@ values = tle.dsa.ascend.raw("cast_int4_to_fp16", packed, 0, 2 * N, out=values)  
 `python python/tutorials/tle/custom/test_cast_ops.py`，也已接入
 `test_custom_ops.py`。测试包含全部字节编码、不同块大小和参数校验，以及
 4096 字节 tile 与 Triton `tl.interleave` 拆 nibble 再 `.to(tl.float16)` 的耗时对比。
+
+## 融合乘加：mul_add_dst / fused_mul_add / mul_add_relu / axpy
+
+这四个算子暴露 Vector 单元的融合乘加指令 `vmla` / `vmadd` / `vmaddrelu` /
+`vaxpy`。HIVM 向量 op 全集（`HIVMVectorOps.td`）里没有任何融合形态，
+`MathToHFusion.cpp` 的 `MathFmaToComposeBinaryOp` 还会主动把 `math.fma`
+拆成 `linalg.mul` + `linalg.add`，因此前端无法表达这条硬件能力。
+
+| 算子 | 语义 | 指令 | dtype（src, dst） |
+|------|------|------|-------------------|
+| `mul_add_dst(src0, src1, count)` | `dst = src0*src1 + dst` | `vmla` | (f16,f16) (f32,f32) (f16,f32) |
+| `fused_mul_add(src0, src1, count)` | `dst = src0*dst + src1` | `vmadd` | f16 / f32 |
+| `mul_add_relu(src0, src1, count)` | `dst = relu(src0*dst + src1)` | `vmaddrelu` | f16 / f32 |
+| `axpy(src, scalar, count)` | `dst = src*scalar + dst` | `vaxpy` | (f16,f16) (f32,f32) (f16,f32) |
+
+实现参考 CANN `dav_c220/kernel_operator_vec_binary_impl.h` 的
+`MulAddDstImpl` / `FusedMulAddImpl` / `FusedMulAddReluImpl` 与
+`kernel_operator_vec_ternary_scalar_impl.h` 的 `AxpyImpl`，均为 Level 2
+count 模式、单次 repeat、默认步长；混合精度形态按 AscendC 的做法把源
+repeat stride 从 8 减半为 4。不调用 AscendC 高层 API，也不在 op 内插入
+pipeline barrier；前后序由调用方保证。
+
+**四个算子的 `out` 都是读-改-写的**，这点与注册表中其它算子不同（它们的
+`out` 只写）。`mul_add_dst` / `axpy` 的 `out` 入值是加数，
+`fused_mul_add` / `mul_add_relu` 的 `out` 入值是被乘数，调用方必须先写入
+有意义的值，不能只分配不初始化：
+
+```python
+acc = tl.load(C + offs)                                        # 加数，不是占位
+acc = tle_raw.call("ascend_mul_add_dst", a, b, N, out=acc)     # acc += a*b
+acc = tle_raw.call("ascend_axpy", x, 2.5, N, out=acc)          # acc += x*2.5
+```
+
+源与 `out` 须为一维连续 UB tensor、元素个数相同、32 字节对齐且互不重叠；
+`count` 为编译期常量且等于源长度。单次调用元素上限 f16 16384 / f32 8192。
+
+精度上，这四条指令融合的是**指令与数据通路，不是运算语义**：它们并非
+IEEE-754 `fma`，乘积会先舍入到计算精度再参与加法，结果带两次舍入。
+910B4-1 上每种 dtype 取 4096 个随机值实测与该模型逐位相同（若按 IEEE 单
+次舍入建模，f16 与 f32 各有约 1190/4096 个值不符）。因此同精度形态在数值
+上与"显式一次乘、一次加"完全一致，不要指望它带来额外精度。
+
+f16 源 / f32 目标的混合形态是例外：f16 乘积可被 f32 精确表示，两种模型在
+此重合，乘积不会被舍入到 f16。它既省掉一次 `vcast`，精度也优于先 cast 到
+f32 再乘加——这里的收益来自**累加精度**，同样不是单次舍入。
+
+测试入口为 `python python/tutorials/tle/custom/test_fused_mul_add.py`。
 
 ## @dialect(name="cann")：算子层面混合语言编程
 
