@@ -68,6 +68,12 @@ struct BlockInfo {
     auto shift = [&](const IntervalMapT &src, IntervalMapT &dst) {
       constexpr size_t kMax = std::numeric_limits<size_t>::max();
       for (auto &[interval, ops] : src) {
+        // The all-shared-memory interval (e.g. an elected mbarrier arrive)
+        // also covers the caller's allocations below the callee frame.
+        if (interval == Interval<size_t>()) {
+          dst[interval].insert(ops.begin(), ops.end());
+          continue;
+        }
         size_t end = interval.end() == kMax ? kMax : interval.end() + offset;
         dst[Interval<size_t>(interval.start() + offset, end)].insert(
             ops.begin(), ops.end());

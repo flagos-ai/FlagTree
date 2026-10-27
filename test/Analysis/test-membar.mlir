@@ -1087,3 +1087,71 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     tt.return %sum1 : tensor<128x32xf16, #blockedCallDst>
   }
 }
+
+// -----
+
+#blockedArrive = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#sharedArrive = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  tt.func private @arrive_then_scratch(%barrier: !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive> {
+    ttng.arrive_barrier %barrier, 128 {release_fence = true} : !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>
+    %zero = arith.constant dense<0> : tensor<128xi32, #blockedArrive>
+    %scratch = ttg.local_alloc %zero : (tensor<128xi32, #blockedArrive>) -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    %result = ttg.local_load %scratch : !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable> -> tensor<128xi32, #blockedArrive>
+    tt.return %result : tensor<128xi32, #blockedArrive>
+  }
+
+  // An elected arrive at the callee's entry publishes all shared memory,
+  // including the caller's data below the callee frame, so the caller's store
+  // needs a CTA barrier before the call even though the frame is offset.
+  // CHECK-LABEL: @caller_nonzero_frame_elected_arrive
+  // CHECK: ttg.local_store
+  // CHECK-NEXT: ttg.local_barrier
+  // CHECK-NEXT: tt.call @arrive_then_scratch{{.*}}allocation.offset = {{[1-9][0-9]*}}
+  tt.func @caller_nonzero_frame_elected_arrive(%values: tensor<128xi32, #blockedArrive>) -> tensor<128xi32, #blockedArrive> {
+    %data = ttg.local_alloc : () -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    %barrier = ttg.local_alloc : () -> !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>
+    ttng.init_barrier %barrier, 128 : !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>
+    gpu.barrier
+    ttg.local_store %values, %data : tensor<128xi32, #blockedArrive> -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    %tmp = tt.call @arrive_then_scratch(%barrier) : (!ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive>
+    %loaded = ttg.local_load %data : !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable> -> tensor<128xi32, #blockedArrive>
+    %sum = arith.addi %loaded, %tmp : tensor<128xi32, #blockedArrive>
+    tt.return %sum : tensor<128xi32, #blockedArrive>
+  }
+
+  tt.func private @forward_to_arrive(%barrier: !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive> {
+    %result = tt.call @arrive_then_scratch(%barrier) : (!ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive>
+    tt.return %result : tensor<128xi32, #blockedArrive>
+  }
+
+  // The all-memory interval must survive translation through every call level.
+  // CHECK-LABEL: @caller_nonzero_frame_nested_elected_arrive
+  // CHECK: ttg.local_store
+  // CHECK-NEXT: ttg.local_barrier
+  // CHECK-NEXT: tt.call @forward_to_arrive{{.*}}allocation.offset = {{[1-9][0-9]*}}
+  tt.func @caller_nonzero_frame_nested_elected_arrive(%values: tensor<128xi32, #blockedArrive>) -> tensor<128xi32, #blockedArrive> {
+    %data = ttg.local_alloc : () -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    %barrier = ttg.local_alloc : () -> !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>
+    ttng.init_barrier %barrier, 128 : !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>
+    gpu.barrier
+    ttg.local_store %values, %data : tensor<128xi32, #blockedArrive> -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    %tmp = tt.call @forward_to_arrive(%barrier) : (!ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive>
+    %loaded = ttg.local_load %data : !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable> -> tensor<128xi32, #blockedArrive>
+    %sum = arith.addi %loaded, %tmp : tensor<128xi32, #blockedArrive>
+    tt.return %sum : tensor<128xi32, #blockedArrive>
+  }
+
+  // Control: with the callee frame at offset 0 the barrier was always kept.
+  // CHECK-LABEL: @caller_zero_frame_elected_arrive
+  // CHECK: ttg.local_store
+  // CHECK-NEXT: ttg.local_barrier
+  // CHECK-NEXT: tt.call @arrive_then_scratch{{.*}}allocation.offset = 0
+  tt.func @caller_zero_frame_elected_arrive(%values: tensor<128xi32, #blockedArrive>, %barrier: !ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive> {
+    %data = ttg.local_alloc : () -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    ttg.local_store %values, %data : tensor<128xi32, #blockedArrive> -> !ttg.memdesc<128xi32, #sharedArrive, #smem, mutable>
+    %tmp = tt.call @arrive_then_scratch(%barrier) : (!ttg.memdesc<1xi64, #sharedArrive, #smem, mutable>) -> tensor<128xi32, #blockedArrive>
+    tt.return %tmp : tensor<128xi32, #blockedArrive>
+  }
+}
