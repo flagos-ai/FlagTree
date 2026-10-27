@@ -13,6 +13,7 @@ from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.ops.ntt.vectorized_cast import cast_vector_axes
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("axes,lanes,new_lanes", [((1, ), (8, ), (4, )), ((0, 1), (2, 4), (1, 4)),
@@ -21,8 +22,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 @pytest.mark.parametrize("distributed", [False, True])
 def test_fused_cast_activation_reuses_real_vector_coordinate_mapping(tmp_path, axes, lanes, new_lanes, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     shape = (4, 8)
     value_type = fm.tensor_type(fm.vector_type("bfloat16", lanes), shape)
     metadata = {}

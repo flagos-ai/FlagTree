@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.runtime import load
 from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+from python.test.flagmega.devices import require_nvidia_sm90
 
 CASES = [
     ("pad", {"pad_end": (0, 3), "pad_value": -2.5}),
@@ -45,8 +46,7 @@ def test_tensor_transform_selects_real_generic_template(tmp_path, op, attrs):
 @pytest.mark.parametrize("vector,split", [(False, False), (True, False), (True, True)])
 def test_tensor_transform_executes_exact_values_with_tail_owners_and_lanes(tmp_path, op, attrs, vector, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     module = graph(op, attrs, vector=vector, split=split)
     values = torch.arange(6 * 7 * (8 if vector else 1), device="cuda").reshape((6, 7, 2, 4) if vector else (6, 7))
     values = values.to(torch.bfloat16 if vector else torch.float32)

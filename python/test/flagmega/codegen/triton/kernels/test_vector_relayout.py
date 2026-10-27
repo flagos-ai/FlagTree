@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.runtime import load
 from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("op", ["pack", "unpack"])
@@ -19,8 +20,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("old_lanes,split", [((), False), ((2, 2), False), ((2, 2), True)])
 def test_local_vector_relayout_preserves_lane_order_and_owner_coordinates(tmp_path, op, axes, lanes, old_lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     dtype = fm.vector_type("bfloat16", old_lanes) if old_lanes else "bfloat16"
     logical = fm.tensor_type(dtype, (16, 6))
     metadata = {}

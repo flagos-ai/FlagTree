@@ -7,6 +7,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("n,k", [(2048, 2048), (80, 320), (2056, 528)])
@@ -15,8 +16,7 @@ def test_packed_compute_tile_matches_reference_with_local_and_reduction_tails(
     tmp_path, compile_packed_projection, n, k, tile_n, block_k,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
-        pytest.skip("requires Hopper CUDA")
+    require_nvidia_sm90()
     implementation = f"tir.dense_matmul.packed_k_major_gemv_tn{tile_n}_bk{block_k}"
     module = compile_packed_projection(implementation, k=k, n=n)
     generator = torch.Generator().manual_seed(n + k)

@@ -7,6 +7,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("op,input_name", [
@@ -18,8 +19,7 @@ from triton.flagmega.runtime import load
 ])
 def test_local_primitive_temporaries_do_not_shadow_editable_ir_arguments(tmp_path, op, input_name):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
 
     class Graph(fm.Module):
 
