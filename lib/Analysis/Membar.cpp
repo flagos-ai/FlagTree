@@ -410,11 +410,14 @@ void MembarOrFenceAnalysis::resolve(FunctionOpInterface funcOp,
     // Start the analysis from the entry blocks of any nested isolated from
     // above regions.
     if (block->isEntryBlock() &&
-        !isa<RegionBranchOpInterface>(block->getParentOp())) {
+        !isa<RegionBranchOpInterface>(block->getParentOp()))
       blockList.emplace_back(block, Block::iterator());
-      if (tracksEntrySync() && block->getParentOp() == funcOp.getOperation())
-        inputBlockInfoMap[{block, Block::iterator()}].entryUnsynced = true;
-    }
+#ifdef __TLE__
+    if (block->isEntryBlock() &&
+        !isa<RegionBranchOpInterface>(block->getParentOp()) &&
+        tracksEntrySync() && block->getParentOp() == funcOp.getOperation())
+      inputBlockInfoMap[{block, Block::iterator()}].entryUnsynced = true;
+#endif
   });
 
   // A fixed point algorithm
@@ -533,6 +536,7 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
 }
 
+#ifdef __TLE__
 void MembarAnalysis::addToEntryPrefix(const BlockInfo &blockInfo) {
   auto funcOp = cast<FunctionOpInterface>(allocation->getOperation());
   BlockInfo accesses = blockInfo;
@@ -581,6 +585,7 @@ void MembarAnalysis::updateCall(Operation *op, FunctionOpInterface callee,
   calleeExit.entryUnsynced = false;
   blockInfo->join(calleeExit);
 }
+#endif
 
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
@@ -611,8 +616,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       return true;
     return filter ? filter(lhs, rhs) : false;
   };
-#else
-  auto effectiveFilter = filter;
 #endif
 
   BlockInfo curBlockInfo;
@@ -620,11 +623,17 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   if (isa<triton::CallOp>(op)) {
     // Inter-function dependencies
     auto callOpInterface = dyn_cast<CallOpInterface>(op);
+#ifdef __TLE__
     if (auto callee =
             dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
       updateCall(op, callee, blockInfo, funcBlockInfoMap, effectiveFilter,
                  builder);
     return;
+#else
+    if (auto callee =
+            dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
+      curBlockInfo = funcBlockInfoMap->lookup(callee);
+#endif
   } else {
     // Intra-function dependencies
     if (auto memoryEffectOpInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
@@ -730,14 +739,22 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
+#ifdef __TLE__
       blockInfo->sync();
+#endif
     }
+#ifdef __TLE__
     // The write phase runs before the op's internal barrier.
     if (entryPrefixMap && blockInfo->entryUnsynced)
       addToEntryPrefix(curBlockInfo);
+#endif
     // Ops with a scratch buffer that don't use warp.sync internally sync
     // read/write on shared memory
+#ifdef __TLE__
     if (!isWarpSync)
+#else
+    if (insertCTABarrier || !isWarpSync)
+#endif
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
 #ifdef __TLE__
@@ -749,8 +766,10 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     insertBarrier(op, builder);
     blockInfo->sync();
   }
+#ifdef __TLE__
   if (entryPrefixMap && blockInfo->entryUnsynced)
     addToEntryPrefix(curBlockInfo);
+#endif
   // Update the region info, even if barrier is inserted, we have to maintain
   // the current op's read/write buffers.
   blockInfo->join(curBlockInfo);
