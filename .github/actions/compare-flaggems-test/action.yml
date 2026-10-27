@@ -69,6 +69,8 @@ runs:
       id: compare
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        COMPARE_SCRIPT: ${{ inputs.compare-script }}
       run: |
         set -x
 
@@ -95,7 +97,6 @@ runs:
           exit 1
         fi
 
-        COMPARE_SCRIPT="${{ inputs.compare-script }}"
         COMPARE_SCRIPT="${COMPARE_SCRIPT:-${GITHUB_WORKSPACE}/.github/workflows/gems/ci/compare_test_result.py}"
 
         if [ ! -f "$COMPARE_SCRIPT" ]; then

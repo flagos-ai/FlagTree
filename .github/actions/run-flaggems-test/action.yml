@@ -121,6 +121,7 @@ runs:
         FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
         BACKEND: ${{ inputs.backend }}
         ASSETS_DIR: ${{ inputs.assets-dir }}
+        RUN_SCRIPT: ${{ inputs.run-script }}
       run: |
         set -x
 
@@ -171,7 +172,6 @@ runs:
 
         # Build test runner command. The script runs from the FlagTree
         # checkout, so it is told where FlagGems lives.
-        RUN_SCRIPT="${{ inputs.run-script }}"
         RUN_SCRIPT="${RUN_SCRIPT:-${ASSETS}/ci/ci_run_tests.py}"
         CMD="python ${RUN_SCRIPT} --gpus ${{ inputs.gpus }} --output-dir $TEST_OUTPUT_DIR"
         CMD="$CMD --flaggems-path ${{ inputs.flaggems-path }}"
