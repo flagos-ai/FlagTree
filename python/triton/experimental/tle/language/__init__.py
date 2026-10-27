@@ -27,6 +27,7 @@ from .core import (
     extract_tile,
     insert_tile,
     load,
+    get_hyperparam,
 )
 from .pipe import (
     pipe,
@@ -99,6 +100,7 @@ def __getattr__(name):
 
 __all__ = [
     "load",
+    "get_hyperparam",
     "cumsum",
     "extract_tile",
     "insert_tile",

@@ -957,13 +957,6 @@ LogicalResult DSLRegionOp::verify() {
   if (body.empty()) {
     if (!sourceId && !wrapper)
       return emitOpError("empty body requires a deferred source or wrapper");
-    for (auto [i, idx] : llvm::enumerate(indices)) {
-      if (getResult(i).getType() != getOperand(idx).getType())
-        return emitOpError("deferred result must have its aliased operand "
-                           "type; result ")
-               << i << " has type " << getResult(i).getType() << ", operand "
-               << idx << " has type " << getOperand(idx).getType();
-    }
     return success();
   }
 

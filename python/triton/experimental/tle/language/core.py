@@ -40,6 +40,17 @@ def _tle_pick_sum_dtype(in_dtype, dtype):
     return None
 
 
+@tl.builtin
+def get_hyperparam(name, _semantic=None):
+    name = tl._unwrap_if_constexpr(name)
+    if not isinstance(name, str):
+        raise TypeError("hyperparam name must be a compile-time string")
+    options = _semantic.builder.options
+    if not hasattr(options, name):
+        raise ValueError(f"Unknown compilation hyperparameter: {name!r}")
+    return tl.constexpr(getattr(options, name))
+
+
 # -----------------------
 # Non-Atomic Memory Operations
 # -----------------------
