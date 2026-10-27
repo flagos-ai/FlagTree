@@ -96,20 +96,20 @@ jobs:
           fi
 
       - name: Smart Checkout
-        uses: ./.github/actions/smart-checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
           checkout_version: 'v6'
 
       - name: Check if backend-relevant files changed
         id: check_backend
         if: success()
-        uses: ./.github/actions/check-backend-changed
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: ${{ inputs.backend }}
 
       - name: Cleanup FlagTree Environment
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: ./.github/actions/cleanup-flagtree-env
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Build FlagTree
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
@@ -119,7 +119,7 @@ jobs:
 
       - name: Clone FlagGems Repo
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: ./.github/actions/git-clone-retry
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
         with:
           repo-url: 'https://github.com/flagos-ai/FlagGems.git'
           ref: ${{ inputs.flaggems-tag }}
@@ -128,7 +128,7 @@ jobs:
       - name: Clear cache if ClearCache label present
         id: clear_cache
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: ./.github/actions/clear-cache-if-labeled
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ${{ inputs.backend }}
@@ -136,7 +136,7 @@ jobs:
       - name: Run FlagGems Test
         id: run-flaggems-test
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: ./.github/actions/run-flaggems-test
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
         with:
           flaggems-path: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           gpus: '${{ steps.setup.outputs.gpus }}'
@@ -150,7 +150,7 @@ jobs:
       - name: Compare with Baseline
         id: compare-baseline
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: ./.github/actions/compare-flaggems-test
+        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
         with:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'

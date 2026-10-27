@@ -40,7 +40,7 @@ concurrency:
 jobs:
   enflame36x-gcu300:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-    uses: ./.github/workflows/template-gems-test.yml
+    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
     with:
       runner: enflame3.6-gcu300
       backend: enflame
