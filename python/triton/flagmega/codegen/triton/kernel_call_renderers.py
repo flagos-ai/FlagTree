@@ -6385,9 +6385,11 @@ def _paged_attention_combine_call(raw) -> dict[str, object]:
                     owners[axis] = value
         return tuple(local), _linear_owner_expression(owners, hierarchy)
 
+    # Each state resolves its own owner: max/sum have a unit dim extent, while a
+    # dim-sharded accumulator element can live on a different owner.
     max_coordinates, owner = state_access(max_abi, True)
-    sum_coordinates, _ = state_access(partial_sum["abi"], True)
-    accumulator_coordinates, _ = state_access(partial_accumulator["abi"], False)
+    sum_coordinates, sum_owner = state_access(partial_sum["abi"], True)
+    accumulator_coordinates, accumulator_owner = state_access(partial_accumulator["abi"], False)
     return {
         "partial_max": emit_storage_pointer(
             max_abi, str(partial_max["runtime_argument"])
@@ -6400,6 +6402,8 @@ def _paged_attention_combine_call(raw) -> dict[str, object]:
             str(partial_accumulator["runtime_argument"]),
         ),
         "partial_owner": owner,
+        "partial_sum_owner": sum_owner,
+        "partial_accumulator_owner": accumulator_owner,
         "partial_max_owner_stride": int(
             max_abi["component_stride_scalar_elements"]
         ),

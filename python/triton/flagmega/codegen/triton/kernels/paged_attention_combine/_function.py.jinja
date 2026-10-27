@@ -33,8 +33,16 @@ def {{ call.symbol }}({{ call.signature }}):
         attention_merged_accumulator = tl.zeros(
             ({{ call.tile }},), tl.float32,
         )
+{% set sum_index = "attention_index" if call.partial_sum_owner == call.partial_owner else "attention_sum_index" %}
+{% set accumulator_index = "attention_index" if call.partial_accumulator_owner == call.partial_owner else "attention_accumulator_index" %}
         for attention_part in tl.static_range({{ call.context_shards }}):
             attention_index = {{ call.partial_owner }}
+{% if sum_index != "attention_index" %}
+            attention_sum_index = {{ call.partial_sum_owner }}
+{% endif %}
+{% if accumulator_index != "attention_index" %}
+            attention_accumulator_index = {{ call.partial_accumulator_owner }}
+{% endif %}
             attention_factor = tl.exp(
                 tl.load(
                     {{ call.partial_max }}
@@ -46,14 +54,14 @@ def {{ call.symbol }}({{ call.signature }}):
             )
             attention_merged_sum += tl.load(
                 {{ call.partial_sum }}
-                + attention_index * {{ call.partial_sum_owner_stride }}
+                + {{ sum_index }} * {{ call.partial_sum_owner_stride }}
                 + ({{ call.partial_sum_offset }}),
                 mask=attention_output_mask,
                 other=0.0,
             ).to(tl.float32) * attention_factor
             attention_value = tl.load(
                 {{ call.partial_accumulator }}
-                + attention_index * {{ call.partial_accumulator_owner_stride }}
+                + {{ accumulator_index }} * {{ call.partial_accumulator_owner_stride }}
                 + ({{ call.partial_accumulator_offset }}),
                 mask=attention_output_mask,
                 other=0.0,
