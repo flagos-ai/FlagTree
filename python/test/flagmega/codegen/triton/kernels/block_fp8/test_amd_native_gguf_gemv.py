@@ -184,17 +184,18 @@ def rows_kernel(source, weight, output, N: tl.constexpr, K: tl.constexpr, ROW_BY
     return module
 
 
-# 40 rows = two full 16-row tiles and a ragged 8-row tile; K=2048 runs the
-# unmasked group loop, K=768 the masked tail.
+# 40 rows end in a tile whose second 8-row half is empty (skipped), 44 rows in
+# one whose second half is partly active; K=2048 runs the unmasked group loop,
+# K=768 the masked tail.
 @pytest.mark.parametrize("encoding", ("IQ4_XS", "Q4_K"))
 @pytest.mark.parametrize("k", (2048, 768))
 @pytest.mark.parametrize("family", ("linear", "glu"))
-def test_amd_native_gguf_helpers_match_fp64(amd_helpers, encoding, k, family):
+@pytest.mark.parametrize("n", (40, 44))
+def test_amd_native_gguf_helpers_match_fp64(amd_helpers, encoding, k, family, n):
     if _amd_target() is None:
         pytest.skip("requires an AMD RDNA GPU (gfx1100 / gfx1201)")
     from python.test.flagmega.codegen.triton.test_gguf_native_quant import _packed_fixture
 
-    n = 40
     packed, dequantized = _packed_fixture(encoding, rows=n, k=k)
     value = torch.randn(1, k, generator=torch.Generator().manual_seed(5)).bfloat16()
     output = torch.full((n + 8, ), float("nan"), dtype=torch.float32, device="cuda")

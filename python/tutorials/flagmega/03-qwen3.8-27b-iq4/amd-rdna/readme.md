@@ -11,7 +11,9 @@ from RDNA templates (`kernels/{block_fp8,matmul_glu}/platforms/amd/`): one
 thread owns a 32-value group of two rows, loads its 16 packed bytes with wide
 loads, maps the IQ4_NL codebook with `v_perm_b32` table lookups (as llama.cpp's
 `get_int_from_table_16`), applies each group's `d*(scale-32)` once to the group
-sum and reduces across threads once per tile. Activations stay floating point.
+sum and reduces across threads once per tile; a 16-row tile runs as two
+8-row halves and skips a half with no active row. Activations stay floating
+point.
 
 The native IQ4_XS GEMVs never quantize activations, so they also run on gfx1100,
 which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
@@ -21,22 +23,23 @@ which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, RDNA native GGUF GEMV templates | 37.0 | 27.0 |
+| FlagMega, RDNA native GGUF GEMV templates | 34.4 | 29.1 |
 | FlagMega, generic native GGUF GEMV (before) | 257 | 3.9 |
 | llama.cpp (HIP, gfx1201) | 29.9 | 33.5 |
 
 Three rotated rounds per workload on one idle card (.101, no ECC); host time
 around graph replay, GPU greedy sampling and one CPU token return, the same
 boundary as the NVIDIA tutorial and `llama_performance.py`. Chinese64:
-36.99/37.07/37.08 ms vs llama.cpp 29.73/29.76/29.77 ms; Synthetic32:
-36.85/36.94/36.99 ms vs 29.99/30.17/30.07 ms. Model weight bandwidth is
-13,611,666,080 bytes per call / latency: about 368 GB/s, 57% of the R9700's
-644.6 GB/s (58% of the ~631 GB/s it streams). The IQ4 GEMVs were 97% of the
+34.35/34.42/34.42 ms vs llama.cpp 29.75/29.71/29.70 ms; Synthetic32:
+34.27/34.35/34.38 ms vs 29.93/29.97/30.21 ms. Model weight bandwidth is
+13,611,666,080 bytes per call / latency: about 396 GB/s, 61% of the R9700's
+644.6 GB/s (63% of the ~631 GB/s it streams). The IQ4 GEMVs were 97% of the
 generic kernel's time: its 15-deep `tl.where` codebook, per-element byte loads
 and a cross-thread reduction every K step left it latency-bound at ~55 GB/s.
-In isolation the RDNA templates stream 512–560 GB/s on the model's projection
-shapes. The megakernel still uses 248 VGPRs per thread (the GEMV helpers use
-170), with no spills.
+In isolation the RDNA templates stream 450–560 GB/s on the model's projection
+shapes; skipping empty half tiles (owners of 40 and 8 rows end in a half-full
+tile) took decode from 37.0 to 34.4 ms. The megakernel still uses 248 VGPRs
+per thread (the GEMV helpers use 170), with no spills.
 
 Correctness is checked against llama.cpp built for HIP from the same pinned
 commit on the same GGUF and GPU:

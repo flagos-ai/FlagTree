@@ -176,8 +176,9 @@ def _flagmega_amd_q4_k_rows8(source, weight, rows8, K: tl.constexpr):
 @triton.jit
 def _flagmega_amd_native_rows(source, weight, row_offsets, n_mask, K: tl.constexpr,
                               ENCODING: tl.constexpr, TN: tl.constexpr):
-    """Native GGUF dot of a TN-row tile (TN in {8, 16}); 16 rows run as two
-    8-row halves (even/odd rows) to bound register pressure."""
+    """Native GGUF dot of a TN-row tile (TN in {8, 16}). 16 rows run as two
+    contiguous 8-row halves, which bounds register pressure; a half without an
+    active row (the ragged last tile of an owner) is skipped."""
     tl.static_assert(TN == 8 or TN == 16, "AMD native GGUF tiles hold 8 or 16 rows")
     safe = tl.where(n_mask, row_offsets, tl.max(tl.where(n_mask, row_offsets, 0), axis=0))
     if TN == 8:
@@ -186,12 +187,17 @@ def _flagmega_amd_native_rows(source, weight, row_offsets, n_mask, K: tl.constex
         else:
             result = _flagmega_amd_q4_k_rows8(source, weight, safe, K)
     else:
-        even_rows, odd_rows = tl.split(tl.reshape(safe, (8, 2)))
+        first_rows, second_rows = tl.split(tl.permute(tl.reshape(safe, (2, 8)), (1, 0)))
+        _, second_active = tl.split(tl.permute(tl.reshape(n_mask.to(tl.int32), (2, 8)), (1, 0)))
         if ENCODING == "IQ4_XS":
-            even = _flagmega_amd_iq4_xs_rows8(source, weight, even_rows, K)
-            odd = _flagmega_amd_iq4_xs_rows8(source, weight, odd_rows, K)
+            first = _flagmega_amd_iq4_xs_rows8(source, weight, first_rows, K)
         else:
-            even = _flagmega_amd_q4_k_rows8(source, weight, even_rows, K)
-            odd = _flagmega_amd_q4_k_rows8(source, weight, odd_rows, K)
-        result = tl.reshape(tl.join(even, odd), (16,))
+            first = _flagmega_amd_q4_k_rows8(source, weight, first_rows, K)
+        second = tl.zeros((8, ), tl.float32)
+        if tl.max(second_active, axis=0) > 0:
+            if ENCODING == "IQ4_XS":
+                second = _flagmega_amd_iq4_xs_rows8(source, weight, second_rows, K)
+            else:
+                second = _flagmega_amd_q4_k_rows8(source, weight, second_rows, K)
+        result = tl.reshape(tl.permute(tl.join(first, second), (1, 0)), (16, ))
     return result
