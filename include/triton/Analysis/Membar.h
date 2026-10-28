@@ -28,6 +28,9 @@
 
 #include "Allocation.h"
 
+#ifdef __TLE__
+#include <limits>
+#endif
 #include <set>
 
 namespace mlir {
@@ -44,6 +47,11 @@ struct BlockInfo {
 
   IntervalMapT syncReadIntervals;
   IntervalMapT syncWriteIntervals;
+#ifdef __TLE__
+  /// Some path from the function entry reaches this point without a CTA
+  /// barrier. Only MembarAnalysis sets it; it tracks a callee's entry prefix.
+  bool entryUnsynced = false;
+#endif
 
   BlockInfo() = default;
 
@@ -55,8 +63,36 @@ struct BlockInfo {
     for (auto &interval : other.syncWriteIntervals)
       syncWriteIntervals[interval.first].insert(interval.second.begin(),
                                                 interval.second.end());
+#ifdef __TLE__
+    entryUnsynced |= other.entryUnsynced;
+#endif
     return *this;
   }
+
+#ifdef __TLE__
+  /// Shifts a callee's intervals into the caller's frame at `offset`.
+  BlockInfo translated(size_t offset) const {
+    auto shift = [&](const IntervalMapT &src, IntervalMapT &dst) {
+      constexpr size_t kMax = std::numeric_limits<size_t>::max();
+      for (auto &[interval, ops] : src) {
+        // The all-shared-memory interval (e.g. an elected mbarrier arrive)
+        // also covers the caller's allocations below the callee frame.
+        if (interval == Interval<size_t>()) {
+          dst[interval].insert(ops.begin(), ops.end());
+          continue;
+        }
+        size_t end = interval.end() == kMax ? kMax : interval.end() + offset;
+        dst[Interval<size_t>(interval.start() + offset, end)].insert(
+            ops.begin(), ops.end());
+      }
+    };
+    BlockInfo result;
+    shift(syncReadIntervals, result.syncReadIntervals);
+    shift(syncWriteIntervals, result.syncWriteIntervals);
+    result.entryUnsynced = entryUnsynced;
+    return result;
+  }
+#endif
 
   void dump() {
     auto &err = llvm::errs();
@@ -91,10 +127,17 @@ struct BlockInfo {
   void sync() {
     syncReadIntervals.clear();
     syncWriteIntervals.clear();
+#ifdef __TLE__
+    entryUnsynced = false;
+#endif
   }
 
   /// Compares two BlockInfo objects.
   bool operator==(const BlockInfo &other) const {
+#ifdef __TLE__
+    if (entryUnsynced != other.entryUnsynced)
+      return false;
+#endif
     return syncReadIntervals == other.syncReadIntervals &&
            syncWriteIntervals == other.syncWriteIntervals;
   }
@@ -177,15 +220,33 @@ protected:
                       FuncBlockInfoMapT *funcBlockInfoMap,
                       OpBuilder *builder) = 0;
 
+#ifdef __TLE__
+  /// Whether the function entry starts with BlockInfo::entryUnsynced set.
+  virtual bool tracksEntrySync() const { return false; }
+#endif
+
   Allocation *allocation = nullptr;
   MembarFilterFn filter = nullptr;
 };
 
 class MembarAnalysis : public MembarOrFenceAnalysis {
 public:
+#ifdef __TLE__
+  /// Per function: the shared-memory accesses that can run before the first
+  /// CTA barrier on some path from the function entry.
+  using EntryPrefixMapT = DenseMap<FunctionOpInterface, BlockInfo>;
+#endif
+
   MembarAnalysis() = default;
+#ifdef __TLE__
+  explicit MembarAnalysis(Allocation *allocation, MembarFilterFn filter,
+                          EntryPrefixMapT *entryPrefixMap = nullptr)
+      : MembarOrFenceAnalysis(allocation, filter),
+        entryPrefixMap(entryPrefixMap) {}
+#else
   explicit MembarAnalysis(Allocation *allocation, MembarFilterFn filter)
       : MembarOrFenceAnalysis(allocation, filter) {}
+#endif
 
   ~MembarAnalysis() override = default;
 
@@ -195,7 +256,21 @@ private:
                       FuncBlockInfoMapT *funcBlockInfoMap,
                       OpBuilder *builder) override;
 
+#ifdef __TLE__
+  bool tracksEntrySync() const override { return entryPrefixMap != nullptr; }
+
+  void updateCall(Operation *op, FunctionOpInterface callee,
+                  BlockInfo *blockInfo, FuncBlockInfoMapT *funcBlockInfoMap,
+                  MembarFilterFn filter, OpBuilder *builder);
+
+  void addToEntryPrefix(const BlockInfo &blockInfo);
+#endif
+
   void insertBarrier(Operation *operation, OpBuilder *builder);
+
+#ifdef __TLE__
+  EntryPrefixMapT *entryPrefixMap = nullptr;
+#endif
 };
 
 /// Postorder traversal on the callgraph to insert membar instructions
@@ -231,7 +306,40 @@ private:
   MembarFilterFn filter;
 };
 
+#ifdef __TLE__
+/// Like ModuleMembarOrFenceAnalysis<MembarAnalysis>, but also keeps each
+/// callee's entry prefix so a call is ordered against what the callee touches
+/// before its first barrier, not only against its exit state.
+class ModuleMembarAnalysis : public CallGraph<BlockInfo> {
+public:
+  ModuleMembarAnalysis(ModuleAllocation *moduleAllocation,
+                       MembarFilterFn filter = nullptr)
+      : CallGraph<BlockInfo>(moduleAllocation->getModuleOp()),
+        moduleAllocation(moduleAllocation), filter(filter) {}
+
+  void run() {
+    walk<WalkOrder::PreOrder, WalkOrder::PostOrder>(
+        // Pre-order walk callback
+        [](CallOpInterface callOp, FunctionOpInterface funcOp) {},
+        // Post-order walk callback
+        [&](FunctionOpInterface funcOp) {
+          auto *allocation = moduleAllocation->getFuncData(funcOp);
+          auto [it, inserted] = funcMap.try_emplace(funcOp, BlockInfo());
+          if (inserted) {
+            MembarAnalysis analysis(allocation, filter, &entryPrefixMap);
+            analysis.run(funcMap);
+          }
+        });
+  }
+
+private:
+  ModuleAllocation *moduleAllocation;
+  MembarFilterFn filter;
+  MembarAnalysis::EntryPrefixMapT entryPrefixMap;
+};
+#else
 typedef ModuleMembarOrFenceAnalysis<MembarAnalysis> ModuleMembarAnalysis;
+#endif
 
 } // namespace mlir
 

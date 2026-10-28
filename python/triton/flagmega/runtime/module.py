@@ -49,7 +49,7 @@ from triton.flagmega.ir.ops.nn._paged_attention_state import (
     create_paged_attention_state,
 )
 from triton.flagmega.runtime.prepared import ResourceContract, prepare_jit_kernel
-from triton.flagmega.runtime.nvidia_launch import compilation_options
+from triton.flagmega.runtime.nvidia_launch import compilation_knobs, compilation_options
 from triton.flagmega.runtime.kernel_programs import verified_kernel_programs
 from triton.flagmega.runtime.lifecycle import RuntimeModule
 from triton.flagmega.runtime.tensor_descriptor import TensorDescriptorCache
@@ -703,51 +703,53 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             arguments = (*arguments, *context_arguments)
         arguments = (*arguments, *descriptors, *self._function_offset_values)
         specs = self._kernel_launch_specs()
-        prepared = []
-        for kernel, spec in zip(self.kernels, specs, strict=True):
-            grid = spec['grid']
-            if 'launch_recipe' in spec:
-                from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
-                properties = _torch().cuda.get_device_properties(self._device)
-                grid = TaskLaunchRecipe.from_data(spec['launch_recipe']).resolve(
-                    sm_count=int(properties.multi_processor_count))
-            contract = _resource_contract(
-                {**self.codegen, "num_warps": spec.get("num_warps", self.codegen["num_warps"])},
-                self.manifest.get("target"),
-                requires_grid_wide_sync=spec.get(
-                    "requires_grid_wide_sync", _requires_grid_wide_sync(self.ir_module)
-                ),
-                device=self._device,
-            )
-            options = compilation_options(contract, self.manifest.get('target', ''),
-                                          floating_point_contract=self.ir_module.metadata.get('floating_point_contract'))
-            if 'maxnreg' in spec:
-                contract = replace(contract, registers_per_thread_limit=min(
-                    contract.registers_per_thread_limit, spec['maxnreg']))
-                options['maxnreg'] = spec['maxnreg']
-            from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
-            bindings = spec.get("argument_bindings")
-            instance = prepare_jit_kernel(
-                kernel,
-                arguments if bindings is None else project_arguments(bindings, arguments),
-                spec["dynamic_argument_indices"],
-                grid=grid,
-                contract=contract,
-                allocation_device=self._device,
-                **options,
-            )
-            prepared.append(instance if bindings is None else BoundProgram(
-                instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
-        if self.codegen.get("kernel_program_schema") in {
-            "flagmega.kernel-programs/v2-dag", "flagmega.kernel-programs/v3-dag-completion",
-            "flagmega.kernel-programs/v4-functions",
-            "flagmega.kernel-programs/v7-mesh-dag",
-        }:
-            from triton.flagmega.runtime.program_dag import ProgramDAG
-            self._program_dag = ProgramDAG(
-                specs, tuple(prepared), device=self._device, target=self.manifest.get("target")
-            )
-        self._prepared = tuple(prepared)
+        target = self.manifest.get("target", "")
+        with compilation_knobs(target):
+            prepared = []
+            for kernel, spec in zip(self.kernels, specs, strict=True):
+                grid = spec['grid']
+                if 'launch_recipe' in spec:
+                    from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
+                    properties = _torch().cuda.get_device_properties(self._device)
+                    grid = TaskLaunchRecipe.from_data(spec['launch_recipe']).resolve(
+                        sm_count=int(properties.multi_processor_count))
+                contract = _resource_contract(
+                    {**self.codegen, "num_warps": spec.get("num_warps", self.codegen["num_warps"])},
+                    self.manifest.get("target"),
+                    requires_grid_wide_sync=spec.get(
+                        "requires_grid_wide_sync", _requires_grid_wide_sync(self.ir_module)
+                    ),
+                    device=self._device,
+                )
+                options = compilation_options(contract, self.manifest.get('target', ''),
+                                              floating_point_contract=self.ir_module.metadata.get('floating_point_contract'))
+                if 'maxnreg' in spec:
+                    contract = replace(contract, registers_per_thread_limit=min(
+                        contract.registers_per_thread_limit, spec['maxnreg']))
+                    options['maxnreg'] = spec['maxnreg']
+                from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
+                bindings = spec.get("argument_bindings")
+                instance = prepare_jit_kernel(
+                    kernel,
+                    arguments if bindings is None else project_arguments(bindings, arguments),
+                    spec["dynamic_argument_indices"],
+                    grid=grid,
+                    contract=contract,
+                    allocation_device=self._device,
+                    **options,
+                )
+                prepared.append(instance if bindings is None else BoundProgram(
+                    instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
+            if self.codegen.get("kernel_program_schema") in {
+                "flagmega.kernel-programs/v2-dag", "flagmega.kernel-programs/v3-dag-completion",
+                "flagmega.kernel-programs/v4-functions",
+                "flagmega.kernel-programs/v7-mesh-dag",
+            }:
+                from triton.flagmega.runtime.program_dag import ProgramDAG
+                self._program_dag = ProgramDAG(
+                    specs, tuple(prepared), device=self._device, target=self.manifest.get("target")
+                )
+            self._prepared = tuple(prepared)
         self.prepare_count += 1
         self._mark_prepared()
 

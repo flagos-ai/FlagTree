@@ -96,3 +96,8 @@ def test_two_layer_qwen3_runs_on_amd_rdna(tmp_path, supplied_model):
 
     torch.testing.assert_close(logits, expected_logits, atol=0.15, rtol=0.04)
     assert next_token.item() == expected_token.item()
+    # gfx1201 compiles the megakernel without buffer ops: its small-phase loads
+    # would otherwise become serial waterfall loops over VGPR base pointers.
+    if target == "amd-gfx1201":
+        for prepared in runtime._prepared:
+            assert "buffer_load" not in prepared.compiled_kernel.asm["amdgcn"]

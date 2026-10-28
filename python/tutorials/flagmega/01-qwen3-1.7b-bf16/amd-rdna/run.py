@@ -12,9 +12,16 @@ Example:
 Compiles through the amd-<arch> FlagMega target with the RDNA distribution
 recipe (see recipe.py), renders the megakernel, loads it on cuda:0 (ROCm maps
 HIP devices through the cuda namespace), and runs a single-token decode.
+
+``--benchmark`` times decode at each ``--context-lengths`` entry (tokens
+already in the KV cache, default 1024,4096,8192). Every step greedily decodes
+from the previous step's token, so the cache holds a real generated sequence;
+each timed step appends one more token, so each result covers
+``L .. L+warmup+iters``.
 """
 
 import argparse
+import math
 import time
 from pathlib import Path
 
@@ -25,13 +32,27 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.importer import (
     DirectoryCheckpoint,
     apply_numerical_profile,
-    import_model,
+    import_qwen3_model,
     VLLM_INDUCTOR_LEVEL3,
 )
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import load as load_runtime
 
 from recipe import create_target, recipe_compile
+
+_KV_BLOCK_SIZE = 256
+_DEFAULT_KV_BLOCKS = 16
+_WARMUP_STEPS = 10
+
+
+def _context_lengths(text):
+    try:
+        lengths = sorted({int(value) for value in text.split(",") if value.strip()})
+    except ValueError:
+        raise SystemExit(f"--context-lengths must be comma-separated integers, got {text!r}")
+    if not lengths or lengths[0] < 1:
+        raise SystemExit("--context-lengths needs at least one length >= 1")
+    return lengths
 
 
 def main():
@@ -44,6 +65,8 @@ def main():
     parser.add_argument("--glu-reduction-group", type=int, choices=(32, 64, 128), default=32)
     parser.add_argument("--benchmark", action="store_true", help="Time steady-state decode latency")
     parser.add_argument("--iters", type=int, default=200)
+    parser.add_argument("--context-lengths", default="1024,4096,8192",
+                        help="Comma-separated KV context lengths to time decode at (with --benchmark)")
     args = parser.parse_args()
 
     target = create_target(arch=args.arch, glu_reduction_group=args.glu_reduction_group)
@@ -51,10 +74,18 @@ def main():
     compiler.target = target
 
     checkpoint = DirectoryCheckpoint(args.checkpoint)
-    print("Importing Qwen3-1.7B weights...", flush=True)
-    module = import_model(checkpoint, numerical_profile=VLLM_INDUCTOR_LEVEL3)
-    if module.stage == "imported":
-        module = apply_numerical_profile(module, VLLM_INDUCTOR_LEVEL3)
+    lengths = _context_lengths(args.context_lengths) if args.benchmark else []
+    # The kernel does not bound-check the block table, so size the cache for
+    # the longest context plus the warmup and timed steps that follow it.
+    tokens_needed = (lengths[-1] + _WARMUP_STEPS + args.iters) if lengths else 1
+    max_positions = int(checkpoint.config.get("max_position_embeddings", tokens_needed))
+    if tokens_needed > max_positions:
+        raise SystemExit(f"context {tokens_needed} exceeds max_position_embeddings={max_positions}")
+    num_blocks = max(_DEFAULT_KV_BLOCKS, math.ceil(tokens_needed / _KV_BLOCK_SIZE))
+
+    print(f"Importing Qwen3-1.7B weights (KV cache {num_blocks * _KV_BLOCK_SIZE} tokens)...", flush=True)
+    module = import_qwen3_model(checkpoint, block_size=_KV_BLOCK_SIZE, num_blocks=num_blocks)
+    module = apply_numerical_profile(module, VLLM_INDUCTOR_LEVEL3)
 
     print("Compiling with the RDNA distribution recipe...", flush=True)
     module = recipe_compile(module, compiler, target)
@@ -75,17 +106,34 @@ def main():
     torch.cuda.synchronize()
     print(f"next_token={int(next_token.item())}  logits_finite={bool(torch.isfinite(logits).all())}", flush=True)
 
-    if args.benchmark:
-        for _ in range(10):
-            runtime.run_into(logits, next_token, input_ids, state)
+    def decode_step():
+        # Feed the greedy token back on device, so the cache holds a real
+        # generated sequence rather than one token repeated (which makes every
+        # key identical and hides attention errors).
+        input_ids.copy_(next_token.reshape(input_ids.shape).to(input_ids.dtype))
+        runtime.run_into(logits, next_token, input_ids, state)
+
+    position = 1  # tokens in the KV cache after the correctness step above
+    for length in lengths:
+        if length > position:
+            print(f"Filling KV cache to {length} tokens...", flush=True)
+            for _ in range(length - position):
+                decode_step()
+            torch.cuda.synchronize()
+            position = length
+        start = position
+        for _ in range(_WARMUP_STEPS):
+            decode_step()
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         for _ in range(args.iters):
-            runtime.run_into(logits, next_token, input_ids, state)
+            decode_step()
         torch.cuda.synchronize()
         us = (time.perf_counter() - t0) / args.iters * 1e6
-        print(f"decode latency: {us:.1f} us/token ({1e6 / us:.1f} tok/s), "
-              f"spill={runtime.resource_report.get('spill_bytes')}", flush=True)
+        position += _WARMUP_STEPS + args.iters
+        print(f"context {start}..{position}: decode latency {us:.1f} us/token "
+              f"({1e6 / us:.1f} tok/s), spill={runtime.resource_report.get('spill_bytes')}",
+              flush=True)
 
 
 if __name__ == "__main__":

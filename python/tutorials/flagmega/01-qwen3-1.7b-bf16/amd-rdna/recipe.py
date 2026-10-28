@@ -11,12 +11,18 @@ nvidia-h800 tutorial, and the one recipe serves both RDNA3 (gfx1100) and RDNA4
      tile/reduction sizes, not NV hardware features). The gfx target machine is
      the only difference between the two RDNA parts.
   2. ``residual_layout="sharded-casts"`` + ``norm_layout="replicated-residual"``
-     keep the residual/norm shards full-mesh contiguous, which avoids the
-     gather-reduce owner-group codegen path that the default auto-distribution
-     hits at realistic (hidden=2048) shapes.
+     keep the residual/norm shards full-mesh contiguous. The norm layout is the
+     load-bearing one: under the default auto-distribution the solver gives the
+     fused ``gather_reduce_add_norm_apply`` a block-cyclic partial input, which
+     its renderer rejects ("Cross-layout partial access requires contiguous
+     source shards"). The residual pin alone is no longer required, but lifting
+     it changes the reduction order (logits not bitwise) and removes no grid
+     barrier.
   3. The H800 TMA kernel recipe (``local_optimizations.kernel_recipe.select_tir``)
      is SKIPPED. RDNA has no TMA/tensor-descriptor, so the default TIR selection
      picks the portable ``packed_k_major_gemv`` variants already supported here.
+     The exceptions are the MLP gate+up projection (``_GLU_PROJECTION``, a
+     64-row tile) and the paged-attention partial (``_ATTENTION_PARTIAL``).
 
 Put this directory on PYTHONPATH (the sibling nvidia-h800 directory is added
 automatically) and call ``recipe_compile`` on an imported Qwen3-1.7B module.
@@ -77,6 +83,8 @@ def create_target(*, arch: str = "gfx1201", glu_reduction_group: int = 32):
             parameters["reduction_width"] = 128
         if implementation.family == "dense_matmul_glu" and "reduction_group" in parameters:
             parameters["reduction_group"] = glu_reduction_group
+        if implementation.id == _GLU_PROJECTION:
+            parameters["block_k"] = _GLU_BLOCK_K
         if implementation.family == "elementwise" and "elements_per_program" in parameters:
             parameters["elements_per_program"] = 256
         return replace(implementation, parameters=parameters)
@@ -157,13 +165,52 @@ def select_distribution(module, target, *, residual_layout="sharded-casts",
     )
 
 
+# On AMD decode_t16 renders the per-token-row online softmax
+# (platforms/amd/decode_t16), which beats the shared-state decode_t32 from 1K up
+# without raising the megakernel's VGPRs. On gfx1100 the long-context partial is
+# latency-bound, so platforms/amd/gfx1100 also loads branch-free clamped tiles
+# and the next tile's block ids with this tile's K/V (W7900 8K partial 65 -> 50
+# us/layer). Per-row 32-token tiles raise VGPRs; t128/t256 spill.
+_ATTENTION_PARTIAL = "tir.paged_attention_partial.decode_t16"
+
+# The default gate+up tile (tile_n 16) sweeps each CTA's 48 GLU rows in three
+# passes over K, splitting every contiguous 1.5 KB weight run into three reads
+# at different times. W7900 loses DRAM locality to that (71% of achievable
+# bandwidth); one 64-row tile with 32-wide K steps streams at the ceiling
+# without raising the megakernel's peak VGPRs (gate+up 105 -> 72 us/layer).
+# R9700 already streams gate+up at ~98% and is neutral.
+_GLU_PROJECTION = "tir.dense_matmul_glu.packed_k_major_gemv_tn64"
+_GLU_BLOCK_K = 32
+
+
+def _pin_implementation(module, implementation_id):
+    choices = [
+        (point.id, implementation_id)
+        for point in module.selection_points
+        if any(candidate.id == implementation_id for candidate in point.candidates)
+    ]
+    if not choices:
+        raise ValueError(f"{implementation_id} is not offered at any selection point")
+    return override_plan(module, choices, rationale=f"RDNA recipe: {implementation_id}")
+
+
 def recipe_compile(module, compiler, target):
     """Compile an imported Qwen3-1.7B module to bufferized_tir with the AMD recipe.
 
-    Distribution is pinned by the recipe; TIR selection is left to the default
-    policy, which picks the RDNA-portable packed_k_major_gemv kernels.
+    Distribution is pinned by the recipe. TIR selection is left to the default
+    policy (the RDNA-portable packed_k_major_gemv kernels) except for the MLP
+    gate+up projection (``_GLU_PROJECTION``, pinned when TIR is lowered) and the
+    paged-attention partial (``_ATTENTION_PARTIAL``, pinned among microkernels).
     """
     module = compiler.compile(module, stop_after="propose-distribution").module
     plan = select_distribution(module, target)
     module = compiler.run_stage(module, "auto-distributed", plan=plan).module
+    module = compiler.compile(module, stop_after="propose-tir").module
+    module = compiler.run_stage(
+        module, "lower-tir", plan=_pin_implementation(module, _GLU_PROJECTION)
+    ).module
+    module = compiler.compile(module, stop_after="propose-microkernels").module
+    module = compiler.run_stage(
+        module, "select-microkernels", plan=_pin_implementation(module, _ATTENTION_PARTIAL)
+    ).module
     return compiler.compile(module).module

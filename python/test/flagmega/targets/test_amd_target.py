@@ -7,6 +7,11 @@ selected_tir stage and later, so it does not fire before propose-tir; the only
 pre-TIR gate is the AMD capability filter over the implementation catalog, which
 keeps the portable bf16 candidates and drops the fp8/tma/mma_v3 ones."""
 
+from pathlib import Path
+from types import SimpleNamespace
+import runpy
+import sys
+
 import pytest
 
 from triton.flagmega import ir as fm
@@ -178,3 +183,62 @@ def test_pyntt_target_caps_but_preserves_a_directly_supplied_model():
     params = _resolved_impl(target, cid)
     assert params.get("tile_n") == 32              # explicit injection preserved
     assert params.get("compute_num_warps") == cap  # invariant applied
+
+
+_AMD_RDNA_TUTORIAL = (Path(__file__).resolve().parents[4]
+                      / "python/tutorials/flagmega/01-qwen3-1.7b-bf16/amd-rdna")
+_GLU_TN64 = "tir.dense_matmul_glu.packed_k_major_gemv_tn64"
+
+
+@pytest.fixture(scope="module")
+def amd_rdna_tutorial():
+    """Load the amd-rdna recipe and run.py once; they import the sibling
+    nvidia-h800 ``local_optimizations`` package, which registers ops."""
+    saved = list(sys.path)
+    sys.path.insert(0, str(_AMD_RDNA_TUTORIAL))
+    try:
+        loaded = {name: runpy.run_path(str(_AMD_RDNA_TUTORIAL / name)) for name in ("recipe.py", "run.py")}
+    finally:
+        sys.path[:] = saved
+    return loaded.__getitem__
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_amd_rdna_recipe_retiles_only_the_gate_up_gemv(amd_rdna_tutorial, arch):
+    from triton.flagmega.targets.portable_triton_implementations import (
+        portable_triton_implementation_model,
+    )
+    recipe = amd_rdna_tutorial("recipe.py")
+    model = recipe["create_target"](arch=arch).triton_implementation_model
+    portable = portable_triton_implementation_model()
+    assert model.implementation(_GLU_TN64).parameters["block_k"] == 32
+    assert model.implementation(_GLU_TN64).parameters["tile_n"] == 64
+    # The shared catalog and the other GLU tiles keep their own K step.
+    assert portable.implementation(_GLU_TN64).parameters["block_k"] == 128
+    tn16 = "tir.dense_matmul_glu.packed_k_major_gemv_tn16"
+    assert model.implementation(tn16).parameters["block_k"] == portable.implementation(tn16).parameters["block_k"]
+    assert model.implementation(recipe["_ATTENTION_PARTIAL"]) is not None
+    with pytest.raises(ValueError, match="arch must be one of"):
+        recipe["create_target"](arch="gfx942")
+
+
+def test_amd_rdna_recipe_pins_only_points_that_offer_the_implementation(amd_rdna_tutorial):
+    recipe = amd_rdna_tutorial("recipe.py")
+    point = lambda point_id, *candidates: SimpleNamespace(
+        id=point_id, candidates=tuple(SimpleNamespace(id=value) for value in candidates))
+    module = SimpleNamespace(semantic_hash="module", selection_map={}, selection_points=(
+        point("tir.gate_up", "tir.dense_matmul_glu.packed_k_major_gemv_tn16", _GLU_TN64),
+        point("tir.down", "tir.dense_matmul.split_k_n_packed_k_major_gemv"),
+    ))
+    plan = recipe["_pin_implementation"](module, _GLU_TN64)
+    assert [(record.point_id, record.candidate_id) for record in plan.records] == [("tir.gate_up", _GLU_TN64)]
+    with pytest.raises(ValueError, match="not offered"):
+        recipe["_pin_implementation"](module, recipe["_ATTENTION_PARTIAL"])
+
+
+def test_amd_rdna_benchmark_context_lengths(amd_rdna_tutorial):
+    parse = amd_rdna_tutorial("run.py")["_context_lengths"]
+    assert parse("8192, 1,1024,1") == [1, 1024, 8192]
+    for text in ("", "0,1024", "1k"):
+        with pytest.raises(SystemExit):
+            parse(text)

@@ -8,6 +8,10 @@ import re
 from collections.abc import Mapping
 from math import prod
 
+from triton.flagmega.codegen.triton.amd_prefetch import (
+    add_next_invocation_qkv_prefetch,
+    add_split_k_weight_tile_prefetch,
+)
 from triton.flagmega.codegen.triton.function_call import (
     emit_function_call_arguments,
 )
@@ -227,6 +231,16 @@ def describe_tir_package(
         if specialize_readonly_layout:
             from triton.flagmega.codegen.triton.corex_readonly_layout import select_readonly_layouts
             readonly_layout = select_readonly_layouts(module, wrappers)
+    amd_prefetch = add_next_invocation_qkv_prefetch(
+        source_schedule["device_functions"] if source_schedule else (),
+        encoded_calls,
+        platform=platform,
+        architecture=architecture,
+    )
+    if cooperative:
+        amd_prefetch = add_split_k_weight_tile_prefetch(
+            wrappers, mesh, platform=platform, architecture=architecture,
+        ) or amd_prefetch
     if (platform != "nvidia" or architecture != "sm90") and any(
         call.get("decode_schedule") == "bf16_mma" for calls in encoded_calls.values() for call in calls
     ):
@@ -343,6 +357,7 @@ def describe_tir_package(
         "entry_events": entry_events,
         "pipeline_schedule": pipeline_schedule,
         "device_functions": source_schedule["device_functions"] if source_schedule else [],
+        "amd_prefetch": amd_prefetch,
         "use_tle": pipeline_schedule is not None or cooperative,
         "kernel_templates": kernel_templates,
         "kernel_template_specs": plain_package_value(raw_templates),

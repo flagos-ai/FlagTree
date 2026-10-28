@@ -1,0 +1,18 @@
+{% macro prefetch_event(event) %}
+    # prefetch the next invocation's {{ event.call }} weight slab
+    if {{ event.guard }}:
+        _flagmega_amd_prefetch_slab({{ event.base }} + shard_index * {{ event.slab_bytes }}, {{ event.chunks }})
+{%- endmacro %}
+@triton.jit
+def _flagmega_amd_prefetch_slab(base, CHUNKS: tl.constexpr):
+    """gfx12 scalar prefetch of CHUNKS consecutive 4 KB blocks starting at base."""
+    address = base.to(tl.int64, bitcast=True)
+    # s_prefetch_data takes an SGPR address; make it uniform once per site.
+    low = tl.inline_asm_elementwise("v_readfirstlane_b32 $0, $1", "=s,v", [address.to(tl.int32)],
+                                    dtype=tl.int32, is_pure=True, pack=1)
+    high = tl.inline_asm_elementwise("v_readfirstlane_b32 $0, $1", "=s,v", [(address >> 32).to(tl.int32)],
+                                     dtype=tl.int32, is_pure=True, pack=1)
+    address = (high.to(tl.int64) << 32) | (low.to(tl.int64) & 0xFFFFFFFF)
+    for chunk in tl.range(0, CHUNKS):
+        tl.inline_asm_elementwise("s_prefetch_data $1, 0x0, null, 31", "=s,s", [address + chunk * 4096],
+                                  dtype=tl.int32, is_pure=False, pack=1)

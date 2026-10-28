@@ -7,6 +7,13 @@
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: llvm.func @grid_barrier
+  // The workgroup count is read from the implicit-argument block counts with
+  // invariant aligned loads, not through __ockl_get_num_groups, whose
+  // unaligned remainder reads are vector loads re-fetched after every acquire.
+  // CHECK-NOT: __ockl_get_num_groups
+  // CHECK: llvm.call_intrinsic "llvm.amdgcn.implicitarg.ptr"
+  // CHECK-COUNT-3: llvm.load {{.*}}invariant{{.*}} : !llvm.ptr<4> -> i32
+  // CHECK-NOT: __ockl_get_num_groups
   // arrive (release) + spin (acquire), both agent-scoped global atomics:
   // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent") release
   // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent") acquire
