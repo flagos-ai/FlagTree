@@ -46,6 +46,7 @@ ARG RPM_BASE_IMAGE=fedora:43
 # build-flagtree-rpm.sh fills all of these from packaging/backends.conf.
 ARG FLAGTREE_BACKEND=nvidia
 ARG FLAGTREE_WHEEL_STAGE=wheel-builder
+ARG FLAGTREE_WHEEL_SOURCE=source
 ARG FLAGTREE_ARCH=x86_64
 # Index to download a published wheel from, and an optional exact local
 # version to pin (e.g. ascend3.5); see packaging/build-helpers/fetch-wheel.sh.
@@ -143,8 +144,6 @@ FROM ${FLAGTREE_WHEEL_STAGE} AS wheel-src
 # ---------- Stage 2: assemble the .rpm ----------
 FROM ${RPM_BASE_IMAGE} AS rpm-assembler
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG FLAGTREE_BACKEND
-ARG FLAGTREE_ARCH
 
 ENV PIP_ROOT_USER_ACTION=ignore
 
@@ -169,9 +168,29 @@ COPY packaging/rpm/specs/flagtree.spec /root/rpmbuild/SPECS/
 COPY LICENSE /root/rpmbuild/SOURCES/LICENSE
 COPY --from=wheel-src /wheels /wheels
 
+# Declared here, after the layers that do not depend on them, so building
+# another backend reuses the toolchain layers.
+ARG FLAGTREE_BACKEND
+ARG FLAGTREE_WHEEL_SOURCE
+ARG FLAGTREE_ARCH
+
 # The spec's ExclusiveArch is the backend's architecture, so rpmbuild stops
 # here rather than producing a mislabeled rpm on the wrong host.
-RUN rpmbuild -ba /root/rpmbuild/SPECS/flagtree.spec \
+#
+# QA_RPATHS, for a published wheel only: rpm runs check-rpaths over the
+# buildroot of every non-noarch package, and a vendor-built wheel carries
+# absolute RUNPATHs this packaging cannot fix without patching the vendor's
+# binaries -- the vendor's own install prefix (/usr/local/Ascend/..., where the
+# runtime the backend loads actually lives) and, in the published ascend wheel,
+# a directory from the machine that built it. Both are properties of the wheel.
+# 0x0002 is check-rpaths' "invalid RPATH" class, the only one they fall in;
+# downgrading it to a warning keeps the paths in the build log instead of
+# ending the build, and every other class stays an error. A wheel this
+# packaging compiles itself gets the unmodified check.
+RUN if [ "${FLAGTREE_WHEEL_SOURCE}" = index ]; then \
+        export QA_RPATHS=0x0002; \
+    fi && \
+    rpmbuild -ba /root/rpmbuild/SPECS/flagtree.spec \
         --define "flagtree_backend ${FLAGTREE_BACKEND}" \
         --define "flagtree_arch ${FLAGTREE_ARCH}" \
         --define "wheel_dir /wheels" && \

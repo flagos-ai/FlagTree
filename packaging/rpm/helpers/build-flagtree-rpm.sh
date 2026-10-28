@@ -82,6 +82,7 @@ docker build \
     --build-arg RPM_BASE_IMAGE="${RPM_BASE_IMAGE}" \
     --build-arg FLAGTREE_BACKEND="${BACKEND}" \
     --build-arg FLAGTREE_WHEEL_STAGE="${WHEEL_STAGE}" \
+    --build-arg FLAGTREE_WHEEL_SOURCE="${WHEEL_SOURCE}" \
     --build-arg FLAGTREE_ARCH="${FLAGTREE_ARCH}" \
     --build-arg FLAGTREE_PYPI_INDEX="${FLAGTREE_PYPI_INDEX}" \
     --build-arg FLAGTREE_WHEEL_LOCAL="${FLAGTREE_WHEEL_LOCAL}" \
