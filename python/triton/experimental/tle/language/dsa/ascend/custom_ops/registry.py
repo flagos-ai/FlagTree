@@ -622,3 +622,176 @@ class cast_int4_to_fp16:
         self.arg_type["count"] = tl.int32
         self.symbol = "custom_cast_int4_to_fp16"
         self.bitcode = CUSTOM_OPS_BITCODE
+
+
+# Fused multiply-add sources are contiguous 1D UB tensors sized in whole
+# 32-byte blocks; the count-mode mask covers the whole source in one repeat.
+_FMA_MAX_COUNT = {tl.float16: 16384, tl.float32: 8192}
+
+
+def _fma_source_size(src, dtype, op_name):
+    assert _element_dtype(src) == dtype, (f"{op_name} requires all sources to share one dtype, "
+                                          f"got {_element_dtype(src)} and {dtype}")
+    assert len(src.shape) == 1, f"{op_name} requires 1D UB sources"
+    return src.numel.value
+
+
+@al.register_custom_op
+class mul_add_dst:
+    """Fused multiply-accumulate into the destination: dst = src0 * src1 + dst.
+
+    Based on CANN 9.0 `dav_c220/kernel_operator_vec_binary_impl.h`
+    MulAddDstImpl (MulAddDst Level 2, the `vmla` instruction). The
+    destination is read-modify-write: the value held by `out` on entry is
+    the addend, so callers must initialise it. Supported dtype combinations
+    follow the hardware: (src fp16, dst fp16), (src fp32, dst fp32) and
+    (src fp16, dst fp32) for mixed-precision accumulation, which also
+    avoids a separate cast. src0, src1 and out must be 1D contiguous UB
+    tensors of the same element count, 32-byte aligned; src0/src1 must not
+    overlap out. count is the number of elements and must equal the source
+    size. The op inserts no pipeline barrier; ordering is the caller's
+    responsibility.
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src0, src1, count, out=None):
+        assert out is not None, "mul_add_dst requires an output buffer holding the addend"
+        src_dtype = _element_dtype(src0)
+        out_dtype = _element_dtype(out)
+        assert (src_dtype, out_dtype) in (
+            (tl.float16, tl.float16),
+            (tl.float32, tl.float32),
+            (tl.float16, tl.float32),
+        ), ("mul_add_dst supports (src fp16, dst fp16), (src fp32, dst fp32) or "
+            f"(src fp16, dst fp32), got (src {src_dtype}, dst {out_dtype})")
+        size = _fma_source_size(src0, src_dtype, "mul_add_dst")
+        assert _fma_source_size(
+            src1, src_dtype,
+            "mul_add_dst") == size, ("mul_add_dst requires both sources to have the same element count")
+        assert len(out.shape) == 1 and out.numel.value == size, (
+            f"mul_add_dst requires a 1D output with the source element count ({size})")
+        limit = _FMA_MAX_COUNT[src_dtype]
+        assert size <= limit, (f"mul_add_dst supports at most {limit} {src_dtype} elements per call, got {size}")
+        assert isinstance(count, int) and count == size, (
+            f"mul_add_dst count must be a compile-time element count equal to the source size ({size})")
+        self.arg_type["count"] = tl.int32
+        if src_dtype == tl.float32:
+            suffix = "float"
+        elif out_dtype == tl.float16:
+            suffix = "half"
+        else:
+            suffix = "fmix"
+        self.symbol = "custom_mul_add_dst_" + suffix
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+class _fused_mul_add_base:
+    """Shared validation for dst = src0 * dst + src1 and its relu variant."""
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def _setup(self, op_name, src0, src1, count, out):
+        assert out is not None, f"{op_name} requires an output buffer holding the multiplicand"
+        dtype = _element_dtype(out)
+        assert dtype in (tl.float16, tl.float32), (f"{op_name} supports fp16 or fp32, got {dtype}")
+        size = _fma_source_size(src0, dtype, op_name)
+        assert _fma_source_size(src1, dtype,
+                                op_name) == size, (f"{op_name} requires both sources to have the same element count")
+        assert len(out.shape) == 1 and out.numel.value == size, (
+            f"{op_name} requires a 1D output with the source element count ({size})")
+        limit = _FMA_MAX_COUNT[dtype]
+        assert size <= limit, (f"{op_name} supports at most {limit} {dtype} elements per call, got {size}")
+        assert isinstance(count, int) and count == size, (
+            f"{op_name} count must be a compile-time element count equal to the source size ({size})")
+        self.arg_type["count"] = tl.int32
+        suffix = "half" if dtype == tl.float16 else "float"
+        self.symbol = f"custom_{op_name}_{suffix}"
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
+class fused_mul_add(_fused_mul_add_base):
+    """Fused multiply-add through the destination: dst = src0 * dst + src1.
+
+    Based on CANN 9.0 `dav_c220/kernel_operator_vec_binary_impl.h`
+    FusedMulAddImpl (FusedMulAdd Level 2, the `vmadd` instruction). Note the
+    operand roles differ from mul_add_dst: here `out` is a multiplicand and
+    `src1` is the addend, so `out` must hold a meaningful value on entry.
+    src0, src1 and out must be 1D contiguous UB tensors of one fp16 or fp32
+    dtype and the same element count, 32-byte aligned; sources must not
+    overlap out. count is the number of elements and must equal the source
+    size. The op inserts no pipeline barrier; ordering is the caller's
+    responsibility.
+    """
+
+    def __init__(self, src0, src1, count, out=None):
+        self._setup("fused_mul_add", src0, src1, count, out)
+
+
+@al.register_custom_op
+class mul_add_relu(_fused_mul_add_base):
+    """Fused multiply-add with relu: dst = relu(src0 * dst + src1).
+
+    Based on CANN 9.0 `dav_c220/kernel_operator_vec_binary_impl.h`
+    FusedMulAddReluImpl (MulAddRelu Level 2, the `vmaddrelu` instruction).
+    Operand roles and all constraints match fused_mul_add; the only
+    difference is the relu applied to the result. The op inserts no
+    pipeline barrier; ordering is the caller's responsibility.
+    """
+
+    def __init__(self, src0, src1, count, out=None):
+        self._setup("mul_add_relu", src0, src1, count, out)
+
+
+@al.register_custom_op
+class axpy:
+    """Scaled accumulate into the destination: dst = src * scalar + dst.
+
+    Based on CANN 9.0 `dav_c220/kernel_operator_vec_ternary_scalar_impl.h`
+    AxpyImpl (Axpy Level 2, the `vaxpy` instruction). The destination is
+    read-modify-write: the value held by `out` on entry is the addend, so
+    callers must initialise it. Supported dtype combinations follow the
+    hardware: (src fp16, dst fp16), (src fp32, dst fp32) and (src fp16,
+    dst fp32) for mixed-precision accumulation. scalar is passed as fp32
+    and narrowed to the source dtype. src and out must be 1D contiguous UB
+    tensors of the same element count, 32-byte aligned and disjoint. count
+    is the number of elements and must equal the source size. The op
+    inserts no pipeline barrier; ordering is the caller's responsibility.
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src, scalar, count, out=None):
+        assert out is not None, "axpy requires an output buffer holding the addend"
+        src_dtype = _element_dtype(src)
+        out_dtype = _element_dtype(out)
+        assert (src_dtype, out_dtype) in (
+            (tl.float16, tl.float16),
+            (tl.float32, tl.float32),
+            (tl.float16, tl.float32),
+        ), ("axpy supports (src fp16, dst fp16), (src fp32, dst fp32) or "
+            f"(src fp16, dst fp32), got (src {src_dtype}, dst {out_dtype})")
+        size = _fma_source_size(src, src_dtype, "axpy")
+        assert len(out.shape) == 1 and out.numel.value == size, (
+            f"axpy requires a 1D output with the source element count ({size})")
+        limit = _FMA_MAX_COUNT[src_dtype]
+        assert size <= limit, (f"axpy supports at most {limit} {src_dtype} elements per call, got {size}")
+        assert isinstance(count, int) and count == size, (
+            f"axpy count must be a compile-time element count equal to the source size ({size})")
+        self.arg_type["scalar"] = tl.float32
+        self.arg_type["count"] = tl.int32
+        if src_dtype == tl.float32:
+            suffix = "float"
+        elif out_dtype == tl.float16:
+            suffix = "half"
+        else:
+            suffix = "fmix"
+        self.symbol = "custom_axpy_" + suffix
+        self.bitcode = CUSTOM_OPS_BITCODE
