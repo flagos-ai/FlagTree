@@ -1,0 +1,19 @@
+{% include "kernels/block_fp8/platforms/amd/_native_gguf.py.jinja" %}
+@triton.jit
+def _flagmega_iq4_xs_linear_local_tile(
+    source, weight, destination, weight_row_offsets, destination_offsets,
+    n_mask, K: tl.constexpr,
+):
+    """IQ4_XS GEMV over packed GGML bytes; storage stays quantized."""
+    result = _flagmega_amd_native_rows(source, weight, weight_row_offsets, n_mask, K, "IQ4_XS", {{ tn }})
+    tl.store(destination + destination_offsets, result.to(destination.dtype.element_ty), mask=n_mask)
+
+@triton.jit
+def _flagmega_q4_k_linear_local_tile(
+    source, weight, destination, weight_row_offsets, destination_offsets,
+    n_mask, K: tl.constexpr,
+):
+    """Q4_K GEMV over 144-byte GGML super-blocks."""
+    result = _flagmega_amd_native_rows(source, weight, weight_row_offsets, n_mask, K, "Q4_K", {{ tn }})
+    tl.store(destination + destination_offsets, result.to(destination.dtype.element_ty), mask=n_mask)
+

@@ -5,8 +5,13 @@ This tutorial compiles the same original GGUF as
 and `amd-gfx1100` FlagMega targets: all 64 text decoder layers (48 GDN, 16 gated full attention),
 the IQ4_XS output head and GPU greedy sampling, in one cooperative megakernel.
 IQ4_XS weights stay packed in IR, readonly data and GPU storage. It uses the
-current default compiler (the core baseline path); the NVIDIA `pc_tma` agent
-optimizations rely on TMA, DP4A and PTX and are not used here.
+default compiler path; the NVIDIA `pc_tma` agent optimizations rely on TMA,
+DP4A and PTX and are not used here. On AMD the native IQ4_XS/Q4_K GEMVs render
+from RDNA templates (`kernels/{block_fp8,matmul_glu}/platforms/amd/`): one
+thread owns a 32-value group of two rows, loads its 16 packed bytes with wide
+loads, maps the IQ4_NL codebook with `v_perm_b32` table lookups (as llama.cpp's
+`get_int_from_table_16`), applies each group's `d*(scale-32)` once to the group
+sum and reduces across threads once per tile. Activations stay floating point.
 
 The native IQ4_XS GEMVs never quantize activations, so they also run on gfx1100,
 which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
@@ -16,15 +21,22 @@ which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega compiler baseline | 257 | 3.9 |
+| FlagMega, RDNA native GGUF GEMV templates | 37.0 | 27.0 |
+| FlagMega, generic native GGUF GEMV (before) | 257 | 3.9 |
 | llama.cpp (HIP, gfx1201) | 29.9 | 33.5 |
 
-Three rotated rounds per workload on one idle card; host time around graph
-replay, GPU greedy sampling and one CPU token return, the same boundary as the
-NVIDIA tutorial and `llama_performance.py`. Chinese64: 257.8/258.2/258.2 ms vs
-llama.cpp 29.8/29.7/29.8 ms; Synthetic32: 255.7/257.3/258.0 ms vs 29.9/30.1/30.0 ms.
-Model weight bandwidth is 13,611,666,080 bytes per call / latency: about
-53 GB/s, 8% of the R9700's 644.6 GB/s. The megakernel uses 248 VGPRs per thread.
+Three rotated rounds per workload on one idle card (.101, no ECC); host time
+around graph replay, GPU greedy sampling and one CPU token return, the same
+boundary as the NVIDIA tutorial and `llama_performance.py`. Chinese64:
+36.99/37.07/37.08 ms vs llama.cpp 29.73/29.76/29.77 ms; Synthetic32:
+36.85/36.94/36.99 ms vs 29.99/30.17/30.07 ms. Model weight bandwidth is
+13,611,666,080 bytes per call / latency: about 368 GB/s, 57% of the R9700's
+644.6 GB/s (58% of the ~631 GB/s it streams). The IQ4 GEMVs were 97% of the
+generic kernel's time: its 15-deep `tl.where` codebook, per-element byte loads
+and a cross-thread reduction every K step left it latency-bound at ~55 GB/s.
+In isolation the RDNA templates stream 512–560 GB/s on the model's projection
+shapes. The megakernel still uses 248 VGPRs per thread (the GEMV helpers use
+170), with no spills.
 
 Correctness is checked against llama.cpp built for HIP from the same pinned
 commit on the same GGUF and GPU:
@@ -33,13 +45,18 @@ commit on the same GGUF and GPU:
   including the first 8 generated independently.
 - **Chinese64** (17 prompt tokens, 64 calls): the generated prefix equals
   llama.cpp up to step 22, a genuine near-tie: llama.cpp HIP ranks 98832 over
-  4960 by 0.009 logits and FlagMega ranks them the other way by 0.071 (the CUDA
-  build of llama.cpp also picks 4960). With the same input tokens forced, 63 of
-  64 steps agree.
+  4960 by 0.009 logits and FlagMega picks 4960 (as does the CUDA build of
+  llama.cpp).
+- Against a one-step fp64 reference (GGUF dequantization, token 1), the GDN
+  convolution / recurrent states, KV cache and logits are closer than with the
+  generic kernel (logits max error 0.096 vs 0.156; same top-5).
 - Logits are finite; three independent processes reproduce the 64-step
   trajectory and logits bitwise.
 
 ## Results: W7900 (gfx1100), ROCm 7.2, one GPU
+
+These W7900 results were measured with the generic native GGUF GEMV, before the
+RDNA templates above; re-validation on the W7900 is pending.
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |

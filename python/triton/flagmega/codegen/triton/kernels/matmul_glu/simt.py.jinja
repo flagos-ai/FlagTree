@@ -1,6 +1,9 @@
-# flagmega-kernel: matmul_glu/simt platform=generic
+# flagmega-kernel: matmul_glu/simt platform={{ matmul_glu_simt_platform | default("generic") }}
 {% set matmul_glu_variant = "simt" %}
 {% include "kernels/_activation_quantization.py.jinja" %}
+{% if matmul_glu_native_gguf_helpers is defined %}
+{% include matmul_glu_native_gguf_helpers %}
+{% else %}
 @triton.jit
 def _flagmega_iq4_xs_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
     weight_u8 = weight.to(tl.pointer_type(tl.uint8))
@@ -60,6 +63,7 @@ def _flagmega_q4_k_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
         result += tl.sum((d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)) * source_value[None, :], axis=1)
     return result
 
+{% endif %}
 @triton.jit
 def _flagmega_block_glu_local_tile(
     source, gate_weight, up_weight, gate_scale, up_scale, destination,

@@ -1,6 +1,9 @@
-# flagmega-kernel: block_fp8/simt platform=generic
+# flagmega-kernel: block_fp8/simt platform={{ block_fp8_simt_platform | default("generic") }}
 {% set block_fp8_variant = "simt" %}
 {% include "kernels/_activation_quantization.py.jinja" %}
+{% if block_fp8_native_gguf_helpers is defined %}
+{% include block_fp8_native_gguf_helpers %}
+{% else %}
 @triton.jit
 def _flagmega_iq4_xs_linear_local_tile(
     source, weight, destination, weight_row_offsets, destination_offsets,
@@ -67,6 +70,7 @@ def _flagmega_q4_k_linear_local_tile(
         accumulator += tl.sum((d * sc * q - dmin * mn) * source_value[None, :], axis=1)
     tl.store(destination + destination_offsets, accumulator.to(destination.dtype.element_ty), mask=n_mask)
 
+{% endif %}
 @triton.jit
 def _flagmega_block_linear_local_tile(
     source, weight, weight_scale, destination,
