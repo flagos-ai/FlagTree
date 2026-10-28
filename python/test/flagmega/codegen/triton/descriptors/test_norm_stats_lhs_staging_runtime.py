@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 BASE = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats"
@@ -17,7 +18,7 @@ BASE = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_
 @pytest.mark.parametrize("reduction_extent", [1024, 4096, 6144, 8192])
 def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, reduction_extent):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     generator = torch.Generator().manual_seed(257)
     weight = torch.randn((2048, reduction_extent), dtype=torch.bfloat16, generator=generator) / 32

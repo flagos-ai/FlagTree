@@ -9,6 +9,7 @@ from math import prod
 from pathlib import Path
 
 import pytest
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 def cross_chip_norm_module(*, lanes=1, use_mean=False, split_axes=(0, 2), gather_output=True, dtype="bfloat16"):
@@ -85,8 +86,8 @@ def _worker(artifact, use_mean):
     (1, False, (0, 2)), (8, False, (0, 2)), (8, True, (0, 2)), (1, True, (0,)),
 ])
 def test_cross_chip_statistics_are_reduced_before_rms_apply(tmp_path, lanes, use_mean, split_axes):
-    torch = pytest.importorskip("torch")
-    if torch.cuda.device_count() < 4 or any(torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(4)):
+    pytest.importorskip("torch")
+    if not has_nvidia_sm90_devices(4):
         pytest.skip("Four SM90 CUDA devices are required")
     from triton.flagmega.artifacts import write_artifact
 

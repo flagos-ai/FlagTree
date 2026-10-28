@@ -10,12 +10,13 @@ from triton.flagmega.ir import DType, SBP
 from triton.flagmega.runtime import load
 
 from .conftest import _packed_descriptor_pipeline_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("n,cyclic", [(17408, False), (17408, True), (17416, True), (32768, False)])
 def test_output_tail_pipeline_matches_torch(tmp_path, n, cyclic):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 is required")
     implementation = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_tn64_bk512"
     policy = SBP.split_block_cyclic((0, 1), 1) if cyclic else SBP.split_contiguous((0, 1), n // 8 // 128)

@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 def function_frame_module(reduction: bool, depth: int):
@@ -82,10 +83,8 @@ def _worker(artifact, reduction, depth):
 @pytest.mark.parametrize("depth", [1, 2])
 @pytest.mark.parametrize("reduction", [False, True])
 def test_cross_chip_boxing_in_nonzero_function_frame(tmp_path, reduction, depth):
-    torch = pytest.importorskip("torch")
-    if torch.cuda.device_count() < 4 or any(
-        torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(4)
-    ):
+    pytest.importorskip("torch")
+    if not has_nvidia_sm90_devices(4):
         pytest.skip("Four SM90 CUDA devices are required")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.ir import verify_buffer_plan

@@ -13,12 +13,13 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from triton.flagmega.selection import apply_plan, override_plan
 
 from python.test.flagmega.ir.ops.nn.test_requantize_block_scaled_fp8 import Requantized, _simple_weights
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("variant", ["tir.block_fp8.simt", "tir.block_fp8.mma"])
 @pytest.mark.parametrize("mode", ["rn", "reciprocal_multiply"])
 def test_offline_requantized_weights_reach_real_gpu_consumer(tmp_path, variant, mode):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     weights = _simple_weights()
     infos = {name: TensorInfo(name, DType.FLOAT8_E4M3FN if name == "weight" else DType.FLOAT32,

@@ -10,15 +10,14 @@ from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from triton.flagmega.ir.ops.nn._gdn_state import GatedDeltaNetStateConfig, create_gdn_state
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
+from python.test.flagmega.devices import executable_target
 
 
 @pytest.mark.parametrize('family', ['convolution', 'recurrent'])
 def test_ragged_cyclic_state_and_output_match_logical_reference(tmp_path, family):
     torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available(): pytest.skip('CUDA required')
-    major, minor = torch.cuda.get_device_capability()
-    target = {(9, 0): 'nvidia-sm90', (12, 0): 'nvidia-sm120'}.get((major, minor))
-    if target is None: pytest.skip('requires an executable FlagMega CUDA target')
+    target = executable_target()
+    if target is None: pytest.skip('requires a GPU with an executable FlagMega target')
     cfg = GatedDeltaNetStateConfig(1, 3, 6, 128, 128, 4, 1536)
     mesh = fm.Placement((3, 3), 'yx', 'bb')
     b = fm.SBP.broadcast()

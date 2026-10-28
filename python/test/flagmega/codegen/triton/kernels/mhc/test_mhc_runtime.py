@@ -33,6 +33,7 @@ from python.test.flagmega.ir.ops.nn.test_mhc import (
     _reference_post,
     _reference_pre,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 PRE_INPUTS = ("streams", "projection", "base", "scale")
 POST_INPUTS = ("value", "residual", "post", "comb")
@@ -88,7 +89,7 @@ def _artifact(tmp_path: pathlib.Path, name: str, module):
 
 
 def _skip_without_sm90(torch):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
 
 

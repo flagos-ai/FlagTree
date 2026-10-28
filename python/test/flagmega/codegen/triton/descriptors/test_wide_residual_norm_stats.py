@@ -9,6 +9,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 from .conftest import _packed_norm_stats_pipeline_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("implementation", [
@@ -19,7 +20,7 @@ from .conftest import _packed_norm_stats_pipeline_module
 @pytest.mark.parametrize("round_addend", [False, True])
 def test_wide_residual_preserves_projection_rounding_and_fp32_sum(tmp_path, implementation, round_addend):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = _packed_norm_stats_pipeline_module(implementation, wide=True,
         addend_cast_dtypes=("bfloat16", "float32") if round_addend else ())

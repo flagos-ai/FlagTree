@@ -7,13 +7,14 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
 @pytest.mark.parametrize("split", [False, True])
 def test_embedding_reads_every_weight_lane_and_writes_every_output_lane(tmp_path, lanes, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     mesh = fm.Placement((2, 2), "yx", "bb")
 

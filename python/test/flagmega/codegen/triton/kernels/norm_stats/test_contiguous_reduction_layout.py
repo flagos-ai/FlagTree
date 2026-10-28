@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.errors import CodegenError, IRVerificationError
 from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _reference(value):
@@ -76,7 +77,7 @@ def test_invalid_contiguous_reduction_layout_is_rejected(tmp_path, layout):
 
 @pytest.mark.parametrize("width,packed", [(1536, True), (512, True), (1031, False)])
 def test_contiguous_eight_reduction_preserves_order_for_misaligned_inputs(tmp_path, width, packed):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     host = torch.randn((2, width), generator=torch.Generator().manual_seed(0)).bfloat16()
     expected = _reference(host).cuda()

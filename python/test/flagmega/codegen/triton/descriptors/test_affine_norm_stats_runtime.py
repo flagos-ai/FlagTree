@@ -10,12 +10,13 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.codegen.triton import describe_tir_package
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("k,n", [(1024, 2048), (4096, 4096), (6144, 2048), (4096, 6144), (8192, 8192)])
 def test_affine_owner_table_matches_contiguous_owner_table(tmp_path, k, n):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     generator = torch.Generator().manual_seed(260)
     weights = {

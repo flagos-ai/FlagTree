@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from .test_partial_reduce_local_abi import _abi, _prepare
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("sharing_scope", ["chip", "block"])
@@ -50,7 +51,7 @@ def test_matching_compact_result_writes_all_owners_without_canonical_writer_filt
 @pytest.mark.parametrize("split_kind", ["cyclic", "contiguous"])
 def test_partial_reduce_into_block_local_result_then_local_consumer(tmp_path, partial_axes, destination, split_kind):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     placement = fm.Placement((2, 4), "yx", "bb")
     preserved_axes = tuple(axis for axis in range(2) if axis not in partial_axes)
@@ -106,7 +107,7 @@ def test_partial_reduce_into_block_local_result_then_local_consumer(tmp_path, pa
 
 def test_packed_split_k_projection_reduces_vector_packets_into_private_broadcast(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     mesh = fm.Placement((8, 16), "yx", "bb")
     broad = fm.SBP.broadcast()
@@ -151,7 +152,7 @@ def test_packed_split_k_projection_reduces_vector_packets_into_private_broadcast
 @pytest.mark.parametrize("lanes", [1, 8])
 def test_qkv_collective_routes_flat_partials_to_head_aligned_results(tmp_path, lanes):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     mesh = fm.Placement((2, 4), "yx", "bb")
     broad = fm.SBP.broadcast()

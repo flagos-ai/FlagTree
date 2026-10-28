@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def attention_module(config):
@@ -43,7 +44,7 @@ def attention_module(config):
 @pytest.mark.parametrize("length", [33, 129, 250, 300])
 def test_mma_attention_merges_unequal_nonempty_shard_maxima(tmp_path, length):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     config = PagedAttentionStateConfig(1, 8, 128, num_blocks=4)
     module = Compiler().compile(attention_module(config)).module

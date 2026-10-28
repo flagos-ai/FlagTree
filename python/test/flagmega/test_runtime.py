@@ -12,6 +12,7 @@ from triton.flagmega.errors import RuntimeContractError
 from triton.flagmega import ir as fm
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.runtime import PreparedKernel, ResourceContract, load, prepare_jit_kernel
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 class _Metadata:
@@ -199,7 +200,7 @@ def test_nvidia_tir_artifact_loads_without_device(tmp_path, target):
 
 def test_executable_artifact_load_prepare_run_into_on_h800(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required for the executable artifact integration test")
     compiled = Compiler().compile(_add_module()).module
     artifact = write_artifact(

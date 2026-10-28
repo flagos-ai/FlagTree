@@ -20,6 +20,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import is_nvidia_sm90
 
 HEADS, DIM = 2, 4
 LOWER_BOUND = -5.0
@@ -131,7 +132,7 @@ def test_generated_source_computes_the_gate_in_registers(tmp_path):
 
 def test_generated_kernel_matches_the_published_forget_gate(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     runtime = load(_artifact(tmp_path), device="cuda:0")
     values = _values(torch, device="cuda")
@@ -171,7 +172,7 @@ def test_packed_kda_writes_all_heads_and_preserves_state(tmp_path, lanes, gated)
     from math import prod
 
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     heads, dim = 3, 8
     host = _values(torch, heads=heads, dim=dim)
@@ -214,7 +215,7 @@ def test_packed_kda_writes_all_heads_and_preserves_state(tmp_path, lanes, gated)
                                                (5, fm.SBP.split_block_cyclic((0,), 1))])
 def test_packed_kda_preserves_distributed_head_addresses(tmp_path, gated, head_policy, heads):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     placement = fm.Placement((2,), "x", "b")
     dim = 8

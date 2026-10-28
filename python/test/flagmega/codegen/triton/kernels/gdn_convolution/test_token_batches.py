@@ -6,6 +6,7 @@ import pytest
 from triton.flagmega.ir.ops.nn._gdn_state import GatedDeltaNetStateConfig, create_gdn_state
 from triton.flagmega.ir.ops.nn.gdn_convolution import gated_delta_net_convolution
 from python.test.flagmega.codegen.triton.kernels.gdn_convolution.helpers import execute_convolution
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("tokens_per_call", (2, 3, 9))
@@ -15,7 +16,7 @@ def test_convolution_consumes_every_prompt_token_and_continues_from_updated_hist
                                                                                     round_products, round_activation,
                                                                                     order):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     config = GatedDeltaNetStateConfig(1, 2, 4, 8, 8, 4, 32)
     generator = torch.Generator().manual_seed(719)

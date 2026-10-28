@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
+from python.test.flagmega.devices import nvidia_capability
 
 
 _COPY_KERNEL = '''
@@ -73,9 +74,10 @@ def _load_scope_module(tmp_path):
 
 def _torch_cuda():
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("requires CUDA")
-    if torch.cuda.get_device_capability()[0] < 9:
+    capability = nvidia_capability()
+    if capability is None:
+        pytest.skip("requires an NVIDIA GPU")
+    if capability[0] < 9:
         pytest.skip("SM90 shared-layout fixture")
     return torch
 

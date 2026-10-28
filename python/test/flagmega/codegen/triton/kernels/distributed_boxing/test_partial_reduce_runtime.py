@@ -7,6 +7,7 @@ import pytest
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.runtime import load
 from .conftest import partial_sum_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("values,axes,use_mean", [
@@ -15,7 +16,7 @@ from .conftest import partial_sum_module
 ])
 def test_partial_reduce_preserves_group_owners_and_ragged_output(tmp_path, values, axes, use_mean):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module, owners = partial_sum_module(values, axes, use_mean=use_mean)
     artifact = write_artifact(module, tmp_path / "partial", target="nvidia-sm90", emit_executable=True)

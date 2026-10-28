@@ -16,6 +16,7 @@ from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
 
 from .test_kda_gated_recurrent_runtime import _module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @triton.jit
@@ -75,7 +76,7 @@ def _compile(tmp_path, lanes, *, decay_input=None, layout="warp_k", dim=128, req
 @pytest.mark.parametrize("lanes", [(), (8,)])
 @pytest.mark.parametrize("decay_input", ["rate", "log_rate"])
 def test_warp_k_schedule_matches_independent_one_warp_state(tmp_path, lanes, decay_input):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     generator = torch.Generator().manual_seed(117)
     values = {name: torch.randn((1, 2, 128), generator=generator).bfloat16().cuda() for name in ("q", "k", "v", "gate")}

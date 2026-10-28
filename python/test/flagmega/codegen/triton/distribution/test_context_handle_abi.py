@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _compile_context(package_path, memory, communication, mode_token=None):
@@ -77,8 +78,8 @@ def test_generated_handle_arguments_have_a_runtime_abi(tmp_path):
 
 
 def test_context_addresses_do_not_recompile_the_same_generated_kernel(tmp_path):
-    torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    pytest.importorskip('torch')
+    if not is_nvidia_sm90():
         pytest.skip('SM90 CUDA is required')
     _package(tmp_path)
     hashes = []
@@ -95,8 +96,8 @@ def test_context_addresses_do_not_recompile_the_same_generated_kernel(tmp_path):
 
 
 def test_injected_context_mode_has_a_distinct_compilation_identity(tmp_path):
-    torch = pytest.importorskip('torch')
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    pytest.importorskip('torch')
+    if not is_nvidia_sm90():
         pytest.skip('SM90 CUDA is required')
     _package(tmp_path)
     reports = []

@@ -6,6 +6,7 @@ import ast
 
 import pytest
 from triton.flagmega.codegen.triton.tir_package import describe_tir_package, render_tir_package
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def test_reusable_function_passes_one_pool_origin_and_a_call_record(compile_pipeline_module):
@@ -41,7 +42,7 @@ def test_function_pool_record_executes_distinct_weights_and_frames_on_sm90(
     tmp_path, compile_pipeline_module,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.runtime import load

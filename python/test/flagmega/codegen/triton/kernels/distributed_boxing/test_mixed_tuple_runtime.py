@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.codegen.triton import describe_tir_package
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +46,7 @@ def test_mixed_tuple_has_independent_transfer_contracts(mixed_boxing_module):
 
 def test_mixed_nested_tuple_matches_inputs_exactly(tmp_path, mixed_boxing_module):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     artifact = write_artifact(mixed_boxing_module, tmp_path / "mixed", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")

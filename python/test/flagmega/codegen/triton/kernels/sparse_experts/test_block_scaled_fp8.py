@@ -21,6 +21,7 @@ from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import (
     execute_and_reference,
     stage_module,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 DEFINITIONS = [SparseExpertsGateUp, SparseExpertsDown]
 
@@ -89,7 +90,7 @@ def test_block_scaled_fp8_device_matches_evaluator(tmp_path, definition, weight_
     """
 
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     actual, expected, _ = execute_and_reference(_fp8_module(definition, weight_block), tmp_path, torch)
     # FP32 accumulation order differs between the tiled kernel and torch.matmul.
@@ -100,7 +101,7 @@ def test_block_scaled_fp8_device_matches_evaluator(tmp_path, definition, weight_
 @pytest.mark.parametrize("sign", (-1, 1))
 def test_activation_quantization_preserves_round_to_even_ties(tmp_path, definition, sign):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     from triton.flagmega import ir as fm
 

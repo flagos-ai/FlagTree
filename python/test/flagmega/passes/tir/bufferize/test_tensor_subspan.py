@@ -8,6 +8,7 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def slice_graph(*, shape=(3, 16), starts=(1,), ends=(2,), axes=(0,), vector=False, distributed=False,
@@ -91,7 +92,7 @@ def test_exported_slice_materializes_the_result_abi():
 @pytest.mark.parametrize("producer,split,chip", [(False, False, False), (True, False, False), (True, True, True)])
 def test_subspan_device_execution(producer, split, chip, tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.runtime import load
@@ -202,7 +203,7 @@ def test_declared_alignment_applies_to_every_owner_component(tmp_path):
     assert parent.component_stride_bytes == view.component_stride_bytes == 128
     assert view.byte_offset % 128 == 0
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required for padded-owner execution")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.runtime import load

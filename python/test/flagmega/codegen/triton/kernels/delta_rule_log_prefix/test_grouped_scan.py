@@ -6,11 +6,12 @@ import pytest
 from triton.flagmega import ir as fm
 from python.test.flagmega.codegen.triton.kernels.delta_rule_log_prefix.helpers import execute_log_prefix
 from python.test.flagmega.codegen.triton.kernels.delta_rule_log_prefix.oracles import scan_oracle
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def require_device():
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     return torch
 

@@ -8,6 +8,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.fusion import fusion_rules
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.rewriter import DataflowPass
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def graph(kind, *, exported=False):
@@ -108,7 +109,7 @@ def test_scalar_numeric_cast_commutes_with_lane_grouping_exactly(source_dtype, t
 
 @pytest.mark.parametrize("kind", ["sharded", "bitcast"])
 def test_cast_view_fusion_executes_exact_gpu_values(kind, tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.compiler import Compiler

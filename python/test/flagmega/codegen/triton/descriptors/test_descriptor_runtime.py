@@ -6,13 +6,14 @@ import pytest
 
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 @pytest.mark.parametrize("transpose_b", [False, True])
 def test_reused_descriptor_gemv_matches_torch_on_sm90(
     tmp_path, transpose_b, two_call_descriptor_module,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
 
     artifact = write_artifact(

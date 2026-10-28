@@ -11,6 +11,7 @@ from triton.flagmega.ir.ops.nn.delta_rule_block_update import delta_rule_block_u
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _reusable_state_graph(head_axes, private_result=False):
@@ -65,7 +66,7 @@ def _reusable_state_graph(head_axes, private_result=False):
 @pytest.mark.parametrize("head_axes", ((), (0, )))
 def test_reusable_block_updates_only_selected_packed_layer_and_preserves_output_ownership(tmp_path, head_axes):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     original = _reusable_state_graph(head_axes)
     namespace = {}

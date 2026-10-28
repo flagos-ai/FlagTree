@@ -8,6 +8,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.codegen.triton import render_triton_package
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _module(op: str) -> fm.IRModule:
@@ -71,7 +72,7 @@ def test_selected_elementwise_template_executes_through_artifact_runtime_on_h800
     op,
 ):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module(op)).module
     artifact = write_artifact(

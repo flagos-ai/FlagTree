@@ -16,6 +16,7 @@ from triton.flagmega.selection import apply_plan, override_plan
 from triton.flagmega.targets import NvidiaSm90Target
 
 from python.test.flagmega.codegen.triton.kernels.block_fp8.test_dequantized_runtime import _run
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 class Projection(fm.Module):
@@ -73,7 +74,7 @@ def _compile(tmp_path, glu, mode):
 @pytest.mark.parametrize("glu", [False, True])
 @pytest.mark.parametrize("mode", ["compensated", "fma"])
 def test_selected_scaled_accumulation_preserves_rounding_boundary(tmp_path, glu, mode):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("requires SM90")
     x = torch.ones((1, 256), dtype=torch.bfloat16)
     w = torch.ones((16, 256))

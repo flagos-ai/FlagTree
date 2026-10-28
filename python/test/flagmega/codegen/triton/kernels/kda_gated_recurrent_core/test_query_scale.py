@@ -11,6 +11,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from python.test.flagmega.codegen.triton.kernels.kda_gated_recurrent_core.test_kda_gated_recurrent_runtime import (
     _module,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("gated", (False, True))
@@ -18,7 +19,7 @@ from python.test.flagmega.codegen.triton.kernels.kda_gated_recurrent_core.test_k
 @pytest.mark.parametrize("packing", ("scalar", "direct", "demand"))
 def test_scaled_readout_keeps_the_same_state_after_optional_normalization(tmp_path, gated, l2norm, packing):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     vector = torch.tensor([[[1., 0., 0., 0.]]]).repeat(1, 2, 1).bfloat16()
     value = torch.tensor([[[2., 4., 6., 8.]]]).repeat(1, 2, 1).bfloat16()

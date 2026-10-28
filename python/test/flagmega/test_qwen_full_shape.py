@@ -17,6 +17,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.importer import Qwen35Layer0Importer, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load as load_runtime
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 torch = pytest.importorskip("torch")
@@ -194,7 +195,7 @@ def test_qwen3_8_27b_sharded_codegen_uses_local_call_abi_and_explicit_boxing():
     reason="set FLAGMEGA_RUN_FULL_SHAPE=1 to run the >3GB exact-shape H800 regression",
 )
 def test_qwen3_8_27b_fp8_exact_shape_single_entry_runs_twice(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     checkpoint = _ZeroFullShapeCheckpoint()
     imported = Qwen35Layer0Importer(checkpoint, revision="synthetic-zero-full-shape").import_module()

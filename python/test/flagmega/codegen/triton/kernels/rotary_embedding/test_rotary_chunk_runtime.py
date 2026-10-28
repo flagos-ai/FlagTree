@@ -9,11 +9,12 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _run_rotary(tmp_path, tokens, past, lanes, output_dtype="float32"):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     placement = fm.Placement((2, 2), "yx", "bb")
     config = PagedAttentionStateConfig(1, 2, 32)

@@ -8,12 +8,13 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("nested", [False, True])
 def test_reusable_calls_preserve_borrowed_input_and_earlier_outputs(tmp_path, nested):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     ty = fm.tensor_type("bfloat16", (1, 128))
 

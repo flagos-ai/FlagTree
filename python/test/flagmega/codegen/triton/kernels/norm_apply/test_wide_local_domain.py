@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def test_catalog_does_not_serialize_wide_norm_domains_into_half_cta_tiles():
@@ -20,7 +21,7 @@ def test_catalog_does_not_serialize_wide_norm_domains_into_half_cta_tiles():
 @pytest.mark.parametrize("extent,use_mean", [(257, False), (2048, True), (4097, False)])
 def test_wide_norm_apply_retains_row_stats_tail_and_bf16_rounding(tmp_path, extent, use_mean):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     value_type = fm.tensor_type("bfloat16", (2, extent))
     stats_type = fm.tensor_type("float32", (2 if use_mean else 1, 2, 1))

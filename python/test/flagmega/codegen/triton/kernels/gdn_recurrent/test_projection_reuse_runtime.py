@@ -7,6 +7,7 @@ import pytest
 from triton.flagmega import ir as fm
 from python.test.flagmega.codegen.triton.kernels.gdn_recurrent.helpers import execute_recurrent
 from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent_reference
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("dimension,value_dimension,mesh,split_axes",
@@ -19,7 +20,7 @@ from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent
                           ])
 def test_projection_cache_respects_head_keys_and_call_lifetime(tmp_path, dimension, value_dimension, mesh, split_axes):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     config, attrs, types, values = recurrent_case(dimension=dimension, value_dimension=value_dimension,
                                                   qk_norm_mode="add", qk_norm_epsilon=1e-6, round_core=True)

@@ -5,6 +5,7 @@ import pytest
 
 from triton.flagmega import ir as fm
 from python.test.flagmega.codegen.triton.kernels.l2_normalization.helpers import execute_l2
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("shape,axes,split", (
@@ -16,7 +17,7 @@ from python.test.flagmega.codegen.triton.kernels.l2_normalization.helpers import
 def test_l2_device_axes_tiles_and_physical_storage(tmp_path, shape, axes, split, local_input, local_result,
                                                    epsilon_mode, division):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(137)
     value = torch.randn(shape, generator=generator).bfloat16()

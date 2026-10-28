@@ -29,6 +29,7 @@ from triton.flagmega.runtime import (
 )
 from triton.flagmega.codegen.triton import describe_tir_package
 from triton.flagmega.codegen.triton.distribution import requires_distributed_grid
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 torch = pytest.importorskip("torch")
@@ -348,7 +349,7 @@ def test_tir_renderer_rejects_an_unmaterialized_agent_override():
 
 
 def test_synthetic_qwen_executable_matches_reference_on_h800(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required for the Qwen executable integration test")
     checkpoint = _memory_checkpoint()
     importer = Qwen35Layer0Importer(checkpoint)

@@ -5,6 +5,7 @@ import pytest
 
 from python.test.flagmega.codegen.triton.kernels.gdn_recurrent.helpers import execute_recurrent
 from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent_reference
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("mode", ["clamp", "add"])
@@ -12,7 +13,7 @@ from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent
                                                             (True, False, True), (True, False, False)])
 def test_recurrent_storage_boundaries_on_device(tmp_path, mode, round_qk, round_beta, round_core):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     config, attrs, types, values = recurrent_case(qk_norm_mode=mode, qk_norm_epsilon=1e-6, round_normalized_qk=round_qk,
                                                   round_beta=round_beta, round_core=round_core)

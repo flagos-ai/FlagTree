@@ -9,6 +9,7 @@ from triton.flagmega.codegen.triton import describe_tir_package, render_tir_pack
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 IMPLEMENTATION = "tir.qkv_parallel_linear.packed_gemv_smem_pipeline"
@@ -58,7 +59,7 @@ def test_masked_tile_keeps_real_rhs_shape_in_the_tensor_map(packed_qkv_simt_pipe
 
 def test_simt_qkv_matches_three_independent_matmuls(tmp_path, packed_qkv_simt_pipeline_module):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 is required")
     generator = torch.Generator().manual_seed(280)
     weights = {name: torch.randn((2048, n), generator=generator, dtype=torch.bfloat16) / 32

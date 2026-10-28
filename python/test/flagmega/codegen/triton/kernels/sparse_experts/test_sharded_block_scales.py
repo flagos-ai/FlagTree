@@ -8,6 +8,7 @@ from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import execute_and_reference, stage_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _module(definition, block, split_k, cyclic=False):
@@ -49,7 +50,7 @@ def _module(definition, block, split_k, cyclic=False):
 def test_sharded_fp8_weights_use_global_scale_blocks(tmp_path, definition, split_k, block,
                                                     cyclic):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     module = _module(definition, block, split_k, cyclic)
     values = {}

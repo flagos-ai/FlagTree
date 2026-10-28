@@ -18,6 +18,7 @@ from python.test.flagmega.ir.ops.math.test_dequantized_block_scaled_matmul impor
     DequantizedProjection,
     boundary_operands,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def _artifact(tmp_path, module, variant, *, options=None, checkpoint=None, dequant_mma_splits=None):
@@ -66,7 +67,7 @@ def _run(path, values, shape, dtype):
 
 
 def _require_sm90():
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
 
 

@@ -9,6 +9,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.compiler import Compiler
 from python.test.flagmega.codegen.triton.kernels.gdn_recurrent.helpers import execute_recurrent
 from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent_reference
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("dimension,value_dimension,mesh,tile,policy", [
@@ -20,7 +21,7 @@ from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent
 ])
 def test_state_pipeline_matches_repeated_recurrence(tmp_path, dimension, value_dimension, mesh, tile, policy):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     key_tile = max(32, 1 << (dimension - 1).bit_length())
     identity = f"tir.gdn_recurrent.state_smem_pipeline_k{key_tile}_v{tile}"

@@ -5,6 +5,7 @@ import torch
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import _repack_vector_coordinates
 from triton.flagmega.ir.ops.tensors.pack import pack_physical, axis_lane_products
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("axes,input_lanes,output_lanes", [
@@ -37,7 +38,7 @@ def test_repeated_axis_cast_runs_through_selected_tir(tmp_path, widen):
     from triton.flagmega.compiler import Compiler
     from triton.flagmega.runtime import load
 
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     source_dtype, target_dtype = ("bfloat16", "float32") if widen else ("float32", "bfloat16")
     source_lanes, target_lanes = ((4, 8), (2, 4)) if widen else ((2, 4), (4, 8))

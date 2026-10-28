@@ -15,13 +15,14 @@ from triton.flagmega.importer import import_qwen3_model
 from triton.flagmega.runtime import load as load_runtime
 
 from .helpers import full_checkpoint
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 torch = pytest.importorskip("torch")
 
 
 def test_two_layer_call_graph_runtime_matches_evaluator_on_h800(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     checkpoint = full_checkpoint(num_hidden_layers=2)
     imported = import_qwen3_model(checkpoint)

@@ -7,6 +7,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 from .conftest import _packed_glu_descriptor_pipeline_module
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("implementation", [
@@ -16,7 +17,7 @@ from .conftest import _packed_glu_descriptor_pipeline_module
 ])
 def test_wide_activation_preserves_both_bf16_projection_boundaries(tmp_path, implementation):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = _packed_glu_descriptor_pipeline_module(implementation, round_activation=False)
     gate = torch.zeros((2048, 2048), dtype=torch.bfloat16)

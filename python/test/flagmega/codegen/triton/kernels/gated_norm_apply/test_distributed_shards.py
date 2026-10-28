@@ -14,6 +14,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 TOKENS, HEADS, DIM = 1, 8, 16
 EPS = 1e-5
@@ -49,7 +50,7 @@ def _module():
 
 def test_the_head_split_gate_is_applied_per_shard(tmp_path):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module()).module
     artifact = write_artifact(

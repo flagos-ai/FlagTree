@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 import pytest
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 _CASES = {
@@ -140,10 +141,8 @@ def _worker(artifact, case):
 
 @pytest.mark.parametrize("case", sorted(_CASES))
 def test_cross_chip_boxing_four_ranks(tmp_path, case):
-    torch = pytest.importorskip("torch")
-    if torch.cuda.device_count() < 4 or any(
-        torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(4)
-    ):
+    pytest.importorskip("torch")
+    if not has_nvidia_sm90_devices(4):
         pytest.skip("Four SM90 CUDA devices are required")
     from triton.flagmega.artifacts import write_artifact
 

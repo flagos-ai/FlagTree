@@ -5,6 +5,7 @@ import pytest
 
 from triton.flagmega.ir.ops.nn.delta_rule_coefficients import delta_rule_coefficients
 from python.test.flagmega.codegen.triton.kernels.delta_rule_coefficients.helpers import execute_coefficients
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("block_size,tokens,dimension", [(8, 3, 1), (16, 17, 7), (32, 33, 16), (64, 65, 16),
@@ -13,7 +14,7 @@ from python.test.flagmega.codegen.triton.kernels.delta_rule_coefficients.helpers
 def test_coefficients_normal_compile_rounding_tail_and_storage(tmp_path, block_size, tokens, dimension, split_axes,
                                                                local_inputs):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(1649)
     key = (torch.randint(-4, 5, (tokens, 4, dimension), generator=generator).float() / 16).bfloat16()

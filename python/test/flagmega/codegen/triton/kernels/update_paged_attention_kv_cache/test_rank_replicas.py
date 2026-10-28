@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+from python.test.flagmega.devices import has_nvidia_sm90_devices
 
 
 def _worker(artifact):
@@ -57,8 +58,8 @@ def _worker(artifact):
 
 @pytest.mark.parametrize("hierarchy,levels", [((4, 2, 2), "cbb"), ((2, 4, 2), "bcb")])
 def test_paged_cache_updates_each_rank_replica(tmp_path, hierarchy, levels):
-    torch = pytest.importorskip("torch")
-    if torch.cuda.device_count() < 4 or any(torch.cuda.get_device_capability(i) != (9, 0) for i in range(4)):
+    pytest.importorskip("torch")
+    if not has_nvidia_sm90_devices(4):
         pytest.skip("Four SM90 CUDA devices are required")
     from triton.flagmega import ir as fm
     from triton.flagmega.artifacts import write_artifact

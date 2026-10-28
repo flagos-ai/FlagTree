@@ -14,6 +14,7 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from triton.flagmega.targets import NvidiaSm90Target
 
 from python.test.flagmega.codegen.triton.kernels.dense_matmul.test_packed_mma_runtime import CanonicalTarget
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def ordered_reference(value, weight):
@@ -34,7 +35,7 @@ def ordered_reference(value, weight):
 @pytest.mark.parametrize("m,k,n", [(1, 4096, 24), (2, 1024, 8)])
 @pytest.mark.parametrize("warps", [4, 8])
 def test_packed_threaded_fma_preserves_fp32_dot_order(tmp_path, m, k, n, warps):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     from safetensors.torch import save_file
 

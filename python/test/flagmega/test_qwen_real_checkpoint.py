@@ -16,6 +16,7 @@ from triton.flagmega.evaluator import CheckpointWeightResolver, TorchEvaluator, 
 from triton.flagmega.importer import DirectoryCheckpoint, Qwen35Layer0Importer
 from triton.flagmega.runtime import load as load_runtime
 from triton.flagmega.passes import decompose_gated_delta_net
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 torch = pytest.importorskip("torch")
@@ -26,7 +27,7 @@ torch = pytest.importorskip("torch")
     reason="set FLAGMEGA_QWEN3_8_FP8 to the official layer-0 checkpoint directory",
 )
 def test_real_qwen3_8_27b_fp8_layer0_two_step_compile_run_and_reference(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     checkpoint = DirectoryCheckpoint(os.environ["FLAGMEGA_QWEN3_8_FP8"])
     importer = Qwen35Layer0Importer(

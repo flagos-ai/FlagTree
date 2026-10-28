@@ -21,10 +21,11 @@ from python.test.flagmega.ir.ops.nn.test_sparse_experts_ue8m0 import (
     bf16_domain,
     ue8m0_projection_case,
 )
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def require_sm90():
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
 
 

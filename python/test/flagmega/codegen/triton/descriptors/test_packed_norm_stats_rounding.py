@@ -8,6 +8,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("fixture_name", [
@@ -17,7 +18,7 @@ from triton.flagmega.runtime import load
 ])
 def test_fused_packed_projection_keeps_bf16_rounding_before_cancellation(tmp_path, request, fixture_name):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     module = request.getfixturevalue(fixture_name)
     weight = torch.zeros((2048, 2048), dtype=torch.bfloat16)

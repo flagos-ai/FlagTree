@@ -12,6 +12,7 @@ from triton.flagmega.importer import DirectoryCheckpoint, Qwen3LayerImporter
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load as load_runtime
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 torch = pytest.importorskip("torch")
@@ -56,7 +57,7 @@ def test_real_qwen3_1_7b_layer_matches_nncase_reference():
     reason="set FLAGMEGA_QWEN3_1_7B_RUNTIME to the Qwen3-1.7B one-layer checkpoint",
 )
 def test_real_qwen3_1_7b_generated_kernel_is_zero_spill_and_matches_nncase(tmp_path):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
     model = Path(os.environ["FLAGMEGA_QWEN3_1_7B_RUNTIME"])
     checkpoint = DirectoryCheckpoint(model)

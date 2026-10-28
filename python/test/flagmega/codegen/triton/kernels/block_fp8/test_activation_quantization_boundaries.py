@@ -8,6 +8,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.selection import apply_plan, override_plan
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 @pytest.mark.parametrize("family", ("linear", "glu"))
@@ -15,7 +16,7 @@ from triton.flagmega.selection import apply_plan, override_plan
 @pytest.mark.parametrize("sign", (-1, 1))
 def test_bf16_activation_at_fp8_round_to_even_boundary(tmp_path, family, variant, sign):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA is required")
 
     class Graph(fm.Module):

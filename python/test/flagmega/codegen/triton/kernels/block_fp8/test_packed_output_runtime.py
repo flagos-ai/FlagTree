@@ -15,6 +15,7 @@ from triton.flagmega.options import CompileOptions, parse_placement
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from triton.flagmega.selection import apply_plan, override_plan
+from python.test.flagmega.devices import is_nvidia_sm90
 
 
 def linear_module(*, dtype="bfloat16", output_lanes=(), consumer_lanes=(),
@@ -63,7 +64,7 @@ def run(path, values, shape, torch):
 @pytest.mark.parametrize("lanes", [(8,), (2, 4), (1,)])
 def test_fp8_packed_store_matches_scalar_kernel_and_evaluator(tmp_path, variant, dtype, lanes):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(31)
     values = {"value": torch.randn(1, 160, generator=generator).to(getattr(torch, dtype)),
@@ -90,7 +91,7 @@ def test_fp8_packed_store_matches_scalar_kernel_and_evaluator(tmp_path, variant,
 @pytest.mark.parametrize("variant", ["tir.block_fp8.simt", "tir.block_fp8.mma"])
 def test_fp8_packed_output_covers_distributed_n_owners(tmp_path, variant):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     generator = torch.Generator().manual_seed(37)
     values = {"value": torch.randn(1, 160, generator=generator).bfloat16().cuda(),
@@ -107,7 +108,7 @@ def test_fp8_packed_output_covers_distributed_n_owners(tmp_path, variant):
 @pytest.mark.parametrize("variant", ["tir.block_fp8.simt", "tir.block_fp8.mma"])
 def test_fp8_packed_output_preserves_k_partial_and_scale_owner(tmp_path, variant):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+    if not is_nvidia_sm90():
         pytest.skip("SM90 CUDA required")
     placement = parse_placement("x=2/b")
     broadcast = fm.SBP.broadcast()
