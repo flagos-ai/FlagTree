@@ -1,16 +1,17 @@
-# Reader for packaging/backends.conf. Source it; do not execute it.
+# Reader for packaging/backends.conf, shared by the deb and the rpm line.
+# Source it; do not execute it.
 #
-#   . "$(dirname "$0")/backends.sh"
+#   . "$(dirname "$0")/../../build-helpers/backends.sh"
 #   backend_field metax vendor     # -> MetaX
 #   backend_list                   # -> nvidia metax
 #
 # BACKENDS_CONF overrides the table location. The default works both in the
-# repo (packaging/backends.conf) and inside the deb-assembler container, where
-# debian/ and backends.conf keep the same relative layout under /build.
+# repo (packaging/backends.conf) and inside the build containers, where
+# build-helpers/ and backends.conf keep the same relative layout under /build.
 
-BACKENDS_CONF="${BACKENDS_CONF:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/backends.conf}"
+BACKENDS_CONF="${BACKENDS_CONF:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backends.conf}"
 
-_backend_columns="backend arch wheel base python vendor excludes runtime smoke"
+_backend_columns="backend arch wheel base python vendor excludes runtime smoke rpm_wheel rpm_base rpm_arch"
 
 # backend_field <backend> <column> -- print one field, or fail if the backend
 # is not in the table. An empty field prints nothing and succeeds.

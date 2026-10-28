@@ -6,7 +6,7 @@
 # machine.
 #
 # Usage:
-#   ./packaging/debian/build-helpers/fetch-wheel.sh <backend> <version> <outdir>
+#   ./packaging/build-helpers/fetch-wheel.sh <backend> <version> <outdir>
 #
 # <version> is the upstream version without a local segment, e.g. 0.7.0; the
 # published file carries the backend and chip generation as a PEP 440 local

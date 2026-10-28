@@ -15,10 +15,9 @@
 
 set -euo pipefail
 
-HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEBIAN_DIR="$(dirname "${HELPERS_DIR}")"
-# shellcheck source=./backends.sh
-. "${HELPERS_DIR}/backends.sh"
+DEBIAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../../build-helpers/backends.sh
+. "${DEBIAN_DIR}/../build-helpers/backends.sh"
 
 if [ "$#" -ne 1 ]; then
     echo "usage: $(basename "$0") <backend>   (known: $(backend_list))" >&2
