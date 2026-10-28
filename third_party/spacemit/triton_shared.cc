@@ -215,6 +215,33 @@ void init_triton_xsmt_ir(py::module &&m) {
                throw std::runtime_error("Unsupported packing shapes");
              }
            })
+      .def(
+          "create_vmt4d",
+          [](TritonOpBuilder &self, Value &a, Value &b,
+             std::optional<Value> c = std::nullopt) -> Value {
+            auto aType = cast<RankedTensorType>(a.getType());
+            auto bType = cast<RankedTensorType>(b.getType());
+
+            assert(aType.getRank() == 2 && "A must be a 2D [1, K] tensor");
+            assert(bType.getRank() == 2 && "B must be a 2D [K, N] tensor");
+            assert(aType.getDimSize(0) == 1 && "A must have M == 1");
+            assert(aType.getDimSize(1) == bType.getDimSize(0) &&
+                   "K dims of A and B must match");
+
+            // f16 inputs without an explicit init accumulate in f32 (engine
+            // widening); with an init the init element type wins.
+            Type elemTy = aType.getElementType();
+            if (c.has_value())
+              elemTy = cast<RankedTensorType>(c->getType()).getElementType();
+            else if (elemTy.isF16())
+              elemTy = Float32Type::get(aType.getContext());
+
+            auto resultType =
+                RankedTensorType::get({1, bType.getDimSize(1)}, elemTy);
+            return self.create<xsmt::VMT4DOp>(resultType, a, b,
+                                              c.value_or(Value()));
+          },
+          py::arg("a"), py::arg("b"), py::arg("c") = py::none())
       .def("create_mbarrier",
            [](TritonOpBuilder &self, Value &flag, Value &atc, Value &tc,
               Value &exp) -> Value {
