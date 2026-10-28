@@ -120,3 +120,21 @@ def test_partial_rejects_non_block_or_extent_mismatched_split_axis(
 
     with pytest.raises(IRSchemaError, match="physical block hierarchy axis"):
         _infer(query, hidden_size=128, split_count=split_count)
+
+
+@pytest.mark.parametrize("axes", [(0, 1), (0, ), (1, )])
+def test_partial_rejects_a_query_held_only_by_an_exclusive_owner_group(axes):
+    # Every context shard computes its own state from the query. An E query
+    # lives only on its owner group, so codegen would run the whole partial
+    # there and leave the other shards' states unwritten.
+    placement = fm.Placement((8, 16), "yx", "bb")
+    query = fm.DistributedType(
+        fm.tensor_type("bfloat16", (1, 16, 8)),
+        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.broadcast()),
+        placement,
+        exclusive=fm.SBP.exclusive(axes),
+    )
+
+    with pytest.raises(IRSchemaError, match="every context shard"):
+        _infer(query, hidden_size=128)
+    _infer(fm.DistributedType(query.tensor, query.axis_policies, placement), hidden_size=128)
