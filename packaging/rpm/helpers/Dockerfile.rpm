@@ -18,14 +18,39 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# Two-stage RPM build: produce the wheel and assemble the RPM on the same
+# RPM build: obtain the FlagTree wheel, then assemble the rpm on the same
 # RPM-family base image. The wheel's Python ABI tag must match the Python
 # interpreter used by rpmbuild/pip in the assembler stage.
+#
+# Two stages produce /wheels/flagtree-*.whl; which one runs is decided by
+# FLAGTREE_WHEEL_STAGE, from the backend's "rpm_wheel" column in
+# packaging/backends.conf. BuildKit only builds the stage the assembler
+# actually copies from, so an index build never pays for the compile.
+#   1a. wheel-builder: heavy stage with CMake/Ninja/LLVM that compiles the
+#       wheel from source.
+#   1b. wheel-index:   light stage that downloads the wheel the backend's own
+#       delivery workflow published, for backends built on vendor hardware
+#       this packaging has no access to.
+#   2.  rpm-assembler: rpmbuild wraps the wheel into an rpm. It does NOT
+#       recompile.
+#
+# Build (through the helper, which fills the build args from backends.conf):
+#   bash packaging/rpm/helpers/build-flagtree-rpm.sh nvidia
 #
 # COPY-narrowing in wheel-builder mirrors Dockerfile.deb — packaging-only
 # edits do NOT invalidate the wheel cache.
 
 ARG RPM_BASE_IMAGE=fedora:43
+# Backend to package: selects the package name, the spec's ExclusiveArch and,
+# through FLAGTREE_WHEEL_STAGE, where the wheel comes from.
+# build-flagtree-rpm.sh fills all of these from packaging/backends.conf.
+ARG FLAGTREE_BACKEND=nvidia
+ARG FLAGTREE_WHEEL_STAGE=wheel-builder
+ARG FLAGTREE_ARCH=x86_64
+# Index to download a published wheel from, and an optional exact local
+# version to pin (e.g. ascend3.5); see packaging/build-helpers/fetch-wheel.sh.
+ARG FLAGTREE_PYPI_INDEX=
+ARG FLAGTREE_WHEEL_LOCAL=
 
 # ---------- Stage 1: build the wheel ----------
 FROM ${RPM_BASE_IMAGE} AS wheel-builder
@@ -82,9 +107,44 @@ RUN unset FLAGTREE_BACKEND && \
     test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)" && \
     rm -rf /src/build /root/.triton
 
+# ---------- Stage 1b: download a published wheel ----------
+# For backends whose wheel is built by their own delivery workflow on vendor
+# hardware. Nothing here needs a vendor SDK; the wheel is taken as published
+# and its sha256 is checked against the index. fetch-wheel.sh accepts only a
+# wheel matching this image's python3 and architecture, which is what makes a
+# backend's row valid for this base image at all.
+FROM ${RPM_BASE_IMAGE} AS wheel-index
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG FLAGTREE_BACKEND
+ARG FLAGTREE_PYPI_INDEX
+ARG FLAGTREE_WHEEL_LOCAL
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        python3 curl ca-certificates \
+    && dnf clean all
+
+COPY packaging/build-helpers/fetch-wheel.sh /ctx/fetch-wheel.sh
+
+# Declared last so a version bump invalidates only the download. A wheel
+# re-published under an unchanged name is not noticed by the layer cache;
+# the sha256 the index served is echoed into the build log either way.
+ARG FLAGTREE_WHEEL_VERSION=
+RUN FLAGTREE_PYPI_INDEX="${FLAGTREE_PYPI_INDEX}" \
+    FLAGTREE_WHEEL_LOCAL="${FLAGTREE_WHEEL_LOCAL}" \
+    bash /ctx/fetch-wheel.sh \
+        "${FLAGTREE_BACKEND}" "${FLAGTREE_WHEEL_VERSION}" /wheels
+
+# ---------- The wheel the assembler uses ----------
+# Aliasing the selected stage keeps the choice in one build arg: a FROM reads
+# the global ARG in every builder, where a COPY --from does not, and only the
+# stage named here gets built.
+FROM ${FLAGTREE_WHEEL_STAGE} AS wheel-src
+
 # ---------- Stage 2: assemble the .rpm ----------
 FROM ${RPM_BASE_IMAGE} AS rpm-assembler
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG FLAGTREE_BACKEND
+ARG FLAGTREE_ARCH
 
 ENV PIP_ROOT_USER_ACTION=ignore
 
@@ -107,20 +167,33 @@ RUN if [ -z "$(rpm --eval '%{?dist}')" ]; then \
 
 COPY packaging/rpm/specs/flagtree.spec /root/rpmbuild/SPECS/
 COPY LICENSE /root/rpmbuild/SOURCES/LICENSE
-COPY --from=wheel-builder /wheels /wheels
+COPY --from=wheel-src /wheels /wheels
 
+# The spec's ExclusiveArch is the backend's architecture, so rpmbuild stops
+# here rather than producing a mislabeled rpm on the wrong host.
 RUN rpmbuild -ba /root/rpmbuild/SPECS/flagtree.spec \
-        --define "flagtree_backend nvidia" \
+        --define "flagtree_backend ${FLAGTREE_BACKEND}" \
+        --define "flagtree_arch ${FLAGTREE_ARCH}" \
         --define "wheel_dir /wheels" && \
-    ls -lh /root/rpmbuild/RPMS/x86_64/
+    ls -lh "/root/rpmbuild/RPMS/${FLAGTREE_ARCH}/"
 
 # Smoke test: install the freshly built rpm and import the package.
 # Catches the "installs fine, fails at import" class (missing libs,
 # bad rpath, glibc mismatch) that rpmbuild alone cannot see.
-RUN dnf install -y /root/rpmbuild/RPMS/x86_64/python3-flagtree-*.x86_64.rpm && \
-    python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))"
+# triton's backend discovery imports the compiler module of every installed
+# backend, so a backend whose module reaches for its vendor SDK there cannot be
+# imported on a host without that SDK; its row sets smoke=install and only the
+# install is asserted (see packaging/backends.conf).
+ARG FLAGTREE_SMOKE=import
+RUN dnf install -y "/root/rpmbuild/RPMS/${FLAGTREE_ARCH}"/python3-flagtree-*.rpm && \
+    if [ "${FLAGTREE_SMOKE}" = install ]; then \
+        python3 -c "import importlib.util as u; print('triton installed at', u.find_spec('triton').submodule_search_locations[0])" && \
+        echo "smoke=install: importing triton needs prerequisites the ${FLAGTREE_BACKEND} backend brings in"; \
+    else \
+        python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))"; \
+    fi
 
 # ---------- Stage 3: extract just the rpms ----------
 FROM scratch AS rpm-output
-COPY --from=rpm-assembler /root/rpmbuild/RPMS/x86_64/python3-flagtree-*.rpm /output/
+COPY --from=rpm-assembler /root/rpmbuild/RPMS/*/python3-flagtree-*.rpm /output/
 COPY --from=rpm-assembler /root/rpmbuild/SRPMS/python3-flagtree-*.src.rpm /output/
