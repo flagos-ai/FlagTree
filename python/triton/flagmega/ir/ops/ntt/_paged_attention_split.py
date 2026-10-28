@@ -73,6 +73,11 @@ def create_partial_state_type(
             "PagedAttentionPartial requires an unused physical block hierarchy axis "
             f"{split_hierarchy_axis} with extent {split_count}, got {attention_type!r}."
         )
+    if attention_type.exclusive is not None:
+        # Every context shard computes its own state, so each one needs the
+        # query; an E query exists only on its owner group.
+        raise IRSchemaError("PagedAttentionPartial requires a query held by every context shard, "
+                            f"got exclusive {attention_type.exclusive!r}.")
     policies = attention_type.axis_policies
     return TupleType((
         DistributedType(
