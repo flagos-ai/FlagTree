@@ -801,10 +801,11 @@ def _block_fp8_call(raw) -> dict[str, object]:
     scale_abi = scale["abi"]
     result_abi = result["abi"]
     lanes = tuple(raw["semantic_attrs"].get("output_lanes", ()))
+    output_dtype = raw["semantic_attrs"].get("output_data_type") or value_abi["scalar_dtype"]
     if (tuple(result_abi.get("scalar_lane_shape", ())) != lanes
             or int(result_abi.get("scalar_lane_count", 1)) != prod(lanes)
-            or result_abi["scalar_dtype"] != value_abi["scalar_dtype"]):
-        raise CodegenError("TIR block-FP8 output ABI disagrees with output_lanes or activation dtype.")
+            or str(result_abi["scalar_dtype"]) != str(output_dtype)):
+        raise CodegenError("TIR block-FP8 output ABI disagrees with output_lanes or output_data_type.")
     value_shape = _static_shape(value_abi, "logical_shape")
     result_local = _static_shape(result_abi, "local_capacity_shape")
     if len(value_shape) != 2 or len(result_local) != 2:
