@@ -849,13 +849,14 @@ def _block_fp8_call(raw) -> dict[str, object]:
             raw.get("variant") != "mma" or precision.get("activation_quantization") != "none"
             or value_domain["capacity"] % (dequant_mma_splits * block_k)):
         raise CodegenError("TIR block-FP8 dequant_mma_splits requires complete dequantized MMA scale blocks.")
-    if encoding is None:
-        weight_row = emit_local_scalar_offset(weight["abi"], (local_n, "0"))
-    else:
-        bytes_per_block = 136 if encoding == "IQ4_XS" else 144
+    if encoding is not None:
         if global_k_size % 256:
             raise CodegenError("Native GGUF quantized GEMV requires K divisible by 256.")
-        weight_row = f"({global_n}) * ({global_k_size} // 256) * {bytes_per_block}"
+        if value_domain["capacity"] != global_k_size:
+            # The packed kernel walks whole GGUF blocks from K = 0.
+            raise CodegenError("Native GGUF quantized GEMV requires an unsharded K axis.")
+    # Each UINT8 row of a native GGUF weight holds one output row's packed blocks.
+    weight_row = emit_local_scalar_offset(weight["abi"], (local_n, "0"))
     scale_row = emit_global_scalar_offset(
         scale_abi,
         (f"({global_n}) // {block_n}", f"({value_domain['global_scalar']}) // {block_k}"),
