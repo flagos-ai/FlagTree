@@ -70,7 +70,7 @@ ARG DEB_VERSION_SUFFIX=auto
 ARG FLAGTREE_BACKEND=nvidia
 ARG FLAGTREE_WHEEL_STAGE=wheel-builder
 # Index to download a published wheel from, and an optional exact local
-# version to pin (e.g. metax3.6); see build-helpers/fetch-wheel.sh.
+# version to pin (e.g. metax3.6); see packaging/build-helpers/fetch-wheel.sh.
 ARG FLAGTREE_PYPI_INDEX=
 ARG FLAGTREE_WHEEL_LOCAL=
 # Path fragments to keep away from dpkg-shlibdeps; see debian/rules.
@@ -175,7 +175,7 @@ RUN if [ -n "${PYTHON_VERSION}" ] && ! python3 --version 2>&1 | grep -q " ${PYTH
         apt-get clean && rm -rf /var/lib/apt/lists/*; \
     fi && python3 --version
 
-COPY packaging/debian/build-helpers/fetch-wheel.sh /ctx/fetch-wheel.sh
+COPY packaging/build-helpers/fetch-wheel.sh /ctx/fetch-wheel.sh
 
 # Declared last so a version bump invalidates only the download. A wheel
 # re-published under an unchanged name is not noticed by the layer cache;
@@ -228,6 +228,7 @@ RUN if [ -n "${PYTHON_VERSION}" ] && ! python3 --version 2>&1 | grep -q " ${PYTH
 
 WORKDIR /build
 COPY packaging/backends.conf /build/backends.conf
+COPY packaging/build-helpers /build/build-helpers
 COPY packaging/debian /build/debian
 COPY --from=wheel-src /wheels /build/dist
 
