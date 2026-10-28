@@ -1383,8 +1383,18 @@ Operation *convertDistributedOpEncoding(Attribute encoding, Operation *op) {
   for (size_t i = 0; i < op->getNumResults(); i++) {
     Value newResult = newOp->getResult(i);
     if (newTypes[i] != op->getResultTypes()[i]) {
-      newResult = triton::gpu::ConvertLayoutOp::create(
+      auto convert = triton::gpu::ConvertLayoutOp::create(
           builder, op->getLoc(), op->getResult(i).getType(), newResult);
+      newResult = convert.getResult();
+#ifdef __TLE__
+      if (Attribute explicitEncoding = getTleExplicitResultEncoding(op, i)) {
+        // The bridge restores the hard result layout; the rebuilt producer
+        // must not retain a marker for a layout it no longer produces.
+        newOp->removeAttr(getTleExplicitEncodingAttrName(i));
+        setTleExplicitResultEncoding(convert.getOperation(), 0,
+                                     explicitEncoding);
+      }
+#endif
     }
     op->getResult(i).replaceAllUsesWith(newResult);
   }

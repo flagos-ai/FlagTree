@@ -108,6 +108,10 @@ struct CanonicalizeConvertFromTMEMStore
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
 
     // bail for incompatible layouts
     auto cvtSrcType = convert.getSrc().getType();
@@ -133,6 +137,10 @@ struct CanonicalizeConvertFromReshape
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
     // If the layouts are structurally the same, the convert is trivial
     if (isConvertTrivial(convert)) {
       rewriter.replaceOpWithNewOp<triton::ReshapeOp>(
@@ -177,6 +185,10 @@ struct CanonicalizeConvertFromTranspose
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert || !isConvertTrivial(convert))
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
 
     rewriter.replaceOpWithNewOp<triton::TransOp>(
         op, op.getType(), convert.getSrc(), op.getOrder());
@@ -197,6 +209,10 @@ struct CanonicalizeConvertFromHistogram
     if (!convert) {
       return failure();
     }
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
     src = convert.getSrc();
 
     // If mask is present, convert the layout of mask to match new src layout
@@ -231,6 +247,10 @@ struct CanonicalizeConvertFromGatherSource : public OpRewritePattern<GatherOp> {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
 
     rewriter.replaceOpWithNewOp<GatherOp>(op, convert.getSrc(), op.getIndices(),
                                           op.getAxis());
@@ -251,6 +271,10 @@ struct CanonicalizeConvertFromAlloc
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
     rewriter.replaceOpWithNewOp<triton::gpu::LocalAllocOp>(
         op, op->getResult(0).getType(), convert.getSrc());
     return mlir::success();
@@ -268,6 +292,10 @@ struct CanonicalizeConvertFromLocalStore
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
     rewriter.replaceOpWithNewOp<triton::gpu::LocalStoreOp>(op, convert.getSrc(),
                                                            op.getDst());
     return mlir::success();
@@ -284,6 +312,10 @@ struct CanonicalizeConvertFromSplit
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#endif
     auto srcEncoding = convert.getSrc().getType().getEncoding();
     // Multiple source layout can give the same output layout, if the source
     // layout of the convert gives the same destination layout we can skip the
@@ -303,6 +335,11 @@ struct CanonicalizeConvertFromConvert
   mlir::LogicalResult
   matchAndRewrite(ConvertLayoutOp op,
                   PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    // Keep explicit layout boundaries while layout-changing passes still run.
+    if (isTleExplicitConvertLayoutOp(op))
+      return failure();
+#endif
     // Convert to the same layout is redundant.
     if (op->getResultTypes() == op->getOperandTypes()) {
       rewriter.replaceOp(op, op->getOperands());
@@ -380,6 +417,10 @@ struct CanonicalizeConvertFromConvert
 
     // cvt(cvt(x, type1), type2) -> cvt(x, type2)
     if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
+#ifdef __TLE__
+      if (isTleExplicitConvertLayoutOp(cvt))
+        return failure();
+#endif
       rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
           op, op->getResultTypes().front(), cvt.getSrc());
       return success();
