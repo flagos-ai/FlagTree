@@ -20,14 +20,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from __future__ import annotations
+
 from functools import cached_property, partial, update_wrapper
 from inspect import signature
 import json
 from math import isfinite
 from numbers import Real
 from time import perf_counter
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 import warnings
+
+if TYPE_CHECKING:
+    import torch.distributed
 
 __all__ = ["AutoTuner", "autotune", "to_hashable"]
 
@@ -38,8 +43,6 @@ def to_hashable(tensor):
 
 
 def _config_key(value):
-    """Describe configuration values without object identity or pickle equality."""
-
     def encode(value):
         value_type = type(value)
         if value is None:
@@ -67,11 +70,10 @@ def _config_key(value):
                 raise TypeError("Distributed tuning does not support triton.Config pre_hook")
             if value.ir_override is not None or value.kwargs.get("ir_override") is not None:
                 raise TypeError("Distributed tuning does not support triton.Config ir_override")
-            # Include backend-specific instance fields as well as kwargs/warps/stages.
             return ["triton.Config", encode(vars(value))]
         raise TypeError(f"Unsupported distributed configuration value: {value_type.__name__}")
 
-    return json.dumps(encode(value), separators=(",", ":"), ensure_ascii=True)
+    return json.dumps(encode(value), indent=2, separators=(",", ":"), ensure_ascii=True)
 
 
 def _get_distributed_device():
@@ -146,6 +148,7 @@ class AutoTuner:
         # Benchmark results are timings, so execute the winner to obtain the real result.
         return self.fn(*args, **{**best_config, **kwargs})
 
+    # "group" is autotune_pg; all members align candidates even when tuning is disabled.
     def _call_distributed(self, group, autotune_enabled, *args, **kwargs):
         import torch
         import torch.distributed as dist
@@ -158,40 +161,77 @@ class AutoTuner:
 
         local_configs = {}
         error = None
+        tune_enabled = None
         try:
-            if not autotune_enabled:
-                raise ValueError("autotune=False is unsupported with autotune_pg")
-            tuned_names = {name for config in self.config_space for name in config}
-            conflicts = tuned_names.intersection(kwargs)
-            if conflicts:
-                raise ValueError(f"Distributed tuning forbids overriding candidate arguments: {sorted(conflicts)}")
-            fn_signature = signature(self.fn)
+            tune_enabled = bool(autotune_enabled)
             for config in self.get_pruned_config(*args, **kwargs):
-                # Also reject positional collisions and missing parameters before any launch.
-                fn_signature.bind(*args, **{**config, **kwargs})
                 local_configs.setdefault(_config_key(config), config)
-            device_interface, device = _get_distributed_device()
-            # Gloo control tensors live on CPU even when the function uses a GPU.
-            if dist.get_backend(group) == "gloo":
-                device = "cpu"
-            score = torch.empty(1, dtype=torch.float64, device=device)
-            selected = torch.full((1, ), -1, dtype=torch.int64, device=device)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
 
-        # Every member participates even if its prune/encoding/validation failed.
+        # Intersect original pruned candidates before applying caller overrides.
+        # Every member participates even if its pruning or encoding failed.
         reports = [None] * dist.get_world_size(group=group)
-        dist.all_gather_object(reports, (error, list(local_configs)), group=group)
+        dist.all_gather_object(reports, (error, list(local_configs), tune_enabled), group=group)
         errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
         if errors:
             raise ValueError("Distributed autotune preparation failed: " + "; ".join(errors))
         common = set(local_configs)
-        for _, keys in reports:
+        for _, keys, _ in reports:
             common.intersection_update(keys)
         config_keys = sorted(common)
         if not config_keys:
             raise ValueError("No common configuration remains after distributed pruning")
+        if any(report[2] != tune_enabled for report in reports):
+            raise ValueError("All ranks in autotune_pg must use the same autotune setting")
 
+        tuned_names = {name for key in config_keys for name in local_configs[key]}
+
+        # When disabling tuning, only keep the first one.
+        if not tune_enabled:
+            config_keys = config_keys[:1]
+
+        effective_keys = []
+        error = None
+        try:
+            overrides = {name: kwargs[name] for name in tuned_names if name in kwargs}
+            fn_signature = signature(self.fn)
+            for config_key in config_keys:
+                config = local_configs[config_key]
+                # Validate only calls that survived the group intersection.
+                fn_signature.bind(*args, **{**config, **kwargs})
+                effective_keys.append(_config_key({**config, **overrides}))
+            if tune_enabled:
+                device_interface, device = _get_distributed_device()
+
+                # Optional CPU placement for Gloo control tensors.
+                # if dist.get_backend(group) == "gloo":
+                #     device = "cpu"
+
+                # Reused latency buffer and the index of the winning candidate.
+                score = torch.empty(1, dtype=torch.float64, device=device)
+                selected = torch.full((1, ), -1, dtype=torch.int64, device=device)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+
+        # Overriding is allowed, but ranks must still execute the same effective configs.
+        # Keep workload arguments out of the comparison: inputs may differ across ranks.
+        dist.all_gather_object(reports, (error, effective_keys), group=group)
+        errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
+        if errors:
+            raise ValueError("Distributed autotune preparation failed: " + "; ".join(errors))
+            
+        if any(report[1] != effective_keys for report in reports):
+            raise ValueError(
+                "Tuning parameter values differ across ranks after applying keyword argument overrides. "
+                "For each candidate configuration, all ranks in autotune_pg must use the same final values."
+            )
+
+        if not tune_enabled:
+            config = local_configs[config_keys[0]]
+            return self.fn(*args, **{**config, **kwargs})
+
+        # Distributed cache lookup and persistence are not implemented yet.
         timings = []
         for config_key in config_keys:
             config = local_configs[config_key]
@@ -270,8 +310,8 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     backend's benchmarker. Tuning executes the function repeatedly; inputs must
     tolerate these repeated calls.
 
-    Call with ``autotune=False`` to use the first unpruned candidate directly.
-    Candidate names must not also be supplied by the caller unless
+    In local mode, call with ``autotune=False`` to use the first unpruned candidate
+    directly. Candidate names must not also be supplied by the caller unless
     ``autotune_allow_arg_overwrite=True``, in which case caller keywords take
     precedence. These control keywords and ``autotune_pg`` are reserved by the wrapper.
     ``decorated.fn`` exposes the original function, and
@@ -280,16 +320,24 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     Pass an initialized ``torch.distributed`` group as ``autotune_pg`` for joint
     tuning. All members must enter this call in the same order, with their active
     device selected. Candidates must preserve semantics and communication order.
-    The group intersects candidates by value and benchmarks them in a common
-    order with exactly 5 warmup and 10 measured calls each. Device-synchronized
+    The group intersects pruned candidates by value and sorts their stable keys.
+    An empty intersection is an error even when the caller overrides parameters.
+    Caller keywords take precedence over candidate values without requiring
+    ``autotune_allow_arg_overwrite``. ``prune_fn`` receives those keywords and
+    should account for them when checking candidate validity. Effective candidate
+    arguments and the ``autotune`` setting must agree across ranks; workload
+    inputs may differ. With ``autotune=False``, each rank executes the first common
+    candidate once, without benchmarking or resolving a benchmark device.
+
+    With tuning enabled, the group benchmarks candidates in the common order
+    with exactly 5 warmup and 10 measured calls each. Device-synchronized
     wall time measures end-to-end milliseconds per call, including host overhead.
     The winner minimizes the maximum rank latency and is broadcast by group rank 0.
     Each rank then executes the winner once more and returns its local result.
 
-    Distributed calls always retune, ignoring ``key_fn``, ``best_configs`` and
-    ``do_bench``. They reject ``autotune=False`` and caller overrides of candidate
-    arguments, even with ``autotune_allow_arg_overwrite=True``. Supported candidate
-    values are None, bool, int, finite float, str, list, tuple, string-keyed dict,
+    Distributed calls with tuning enabled currently always retune, ignoring
+    ``key_fn``, ``best_configs`` and ``do_bench``; disk caching is not implemented.
+    Supported candidate values are None, bool, int, finite float, str, list, tuple, string-keyed dict,
     and ``triton.Config`` with supported field values. Config hooks and external
     IR overrides are unsupported. Preparation failures are reported collectively;
     operator failures abort tuning and may require the group's timeout to release
