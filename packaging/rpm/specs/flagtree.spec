@@ -10,6 +10,7 @@
 #   1. build-flagtree-rpm.sh produces /wheels/flagtree-*.whl
 #   2. rpmbuild -ba flagtree.spec --define "wheel_dir /wheels"
 #                                 --define "flagtree_backend nvidia"
+#                                 --define "flagtree_arch x86_64"
 #
 # The wheel must be built with the same Python ABI as the RPM build
 # environment. pip validates the wheel tag during %%install, so a cp310 wheel
@@ -18,6 +19,7 @@
 # cannot be installed by a cp314 Fedora Python, for example.
 
 %{!?flagtree_backend: %global flagtree_backend nvidia}
+%{!?flagtree_arch: %global flagtree_arch x86_64}
 %{!?wheel_dir: %global wheel_dir %{_sourcedir}}
 
 # Disable byte-compile failures for the bundled vendored Python files.
@@ -25,8 +27,9 @@
 %define _python_bytecompile_errors_terminate_build 0
 
 # Skip auto-provides/requires for the bundled native libraries; they reference
-# CUDA libs we don't want declared as RPM-level Requires.
-%define __requires_exclude libcuda\\.so|libnvidia.*
+# vendor runtime libraries that ship with the vendor's own installation, not as
+# rpms: CUDA for the nvidia backend, CANN (libascendcl.so) for ascend.
+%define __requires_exclude libcuda\\.so|libnvidia.*|libascendcl\\.so
 
 Name:           python3-flagtree-%{flagtree_backend}
 Version:        0.6.1
@@ -34,10 +37,13 @@ Release:        2%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
 URL:            https://github.com/flagos-ai/FlagTree
-# The FlagTree wheel is linux_x86_64 only (LLVM/MLIR backend). Use
-# ExclusiveArch instead of BuildArch so rpmbuild refuses to start on a
-# non-x86_64 host rather than producing a mislabeled rpm.
-ExclusiveArch:  x86_64
+# A FlagTree wheel is architecture-specific (LLVM/MLIR backend), and which
+# architecture depends on the backend: the nvidia wheel this spec compiles is
+# linux_x86_64, the published ascend wheel is linux_aarch64. The build passes
+# the backend's architecture; ExclusiveArch (rather than BuildArch) then makes
+# rpmbuild refuse to start on another host instead of producing a mislabeled
+# rpm. See the rpm_arch column in packaging/backends.conf.
+ExclusiveArch:  %{flagtree_arch}
 Source0:        LICENSE
 
 # The wheel itself is supplied via --define "wheel_dir ...".
@@ -79,6 +85,9 @@ Conflicts:      python3-flagtree-hcu
 %if "%{flagtree_backend}" != "xpu"
 Conflicts:      python3-flagtree-xpu
 %endif
+%if "%{flagtree_backend}" != "ascend"
+Conflicts:      python3-flagtree-ascend
+%endif
 
 %description
 FlagTree is a unified compiler supporting multiple AI chip backends for
@@ -103,8 +112,11 @@ if [ -z "$WHEEL" ]; then
 fi
 
 # Guard against Version drifting from the wheel again (0.5.0 rpms used
-# to ship a 0.6.0 wheel).
-WHEEL_VER=$(basename "$WHEEL" | cut -d- -f2)
+# to ship a 0.6.0 wheel). A published wheel carries the backend and chip
+# generation as a PEP 440 local version (0.6.1+ascend3.5); the part before
+# the "+" is what has to match. cut, not shell suffix removal: rpm would eat
+# the %% of a ${var%%+*} expansion before the shell ever sees it.
+WHEEL_VER=$(basename "$WHEEL" | cut -d- -f2 | cut -d+ -f1)
 if [ "$WHEEL_VER" != "%{version}" ]; then
     echo "ERROR: wheel version $WHEEL_VER != spec Version %{version}" >&2
     exit 1
@@ -127,7 +139,12 @@ fi
 # pip writes console-script shebangs from sys.executable, which may resolve to
 # /usr/sbin/python3 under rpmbuild. Normalize them to Fedora's Python path so
 # RPM auto-requires are satisfiable from the python3 package.
-sed -i "1s|^#!.*python3$|#!%{__python3}|" %{buildroot}%{_bindir}/proton*
+# Which scripts exist depends on the wheel: a wheel built from this tree ships
+# proton / proton-viewer, a published one may ship flagtree-profiler instead.
+for script in %{buildroot}%{_bindir}/*; do
+    [ -e "$script" ] || continue
+    sed -i "1s|^#!.*python3$|#!%{__python3}|" "$script"
+done
 
 # RECORD references absolute paths under --target which become wrong after
 # rpmbuild relocates them. Drop it; pip doesn't need RECORD to function.
@@ -150,7 +167,7 @@ install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 # this list the build fails on unpackaged files, which is how it was found.
 %{python3_sitearch}/flagtree
 %{python3_sitearch}/flagtree-*.dist-info
-%{_bindir}/proton*
+%{_bindir}/*
 
 %changelog
 * Thu Sep 24 2026 FlagOS Contributors <contact@flagos.io> - 0.6.1-2

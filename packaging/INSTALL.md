@@ -6,7 +6,7 @@ Install the one matching the hardware, and only that one: they all occupy the
 `triton` Python namespace and conflict with each other.
 
 After `apt install python3-flagtree-<backend>` (Debian/Ubuntu) or
-`dnf install python3-flagtree-<backend>` (Fedora), install the ML runtime
+`dnf install python3-flagtree-<backend>` (Fedora / openEuler), install the ML runtime
 separately — it is intentionally **not** declared as a hard Depends/Requires
 because the distro versions are CPU-only (torch) or too old (triton) for GPU
 workloads. The chip vendor's own runtime has to be installed the vendor's way;
