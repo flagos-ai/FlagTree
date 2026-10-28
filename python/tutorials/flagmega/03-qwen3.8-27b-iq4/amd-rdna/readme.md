@@ -46,8 +46,8 @@ commit on the same GGUF and GPU:
 | FlagMega compiler baseline | 192 | 5.2 |
 | llama.cpp (HIP, gfx1100) | 29.6 | 33.8 |
 
-One round per workload, three repeats each (Chinese64: 191.8 ms vs llama.cpp
-29.5 ms; Synthetic32: 192.5 ms vs 29.7 ms). That is about 71 GB/s of weight
+Two rounds per workload, three repeats each (Chinese64: 191.8 / 192.3 ms vs
+llama.cpp 29.5 ms; Synthetic32: 192.5 / 192.4 ms vs 29.7 ms). That is about 71 GB/s of weight
 bandwidth, 10% of the ~700 GB/s this W7900 streams. Its VRAM ECC is enabled,
 which limits streaming bandwidth to about 700 of the 864 GB/s nominal (see the
 Qwen3-1.7B [amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)).
@@ -60,11 +60,12 @@ Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
 - **Synthetic32**: equal through step 17; at step 18 llama.cpp ranks 14791 over
   56239 by 0.022 logits and FlagMega picks 56239, its second choice (a near-tie).
 - Logits are finite.
+- Four independent processes (one before and three after a host reboot)
+  reproduce the 64-step Chinese64 tokens and logits bitwise.
 
-On gfx1100 every FlagMega change must also reproduce bitwise across independent
-processes, because FlagTree's LLVM 22 has a schedule-sensitive gfx1100 codegen
-defect. That multi-process check, and a second rotated performance round, are
-still pending for this model on the W7900.
+On gfx1100 every FlagMega change must reproduce bitwise across independent
+processes like this, because FlagTree's LLVM 22 has a schedule-sensitive
+gfx1100 codegen defect.
 
 `benchmark.py` therefore accepts a generated prefix that equals llama.cpp's, or
 whose first differing step is a golden-logit near-tie (top-2 margin below
