@@ -1,0 +1,8 @@
+{% set corex_preserve_k_reduction = num_warps is defined and num_warps == 16 %}
+{% set all_render_calls = render_calls | default([]) %}
+{% set render_calls = all_render_calls | selectattr('corex_flat_sme_down', 'defined') | list %}
+{% if render_calls %}
+{% include "kernels/dense_matmul/platforms/corex/bi_v150/_flat_sme_norm_stats.py.jinja" %}
+{% endif %}
+{% set render_calls = all_render_calls | rejectattr('corex_flat_sme_down', 'defined') | list %}
+{% include "kernels/dense_matmul/packed_k_major_gemv_norm_stats.py.jinja" %}

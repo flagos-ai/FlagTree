@@ -1,6 +1,15 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == dense_matmul_variant %}
+{% set dense_preserve_reduction = corex_preserve_k_reduction | default(false) and call.tile_n in [128, 256] and call.block_k == 64 and not dense_matmul_uses_descriptor %}
+{% set dense_source_pointer = call.source ~ " + (" ~ call.source_offset ~ ")" %}
+{% set dense_weight_pointer = call.weight ~ " + (" ~ call.weight_offset ~ ")" %}
+{% if dense_preserve_reduction %}
+{# Anchor loads as well as the accumulator. Coalescing otherwise widens K
+   and requires a shared exchange into the numerical reduction layout. #}
+{% set dense_source_pointer = "tle.gpu.set_layout(" ~ dense_source_pointer ~ ", tle.gpu.SlicedEncoding(0, dense_layout))" %}
+{% set dense_weight_pointer = "tle.gpu.set_layout(" ~ dense_weight_pointer ~ ", dense_layout)" %}
+{% endif %}
 {{ entry.kernel_decorator(call, prefer_inline=true) }}  {#- prefer_inline=true. Trials 13-15 measured this backend losing a
    deferred-upcast micro-optimization across a `noinline` boundary (0.119 ->
    0.098 ms on one operator, bitwise-identical output). Trial 55 re-tested
@@ -46,9 +55,13 @@ def {{ call.symbol }}({{ call.signature }}):
         dense_accumulator = tl.zeros(
             ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
         )
+{% if dense_preserve_reduction %}
+        dense_layout: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [4, 16], [16, 1], [1, 0])
+        dense_accumulator = tle.gpu.set_layout(dense_accumulator, dense_layout)
+{% endif %}
 {% endif %}
         for dense_local_k_start in tl.range(
-            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}{% if dense_preserve_reduction %}, loop_unroll_factor=8{% endif %}
         ):
             dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
             dense_global_k = {{ call.global_k }}
@@ -70,32 +83,32 @@ def {{ call.symbol }}({{ call.signature }}):
 {# Preserve FP32 products while deferring the K reduction. #}
             {% if dense_k_masked %}
             dense_source_value = tl.load(
-                {{ call.source }} + ({{ call.source_offset }}),
+                {{ dense_source_pointer }},
                 mask=dense_k_mask, other=0.0,
             )
             {% else %}
-            dense_source_value = tl.load({{ call.source }} + ({{ call.source_offset }}))
+            dense_source_value = tl.load({{ dense_source_pointer }})
             {% endif %}
             {% if dense_n_masked and dense_k_masked %}
             dense_weight_value = tl.load(
-                {{ call.weight }} + ({{ call.weight_offset }}),
+                {{ dense_weight_pointer }},
                 mask=dense_n_mask[:, None] & dense_k_mask[None, :],
                 other=0.0,
             )
             {% elif dense_n_masked %}
             dense_weight_value = tl.load(
-                {{ call.weight }} + ({{ call.weight_offset }}),
+                {{ dense_weight_pointer }},
                 mask=dense_n_mask[:, None],
                 other=0.0,
             )
             {% elif dense_k_masked %}
             dense_weight_value = tl.load(
-                {{ call.weight }} + ({{ call.weight_offset }}),
+                {{ dense_weight_pointer }},
                 mask=dense_k_mask[None, :],
                 other=0.0,
             )
             {% else %}
-            dense_weight_value = tl.load({{ call.weight }} + ({{ call.weight_offset }}))
+            dense_weight_value = tl.load({{ dense_weight_pointer }})
             {% endif %}
             dense_accumulator += (
                 dense_weight_value.to(tl.float32) * dense_source_value[None, :].to(tl.float32)
@@ -104,6 +117,13 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if dense_matmul_uses_descriptor %}
         dense_result = dense_accumulator
 {% else %}
+{% if dense_preserve_reduction %}
+        # Preserve the K register and lane folds when N ownership moves from
+        # thirty-two warps to sixteen. Constrain the reduction input itself.
+        dense_accumulator = tle.gpu.set_layout(
+            dense_accumulator, tle.gpu.BlockEncoding([1, 4], [4, 16], [16, 1], [1, 0])
+        )
+{% endif %}
         dense_result = tl.sum(dense_accumulator, axis=1)
 {% endif %}
         {% if dense_n_masked %}

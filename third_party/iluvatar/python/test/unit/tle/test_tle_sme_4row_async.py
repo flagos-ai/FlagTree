@@ -108,8 +108,10 @@ def _copy_4row_bf16_invalid_stride(src, dst):
     tle.gpu.async_wait_group(0)
 
 
-def test_tle_sme_rejects_invalid_row_stride():
-    with pytest.raises(Exception, match="64-byte.*stride|SME.*stride"):
+def test_tle_sme_rejects_invalid_row_stride(capfd):
+    # MLIR prints the specific diagnostic to stderr; the Python exception
+    # reports pipeline failure rather than embedding that diagnostic.
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
         triton.compile(
             ASTSource(
                 _copy_4row_bf16_invalid_stride,
@@ -119,3 +121,4 @@ def test_tle_sme_rejects_invalid_row_stride():
             target=GPUTarget("corex", 71, 64),
             options={"num_warps": 8},
         )
+    assert "SME row stride must be a positive multiple of 64 bytes" in capfd.readouterr().err

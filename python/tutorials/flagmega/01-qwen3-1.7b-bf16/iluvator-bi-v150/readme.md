@@ -6,6 +6,12 @@ model on **one BI-V150 GPU**. The reference implementation is
 scheduling, page allocation and sampling; FlagMega executes the complete model
 at each decode step. The 4×4 mesh represents 16 CTAs on one GPU.
 
+The [2026-10-28 workspace checkpoint](workspace_status.md) records Triton/TLE
+launch alignment, measured artifact identity, current validation and the
+unresolved private-frame compiler defect. Raw records under `figures/data/`
+are kept locally and ignored by Git; links into that directory require the
+saved data and are not available in a fresh clone.
+
 ## Environment and correctness prerequisites
 
 The validated environment uses COREX 4.5.0.20260509,
@@ -144,8 +150,8 @@ Workload-specific choices are implemented in
   the many serial reductions caused by the original 8×16 tile.
 - Read QKV in the packed weights' physical order, accumulate in FP32 and preserve
   the final output rounding.
-- Use `block_k=64` and 32 warps for QKV GEMV on BI-V150 to reduce CTA synchronization
-  during K reduction. Other GEMVs retain their validated large-tile configurations.
+- Use `block_k=64` and 16 physical warps for QKV GEMV on BI-V150. Explicit
+  reduction layouts preserve the former 32-warp FP32 addition order.
 - Use the logits-only serving ABI, with vLLM handling sampling.
 
 [flagos_adapter.py](flagos_adapter.py) installs through the vLLM worker extension
@@ -315,6 +321,171 @@ CLI outputs differ from the batched-prefill outputs in the charts, and its
 long-input token-scan prefill significantly increases complete request time.
 Decode latency ratios therefore do not establish an end-to-end speedup for
 identical output sequences.
+
+The C++ artifact launches 16 CTAs with 1024 threads per CTA (16 physical
+64-lane warps). Its `num_warps=32` metadata does not determine the C++ launch;
+the generated host shim and `codegen.block_threads=1024` do. Triton artifacts
+with `num_warps=32` launch 2048 threads per CTA. Backend comparisons must record
+the actual block size, and the Triton/TLE parity work first aligns both backends
+to 16 CTAs with 1024 threads per CTA.
+
+The aligned Triton/TLE configuration was validated on 2026-10-22 against the
+original 32-warp Triton artifact: all 151936 logits at every one of 2112
+consecutive decode steps are bitwise identical. COREX templates retain the QKV,
+GEMV and RMS-statistics reduction trees explicitly; changing only the launch
+size changed FP32 addition order and first diverged at context 33.
+
+The following is the aligned optimization baseline on the same GPU, with three
+alternating rounds and 15 samples per context. It measures the complete model
+and identical graph argmax, with fixed input and zero historical KV for timing.
+The request and CLI measurements above have separate boundaries.
+
+| context tokens | C++ device graph | Triton/TLE device graph | Triton/TLE / C++ |
+|---:|---:|---:|---:|
+| 1 | 6.103 ms | 11.195 ms | 1.83× |
+| 33 | 6.120 ms | 11.235 ms | 1.84× |
+| 128 | 6.187 ms | 11.344 ms | 1.83× |
+| 512 | 6.556 ms | 11.928 ms | 1.82× |
+| 1024 | 7.114 ms | 12.717 ms | 1.79× |
+| 2048 | 8.211 ms | 14.259 ms | 1.74× |
+
+With that geometry fixed, explicitly assigning the source and weight pointer
+layouts eliminates shared exchanges into the FP32 reduction layout. Unrolling
+the K loop by eight exposes subsequent loads to instruction scheduling while
+preserving each accumulator stream's addition order. Full-kernel shared memory
+falls from 32 KiB to 8 KiB. Down projection then distributes independent K128
+streams across four warp groups and restores the original reduction layout
+at loop exit. This adds 8 KiB of shared exchange while reducing load cost.
+The GLU path then stages two generations of weights through warp-owned SME
+transfers, overlapping the next K32 load with the current accumulation. Its
+selection proves packed geometry, address alignment and complete shard origins
+from the call ABI. The final reduction and BF16 rounding remain unchanged.
+Down projection also uses two generations of warp-owned SME transfers, with
+four independent K128 streams and the original residual and RMS reduction.
+The current formal artifact preserves every logit over 2112 sequential decode
+steps. The checks cover 98 SME ABI/operator and aligned reduction cases,
+including compact multi-owner storage, cancellation, masked K=516 and N=125.
+The surrounding checks cover 36 native compiler cases and 24 portable template
+neighbors; the earlier 15 GEMV transport proofs remain documented.
+
+GLU now keeps each N32 row tile and both K16 halves in one warp, reducing
+consumer ownership exchanges. Logits batches eight N32 tiles into 256 rows
+and stages two K64 generations; incomplete N32 tiles use masked packed loads.
+The ABI verifies all source/result capacities, alignment and owner origins.
+Both paths retain the original accumulation streams and final reduction trees.
+GLU folds its K32 streams inside the consuming warp: adjacent register pairs
+first, then distant halves. QKV and logits keep the canonical reduction layout
+through output stores, removing additional shared-memory exchanges.
+Q/K/V then shares one packed weight loop, retaining four K16 accumulator
+streams and the original separate Q and K/V reduction trees. Both N4/N8
+packing, masked K tails and inactive-input predicates are covered by tests.
+The split-K/N attention projection processes 256 output rows per tile while
+retaining its K64 accumulation streams and original reduction layout.
+Attention now computes scores and weighted sums for complete 64-token batches
+in parallel, then applies the original four 16-token softmax updates in order.
+Prefix maxima stay in registers, tails use the same 16-token calculation, and
+stores keep the consumer layout. All logits remain exact over 2112 steps;
+57 attention checks include 64-token batch and page boundaries.
+Down projection now performs the original four-register fold and distant-halves
+reductions directly in its consumer layout, eliminating the full accumulator
+exchange. The focused v38 run passes 157 checks, including an adversarial
+floating-point cancellation case. Logits now folds the original four-register
+groups and distant halves in its consumer layout as well, avoiding the full
+256×64 accumulator exchange. Full-kernel shared memory falls from 128 KiB to
+96 KiB. Seven logits checks include F32/BF16 output, cancellation and incomplete
+N32 tails; diagnostic and formal artifacts each pass all logits over 2112 steps.
+
+Residual/RMS normalization batches its eight independent gather rounds while
+retaining their original sequential statistics sum and the final 16-owner
+reduction. Call-derived pointers preserve first-layer and ordinary-layer
+offsets, in-place residual updates and masks. This saves another 0.10 ms
+across all six contexts. The formal artifact passes all logits over 2112 steps;
+the focused suite records 182 passes and eight SM90 runtime skips.
+
+The split-K/N attention projection now stages two K64 generations through
+warp-owned SME transfers, retains its four accumulation streams, and folds
+results in consumer ownership. ABI checks prove packed row origins and
+independent compact output storage for every K sum-partial owner. Scalar and
+vector-lane packed representations preserve their distinct original reduction
+trees. This saves approximately 0.16 ms across all six contexts; the generated
+formal source is identical to the 2112-step validated diagnostic.
+
+QKV now stages two K64 generations through SME while retaining the original
+four K16 accumulation streams and distinct Q/K/V output reduction layouts.
+Each warp copies its four separated N16 fragments, matching the consumer's
+actual packed layout. Complete RHS rows and 64-byte alignment are proven
+before selecting this transport. Inactive source lanes mask both operands,
+including nonfinite weights. Attention combine now batches independent heads
+while preserving the original ordered partial-state merge. Together these
+changes save 0.26–0.30 ms in the complete model. The formal artifact matches
+all 151936 logits at every one of 2112 sequential steps against original Triton.
+
+Down projection now also traverses weights stored contiguously for each CTA.
+The renderer proves complete packed K/N rows and the address contract of every
+consumer before selecting the layout. The runtime permutes verified device
+bytes before graph capture; checkpoint and artifact bytes stay canonical.
+Four consecutive pipeline iterations are unrolled with the same K128
+accumulation order and two-buffer lifetime. Together these changes save another
+0.087–0.099 ms across all six contexts. The formal artifact again matches all
+151936 logits at every one of 2112 sequential steps against original Triton.
+
+Large plain GEMV now processes 512 output rows with K32 transport. Each warp
+owns both K32 halves of the original K64 streams, so their ordered merge
+requires no cross-warp shared-memory exchange. The original floating-point
+tree, incomplete N32 tails and output casts are preserved. This removes three
+CTA synchronizations per logits output batch and saves another 0.064–0.072 ms
+in the complete model. The formal artifact passes all logits over 2112 steps;
+35 GEMV/split-K checks and 11 renderer checks pass.
+
+The N512/K32 transport now also covers proven split-K/N GEMV shards with
+at least 512 output rows. It preserves independent K-owner partials and
+the distinct scalar-packed K0/K16/K32/K48 fold. Consumer warp ownership
+removes the projection reduction exchange; the complete model uses 234
+registers per thread instead of 246, with the same shared-memory arena.
+This saves another 0.075–0.089 ms across the six contexts.
+All 151936 logits match original Triton at every one of 2112 sequential
+steps; 40 GEMV/split-K checks and 11 renderer checks pass.
+
+LLVM convergence constraints now also reach collective device-function
+wrappers and their callers. This fixes a compiler error exposed by phase
+timestamps: LLVM had moved an SME call into both sides of a lane predicate,
+so lanes reached different rendezvous sites and corrupted logits. The
+corrected compiler preserves all logits in both the instrumented and formal
+complete model. Its 153 focused checks and 2112 sequential steps pass;
+the generated model source is unchanged from the preceding result.
+
+The latest 2026-10-23 comparison alternates C++, the aligned baseline and
+the optimized artifact on GPU 1, with five unmeasured warmups per round
+and 45 measured samples per artifact and context. Historical KV is cleared
+before each context, outside timing; all 810 device samples are retained:
+
+| context tokens | C++ device graph | aligned baseline | optimized Triton/TLE | optimized / C++ |
+|---:|---:|---:|---:|---:|
+| 1 | 6.101 ms | 11.202 ms | 6.578 ms | 1.08× |
+| 33 | 6.111 ms | 11.243 ms | 6.580 ms | 1.08× |
+| 128 | 6.179 ms | 11.346 ms | 6.683 ms | 1.08× |
+| 512 | 6.551 ms | 11.935 ms | 7.057 ms | 1.08× |
+| 1024 | 7.103 ms | 12.722 ms | 7.626 ms | 1.07× |
+| 2048 | 8.202 ms | 14.264 ms | 8.770 ms | 1.07× |
+
+![Aligned C++ and Triton/TLE device graph latency](figures/triton_tle_device_graph_latency.svg)
+
+This reduces aligned Triton/TLE latency by 38.5–41.5%. The remaining C++
+latency ratio is 1.07–1.08×, a gap of 6.9–8.2%. C++ performance parity
+remains an open optimization target. These device graph results have a separate
+timing boundary from the vLLM and chat CLI charts. Reproduction commands,
+numerical regression evidence and raw measurements are retained in
+[the alignment record](figures/data/triton-tle-alignment/README.md).
+
+The table and figure identify the measured v47 artifact, using renderer v21.
+A 2026-10-25 audit confirms that current v22 templates instead reproduce the
+unpromoted v48 gate/up layout experiment. To reproduce the figure, use the
+retained v47 source and manifest with
+[the measured-artifact restore helper](figures/data/triton-tle-alignment/restore_measured_v47.py).
+The helper verifies every donor IR and asset byte hash, including the full
+BF16 payload. The restored package again matches all logits over 2112 steps;
+[the renderer audit](figures/data/triton-tle-alignment/current-renderer-audit-v102-v104/README.md)
+records its identity, launch and validation evidence.
 
 The vLLM integration improves both decode and complete request latency over
 native FULL graph for all four context lengths. The average of the two

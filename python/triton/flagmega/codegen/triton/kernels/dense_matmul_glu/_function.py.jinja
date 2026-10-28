@@ -1,6 +1,16 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul_glu" and call.variant == dense_matmul_glu_variant %}
+{% set dense_glu_preserve_reduction = corex_preserve_k_reduction | default(false) and call.tile_n == 128 and call.block_k == 32 %}
+{% set dense_glu_source_pointer = call.source ~ " + (" ~ call.source_offset ~ ")" %}
+{% set dense_glu_gate_pointer = call.gate_weight ~ " + (" ~ call.gate_weight_offset ~ ")" %}
+{% set dense_glu_up_pointer = call.up_weight ~ " + (" ~ call.up_weight_offset ~ ")" %}
+{% if dense_glu_preserve_reduction %}
+{# Use the same K ownership for both loads and their accumulator streams. #}
+{% set dense_glu_source_pointer = "tle.gpu.set_layout(" ~ dense_glu_source_pointer ~ ", tle.gpu.SlicedEncoding(0, dense_glu_layout))" %}
+{% set dense_glu_gate_pointer = "tle.gpu.set_layout(" ~ dense_glu_gate_pointer ~ ", dense_glu_layout)" %}
+{% set dense_glu_up_pointer = "tle.gpu.set_layout(" ~ dense_glu_up_pointer ~ ", dense_glu_layout)" %}
+{% endif %}
 {{ entry.kernel_decorator(call, prefer_inline=true) }}  {#- prefer_inline=true; see dense_matmul/_function.py.jinja for the
    measurement and for why Trial 55's reversal no longer applies. #}
 def {{ call.symbol }}({{ call.signature }}):
@@ -33,8 +43,15 @@ def {{ call.symbol }}({{ call.signature }}):
         dense_glu_up = tl.zeros(
             ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
         )
+{% if dense_glu_preserve_reduction %}
+        dense_glu_layout: tl.constexpr = tle.gpu.BlockEncoding(
+            [1, 2], [4, 16], [16, 1], [1, 0]
+        )
+        dense_glu_gate = tle.gpu.set_layout(dense_glu_gate, dense_glu_layout)
+        dense_glu_up = tle.gpu.set_layout(dense_glu_up, dense_glu_layout)
+{% endif %}
         for dense_glu_local_k_start in tl.range(
-            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}{% if dense_glu_preserve_reduction %}, loop_unroll_factor=8{% endif %}
         ):
             dense_glu_local_k_offsets = (
                 dense_glu_local_k_start + tl.arange(0, {{ call.block_k }})
@@ -54,10 +71,10 @@ def {{ call.symbol }}({{ call.signature }}):
    prefer_inline=true) function body to benefit from it. #}
             {% if dense_glu_k_masked %}
             dense_glu_source_value = tl.load(
-                {{ call.source }} + ({{ call.source_offset }}), mask=dense_glu_k_mask, other=0.0,
+                {{ dense_glu_source_pointer }}, mask=dense_glu_k_mask, other=0.0,
             )
             {% else %}
-            dense_glu_source_value = tl.load({{ call.source }} + ({{ call.source_offset }}))
+            dense_glu_source_value = tl.load({{ dense_glu_source_pointer }})
             {% endif %}
             {% if dense_glu_n_masked and dense_glu_k_masked %}
             dense_glu_matrix_mask = dense_glu_n_mask[:, None] & dense_glu_k_mask[None, :]
@@ -68,17 +85,21 @@ def {{ call.symbol }}({{ call.signature }}):
             {% endif %}
             {% if dense_glu_n_masked or dense_glu_k_masked %}
             dense_glu_gate_value = tl.load(
-                {{ call.gate_weight }} + ({{ call.gate_weight_offset }}), mask=dense_glu_matrix_mask, other=0.0,
+                {{ dense_glu_gate_pointer }}, mask=dense_glu_matrix_mask, other=0.0,
             )
             dense_glu_up_value = tl.load(
-                {{ call.up_weight }} + ({{ call.up_weight_offset }}), mask=dense_glu_matrix_mask, other=0.0,
+                {{ dense_glu_up_pointer }}, mask=dense_glu_matrix_mask, other=0.0,
             )
             {% else %}
-            dense_glu_gate_value = tl.load({{ call.gate_weight }} + ({{ call.gate_weight_offset }}))
-            dense_glu_up_value = tl.load({{ call.up_weight }} + ({{ call.up_weight_offset }}))
+            dense_glu_gate_value = tl.load({{ dense_glu_gate_pointer }})
+            dense_glu_up_value = tl.load({{ dense_glu_up_pointer }})
             {% endif %}
             dense_glu_gate += (dense_glu_gate_value.to(tl.float32) * dense_glu_source_value[None, :].to(tl.float32)).to(tl.float32)
             dense_glu_up += (dense_glu_up_value.to(tl.float32) * dense_glu_source_value[None, :].to(tl.float32)).to(tl.float32)
+{% if dense_glu_preserve_reduction %}
+        dense_glu_gate = tle.gpu.set_layout(dense_glu_gate, dense_glu_layout)
+        dense_glu_up = tle.gpu.set_layout(dense_glu_up, dense_glu_layout)
+{% endif %}
         dense_glu_gate = tl.sum(dense_glu_gate, axis=1)
         dense_glu_up = tl.sum(dense_glu_up, axis=1)
         dense_glu_gate = dense_glu_gate.to({{ call.output_type }}).to(tl.float32)

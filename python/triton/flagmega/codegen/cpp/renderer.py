@@ -45,8 +45,9 @@ CPP_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.cpp-package-descriptor/v1"
 # autotuner owns. A C++ kernel has no autotuner, so the block size is part of
 # the generated source and must be stated here.
 #
-# 1024 = 16 warps x 64 lanes, matching what the Triton path compiles this model
-# to. Measured on BI-V150 with the 28-layer Qwen3-1.7B batch-1 decode model
+# 1024 = 16 physical warps x 64 lanes. The shared descriptor's `num_warps`
+# describes the Triton launch; the C++ host shim uses CPP_BLOCK_THREADS.
+# Measured on BI-V150 with the 28-layer Qwen3-1.7B batch-1 decode model
 # (median of 5 reps x 32 tokens at a fixed 128-token context, eager):
 #
 #     256 threads   96.6 ms/token

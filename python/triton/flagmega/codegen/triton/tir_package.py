@@ -50,7 +50,8 @@ TIR_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.triton-package-descriptor/v1"
 
 
 def describe_tir_package(
-    module: IRModule, *, pool_function_arguments: bool = True
+    module: IRModule, *, pool_function_arguments: bool = True,
+    specialize_readonly_layout: bool = False,
 ) -> dict[str, object]:
     """Derive source-generation facts solely from executable TIR contracts.
 
@@ -58,6 +59,10 @@ def describe_tir_package(
     convention to the source schedule; see
     ``build_pipeline_source_schedule``. A backend whose device functions take
     one pointer per buffer clears it.
+
+    ``specialize_readonly_layout`` enables Triton's proved device weight
+    addresses. C++ describes canonical calls here and selects its own layout
+    later, so sharing this descriptor builder does not repack its pool twice.
     """
 
     try:
@@ -215,6 +220,13 @@ def describe_tir_package(
                 call["partial_owner_index"] = "0"
 
     platform, architecture = module_template_target(module)
+    readonly_layout = None
+    if platform == "corex" and architecture == "bi_v150" and int(plan_launch["num_warps"]) == 16:
+        from triton.flagmega.codegen.triton.corex_sme_abi import attach_flat_sme_calls
+        attach_flat_sme_calls(encoded_calls, source_schedule)
+        if specialize_readonly_layout:
+            from triton.flagmega.codegen.triton.corex_readonly_layout import select_readonly_layouts
+            readonly_layout = select_readonly_layouts(module, wrappers)
     if (platform != "nvidia" or architecture != "sm90") and any(
         call.get("decode_schedule") == "bf16_mma" for calls in encoded_calls.values() for call in calls
     ):
@@ -327,6 +339,7 @@ def describe_tir_package(
         }),
         "replicated_block_runtime_pool": replicated_block_runtime_pool,
         "render_calls": wrappers,
+        **({"triton_readonly_device_layout": readonly_layout} if readonly_layout is not None else {}),
         "entry_events": entry_events,
         "pipeline_schedule": pipeline_schedule,
         "device_functions": source_schedule["device_functions"] if source_schedule else [],

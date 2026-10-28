@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img">
+<title>Aligned device graph latency (lower is better)</title>
+<desc>Complete Qwen3-1.7B BF16 model and identical graph argmax on one BI-V150. Both backends launch 16 CTAs with 1024 threads each. Medians of 45 samples. Fixed token and zero historical KV; separate from CLI and vLLM request timing.</desc>
+<rect width="100%" height="100%" fill="#ffffff" />
+<g font-family="sans-serif" fill="#243343">
+<text x="85.0" y="37.0" font-size="24" text-anchor="start">Aligned device graph latency (lower is better)</text>
+<text x="85.0" y="64.0" font-size="14" text-anchor="start">BF16 / BI-V150 / batch 1 / 28 layers / 16 CTAs × 1024 threads / 2026-10-23</text>
+<text x="85.0" y="89.0" font-size="14" text-anchor="start">Complete model + identical graph argmax; 3 alternating rounds × 15 samples per context.</text>
+<text x="85.0" y="113.0" font-size="14" text-anchor="start">Fixed token, zero historical KV. Device timing; separate from CLI and vLLM request latency.</text>
+<path d="M 85 540.0 H 1170" stroke="#dfe5eb" />
+<text x="73.0" y="545.0" font-size="13" text-anchor="end">0.0</text>
+<path d="M 85 441.2 H 1170" stroke="#dfe5eb" />
+<text x="73.0" y="446.2" font-size="13" text-anchor="end">4.0</text>
+<path d="M 85 342.5 H 1170" stroke="#dfe5eb" />
+<text x="73.0" y="347.5" font-size="13" text-anchor="end">8.0</text>
+<path d="M 85 243.8 H 1170" stroke="#dfe5eb" />
+<text x="73.0" y="248.8" font-size="13" text-anchor="end">12.0</text>
+<path d="M 85 145.0 H 1170" stroke="#dfe5eb" />
+<text x="73.0" y="150.0" font-size="13" text-anchor="end">16.0</text>
+<text x="16.0" y="129.0" font-size="13" text-anchor="start">ms/step</text>
+<rect x="106.3" y="389.4" width="41.1" height="150.6" fill="#556579" />
+<text x="126.8" y="381.4" font-size="12" text-anchor="middle">6.101</text>
+<rect x="152.4" y="263.5" width="41.1" height="276.5" fill="#c47725" />
+<text x="172.9" y="255.5" font-size="12" text-anchor="middle">11.202</text>
+<rect x="198.5" y="377.6" width="41.1" height="162.4" fill="#198269" />
+<text x="219.0" y="369.6" font-size="12" text-anchor="middle">6.578</text>
+<text x="175.4" y="568.0" font-size="14" text-anchor="middle">Context 1</text>
+<rect x="287.1" y="389.1" width="41.1" height="150.9" fill="#556579" />
+<text x="307.7" y="381.1" font-size="12" text-anchor="middle">6.111</text>
+<rect x="333.2" y="262.4" width="41.1" height="277.6" fill="#c47725" />
+<text x="353.8" y="254.4" font-size="12" text-anchor="middle">11.243</text>
+<rect x="379.3" y="377.6" width="41.1" height="162.4" fill="#198269" />
+<text x="399.8" y="369.6" font-size="12" text-anchor="middle">6.580</text>
+<text x="356.2" y="568.0" font-size="14" text-anchor="middle">Context 33</text>
+<rect x="467.9" y="387.5" width="41.1" height="152.5" fill="#556579" />
+<text x="488.5" y="379.5" font-size="12" text-anchor="middle">6.179</text>
+<rect x="514.0" y="259.9" width="41.1" height="280.1" fill="#c47725" />
+<text x="534.6" y="251.9" font-size="12" text-anchor="middle">11.346</text>
+<rect x="560.1" y="375.0" width="41.1" height="165.0" fill="#198269" />
+<text x="580.7" y="367.0" font-size="12" text-anchor="middle">6.683</text>
+<text x="537.1" y="568.0" font-size="14" text-anchor="middle">Context 128</text>
+<rect x="648.8" y="378.3" width="41.1" height="161.7" fill="#556579" />
+<text x="669.3" y="370.3" font-size="12" text-anchor="middle">6.551</text>
+<rect x="694.9" y="245.4" width="41.1" height="294.6" fill="#c47725" />
+<text x="715.4" y="237.4" font-size="12" text-anchor="middle">11.935</text>
+<rect x="741.0" y="365.8" width="41.1" height="174.2" fill="#198269" />
+<text x="761.5" y="357.8" font-size="12" text-anchor="middle">7.057</text>
+<text x="717.9" y="568.0" font-size="14" text-anchor="middle">Context 512</text>
+<rect x="829.6" y="364.6" width="41.1" height="175.4" fill="#556579" />
+<text x="850.2" y="356.6" font-size="12" text-anchor="middle">7.103</text>
+<rect x="875.7" y="225.9" width="41.1" height="314.1" fill="#c47725" />
+<text x="896.2" y="217.9" font-size="12" text-anchor="middle">12.722</text>
+<rect x="921.8" y="351.7" width="41.1" height="188.3" fill="#198269" />
+<text x="942.3" y="343.7" font-size="12" text-anchor="middle">7.626</text>
+<text x="898.8" y="568.0" font-size="14" text-anchor="middle">Context 1024</text>
+<rect x="1010.4" y="337.5" width="41.1" height="202.5" fill="#556579" />
+<text x="1031.0" y="329.5" font-size="12" text-anchor="middle">8.202</text>
+<rect x="1056.5" y="187.8" width="41.1" height="352.2" fill="#c47725" />
+<text x="1077.1" y="179.8" font-size="12" text-anchor="middle">14.264</text>
+<rect x="1102.6" y="323.5" width="41.1" height="216.5" fill="#198269" />
+<text x="1123.2" y="315.5" font-size="12" text-anchor="middle">8.770</text>
+<text x="1079.6" y="568.0" font-size="14" text-anchor="middle">Context 2048</text>
+<rect x="85" y="588" width="14" height="14" fill="#556579" />
+<text x="107.0" y="600.0" font-size="13" text-anchor="start">C++ backend</text>
+<rect x="85" y="613" width="14" height="14" fill="#c47725" />
+<text x="107.0" y="625.0" font-size="13" text-anchor="start">Triton/TLE: aligned baseline</text>
+<rect x="85" y="638" width="14" height="14" fill="#198269" />
+<text x="107.0" y="650.0" font-size="13" text-anchor="start">Triton/TLE: SME, batching, wider GEMV</text>
+<text x="610.0" y="600.0" font-size="13" text-anchor="start">Optimized latency: 38.5–41.5% below aligned baseline</text>
+<text x="610.0" y="625.0" font-size="13" text-anchor="start">Remaining gap to C++: 1.07–1.08×</text>
+<text x="610.0" y="650.0" font-size="12" text-anchor="start">All 151936 logits exact over 2112 sequential steps vs original Triton</text>
+</g>
+</svg>

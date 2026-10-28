@@ -7,7 +7,9 @@ import os
 from triton.flagmega.runtime.prepared import ResourceContract
 
 
-def compilation_options(contract: ResourceContract, target: str = "nvidia-sm90") -> dict[str, object]:
+def compilation_options(
+    contract: ResourceContract, target: str = "nvidia-sm90", *, floating_point_contract: str | None = None,
+) -> dict[str, object]:
     # NVIDIA uses ptxas occupancy bounds; COREX has no equivalent ptx option.
     # Both backends still enforce the post-compilation resource contract.
     options = {"num_warps": contract.compute_num_warps}
@@ -19,6 +21,8 @@ def compilation_options(contract: ResourceContract, target: str = "nvidia-sm90")
             # Declare dependencies here so a new runtime library cannot reuse
             # a specialization compiled against the previous installation.
             options["extern_libs"] = dict(sorted(libraries.items()))
+    if floating_point_contract == "strict":
+        options["enable_fp_fusion"] = False
     # Keep the normal compiler default unless an experiment explicitly asks
     # for a different software-pipeline depth.  This is intentionally an
     # opt-in launch-time knob: the persistent-kernel residency contract still

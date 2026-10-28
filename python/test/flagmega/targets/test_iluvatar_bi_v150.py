@@ -47,6 +47,7 @@ def test_corex_mesh_barrier_does_not_request_unsupported_cooperative_launch():
         cluster_dims = (1, 1, 1)
         launch_cooperative_grid = False
         backend_name = "corex"
+        supports_cooperative_grid = False
 
     class Semantic:
         builder = type("Builder", (), {"options": Options()})()
@@ -102,7 +103,8 @@ def test_bi_v150_qkv_pipeline_block_n_updates_copy_geometry_and_shared_abi(monke
         corex_triton_implementation_model()
 
 
-def test_bi_v150_tutorial_target_selects_async_qkv_pipeline():
+def test_bi_v150_tutorial_target_selects_async_qkv_pipeline(monkeypatch):
+    monkeypatch.setenv("FLAGMEGA_QKV_ASYNC", "1")
     target_path = (
         Path(__file__).resolve().parents[4]
         / "python/tutorials/flagmega/01-qwen3-1.7b-bf16/"
@@ -117,7 +119,23 @@ def test_bi_v150_tutorial_target_selects_async_qkv_pipeline():
     assert implementation.parameters["producer_warps"] == 16
     assert implementation.parameters["producer_registers"] == 24
     assert implementation.parameters["consumer_warps"] == 8
-    assert implementation.parameters["compute_num_warps"] == 32
+    assert implementation.parameters["compute_num_warps"] == 16
+
+
+def test_bi_v150_tutorial_default_matches_cpp_physical_cta(monkeypatch):
+    monkeypatch.delenv("FLAGMEGA_QKV_ASYNC", raising=False)
+    monkeypatch.delenv("FLAGMEGA_QKV_COMPUTE_WARPS", raising=False)
+    target_path = (
+        Path(__file__).resolve().parents[4]
+        / "python/tutorials/flagmega/01-qwen3-1.7b-bf16/"
+        "iluvator-bi-v150/local_optimizations/target.py"
+    )
+    model = runpy.run_path(str(target_path))["create_target"]().triton_implementation_model
+    qkv = model.implementation(model.preferences["qkv_parallel_linear"][0])
+    assert qkv.parameters["compute_num_warps"] == 16
+    assert 16 * IluvatarBiV150Capability().warp_size == 1024
+    assert max(value.parameters.get("compute_num_warps", 0)
+               for value in model.implementations) == 16
 
 
 def test_bi_v150_resource_contract_accepts_verified_256_register_kernel():

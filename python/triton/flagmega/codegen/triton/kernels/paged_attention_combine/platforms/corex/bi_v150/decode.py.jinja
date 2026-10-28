@@ -1,0 +1,13 @@
+{# Batch independent output heads; each retains the same ordered partial fold. #}
+{% set ns = namespace(calls=[]) %}
+{% for call in render_calls | default([]) %}
+{% if num_warps is defined and num_warps == 16 and call.family == "paged_attention_combine" and call.variant == "decode" and call.tile == 128 and call.local_capacity >= 256 %}
+{% set width = 512 if call.local_capacity >= 512 else 256 %}
+{% set adjusted = dict(call, tile=width, corex_combine_inline=true) %}
+{% set ns.calls = ns.calls + [adjusted] %}
+{% else %}
+{% set ns.calls = ns.calls + [call] %}
+{% endif %}
+{% endfor %}
+{% set render_calls = ns.calls %}
+{% include "kernels/paged_attention_combine/decode.py.jinja" %}

@@ -1,0 +1,50 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{# Inline the phases: the former noinline ABI changes whole-kernel register
+   allocation and makes long-context attention slower despite unchanged IR. #}
+@triton.jit
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    pe: tl.constexpr = tle.gpu.BlockEncoding([1,1,1],[1,16,4],[8,2,1],[2,1,0])
+    ve: tl.constexpr = tle.gpu.SlicedEncoding(2,pe)
+    gather_local_offsets = (tl.arange(0,8)[:,None] * {{ call.work_partition_count * call.tile }}
+        + ({{ call.work_partition_index }}) * {{ call.tile }} + tl.arange(0,16)[None,:])
+    gather_mask = (gather_local_offsets < {{ call.local_capacity }}) & ({{ call.active }}) & ({{ call.participant_active }})
+    gather_partial_lane = tl.arange(0,4)
+    gather_partial_owner = {{ call.partial_owner }}
+    values = tl.load(tle.gpu.set_layout({{ call.partial }}
+        + gather_partial_owner[None,None,:] * {{ call.owner_stride }}
+        + ({{ call.partial_offset }})[:,:,None],pe),mask=gather_mask[:,:,None],other=0).to(tl.float32)
+    projected = tl.sum(values,2)
+    output = (projected + tl.load(tle.gpu.set_layout({{ call.addend }} + ({{ call.addend_offset }}),ve),mask=gather_mask,other=0).to(tl.float32)).to({{ call.output_type }})
+    tl.store(tle.gpu.set_layout({{ call.value_result }} + ({{ call.value_offset }}),ve),output,mask=gather_mask)
+    square = tl.trans(tl.where(gather_mask,output.to(tl.float32)*output.to(tl.float32),0.0),(1,0))
+    even,odd = tl.split(square.reshape(16,4,2))
+    e04,e26 = tl.split(even.reshape(16,2,2))
+    o15,o37 = tl.split(odd.reshape(16,2,2))
+    v0,v4 = tl.split(e04)
+    v2,v6 = tl.split(e26)
+    v1,v5 = tl.split(o15)
+    v3,v7 = tl.split(o37)
+    # Fold the original eight loop updates sequentially before the N16 sum.
+    squared = (((((((0.0+v0)+v1)+v2)+v3)+v4)+v5)+v6)+v7
+    tl.store({{ call.stats_partials }} + {{ call.stats_square_base }} + {{ call.stats_writer_index }},tl.sum(squared,0),mask={{ call.participant_active }})
+
+@triton.jit
+def {{ call.symbol }}__finalize({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    norm_owner_offsets = tl.arange(0,16)
+    norm_square_sum = 0.0 + tl.sum(tl.load({{ call.stats_partials }} + {{ call.stats_square_base }} + norm_owner_offsets),0)
+    norm_variance = norm_square_sum / ({{ call.normalization_size }} + 0.0)
+    norm_inverse_std = tl.rsqrt(tl.maximum(norm_variance,0.0) + {{ call.epsilon }})
+    ne: tl.constexpr = tle.gpu.BlockEncoding([1,1],[1,64],[8,2],[1,0])
+    gather_local_offsets = (tl.arange(0,8)[:,None] * {{ call.work_partition_count * call.tile }}
+        + ({{ call.work_partition_index }}) * {{ call.tile }} + tl.arange(0,16)[None,:])
+    gather_mask = (gather_local_offsets < {{ call.local_capacity }}) & ({{ call.active }}) & ({{ call.participant_active }})
+    norm_value = tl.load(tle.gpu.set_layout({{ call.value_result }} + ({{ call.value_offset }}),ne),mask=gather_mask,other=0).to(tl.float32)
+    norm_scale = tl.load(tle.gpu.set_layout({{ call.scale }} + ({{ call.scale_offset }}),ne),mask=gather_mask,other=0).to(tl.float32)
+    norm_output = (norm_value - 0.0)*norm_inverse_std*norm_scale + 0.0
+    tl.store(tle.gpu.set_layout({{ call.norm_result }} + ({{ call.norm_offset }}),ne),norm_output.to({{ call.output_type }}).to({{ call.norm_output_type }}),mask=gather_mask)
+
+{{ entry.phase_schedule(call,("partials","finalize")) }}
+{% endfor %}

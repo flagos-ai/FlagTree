@@ -290,9 +290,11 @@ def test_ws_explicit_copy_2d_sme_codegen():
     assert "isSme = true" in compiled.asm["ttgir"]
     assert "llvm.nvvm.barrier.cta.sync.aligned.all" in compiled.asm["llir"]
     assert "__ilu_sme_publication_barrier_" not in compiled.asm["llir"]
-    assert 'i32 64 syncscope("workgroup") release' in compiled.asm["llir"]
-    assert "static_arrive_count = 256 : i32" in compiled.asm["ttgir"]
-    assert re.search(r"lshr i32 %\d+, 8", compiled.asm["llir"])
+    # WS named barriers count one ticket per warp leader. Pipe barriers
+    # separately count the producer's full 4 x 64 thread partition.
+    assert 'i32 1 syncscope("workgroup") release' in compiled.asm["llir"]
+    assert 'i32 256 syncscope("workgroup") acq_rel' in compiled.asm["llir"]
+    assert re.search(r"lshr(?: exact)? i32 %\d+, 8", compiled.asm["llir"])
     assert "inputStride" in compiled.asm["ttgir"]
     assert "llvm.bi.sme.load.4x1b64.rowxfb16" in compiled.asm["llir"]
 

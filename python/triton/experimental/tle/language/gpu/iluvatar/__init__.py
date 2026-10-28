@@ -18,7 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from . import copy
-from . import layout
+from . import copy, layout, sme
 
-__all__ = ["copy", "layout"]
+__all__ = ["copy", "layout", "sme"]

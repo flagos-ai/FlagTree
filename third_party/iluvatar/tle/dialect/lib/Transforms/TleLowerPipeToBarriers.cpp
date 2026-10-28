@@ -15,6 +15,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <limits>
 #include <map>
 #include <optional>
 
@@ -37,7 +38,7 @@ struct PipeState {
   Value closeTags;
   ttg::MemDescType barrierSlotType;
   ttg::MemDescType closeTagSlotType;
-  RankedTensorType closeTagTensorType;
+  Value drainBarrier;
   SmallVector<std::string> readerNames;
   bool oneShot;
   std::optional<int32_t> writerThreadCount;
@@ -60,12 +61,14 @@ static OperandRange getPipeFields(Operation *op) {
     return pipeOp.getFields();
   if (auto pipeOp = dyn_cast<PipeReaderWaitOp>(op))
     return pipeOp.getFields();
-  return cast<PipeReaderReleaseOp>(op).getFields();
+  if (auto pipeOp = dyn_cast<PipeReaderReleaseOp>(op))
+    return pipeOp.getFields();
+  return cast<PipeDrainOp>(op).getFields();
 }
 
 static bool isPipeLifecycleOp(Operation *op) {
   return isa<PipeCreateOp, PipeWriterAcquireOp, PipeWriterCommitOp,
-             PipeWriterCloseOp, PipeReaderWaitOp, PipeReaderReleaseOp>(op);
+             PipeWriterCloseOp, PipeReaderWaitOp, PipeReaderReleaseOp, PipeDrainOp>(op);
 }
 
 static bool containsPipeLifecycleOp(tt::FuncOp func) {
@@ -337,7 +340,197 @@ static Value phaseAsI32(OpBuilder &builder, Location loc, Value phaseI1) {
   return arith::ExtUIOp::create(builder, loc, builder.getI32Type(), phaseI1);
 }
 
-static PipeState createPipeState(PipeCreateOp op, int32_t provisionalCount) {
+struct PipeDrainBuildState {
+  SmallVector<std::string> readerNames;
+  bool oneShot = false;
+  std::optional<std::pair<int32_t, int32_t>> writerCloseTask;
+  std::map<std::string, std::pair<int32_t, int32_t>> readerReleaseTasks;
+  std::map<int32_t, int32_t> readyTasks;
+  std::map<int32_t, int32_t> drainTasks;
+  DenseSet<int32_t> drainedTasks;
+};
+
+static LogicalResult recordDrainReadyTask(PipeDrainBuildState &state,
+                                          Operation *op, int32_t taskId,
+                                          int32_t threadCount) {
+  auto it = state.readyTasks.find(taskId);
+  if (it != state.readyTasks.end() && it->second != threadCount)
+    return op->emitOpError("uses pipe drain participant task ")
+           << taskId << " with inconsistent thread counts " << it->second
+           << " and " << threadCount;
+  state.readyTasks[taskId] = threadCount;
+  return success();
+}
+
+static LogicalResult recordDrainArrival(PipeDrainBuildState &state,
+                                        Operation *op, int32_t taskId,
+                                        int32_t threadCount) {
+  if (state.oneShot)
+    return op->emitOpError("does not support wait_drained on one_shot pipe");
+  if (!state.readyTasks.count(taskId))
+    return op->emitOpError(
+        "requires a preceding pipe.writer_close or pipe.reader_release in the "
+        "same async task before wait_drained");
+  if (state.drainedTasks.contains(taskId))
+    return op->emitOpError("has duplicate wait_drained in async_task_id ")
+           << taskId;
+  state.drainedTasks.insert(taskId);
+  state.drainTasks[taskId] = threadCount;
+  return success();
+}
+
+static LogicalResult verifyNoUseAfterDrain(PipeDrainBuildState &state,
+                                           Operation *op, int32_t taskId) {
+  if (!state.drainedTasks.contains(taskId))
+    return success();
+  return op->emitOpError("uses pipe after wait_drained in async_task_id ")
+         << taskId;
+}
+
+static LogicalResult
+verifyRequiredDrainParticipant(PipeDrainBuildState &state, Operation *op,
+                               StringRef role,
+                               std::optional<std::pair<int32_t, int32_t>> task) {
+  if (!task)
+    return op->emitOpError("wait_drained requires ") << role
+                                                     << " to reach drain";
+  int32_t taskId = task->first;
+  auto it = state.drainTasks.find(taskId);
+  if (it == state.drainTasks.end())
+    return op->emitOpError("wait_drained requires ") << role
+                                                     << " async_task_id "
+                                                     << taskId
+                                                     << " to call drain";
+  if (it->second != task->second)
+    return op->emitOpError("wait_drained participant thread count mismatch "
+                           "for ")
+           << role;
+  return success();
+}
+
+static LogicalResult analyzePipeDrains(
+    ArrayRef<Operation *> ops, std::map<std::string, PipeCreateOp> &pipes,
+    std::map<std::string, int32_t> &drainParticipantCounts) {
+  std::map<std::string, PipeDrainBuildState> states;
+
+  for (const auto &entry : pipes) {
+    PipeDrainBuildState state;
+    if (auto readers = entry.second->getAttrOfType<ArrayAttr>("readers"))
+      for (Attribute reader : readers)
+        state.readerNames.push_back(cast<StringAttr>(reader).getValue().str());
+    if (auto oneShot = entry.second->getAttrOfType<BoolAttr>("one_shot"))
+      state.oneShot = oneShot.getValue();
+    states.emplace(entry.first, std::move(state));
+  }
+
+  for (Operation *op : ops) {
+    if (isa<PipeCreateOp>(op))
+      continue;
+
+    std::string key = getPipeKey(op);
+    auto defIt = pipes.find(key);
+    if (defIt == pipes.end())
+      return op->emitOpError("requires a preceding matching pipe.create");
+    PipeDrainBuildState &state = states[key];
+
+    auto defaultTask = [&]() -> int32_t {
+      if (isa<PipeWriterAcquireOp, PipeWriterCommitOp, PipeWriterCloseOp>(op))
+        return getEnclosingDefaultTaskId(op, /*writer=*/0);
+      if (isa<PipeDrainOp>(op))
+        return getEnclosingDefaultTaskId(op, /*nonWarpSpecializeDefault=*/0);
+      return getEnclosingDefaultTaskId(op, /*reader=*/1);
+    };
+    auto taskId = getSingleTaskId(op, defaultTask());
+    if (failed(taskId))
+      return failure();
+    auto threadCount = getTaskThreadCount(op);
+    if (failed(threadCount))
+      return failure();
+
+    if (isa<PipeDrainOp>(op)) {
+      if (failed(recordDrainArrival(state, op, *taskId, *threadCount)))
+        return failure();
+      continue;
+    }
+
+    if (failed(verifyNoUseAfterDrain(state, op, *taskId)))
+      return failure();
+
+    if (auto close = dyn_cast<PipeWriterCloseOp>(op)) {
+      if (state.writerCloseTask && state.writerCloseTask->first != *taskId)
+        return close.emitOpError("uses writer async_task_id ")
+               << *taskId << " but pipe close already has writer "
+               << "async_task_id " << state.writerCloseTask->first;
+      state.writerCloseTask = std::make_pair(*taskId, *threadCount);
+      if (failed(recordDrainReadyTask(state, op, *taskId, *threadCount)))
+        return failure();
+      continue;
+    }
+
+    if (auto release = dyn_cast<PipeReaderReleaseOp>(op)) {
+      std::string readerName;
+      if (auto attr = release->getAttrOfType<StringAttr>("reader_name"))
+        readerName = attr.getValue().str();
+      auto it = state.readerReleaseTasks.find(readerName);
+      if (it != state.readerReleaseTasks.end() &&
+          it->second.first != *taskId)
+        return release.emitOpError("uses reader ")
+               << readerName << " async_task_id " << *taskId
+               << " but that reader already released from async_task_id "
+               << it->second.first;
+      state.readerReleaseTasks[readerName] =
+          std::make_pair(*taskId, *threadCount);
+      if (failed(recordDrainReadyTask(state, op, *taskId, *threadCount)))
+        return failure();
+    }
+  }
+
+  for (auto &[key, state] : states) {
+    if (state.drainTasks.empty())
+      continue;
+
+    Operation *diagnosticOp = pipes[key].getOperation();
+    if (failed(verifyRequiredDrainParticipant(
+            state, diagnosticOp, "writer close", state.writerCloseTask)))
+      return failure();
+
+    if (state.readerNames.empty()) {
+      auto it = state.readerReleaseTasks.find("");
+      std::optional<std::pair<int32_t, int32_t>> defaultReader;
+      if (it != state.readerReleaseTasks.end())
+        defaultReader = it->second;
+      if (failed(verifyRequiredDrainParticipant(state, diagnosticOp,
+                                                "default reader release",
+                                                defaultReader)))
+        return failure();
+    } else {
+      for (const std::string &readerName : state.readerNames) {
+        auto it = state.readerReleaseTasks.find(readerName);
+        std::optional<std::pair<int32_t, int32_t>> readerTask;
+        if (it != state.readerReleaseTasks.end())
+          readerTask = it->second;
+        std::string role = (Twine("reader ") + readerName + " release").str();
+        if (failed(verifyRequiredDrainParticipant(state, diagnosticOp, role,
+                                                  readerTask)))
+          return failure();
+      }
+    }
+
+    int64_t participantCount = 0;
+    for (auto &[taskId, threads] : state.drainTasks)
+      participantCount += threads;
+    if (participantCount <= 0 ||
+        participantCount > std::numeric_limits<int32_t>::max())
+      return diagnosticOp->emitOpError(
+          "wait_drained participant count is out of range");
+    drainParticipantCounts[key] = static_cast<int32_t>(participantCount);
+  }
+
+  return success();
+}
+
+static PipeState createPipeState(PipeCreateOp op, int32_t provisionalCount,
+                                 std::optional<int32_t> drainCount) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
   MLIRContext *context = op->getContext();
@@ -385,7 +578,7 @@ static PipeState createPipeState(PipeCreateOp op, int32_t provisionalCount) {
                              /*value=*/false);
     state.closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
                                                 initialCloseTags);
-    state.closeTagTensorType = getCloseTagTensorType(op, builder, {1});
+
   }
 
   if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
@@ -394,8 +587,12 @@ static PipeState createPipeState(PipeCreateOp op, int32_t provisionalCount) {
       state.readerNames.push_back(cast<StringAttr>(attr).getValue().str());
   }
 
+  if (drainCount) {
+    state.drainBarrier = ttg::LocalAllocOp::create(builder, loc, barrierSlotType,
+                                                  Value());
+    InitBarrierOp::create(builder, loc, state.drainBarrier, *drainCount);
+  }
   ::mlir::gpu::BarrierOp::create(builder, loc);
-  op.erase();
   return state;
 }
 
@@ -404,8 +601,9 @@ static void storeCloseTag(OpBuilder &builder, Location loc,
                           Operation *source, int32_t taskId) {
   Value closeTags = getWarpSpecializeCaptureForUse(source, state.closeTags);
   Value slot = createCloseTagSlot(builder, loc, state, closeTags, stage);
+  RankedTensorType tagType = getCloseTagTensorType(source, builder, {1});
   Value tag =
-      createCloseTagTensor(builder, loc, state.closeTagTensorType, value);
+      createCloseTagTensor(builder, loc, tagType, value);
   auto store = ttg::LocalStoreOp::create(builder, loc, tag, slot);
   setRoleTaskId(source, slot.getDefiningOp(), taskId);
   setRoleTaskId(source, tag.getDefiningOp(), taskId);
@@ -417,8 +615,9 @@ static Value loadCloseTag(OpBuilder &builder, Location loc,
                           Operation *source, int32_t taskId) {
   Value closeTags = getWarpSpecializeCaptureForUse(source, state.closeTags);
   Value slot = createCloseTagSlot(builder, loc, state, closeTags, stage);
+  RankedTensorType tagType = getCloseTagTensorType(source, builder, {1});
   Value tagTensor =
-      ttg::LocalLoadOp::create(builder, loc, state.closeTagTensorType, slot);
+      ttg::LocalLoadOp::create(builder, loc, tagType, slot);
   Value tagI32 =
       tt::UnsplatOp::create(builder, loc, builder.getI32Type(), tagTensor);
   Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
@@ -536,11 +735,25 @@ public:
       provisionalCount = numWarps.getInt() * threadsPerWarp;
     }
 
+    std::map<std::string, PipeCreateOp> definitions;
+    for (Operation *op : ops)
+      if (auto create = dyn_cast<PipeCreateOp>(op))
+        definitions.emplace(getPipeKey(op), create);
+    std::map<std::string, int32_t> drainCounts;
+    if (failed(analyzePipeDrains(ops, definitions, drainCounts))) {
+      signalPassFailure();
+      return;
+    }
     std::map<std::string, PipeState> pipes;
+    SmallVector<PipeCreateOp> creates;
     for (Operation *op : ops) {
       std::string key = getPipeKey(op);
       if (auto create = dyn_cast<PipeCreateOp>(op)) {
-        pipes.emplace(key, createPipeState(create, provisionalCount));
+        std::optional<int32_t> drainCount;
+        if (auto it = drainCounts.find(key); it != drainCounts.end())
+          drainCount = it->second;
+        pipes.emplace(key, createPipeState(create, provisionalCount, drainCount));
+        creates.push_back(create);
         continue;
       }
 
@@ -674,6 +887,27 @@ public:
         continue;
       }
 
+      if (auto drain = dyn_cast<PipeDrainOp>(op)) {
+        auto taskId = getSingleTaskId(
+            op, getEnclosingDefaultTaskId(op, /*nonWarpSpecializeDefault=*/0));
+        auto threadCount = getTaskThreadCount(op);
+        if (failed(taskId) || failed(threadCount)) {
+          signalPassFailure();
+          return;
+        }
+        Value barrier =
+            getWarpSpecializeCaptureForUse(op, state.drainBarrier);
+        auto arrive =
+            ArriveBarrierOp::create(builder, loc, barrier, *threadCount);
+        Value phase = arith::ConstantIntOp::create(builder, loc, 0, 32);
+        auto wait = WaitBarrierOp::create(builder, loc, barrier, phase);
+        setRoleTaskId(op, arrive.getOperation(), *taskId);
+        setRoleTaskId(op, phase.getDefiningOp(), *taskId);
+        setRoleTaskId(op, wait.getOperation(), *taskId);
+        drain.erase();
+        continue;
+      }
+
       if (auto release = dyn_cast<PipeReaderReleaseOp>(op)) {
         if (state.oneShot) {
           release.erase();
@@ -736,6 +970,17 @@ public:
       patchInits(state.fullBars, fullCount);
       if (!state.oneShot)
         patchInits(state.emptyBars, emptyCount);
+    }
+
+    // Pipe handles can remain captured by warp-specialize regions while the
+    // lifecycle operations are lowered. Erasing a live create invalidates
+    // those capture operands and corrupts subsequent capture insertion.
+    for (PipeCreateOp create : creates) {
+      OpBuilder builder(create);
+      Value loweredHandle =
+          arith::ConstantIntOp::create(builder, create.getLoc(), 0, 32);
+      create.getResult().replaceAllUsesWith(loweredHandle);
+      create.erase();
     }
 
     // Ensure no pipe lifecycle ops remain.

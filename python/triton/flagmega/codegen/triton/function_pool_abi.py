@@ -224,6 +224,9 @@ def function_pool_aliases(plan: Mapping | None) -> dict[str, str]:
             # records the group identity so codegen can reach the other rows;
             # this is where the trip's row index becomes an address.
             stride = int(field["row_stride_bytes"])
+            # Static calls may specialize the index to a Python integer.
+            # tl.cast normalizes constants and runtime scalars alike before
+            # multiplying the byte stride in signed 64-bit arithmetic.
             displacement = f"tl.cast({ROW_INDEX}, tl.int64) * {stride}"
             offset = (displacement if offset == "0"
                       else f"({offset} + {displacement})")

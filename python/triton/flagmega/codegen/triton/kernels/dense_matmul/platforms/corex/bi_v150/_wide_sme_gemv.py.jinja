@@ -1,0 +1,61 @@
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    ce: tl.constexpr=tle.gpu.BlockEncoding([1,1],[1,64],[16,1],[1,0])
+    ae: tl.constexpr=tle.gpu.BlockEncoding([1,8],[32,2],[16,1],[1,0])
+    cp=tle.gpu.set_layout(tl.arange(0,16)[:,None],ce)
+    arena=tle.gpu.alloc([32768],dtype=tl.bfloat16,
+        layout=tle.gpu.swizzled_shared_layout(1,1,1,[0],1,[1],[1],[0]),nv_mma_shared_layout=False)
+    base=tle.gpu.local_ptr(arena,(0,))
+    n=tl.arange(0,512)[:,None]
+    k=tl.arange(0,32)[None,:]
+    indices=tle.gpu.set_layout(tl.broadcast_to((k//16)*8192+n*16+k%16,[512,32]),ae)
+    for ns in range(0,{{ call.local_n_capacity }},512):
+        active_rows=tl.minimum({{ call.local_n_capacity }}-ns,512)
+        weight={{ call.corex_flat_sme_gemv.weight }}+ns*16
+        source={{ call.corex_flat_sme_gemv.source }}
+        acc0=tle.gpu.set_layout(tl.zeros([512,32],tl.float32),ae)
+        acc1=tle.gpu.set_layout(tl.zeros([512,32],tl.float32),ae)
+        for initial in tl.static_range(2):
+            for kp in tl.static_range(2):
+                sme.copy(weight+(initial*2+kp)*{{ call.corex_flat_sme_gemv.weight_k_group_stride }}+cp*512,
+                    base+initial*16384+kp*8192+cp*512,active=cp*32+32<=active_rows)
+        for step in range({{ call.local_k_capacity//64 }}):
+            for half in tl.static_range(2):
+                generation=step*2+half
+                slot=half*16384
+                if generation<{{ call.local_k_capacity//32-2 }}:
+                    sme.wait(2)
+                else:
+                    sme.wait(0)
+                matrix=tl.load(tle.gpu.set_layout(base+slot+indices,ae),mask=n//32*32+32<=active_rows,other=0).to(tl.float32)
+                direct=tl.load(tle.gpu.set_layout(weight+(step*4+half*2+k//16)*{{ call.corex_flat_sme_gemv.weight_k_group_stride }}+n*16+k%16,ae),mask=(n<active_rows)&(n//32*32+32>active_rows),other=0).to(tl.float32)
+                matrix=tl.where(n//32*32+32<=active_rows,matrix,direct)
+                value=tl.load(tle.gpu.set_layout(source+step*64+half*32+tl.arange(0,32),tle.gpu.SlicedEncoding(0,ae))).to(tl.float32)
+                if half==0:
+                    acc0=tle.gpu.set_layout(acc0+matrix*value[None,:],ae)
+                else:
+                    acc1=tle.gpu.set_layout(acc1+matrix*value[None,:],ae)
+                sme.wait(2,drain_reads=True)
+                if generation<{{ call.local_k_capacity//32-2 }}:
+                    for kp in tl.static_range(2):
+                        sme.copy(weight+((generation+2)*2+kp)*{{ call.corex_flat_sme_gemv.weight_k_group_stride }}+cp*512,
+                            base+slot+kp*8192+cp*512,active=cp*32+32<=active_rows)
+        sme.wait(0,drain_reads=True)
+{% if call.corex_flat_sme_gemv.strided_k16_fold | default(false) %}
+        # Scalar packed K0/K16/K32/K48 streams retain their sequential fold.
+        v0,v1=tl.split(tl.trans(acc0.reshape(512,2,16),(0,2,1)))
+        v2,v3=tl.split(tl.trans(acc1.reshape(512,2,16),(0,2,1)))
+        partials=((v0+v1)+v2)+v3
+        partials=tl.sum(partials.reshape(512,2,8),1)
+{% else %}
+        # Preserve each K64 stream; merge distant halves before reducing within them.
+        p0=tl.sum(acc0.reshape(512,8,4),2)
+        p1=tl.sum(acc1.reshape(512,8,4),2)
+        partials=p0+p1
+{% endif %}
+        partials=tl.sum(partials.reshape(512,2,4),1)
+        partials=tl.sum(partials.reshape(512,2,2),1)
+        partials=tl.sum(partials.reshape(512,2,1),1)
+        result=partials.reshape(512)
+        tl.store(tle.gpu.set_layout({{ call.corex_flat_sme_gemv.result }}+ns+tl.arange(0,512),tle.gpu.SlicedEncoding(1,ae)),result.to({{ call.output_type }}),mask=tl.arange(0,512)<active_rows)

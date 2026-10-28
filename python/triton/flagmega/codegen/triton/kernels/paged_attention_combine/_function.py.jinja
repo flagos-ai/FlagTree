@@ -1,7 +1,7 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == attention_combine_family|default("paged_attention_combine") and call.variant == "decode" %}
-{{ entry.kernel_decorator(call) }}
+{{ entry.kernel_decorator(call, prefer_inline=call.corex_combine_inline | default(false)) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     for attention_output_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):

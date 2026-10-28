@@ -18,7 +18,9 @@ def create_target(*, glu_reduction_group=32):
     qkv_producer_warps = int(os.environ.get("FLAGMEGA_QKV_PRODUCER_WARPS", "16"))
     if qkv_producer_warps not in {2, 4, 8, 16}:
         raise ValueError("FLAGMEGA_QKV_PRODUCER_WARPS must be 2, 4, 8, or 16")
-    qkv_compute_warps = int(os.environ.get("FLAGMEGA_QKV_COMPUTE_WARPS", "32"))
+    # Match the C++ launch: sixteen physical 64-lane warps per CTA. The
+    # COREX templates preserve the previous FP32 reduction trees explicitly.
+    qkv_compute_warps = int(os.environ.get("FLAGMEGA_QKV_COMPUTE_WARPS", "16"))
     if qkv_compute_warps not in {8, 16, 32}:
         raise ValueError("FLAGMEGA_QKV_COMPUTE_WARPS must be 8, 16, or 32")
     model = corex_triton_implementation_model()
@@ -40,7 +42,7 @@ def create_target(*, glu_reduction_group=32):
         if implementation.family == "dense_matmul_glu" and "reduction_group" in parameters:
             parameters["reduction_group"] = glu_reduction_group
             parameters["block_k"] = 64
-            parameters["compute_num_warps"] = 32
+            parameters["compute_num_warps"] = 16
         # The selected GLU variant has no `reduction_group`, so it never
         # reached the branch above and kept the catalog's block_k=128. Exactly
         # one site uses this variant (mlp_gate_up), so this is a per-site tile.
@@ -67,7 +69,7 @@ def create_target(*, glu_reduction_group=32):
         if (implementation.family == "qkv_parallel_linear"
                 and implementation.variant == "packed_fused_gemv"):
             parameters["block_k"] = 64
-            parameters["compute_num_warps"] = 32
+            parameters["compute_num_warps"] = 16
             parameters["tile_n"] = 512
         # These two dense_matmul variants want OPPOSITE tiles, so they must be
         # set per variant. Tuning them jointly (one tile for both) averages

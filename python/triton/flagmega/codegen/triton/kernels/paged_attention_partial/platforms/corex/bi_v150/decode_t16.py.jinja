@@ -1,0 +1,49 @@
+{# Map four owner-local heads together while preserving the portable
+   16-token softmax boundaries and FP32 reduction order. #}
+{% set geometry = namespace(parallel=render_calls is defined and num_warps is defined and num_warps in [16, 32]) %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "paged_attention_partial" and call.variant == "decode_t16" %}
+{% set layout = call.semantic_attrs.layout %}
+{% set seq_axis = layout.index("seq") %}
+{% set head_axis = layout.index("head") %}
+{% set dim_axis = layout.index("dim") %}
+{% set query_abi = call.inputs | selectattr("formal", "equalto", "q") | first %}
+{% set state_shape = call.outputs[0].buffers[0].abi.local_capacity_shape %}
+{# The scalar loop bounds are shared by all four heads. A chunk with two
+   query tokens and two heads also has capacity four, but its heads need
+   different context lengths and cannot use this tensor mapping. #}
+{% if call.local_capacity != 4 or call.head_dim != 128 or call.token_tile != 16
+   or query_abi.buffers[0].abi.logical_shape[seq_axis] != 1
+   or state_shape[seq_axis] != 1 or state_shape[head_axis] != 4
+   or state_shape[dim_axis] != 1 %}
+{% set geometry.parallel = false %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if geometry.parallel %}
+{% include "kernels/paged_attention_partial/platforms/corex/bi_v150/_parallel.py.jinja" %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "paged_attention_partial" and call.variant == "decode_t16" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    attention_state_offsets = 0
+    query_token = {{ call.query_token }}
+    attention_state_offsets = tl.arange(0, {{ call.local_capacity }})
+    _flagmega_paged_attention_partial_parallel(
+        {{ call.query }}, {{ call.kv_cache }}, {{ call.slot_mapping }}, {{ call.block_table }},
+        {{ call.layer_id }}, {{ call.partial_max }}, {{ call.partial_sum }}, {{ call.partial_accumulator }},
+        {{ call.context_shard }}, {{ call.head }}, {{ call.active }}, query_token,
+        {{ call.num_layers }}, {{ call.num_query_heads }}, {{ call.num_kv_heads }}, {{ call.head_dim }},
+        {{ call.block_size }}, {{ call.scale }}, {{ call.token_tile }}, {{ call.context_shards }},
+        {{ call.query_dim_stride }}, {{ call.query_lanes }}, {{ call.accumulator_dim_stride }}, {{ call.num_blocks }},
+        {{ call.local_capacity }},
+    )
+{% endif %}
+{% endfor %}
+{% else %}
+{% include "kernels/paged_attention_partial/decode_t16.py.jinja" %}
+{% endif %}

@@ -9,33 +9,18 @@ permutation, matching the explicit group strides in its generated kernels.
 from __future__ import annotations
 
 from math import prod
-from collections.abc import Mapping
 
-from triton.flagmega.errors import ArtifactError, CodegenError
+from triton.flagmega.codegen.readonly_layout import (
+    apply_readonly_layout as _apply_readonly_layout,
+    readonly_roots as _readonly_roots,
+)
+from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import (
     ContiguousSplit, DistributedBufferStorageKind, block_owner_axes,
     block_owner_count, verify_buffer_plan,
 )
 
 READONLY_LAYOUT_SCHEMA = "flagmega.cpp-readonly-layout/v1"
-
-
-def _readonly_roots(plan, buffer, seen=()):
-    if buffer.storage == "rdata":
-        return (buffer,)
-    if buffer.storage != "parameter" or buffer.function in seen:
-        return ()
-    callers = tuple(c for c in plan.call_map.values() if c.callee == buffer.function)
-    if not callers:
-        return ()
-    roots = []
-    for call in callers:
-        actual = plan.resolve_call_buffer(call.call, buffer.id)
-        resolved = _readonly_roots(plan, actual, (*seen, buffer.function))
-        if not resolved:
-            return ()
-        roots.extend(resolved)
-    return tuple(roots)
 
 
 def select_readonly_layouts(module, descriptor):
@@ -143,39 +128,5 @@ def select_readonly_layouts(module, descriptor):
 
 
 def apply_readonly_layout(pool, contract, module):
-    """Permute exact byte views once, before graph capture or any kernel use."""
-    if not isinstance(contract, Mapping) or contract.get("schema") != READONLY_LAYOUT_SCHEMA:
-        raise ArtifactError("Unknown C++ readonly device layout schema.")
-    buffers = verify_buffer_plan(module).buffer_map
-    records = contract.get("buffers")
-    if not isinstance(records, (list, tuple)):
-        raise ArtifactError("C++ readonly device layouts must be a list.")
-    end = 0
-    for record in records:
-        if not isinstance(record, Mapping):
-            raise ArtifactError("C++ readonly layouts must contain buffer records.")
-        buffer = buffers.get(record.get("buffer"))
-        shape, axes = record.get("shape"), record.get("axes")
-        if (buffer is None or buffer.storage != "rdata"
-                or buffer.distributed_storage_kind is not DistributedBufferStorageKind.CANONICAL_GLOBAL
-                or record.get("offset") != buffer.offset or record.get("nbytes") != buffer.nbytes
-                or not isinstance(shape, (list, tuple)) or len(shape) != 4
-                or any(type(dim) is not int or dim <= 0 for dim in shape)
-                or shape[0] != buffer.shape[0]
-                or buffer.distributed_type is None
-                or shape[1] != block_owner_count(buffer.distributed_type)
-                or shape[3] != 2 or axes != [1, 0, 2, 3]
-                or prod(shape) != buffer.nbytes or record["offset"] < end
-                or record["offset"] + buffer.nbytes > pool.numel()):
-            raise ArtifactError("C++ readonly layout does not match its canonical buffer byte range.")
-        end = record["offset"] + buffer.nbytes
-    for record in records:
-        buffer = buffers[record["buffer"]]
-        shape, axes = record["shape"], record["axes"]
-        view = pool.narrow(0, buffer.offset, buffer.nbytes).view(*shape)
-        # clone is necessary even when an owner dimension has extent one:
-        # contiguous() may alias the input in that case.
-        import torch
-        reordered = view.permute(*axes).clone(memory_format=torch.contiguous_format)
-        view.reshape(-1).copy_(reordered.reshape(-1))
-    return pool
+    """Preserve the existing C++ artifact schema over the shared byte proof."""
+    return _apply_readonly_layout(pool, contract, module, schema=READONLY_LAYOUT_SCHEMA)
