@@ -45,10 +45,7 @@ jobs:
         runner: [ascend3.5-910c-py312, ascend3.5-910c-py311,
                  ascend3.5-910b-py312]
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-    # TEMP(pr-validation): resolve the template from the main-branch PR that adds
-    # the asset directory, since it is not on main yet. Restore to
-    # `@main` before merge.
-    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@fix/my-bug-fix-main-gems-assets-v1
+    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
     with:
       runner: ${{ matrix.runner }}
       backend: ascend
