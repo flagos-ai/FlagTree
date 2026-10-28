@@ -22,6 +22,18 @@ def get_extra_install_packages():
     ]
 
 
+def get_extra_install_requires():
+    # `triton.experimental.tle` imports its DSA host APIs at module scope, and
+    # those import `shmem`, whose distribution name is `cann-shmem`. Without
+    # this the Ascend wheel installs cleanly and only fails when the ops are
+    # used. `cann-shmem` is not on PyPI: it is served from the CANN index in
+    # python/requirements-ascend.txt, which must be passed as an
+    # --extra-index-url for the install to resolve. Pinned exactly: the ABI and
+    # the device-side library must match the CANN toolkit the wheel was built
+    # against, so a range would let pip resolve a mismatched pair.
+    return ["cann-shmem==1.6.0"]
+
+
 def get_package_dir():
     package_dict = {}
     ascend_ext_base = "../third_party/ascend/python/triton/extension"
