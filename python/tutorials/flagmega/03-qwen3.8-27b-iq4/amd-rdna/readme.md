@@ -1,17 +1,18 @@
-# Qwen3.8-27B IQ4_XS decode on AMD RDNA (R9700 / gfx1201)
+# Qwen3.8-27B IQ4_XS decode on AMD RDNA (R9700 / gfx1201, W7900 / gfx1100)
 
 This tutorial compiles the same original GGUF as
 [the RTX 5060 Ti tutorial](../nvidia-rtx5060ti/readme.md) for the `amd-gfx1201`
-FlagMega target: all 64 text decoder layers (48 GDN, 16 gated full attention),
+and `amd-gfx1100` FlagMega targets: all 64 text decoder layers (48 GDN, 16 gated full attention),
 the IQ4_XS output head and GPU greedy sampling, in one cooperative megakernel.
 IQ4_XS weights stay packed in IR, readonly data and GPU storage. It uses the
 current default compiler (the core baseline path); the NVIDIA `pc_tma` agent
 optimizations rely on TMA, DP4A and PTX and are not used here.
 
-W7900 (gfx1100) is not supported yet: the portable IQ4 GEMV candidates require
-the `fp8` target capability, which gfx1100 does not have.
+The native IQ4_XS GEMVs never quantize activations, so they also run on gfx1100,
+which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
+`tir.matmul_glu.native_simt` implementations there.
 
-## Accepted results (R9700, ROCm 7.2, one GPU)
+## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
@@ -37,6 +38,33 @@ commit on the same GGUF and GPU:
   64 steps agree.
 - Logits are finite; three independent processes reproduce the 64-step
   trajectory and logits bitwise.
+
+## Results: W7900 (gfx1100), ROCm 7.2, one GPU
+
+| Backend | ms/decode call | tokens/s |
+| --- | ---: | ---: |
+| FlagMega compiler baseline | 192 | 5.2 |
+| llama.cpp (HIP, gfx1100) | 29.6 | 33.8 |
+
+One round per workload, three repeats each (Chinese64: 191.8 ms vs llama.cpp
+29.5 ms; Synthetic32: 192.5 ms vs 29.7 ms). That is about 71 GB/s of weight
+bandwidth, 10% of the ~700 GB/s this W7900 streams. Its VRAM ECC is enabled,
+which limits streaming bandwidth to about 700 of the 864 GB/s nominal (see the
+Qwen3-1.7B [amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)).
+The megakernel uses 248 VGPRs, no spills, and builds in about 67 s.
+
+Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
+
+- **Chinese64**: all 64 tokens equal llama.cpp. The gfx1100 llama.cpp build
+  itself picks 4960 at the step-22 near-tie, like FlagMega and the CUDA build.
+- **Synthetic32**: equal through step 17; at step 18 llama.cpp ranks 14791 over
+  56239 by 0.022 logits and FlagMega picks 56239, its second choice (a near-tie).
+- Logits are finite.
+
+On gfx1100 every FlagMega change must also reproduce bitwise across independent
+processes, because FlagTree's LLVM 22 has a schedule-sensitive gfx1100 codegen
+defect. That multi-process check, and a second rotated performance round, are
+still pending for this model on the W7900.
 
 `benchmark.py` therefore accepts a generated prefix that equals llama.cpp's, or
 whose first differing step is a golden-logit near-tie (top-2 margin below
@@ -65,6 +93,7 @@ python "$TUTORIAL/compile.py" --checkpoint "$CHECKPOINT" --arch gfx1201 \
 python "$TUTORIAL/run.py" --artifact "$LOCAL/trials/baseline-001/artifact" --steps 4
 ```
 
+Use `--arch gfx1100` (and `-DAMDGPU_TARGETS=gfx1100` for llama.cpp) on a W7900.
 Build the pinned llama.cpp with HIP for the same GPU, record the goldens and
 compare (Synthetic32: `--steps 32 --token-id 1` and no `--prompt`):
 

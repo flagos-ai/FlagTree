@@ -19,8 +19,7 @@ from download_checkpoint import FILENAME, REVISION  # noqa: E402  (shared checkp
 REPO = TUTORIAL.parents[4]
 LOCAL = TUTORIAL / '.local'
 SKILL = REPO / 'skills/flagmega-developer/SKILL.md'
-# gfx1100 has no FP8 capability, so the portable IQ4 GEMV candidates are not offered there yet.
-TARGETS = {'gfx1201': 'amd-gfx1201'}
+TARGETS = {'gfx1201': 'amd-gfx1201', 'gfx1100': 'amd-gfx1100'}
 
 
 def source_identity():
@@ -40,7 +39,7 @@ def source_identity():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, default=LOCAL / 'checkpoint' / FILENAME)
-    parser.add_argument('--arch', choices=('gfx1201', 'gfx1100'), default='gfx1201')
+    parser.add_argument('--arch', choices=tuple(TARGETS), default='gfx1201')
     destination = parser.add_mutually_exclusive_group()
     destination.add_argument('--trial', type=Path, help='Fresh trial directory; default: .local/trials/<UTC>-<arch>')
     destination.add_argument('--output', type=Path,
@@ -50,9 +49,6 @@ def main():
     parser.add_argument('--rdata-cache-dir', type=Path, default=LOCAL / 'rdata-cache')
     parser.add_argument('--work-dir', type=Path, help='Fresh directory for compiler stage dumps')
     args = parser.parse_args()
-    if args.arch not in TARGETS:
-        parser.error(f'{args.arch} is not supported yet: its target has no FP8 capability, so the IQ4 GEMV '
-                     'candidates are not offered')
     target = TARGETS[args.arch]
     checkpoint = args.checkpoint.expanduser().resolve()
     if not checkpoint.is_file() or checkpoint.suffix.lower() != '.gguf':
