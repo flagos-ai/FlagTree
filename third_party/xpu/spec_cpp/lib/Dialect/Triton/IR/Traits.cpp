@@ -152,7 +152,7 @@ LogicalResult OpTrait::impl::verifyTensorSize(Operation *op) {
                << maxTensorNumElements << ", but " << *op
                << " has more than that";
       //===-------------------- For Triton XPU -----------------------===//
-      // [internal] Triton XPU does not require the power-of-two limitation
+      // [sync source] Triton XPU does not require the power-of-two limitation
       // (matches the 3.0 fork). MLIR-level shape verifier disabled so kernels
       // with e.g. BLOCK_M=480 / non-pow2 block_size_candidates tiles compile.
       // if ((numElements & (numElements - 1)) != 0)
@@ -172,7 +172,7 @@ LogicalResult OpTrait::impl::verifyTensorSize(Operation *op) {
                << maxTensorNumElements << ", but " << *op
                << " has more than that";
       //===-------------------- For Triton XPU -----------------------===//
-      // [internal] Triton XPU does not require the power-of-two limitation
+      // [sync source] Triton XPU does not require the power-of-two limitation
       // (matches the 3.0 fork). MLIR-level shape verifier disabled so kernels
       // with e.g. BLOCK_M=480 / non-pow2 block_size_candidates tiles compile.
       // if ((numElements & (numElements - 1)) != 0)

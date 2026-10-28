@@ -121,6 +121,11 @@ jobs:
           mkdir -p "${SPINE_TRITON_DUMP_PATH}"
           python3 third_party/spacemit/python/examples/mm_block_ptr.py
 
+          python3 -c "import pytest" 2>/dev/null || PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install -q pytest
+          python3 -m pytest -q \
+            third_party/spacemit/python/examples/raw/test_raw_mv_svector.py \
+            third_party/spacemit/python/examples/raw/test_raw_mv_three_stage.py
+
       - name: Stop QEMU RPC server
         if: always() && steps.check_backend.outputs.should_skip != 'true'
         shell: bash

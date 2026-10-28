@@ -28,7 +28,7 @@ Setting **num_ctas=2** is critical for dense dot-related workloads on specific h
 
 #### num_warps
 
-The CUDA Tile IR Backend currently ignores the `num_warps` hint, leaving tileiras to determine the optimal number of warps automatically. Therefore, autotuning `num_warps` is unnecessary. While the default is 4, the tileiras compiler will analyze and decide the specific num_warps after optimization.
+On this CUDA 13.4 branch, `num_warps` is forwarded as the public `num_worker_warps_per_cta` optimization hint. The default is 4. It is a compiler hint, so validate the generated kernel and measure each configuration rather than assuming a fixed PTX warp layout.
 
 #### num_stages
 
@@ -40,7 +40,7 @@ The compiler should generally avoid producing SMEM or TMEM out-of-memory errors 
 
 #### warp_specialize
 
-The CUDA Tile IR Backend does not consider this loop hint.
+The requested value reaches the frontend; the CUDA 13.3 workaround that forced `True` to `False` has been removed. TileIR scheduling is selected by tileiras and does not promise the PTX backend's warp layout.
 
 #### Manual Slicing
 
@@ -54,7 +54,9 @@ Manual slicing approaches (such as `EPILOGUE_SUBTILE` in `python/tutorials/09-pe
 
 - **TMA API Preference**: The TileIR compiler shipping in CUDA 13.1 has a known performance issue with the `tl.load` API (for example, running `03-matrix-multiplication.py` is 20%+ slower than when using the Triton PTX backend). It is recommended to use TMA APIs for all data loading scenarios. The tileiras compiler will automatically fall back to alternative instructions when TMA requirements are not met.
 
-## Performance Benchmarks on B200(1000W)
+## Historical Performance Benchmarks on B200(1000W)
+
+The following measurements and CUDA 13.1 observations above are historical. They are not a CUDA 13.4 performance baseline; remeasure the workload with its actual toolchain and configuration.
 
 ```bash
 sudo nvidia-smi -i 0 -pm 1; sudo nvidia-smi -i 0 -pl 1000; sudo nvidia-smi -i 0 -lgc 1800

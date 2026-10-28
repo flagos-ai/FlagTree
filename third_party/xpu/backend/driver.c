@@ -163,19 +163,22 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   XPU_CHECK(xpu_device_get_attr(&num_cluster, XPUATTR_NUM_CLUSTER, device_id));
   multiprocessor_count = num_cluster;
 
-  uint64_t model = (uint64_t)KL3;
+  // Device model query via the XPU runtime API. Numeric values avoid a
+  // compile-time dependency on model enum constants in system-installed XRE
+  // headers.
+  uint64_t model = 300;
   int device_model_int = -1;
   XPU_CHECK(xpu_device_get_attr((uint64_t *)&model, XPUATTR_MODEL, device_id));
 
-  // ==================== FLAGTREE XPU SYNC MARK ====================
-  // This FlagTree XPU path currently supports the XPU3/KL3 runtime bundle.
-  // Keep probing constrained to KL3 instead of referencing newer SDK model
-  // macros that may not exist in the local headers.
-  // ==================== FLAGTREE XPU SYNC MARK ====================
-  assert(model <= KL3_END && "model version must be less than or equal to KL3");
-  assert(model >= KL3_BEGIN &&
-         "model version must be more than or equal to KL3");
-  device_model_int = 3;
+  assert(model <= 799 && "model version must be less than KL5_END");
+  assert(model >= 300 && "model version must be more than KL3_BEGIN");
+  if (model >= 700) {
+    device_model_int = 5;
+  } else if (model >= 600) {
+    device_model_int = 4;
+  } else if (model >= 300) {
+    device_model_int = 3;
+  }
 
   return Py_BuildValue(
       "{s:i, s:i, s:i, s:i, s:i, s:i, s:i, s:i}", "max_shared_mem",

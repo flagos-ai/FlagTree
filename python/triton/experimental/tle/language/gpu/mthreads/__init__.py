@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 from . import buffer, common, copy, pipe, warp_specialize, wgmma
-from .types import MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding
+from .types import MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding, TMECachePolicy
 
 __all__ = [
     "buffer",
@@ -28,6 +28,7 @@ __all__ = [
     "pipe",
     "warp_specialize",
     "wgmma",
+    "TMECachePolicy",
     "MusaDotOperandEncoding",
     "MusaSqmmaEncoding",
     "MusaWmmaEncoding",

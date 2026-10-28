@@ -30,6 +30,10 @@ namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
 #ifdef __TLE__
+inline constexpr llvm::StringLiteral kTMEInnerPersistenceAttr =
+    "musa.tme.inner_persistence";
+inline constexpr llvm::StringLiteral kTMEOuterPersistenceAttr =
+    "musa.tme.outer_persistence";
 inline constexpr llvm::StringLiteral kTMEIssueThreadAttr =
     "musa.tme.issue_thread";
 inline constexpr llvm::StringLiteral kTMEExplicitCompletionAttr =

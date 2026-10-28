@@ -102,6 +102,15 @@ def exp(x, _semantic=None):
 
 @core.builtin
 @_check_dtype(dtypes=["fp32", "fp64"])
+@_add_math_1arg_docstr("gelu")
+@core._tensor_member_fn
+def gelu(x, _semantic=None):
+    x = _semantic.to_tensor(x)
+    return core.tensor(_semantic.builder.create_gelu(x.handle, x.type.to_ir(_semantic.builder)), x.type)
+
+
+@core.builtin
+@_check_dtype(dtypes=["fp32", "fp64"])
 @_add_math_1arg_docstr("exponential (base 2)")
 @core._tensor_member_fn
 def exp2(x, _semantic=None):
@@ -115,7 +124,7 @@ def exp2(x, _semantic=None):
 @core._tensor_member_fn
 def log(x, _semantic=None):
     x = _semantic.to_tensor(x)
-    return core.tensor(_semantic.builder.create_log(x.handle), x.type)
+    return core.tensor(_semantic.builder.create_log2(x.handle), x.type)
 
 
 @core.builtin

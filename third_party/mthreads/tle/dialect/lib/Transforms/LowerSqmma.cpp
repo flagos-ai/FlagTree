@@ -127,6 +127,17 @@ static ttg::LocalAllocOp findRootAlloc(Value value) {
   while (value && visited.insert(value.getAsOpaquePointer()).second) {
     if (auto alloc = value.getDefiningOp<ttg::LocalAllocOp>())
       return alloc;
+    // A worker's shared descriptor is an explicit capture, not a new
+    // allocation. Follow it back across the isolated partition boundary.
+    if (auto argument = dyn_cast<BlockArgument>(value)) {
+      auto partitions = dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(
+          argument.getOwner()->getParentOp());
+      if (!partitions ||
+          argument.getArgNumber() >= partitions.getExplicitCaptures().size())
+        break;
+      value = partitions.getExplicitCaptures()[argument.getArgNumber()];
+      continue;
+    }
     Operation *def = value.getDefiningOp();
     if (auto index = dyn_cast_or_null<ttg::MemDescIndexOp>(def))
       value = index.getSrc();
@@ -345,12 +356,6 @@ static LogicalResult verifyAsyncUses(musa_tle::SqmmaOp op) {
   return success();
 }
 
-static bool isMmaEncoded(Value value) {
-  auto type = dyn_cast<RankedTensorType>(value.getType());
-  return type &&
-         isa_and_nonnull<ttg::MUSASqmmaEncodingAttr>(type.getEncoding());
-}
-
 } // namespace
 
 namespace mlir {
@@ -415,13 +420,14 @@ struct TritonMUSAGPUTLELowerSqmmaPass
         auto nativeTy = RankedTensorType::get(
             oldAccTy.getShape(), oldAccTy.getElementType(), encodings[dot]);
         Value nativeAcc = nativeAccumulators.lookup(dot.getC());
-        if (!nativeAcc) {
-          if (isMmaEncoded(dot.getC()))
-            nativeAcc = dot.getC();
-          else
-            nativeAcc = ttg::ConvertLayoutOp::create(builder, dot.getLoc(),
-                                                     nativeTy, dot.getC());
-        }
+        if (!nativeAcc)
+          nativeAcc = dot.getC();
+        // An explicit SQMMA layout can describe another instruction shape.
+        // Being MMA-encoded alone does not make its register distribution
+        // compatible with this dot's selected accumulator type.
+        if (nativeAcc.getType() != nativeTy)
+          nativeAcc = ttg::ConvertLayoutOp::create(builder, dot.getLoc(),
+                                                   nativeTy, nativeAcc);
         Value useC = arith::ConstantIntOp::create(builder, dot.getLoc(), 1, 1);
         auto config = cast<ttg::MUSASqmmaEncodingAttr>(nativeTy.getEncoding());
         auto instr = config.getInstrShape();

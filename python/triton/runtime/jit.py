@@ -704,7 +704,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         from ..compiler import CompiledKernel, compile, ASTSource, make_backend
         from ..backends import route_target
         target = driver.active.get_current_target()
-        target = route_target(target, self)
+        target = route_target(target, self)  # flagtree tileir: support target routing
         backend = make_backend(target)
         self.CompiledKernel = CompiledKernel
         self.compile = compile

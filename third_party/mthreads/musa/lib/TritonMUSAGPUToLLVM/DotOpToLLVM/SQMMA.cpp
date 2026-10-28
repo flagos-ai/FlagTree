@@ -61,7 +61,6 @@ bool isFP8(triton::musa::SQMMAEltType type) {
 struct SqmmaDescriptorIntrinsicSpec {
   llvm::StringRef intrinsicName;
   Type loadType;
-  Type dataType;
   Value leadingStrideBytes;
   Value swizzleGranularity;
   Value swizzleStride;
@@ -143,24 +142,19 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   if (!loadType)
     return failure();
 
-  MLIRContext *ctx = rewriter.getContext();
   llvm::StringRef intrinsicName;
-  Type dataType;
   switch (eltType) {
   case triton::musa::SQMMAEltType::f16:
   case triton::musa::SQMMAEltType::bf16:
     intrinsicName = "llvm.musa.sqmma.desc.half";
-    dataType = rewriter.getI16Type();
     break;
   case triton::musa::SQMMAEltType::tf32:
     intrinsicName = "llvm.musa.sqmma.desc.fp32";
-    dataType = rewriter.getF32Type();
     break;
   case triton::musa::SQMMAEltType::s8:
   case triton::musa::SQMMAEltType::e4m3:
   case triton::musa::SQMMAEltType::e5m2:
     intrinsicName = "llvm.musa.sqmma.desc.i8";
-    dataType = IntegerType::get(ctx, 8);
     break;
   default:
     return failure();
@@ -170,7 +164,6 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   return SqmmaDescriptorIntrinsicSpec{
       intrinsicName,
       loadType,
-      dataType,
       b.i32_val(static_cast<int32_t>(groupedLeadingWidthBytes)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleGranularity)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleStride)),
@@ -223,13 +216,9 @@ public:
     auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
     Value elemBase = b.bitcast(base, elemPtrTy);
     Value elemPtr = b.gep(elemPtrTy, descriptorSpec.loadType, elemBase, offset);
-    Value data =
-        LLVM::LoadOp::create(rewriter, loc, descriptorSpec.loadType, elemPtr);
-    if (data.getType() != descriptorSpec.dataType)
-      data = b.bitcast(data, descriptorSpec.dataType);
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
-        ValueRange{data, descriptorSpec.leadingStrideBytes,
+        ValueRange{elemPtr, descriptorSpec.leadingStrideBytes,
                    descriptorSpec.swizzleGranularity,
                    descriptorSpec.swizzleStride});
     return desc.getResult(0);

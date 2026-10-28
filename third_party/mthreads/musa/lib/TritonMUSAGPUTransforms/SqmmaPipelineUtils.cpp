@@ -447,7 +447,7 @@ void pipelineSqmma(ModuleOp moduleOp, unsigned numStages) {
   moduleOp.walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
 
   for (scf::ForOp loop : loops) {
-    if (tt::getNumStagesOrDefault(loop, numStages) < 1)
+    if (tt::getNumStagesOrDefault(loop, numStages) <= 1)
       continue;
 
     SmallVector<triton::musa::SquadDotOp> sqmmaDots =

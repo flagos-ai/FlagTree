@@ -40,6 +40,19 @@ class GeluOp;
 MLIR_DECLARE_EXPLICIT_TYPE_ID(mlir::triton::GeluOp)
 MLIR_DEFINE_EXPLICIT_TYPE_ID(mlir::triton::GeluOp)
 
+// TrionCallConvXPUKernel is the XTDK-22 private calling-convention number.
+// NOTE (2026-09-06, measured): the XTDK *19* backend's real XPU_KERNEL is
+// 112, not 124.  Triton uses 124 because XTDK22 moved its private cc numbers
+// from 112/113 to 124/125 (freeing 112-121 for the RISC-V VLS family); in
+// public LLVM 22 the number 124 instead names AMDGPU_Gfx_WholeWave, which
+// llvm prints as `amdgpu_gfx_whole_wave`.  The text bridge
+// (llvm_ir_downgrade.CALLING_CONV_BRIDGE) rewrites that spelling back to
+// `xpu_kernel`, and the downstream XTDK19 llc recognizes cc 112 by that name.
+// The constant 124 therefore works end-to-end only through that text bridge,
+// guarded by the make_elf XPU_KERNEL_PARAM_SIZE assertion (see
+// STATUS-SUMMARY §4 / COLLISION-AUDIT).
+inline constexpr unsigned TrionCallConvXPUKernel = 124;
+
 namespace py = pybind11;
 
 std::string translateLLVMIRToASM(llvm::Module &module,
@@ -105,6 +118,21 @@ void init_triton_xpu_passes_transform(py::module &&m) {
           self.addPass(mlir::triton::xpu::createTritonXPUTLECoreTiling(
               {dump_flag, buffer_size, core_num}));
         });
+
+  m.def("add_tritonxpu_tle_pipeline_pass",
+        [](mlir::PassManager &self, bool enable, uint32_t num_stages,
+           uint32_t wait_mask, uint32_t lm_bytes_limit) {
+          self.addPass(mlir::triton::xpu::createTritonXPUTLEPipeline(
+              {enable, num_stages, wait_mask, lm_bytes_limit}));
+        });
+
+  m.def("add_tritonxpu_tle_sm_alloc_pass", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPUTLESharedMemAlloc());
+  });
+
+  m.def("add_tritonxpu_tle_dtype_convert_pass", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPUTLEDtypeConvert());
+  });
 
   m.def("add_tritonxpu_mask_pass",
         [](mlir::PassManager &self, bool oneCoreActOnly, bool isUseMaskZero) {
@@ -181,12 +209,13 @@ void init_triton_xpu_passes_transform(py::module &&m) {
               {dump_flag, compare_fusion}));
         });
 
-  m.def("add_tritonxpu_vectorize_pass",
-        [](mlir::PassManager &self, bool dump_flag, bool compare_fusion,
-           bool per_op_decision) {
-          self.addPass(mlir::triton::xpu::createTritonXPUVectorize(
-              {dump_flag, compare_fusion, per_op_decision}));
-        });
+  m.def("add_tritonxpu_vectorize_pass", [](mlir::PassManager &self,
+                                           bool dump_flag, bool compare_fusion,
+                                           bool per_op_decision,
+                                           bool tle_smem_vec, bool tle_vec) {
+    self.addPass(mlir::triton::xpu::createTritonXPUVectorize(
+        {dump_flag, compare_fusion, per_op_decision, tle_smem_vec, tle_vec}));
+  });
 
   m.def("add_tritonxpu_tile_analysis_pass", [](mlir::PassManager &self,
                                                uint32_t vrf_budget) {
@@ -194,10 +223,11 @@ void init_triton_xpu_passes_transform(py::module &&m) {
   });
 
   m.def("add_tritonxpu_vectorizability_analysis_pass",
-        [](mlir::PassManager &self, bool reduce_vec, bool pre_tiling) {
+        [](mlir::PassManager &self, bool reduce_vec, bool tle_smem_vec,
+           bool tle_vec, bool pre_tiling) {
           self.addPass(
               mlir::triton::xpu::createTritonXPUVectorizabilityAnalysis(
-                  {reduce_vec, pre_tiling}));
+                  {reduce_vec, tle_smem_vec, tle_vec, pre_tiling}));
         });
 
   // The decision half of M2/M3, taken ahead of CoreTiling. Writes only the
@@ -251,20 +281,6 @@ void init_triton_xpu_passes_transform(py::module &&m) {
   m.def("add_tritonxpu_legalize_extern_ew_pass", [](mlir::PassManager &self) {
     self.addPass(mlir::triton::xpu::createTritonXPULegalizeExternEW());
   });
-
-  // `sources` maps a deferred tle.raw source id to the LLVM IR the backend
-  // compiled for the architecture it is building for.
-  m.def(
-      "add_tritonxpu_materialize_deferred_raw_pass",
-      [](mlir::PassManager &self,
-         const std::map<std::string, std::string> &sources) {
-        llvm::StringMap<std::string> compiled;
-        for (auto &[sourceId, llvmIr] : sources)
-          compiled.insert_or_assign(sourceId, llvmIr);
-        self.addPass(
-            mlir::triton::xpu::createTritonXPUMaterializeDeferredRawWithSources(
-                compiled));
-      });
 }
 
 void init_triton_sdnn_passes_conversion(py::module &&m);
@@ -338,8 +354,23 @@ static void amendLLVMFunc(llvm::Function *func, const XPUMetadata &metadata,
   }
 
   if (metadata.isKernel) {
-    func->setDSOLocal(true);
-    func->setCallingConv(llvm::CallingConv::XPU_KERNEL);
+    // Set the kernel calling convention and DSOLocal only on definitions;
+    // declarations retain the standard C calling convention.
+    //   the convention survives on the declares as well: cc 124 collides with
+    //   AMDGPU_Gfx_WholeWave and shows up in the .llir as
+    //   `declare amdgpu_gfx_whole_wave void @llvm.xpu.dsmadd(...)`.  That (a)
+    //   confuses get_kernel_name into picking an intrinsic name, and (b) makes
+    //   the downstream llc treat the intrinsic declares as kernel entries, so
+    //   XPURT profiling reports llvm.xpu.dsmadd etc. instead of the triton
+    //   kernel.  Only a defined function can be a kernel entry: stamp the
+    //   calling convention (and DSOLocal) on the body only; declares keep the
+    //   plain C convention, matching the t36 (XTDK LLVM 19) output.  The
+    //   "kernel" annotation below stays on every function (as t36 does) -- the
+    //   only reader (get_kernel_name) skips declares, so it is harmless.
+    if (!func->isDeclaration()) {
+      func->setDSOLocal(true);
+      func->setCallingConv(TrionCallConvXPUKernel);
+    }
     llvm::Metadata *mdArgs[] = {
         llvm::ValueAsMetadata::get(func), llvm::MDString::get(ctx, "kernel"),
         llvm::ValueAsMetadata::get(
@@ -373,20 +404,37 @@ using ret = py::return_value_policy;
 void init_triton_xpu_llvm(py::module &&m) {
 
   m.def("get_kernel_name", [](llvm::Module &mod) {
+    // Only a defined function can be the kernel entry. SDNN also annotates
+    // external intrinsic declarations; public LLVM 22 preserves calling
+    // convention 124 on them, so declarations must not win kernel selection.
     for (auto &F : mod) {
-      if (F.getCallingConv() == llvm::CallingConv::XPU_KERNEL) {
+      if (F.isDeclaration())
+        continue;
+      if (F.getCallingConv() == TrionCallConvXPUKernel) {
         std::string name = F.getName().str();
         return py::str(name);
       }
     }
 
+    // Fallback reads the function from metadata operand(0), not operand(1):
+    // operand(1) is the annotation tag and never names a function. Filter the
+    // `kernel` tag and declarations so an intrinsic cannot become the entry.
     auto MD = mod.getNamedMetadata("xpu.annotations");
     std::string name;
-    for (auto *Op : MD->operands()) {
-      if (Op->getNumOperands() != 3)
-        continue;
-      auto *Prop = llvm::dyn_cast<llvm::MDString>(Op->getOperand(1));
-      name = Prop->getString();
+    if (MD) {
+      for (auto *Op : MD->operands()) {
+        if (Op->getNumOperands() != 3)
+          continue;
+        auto *Prop = llvm::dyn_cast<llvm::MDString>(Op->getOperand(1));
+        if (!Prop || Prop->getString() != "kernel")
+          continue;
+        auto *VAM = llvm::dyn_cast<llvm::ValueAsMetadata>(Op->getOperand(0));
+        auto *Fn = llvm::dyn_cast_or_null<llvm::Function>(VAM ? VAM->getValue()
+                                                              : nullptr);
+        if (!Fn || Fn->isDeclaration())
+          continue;
+        name = Fn->getName().str();
+      }
     }
     return py::str(name);
   });
@@ -447,6 +495,13 @@ extern void insertTritonSDNNDialect(mlir::DialectRegistry &registry);
 extern void defineIsSDNNKernel(py::module &m);
 extern void defineGetLutInfo(py::module &m);
 
+// The vendor-private ABI predicate.  Defined in a *prebuilt* object
+// (`abi_table.cc.o`, staged from the package): the ledger itself never ships,
+// only this predicate does.  `extern "C"` is load-bearing -- without it the
+// symbol is name-mangled and the module fails to load with
+// `undefined symbol: flagtree_private_abi_is_registered`.
+extern "C" bool flagtree_private_abi_is_registered(const char *name);
+
 void init_triton_xpu(py::module &&m) {
   m.doc() = "Python bindings to the XPU Triton backend";
 
@@ -457,6 +512,11 @@ void init_triton_xpu(py::module &&m) {
   init_triton_sdnn_passes_transform(passes.def_submodule("ttsdnnir"));
   init_llvm_xpu_passes_transform(passes.def_submodule("llvmxpuir"));
   init_triton_xpu_llvm(m.def_submodule("llvm"));
+
+  // Only the predicate is exposed -- never an enumerable / serializable table.
+  m.def(
+      "is_registered", &flagtree_private_abi_is_registered,
+      "Whether a private intrinsic name is recorded in the vendor ABI ledger.");
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -518,7 +578,13 @@ void init_triton_xpu(py::module &&m) {
           for (mlir::Region &region : regionOp->getRegions()) {
             if (region.empty())
               continue;
+#if defined(TRITON_MLIR_REGIONSUCCESSOR_OP_CTOR)
+            // Public MLIR: takes RegionSuccessor (wrap the region).
+            auto forwarded = regionOp.getEntrySuccessorOperands(
+                ::mlir::RegionSuccessor(&region));
+#else
             auto forwarded = regionOp.getEntrySuccessorOperands(region);
+#endif
             if (forwarded.empty())
               continue;
             mlir::Block &entry = region.front();

@@ -141,7 +141,7 @@ struct TritonXPUTLECoreTilingPass
   // order is irrelevant (single row per core, slots collapse to (0, n)): keep
   // the canonical [0, 1].
   //
-  // For RowTiled (g == 1) with rpc > 1 declare order [1, 0] (方案③). A core
+  // For RowTiled (g == 1) with rpc > 1, declare order [1, 0]. A core
   // owns rpc WHOLE rows, so its LM must be ROW-MAJOR. order [1, 0] makes the
   // col dim the fastest, so emitOffsetForClusterLayout /
   // planTileSegmentsFromLayout / BroadcastOp all enumerate slots row-major and
@@ -200,9 +200,14 @@ struct TritonXPUTLECoreTilingPass
   //     g == 1  replicated:  sizePerCore=[len],            cpg=[1],  gpc=[1]
   //     g >  1  distributed over the g col-cores:
   //                           sizePerCore=[ceil(len,g)],   cpg=[g],  gpc=[1]
-  //   d == 1 (row vector, distributed over the ngroup row-groups):
-  //                           sizePerCore=[ceil(len,ngroup)], cpg=[1],
-  //                           gpc=[ngroup]
+  //   d == 1 (row vector, distributed over the ngroup row-groups): identical to
+  //     getOutput1D -- sizePerCore=[ceil(len,ngroup)], cpg=[g], gpc=[ngroup].
+  //     cpg MUST be [g], not [1]: product(cpg) has to equal the module's
+  //     threads-per-warp (== g). A loop-carried accumulator tl.zeros([XBLOCK])
+  //     routed here would otherwise get cpg=[1] while the tl.sum(pre,1) reduce
+  //     result it is added to comes through getOutput1D with cpg=[g], and the
+  //     `arith.addf` verifier rejects the encoding mismatch (surfaces as a
+  //     bogus OutOfResources("uni_sram")). RowTiled (g == 1) is unaffected.
   Attribute getCluster1DForSliceDim(MLIRContext *ctx, unsigned len,
                                     unsigned d) {
     std::vector<unsigned> sizePerCore;
@@ -219,7 +224,7 @@ struct TritonXPUTLECoreTilingPass
       }
     } else {
       sizePerCore = {ceil<unsigned>(len, this->numGroups)};
-      coresPerGroup = {1};
+      coresPerGroup = {this->groupSize};
       groupsPerCluster = {this->numGroups};
     }
     return triton::xpu::ClusterLayoutAttr::get(ctx, sizePerCore, coresPerGroup,
@@ -321,6 +326,22 @@ struct TritonXPUTLECoreTilingPass
       numGroupsOut = this->coreNum;
       return true;
     }
+    if (m == 1) {
+      // A SINGLE row split across ALL cores -- LargeN with ngroup = 1. This
+      // is the wide-row case (a fused group-norm / rownorm whose only 2-D
+      // tile is [1, WT], WT >> coreNum): each of the coreNum col-cores owns
+      // ceil(WT, coreNum) columns, the reduce is cross-core exactly like
+      // every other LargeN config, and the result writeback is the rank-1
+      // cyclic case (only col-core 0 writes row 0). Previously m == 1 fell
+      // through to "not tileable", the pass no-oped, and the kernel silently
+      // ran on the DEFAULT layout. Requires n % coreNum == 0, same static
+      // column-width divisibility as the general LargeN branch.
+      if (n % this->coreNum != 0)
+        return false;
+      groupSizeOut = this->coreNum;
+      numGroupsOut = 1;
+      return true;
+    }
     if (m >= 2 && this->coreNum % m == 0) {
       unsigned candidateGroupSize = this->coreNum / m;
       if (n % candidateGroupSize != 0)
@@ -415,6 +436,17 @@ struct TritonXPUTLECoreTilingPass
   // Anchor 2 (fallback): no reduce -> pick a 2D ClusterLayout working-tile
   // (dim0 = M). Take the largest shape[0] > 1 as the anchor (the working tile,
   // not a broadcast-source row vector of shape[0] == 1). No 2D tile -> no-op.
+  //
+  // shape[1] == 1 candidates are EXCLUDED: an expand_dims(axis=1) row-vector
+  // intermediate (e.g. `rows = arange(M)[:, None]`) has the same shape[0] as
+  // the real working tile but is visited EARLIER (it feeds the broadcast), and
+  // the strict `>` tie rule then lets [M, 1] steal the anchor from [M, N].
+  // computeParams(M, 1) always rejects under LargeN (1 % g != 0), so the whole
+  // pass silently no-ops and the kernel falls back to the DEFAULT layout --
+  // measured as the sm_gather repro: gather/store slot counts disagree with
+  // copy_l2g's drain plan and every result is wrong. A [M, 1] tensor is never
+  // the working tile (its columns are broadcast, not computed), so skipping it
+  // changes nothing for kernels anchored on a real tile.
   bool findElementwiseAnchor(ModuleOp &mod) {
     unsigned anchorM = 0, anchorN = 0;
     auto scan = [&](Value v) {
@@ -422,7 +454,8 @@ struct TritonXPUTLECoreTilingPass
         if (auto enc = dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(
                 ty.getEncoding())) {
           auto shape = ty.getShape();
-          if (shape.size() == 2 && static_cast<unsigned>(shape[0]) > anchorM) {
+          if (shape.size() == 2 && shape[1] > 1 &&
+              static_cast<unsigned>(shape[0]) > anchorM) {
             anchorM = static_cast<unsigned>(shape[0]);
             anchorN = static_cast<unsigned>(shape[1]);
           }
@@ -437,8 +470,10 @@ struct TritonXPUTLECoreTilingPass
     }
     unsigned candGroupSize = 0, candNumGroups = 0;
     if (!computeParams(anchorM, anchorN, candGroupSize, candNumGroups)) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "[TLECoreTiling] reject: anchor tile is not tileable\n");
+      LLVM_DEBUG(llvm::dbgs() << "[TLECoreTiling] reject: anchor tile is not "
+                                 "tileable (M="
+                              << anchorM << ", N=" << anchorN
+                              << ", coreNum=" << this->coreNum << ")\n");
       return false;
     }
     this->groupSize = candGroupSize;
@@ -784,35 +819,107 @@ struct TritonXPUTLECoreTilingPass
       auto memTy = dyn_cast<triton::gpu::MemDescType>(lp.getBuffer().getType());
       if (!memTy)
         return;
-      // Only encode INPUT pointers (consumed by tt.load). An OUTPUT pointer
-      // (consumed by tt.store) must keep the encoding that matches its store
-      // VALUE operand: that value is the compute result whose final
-      // convert_layout leaves it in the DEFAULT (unencoded) layout, and the
-      // tt.store verifier requires value-type == ptr-type. Re-encoding the
-      // output ptr here would break that verifier. The output count is already
-      // correct under the default layout (copy_l2g is stamped with the matching
-      // getTiled2D / getOutput1D in tagMemoryOps), so leave output ptrs alone.
+      // Encode INPUT pointers (consumed by tt.load), and -- as of the in-place
+      // exception below -- also a pointer that is BOTH read and written (the
+      // same local_ptr feeds tt.load AND tt.store, e.g. layernorm normalizing
+      // back into its input tile). A PURE output pointer (only tt.store, no
+      // loads) still keeps the DEFAULT (unencoded) layout: its store VALUE ends
+      // in the default layout via a terminal convert_layout, the tt.store
+      // verifier requires value-type == ptr-type, and the output count is
+      // already correct there (copy_l2g is stamped with the matching getTiled2D
+      // / getOutput1D in tagMemoryOps), so re-encoding a pure output ptr would
+      // only break the verifier for zero gain. The in-place case DOES re-encode
+      // the ptr (so the shared load leaf is vectorizable) and compensates by
+      // re-encoding the store value below to keep the verifier satisfied.
+      // Classify consumers, LOOKING THROUGH intervening convert_layout ops.
+      // For an SM buffer the index tensor carries a real ClusterLayout (e.g.
+      // #cluster from `roff + arange`), so Step1 wraps the still-unencoded
+      // tle_local_ptr in convert_layout on BOTH sides: the index arrives as
+      // `convert(#cluster -> unencoded)` and the result leaves as
+      // `convert(unencoded -> #cluster)`. The direct user is therefore a
+      // convert, not the tt.load, so a direct-user-only scan would miss it and
+      // leave the ptr/index unencoded (8 elems/core instead of the replicated
+      // count) => the SM local_ptr lowering emits only 8 pointers and the
+      // load's convert cyclically replicates them (wrong data on every core).
       bool feedsStore = false;
-      bool feedsLoad = false;
-      for (auto *u : lp.getResult().getUsers()) {
-        if (isa<triton::StoreOp>(u))
-          feedsStore = true;
-        else if (isa<triton::LoadOp>(u))
-          feedsLoad = true;
+      llvm::SmallVector<triton::LoadOp> loads;
+      llvm::SmallVector<triton::StoreOp> stores;
+      {
+        llvm::SmallVector<Value> wl{lp.getResult()};
+        llvm::SmallPtrSet<Operation *, 8> seen;
+        while (!wl.empty()) {
+          Value cur = wl.pop_back_val();
+          for (auto *u : cur.getUsers()) {
+            if (!seen.insert(u).second)
+              continue;
+            if (auto st = dyn_cast<triton::StoreOp>(u)) {
+              feedsStore = true;
+              stores.push_back(st);
+            } else if (auto ld = dyn_cast<triton::LoadOp>(u))
+              loads.push_back(ld);
+            else if (auto cvt = dyn_cast<triton::xpu::ConvertLayoutOp>(u))
+              wl.push_back(cvt.getResult());
+          }
+        }
       }
-      if (feedsStore || !feedsLoad)
+      // A PURE output ptr (feeds only tt.store, no loads) keeps the default
+      // (unencoded) layout -- see the comment above. The EXCEPTION handled here
+      // is an IN-PLACE buffer whose SAME local_ptr feeds BOTH tt.load and
+      // tt.store (e.g. layernorm normalizing back into its input tile). Left
+      // unencoded, its load leaf carries no ClusterLayout, so the vectorizer's
+      // vectorizeTLEChain bails and the whole store chain stays scalar
+      // (in-place is ~1.46x slower than a separate output buffer purely from
+      // losing vectorization). Encode it exactly like an input pointer so the
+      // load leaf is vectorizable, then re-encode the store value(s) so the
+      // tt.store verifier still sees value-type == ptr-type. Restricted to a 2D
+      // tile, where getTiled2D is count-IDENTICAL to the default layout, so the
+      // copy_l2g DMA count is unchanged; a 1D in-place output keeps the bail.
+      if (loads.empty())
+        return;
+      if (feedsStore && memTy.getShape().size() != 2)
         return;
       auto shape = memTy.getShape();
+      // Detect the SM (cluster-shared) scope: the buffer's alloc carries
+      // xpu.mem_scope == "smem". An SM buffer holds the FULL array shared by
+      // all cores; each core reads its own segment by INDEX, so the index
+      // tensors must carry the replicated ClusterLayout too (the LM path
+      // discards the index operands, so this stamp is a no-op there).
+      bool isSmem = false;
+      if (auto *defOp = lp.getBuffer().getDefiningOp())
+        if (auto sc = defOp->getAttrOfType<StringAttr>("xpu.mem_scope"))
+          isSmem = (sc.getValue() == "smem");
+      // Prefer the terminal load's already-assigned ClusterLayout (Step1 gives
+      // the SM load result the correct replicated #cluster). This makes the
+      // surrounding convert_layout ops identity (src == dst) and keeps the
+      // ptr/index/load counts consistent. Fall back to the computed layout when
+      // the load result is still unencoded (the direct-load 2D LM tile case,
+      // unchanged from before). Every load off one local_ptr reads the tile
+      // through the SAME pointer count, so they must agree on the encoding;
+      // silently taking the first would give the others a mismatched count.
       Attribute layout;
-      if (shape.size() == 2) {
-        layout = getTiled2D(context, shape);
-      } else if (shape.size() == 1) {
-        layout = get1DAccessLayout(context, lp.getBuffer(),
-                                   static_cast<unsigned>(shape[0]));
-        if (!layout)
-          layout = getOutput1D(context, static_cast<unsigned>(shape[0]));
-      } else {
-        return;
+      auto loadEnc = [](triton::LoadOp ld) -> Attribute {
+        auto rt = dyn_cast<RankedTensorType>(ld.getResult().getType());
+        if (!rt)
+          return {};
+        return dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(
+            rt.getEncoding());
+      };
+      layout = loadEnc(loads.front());
+      assert(llvm::all_of(
+                 loads,
+                 [&](triton::LoadOp ld) { return loadEnc(ld) == layout; }) &&
+             "loads off one tle_local_ptr disagree on their ClusterLayout");
+      if (!layout) {
+        if (shape.size() == 2) {
+          layout = getTiled2D(context, shape);
+        } else if (shape.size() == 1) {
+          layout = get1DAccessLayout(context, lp.getBuffer(),
+                                     static_cast<unsigned>(shape[0]));
+          if (!layout)
+            layout = getOutput1D(context, static_cast<unsigned>(shape[0]));
+        } else {
+          return;
+        }
       }
       auto setEnc = [&](Value v) {
         auto rt = dyn_cast<RankedTensorType>(v.getType());
@@ -822,13 +929,26 @@ struct TritonXPUTLECoreTilingPass
             RankedTensorType::get(rt.getShape(), rt.getElementType(), layout));
       };
       setEnc(lp.getResult());
+      // SM: the index operands must be encoded so the lowering unpacks the full
+      // replicated count of logical column indices (one gep per index
+      // register).
+      if (isSmem)
+        for (Value idx : lp.getIndices())
+          setEnc(idx);
       // The tt.load result must carry the same encoding so its result struct
       // size matches the pointer count (the load packs one value per pointer).
       // A tt.store's value is produced by compute and is already tiled; its
       // pointer operand is this (now-encoded) local_ptr, so nothing to set.
-      for (auto *u : lp.getResult().getUsers())
-        if (auto ld = dyn_cast<triton::LoadOp>(u))
-          setEnc(ld.getResult());
+      for (triton::LoadOp ld : loads)
+        setEnc(ld.getResult());
+      // In-place reuse (feedsStore): retype the store value(s) to the now-
+      // encoded ptr layout so the tt.store verifier still sees value-type ==
+      // ptr-type. The terminal `convert_layout #cluster -> default` that fed
+      // the previously-unencoded store becomes an identity #cluster -> #cluster
+      // convert (folded by later canonicalization), and the encoded store value
+      // lets vectorizeTLE start its chain from a ClusterLayout root.
+      for (triton::StoreOp st : stores)
+        setEnc(st.getValue());
     });
   }
 

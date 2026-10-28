@@ -6,16 +6,16 @@ from triton.language.semantic import TritonSemantic
 
 class buffered_tensor(tl.tensor):
 
-    def __init__(self, handle, element_ty: tl.dtype, shape: List, copies: int, storage: str,
+    def __init__(self, handle, element_ty: tl.dtype, shape: List, copies: int, scope: str,
                  semantic: TritonSemantic = None):
-        buf_type = buffered_tensor_type(element_ty, shape, copies, storage, semantic)
+        buf_type = buffered_tensor_type(element_ty, shape, copies, scope, semantic)
         super().__init__(handle, buf_type)
 
         self.type = buf_type
         self.shape = shape
         self.element_ty = element_ty
         self.copies = copies
-        self.storage = storage
+        self.scope = scope
         self.semantic = semantic
 
     def __getitem__(self, buffer_idx):
@@ -33,15 +33,15 @@ class buffered_tensor(tl.tensor):
             self.element_ty,
             [self.shape[d] for d in dims],
             self.type.copies,
-            self.type.storage,
+            self.type.scope,
         )
 
 
 class buffered_tensor_type(tl.pointer_type):
 
-    def __init__(self, element_ty: tl.dtype, shape: List, copies: int, storage: str, semantic: TritonSemantic = None):
+    def __init__(self, element_ty: tl.dtype, shape: List, copies: int, scope: str, semantic: TritonSemantic = None):
         super().__init__(element_ty, shape)
-        self.storage = storage
+        self.scope = scope
         self.copies = copies
         self.semantic = semantic
         self.element_ty = element_ty
@@ -50,7 +50,7 @@ class buffered_tensor_type(tl.pointer_type):
         assert semantic or copies == 0, "buffered_tensor array must be created with a builder"
 
     def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[buffered_tensor, int]:
-        value = buffered_tensor(handles[cursor], self.scalar, self.shape, self.copies, self.storage, self.semantic)
+        value = buffered_tensor(handles[cursor], self.scalar, self.shape, self.copies, self.scope, self.semantic)
         return value, cursor + 1
 
     def mangle(self) -> str:
@@ -79,7 +79,7 @@ class buffered_tensor_type(tl.pointer_type):
             shape,
             self.element_ty.to_ir(builder),
             self.copies,
-            self.storage.value,
+            self.scope.value,
         )
 
     @property

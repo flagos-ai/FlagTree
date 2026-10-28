@@ -80,6 +80,17 @@ public:
 
   void visitCallOperand(OpOperand &operand) override { return; }
 
+#if !defined(TRITON_HAVE_XTDKDL)
+  // Public MLIR 22 added this pure-virtual hook (loop induction variables and
+  // other non-forwarded region arguments); XTDK MLIR does not have it.  Not
+  // propagating through them is the conservative choice for use analysis.
+  void
+  visitNonControlFlowArguments(RegionSuccessor &successor,
+                               ArrayRef<BlockArgument> arguments) override {
+    return;
+  }
+#endif
+
   void setToExitState(UseInfo *lattice) override {
     lattice->type = UseType::Undefined;
   }

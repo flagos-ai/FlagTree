@@ -35,7 +35,7 @@ inputs:
   max-attempts:
     description: 'Maximum number of total clone attempts (including the first one). All failure reasons are counted together.'
     required: false
-    default: '100'
+    default: '40'
   retry-delay:
     description: 'Delay in seconds between retries after a git error. NOT applied to slow-speed interruptions (those retry immediately).'
     required: false
@@ -43,11 +43,11 @@ inputs:
   slow-threshold-initial:
     description: 'Initial slow-speed threshold in seconds. If a clone attempt exceeds this, it is killed and retried immediately.'
     required: false
-    default: '10'
+    default: '20'
   slow-threshold-step:
     description: 'Number of attempts after which the slow-speed threshold increases.'
     required: false
-    default: '5'
+    default: '1'
   slow-threshold-increment:
     description: 'Seconds added to the slow-speed threshold every slow-threshold-step attempts.'
     required: false

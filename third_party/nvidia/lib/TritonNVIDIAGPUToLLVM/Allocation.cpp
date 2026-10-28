@@ -133,6 +133,11 @@ getNvidiaAllocationAnalysisScratchSizeFn(TargetInfoBase &targetInfo) {
       auto dstTy = dyn_cast<RankedTensorType>(extractTileOp.getType());
       if (!dstTy)
         return 0;
+      auto staticIndex = triton::tle::getStaticExtractTileIndex(extractTileOp);
+      if (extractTileOp->hasAttr(triton::tle::kPlannedTileAttr) &&
+          staticIndex &&
+          triton::tle::isExtractTileCTAAligned(extractTileOp, *staticIndex))
+        return 0;
       return static_cast<unsigned>(dstTy.getNumElements() *
                                    (getBitwidth(dstTy) / 8));
     }

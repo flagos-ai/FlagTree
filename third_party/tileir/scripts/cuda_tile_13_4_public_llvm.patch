@@ -1,0 +1,121 @@
+--- a/include/cuda_tile/Dialect/CudaTile/IR/Types.td
++++ b/include/cuda_tile/Dialect/CudaTile/IR/Types.td
+@@ -67,7 +67,6 @@
+ def CudaTile_Float8E5M2   : CudaTileTypeAlias<F8E5M2, "13.1", "f8E5M2">;
+ def CudaTile_Float8E8M0FNU : CudaTileTypeAlias<F8E8M0FNU, "13.2", "f8E8M0FNU">;
+ def CudaTile_Float4E2M1FN : CudaTileTypeAlias<F4E2M1FN, "13.3", "f4E2M1FN">;
+-def CudaTile_Float8E5M3FNU : CudaTileTypeAlias<F8E5M3FNU, "13.4", "f8E5M3FNU">;
+ def CudaTile_AnyFloat : AnyTypeOf<[CudaTile_Float16,
+                                    CudaTile_BFloat16,
+                                    CudaTile_Float32,
+@@ -77,7 +76,7 @@
+                                    CudaTile_Float8E5M2,
+                                    CudaTile_Float8E8M0FNU,
+                                    CudaTile_Float4E2M1FN,
+-                                   CudaTile_Float8E5M3FNU,
++
+                                   ]> {
+   let cppFunctionName = "isAnyFloat";
+ }
+@@ -960,16 +959,14 @@
+ def CudaTile_FloatTileType : CudaTile_TileOf<[
+   CudaTile_Float16, CudaTile_BFloat16, CudaTile_Float32, CudaTile_Float64,
+   CudaTile_TFloat32, CudaTile_Float8E4M3FN, CudaTile_Float8E5M2,
+-  CudaTile_Float8E8M0FNU, CudaTile_Float4E2M1FN,
+-  CudaTile_Float8E5M3FNU
++  CudaTile_Float8E8M0FNU, CudaTile_Float4E2M1FN
+ ]>;
+
+ def CudaTile_NumberTileType : CudaTile_TileOf<[
+   CudaTile_Int1, CudaTile_Int8, CudaTile_Int16, CudaTile_Int32, CudaTile_Int64,
+   CudaTile_Float16, CudaTile_BFloat16, CudaTile_Float32, CudaTile_Float64,
+   CudaTile_TFloat32, CudaTile_Float8E4M3FN, CudaTile_Float8E5M2,
+-  CudaTile_Float8E8M0FNU, CudaTile_Float4E2M1FN,
+-  CudaTile_Float8E5M3FNU
++  CudaTile_Float8E8M0FNU, CudaTile_Float4E2M1FN
+ ]>;
+
+ def CudaTile_PointerTileType : CudaTile_TileOf<[CudaTile_PointerType]>;
+--- a/include/cuda_tile/Dialect/CudaTile/IR/Ops.td
++++ b/include/cuda_tile/Dialect/CudaTile/IR/Ops.td
+@@ -1581,8 +1581,7 @@
+                                                     [CudaTile_IsTileTypePred],
+                                                     "mmaf_scaled operand tile type">;
+ def MmaFScaledOp_ScaleTileType : CudaTile_TileOf<[CudaTile_Float8E4M3FN,
+-                                                  CudaTile_Float8E8M0FNU,
+-                                                  CudaTile_Float8E5M3FNU
++                                                  CudaTile_Float8E8M0FNU
+                                                   ],
+                                                   [CudaTile_IsTileTypePred],
+                                                    "mmaf_scaled scale tile type">;
+--- a/include/cuda_tile/Dialect/CudaTile/IR/BytecodeTypeOpcodes.td
++++ b/include/cuda_tile/Dialect/CudaTile/IR/BytecodeTypeOpcodes.td
+@@ -83,5 +83,4 @@
+ def : CudaTileTypeTag<"BytecodeTestEvolvedType", 200>;
+ #endif // TILE_IR_INCLUDE_TESTS
+
+-def : FloatTypeTag<"Float8E5M3FNU", 0x82, "Float8E5M3FNUType">;
+ #endif // CUDATILE_DIALECT_CUDATILE_IR_BYTECODE_TYPE_OPCODES_TD
+--- a/lib/Dialect/CudaTile/IR/CudaTile.cpp
++++ b/lib/Dialect/CudaTile/IR/CudaTile.cpp
+@@ -373,7 +373,7 @@
+          isa<Float8E4M3FNType>(elementType) ||  // f8E4M3FN
+          isa<Float8E5M2Type>(elementType) ||    // f8E5M2
+          isa<Float8E8M0FNUType>(elementType) || // f8E8M0FNU
+-         isa<Float8E5M3FNUType>(elementType) || // f8E5M3FNU
++
+          isa<Float4E2M1FNType>(elementType);    // f4E2M1FN
+ }
+
+@@ -2577,16 +2577,6 @@
+   }
+
+   // Check element types.
+-  if (isa<Float8E5M3FNUType>(lhsScaleType.getElementType())) {
+-    if (!isa<Float4E2M1FNType>(lhsType.getElementType())) {
+-      return emitOpError(
+-                 "unsupported combination of element types. Scale type ")
+-             << lhsScaleType.getElementType()
+-             << " expects lhs and rhs element types to be "
+-             << Float4E2M1FNType::get(getContext()) << ", but got "
+-             << lhsType.getElementType();
+-    }
+-  }
+   if (isa<Float8E4M3FNType>(lhsScaleType.getElementType())) {
+     if (!isa<Float4E2M1FNType>(lhsType.getElementType()))
+       return emitOpError(
+@@ -2650,16 +2640,6 @@
+                   "requires block scale factor of lhs_scale and rhs_scale "
+                   "to be 16 or 32, but got "
+                 << lhsScaleVecSize;
+-      }
+-    }
+-    // F4 with UE5M3 scales can have vecSize=16 or 32 on SM107.
+-    if (isa<Float8E5M3FNUType>(lhsScaleType.getElementType())) {
+-      if (lhsScaleVecSize != 16 && lhsScaleVecSize != 32) {
+-        return emitOpError()
+-               << "shape error: f4E2M1FN element type with f8E5M3FNU scales "
+-                  "requires block scale factor of lhs_scale and rhs_scale "
+-                  "to be 16 or 32, but got "
+-               << lhsScaleVecSize;
+       }
+     }
+   }
+--- a/tools/cuda-tile-tblgen/CudaTileType.cpp
++++ b/tools/cuda-tile-tblgen/CudaTileType.cpp
+@@ -70,7 +70,6 @@
+       kI1,     kI4,        kI8,  kI16,  kI32,  kI64, kF4E2M1FN, kF8E4M3FN,
+       kF8E5M2, kF8E8M0FNU, kF16, kBF16, kTF32, kF32, kF64,
+   };
+-  types.push_back(kF8E5M3FNU);
+   return types;
+ }
+
+@@ -168,7 +167,6 @@
+   types.emplace_back(std::make_shared<ElementType>(kF8E5M2));
+   types.emplace_back(std::make_shared<ElementType>(kF8E8M0FNU));
+   types.emplace_back(std::make_shared<ElementType>(kF4E2M1FN));
+-  types.emplace_back(std::make_shared<ElementType>(kF8E5M3FNU));
+   types.emplace_back(std::make_shared<ElementType>(kTF32));
+
+   return TileIRType(std::make_shared<TileType>(types));

@@ -71,6 +71,8 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITONXCN_AMD_MODE_FDIV",
     "TRITONJUPITER_AMD_MODE_FDIV",
     "USE_FAST_MATH",
+    "TRITON_DISABLE_LOOP_PEELING",
+    "TRITON_TLE_STACK_MARGIN",
     // clang-format on
 };
 

@@ -45,8 +45,19 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
   SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
 
-  auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, offsets,
-                                                         dims, strides);
+  // XTDK MLIR had a 5-arg inferResultType(source, offsets, sizes, strides);
+  // public MLIR 22 only exposes the sizes-based overload.  With all offsets
+  // 0 and strides 1 (the case here), the result shape is exactly `dims`,
+  // so build the type directly.
+  SmallVector<int64_t> shape;
+  for (auto d : dims) {
+    std::optional<int64_t> c = mlir::getConstantIntValue(d);
+    // Dynamic dims stay dynamic: the XTDK inferResultType overload
+    // this replaces could model them, and tiled IR (e.g. TritonKLX
+    // irtest tiled_matmul_kind4) does reach here with a runtime extent.
+    shape.push_back(c.has_value() ? *c : ShapedType::kDynamic);
+  }
+  auto dstType = RankedTensorType::get(shape, sourceType.getElementType());
 
   return builder.create<tensor::ExtractSliceOp>(loc, dstType, source, offsets,
                                                 dims, strides);

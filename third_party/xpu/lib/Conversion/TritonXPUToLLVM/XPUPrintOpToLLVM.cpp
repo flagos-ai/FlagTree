@@ -49,9 +49,7 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
        << ", " << getFormatSubstr(pidZ) << ")";
     SmallVector<Value, 9> idOperands = {pidX, pidY, pidZ};
 
-    std::string printVerboseStr =
-        mlir::triton::tools::getStrEnvXPU("TRITON_PRINT_VERBOSE");
-    if (printVerboseStr != "0" && printVerboseStr != "false") {
+    if (mlir::triton::tools::getBoolEnv("TRITON_PRINT_VERBOSE")) {
       os << ", hw_id (" << getFormatSubstr(physicalClusterId) << ", "
          << getFormatSubstr(logicClusterId) << ", " << getFormatSubstr(coreId)
          << ")"
@@ -68,18 +66,31 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
       std::string formatStr;
       llvm::raw_string_ostream os(formatStr);
       os << idStr << op.getPrefix();
-      llPrintf(formatStr, idOperands, rewriter);
+      llPrintf(formatStr, idOperands, rewriter,
+               SmallVector<bool>(idOperands.size(), true));
       rewriter.eraseOp(op);
       return success();
     }
 
     for (size_t i = 8; i < op.getNumOperands(); i++) {
       auto elems = unpackLLElements(loc, adaptor.getOperands()[i], rewriter);
+      bool isSigned = op.getIsSigned()[i - 8] > 0;
 
       SmallVector<int, 8> dimWidths;
       SmallVector<SmallVector<Value>> indices;
       if (auto rankedTy =
               dyn_cast<RankedTensorType>(op.getOperand(i).getType())) {
+        if (auto clusterLayout = dyn_cast<triton::xpu::ClusterLayoutAttr>(
+                rankedTy.getEncoding())) {
+          if (rankedTy.getRank() == 2 &&
+              product(clusterLayout.getSizePerCore()) !=
+                  clusterLayout.getTotalElemsPerThread(rankedTy.getShape(),
+                                                       rankedTy)) {
+            return op.emitError(
+                "device_print of a 2D tensor is not supported for this "
+                "cluster layout (elements per core do not match sizePerCore)");
+          }
+        }
         indices = getIndicesAndDimWidths(
             loc, rewriter, targetInfo, rankedTy.getEncoding(), rankedTy,
             dimWidths, innerIdx, ucIdx, innerBound, ucBound);
@@ -91,7 +102,7 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
       if (!elems.empty()) {
         printTensor(idStr, op.getPrefix(), i - 8, op.getNumOperands() - 8,
                     elems, idOperands, indices, dimWidths, op.getHex(),
-                    rewriter);
+                    rewriter, isSigned);
       }
     }
 
@@ -105,7 +116,7 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
                    SmallVector<Value, 9> idOperands,
                    ArrayRef<SmallVector<Value>> indices,
                    ArrayRef<int> dimWidths, bool hex,
-                   ConversionPatternRewriter &rewriter) const {
+                   ConversionPatternRewriter &rewriter, bool isSigned) const {
     assert(!elems.empty());
     assert(elems.size() == indices.size());
     assert(dimWidths.size() == indices.front().size());
@@ -150,21 +161,26 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
       }
 
       auto elem = elems[i];
-      os << getFormatSubstr(elem, hex);
+      os << getFormatSubstr(elem, hex, /*width=*/std::nullopt, isSigned);
       printfOperands.push_back(elem);
 
+      // The pid/index operands are always signed; only the printed element
+      // follows the operand's signedness.
+      SmallVector<bool> isSignedOperands(printfOperands.size(), true);
+      isSignedOperands.back() = isSigned;
+
       if (i == 0) {
-        formatStrValue =
-            llPrintf(formatStr, printfOperands, rewriter, &formatStrByteCount);
+        formatStrValue = llPrintf(formatStr, printfOperands, rewriter,
+                                  isSignedOperands, &formatStrByteCount);
       } else {
         targetInfo.printf(rewriter, formatStrValue, formatStrByteCount,
-                          printfOperands);
+                          printfOperands, isSignedOperands);
       }
     }
   }
 
   Value llPrintf(StringRef msg, ValueRange args,
-                 ConversionPatternRewriter &rewriter,
+                 ConversionPatternRewriter &rewriter, ArrayRef<bool> isSigned,
                  int *formatStrByteCount = nullptr) const {
     assert(!msg.empty() && "printf with empty string not supported");
     llvm::SmallString<64> msgNewline(msg);
@@ -173,14 +189,16 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
     Value msgValue =
         LLVM::addStringToModule(UnknownLoc::get(rewriter.getContext()),
                                 rewriter, "printfFormat_", msgNewline);
-    targetInfo.printf(rewriter, msgValue, msgNewline.size_in_bytes(), args);
+    targetInfo.printf(rewriter, msgValue, msgNewline.size_in_bytes(), args,
+                      isSigned);
     if (formatStrByteCount)
       *formatStrByteCount = msgNewline.size_in_bytes();
     return msgValue;
   }
 
   std::string getFormatSubstr(Value value, bool hex = false,
-                              std::optional<int> width = std::nullopt) const {
+                              std::optional<int> width = std::nullopt,
+                              bool isSigned = true) const {
     Type type = value.getType();
     if (isa<LLVM::LLVMPointerType>(type)) {
       return "%p";
@@ -207,16 +225,13 @@ struct XPUPrintOpConversion : public ConvertOpToLLVMPattern<XPUPrintOp> {
       return prefix + "f";
     } else if (type.isF64()) {
       return prefix + "F";
-    } else if (type.isSignedInteger()) {
+    } else if (type.isIntOrIndex()) {
+      // LLVM integer types are signless, so the operand's signedness comes
+      // from tt.print's isSigned attribute rather than from the type.
       if (type.getIntOrFloatBitWidth() == 64)
-        return prefix + "lli";
+        return prefix + (isSigned ? "lli" : "llu");
       else
-        return prefix + "i";
-    } else if (type.isUnsignedInteger() || type.isSignlessInteger()) {
-      if (type.getIntOrFloatBitWidth() == 64)
-        return type.isUnsignedInteger() ? prefix + "llu" : prefix + "lld";
-      else
-        return type.isUnsignedInteger() ? prefix + "u" : prefix + "d";
+        return prefix + (isSigned ? "i" : "u");
     }
     assert(false && "not supported type");
     return "";

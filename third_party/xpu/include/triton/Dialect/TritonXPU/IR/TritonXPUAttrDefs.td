@@ -228,3 +228,20 @@ core_32-core_63 will be idle
 // }
 
 #endif // TRITONXPU_ATTRDEFS
+
+//===----------------------------------------------------------------------===//
+// Shared (cluster-wide SM) memory space
+//===----------------------------------------------------------------------===//
+
+// Marks a `ttg.memdesc` as living in the cluster-shared SM block rather than in
+// per-core LM. `#ttg.shared_memory` keeps meaning LM, so IR predating this split
+// does not change meaning. Deliberately NOT a `TritonXPU_Attr`: that base class
+// force-concats `TritonXPU_AttrTrait`, whose six layout methods are meaningless
+// for a memory space tag.
+def TritonXPU_SharedMemorySpace : AttrDef<TritonXPU_Dialect, "SharedMemorySpace"> {
+  let mnemonic = "smem";
+  let description = [{
+    Attribute to indicate that the memory descriptor points to the cluster-shared
+    SM block (address space 2) instead of per-core local memory.
+  }];
+}

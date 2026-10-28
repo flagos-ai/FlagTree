@@ -64,16 +64,16 @@ mlir::Type BufferType::parse(AsmParser &parser) {
   }
   int copies = (int)copies64;
 
-  StringAttr storageKind;
-  if (parser.parseComma() || parser.parseKeyword("storageKind") ||
-      parser.parseEqual() || parser.parseAttribute(storageKind))
+  StringAttr scopeKind;
+  if (parser.parseComma() || parser.parseKeyword("scopeKind") ||
+      parser.parseEqual() || parser.parseAttribute(scopeKind))
     return Type();
 
   if (parser.parseGreater())
     return Type();
 
   return BufferType::get(parser.getContext(), shape, elementType, copies,
-                         storageKind);
+                         scopeKind);
 }
 
 void BufferType::print(AsmPrinter &printer) const {
@@ -81,7 +81,7 @@ void BufferType::print(AsmPrinter &printer) const {
   llvm::interleaveComma(getShape(), printer);
   printer << "], elementType=" << getElementType();
   printer << ", copies=" << getCopies();
-  printer << ", storageKind=" << getStorageKind();
+  printer << ", scopeKind=" << getScopeKind();
   printer << ">";
 }
 
@@ -89,7 +89,7 @@ mlir::ShapedType
 BufferType::cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape,
                       mlir::Type elementType) const {
   auto newTy = BufferType::get(getContext(), shape.value_or(getShape()),
-                               elementType, getCopies(), getStorageKind());
+                               elementType, getCopies(), getScopeKind());
   return mlir::cast<mlir::ShapedType>(newTy);
 }
 

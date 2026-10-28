@@ -106,6 +106,95 @@ def TritonXPUTLECoreTiling : Pass<"tritonxpu-tle-core-tiling", "mlir::ModuleOp">
   ];
 }
 
+def TritonXPUTLESharedMemAlloc
+    : Pass<"tritonxpu-tle-sm-alloc", "mlir::ModuleOp"> {
+  let summary = "Assign static SM byte offsets to TLE cluster-shared buffers.";
+
+  let description = [{
+    Assigns a static byte offset (`xpu.sm_offset`) to every TLE cluster-shared
+    (scope == smem) `ttg.local_alloc`, stamped by the frontend with
+    `xpu.mem_scope = "smem"`. Such a buffer is not a per-core LM allocation: all
+    cores share one copy in the module-level `global_smem` window (addrspace 2),
+    and the GM->SM copy / per-core local_ptr lowerings recompute their base as
+    `global_smem + sm_offset`.
+
+    Buffers are stacked downward from the top of the 256KB SM window, each
+    64B-aligned, in deterministic walk order. The lower 128KB is reserved for the
+    reduce/scan scratch (which grows up from offset 0); the pass fails if the
+    smem buffers together exceed the top 128KB. Runs on the TLE path only, after
+    tritonxpu-tle-legalize and before the LLVM lowering.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+}
+
+def TritonXPUTLEDtypeConvert
+    : Pass<"tritonxpu-tle-dtype-convert", "mlir::ModuleOp"> {
+  let summary = "Promote bf16 TLE compute to f32, keeping bf16 in LM.";
+
+  let description = [{
+    The TLE counterpart of tritonxpu-dtype-convert (XPU3: BF16 => FP32), seeded
+    from `tt.store` through a `tle_local_ptr` on a bf16 LM buffer.
+
+    XPU3 has neither a bf16 ALU nor a bf16 <-> f32 convert instruction, so bf16
+    compute cannot be vectorized: the arithmetic is promoted to f32 and the
+    conversion is left on the LM boundary, where the load/store lowering fuses
+    it (VecBF16ToFP32* / VecFP32ToBF16*). Because tt.load/tt.store require
+    "result/value type == pointee type", the boundary op's pointer tensor is
+    retyped to the promoted register type and the op is marked `xpu.lm_bf16` to
+    record that the memory is still bf16.
+
+    A tree whose bf16 values cross a region-carrying op (a tt.reduce combine
+    body) is left untouched, i.e. it keeps computing in bf16 unvectorized.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+}
+
+def TritonXPUTLEPipeline : Pass<"tritonxpu-tle-pipeline", "mlir::ModuleOp"> {
+  let summary = "Software-pipeline TLE GM->LM/SM copies (double buffering).";
+
+  let description = [{
+    Overlap a TLE loop's DMA fill with its compute by rotating the destination
+    buffer through the loop's iter_args, so iteration i computes out of the buffer
+    filled by iteration i-1 while the fill for i+1 is in flight.
+
+    The XPU cluster ISA has no counting wait -- `mfence` is a bulk drain per memory
+    space -- so depth is capped at 1 per staged memory space, i.e.
+    `maxStages = kStagedSpaces.size() + 1`. Depth 2 therefore alternates the LM and
+    SM channels across two unrolled halves of the loop.
+
+    Body order is `tle_wait ; issue prefetch(i+1) ; compute(i)`. The reverse order
+    is a structural no-op under a bulk drain -- the fence would drain the copy just
+    issued -- while still looking correct in the IR.
+
+    The local- and shared-memory budget checks run unconditionally, even with
+    `enable=false`, because an over-budget allocation is a hard error regardless of
+    whether pipelining is applied.
+
+    Must run BEFORE tritonxpu-tle-legalize, which stamps unique reduce/scan ids
+    that cloning the loop body would duplicate.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+
+  let options = [
+    Option<"enable", "enable",
+           "bool", /*default*/"0",
+           "Enable the pipelining rewrite (budget checks always run)">,
+    Option<"numStages", "num-stages",
+           "uint32_t", /*default*/"1",
+           "Default pipeline depth+1 when a loop has no tt.num_stages">,
+    Option<"waitMask", "wait-mask",
+           "uint32_t", /*default*/"1",
+           "mfence mask for the LM channel (bit0=LM, bit1=SM, bit2=GM)">,
+    Option<"lmBytesLimit", "lm-bytes-limit",
+           "uint32_t", /*default*/"8192",
+           "Per-core local memory budget in bytes">,
+  ];
+
+}
+
 def TritonXPUMask : Pass<"tritonxpu-mask", "mlir::ModuleOp"> {
   let summary = "Mask for Calculation.";
 
@@ -334,7 +423,25 @@ def TritonXPUVectorize : Pass<"tritonxpu-vectorize", "mlir::ModuleOp"> {
     // Default on since step 3.2n (the gate is in XPUOptions.per_op_decision).
     Option<"perOpDecision", "per-op-decision",
             "bool", /*default*/"true",
-            "decide vectorization per op from the Vector-Flow terminal state">
+            "decide vectorization per op from the Vector-Flow terminal state">,
+    // Escape hatch for the one TLE read whose vector form is a stack bet: a
+    // scope=smem buffer is cluster-shared, so vectorizing it keeps a whole
+    // per-core tile live in vector registers. Cleared by the driver on the last
+    // rung of the TLE retune ladder (and by TRITONXPU_IS_CLOSE_TLE_SM_VEC), so a
+    // kernel that unroll control cannot slice under the budget recompiles with
+    // the scalar SM read instead of failing to compile. The LM path is
+    // unaffected either way.
+    Option<"tleSmemVec", "tle-smem-vec",
+            "bool", /*default*/"true",
+            "vectorize reads of a scope=smem TLE buffer">,
+    // The retune ladder's last rung. Weights in LM or in SM both end up asking
+    // unroll control for stack relief, so when its knobs are spent the only
+    // thing left is to not vectorize the TLE segment at all: false makes both
+    // TLE arms report no coverage and the segment stays scalar. Ships a slow
+    // kernel instead of no kernel.
+    Option<"tleVec", "tle-vec",
+            "bool", /*default*/"true",
+            "vectorize the TLE compute segment at all">
   ];
 }
 
@@ -469,11 +576,23 @@ def TritonXPUVectorizabilityAnalysis
 
   let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
 
-  let options =
-      [Option<"reduceVec", "reduce-vec", "bool", /*default*/ "1",
-              "match Vectorize's ReduceVec so the same roots are enumerated">,
-       Option<"preTiling", "pre-tiling", "bool", /*default*/ "0",
-              "this instance sits ahead of CoreTiling">,
+  let options = [
+    Option<"reduceVec", "reduce-vec",
+           "bool", /*default*/"1",
+           "match Vectorize's ReduceVec so the same roots are enumerated">,
+    // Must track Vectorize's tle-smem-vec: the analysis and the rewrite have to
+    // agree on which TLE reads are vectorizable, or the rewrite is handed a set
+    // the analysis never validated.
+    Option<"tleSmemVec", "tle-smem-vec",
+           "bool", /*default*/"true",
+           "match Vectorize's tleSmemVec so the same reads are admissible">,
+    Option<"tleVec", "tle-vec",
+           "bool", /*default*/"true",
+           "match Vectorize's tleVec so the same segments are admissible">,
+    Option<"preTiling", "pre-tiling",
+           "bool", /*default*/"0",
+           "this instance sits ahead of CoreTiling: report the state-only "
+           "answer (all-Unknown fit oracle) alongside the real one">,
   ];
 }
 
@@ -509,25 +628,6 @@ def TritonXPUTileDecide : Pass<"tritonxpu-tile-decide", "mlir::ModuleOp"> {
            "bool", /*default*/"1",
            "match Vectorize's ReduceVec so the same roots are enumerated">,
   ];
-}
-
-def TritonXPUMaterializeDeferredRaw
-    : Pass<"tritonxpu-materialize-deferred-raw", "mlir::ModuleOp"> {
-  let summary = "Fill in the payload of deferred triton_xpu.raw ops";
-
-  let description = [{
-    A `triton_xpu.raw` emitted by `tle.raw.call` on a deferred payload
-    handle carries `triton_xpu.raw_source_id` and an empty `llvm_ir`: at trace
-    time the target architecture is not known yet, so the payload has not been
-    compiled. This pass replaces the id with the LLVM IR that the backend
-    compiled for the architecture it is building for.
-
-    Like TritonSDNNMaterializeDeferredRaw, the id -> LLVM IR map is deliberately
-    NOT a Pass `Option<>`; inject it through
-    `createTritonXPUMaterializeDeferredRawWithSources()`.
-  }];
-
-  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
 }
 
 #endif // TRITONXPU_PASSES

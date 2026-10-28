@@ -3,7 +3,7 @@
 Run from the repository root on one node with at least two GPUs:
 
     NPROC_PER_NODE=4 M=2048 N=2048 DTYPE=bf16 \
-        bash python/tutorials/tle/06-intra-node-reduce-scatter.sh
+        bash python/tutorials/tle/07-intra-node-reduce-scatter.sh
 
 MASTER_ADDR defaults to localhost; MASTER_PORT defaults to 29501.
 

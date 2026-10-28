@@ -145,10 +145,10 @@ jobs:
           gpus: '${{ steps.setup.outputs.gpus }}'
           output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/Baseline'
           output-subdir: '${{ steps.setup.outputs.date }}_${{ steps.setup.outputs.commit_id }}'
-          run-script: 'tools/ci/ci_run_tests.py'
-          skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'
           pre-command: ${{ inputs.flaggems-pre-command }}
+          flaggems-tag: ${{ inputs.flaggems-tag }}
+          backend: ${{ inputs.backend }}
 
       - name: Check Best Baseline Exists
         id: check-best
@@ -170,8 +170,6 @@ jobs:
         with:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
-          compare-script: 'tools/ci/compare_test_result.py'
-          working-directory: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           fail-on-missing-baseline: 'true'
 
       - name: Update Best Baseline

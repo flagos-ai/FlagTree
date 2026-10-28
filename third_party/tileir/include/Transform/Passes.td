@@ -58,7 +58,7 @@ def LiftTTCFToSCF : Pass</*cli-arg*/"lift-tt-cf-to-scf", /*Op*/"mlir::ModuleOp">
   let dependentDialects = ["mlir::triton::TritonDialect", "mlir::cf::ControlFlowDialect", "mlir::scf::SCFDialect", "mlir::ub::UBDialect"];
 }
 
-def AutoGenMemoryToken : Pass</*cli-arg*/"auto-gen-memory-token", /*Op*/"mlir::ModuleOp"> {
+def AutoGenMemoryToken : InterfacePass</*cli-arg*/"auto-gen-memory-token", /*Interface*/"mlir::FunctionOpInterface"> {
   let summary = "Automatically generate memory tokens for debug_barrier and cuda_tile memory operations";
   let description = [{
     This pass automatically generates memory tokens for debug_barrier in a serialized manner.

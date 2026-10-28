@@ -25,41 +25,37 @@ else()
   # Upstream does a build-time `git clone https://github.com/NVIDIA/cuda-tile`
   # into ${CMAKE_CURRENT_BINARY_DIR}/tileir_src and applies an inline patch.
   #
-  # flagtree instead:
-  #   1) pins cuda-tile as a git submodule under third_party/cuda-tile (v13.3.0),
-  #      so the build doesn't need network access and the version is reviewable
-  #      in flagtree's git history;
-  #   2) copies the submodule to a build-tree working dir so patches/build
-  #      artifacts don't pollute the submodule checkout;
-  #   3) runs the flagtree-tuned patch script (see scripts/patch_bytecode_utils.sh)
-  #      with non-fatal failure semantics so future cuda-tile bumps don't break
-  #      the build for cosmetic patch mismatches.
+  # FlagTree instead:
+  #   1) setup.py fetches the pinned cuda-tile checkout under third_party;
+  #   2) CMake copies it to the build tree so patches and build artifacts do
+  #      not pollute the pinned checkout;
+  #   3) CMake applies the LLVM compatibility patch and fails on any mismatch.
   # ================================================================
-  # Use the cuda-tile git submodule (pinned to v13.3.0 for LLVM API compat with flagtree).
-  set(CUDA_TILE_COMMIT 2e5ccba66fb3afdba34b26cf358418283027c248)
-  set(CUDA_TILE_SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cuda-tile)
-  if(NOT EXISTS ${CUDA_TILE_SUBMODULE_DIR}/CMakeLists.txt)
+  # setup.py populates the pinned cuda-tile checkout before CMake runs.
+  set(CUDA_TILE_COMMIT 7e8e2e68fa219716103824c01f7303367cf7df8d)
+  set(CUDA_TILE_CHECKOUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cuda-tile)
+  if(NOT EXISTS ${CUDA_TILE_CHECKOUT_DIR}/CMakeLists.txt)
     message(FATAL_ERROR
-      "cuda-tile submodule not initialized at ${CUDA_TILE_SUBMODULE_DIR}. ")
+      "cuda-tile checkout not populated at ${CUDA_TILE_CHECKOUT_DIR}. Re-run setup.py")
   endif()
 
   execute_process(
     COMMAND git rev-parse HEAD
-    WORKING_DIRECTORY ${CUDA_TILE_SUBMODULE_DIR}
-    OUTPUT_VARIABLE CUDA_TILE_SUBMODULE_COMMIT
+    WORKING_DIRECTORY ${CUDA_TILE_CHECKOUT_DIR}
+    OUTPUT_VARIABLE CUDA_TILE_CHECKOUT_COMMIT
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE CUDA_TILE_REV_PARSE_RESULT
   )
   if(NOT CUDA_TILE_REV_PARSE_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to read cuda-tile submodule commit at ${CUDA_TILE_SUBMODULE_DIR}")
+    message(FATAL_ERROR "Failed to read cuda-tile checkout commit at ${CUDA_TILE_CHECKOUT_DIR}")
   endif()
-  if(NOT CUDA_TILE_SUBMODULE_COMMIT STREQUAL CUDA_TILE_COMMIT)
+  if(NOT CUDA_TILE_CHECKOUT_COMMIT STREQUAL CUDA_TILE_COMMIT)
     message(FATAL_ERROR
-      "cuda-tile submodule is at ${CUDA_TILE_SUBMODULE_COMMIT}, expected ${CUDA_TILE_COMMIT}. "
-      "Run: git submodule update --init --recursive third_party/tileir/third_party/cuda-tile")
+      "cuda-tile checkout is at ${CUDA_TILE_CHECKOUT_COMMIT}, expected ${CUDA_TILE_COMMIT}. "
+      "Re-run setup.py to fetch the pinned cuda-tile checkout")
   endif()
 
-  # Copy sources to the build tree so patches and build artifacts don't pollute the submodule.
+  # Copy sources to the build tree so patches and build artifacts do not pollute the checkout.
   set(CUDA_TILE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/cuda-tile-work)
   set(CUDA_TILE_COPY_MARKER ${CUDA_TILE_SOURCE_DIR}/.flagtree_cuda_tile_commit)
   set(CUDA_TILE_NEEDS_COPY ON)
@@ -71,10 +67,10 @@ else()
     endif()
   endif()
   if(CUDA_TILE_NEEDS_COPY)
-    message(STATUS "Copying cuda-tile sources from submodule to ${CUDA_TILE_SOURCE_DIR}")
+    message(STATUS "Copying cuda-tile sources from checkout to ${CUDA_TILE_SOURCE_DIR}")
     file(REMOVE_RECURSE ${CUDA_TILE_SOURCE_DIR})
     execute_process(
-      COMMAND ${CMAKE_COMMAND} -E copy_directory ${CUDA_TILE_SUBMODULE_DIR} ${CUDA_TILE_SOURCE_DIR}
+      COMMAND ${CMAKE_COMMAND} -E copy_directory ${CUDA_TILE_CHECKOUT_DIR} ${CUDA_TILE_SOURCE_DIR}
       RESULT_VARIABLE CUDA_TILE_COPY_RESULT
     )
     if(NOT CUDA_TILE_COPY_RESULT EQUAL 0)
@@ -83,19 +79,14 @@ else()
     file(WRITE ${CUDA_TILE_COPY_MARKER} "${CUDA_TILE_COMMIT}\n")
   endif()
 
-  # Patch cuda-tile sources to compile against flagtree's pinned LLVM (commit
-  # f6ded0be, older than cuda-tile v13.3.0's expected LLVM 13c00cbc). The patch
-  # script does narrow API renames; see comments in patch_bytecode_utils.sh.
-  # We treat a non-zero exit from the patch script as a warning (not a fatal error)
-  # so that future cuda-tile / LLVM bumps don't break the build for cosmetic patch
-  # failures — real compile errors will surface in the build step below.
+  # Patch cuda-tile 13.4 for FlagTree's pinned public LLVM APIs.
   execute_process(
-    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_bytecode_utils.sh ${CUDA_TILE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} -E env LLVM_SYSPATH=${LLVM_SYSPATH} bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_bytecode_utils.sh ${CUDA_TILE_SOURCE_DIR}
     WORKING_DIRECTORY ${CUDA_TILE_SOURCE_DIR}
     RESULT_VARIABLE CUDA_TILE_PATCH_RESULT
   )
   if(NOT CUDA_TILE_PATCH_RESULT EQUAL 0)
-    message(WARNING "cuda_tile patch_bytecode_utils.sh exited ${CUDA_TILE_PATCH_RESULT}; continuing")
+    message(FATAL_ERROR "cuda_tile patch failed with code: ${CUDA_TILE_PATCH_RESULT}")
   endif()
 
   execute_process(
@@ -141,6 +132,7 @@ endif()
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools/triton-cuda-tile-opt)
+add_subdirectory(test)
 
 if(TRITON_BUILD_PYTHON_MODULE AND HAVE_CUDA_TILE_INSTALL)
   add_triton_plugin(TritonTileIR ${CMAKE_CURRENT_SOURCE_DIR}/triton_tileir.cc LINK_LIBS TritonToTileIR TritonTileIRTransforms)

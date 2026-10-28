@@ -590,6 +590,33 @@ private:
     llvm_unreachable("Unknown arith::CmpFPredicate");
   }
 
+  LLVM::ICmpPredicate
+  ArithCmpIPredicateToLLVM(arith::CmpIPredicate predicate) const {
+    switch (predicate) {
+    case arith::CmpIPredicate::eq:
+      return LLVM::ICmpPredicate::eq;
+    case arith::CmpIPredicate::ne:
+      return LLVM::ICmpPredicate::ne;
+    case arith::CmpIPredicate::sgt:
+      return LLVM::ICmpPredicate::sgt;
+    case arith::CmpIPredicate::sge:
+      return LLVM::ICmpPredicate::sge;
+    case arith::CmpIPredicate::slt:
+      return LLVM::ICmpPredicate::slt;
+    case arith::CmpIPredicate::sle:
+      return LLVM::ICmpPredicate::sle;
+    case arith::CmpIPredicate::ugt:
+      return LLVM::ICmpPredicate::ugt;
+    case arith::CmpIPredicate::uge:
+      return LLVM::ICmpPredicate::uge;
+    case arith::CmpIPredicate::ult:
+      return LLVM::ICmpPredicate::ult;
+    case arith::CmpIPredicate::ule:
+      return LLVM::ICmpPredicate::ule;
+    }
+    llvm_unreachable("Unknown arith::CmpIPredicate");
+  }
+
   void calculate(ConversionPatternRewriter &rewriter, const Location &loc,
                  Operation *op, Value &acc, const Value &cur) const {
     TypeSwitch<Operation *>(op)
@@ -649,8 +676,11 @@ private:
     // (findings.md 1.24).
     return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
                arith::MaxNumFOp, arith::MinNumFOp, arith::OrIOp, arith::XOrIOp,
-               arith::AndIOp, arith::CmpFOp, arith::SelectOp,
-               arith::ConstantOp>(op);
+               arith::AndIOp, arith::CmpFOp, arith::CmpIOp, arith::AddIOp,
+               arith::SubIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,
+               arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp,
+               arith::MinimumFOp, arith::DivSIOp, arith::DivUIOp,
+               arith::SelectOp, arith::ConstantOp>(op);
   }
 
   // All rejection happens here, before anything is emitted, so a region we
@@ -760,6 +790,47 @@ private:
           return rewriter.create<LLVM::FCmpOp>(
               loc, resTy, ArithCmpFPredicateToLLVM(cmpfOp.getPredicate()),
               args[0], args[1]);
+        })
+        .Case<arith::CmpIOp>([&](arith::CmpIOp cmpiOp) -> Value {
+          Type resTy = rewriter.getI1Type();
+          if (auto ty = dyn_cast<VectorType>(args[0].getType()))
+            resTy = VectorType::get(ty.getShape(), resTy);
+          return rewriter.create<LLVM::ICmpOp>(
+              loc, resTy, ArithCmpIPredicateToLLVM(cmpiOp.getPredicate()),
+              args[0], args[1]);
+        })
+        .Case<arith::AddIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::AddOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::SubIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::SubOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MulIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::MulOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MaxSIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::SMaxOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MinSIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::SMinOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MaxUIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::UMaxOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MinUIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::UMinOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MaximumFOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::MaximumOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MinimumFOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::MinimumOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::DivSIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::SDivOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::DivUIOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::UDivOp>(loc, args[0], args[1]);
         })
         .Case<arith::SelectOp>(
             [&](auto) -> Value { return select(args[0], args[1], args[2]); })

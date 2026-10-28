@@ -62,6 +62,17 @@ template <> struct is_xpu_memory_op<triton::xpu::SM2GMMaskOp> {
 
 #define COMBINE_OP COMBINE_BINARY_OP, arith::CmpFOp
 
+// Combine-region ops admitted for TLE kernels only.
+// `reduceCombineIsVectorizable` gates them on the reduce's module actually
+// containing TLE ops, so the generic path keeps the historical list above
+// byte-for-byte. The retype Case in Vectorize.cpp and the `emitCombineOp` arms
+// in ReduceOpToLLVM.cpp list them unconditionally: those run only on reduces
+// the predicate already admitted.
+#define COMBINE_OP_TLE_EXT                                                     \
+  arith::CmpIOp, arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::MaxSIOp,  \
+      arith::MinSIOp, arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp,       \
+      arith::MinimumFOp, arith::DivSIOp, arith::DivUIOp
+
 enum class OffsetState {
   Unknown = -1,
   DiscreteSame = 0,

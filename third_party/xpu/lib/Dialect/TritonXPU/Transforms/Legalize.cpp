@@ -99,7 +99,43 @@ struct TritonXPULegalizePass
         }
       });
     }
-    return;
+
+    if (!isFirst)
+      return;
+
+    int64_t maxNumElements = 0;
+    triton::xpu::ClusterLayoutAttr maxEncoding;
+    auto updateMax2DTensorEncoding = [&](Type type) {
+      auto tensorType = mlir::dyn_cast<RankedTensorType>(type);
+      if (!tensorType || tensorType.getShape().size() != 2)
+        return;
+      auto globalEncoding = mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(
+          tensorType.getEncoding());
+      if (!globalEncoding)
+        return;
+      auto shape = tensorType.getShape();
+      if (shape[0] <= 0 || shape[1] <= 0)
+        return;
+      int64_t numElements = shape[0] * shape[1];
+      if (numElements <= maxNumElements)
+        return;
+      maxNumElements = numElements;
+      maxEncoding = globalEncoding;
+    };
+
+    for (auto op : opTree) {
+      op->walk([&](Operation *nested) {
+        if (isa<triton::xpu::ConvertLayoutOp, triton::ExpandDimsOp,
+                triton::xpu::BroadcastOp>(nested))
+          return;
+        for (auto result : nested->getResults())
+          updateMax2DTensorEncoding(result.getType());
+        for (auto operand : nested->getOperands())
+          updateMax2DTensorEncoding(operand.getType());
+      });
+    }
+    if (maxEncoding)
+      _getGroupInfo(maxEncoding);
   }
 
   size_t getSizePerCluster(Type &type, bool unrollOpt) {
@@ -866,6 +902,100 @@ struct TritonXPULegalizePass
           }
         };
 
+        auto reshapeConstOperandsToMatchSiblings = [&](Operation *targetOp,
+                                                       bool skipIfInTree) {
+          if (isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::scf::YieldOp,
+                  triton::ScanOp, triton::ReduceOp, triton::xpu::ScanOp,
+                  triton::xpu::ReduceOp>(targetOp))
+            return;
+          for (unsigned operandIdx = 0; operandIdx < targetOp->getNumOperands();
+               ++operandIdx) {
+            auto constOp = targetOp->getOperand(operandIdx)
+                               .getDefiningOp<mlir::arith::ConstantOp>();
+            if (!constOp || (skipIfInTree && sortedOpTree.contains(constOp)))
+              continue;
+            auto constTy = dyn_cast<RankedTensorType>(constOp.getType());
+            auto attr = dyn_cast<mlir::DenseElementsAttr>(constOp.getValue());
+            if (!constTy || !attr)
+              continue;
+            RankedTensorType targetTy;
+            for (unsigned siblingIdx = 0;
+                 siblingIdx < targetOp->getNumOperands(); ++siblingIdx) {
+              if (siblingIdx == operandIdx)
+                continue;
+              auto siblingTy = dyn_cast<RankedTensorType>(
+                  targetOp->getOperand(siblingIdx).getType());
+              if (!siblingTy || siblingTy.getRank() != constTy.getRank() ||
+                  siblingTy.getShape() == constTy.getShape())
+                continue;
+              targetTy = RankedTensorType::get(siblingTy.getShape(),
+                                               constTy.getElementType(),
+                                               constTy.getEncoding());
+              break;
+            }
+            if (!targetTy)
+              continue;
+            auto newValue = DenseElementsAttr::getFromRawBuffer(
+                cast<ShapedType>(targetTy), attr.getRawData());
+            OpBuilder constBuilder(targetOp);
+            auto newConstOp = constBuilder.create<mlir::arith::ConstantOp>(
+                constOp.getLoc(), targetTy, newValue);
+            targetOp->setOperand(operandIdx, newConstOp);
+          }
+        };
+
+        auto reshapeConstYieldOperandsToMatchResults =
+            [&](mlir::scf::YieldOp yieldOp, TypeRange resultTypes) {
+              for (unsigned i = 0; i < yieldOp.getNumOperands(); ++i) {
+                auto constOp = yieldOp.getOperand(i)
+                                   .getDefiningOp<mlir::arith::ConstantOp>();
+                auto targetTy = i < resultTypes.size()
+                                    ? dyn_cast<RankedTensorType>(resultTypes[i])
+                                    : RankedTensorType();
+                auto constTy =
+                    constOp ? dyn_cast<RankedTensorType>(constOp.getType())
+                            : RankedTensorType();
+                auto attr =
+                    constOp
+                        ? dyn_cast<mlir::DenseElementsAttr>(constOp.getValue())
+                        : nullptr;
+                if (!constOp || !targetTy || !constTy || !attr ||
+                    targetTy.getShape() == constTy.getShape())
+                  continue;
+                auto newValue = DenseElementsAttr::getFromRawBuffer(
+                    cast<ShapedType>(targetTy), attr.getRawData());
+                OpBuilder constBuilder(yieldOp);
+                auto newConstOp = constBuilder.create<mlir::arith::ConstantOp>(
+                    constOp.getLoc(), targetTy, newValue);
+                yieldOp.setOperand(i, newConstOp);
+              }
+            };
+
+        auto rewriteShapeSpecialOp = [&](Operation *shapeOp) {
+          if (auto cvtOp = dyn_cast<triton::xpu::ConvertLayoutOp>(shapeOp)) {
+            auto srcTy = dyn_cast<RankedTensorType>(cvtOp.getSrc().getType());
+            auto resultTy =
+                dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+            if (srcTy && resultTy && srcTy.getShape() != resultTy.getShape()) {
+              cvtOp.getResult().setType(RankedTensorType::get(
+                  srcTy.getShape(), resultTy.getElementType(),
+                  resultTy.getEncoding()));
+            }
+          } else if (auto expandOp = dyn_cast<triton::ExpandDimsOp>(shapeOp)) {
+            auto srcTy =
+                dyn_cast<RankedTensorType>(expandOp.getSrc().getType());
+            auto resultTy =
+                dyn_cast<RankedTensorType>(expandOp.getResult().getType());
+            if (!srcTy || !resultTy)
+              return;
+            SmallVector<int64_t> shape(srcTy.getShape().begin(),
+                                       srcTy.getShape().end());
+            shape.insert(shape.begin() + expandOp.getAxis(), 1);
+            expandOp.getResult().setType(RankedTensorType::get(
+                shape, resultTy.getElementType(), resultTy.getEncoding()));
+          }
+        };
+
         if (auto makeRangeOp = dyn_cast<triton::MakeRangeOp>(op)) {
           auto type = makeRangeOp.getType();
           if (outerChain.count(makeRangeOp)) {
@@ -948,7 +1078,10 @@ struct TritonXPULegalizePass
                 slicedShapedType, attr.getRawData());
             auto newConstOp = builder.create<mlir::arith::ConstantOp>(
                 loc, slicedResTy, newValue);
-            op->replaceAllUsesWith(newConstOp->getResults());
+            for (auto &use : llvm::make_early_inc_range(op->getUses())) {
+              if (sortedOpTree.contains(use.getOwner()))
+                use.set(newConstOp->getResult(0));
+            }
           }
         } else if (auto forOp = dyn_cast<mlir::scf::ForOp>(op)) {
 
@@ -1048,6 +1181,9 @@ struct TritonXPULegalizePass
                                                     iterCount, isInnerOp);
                   newInBlockOpRes.setType(slicedOpType);
                 }
+                rewriteShapeSpecialOp(&*newInBlockOp);
+                reshapeConstOperandsToMatchSiblings(&*newInBlockOp,
+                                                    /*skipIfInTree=*/false);
                 if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
                   handleXpuPrintOp(xpuPrintOp);
                 }
@@ -1060,10 +1196,17 @@ struct TritonXPULegalizePass
                 for (auto &inBlockOp0 : elseBlock) {
                   bool isInnerOp = inOpChain(innerChain, &inBlockOp0);
                   setSlicedResTy(&inBlockOp0, isInnerOp);
+                  rewriteShapeSpecialOp(&inBlockOp0);
+                  reshapeConstOperandsToMatchSiblings(&inBlockOp0,
+                                                      /*skipIfInTree=*/false);
                   if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp0)) {
                     handleXpuPrintOp(xpuPrintOp);
                   }
                 }
+                if (auto yieldOp =
+                        dyn_cast<mlir::scf::YieldOp>(elseBlock.getTerminator()))
+                  reshapeConstYieldOperandsToMatchResults(
+                      yieldOp, ifOp.getResultTypes());
                 for (auto newInBlockOpRes : ifOp->getResults()) {
                   auto slicedOpType =
                       getSlicedType(newInBlockOpRes.getType(), iterCount, true);
@@ -1073,9 +1216,16 @@ struct TritonXPULegalizePass
             } else if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
               handleXpuPrintOp(xpuPrintOp);
             } else {
+              rewriteShapeSpecialOp(&inBlockOp);
               setSlicedResTy(&inBlockOp, inBlockIsInner);
+              reshapeConstOperandsToMatchSiblings(&inBlockOp,
+                                                  /*skipIfInTree=*/false);
             }
           }
+          if (auto yieldOp =
+                  dyn_cast<mlir::scf::YieldOp>(forBlock.getTerminator()))
+            reshapeConstYieldOperandsToMatchResults(yieldOp,
+                                                    forOp.getResultTypes());
           for (auto op : erasedOps) {
             if (op->use_empty())
               op->erase();
@@ -1113,6 +1263,9 @@ struct TritonXPULegalizePass
                                                 iterCount, isInnerOp);
               newInBlockOpRes.setType(slicedOpType);
             }
+            rewriteShapeSpecialOp(&*newInBlockOp);
+            reshapeConstOperandsToMatchSiblings(&*newInBlockOp,
+                                                /*skipIfInTree=*/false);
             if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
               handleXpuPrintOp(xpuPrintOp);
             } else if (auto reduceOpInIf =
@@ -1165,11 +1318,18 @@ struct TritonXPULegalizePass
                                                   iterCount, isInnerOp);
                 newInBlockOpRes.setType(slicedOpType);
               }
+              rewriteShapeSpecialOp(&*newInBlockOp);
+              reshapeConstOperandsToMatchSiblings(&*newInBlockOp,
+                                                  /*skipIfInTree=*/false);
               if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
                 handleXpuPrintOp(xpuPrintOp);
               }
             }
           }
+          if (auto yieldOp =
+                  dyn_cast<mlir::scf::YieldOp>(newIfThenBlock.getTerminator()))
+            reshapeConstYieldOperandsToMatchResults(yieldOp,
+                                                    ifOp.getResultTypes());
 
         } else if (auto reshapeOp = dyn_cast<mlir::triton::ReshapeOp>(op)) {
           if (auto reshapeResTy =
@@ -1192,10 +1352,15 @@ struct TritonXPULegalizePass
               reshapeOp.getResult().setType(slicedReshapeSrcTy);
             }
           }
+        } else if (isa<triton::xpu::ConvertLayoutOp, triton::ExpandDimsOp>(
+                       op)) {
+          rewriteShapeSpecialOp(op);
         } else if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(op)) {
           handleXpuPrintOp(xpuPrintOp);
         } else {
+          rewriteShapeSpecialOp(op);
           setSlicedResTy(op, isInner);
+          reshapeConstOperandsToMatchSiblings(op, /*skipIfInTree=*/true);
         }
 
         // LLVM_DEBUG(llvm::dbgs() << "After Deal:\n" << m << "\n");

@@ -5,6 +5,11 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/SetVector.h"
+
+#include <functional>
+
 namespace mlir {
 namespace triton {
 namespace xpu {
@@ -76,8 +81,73 @@ struct TritonXPULoopGrid
       auto step = b.create<arith::IndexCastOp>(loc, idxTy, numCluster);
       auto loopGrid = b.create<scf::ForOp>(loc, lower, upper, step);
 
+      // Determine which top-level ops must stay OUTSIDE the grid-stride loop.
+      // Cluster-shared SM staging (tle_copy_g2l into a scope=smem local_alloc)
+      // is loop-invariant: it copies the same GM data (loop-invariant desc,
+      // constant offsets) into per-cluster SM, which persists across all
+      // grid-stride iterations. If it were moved inside the loop it would
+      // re-stage on every iteration -- wasting DMA and (without a leading
+      // barrier) racing the previous iteration's SM reads ("sm rdwr conflict").
+      // So hoist the staging copy, its smem alloc, and their memory-effect-free
+      // operand cone (constants / index math) to before the loop => staged ONCE
+      // per cluster. Pure LM kernels have no smem copy => hoistSet stays empty
+      // => behaviour is byte-identical to before.
+      llvm::SetVector<Operation *> hoistSet;
+      // Collect the defining cone of `v` inside the loop body into `cone`.
+      // Returns false if any op of that cone cannot be hoisted (it has memory
+      // effects), in which case the CALLER MUST ABANDON the whole hoist: moving
+      // a copy out while one of its operands stays inside the loop would break
+      // dominance and fail the verifier.
+      std::function<bool(Value, llvm::SetVector<Operation *> &)> collectCone =
+          [&](Value v, llvm::SetVector<Operation *> &cone) -> bool {
+        Operation *def = v.getDefiningOp();
+        if (!def || def->getBlock() != &body)
+          return true; // block arg or not a top-level body op: already
+                       // dominates.
+        if (hoistSet.contains(def) || cone.contains(def))
+          return true;
+        if (!isMemoryEffectFree(def))
+          return false; // only pure ops are safe to pull out via the cone.
+        cone.insert(def);
+        for (Value operand : def->getOperands())
+          if (!collectCone(operand, cone))
+            return false;
+        return true;
+      };
+      for (Operation *op : operations) {
+        auto copy = dyn_cast<triton::xpu::TLECopyGlobalToLocalOp>(op);
+        if (!copy)
+          continue;
+        Operation *dstDef = copy.getDstBuffer().getDefiningOp();
+        if (!dstDef)
+          continue;
+        auto scope = dstDef->getAttrOfType<StringAttr>("xpu.mem_scope");
+        if (!scope || scope.getValue() != "smem")
+          continue;
+        // The staging copy and its smem alloc are hoisted by construction;
+        // everything they depend on must come from a PURE cone. If anything is
+        // impure, keep this copy in the loop: still correct (it re-stages every
+        // iteration, and the lowering's leading mfence + barrier makes that
+        // race-free), just slower.
+        llvm::SetVector<Operation *> cone;
+        if (dstDef->getBlock() == &body)
+          cone.insert(dstDef);
+        bool hoistable = true;
+        for (Value operand : copy->getOperands())
+          hoistable &= collectCone(operand, cone);
+        for (Value operand : dstDef->getOperands())
+          hoistable &= collectCone(operand, cone);
+        if (!hoistable)
+          continue;
+        hoistSet.insert(cone.begin(), cone.end());
+        hoistSet.insert(copy);
+      }
+
       for (auto op : operations) {
-        op->moveBefore(loopGrid.getBody()->getTerminator());
+        if (hoistSet.contains(op))
+          op->moveBefore(loopGrid); // stays before the loop: staged ONCE.
+        else
+          op->moveBefore(loopGrid.getBody()->getTerminator());
       }
 
       b.setInsertionPointToStart(loopGrid.getBody());

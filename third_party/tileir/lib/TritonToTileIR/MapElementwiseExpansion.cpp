@@ -58,7 +58,6 @@ static Value liftToTensor(Value val, OpBuilder &builder, Location loc,
   mapping.map(val, mapped);
   return mapped;
 }
-
 // Recursively lift all ops in a region body (single block) to tensor level.
 // Returns the lifted values corresponding to the scf.yield operands.
 static SmallVector<Value> liftRegionBody(Region &region, OpBuilder &builder,

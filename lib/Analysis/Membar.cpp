@@ -27,6 +27,7 @@
 #ifdef __TLE__
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -50,6 +51,7 @@ struct StaticAccessView {
   SmallVector<int64_t> offsets;
   SmallVector<int64_t> sizes;
   int64_t rank = 0;
+  bool tiledSMEM = false;
 };
 
 struct StaticIndexCoverage {
@@ -156,10 +158,63 @@ matchStaticIndexCoverage(Value index) {
   return matchRangeWithStaticOffset(current);
 }
 
+static bool isTiledSMEMStorageRoot(Value value) {
+  return static_cast<bool>(tt::tle::getExactSMEMRoot(value));
+}
+
 static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
+  if (auto result = dyn_cast<OpResult>(value)) {
+    if (auto wait = dyn_cast<triton::nvidia_gpu::WarpGroupDotWaitOp>(
+            result.getOwner())) {
+      unsigned resultNo = result.getResultNumber();
+      if (resultNo < wait.getNumOperands())
+        return getStaticMemDescView(wait.getOperand(resultNo));
+    }
+  }
   auto memDescTy = dyn_cast<ttg::MemDescType>(value.getType());
   if (!memDescTy)
     return std::nullopt;
+
+  if (tt::tle::ExactSMEMStage stage = tt::tle::getExactSMEMStage(value)) {
+    auto srcView = getStaticMemDescView(stage.getSrc());
+    if (!srcView || srcView->offsets.empty() ||
+        srcView->offsets.size() != srcView->sizes.size())
+      return std::nullopt;
+    int64_t tilesPerStage = stage.root.getTilesPerStage();
+    // Alias analysis uses a stage-independent residue-class representative.
+    // A full stage may alias every tile, regardless of its dynamic stage
+    // value, so represent it as tiles [0, tiles_per_stage).
+    srcView->offsets[0] = 0;
+    srcView->sizes[0] = tilesPerStage;
+    srcView->rank = memDescTy.getRank();
+    srcView->tiledSMEM = true;
+    return srcView;
+  }
+
+  if (tt::tle::ExactSMEMTile tile = tt::tle::getExactSMEMTile(value)) {
+    auto srcView = getStaticMemDescView(tile.getSrc());
+    if (!srcView || srcView->offsets.empty() ||
+        srcView->offsets.size() != srcView->sizes.size())
+      return std::nullopt;
+    // Addresses are stage*tiles_per_stage+tile in atom units. Distinct tile
+    // residues cannot alias. Map every stage to the same representative so
+    // equal tiles conservatively overlap even when stage SSA values differ.
+    srcView->offsets[0] = tile.getTile();
+    srcView->sizes[0] = tile.getSpan();
+    srcView->rank = memDescTy.getRank();
+    srcView->tiledSMEM = true;
+    return srcView;
+  }
+
+  if (auto wgmmaView = value.getDefiningOp<tt::tle::MemDescWGMMAViewOp>()) {
+    auto srcView = getStaticMemDescView(wgmmaView.getSrc());
+    if (!srcView)
+      return std::nullopt;
+    // A virtual transpose retains the tiled stage's exact active interval
+    // rather than widening it to the unallocated carrier tail.
+    srcView->rank = memDescTy.getRank();
+    return srcView;
+  }
 
   if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
     auto srcView = getStaticMemDescView(index.getSrc());
@@ -209,7 +264,8 @@ static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
   SmallVector<int64_t> shape(memDescTy.getShape().begin(),
                              memDescTy.getShape().end());
   return StaticAccessView{value, SmallVector<int64_t>(shape.size(), 0),
-                          std::move(shape), memDescTy.getRank()};
+                          std::move(shape), memDescTy.getRank(),
+                          isTiledSMEMStorageRoot(value)};
 }
 
 static std::optional<StaticAccessView> getStaticLocalPointerView(Value value) {
@@ -311,6 +367,18 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
   }
 
   auto order = ttg::getOrder(rootTy);
+  // A tiled backing allocation may have leading physical tile dimensions that
+  // are absent from the atom encoding reused by its aliases. Shift the atom
+  // order over those leading dimensions, then append the tile dimensions from
+  // innermost to outermost. For [tile, row, col] with atom order [col, row],
+  // this derives [col, row, tile] without assuming a fixed storage rank.
+  if (view->tiledSMEM && order.size() < shape.size()) {
+    unsigned leadingRank = shape.size() - order.size();
+    for (unsigned &dim : order)
+      dim += leadingRank;
+    for (unsigned dim = leadingRank; dim > 0; --dim)
+      order.push_back(dim - 1);
+  }
   if (order.size() != shape.size())
     return std::nullopt;
 

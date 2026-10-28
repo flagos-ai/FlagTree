@@ -19,6 +19,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -452,8 +453,12 @@ static bool isKnownBrokenSqmmaConfig(
       bIsShared);
 }
 
+// This is deliberately kept only for architecture contracts that explicitly
+// allow CTA-level over-coverage (currently QY2's legacy wave128 path and the
+// F32/TF32 excess-warp compatibility path).  Ordinary PH1/PH1S operands use
+// selectExactWmmaConfig below and never pass through this heuristic.
 static SmallVector<unsigned, 2>
-selectWmmaWarpsPerCTAForPH1(unsigned m, unsigned n, unsigned numWarps,
+selectLegacyWmmaWarpsPerCTA(unsigned m, unsigned n, unsigned numWarps,
                             ArrayRef<unsigned> instrShape) {
   assert(instrShape.size() == 3 && "Unexpected instrShape rank");
   SmallVector<unsigned, 2> ret{1, 1};
@@ -467,6 +472,18 @@ selectWmmaWarpsPerCTAForPH1(unsigned m, unsigned n, unsigned numWarps,
   }
   return ret;
 }
+
+enum class WmmaAdmissionKind {
+  ExactPerWarp,
+  CtaOvercovered,
+  LegacyCta,
+};
+
+struct WmmaSelectedConfig {
+  SmallVector<unsigned, 3> instrShape;
+  SmallVector<unsigned, 2> warpsPerCTA;
+  WmmaAdmissionKind admission = WmmaAdmissionKind::ExactPerWarp;
+};
 
 static bool shouldUseSqmmaCOperand(Type aElemTy, Type dElemTy, unsigned m,
                                    unsigned n, uint32_t maxNumImpreciseAcc,
@@ -534,61 +551,169 @@ static SqmmaAccumulationContract selectSqmmaAccumulationContract(
   return contract;
 }
 
-static std::optional<SelectedConfig>
-#ifdef __TLE__
-selectWmmaConfig(const MusaDotProblem &problem,
-                 const triton::musa::MusaWmmaArchTraits &traits) {
-  unsigned m = problem.matrixShape.m;
-  unsigned n = problem.matrixShape.n;
-  unsigned k = problem.matrixShape.k;
-  unsigned numWarps = problem.numWarps;
-  Type elemTy = problem.aElemType;
-#else
-selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
-                 Type elemTy, const triton::musa::MusaWmmaArchTraits &traits) {
-#endif // __TLE__
+static std::optional<WmmaSelectedConfig>
+selectExactWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
+                      Type elemTy,
+                      const triton::musa::MusaWmmaArchTraits &traits) {
   if (numWarps == 0 || (numWarps & (numWarps - 1)) != 0)
+    return std::nullopt;
+  if (!traits.requiresExactWarpPartition)
     return std::nullopt;
 
   auto candidates = getWmmaCandidateInstrShapes(elemTy, traits);
-
   bool found = false;
-  SmallVector<unsigned, 3> bestInstrShape = {0, 0, 0};
-  unsigned bestInstCount = 0;
+  WmmaSelectedConfig best;
+  uint64_t bestInstCount = std::numeric_limits<uint64_t>::max();
+  uint64_t bestVolume = 0;
+  uint64_t bestRepM = std::numeric_limits<uint64_t>::max();
+  uint64_t bestRepN = std::numeric_limits<uint64_t>::max();
 
+  // Select the instruction shape and warp split as one candidate.  The
+  // PH1/PH1S C/D layouts multiply the native instruction tile by each warp
+  // axis, so exact mode requires every warp to own an integral number of
+  // native M/N tiles.  A later heuristic must never recompute this split.
   for (const auto &shape : candidates) {
-#ifdef __TLE__
-    SelectedConfig candidate;
-    llvm::append_range(candidate.instrShape, shape);
-    candidate.warpsPerCTA = selectWmmaWarpsPerCTAForPH1(m, n, numWarps, shape);
-    if (!validateWmmaConfig(problem, candidate, traits).succeeded())
-      continue;
-#else
     if (!triton::musa::lookupWmmaIntrinsic(elemTy, shape, traits.versionMajor,
                                            traits.versionMinor))
       continue;
-    if (m % shape[0] != 0 || n % shape[1] != 0 || k % shape[2] != 0)
-      continue;
-#endif // __TLE__
     unsigned instM = shape[0];
     unsigned instN = shape[1];
     unsigned instK = shape[2];
-    unsigned instCount = (m / instM) * (n / instN) * (k / instK);
-    if (!found || instCount < bestInstCount) {
-      bestInstCount = instCount;
-      bestInstrShape.assign(shape.begin(), shape.end());
-      found = true;
+    if (k % instK != 0)
+      continue;
+
+    for (unsigned warpsM = 1; warpsM <= numWarps;) {
+      if (numWarps % warpsM == 0) {
+        unsigned warpsN = numWarps / warpsM;
+        uint64_t tileM = static_cast<uint64_t>(instM) * warpsM;
+        uint64_t tileN = static_cast<uint64_t>(instN) * warpsN;
+        if (tileM <= m && tileN <= n && m % tileM == 0 && n % tileN == 0) {
+          uint64_t repM = m / tileM;
+          uint64_t repN = n / tileN;
+          uint64_t repK = k / instK;
+          uint64_t instCount = repM * repN * repK;
+          uint64_t volume = static_cast<uint64_t>(instM) * instN * instK;
+
+          // Keep the historical candidate order on exact ties.  Prefer a
+          // larger native tile and fewer repetitions only when the primary
+          // instruction count is equal; this is deterministic and avoids
+          // introducing a new shape heuristic into the admission fix.
+          bool better =
+              !found || instCount < bestInstCount ||
+              (instCount == bestInstCount &&
+               (volume > bestVolume ||
+                (volume == bestVolume &&
+                 (repM < bestRepM || (repM == bestRepM && repN < bestRepN)))));
+          if (better) {
+            found = true;
+            bestInstCount = instCount;
+            bestVolume = volume;
+            bestRepM = repM;
+            bestRepN = repN;
+            best.instrShape.assign(shape.begin(), shape.end());
+            best.warpsPerCTA = {warpsM, warpsN};
+            best.admission = WmmaAdmissionKind::ExactPerWarp;
+          }
+        }
+      }
+
+      // numWarps is known to be a power of two; avoid an unsigned wrap at
+      // the end of the divisor enumeration.
+      if (warpsM > numWarps / 2)
+        break;
+      warpsM <<= 1;
     }
   }
 
   if (!found)
     return std::nullopt;
-
-  SelectedConfig best;
-  best.instrShape = bestInstrShape;
-  best.warpsPerCTA =
-      selectWmmaWarpsPerCTAForPH1(m, n, numWarps, best.instrShape);
   return best;
+}
+
+static std::optional<WmmaSelectedConfig>
+selectLegacyWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
+                       Type elemTy,
+                       const triton::musa::MusaWmmaArchTraits &traits,
+                       WmmaAdmissionKind admission) {
+  if (numWarps == 0 || (numWarps & (numWarps - 1)) != 0)
+    return std::nullopt;
+
+  auto candidates = getWmmaCandidateInstrShapes(elemTy, traits);
+  bool found = false;
+  uint64_t bestInstCount = std::numeric_limits<uint64_t>::max();
+  unsigned bestShapeIndex = std::numeric_limits<unsigned>::max();
+  bool bestPreferredSplit = false;
+  WmmaSelectedConfig best;
+
+  // This is the deliberately retained CTA-level policy for QY2's legacy
+  // wave128 contract and the tested F32/TF32 excess-warp compatibility path.
+  // It is never used for ordinary PH1/PH1S low-precision dots.  Even here,
+  // enumerate shape and split together so the returned object is one coupled
+  // candidate; the old split helper is only a compatibility tie preference.
+  for (auto [shapeIndex, shape] : llvm::enumerate(candidates)) {
+    if (!triton::musa::lookupWmmaIntrinsic(elemTy, shape, traits.versionMajor,
+                                           traits.versionMinor))
+      continue;
+    unsigned instM = shape[0];
+    unsigned instN = shape[1];
+    unsigned instK = shape[2];
+    if (m % instM != 0 || n % instN != 0 || k % instK != 0)
+      continue;
+    uint64_t instCount =
+        static_cast<uint64_t>(m / instM) * (n / instN) * (k / instK);
+
+    auto preferredSplit = selectLegacyWmmaWarpsPerCTA(m, n, numWarps, shape);
+    for (unsigned warpsM = 1; warpsM <= numWarps;) {
+      if (numWarps % warpsM == 0) {
+        unsigned warpsN = numWarps / warpsM;
+        bool isPreferred =
+            preferredSplit[0] == warpsM && preferredSplit[1] == warpsN;
+        bool better = !found || instCount < bestInstCount ||
+                      (instCount == bestInstCount &&
+                       (shapeIndex < bestShapeIndex ||
+                        (shapeIndex == bestShapeIndex && isPreferred &&
+                         !bestPreferredSplit)));
+        if (better) {
+          found = true;
+          bestInstCount = instCount;
+          bestShapeIndex = shapeIndex;
+          bestPreferredSplit = isPreferred;
+          best.instrShape.assign(shape.begin(), shape.end());
+          best.warpsPerCTA = {warpsM, warpsN};
+          best.admission = admission;
+        }
+      }
+      if (warpsM > numWarps / 2)
+        break;
+      warpsM <<= 1;
+    }
+  }
+
+  if (!found)
+    return std::nullopt;
+  return best;
+}
+
+static std::optional<WmmaSelectedConfig>
+selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
+                 Type elemTy, bool allowTF32,
+                 const triton::musa::MusaWmmaArchTraits &traits) {
+  // QY2 has a wave128 layout contract and must retain its existing CTA-level
+  // policy until a dedicated wave-group selector is introduced.  Applying the
+  // PH1 wave32 split arithmetic here would reject valid QY2 multi-wave paths.
+  if (!traits.requiresExactWarpPartition)
+    return selectLegacyWmmaConfig(m, n, k, numWarps, elemTy, traits,
+                                  WmmaAdmissionKind::LegacyCta);
+
+  // Exact mode is always preferred, including F32/TF32.  The relaxed branch
+  // is only a compatibility escape for the documented excess-warp contract.
+  if (auto exact = selectExactWmmaConfig(m, n, k, numWarps, elemTy, traits))
+    return exact;
+
+  if (traits.supportsTf32Overcoverage && allowTF32 && elemTy.isF32())
+    return selectLegacyWmmaConfig(m, n, k, numWarps, elemTy, traits,
+                                  WmmaAdmissionKind::CtaOvercovered);
+  return std::nullopt;
 }
 
 static bool isSupportedSqmmaOperandType(Type elemTy, bool allowTF32) {
@@ -674,7 +799,10 @@ planSharedMemorySqmmaOperand(Value v, bool allowTranspose) {
     return std::nullopt;
 
   SmallVector<unsigned> newOrder = ttg::getOrderForMemory(argType);
-  if (!allowTranspose) {
+  bool preserveRank2SourceOrder =
+      rank == 2 &&
+      (argType.getElementType().isF16() || argType.getElementType().isBF16());
+  if (!allowTranspose && !preserveRank2SourceOrder) {
     newOrder.clear();
     for (int dim = static_cast<int>(rank) - 1; dim >= 0; --dim)
       newOrder.push_back(static_cast<unsigned>(dim));
@@ -907,6 +1035,22 @@ static Value promoteDotOperand(OpBuilder &builder, Location loc, Value operand,
   if (tt::type::isFloat8(srcElemTy))
     return tt::FpToFpOp::create(builder, loc, dstTy, operand);
 
+  // The MTGPU QY2 backend does not have a selectable scalar/vector BF16
+  // fpext pattern in every generic-dot shape.  Preserve the exact BF16 value
+  // by widening its bit representation and constructing the corresponding
+  // F32 exponent/mantissa bits.  This is equivalent to fpext, but lowers to
+  // integer zext/shl/bitcast operations that llc can select reliably.
+  if (srcElemTy.isBF16() && promoteElemTy.isF32()) {
+    auto i16Ty = tensorTy.clone(builder.getI16Type());
+    auto i32Ty = tensorTy.clone(builder.getI32Type());
+    Value bits = tt::BitcastOp::create(builder, loc, i16Ty, operand);
+    Value widened = arith::ExtUIOp::create(builder, loc, i32Ty, bits);
+    Value shiftValue = arith::ConstantIntOp::create(builder, loc, 16, 32);
+    Value shift = tt::SplatOp::create(builder, loc, i32Ty, shiftValue);
+    Value shifted = arith::ShLIOp::create(builder, loc, i32Ty, widened, shift);
+    return tt::BitcastOp::create(builder, loc, dstTy, shifted);
+  }
+
   if (isa<FloatType>(srcElemTy) && isa<FloatType>(promoteElemTy))
     return arith::ExtFOp::create(builder, loc, dstTy, operand);
   return operand;
@@ -949,7 +1093,7 @@ static void promoteResidualDotForFma(ModuleOp mod) {
 
     if (!isLowPrecisionFloatingForFma(aElemTy) ||
         !isLowPrecisionFloatingForFma(bElemTy) ||
-        !isLowPrecisionFloatingForFma(dElemTy))
+        (!isLowPrecisionFloatingForFma(dElemTy) && !dElemTy.isF32()))
       continue;
 
     Type carrierElemTy = builder.getF32Type();
@@ -960,6 +1104,11 @@ static void promoteResidualDotForFma(ModuleOp mod) {
     auto newDot = tt::DotOp::create(builder, loc, carrierTy, newA, newB, newC,
                                     dotOp.getInputPrecision(),
                                     dotOp.getMaxNumImpreciseAcc());
+    if (dElemTy.isF32()) {
+      dotOp.replaceAllUsesWith(newDot.getResult());
+      dotOp.erase();
+      continue;
+    }
     Value truncated =
         arith::TruncFOp::create(builder, loc, dTy, newDot.getResult());
     dotOp.replaceAllUsesWith(truncated);
@@ -1524,7 +1673,15 @@ public:
         !(*arch != triton::musa::MusaArch::QY2 && aElemTy.isF16() &&
           bElemTy.isF16()))
       return failure();
-    auto config = selectWmmaConfig(*problem, wmmaTraits);
+    auto config = selectWmmaConfig(
+        problem->matrixShape.m, problem->matrixShape.n, problem->matrixShape.k,
+        problem->numWarps, aElemTy, allowTF32, wmmaTraits);
+    if (config &&
+        !validateWmmaConfig(
+             *problem, SelectedConfig{config->instrShape, config->warpsPerCTA},
+             wmmaTraits)
+             .succeeded())
+      return failure();
 #else
     auto aTy = cast<RankedTensorType>(dotOp.getA().getType());
     auto bTy = cast<RankedTensorType>(dotOp.getB().getType());
@@ -1571,7 +1728,8 @@ public:
     unsigned k = matrixShape->k;
     unsigned numWarps = ttg::lookupNumWarps(dotOp);
 
-    auto config = selectWmmaConfig(m, n, k, numWarps, aElemTy, wmmaTraits);
+    auto config =
+        selectWmmaConfig(m, n, k, numWarps, aElemTy, allowTF32, wmmaTraits);
 #endif // __TLE__
     if (!config)
       return failure();

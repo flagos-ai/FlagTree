@@ -6,11 +6,12 @@ PARENT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 echo "$SCRIPT_DIR"
 
+# Let the tutorial provide BLOCK_N=128 by default so repeated --block-n
+# options in "$@" select exactly the requested sweep.
 python "${PARENT_DIR}/tle_hopper_fa_ws_pipelined_pingpong_persistent.py" \
   --warmup 25 \
   --rep 100 \
   --block-m 128 \
-  --block-n 128 \
   --cuda-graph \
   --out "${SCRIPT_DIR}/tle_fa_user_promise_benchmark.csv" \
   --problem 4x32x1024x128 \

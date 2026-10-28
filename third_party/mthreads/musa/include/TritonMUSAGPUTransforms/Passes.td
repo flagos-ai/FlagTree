@@ -21,7 +21,7 @@ def TritonMUSAGPUPipeline
     "mlir::triton::musa::MUSADialect"
   ];
   let options = [
-    Option<"numStages", "num-stages", "int32_t", /*default*/"3",
+    Option<"numStages", "num-stages", "int32_t", /*default*/"1",
            "number of pipeline stages">,
     Option<"dumpIntermediateSteps", "dump-intermediate-steps",
            "bool", /*default*/"false",

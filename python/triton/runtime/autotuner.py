@@ -32,7 +32,7 @@ from typing import Dict, Tuple, List, Optional
 
 from .. import knobs
 from .jit import KernelInterface, JITFunction
-from .errors import OutOfResources, PTXASError, AutotunerError
+from .errors import BackendCompilerError, OutOfResources, PTXASError, AutotunerError
 from .driver import driver
 from .cache import get_cache_manager, triton_key
 from .adjust_kernel_param import auto_adjust_block_sizes
@@ -205,7 +205,9 @@ class Autotuner(KernelInterface):
 
         try:
             rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
+        # except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
+        # flagtree tileir: prune backend compiler failures during autotuning.
+        except (OutOfResources, CompileTimeAssertionFailure, PTXASError, BackendCompilerError) as e:
             if verbose:
                 print(f"Autotuning failed with {e}")
             rett = [float("inf"), float("inf"), float("inf")]

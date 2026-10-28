@@ -1,4 +1,17 @@
+from typing import Optional
+
 from triton.errors import TritonError
+from triton.runtime.errors import BackendCompilerError
+
+
+class TileirasError(BackendCompilerError):
+
+    def __init__(self, error_message: Optional[str] = None):
+        self.error_message = error_message
+
+    def __str__(self) -> str:
+        error_message = self.error_message or ""
+        return f"tileiras error: {error_message}"
 
 
 class HitFallback(TritonError):

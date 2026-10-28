@@ -31,7 +31,10 @@ def min_dot_size(target: GPUTarget):
 
 
 # Whole-byte dtypes covered by the inherited async-copy/descriptor movement
-# paths; the fp8 portion follows the per-capability storage whitelist
+# paths; the fp8 portion follows the per-capability storage whitelist. The
+# async-copy path additionally gates on a >= 4-byte per-thread copy vector
+# (cp.async-style, dtype-agnostic); narrower copies fall back to ordinary
+# tt.load.
 _MOVEMENT_DTYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "fp16", "bf16", "fp32",
                     "fp64")
 
@@ -211,7 +214,6 @@ def get_musa_version() -> str:
         return "unknown"
 
 
-@functools.lru_cache(None)
 def file_hash(path: str) -> str:
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
@@ -314,12 +316,14 @@ def _local_backend_tool_path(binary: str) -> Optional[str]:
 
 
 def _select_tool_path(binary: str, explicit_path: Optional[str], tool_getter) -> Optional[str]:
-    local_path = _local_backend_tool_path(binary)
-    if local_path:
-        return local_path
+    # Honor an explicit toolchain override before the bundled binaries. New
+    # lowering contracts may require a newer MTCC than the wheel contains.
     path = _validated_tool_path(explicit_path)
     if path:
         return path
+    local_path = _local_backend_tool_path(binary)
+    if local_path:
+        return local_path
     return _maybe_tool_path(tool_getter())
 
 
@@ -721,7 +725,7 @@ def _llc_extra_options(metadata: Dict[str, object], options: "MUSAOptions", capa
 class MUSAOptions:
     num_warps: int = 4
     num_ctas: int = 1
-    num_stages: int = 3
+    num_stages: int = 1
     warp_size: int = 32
     maxnreg: Optional[int] = None
     cluster_dims: tuple = (1, 1, 1)  # flagtree mthreads3.2
@@ -759,6 +763,8 @@ class MUSAOptions:
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get("libdevice", None):
             extern_libs["libdevice"] = knobs.musa.libdevice_path or str(default_libdir / "libdevice.31.bc")
+        if self.arch is not None and _capability_from_arch(self.arch) == 31 and not extern_libs.get("printf", None):
+            extern_libs["printf"] = knobs.musa.libprintf_path or str(default_libdir / "libprintf.bc")
         object.__setattr__(self, "extern_libs", tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
             "num_warps must be a power of 2"
@@ -1063,6 +1069,8 @@ class MUSABackend(BaseBackend):
             passes.ttgpuir.add_schedule_loops(pm)
             mthreads.passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
         else:
+            passes.ttgpuir.add_fuse_nested_loops(pm)
+            passes.common.add_canonicalizer(pm)
             passes.ttir.add_triton_licm(pm)
 
         passes.common.add_canonicalizer(pm)
@@ -1149,8 +1157,12 @@ class MUSABackend(BaseBackend):
         mthreads.attach_datalayout(llvm_mod)
 
         if options.extern_libs:
-            paths = [path for (name, path) in options.extern_libs]
-            llvm.link_extern_libs(llvm_mod, paths)
+            inline_paths = [path for (name, path) in options.extern_libs if name != "printf"]
+            printf_paths = [path for (name, path) in options.extern_libs if name == "printf"]
+            if inline_paths:
+                llvm.link_extern_libs(llvm_mod, inline_paths)
+            if printf_paths:
+                llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))

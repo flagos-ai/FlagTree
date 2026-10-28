@@ -14,6 +14,7 @@
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -108,8 +109,45 @@ struct ReifyMemrefUnrealizedCast
   }
 };
 
-static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
-  return ptr::GenericSpaceAttr::get(ctx);
+static Attribute getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return mlir::triton::getDefaultBridgeMemorySpace(ctx);
+}
+
+/// Offset used by semantic.py to tag xsmt.alloc pointers.
+/// scope "global"->10, "tcm"->11, "l2"->12, "fragment"->13.
+/// This avoids collision with Triton's default address_space=1.
+static constexpr int kScopeAddrSpaceOffset = 10;
+
+/// Derive the memref memory space from a triton::PointerType.
+/// If the pointer carries a tagged address space (>= kScopeAddrSpaceOffset),
+/// decode it back to the corresponding xsmt::MemorySpaceAttr so that the
+/// TypeConverter produces memref types whose memory space matches what
+/// scopeToMemorySpace() returns in the xsmt.alloc lowering path.
+///
+/// Frontend scope -> canonical spine-mlir memory space:
+///   10 (global)  -> #xsmt.memory_space<global>
+///   11 (tcm)     -> #xsmt.memory_space<thread_local>
+///   12 (l2)      -> #xsmt.memory_space<cluster_shared_l2>
+///   13 (fragment)-> #xsmt.memory_space<fragment>
+static Attribute getMemorySpaceForPtr(triton::PointerType ptrType) {
+  MLIRContext *ctx = ptrType.getContext();
+  int addrSpace = ptrType.getAddressSpace();
+  if (addrSpace >= kScopeAddrSpaceOffset) {
+    int decoded = addrSpace - kScopeAddrSpaceOffset;
+    switch (decoded) {
+    case 0:
+      return mlir::triton::scopeToMemorySpace("global", ctx);
+    case 1:
+      return mlir::triton::scopeToMemorySpace("tcm", ctx);
+    case 2:
+      return mlir::triton::scopeToMemorySpace("l2", ctx);
+    case 3:
+      return mlir::triton::scopeToMemorySpace("fragment", ctx);
+    default:
+      return mlir::triton::scopeToMemorySpace("global", ctx);
+    }
+  }
+  return getPtrBridgeMemorySpace(ctx);
 }
 
 class PtrToMemrefConverter : public TypeConverter {
@@ -133,7 +171,7 @@ public:
                                            dynStrides);
 
       return MemRefType::get(shape, pointeeType, layout,
-                             getPtrBridgeMemorySpace(ctx));
+                             getMemorySpaceForPtr(ptrType));
     });
     addConversion([](triton::PointerType ptrType) -> Type {
       MLIRContext *ctx = ptrType.getContext();
@@ -149,7 +187,7 @@ public:
             ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
 
         return MemRefType::get(shape, elementType, layout,
-                               getPtrBridgeMemorySpace(ctx));
+                               getMemorySpaceForPtr(ptrType));
       }
 
       SmallVector<int64_t> dynStrides(/*Size=*/1, ShapedType::kDynamic);
@@ -157,7 +195,7 @@ public:
           StridedLayoutAttr::get(ctx,
                                  /*offset=*/ShapedType::kDynamic, dynStrides);
       return MemRefType::get({ShapedType::kDynamic}, pointeeType, layout,
-                             getPtrBridgeMemorySpace(ctx));
+                             getMemorySpaceForPtr(ptrType));
     });
     addConversion([](xsmt::BufferType bufTy) -> Type {
       MLIRContext *ctx = bufTy.getContext();
@@ -168,7 +206,10 @@ public:
       auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic,
                                            dynStrides);
 
-      return MemRefType::get(shape, elemTy, layout, /*memorySpace=*/0);
+      // Use the scope encoded in BufferType to derive the memory space.
+      StringRef scopeName = bufTy.getScopeKind().getValue();
+      Attribute memSpace = mlir::triton::scopeToMemorySpace(scopeName, ctx);
+      return MemRefType::get(shape, elemTy, layout, memSpace);
     });
     addConversion([](xsmt::MBarrierType t) -> Type {
       auto *ctx = t.getContext();
@@ -202,11 +243,17 @@ public:
         return nullptr;
       // Let memref::CastOp decide compatibility. It correctly allows
       // static->dynamic (loosening) and other valid memref casts.
-      if (!memref::CastOp::areCastCompatible(inputType, resultType))
-        return nullptr;
+      if (memref::CastOp::areCastCompatible(inputType, resultType))
+        return memref::CastOp::create(builder, loc, resultType, inputs[0])
+            .getResult();
 
-      return memref::CastOp::create(builder, loc, resultType, inputs[0])
-          .getResult();
+      // Memory space mismatch (e.g. IntegerAttr from xsmt.alloc vs
+      // #ptr.generic_space from Triton ptr path): emit an
+      // unrealized_conversion_cast and let ReconcilePtrCastsPass
+      // resolve it later.
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
+          .getResult(0);
     });
 
     addSourceMaterialization([&](OpBuilder &builder, Type resultType,

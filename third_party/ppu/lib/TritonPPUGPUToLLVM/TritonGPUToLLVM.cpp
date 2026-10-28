@@ -108,10 +108,11 @@ public:
 #ifdef __TLE__
 // Partial conversion target for the TLE lowering pre-pass on PPU.
 // PPU only ships a subset of TLE: local_pointers, extract*, pack, extract_tile,
-// insert_tile, dsl_region. WGMMA/TMA/distributed_barrier/exclusive_cumsum/
-// remote_pointers are NVIDIA-only at this stage — they are left out of the
-// pattern set and will produce a legalization failure if a kernel emits them,
-// which is the intended behavior until those features are ported.
+// insert_tile, dsl_region, memdesc_alias. WGMMA/TMA/distributed_barrier/
+// exclusive_cumsum/remote_pointers are NVIDIA-only at this stage — they are
+// left out of the pattern set and will produce a legalization failure if a
+// kernel emits them, which is the intended behavior until those features are
+// ported.
 class TleLLVMConversionTarget : public ConversionTarget {
 public:
   explicit TleLLVMConversionTarget(MLIRContext &ctx,
@@ -286,12 +287,12 @@ struct ConvertTritonGPUToLLVMPPU
     {
       TleLLVMConversionTarget tleTarget(*context, typeConverter);
       RewritePatternSet tlePatterns(context);
-      // local_pointers + Extract*/Pack/DSL-region/extract_tile/insert_tile —
-      // the subset of TLE ops PPU supports today. Patterns for distributed
-      // barriers, exclusive cumsum, WGMMA descriptor views, WGMMA fences and
-      // TMA store commit groups are intentionally not registered: those ops
-      // never appear on PPU and a legalization failure is the right signal if
-      // a kernel does emit them.
+      // local_pointers + Extract*/Pack/DSL-region/extract_tile/insert_tile
+      // + memdesc_alias — the subset of TLE ops PPU supports today. Patterns
+      // for distributed barriers, exclusive cumsum, WGMMA descriptor views,
+      // WGMMA fences and TMA store commit groups are intentionally not
+      // registered: those ops never appear on PPU and a legalization failure
+      // is the right signal if a kernel does emit them.
       mlir::triton::tle::populateDSLRegionOpToLLVMPatterns(
           typeConverter, tlePatterns, benefit);
       mlir::triton::tle::populateExtractOpToLLVMPatterns(typeConverter,
@@ -304,6 +305,8 @@ struct ConvertTritonGPUToLLVMPPU
           typeConverter, tlePatterns, targetInfo, benefit);
       mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
           typeConverter, tlePatterns, targetInfo, benefit);
+      mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
+          typeConverter, tlePatterns, benefit);
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
           typeConverter, targetInfo, tlePatterns, benefit);
       if (failed(

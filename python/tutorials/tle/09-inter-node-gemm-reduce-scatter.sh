@@ -47,4 +47,4 @@ exec torchrun \
     --node-rank="$node_rank" \
     --master-addr="$master_addr" \
     --master-port="$master_port" \
-    "$script_dir/08-inter-node-gemm-reduce-scatter.py" "$@"
+    "$script_dir/09-inter-node-gemm-reduce-scatter.py" "$@"

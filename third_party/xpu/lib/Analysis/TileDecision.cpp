@@ -7,16 +7,29 @@ namespace mlir {
 namespace triton {
 namespace xpu {
 
+// The row the block-to-tree width conversion runs on.
+//
+// `widthPerCore` comes off the segment's store value, and that is a *lower*
+// bound on the tree's row: an f16 store fed by f32 arithmetic is 8 slots per
+// core against 16, so the store row alone halves the trip count asked for.
+// Taking the max keeps the other direction deliberately -- a store row wider
+// than every vector row is the unvectorized side of a boundary (truncstore's i8
+// store against an 8-slot i32 row), and there the inflated target is what makes
+// tier 1 veto down to the vector-row-bound fallback.
+static int64_t conversionRow(const TileContext &ctx) {
+  return std::max<int64_t>({ctx.widthPerCore, ctx.treeVecWidth, 1});
+}
+
 int64_t vrfBudgetTargetFrom(const TileContext &ctx, int64_t blockTarget) {
   // Converted to this tree's row: what is shared between the trees in one block
   // is the per-iteration width, not the number of iterations.
-  int64_t target = llvm::divideCeil(blockTarget * ctx.widthPerCore,
+  int64_t target = llvm::divideCeil(blockTarget * conversionRow(ctx),
                                     std::max<int64_t>(ctx.maxVecWidth, 1));
   return std::max<int64_t>(target, 1);
 }
 
 int64_t pressureAtTrip(const TileContext &ctx, int64_t peak, int64_t k) {
-  return llvm::divideCeil(peak * std::max<int64_t>(ctx.widthPerCore, 1),
+  return llvm::divideCeil(peak * conversionRow(ctx),
                           std::max<int64_t>(k, 1) *
                               std::max<int64_t>(ctx.maxVecWidth, 1));
 }
@@ -149,17 +162,17 @@ public:
 // is "predicted over-budget vregs x instructions each one costs", and
 // `spills(k)` is deliberately absent (§2.4 rejected `spillPrice x spills(k)`).
 //
-//   over(k)  = max(0, ceil(peakVRegs * widthPerCore / (k * maxVecWidth))
-//                      - vrfBudget)
+//   over(k)  = max(0, ceil(peakVRegs * row / (k * maxVecWidth)) - vrfBudget)
+//              with row = max(widthPerCore, treeVecWidth)
 //   price(k) = kPressureInstrsPerVReg * over(k)
 //
 // The inner expression is `vrfBudgetTarget`'s algebra solved for the pressure
 // at a given trip count, on purpose: the demotion has to be an *identity* on
 // today's decisions before it can be an improvement, and sharing the algebra is
 // what makes that checkable instead of coincidental. The
-// `widthPerCore / maxVecWidth` factor is the same block-to-tree conversion
-// (§1.10) -- `peakVRegs` is the block's peak at its widest row, so a narrower
-// tree in the same block is not under `peakVRegs/k` of pressure.
+// `row / maxVecWidth` factor is the same block-to-tree conversion (§1.10) --
+// `peakVRegs` is the block's peak at its widest row, so a narrower tree in the
+// same block is not under `peakVRegs/k` of pressure.
 //
 // Calibration: welford region-reduce has `peakVRegs=32` and `budget=24`, so
 // over(1)=8 and over(2)=0 against a measured +578 machine instructions per row
@@ -200,8 +213,8 @@ public:
 // reason it is safe is an identity, not an experiment. Tier 1 admits exactly
 // `k >= vrfBudgetTarget(ctx)`, and for every such k:
 //
-//   k * maxVecWidth / widthPerCore >= blockTarget >= peakVRegs / vrfBudget
-//     =>  peakVRegs * widthPerCore / (k * maxVecWidth) <= vrfBudget
+//   k * maxVecWidth / row >= blockTarget >= peakVRegs / vrfBudget
+//     =>  peakVRegs * row / (k * maxVecWidth) <= vrfBudget
 //     =>  over(k) = 0
 //
 // so the price is identically zero on the whole feasible set and cannot move

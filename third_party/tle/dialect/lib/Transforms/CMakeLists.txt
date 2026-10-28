@@ -14,6 +14,8 @@ add_triton_library(TritonTLETransforms
   TleOptimizeExclusiveCumsumLayouts.cpp
   TleLowerExclusiveCumsum.cpp
   TleLowerWGMMA.cpp
+  TlePlanLogicalDomains.cpp
+  TleLogicalDomains.cpp
   TleLowerAsyncLoad.cpp
   TleLowerPipeToNvws.cpp
   TleLowerBarriers.cpp

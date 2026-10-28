@@ -22,11 +22,14 @@
  */
 
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
+#include "tle/dialect/include/IR/SMEMPlan.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -215,6 +218,11 @@ static Value getMemDescRoot(Value value) {
       current = alias.getSrc();
       continue;
     }
+    if (auto reinterpret = current.getDefiningOp<ttg::MemDescReinterpretOp>();
+        reinterpret && reinterpret->hasAttr(kExactSMEMStageAttr)) {
+      current = reinterpret.getSrc();
+      continue;
+    }
     break;
   }
   return current;
@@ -225,6 +233,11 @@ matchStaticSubviewMemDesc(triton::StoreOp store) {
   Value ptr = stripConvertLayouts(store.getPtr());
   auto localPointers = ptr.getDefiningOp<tle::LocalPointersOp>();
   if (!localPointers)
+    return std::nullopt;
+  // A tiled stage carrier may contain an unallocated power-of-two tail.
+  // Producer stores must use exact tile views so a generic full local_ptr
+  // store cannot be rewritten into an out-of-bounds cp.async.
+  if (getExactSMEMStage(localPointers.getSrc()))
     return std::nullopt;
 
   auto valueTy = dyn_cast<RankedTensorType>(store.getValue().getType());
@@ -283,6 +296,11 @@ matchAsyncStoreCandidate(triton::StoreOp store) {
   if (!load || !load->hasOneUse())
     return std::nullopt;
   if (load.getIsVolatile())
+    return std::nullopt;
+  // The current AsyncCopyGlobalToLocal lowering only implements the implicit
+  // zero fill; a non-zero `other` operand is ignored. Keep the regular
+  // load/store pair so the requested fill value is honored.
+  if (load.getOther() && !isZeroConst(load.getOther()))
     return std::nullopt;
   if (!isa<RankedTensorType>(load.getType()))
     return std::nullopt;
@@ -418,6 +436,8 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
         candidate->load.getCache(), candidate->load.getEvict(),
         candidate->load.getIsVolatile());
     asyncCopy->setAttr(kTleLocalPointerAsyncStoreAttr, builder.getUnitAttr());
+    if (Attribute plan = store->getAttr(kCopyPlanAttr))
+      asyncCopy->setAttr(kCopyPlanAttr, plan);
     tokens.push_back(asyncCopy.getToken());
   }
 

@@ -11,6 +11,7 @@
 #include "triton-shared/Conversion/UnstructuredToMemref/UnstructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -47,18 +48,15 @@ namespace mlir::triton {
 
 namespace {
 
-static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
-  return ptr::GenericSpaceAttr::get(ctx);
-}
-
 class PtrToUnrankedMemrefConverter : public TypeConverter {
 public:
   PtrToUnrankedMemrefConverter() {
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
       auto *ctx = ptrType.getContext();
-      return UnrankedMemRefType::get(ptrType.getPointeeType(),
-                                     getPtrBridgeMemorySpace(ctx));
+      return UnrankedMemRefType::get(
+          ptrType.getPointeeType(),
+          mlir::triton::getDefaultBridgeMemorySpace(ctx));
     });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
@@ -76,7 +74,8 @@ static MemRefType getMemrefTypeForScalarPtr(triton::PointerType ptrType,
   auto layout = StridedLayoutAttr::get(context, ShapedType::kDynamic, strides);
   auto elemType = ptrType.getPointeeType();
   auto memrefType =
-      MemRefType::get({1}, elemType, layout, getPtrBridgeMemorySpace(context));
+      MemRefType::get({1}, elemType, layout,
+                      mlir::triton::getDefaultBridgeMemorySpace(context));
   return memrefType;
 }
 
@@ -114,6 +113,29 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
         ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1)} /*strides*/);
 
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
+
+    if (auto mask = gatherOp.getMask()) {
+      // Masked scalar load is predicated: yield `other` (or zero when
+      // absent) when the predicate is false, mirroring GatherConverter.
+      Value elseValue = gatherOp.getOther();
+      if (!elseValue) {
+        auto zeroAttr = rewriter.getZeroAttr(gatherOp.getType());
+        assert(zeroAttr && "unexpected element type");
+        elseValue = arith::ConstantOp::create(rewriter, loc, zeroAttr);
+      }
+      auto ifOp = scf::IfOp::create(
+          rewriter, loc, mask,
+          [&](OpBuilder &b, Location l) {
+            auto load = affine::AffineLoadOp::create(b, l, memref, zeroMap,
+                                                     ValueRange{});
+            scf::YieldOp::create(b, l, load.getResult());
+          },
+          [&](OpBuilder &b, Location l) {
+            scf::YieldOp::create(b, l, elseValue);
+          });
+      rewriter.replaceOp(gatherOp, ifOp.getResult(0));
+      return success();
+    }
 
     auto scalarLoadOp = affine::AffineLoadOp::create(rewriter, loc, memref,
                                                      zeroMap, ValueRange{});
@@ -161,8 +183,18 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
     auto storeVal = scatterOp.getValue();
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
 
-    affine::AffineStoreOp::create(rewriter, loc, storeVal, memref, zeroMap,
-                                  ValueRange{});
+    if (auto mask = scatterOp.getMask()) {
+      // Masked scalar store is predicated: guard it with scf.if instead of
+      // writing unconditionally, mirroring ScatterConverter.
+      scf::IfOp::create(rewriter, loc, mask, [&](OpBuilder &b, Location l) {
+        affine::AffineStoreOp::create(b, l, storeVal, memref, zeroMap,
+                                      ValueRange{});
+        scf::YieldOp::create(b, l);
+      });
+    } else {
+      affine::AffineStoreOp::create(rewriter, loc, storeVal, memref, zeroMap,
+                                    ValueRange{});
+    }
     rewriter.eraseOp(scatterOp);
 
     return success();
@@ -203,7 +235,8 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
             rewriter, loc,
             MemRefType::get({ShapedType::kDynamic}, resultType.getElementType(),
                             AffineMap(),
-                            getPtrBridgeMemorySpace(rewriter.getContext())),
+                            mlir::triton::getDefaultBridgeMemorySpace(
+                                rewriter.getContext())),
             ptr)
             .getResult();
 
@@ -328,7 +361,8 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
             rewriter, loc,
             MemRefType::get({ShapedType::kDynamic}, valueType.getElementType(),
                             AffineMap(),
-                            getPtrBridgeMemorySpace(rewriter.getContext())),
+                            mlir::triton::getDefaultBridgeMemorySpace(
+                                rewriter.getContext())),
             ptr)
             .getResult();
 

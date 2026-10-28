@@ -7,11 +7,6 @@ add_triton_library(TritonTileIRTransforms
 
   DEPENDS
   TritonTileIRTransformsIncGen
-  TritonGPUTableGen
-  TritonGPUAttrDefsIncGen
-  TritonGPUCTAAttrIncGen
-  TritonGPUTypeInterfacesIncGen
-  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRPass
@@ -21,7 +16,9 @@ add_triton_library(TritonTileIRTransforms
   MLIRSCFDialect
   MLIRFuncDialect
   MLIRUBDialect
+  MLIRGPUDialect
   TritonIR
+  TritonTileIRAnalysis
   Utils
   ${CUDA_TILE_INSTALL_DIR}/lib/libCudaTileDialect.a
 )

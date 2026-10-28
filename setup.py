@@ -25,6 +25,7 @@ import platform
 import re
 import contextlib
 import functools  # FlagPrism
+import importlib.machinery
 import shlex
 import shutil
 import subprocess
@@ -143,7 +144,14 @@ class BackendInstaller:
             tools_dir = None
 
         for file in ["compiler.py", "driver.py"]:
-            assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
+            # The XPU backend ships its Python implementation compiled, so the
+            # backend entry points may be extension modules rather than sources.
+            stem = file[:-len(".py")]
+            found = any(
+                os.path.exists(os.path.join(backend_path, stem + suffix))
+                for suffix in (".py", *importlib.machinery.EXTENSION_SUFFIXES))
+            assert found, f"${file} does not exist in ${backend_path}"
+            # assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
 
         install_dir = os.path.join(os.path.dirname(__file__), "python", "triton", "backends", backend_name)
 
@@ -458,6 +466,7 @@ class CMakeBuildPy(build_py):
         # FlagPrism: prepare the external component tree before compiling.
         FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)
         self.run_command('build_ext')
+        helper.generate_backend_intrinsic_tables()
         helper.write_flagtree_backend_file()  # flagtree
         helper.overlay_backend_runtime_so(self, backends)  # flagtree
         helper.refresh_generated_backend_packages(self, backends)  # flagtree
@@ -496,7 +505,7 @@ class CMakeBuild(build_ext):
         # with an actionable message otherwise. Done here (build_ext) rather than at
         # import so non-build commands don't run the check.
         helper.check_pybind11_abi()
-        if active_backend not in ("xpu", ):
+        if active_backend not in ("xpu", "spacemit"):
             download_and_copy_dependencies()
 
         try:
@@ -609,6 +618,11 @@ class CMakeBuild(build_ext):
 
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
+        # FlagPrism: the NVIDIA profiler requires CUPTI, so reuse Proton's
+        # existing dependency discovery only for the NVIDIA backend.
+        elif (FLAGPRISM_SETUP.enabled and os.getenv("FLAGPRISM_BACKEND", "").strip().lower() == "nvidia"):
+            cmake_args += self.get_proton_cmake_args()
+        # end FlagPrism
         cmake_args += FLAGPRISM_SETUP.cmake_args(self.build_lib)  # FlagPrism
         cmake_args += FLAGPRISM_SETUP.dependency_cmake_args(self)  # FlagPrism
 

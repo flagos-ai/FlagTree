@@ -1,6 +1,6 @@
 """
-最简单的矩阵乘法示例，使用 tl.make_block_ptr 进行内存访问。
-C = A @ B, 其中 A: [M, K], B: [K, N], C: [M, N]
+Simplest matrix multiplication example, using tl.make_block_ptr for memory access.
+C = A @ B, where A: [M, K], B: [K, N], C: [M, N]
 """
 
 import torch
@@ -32,7 +32,7 @@ def mm_kernel(
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    # K == BLOCK_K，单次加载完整 K 维度
+    # K == BLOCK_K: load the full K dimension in one shot
     a_block_ptr = tl.make_block_ptr(
         base=a_ptr,
         shape=(M, K),
@@ -53,7 +53,7 @@ def mm_kernel(
     b = tl.load(b_block_ptr, boundary_check=(0, 1))
     acc = tl.dot(a, b)
 
-    # 存储结果
+    # store the result
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr,
         shape=(M, N),

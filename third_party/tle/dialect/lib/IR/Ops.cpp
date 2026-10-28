@@ -26,9 +26,11 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include <cctype>
@@ -60,6 +62,58 @@ void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
   state.addOperands(index);
   state.addAttribute("tile_shape", builder.getDenseI64ArrayAttr(tileShape));
   state.addTypes(resultType);
+}
+
+std::optional<int64_t> getStaticExtractTileIndex(ExtractTileOp op) {
+  auto indexConstOp = op.getIndex().getDefiningOp<arith::ConstantOp>();
+  if (!indexConstOp)
+    return std::nullopt;
+  return cast<IntegerAttr>(indexConstOp.getValue()).getInt();
+}
+
+bool isExtractTileCTAAligned(ExtractTileOp op, int64_t linearIndex) {
+  auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+  if (!srcTy)
+    return false;
+  auto blocked =
+      dyn_cast_or_null<triton::gpu::BlockedEncodingAttr>(srcTy.getEncoding());
+  auto tileShapeAttr = op->getAttrOfType<DenseI64ArrayAttr>("tile_shape");
+  if (!blocked || !tileShapeAttr)
+    return false;
+
+  auto srcShape = srcTy.getShape();
+  auto tileShape = tileShapeAttr.asArrayRef();
+  if (srcShape.size() != tileShape.size())
+    return false;
+
+  auto sizePerThread = blocked.getSizePerThread();
+  auto threadsPerWarp = blocked.getThreadsPerWarp();
+  auto warpsPerCTA = blocked.getWarpsPerCTA();
+  SmallVector<int64_t> logicalGrid(srcShape.size());
+  SmallVector<int64_t> tileCoords(srcShape.size());
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    if (tileShape[i] <= 0 || srcShape[i] % tileShape[i] != 0)
+      return false;
+    logicalGrid[i] = srcShape[i] / tileShape[i];
+  }
+
+  int64_t remain = linearIndex;
+  for (int i = static_cast<int>(srcShape.size()) - 1; i >= 0; --i) {
+    tileCoords[i] = remain % logicalGrid[i];
+    remain /= logicalGrid[i];
+  }
+  if (remain != 0 || linearIndex < 0)
+    return false;
+
+  for (size_t i = 0; i < srcShape.size(); ++i) {
+    int64_t ctaTile = static_cast<int64_t>(sizePerThread[i]) *
+                      static_cast<int64_t>(threadsPerWarp[i]) *
+                      static_cast<int64_t>(warpsPerCTA[i]);
+    int64_t offset = tileCoords[i] * tileShape[i];
+    if (ctaTile <= 0 || tileShape[i] % ctaTile != 0 || offset % ctaTile != 0)
+      return false;
+  }
+  return true;
 }
 
 // ============================================================================
@@ -282,7 +336,6 @@ LogicalResult WGMMAOp::verify() {
   auto aType = cast<triton::gpu::TensorOrMemDesc>(getA().getType());
   auto bType = cast<triton::gpu::MemDescType>(getB().getType());
   auto cType = cast<RankedTensorType>(getC().getType());
-  auto dType = cast<RankedTensorType>(getD().getType());
 
   if (aType.getRank() != 2 || bType.getRank() != 2 || cType.getRank() != 2)
     return emitOpError("expects rank-2 A, B, and accumulator operands");
@@ -297,20 +350,147 @@ LogicalResult WGMMAOp::verify() {
   ArrayRef<int64_t> aShape = aType.getShape();
   ArrayRef<int64_t> bShape = bType.getShape();
   ArrayRef<int64_t> cShape = cType.getShape();
-  ArrayRef<int64_t> dShape = dType.getShape();
   if (aShape[1] != bShape[0])
     return emitOpError("expects A and B K dimensions to match");
   if (cShape[0] != aShape[0] || cShape[1] != bShape[1])
     return emitOpError("expects accumulator shape to be MxN from A and B");
-  if (dShape != cShape)
-    return emitOpError("expects result shape to match accumulator shape");
+
+  IntegerAttr activeN = getActiveNAttr();
+  IntegerAttr activeK = getActiveKAttr();
+  ExactSMEMStage tiledBStage = getExactSMEMStage(getB());
+  ExactSMEMStage tiledAStage;
+  if (isa<triton::gpu::MemDescType>(getA().getType()))
+    tiledAStage = getExactSMEMStage(getA());
+
+  // Keep the original verifier contract for ordinary WGMMA.  The stricter
+  // type table and bounded-domain checks below are only for logical-domain
+  // lowering, which is identified by an active extent or a tiled SMEM stage.
+  if (!activeN && !activeK && !tiledBStage && !tiledAStage) {
+    auto dType = cast<RankedTensorType>(getD().getType());
+    if (dType.getShape() != cShape)
+      return emitOpError("expects result shape to match accumulator shape");
+    if (aShape[0] < 64 || aShape[0] % 64 != 0)
+      return emitOpError("expects M dimension to be divisible by 64");
+    if (bShape[1] < 8 || bShape[1] % 8 != 0)
+      return emitOpError("expects N dimension to be divisible by 8");
+    if (aShape[1] < 16)
+      return emitOpError("expects K dimension to be at least 16");
+    return success();
+  }
+
+  Type aElemType = aType.getElementType();
+  Type bElemType = bType.getElementType();
+  std::optional<int64_t> instructionK = getWGMMAInstructionK(aElemType);
+  if (!instructionK || !isSupportedWGMMATypeCombination(aElemType, bElemType,
+                                                        cType.getElementType(),
+                                                        getInputPrecision()))
+    return emitOpError(
+        "has an unsupported Hopper WGMMA operand, accumulator, or input "
+        "precision combination");
 
   if (aShape[0] < 64 || aShape[0] % 64 != 0)
     return emitOpError("expects M dimension to be divisible by 64");
   if (bShape[1] < 8 || bShape[1] % 8 != 0)
     return emitOpError("expects N dimension to be divisible by 8");
-  if (aShape[1] < 16)
-    return emitOpError("expects K dimension to be at least 16");
+  if (aShape[1] < *instructionK)
+    return emitOpError("expects K dimension to contain at least one WGMMA "
+                       "instruction for its operand type");
+
+  if (tiledAStage)
+    return emitOpError(
+        "does not permit a tiled SMEM stage as the WGMMA A operand");
+  if (tiledBStage && !tiledBStage.viewTransposed &&
+      !supportsWGMMAOperandTranspose(bElemType))
+    return emitOpError(
+        "TF32, FP8, and int8 tiled B require a transposed logical view so "
+        "WGMMA consumes a column-major descriptor without PTX transpose "
+        "operands");
+  if (!activeN && !activeK) {
+    if (tiledBStage &&
+        (tiledBStage.getLogicalK() != tiledBStage.getCarrierK() ||
+         tiledBStage.getLogicalN() != tiledBStage.getCarrierN()))
+      return emitOpError(
+          "fragmented tiled SMEM stage requires active_n or active_k");
+    return success();
+  }
+  if (activeN && activeK)
+    return emitOpError("active_n and active_k cannot be specified together");
+  SmallVector<int64_t> cShapePerCTA = cType.getEncoding()
+                                          ? triton::gpu::getShapePerCTA(cType)
+                                          : SmallVector<int64_t>(cShape);
+  if (activeN && !tiledBStage && activeN.getInt() == cShapePerCTA[1])
+    return success();
+  if (activeK && !tiledBStage && activeK.getInt() == aShape[1])
+    return success();
+
+  // The operand/accumulator combination was checked above. Active extents
+  // additionally require one 32-bit accumulator element per register.
+  if (cType.getElementTypeBitWidth() != 32)
+    return emitOpError(
+        "active extents require a supported Hopper WGMMA type combination "
+        "with a 32-bit accumulator");
+  if (aShape[0] != 64)
+    return emitOpError("active extents currently require physical M=64");
+
+  if (activeN) {
+    int64_t activeNValue = activeN.getInt();
+    if (activeNValue <= 0 || activeNValue % 8 != 0)
+      return emitOpError("active_n must be a positive multiple of 8");
+    if (activeNValue > bShape[1])
+      return emitOpError("active_n exceeds the physical N carrier");
+    int64_t maxInstructionN = aElemType.isInteger(8) ? 224 : 256;
+    if (bShape[1] > maxInstructionN)
+      return emitOpError(
+          "active_n physical N carrier exceeds the WGMMA type limit");
+    if (getOperation()->hasAttr("tle.wgmma_accumulator_chain_c"))
+      return emitOpError(
+          "active_n does not support tle.wgmma_accumulator_chain_c");
+    if (tiledBStage) {
+      if (activeNValue != tiledBStage.getLogicalN())
+        return emitOpError(
+            "active_n must equal the tiled stage logical N extent");
+      if (tiledBStage.getLogicalK() != tiledBStage.getCarrierK() ||
+          bShape[0] != tiledBStage.getCarrierK() ||
+          bShape[1] != tiledBStage.getCarrierN())
+        return emitOpError(
+            "active_n carrier shape does not match the tiled stage");
+      if (tiledBStage.getStorageTileN() % 8 != 0)
+        return emitOpError(
+            "active_n storage tile must select complete WGMMA N8 groups");
+    }
+  }
+
+  if (activeK) {
+    int64_t activeKValue = activeK.getInt();
+    if (activeKValue <= 0 || activeKValue % *instructionK != 0)
+      return emitOpError(
+          "active_k must be a positive multiple of the operand type's "
+          "WGMMA instruction K");
+    if (activeKValue > aShape[1])
+      return emitOpError("active_k exceeds the physical K carrier");
+    if (aShape[1] % *instructionK != 0)
+      return emitOpError(
+          "active_k requires physical K divisible by the WGMMA instruction "
+          "K");
+    int64_t physicalSplits = aShape[1] / *instructionK;
+    if ((physicalSplits & (physicalSplits - 1)) != 0)
+      return emitOpError(
+          "active_k physical carrier must contain a power-of-two number of "
+          "WGMMA K instructions");
+    if (tiledBStage) {
+      if (activeKValue != tiledBStage.getLogicalK())
+        return emitOpError(
+            "active_k must equal the tiled stage logical K extent");
+      if (tiledBStage.getLogicalN() != tiledBStage.getCarrierN() ||
+          bShape[0] != tiledBStage.getCarrierK() ||
+          bShape[1] != tiledBStage.getCarrierN())
+        return emitOpError(
+            "active_k carrier shape does not match the tiled stage");
+      if (tiledBStage.getStorageTileK() % *instructionK != 0)
+        return emitOpError("active_k storage tile must select complete WGMMA K "
+                           "instructions");
+    }
+  }
   return success();
 }
 
@@ -483,7 +663,33 @@ static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
 
   if (fields.empty())
     return op->emitOpError("expects at least one pipe field");
-  for (Value field : fields) {
+
+  llvm::SmallBitVector tiledFields(fields.size());
+  if (auto tiledAttr =
+          op->getAttrOfType<DenseI32ArrayAttr>("tiled_smem_fields")) {
+    for (int32_t fieldIndex : tiledAttr.asArrayRef()) {
+      if (fieldIndex < 0 || fieldIndex >= static_cast<int32_t>(fields.size()))
+        return op->emitOpError(
+            "tiled_smem_fields index is outside the field operand range");
+      if (tiledFields.test(fieldIndex))
+        return op->emitOpError("tiled_smem_fields indices must be unique");
+      tiledFields.set(fieldIndex);
+    }
+    if (tiledFields.none())
+      return op->emitOpError(
+          "tiled_smem_fields must not be empty when present");
+  }
+
+  for (auto [fieldIndex, field] : llvm::enumerate(fields)) {
+    if (tiledFields.test(fieldIndex)) {
+      ExactSMEMRoot root = getExactSMEMRoot(field);
+      if (failed(verifyExactSMEMRoot(op, root)))
+        return failure();
+      if (root.capacity != capacity)
+        return op->emitOpError(
+            "expects exact-SMEM field capacity to match pipe capacity");
+      continue;
+    }
     auto type = cast<triton::gpu::MemDescType>(field.getType());
     if (!isa<triton::gpu::SharedMemorySpaceAttr>(type.getMemorySpace()))
       return op->emitOpError("expects only shared-memory pipe fields");
