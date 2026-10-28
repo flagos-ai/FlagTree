@@ -9,13 +9,14 @@ def {{ call.symbol }}({{ call.signature }}):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
         n_mask = local_n_offsets < ({{ call.active_n }})
         weight_rows = {{ call.weight_row_offset }}
+        up_weight_rows = {{ call.up_weight_row_offset }}
         destination_offsets = {{ call.destination_offset }}
 {% if call.weight_encoding == "IQ4_XS" %}
         gate = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
-        up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+        up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, up_weight_rows, n_mask, {{ call.k }})
 {% else %}
         gate = _flagmega_q4_k_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
-        up = _flagmega_q4_k_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+        up = _flagmega_q4_k_dot({{ call.value }}, {{ call.up_weight }}, up_weight_rows, n_mask, {{ call.k }})
 {% endif %}
         tl.store({{ call.result }} + destination_offsets, (_flagmega_silu(gate) * up).to(tl.bfloat16), mask=n_mask)
 {% else %}
