@@ -26,6 +26,11 @@ WHEEL_SOURCE="$(backend_field "$BACKEND" wheel)"
 case "$WHEEL_SOURCE" in
     source) WHEEL_STAGE=wheel-builder ;;
     index)  WHEEL_STAGE=wheel-index ;;
+    "")
+        echo "ERROR: backend '$BACKEND' has an empty wheel column in packaging/backends.conf:"
+        echo "       the deb line does not package it (no ubuntu release's python3 matches its wheel)"
+        exit 1
+        ;;
     *)
         echo "ERROR: backend '$BACKEND' has wheel='$WHEEL_SOURCE'; expected source or index"
         exit 1
