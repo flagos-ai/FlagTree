@@ -43,6 +43,7 @@ def to_hashable(tensor):
 
 
 def _config_key(value):
+
     def encode(value):
         value_type = type(value)
         if value is None:
@@ -220,12 +221,11 @@ class AutoTuner:
         errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
         if errors:
             raise ValueError("Distributed autotune preparation failed: " + "; ".join(errors))
-            
+
         if any(report[1] != effective_keys for report in reports):
             raise ValueError(
                 "Tuning parameter values differ across ranks after applying keyword argument overrides. "
-                "For each candidate configuration, all ranks in autotune_pg must use the same final values."
-            )
+                "For each candidate configuration, all ranks in autotune_pg must use the same final values.")
 
         if not tune_enabled:
             config = local_configs[config_keys[0]]
