@@ -945,15 +945,17 @@ def _matmul_glu_call(raw) -> dict[str, object]:
                              or int(scale["abi"].get("scalar_lane_count", 1)) != 1
                              for scale in (gate_scale, up_scale))):
         raise CodegenError("SM90 reciprocal MatMulGlu requires scalar BF16 activations, FP8 weights and FP32 scales.")
-    if gate_encoding is None:
-        weight_row_offset = emit_local_scalar_offset(gate_weight["abi"], (local_n, "0"))
-        up_weight_row_offset = emit_local_scalar_offset(up_weight["abi"], (local_n, "0"))
-    else:
-        bytes_per_block = 136 if gate_encoding == "IQ4_XS" else 144
+    if gate_encoding is not None:
         if global_k_size % 256:
             raise CodegenError("Native GGUF quantized MatMulGlu requires K divisible by 256.")
-        weight_row_offset = f"({global_n}) * ({global_k_size} // 256) * {bytes_per_block}"
-        up_weight_row_offset = weight_row_offset
+        value_domain = _scalar_last_axis_domain(value["abi"], "0", owner="TIR MatMulGlu activation")
+        if value_domain["capacity"] != global_k_size:
+            # The packed kernel walks whole GGUF blocks from K = 0.
+            raise CodegenError("Native GGUF quantized MatMulGlu requires an unsharded K axis.")
+    # Each UINT8 row of a native GGUF weight holds one output row's packed blocks,
+    # and the gate and up weights may be stored in different owner-local layouts.
+    weight_row_offset = emit_local_scalar_offset(gate_weight["abi"], (local_n, "0"))
+    up_weight_row_offset = emit_local_scalar_offset(up_weight["abi"], (local_n, "0"))
     return {
         "value": _pointer(value),
         "gate_weight": _pointer(gate_weight),
