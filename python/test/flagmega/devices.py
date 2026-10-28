@@ -18,8 +18,9 @@ def _cuda_torch():
     return torch if torch.cuda.is_available() else None
 
 
-def nvidia_capability(device=0):
-    """The NVIDIA compute capability of ``device``, or None off NVIDIA.
+def nvidia_capability(device=None):
+    """The NVIDIA compute capability of ``device`` (default: the current CUDA
+    device, like ``torch.cuda.get_device_capability()``), or None off NVIDIA.
 
     ROCm torch also reports device type "cuda" and returns the gfx version as
     the capability, e.g. (9, 0) on gfx90a, so the build must be checked too.
@@ -27,11 +28,13 @@ def nvidia_capability(device=0):
     torch = _cuda_torch()
     if torch is None or torch.version.hip:
         return None
+    if device is None:
+        device = torch.cuda.current_device()
     return tuple(torch.cuda.get_device_capability(device))
 
 
-def is_nvidia_sm90() -> bool:
-    return nvidia_capability() == (9, 0)
+def is_nvidia_sm90(device=None) -> bool:
+    return nvidia_capability(device) == (9, 0)
 
 
 def has_nvidia_sm90_devices(count: int) -> bool:
@@ -49,7 +52,7 @@ def executable_target():
     if torch.version.hip:
         arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
         return _AMD_TARGETS.get(arch)
-    return _NVIDIA_TARGETS.get(nvidia_capability())
+    return _NVIDIA_TARGETS.get(nvidia_capability(0))
 
 
 def require_nvidia_sm90():

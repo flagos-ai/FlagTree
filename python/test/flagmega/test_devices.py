@@ -11,10 +11,18 @@ from python.test.flagmega.devices import (executable_target, has_nvidia_sm90_dev
 torch = pytest.importorskip("torch")
 
 
-def _device(monkeypatch, *, available, hip, capability, arch="", count=1):
+def _device(monkeypatch, *, available, hip, capability, arch="", count=1, current=0):
+    """``capability`` is one tuple for every device, or a per-device dict."""
+    capabilities = capability if isinstance(capability, dict) else {}
+
+    def get_capability(device=None):
+        device = current if device is None else device
+        return capabilities.get(device, capability) if capabilities else capability
+
     monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
     monkeypatch.setattr(torch.version, "hip", hip, raising=False)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: capability)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", get_capability)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: count if available else 0)
     monkeypatch.setattr(torch.cuda, "get_device_properties",
                         lambda *args: SimpleNamespace(gcnArchName=arch))
@@ -70,3 +78,30 @@ def test_nvidia_capability_is_none_on_rocm(monkeypatch):
 def test_multi_gpu_sm90_guard(monkeypatch, hip, capability, count, expected):
     _device(monkeypatch, available=True, hip=hip, capability=capability, count=count)
     assert has_nvidia_sm90_devices(4) is expected
+
+
+def test_sm90_guards_follow_the_current_device(monkeypatch):
+    # Mixed machine: GPU 0 is Ada, GPU 1 is an H800. Tests that allocate on
+    # device="cuda" run on the current device, so the guard must query it.
+    mixed = {0: (8, 9), 1: (9, 0)}
+    _device(monkeypatch, available=True, hip=None, capability=mixed, count=2, current=1)
+    assert nvidia_capability() == (9, 0)
+    assert is_nvidia_sm90()
+    require_nvidia_sm90()
+    _device(monkeypatch, available=True, hip=None, capability=mixed, count=2, current=0)
+    assert nvidia_capability() == (8, 9)
+    assert not is_nvidia_sm90()
+    with pytest.raises(pytest.skip.Exception):
+        require_nvidia_sm90()
+
+
+def test_explicit_device_queries_keep_their_device(monkeypatch):
+    # executable_target() selects for the runtime it loads on cuda:0, and the
+    # multi-GPU guard checks the first N devices, whatever the current device.
+    mixed = {0: (8, 9), 1: (9, 0)}
+    _device(monkeypatch, available=True, hip=None, capability=mixed, count=2, current=1)
+    assert executable_target() is None
+    assert nvidia_capability(0) == (8, 9)
+    assert not has_nvidia_sm90_devices(2)
+    _device(monkeypatch, available=True, hip=None, capability={0: (9, 0), 1: (8, 9)}, count=2, current=1)
+    assert executable_target() == "nvidia-sm90"
