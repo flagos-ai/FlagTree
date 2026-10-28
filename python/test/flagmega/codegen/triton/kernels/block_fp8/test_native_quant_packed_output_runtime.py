@@ -4,6 +4,8 @@
 
 from math import ceil, prod
 
+import re
+
 import pytest
 
 from triton.flagmega import ir as fm
@@ -21,7 +23,7 @@ def _executable_target():
         return None
     if torch.version.hip:
         arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-        return {"gfx1201": "amd-gfx1201"}.get(arch)
+        return {"gfx1100": "amd-gfx1100", "gfx1201": "amd-gfx1201"}.get(arch)
     return {(9, 0): "nvidia-sm90", (12, 0): "nvidia-sm120"}.get(tuple(torch.cuda.get_device_capability()))
 
 
@@ -101,3 +103,43 @@ def test_native_quantized_template_masks_in_the_scalar_output_domain(encoding):
     compile(source, "native_block_fp8.py", "exec")
     assert "n_mask = (((local_n_offsets) // 8) < (5))" in source
     assert "local_n_offsets < ((5))" not in source
+
+
+def _render_native(tmp_path, monkeypatch, target, encoding, lanes):
+    from triton.flagmega.codegen.triton import kernel_call_renderers as renderers
+
+    captured = []
+    render = renderers._FAMILY_ENCODERS["block_fp8"]
+    monkeypatch.setitem(renderers._FAMILY_ENCODERS, "block_fp8", lambda raw: captured.append(raw) or render(raw))
+    lowered = Compiler(CompileOptions(target=target)).compile(_module(encoding, lanes)).module
+    path = write_artifact(lowered, tmp_path / "artifact", target=target, emit_executable=True)
+    return (path / "generated_kernels.py").read_text(), captured
+
+
+@pytest.mark.parametrize("target", ["amd-gfx1201", "nvidia-sm120"])
+@pytest.mark.parametrize("encoding", ["IQ4_XS", "Q4_K"])
+@pytest.mark.parametrize("lanes", [(), (8, )])
+def test_native_quantized_weight_rows_follow_the_weight_storage(tmp_path, monkeypatch, target, encoding, lanes):
+    # Each UINT8 row holds one output row's packed blocks. The weight is
+    # canonical function storage here, so a block's rows are addressed by their
+    # global row index (the runtime test above checks the values), never by
+    # the whole-K row size recomputed from the activation.
+    source, _ = _render_native(tmp_path, monkeypatch, target, encoding, lanes)
+    row_bytes = K // 256 * BLOCK_BYTES[encoding]
+    assert re.search(rf"local_n_offsets\)[^\n]*\) \* {row_bytes} \+", source)
+    assert f"({K} // 256) * {BLOCK_BYTES[encoding]}" not in source
+
+
+def test_native_quantized_gemv_rejects_a_k_sharded_activation(tmp_path, monkeypatch):
+    import copy
+
+    from triton.flagmega.codegen.triton.kernel_call_renderers import _FAMILY_ENCODERS, _buffer
+    from triton.flagmega.errors import CodegenError
+
+    _, captured = _render_native(tmp_path, monkeypatch, "amd-gfx1201", "IQ4_XS", (8, ))
+    raw = copy.deepcopy(captured[0])
+    value = _buffer(raw, "inputs", "value")["abi"]
+    value["local_capacity_shape"] = [*value["local_capacity_shape"][:-1], K // 2]
+    # The packed kernel walks whole GGUF blocks from K = 0 on every owner.
+    with pytest.raises(CodegenError, match="unsharded K axis"):
+        _FAMILY_ENCODERS["block_fp8"](raw)
