@@ -17,7 +17,8 @@ point.
 
 The native IQ4_XS GEMVs never quantize activations, so they also run on gfx1100,
 which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
-`tir.matmul_glu.native_simt` implementations there.
+`tir.matmul_glu.native_simt` implementations there, which render the same RDNA
+templates.
 
 ## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
 
@@ -58,20 +59,21 @@ commit on the same GGUF and GPU:
 
 ## Results: W7900 (gfx1100), ROCm 7.2, one GPU
 
-These W7900 results were measured with the generic native GGUF GEMV, before the
-RDNA templates above; re-validation on the W7900 is pending.
-
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega compiler baseline | 192 | 5.2 |
+| FlagMega, RDNA native GGUF GEMV templates | 45.7 | 21.9 |
+| FlagMega, generic native GGUF GEMV (before) | 192 | 5.2 |
 | llama.cpp (HIP, gfx1100) | 29.6 | 33.8 |
 
-Two rounds per workload, three repeats each (Chinese64: 191.8 / 192.3 ms vs
-llama.cpp 29.5 ms; Synthetic32: 192.5 / 192.4 ms vs 29.7 ms). That is about 71 GB/s of weight
-bandwidth, 10% of the ~700 GB/s this W7900 streams. Its VRAM ECC is enabled,
-which limits streaming bandwidth to about 700 of the 864 GB/s nominal (see the
-Qwen3-1.7B [amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)).
-The megakernel uses 248 VGPRs, no spills, and builds in about 67 s.
+Two rounds per workload, three repeats each. With the RDNA templates:
+Chinese64 45.67 / 45.82 ms, Synthetic32 45.65 / 45.76 ms. With the generic
+kernel: Chinese64 191.8 / 192.3 ms, Synthetic32 192.5 / 192.4 ms. llama.cpp:
+29.5 / 29.7 ms. That is about 298 GB/s of weight bandwidth (71 GB/s before), 43% of the
+~700 GB/s this W7900 streams. Its VRAM ECC is enabled, which limits streaming
+bandwidth to about 700 of the 864 GB/s nominal (see the Qwen3-1.7B
+[amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)). The megakernel
+uses 248 VGPRs and 160 B of scratch, the same as with the generic kernel, and
+builds in about 73 s.
 
 Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
 
@@ -80,8 +82,10 @@ Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
 - **Synthetic32**: equal through step 17; at step 18 llama.cpp ranks 14791 over
   56239 by 0.022 logits and FlagMega picks 56239, its second choice (a near-tie).
 - Logits are finite.
-- Four independent processes (one before and three after a host reboot)
-  reproduce the 64-step Chinese64 tokens and logits bitwise.
+- With the RDNA templates, three independent processes reproduce the 64-step
+  Chinese64 tokens and logits bitwise, and the tokens above are unchanged. With
+  the generic kernel, four processes did (one before and three after a host
+  reboot).
 
 On gfx1100 every FlagMega change must reproduce bitwise across independent
 processes like this, because FlagTree's LLVM 22 has a schedule-sensitive
