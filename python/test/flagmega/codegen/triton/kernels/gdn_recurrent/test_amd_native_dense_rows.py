@@ -20,8 +20,11 @@ CONTEXT = {"mesh_size": 1}
 @pytest.mark.parametrize("architecture", ("gfx1100", "gfx1201"))
 def test_amd_targets_resolve_the_amd_lookup_template(kernel, variant, architecture):
     registry = TritonTemplateRegistry()
-    assert registry.resolve(KernelTemplateSpec(kernel, variant, "amd", architecture)) == \
-        f"kernels/{kernel}/platforms/amd/{variant}.py.jinja"
+    # gfx1201 GDN wraps the AMD template with its nontemporal state store.
+    amd = f"kernels/{kernel}/platforms/amd/{variant}.py.jinja"
+    if (kernel, architecture) == ("gdn_recurrent", "gfx1201"):
+        amd = f"kernels/{kernel}/platforms/amd/gfx1201/{variant}.py.jinja"
+    assert registry.resolve(KernelTemplateSpec(kernel, variant, "amd", architecture)) == amd
     assert registry.resolve(KernelTemplateSpec(kernel, variant, "nvidia", "sm120")) == \
         f"kernels/{kernel}/{variant}.py.jinja"
 

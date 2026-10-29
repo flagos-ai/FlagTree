@@ -114,4 +114,4 @@ def _flagmega_amd_gdn_core_hoisted(
     if ROUND_CORE:
         core = core.to(tl.bfloat16).to(tl.float32)
     tl.store(core_scratch + global_values, core, mask=active)
-    tl.store(recurrent_state + state_offsets, new_state, mask=mask)
+    tl.store(recurrent_state + state_offsets, new_state, mask=mask{% if gdn_amd_nontemporal_state | default(false) %}, cache_modifier=".cs"{% endif %})
