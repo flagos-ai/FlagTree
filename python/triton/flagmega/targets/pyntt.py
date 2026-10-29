@@ -156,6 +156,17 @@ class PyNttTarget(NttTarget):
             implementation_model=self.triton_implementation_model,
         )
 
+    def paged_attention_split_plan(self, module):
+        """The split axis for paged-attention partials; a machine may override."""
+
+        placements = self.distributed_placements(module)
+        override = getattr(self.machine, "paged_attention_split_plan", None)
+        if override is not None:
+            plan = override(module, placements)
+            if plan is not None:
+                return plan
+        return paged_attention_split_plan(placements)
+
     def register_post_auto_packing_passes(self, registry) -> None:
         super().register_post_auto_packing_passes(registry)
         registry.add("DecomposePagedAttention", "decompose-paged-attention")

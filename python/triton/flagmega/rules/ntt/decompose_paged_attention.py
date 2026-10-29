@@ -55,6 +55,46 @@ def paged_attention_split_plan(placements):
     return axis, extent
 
 
+def head_divisible_paged_attention_split_plan(placements, query_heads):
+    """Like ``paged_attention_split_plan``, but keep the query heads shardable.
+
+    Split partials cannot hold their query heads on the split axis, so the
+    heads can only be sharded over the remaining mesh axes. When the default
+    (smallest) axis leaves a head count that the remaining extent does not
+    divide, the heads are replicated and every owner computes all of them.
+    Return the smallest qualifying axis whose remaining extent divides every
+    head count, or ``None`` when the default already does or none does.
+    """
+
+    placements = tuple(placements)
+    query_heads = tuple(int(heads) for heads in query_heads)
+    if not query_heads:
+        return None
+    default_axis, _ = paged_attention_split_plan(placements)
+    hierarchy = placements[0].hierarchy
+
+    def divides(axis):
+        remaining = 1
+        for other, extent in enumerate(hierarchy):
+            if other != axis:
+                remaining *= extent
+        return all(heads % remaining == 0 for heads in query_heads)
+
+    if divides(default_axis):
+        return None
+    candidates = sorted(
+        (placements[0].hierarchy[axis], axis)
+        for axis in range(placements[0].rank)
+        if all(placement.is_physical_block_axis(axis) for placement in placements)
+        and len({placement.hierarchy[axis] for placement in placements}) == 1
+        and placements[0].hierarchy[axis] > 1
+    )
+    for extent, axis in candidates:
+        if divides(axis):
+            return axis, extent
+    return None
+
+
 def decompose_paged_attention_rule(
     split_hierarchy_axis: int,
     split_count: int,
@@ -145,4 +185,8 @@ def decompose_paged_attention_rule(
     )
 
 
-__all__ = ["decompose_paged_attention_rule", "paged_attention_split_plan"]
+__all__ = [
+    "decompose_paged_attention_rule",
+    "head_divisible_paged_attention_split_plan",
+    "paged_attention_split_plan",
+]

@@ -172,9 +172,13 @@ def _apply_packing(module: IRModule, target: Target) -> IRModule:
 
 
 def _decompose_paged_attention(module: IRModule, target: Target) -> IRModule:
-    split_axis, split_count = paged_attention_split_plan(
-        target.distributed_placements(module)
-    )
+    target_plan = getattr(target, "paged_attention_split_plan", None)
+    if target_plan is not None:
+        split_axis, split_count = target_plan(module)
+    else:
+        split_axis, split_count = paged_attention_split_plan(
+            target.distributed_placements(module)
+        )
     return DataflowRewriter((
         decompose_paged_attention_rule(split_axis, split_count),
     )).rewrite(module)

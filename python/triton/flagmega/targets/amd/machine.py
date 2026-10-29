@@ -19,6 +19,10 @@ from dataclasses import replace
 from triton.flagmega.ir import IRModule, Placement
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.targets.ntt_options import NttTargetOptions
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.rules.ntt.decompose_paged_attention import (
+    head_divisible_paged_attention_split_plan,
+)
 from triton.flagmega.targets.amd.capability import (
     AmdCapability,
     Gfx1100Capability,
@@ -63,6 +67,28 @@ class _AmdRdnaMachine:
         if implementation_model is not None:
             verify_shared_workspaces(implementation_model)
         self._implementation_model = implementation_model
+
+    def paged_attention_split_plan(self, module, placements):
+        """Split decode attention context on an axis that keeps heads sharded.
+
+        With the default (smallest) context-split axis, a query head count the
+        other mesh axis does not divide (e.g. 24 heads over 16 blocks) leaves
+        every block computing every head. Decode only; prefill keeps the
+        default split.
+        """
+
+        query_heads = []
+        for node in module.nodes:
+            if node.op != "nn.paged_attention":
+                continue
+            layout = tuple(node.attrs["layout"])
+            shape = tensor_of(node.type).shape
+            seq = shape[layout.index("seq")]
+            heads = shape[layout.index("head")]
+            if not (seq.is_fixed and seq.fixed_value == 1 and heads.is_fixed):
+                return None
+            query_heads.append(heads.fixed_value)
+        return head_divisible_paged_attention_split_plan(placements, query_heads)
 
     def default_ntt_options(self) -> NttTargetOptions:
         # The placement is the on-chip physical block hierarchy ("bb") that tiles
