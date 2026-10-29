@@ -52,18 +52,12 @@ class TLEFrontendSemantic(TritonSemantic):
         block_shape = tl._unwrap_shape(block_shape)
         logical_shape = None
         if any(dim & (dim - 1) for dim in block_shape):
-            from triton._flagtree_backend import get_active_backend_name
+            from triton._flagtree_backend import FLAGTREE_BACKEND
 
-            try:
-                backend = get_active_backend_name()
-            except RuntimeError as exc:
+            if FLAGTREE_BACKEND:
                 raise ValueError(
                     "TLE logical descriptors with non-power-of-two block shapes require the NVIDIA backend; "
-                    "the active backend could not be determined") from exc
-            if backend != "nvidia":
-                raise ValueError(
-                    "TLE logical descriptors with non-power-of-two block shapes require the NVIDIA backend; "
-                    f"got backend {backend!r}")
+                    f"got backend {FLAGTREE_BACKEND!r}")
             payload = block_shape[-2:]
             if (len(block_shape) < 2 or any(dim != 1 for dim in block_shape[:-2])
                     or sum(bool(dim & (dim - 1)) for dim in payload) != 1

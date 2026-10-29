@@ -34,6 +34,43 @@ LLVM::LLVMFuncOp getPrintfDeclaration(RewriterBase &rewriter) {
                                   funcType);
 }
 
+LLVM::LLVMFuncOp getVprintfDeclaration(RewriterBase &rewriter) {
+  auto moduleOp = rewriter.getBlock()->getParent()->getParentOfType<ModuleOp>();
+  constexpr StringRef funcName("vprintf");
+  if (Operation *funcOp = moduleOp.lookupSymbol(funcName))
+    return cast<LLVM::LLVMFuncOp>(*funcOp);
+
+  auto *context = rewriter.getContext();
+  auto funcType = LLVM::LLVMFunctionType::get(
+      i32_ty, {ptr_ty(context), ptr_ty(context)}, /*isVarArg=*/false);
+
+  RewriterBase::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+  return LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(context), funcName,
+                                  funcType);
+}
+
+void addPassthroughAttribute(RewriterBase &rewriter, StringRef attribute) {
+  Operation *parent = rewriter.getBlock()->getParentOp();
+  while (parent && !isa<LLVM::LLVMFuncOp>(parent))
+    parent = parent->getParentOp();
+  auto funcOp = dyn_cast_or_null<LLVM::LLVMFuncOp>(parent);
+  if (!funcOp)
+    return;
+
+  SmallVector<Attribute> attributes;
+  if (ArrayAttr existing = funcOp.getPassthroughAttr()) {
+    for (Attribute attr : existing) {
+      if (auto stringAttr = dyn_cast<StringAttr>(attr);
+          stringAttr && stringAttr.getValue() == attribute)
+        return;
+      attributes.push_back(attr);
+    }
+  }
+  attributes.push_back(rewriter.getStringAttr(attribute));
+  funcOp.setPassthroughAttr(ArrayAttr::get(rewriter.getContext(), attributes));
+}
+
 std::pair<Type, Value> printfPromoteValue(RewriterBase &rewriter, Value value,
                                           bool isSigned) {
   auto *context = rewriter.getContext();
@@ -121,22 +158,29 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
 
 Value TargetInfo::shuffleXor(RewriterBase &rewriter, Location loc, Value val,
                              int i) const {
-  return LLVM::MUSA::shuffleXor(loc, rewriter, val, i, 32);
+  // QY2 executes a logical warp with 128 lanes.  Passing the legacy 32-lane
+  // width causes absolute-index shuffles used by layout conversion to wrap
+  // at 32/64-lane boundaries and corrupt widening casts and reductions.
+  return LLVM::MUSA::shuffleXor(loc, rewriter, val, i,
+                                computeCapability < 30 ? 128 : 32);
 }
 
 Value TargetInfo::shuffleUp(RewriterBase &rewriter, Location loc, Value val,
                             int i) const {
-  return LLVM::MUSA::shuffleUp(loc, rewriter, val, i, 32);
+  return LLVM::MUSA::shuffleUp(loc, rewriter, val, i,
+                               computeCapability < 30 ? 128 : 32);
 }
 
 Value TargetInfo::shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
                              int i) const {
-  return LLVM::MUSA::shuffleIdx(loc, rewriter, val, i, 32);
+  return LLVM::MUSA::shuffleIdx(loc, rewriter, val, i,
+                                computeCapability < 30 ? 128 : 32);
 }
 
 Value TargetInfo::shuffleIdx(RewriterBase &rewriter, Location loc, Value val,
                              Value i) const {
-  return LLVM::MUSA::shuffleIdx(loc, rewriter, val, i, 32);
+  return LLVM::MUSA::shuffleIdx(loc, rewriter, val, i,
+                                computeCapability < 30 ? 128 : 32);
 }
 
 Value TargetInfo::permute(RewriterBase &rewriter, Location loc, Value a,
@@ -165,6 +209,43 @@ std::string TargetInfo::getMulhiFuncName(Type resultElementTy) const {
 void TargetInfo::printf(RewriterBase &rewriter, Value formatStrStart,
                         int /*formatStrByteCount*/, ValueRange args,
                         ArrayRef<bool> isSigned) const {
+  if (computeCapability == 31) {
+    auto *context = rewriter.getContext();
+    auto loc = getCurrentLoc(rewriter);
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto funcOp = getVprintfDeclaration(rewriter);
+
+    Value bufferPtr = b.null(ptr_ty(context));
+    if (!args.empty()) {
+      SmallVector<Type> argTypes;
+      SmallVector<Value> promotedArgs;
+      for (auto [i, arg] : llvm::enumerate(args)) {
+        auto [newType, newArg] = printfPromoteValue(
+            rewriter, arg, isSigned.empty() ? true : isSigned[i]);
+        argTypes.push_back(newType);
+        promotedArgs.push_back(newArg);
+      }
+
+      Type structTy = LLVM::LLVMStructType::getLiteral(context, argTypes);
+      Value one = b.i32_val(1);
+      Value zero = b.i32_val(0);
+      auto allocated = LLVM::AllocaOp::create(rewriter, loc, ptr_ty(context),
+                                              structTy, one, /*alignment=*/0);
+      for (auto [i, arg] : llvm::enumerate(promotedArgs)) {
+        Value index = b.i32_val(i);
+        Value fieldPtr = b.gep(ptr_ty(context), structTy, allocated,
+                               ArrayRef<Value>{zero, index});
+        b.store(arg, fieldPtr);
+      }
+      bufferPtr = b.bitcast(allocated, ptr_ty(context));
+    }
+
+    addPassthroughAttribute(rewriter, "has_printf");
+    SmallVector<Value> operands{formatStrStart, bufferPtr};
+    b.call(funcOp, operands);
+    return;
+  }
+
   auto funcOp = getPrintfDeclaration(rewriter);
   SmallVector<Value> operands{formatStrStart};
   for (auto [i, arg] : llvm::enumerate(args)) {

@@ -31,6 +31,7 @@
 #include "triton-shared/Utils/Utils.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 // FIXME: triton/Conversion/TritonGPUToLLVM/Utility.h which defined
@@ -83,6 +84,279 @@ LogicalResult convertLinalgOpToLoops(linalg::LinalgOp op,
     return rewriter.notifyMatchFailure(op, "operation not supported yet.");
   rewriter.eraseOp(op);
   return success();
+}
+
+// Expand `arith.truncf f32 -> f8E4M3FN` into integer bit manipulation.
+// The TX81 target has no native f32->fp8 conversion instruction, and the
+// generic arith-to-llvm lowering cannot handle f8 as a truncf result (LLVM
+// represents f8 as i8), so the conversion is done on the bit representation
+// with round-to-nearest-even semantics.
+//
+// f32 subnormal inputs always underflow to zero in f8 (max f32 subnormal is
+// 2^-126, far below half of the smallest f8 subnormal 2^-10), so they need no
+// normalization.
+static Value expandF32ToF8E4M3FN(ConversionPatternRewriter &rewriter,
+                                 Location loc, Value src) {
+  MLIRContext *ctx = rewriter.getContext();
+  auto i32Ty = rewriter.getI32Type();
+  auto i8Ty = rewriter.getI8Type();
+
+  if (!src.getType().isF32()) {
+    src = rewriter.create<arith::ExtFOp>(loc, rewriter.getF32Type(), src);
+  }
+
+  auto cst = [&](int32_t v) {
+    return rewriter.create<arith::ConstantIntOp>(loc, i32Ty, v);
+  };
+  auto shl = [&](Value a, Value b) {
+    return rewriter.create<arith::ShLIOp>(loc, i32Ty, a, b);
+  };
+  auto shru = [&](Value a, Value b) {
+    return rewriter.create<arith::ShRUIOp>(loc, i32Ty, a, b);
+  };
+  auto andOp = [&](Value a, Value b) {
+    return rewriter.create<arith::AndIOp>(loc, i32Ty, a, b);
+  };
+  auto orOp = [&](Value a, Value b) {
+    return rewriter.create<arith::OrIOp>(loc, i32Ty, a, b);
+  };
+  auto andB = [&](Value a, Value b) {
+    return rewriter.create<arith::AndIOp>(loc, a, b);
+  };
+  auto orB = [&](Value a, Value b) {
+    return rewriter.create<arith::OrIOp>(loc, a, b);
+  };
+  auto addOp = [&](Value a, Value b) {
+    return rewriter.create<arith::AddIOp>(loc, i32Ty, a, b);
+  };
+  auto subOp = [&](Value a, Value b) {
+    return rewriter.create<arith::SubIOp>(loc, i32Ty, a, b);
+  };
+  auto cmp = [&](arith::CmpIPredicate p, Value a, Value b) {
+    return rewriter.create<arith::CmpIOp>(loc, p, a, b);
+  };
+  auto sel = [&](Value cond, Value a, Value b) {
+    return rewriter.create<arith::SelectOp>(loc, cond, a, b);
+  };
+  auto zext = [&](Value b) {
+    return rewriter.create<arith::ExtUIOp>(loc, i32Ty, b);
+  };
+
+  Value bits = rewriter.create<arith::BitcastOp>(loc, i32Ty, src);
+  Value sign = andOp(shru(bits, cst(31)), cst(1));
+  Value exp = andOp(shru(bits, cst(23)), cst(0xFF));
+  Value mant = andOp(bits, cst(0x7FFFFF));
+
+  // E4M3FN has no Inf: both Inf and NaN become (sign<<7)|0x7F (canonical NaN).
+  // 0x78 is the finite value 256, not Inf.
+  Value isInfNaN = cmp(arith::CmpIPredicate::eq, exp, cst(0xFF));
+  Value nanInf = orOp(shl(sign, cst(7)), cst(0x7F));
+
+  // exp == 0 -> +-0 (subnormal f32 underflows to zero).
+  Value isZeroOrSub = cmp(arith::CmpIPredicate::eq, exp, cst(0));
+  Value zeroRes = shl(sign, cst(7));
+
+  // Normal f32: 24-bit significand (1.xxx), f8 exponent E8 = exp - 120.
+  Value e8 = subOp(exp, cst(120));
+  Value sig = orOp(shl(cst(1), cst(23)), mant);
+
+  // f8 subnormal path (E8 <= 0): keep 3 mantissa bits with rne rounding.
+  // m = sig >> (21 - E8); shift >= 25 underflows to zero. Clamp so the
+  // variable shift stays below the i32 width (shift 24/25 correctly rounds
+  // the 2^-10 boundary: sig < 2^24 never rounds up at shift 25).
+  Value isSub = cmp(arith::CmpIPredicate::sle, e8, cst(0));
+  Value shift = subOp(cst(21), e8);
+  shift = rewriter.create<arith::MinSIOp>(loc, i32Ty, shift, cst(25));
+  Value half = shl(cst(1), subOp(shift, cst(1)));
+  Value mask = subOp(shl(cst(1), shift), cst(1));
+  Value q = shru(sig, shift);
+  Value r = andOp(sig, mask);
+  Value roundUp =
+      orB(cmp(arith::CmpIPredicate::ugt, r, half),
+          andB(cmp(arith::CmpIPredicate::eq, r, half),
+               cmp(arith::CmpIPredicate::eq, andOp(q, cst(1)), cst(1))));
+  Value m = addOp(q, zext(roundUp));
+  // m == 8 rounds up to the smallest normal f8 (2^-6, encoded 0x08); the
+  // bit pattern (sign<<7)|8 is exactly that value.
+  Value subFull = orOp(shl(sign, cst(7)), m);
+
+  // f8 normal path (E8 >= 1): round 24-bit significand to 4 bits (1+3).
+  // E4M3FN exponent field is 4 bits; e8f >= 16 overflows to NaN (0x7F),
+  // matching ml_dtypes / arith.truncf. Values that RNE into the 0x7F slot
+  // (e.g. 472..480) are already NaN and are left unchanged.
+  Value q4 = shru(sig, cst(20));
+  Value r20 = andOp(sig, cst(0xFFFFF));
+  Value roundUpN =
+      orB(cmp(arith::CmpIPredicate::ugt, r20, cst(0x80000)),
+          andB(cmp(arith::CmpIPredicate::eq, r20, cst(0x80000)),
+               cmp(arith::CmpIPredicate::eq, andOp(q4, cst(1)), cst(1))));
+  Value q4p = addOp(q4, zext(roundUpN));
+  Value q4Carry = cmp(arith::CmpIPredicate::eq, q4p, cst(16));
+  Value q4f = sel(q4Carry, cst(8), q4p);
+  Value e8f = sel(q4Carry, addOp(e8, cst(1)), e8);
+  Value isOverflow = cmp(arith::CmpIPredicate::sge, e8f, cst(16));
+  Value normalRes = orOp(shl(e8f, cst(3)), andOp(q4f, cst(7)));
+  Value normalFull = sel(isOverflow, cst(0x7F), normalRes);
+  Value normalOut = orOp(shl(sign, cst(7)), normalFull);
+
+  Value res = sel(isSub, subFull, normalOut);
+  res = sel(isZeroOrSub, zeroRes, res);
+  res = sel(isInfNaN, nanInf, res);
+
+  Value i8res = rewriter.create<arith::TruncIOp>(loc, i8Ty, res);
+  return rewriter.create<arith::BitcastOp>(loc, Float8E4M3FNType::get(ctx),
+                                           i8res);
+}
+
+static bool isF8E4M3FNTruncF(Operation *op) {
+  auto truncOp = dyn_cast<arith::TruncFOp>(op);
+  return truncOp && isa<Float8E4M3FNType>(truncOp.getResult().getType());
+}
+
+static bool isF8E4M3FNExtF(Operation *op) {
+  auto extOp = dyn_cast<arith::ExtFOp>(op);
+  return extOp && isa<Float8E4M3FNType>(extOp.getIn().getType()) &&
+         extOp.getOut().getType().isF32();
+}
+
+// Expand `arith.extf f8E4M3FN -> f32` into integer bit manipulation.
+// TX81 has no native f8E4M3FN -> f32 conversion instruction, so the value
+// is decoded from its bit representation (sign<<7 | e4<<3 | m3, bias 7).
+static Value expandF8E4M3FNToF32(ConversionPatternRewriter &rewriter,
+                                 Location loc, Value src) {
+  auto i32Ty = rewriter.getI32Type();
+  auto i8Ty = rewriter.getI8Type();
+
+  auto cst = [&](int32_t v) {
+    return rewriter.create<arith::ConstantIntOp>(loc, i32Ty, v);
+  };
+  auto shl = [&](Value a, Value b) {
+    return rewriter.create<arith::ShLIOp>(loc, i32Ty, a, b);
+  };
+  auto shru = [&](Value a, Value b) {
+    return rewriter.create<arith::ShRUIOp>(loc, i32Ty, a, b);
+  };
+  auto andOp = [&](Value a, Value b) {
+    return rewriter.create<arith::AndIOp>(loc, i32Ty, a, b);
+  };
+  auto orOp = [&](Value a, Value b) {
+    return rewriter.create<arith::OrIOp>(loc, i32Ty, a, b);
+  };
+  auto andB = [&](Value a, Value b) {
+    return rewriter.create<arith::AndIOp>(loc, a, b);
+  };
+  auto addOp = [&](Value a, Value b) {
+    return rewriter.create<arith::AddIOp>(loc, i32Ty, a, b);
+  };
+  auto subOp = [&](Value a, Value b) {
+    return rewriter.create<arith::SubIOp>(loc, i32Ty, a, b);
+  };
+  auto cmp = [&](arith::CmpIPredicate p, Value a, Value b) {
+    return rewriter.create<arith::CmpIOp>(loc, p, a, b);
+  };
+  auto sel = [&](Value cond, Value a, Value b) {
+    return rewriter.create<arith::SelectOp>(loc, cond, a, b);
+  };
+
+  Value bits = rewriter.create<arith::ExtUIOp>(
+      loc, i32Ty, rewriter.create<arith::BitcastOp>(loc, i8Ty, src));
+  Value sign = shl(andOp(shru(bits, cst(7)), cst(1)), cst(31));
+  Value e4 = andOp(shru(bits, cst(3)), cst(0xF));
+  Value m3 = andOp(bits, cst(0x7));
+
+  // E4M3FN: only S.1111.111 is NaN. e4==15 and m3=0..6 are finite
+  // (256, 288, ..., 448); those take the normal path below.
+  Value isNaN = andB(cmp(arith::CmpIPredicate::eq, e4, cst(15)),
+                     cmp(arith::CmpIPredicate::eq, m3, cst(7)));
+  Value nanRes = orOp(sign, cst(0x7FC00000));
+
+  // e4 == 0 -> +-0 (m3 == 0) or subnormal m3 * 2^-9. Normalize the 3-bit
+  // significand: lz is the leading-zero count in the 3-bit field, then
+  // exp = 120-lz and the bits after the leading 1 become the f32 mantissa.
+  Value isZeroOrSub = cmp(arith::CmpIPredicate::eq, e4, cst(0));
+  Value isZero = andB(isZeroOrSub, cmp(arith::CmpIPredicate::eq, m3, cst(0)));
+  Value lz = sel(
+      cmp(arith::CmpIPredicate::ult, m3, cst(4)),
+      sel(cmp(arith::CmpIPredicate::ult, m3, cst(2)), cst(2), cst(1)), cst(0));
+  Value subExp = subOp(cst(120), lz);
+  Value subMant = andOp(shl(shl(m3, lz), cst(21)), cst(0x7FFFFF));
+  Value subRes = orOp(orOp(sign, shl(subExp, cst(23))), subMant);
+
+  // Normal: value = 1.m3 * 2^(e4-7) -> f32 exp = e4 + 120, mant = m3 << 20.
+  Value exp32 = addOp(e4, cst(120));
+  Value normalRes = orOp(orOp(sign, shl(exp32, cst(23))), shl(m3, cst(20)));
+
+  Value res = sel(isZero, sign, subRes);
+  res = sel(isZeroOrSub, res, normalRes);
+  res = sel(isNaN, nanRes, res);
+
+  return rewriter.create<arith::BitcastOp>(loc, rewriter.getF32Type(), res);
+}
+
+// Generate the loop nest first, then rewrite matching payload ops in the
+// emitted IR. Rewriting in-place in the linalg region does not work:
+// DialectConversion applies replaceOp/eraseOp only at commit, so the body
+// cloned by linalgOpToLoops would still contain the old op.
+static LogicalResult
+lowerGenericWithBodyRewrite(linalg::GenericOp op,
+                            ConversionPatternRewriter &rewriter,
+                            llvm::function_ref<bool(Operation *)> matches,
+                            llvm::function_ref<void(Operation *)> replace) {
+  Operation *before = op->getPrevNode();
+  auto loops = linalg::linalgOpToLoops(rewriter, op);
+  if (failed(loops))
+    return rewriter.notifyMatchFailure(op, "operation not supported yet.");
+
+  unsigned replaced = 0;
+  auto replaceIfMatch = [&](Operation *bodyOp) {
+    if (!matches(bodyOp))
+      return;
+    rewriter.setInsertionPoint(bodyOp);
+    replace(bodyOp);
+    ++replaced;
+  };
+
+  if (!loops->empty()) {
+    loops->front()->walk([&](Operation *bodyOp) { replaceIfMatch(bodyOp); });
+  } else {
+    // 0-d generic: payload is inlined immediately before `op`.
+    Operation *cur = before ? before->getNextNode() : &op->getBlock()->front();
+    while (cur && cur != op) {
+      Operation *next = cur->getNextNode();
+      cur->walk([&](Operation *bodyOp) { replaceIfMatch(bodyOp); });
+      cur = next;
+    }
+  }
+
+  if (!replaced)
+    return rewriter.notifyMatchFailure(
+        op, "no matching payload op found after lowering to loops");
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult
+lowerGenericF32ToF8E4M3FN(linalg::GenericOp op,
+                          ConversionPatternRewriter &rewriter) {
+  return lowerGenericWithBodyRewrite(
+      op, rewriter, isF8E4M3FNTruncF, [&](Operation *bodyOp) {
+        auto truncOp = cast<arith::TruncFOp>(bodyOp);
+        Value converted = expandF32ToF8E4M3FN(rewriter, truncOp.getLoc(),
+                                              truncOp.getOperand());
+        rewriter.replaceOp(truncOp, converted);
+      });
+}
+
+static LogicalResult
+lowerGenericF8E4M3FNToF32(linalg::GenericOp op,
+                          ConversionPatternRewriter &rewriter) {
+  return lowerGenericWithBodyRewrite(
+      op, rewriter, isF8E4M3FNExtF, [&](Operation *bodyOp) {
+        auto extOp = cast<arith::ExtFOp>(bodyOp);
+        Value converted =
+            expandF8E4M3FNToF32(rewriter, extOp.getLoc(), extOp.getIn());
+        rewriter.replaceOp(extOp, converted);
+      });
 }
 
 // Get format code for tensor element type
@@ -221,6 +495,22 @@ template <typename T> llvm::SmallVector<Operation *> getRegionOps(T linalgOp) {
   auto regionBlock = linalgOp.getBody();
   return llvm::map_to_vector(regionBlock->without_terminator(),
                              [](Operation &op) { return &op; });
+}
+
+/// Bitcast a float scalar to the i32 payload expected by Tx81 VS intrinsics.
+static FailureOr<Value> encodeFloatScalarAsI32(OpBuilder &builder, Location loc,
+                                               Value scalar,
+                                               unsigned bitWidth) {
+  if (bitWidth != 16 && bitWidth != 32)
+    return failure();
+  Type bitcastType =
+      bitWidth == 16 ? builder.getI16Type() : builder.getI32Type();
+  Value i32Value = builder.create<arith::BitcastOp>(loc, bitcastType, scalar);
+  if (bitWidth == 16) {
+    i32Value =
+        builder.create<arith::ExtSIOp>(loc, builder.getI32Type(), i32Value);
+  }
+  return i32Value;
 }
 
 static Data_Format getFormatFromElemType(mlir::Type elemType) {
@@ -423,10 +713,10 @@ public:
 
       if (isDstSPM)
         rewriter.replaceOpWithNewOp<tx::Rdma1dOp>(op, dstPtr, srcPtr, elemCount,
-                                                  fmt, srcPtr);
+                                                  fmt, srcPtr, srcPtr);
       else
         rewriter.replaceOpWithNewOp<tx::Wdma1dOp>(op, dstPtr, srcPtr, elemCount,
-                                                  fmt, dstPtr);
+                                                  fmt, dstPtr, dstPtr);
       return success();
     }
 
@@ -452,7 +742,8 @@ public:
           rewriter.getI32IntegerAttr(rank),      // rank
           rewriter.getI32IntegerAttr(elemBytes), // elem bytes
           rewriter.getI32IntegerAttr(srcFmt),    // Format
-          srcPtr                                 // base_ddr_addr (placeholder)
+          srcPtr,                                // base_ddr_addr (placeholder)
+          srcPtr                                 // loc_str (placeholder)
       );
     } else {
       auto wdmaOp = rewriter.create<tx::WdmaOp>(
@@ -464,7 +755,8 @@ public:
           rewriter.getI32IntegerAttr(rank),      // rank
           rewriter.getI32IntegerAttr(elemBytes), // elem bytes
           rewriter.getI32IntegerAttr(srcFmt),    // Format
-          dstPtr                                 // base_ddr_addr (placeholder)
+          dstPtr,                                // base_ddr_addr (placeholder)
+          dstPtr                                 // loc_str (placeholder)
       );
     }
     rewriter.eraseOp(op);
@@ -1041,18 +1333,11 @@ struct MKArithVSOpConversionPattern : public OpConversionPattern<MKOpT> {
 
     auto loc = op.getLoc();
 
-    // Store float value on a integer type 32bit memory
     auto bitWidth = inputType.getElementTypeBitWidth();
-    assert(bitWidth == 16 || bitWidth == 32);
-    auto bitcastType =
-        bitWidth == 16 ? rewriter.getI16Type() : rewriter.getI32Type();
-    Value i32Value =
-        rewriter.create<arith::BitcastOp>(op.getLoc(), bitcastType, val);
-    // Extend bitcode to 32 bit
-    if (bitWidth == 16) {
-      i32Value = rewriter.create<arith::ExtSIOp>(
-          op.getLoc(), rewriter.getI32Type(), i32Value);
-    }
+    auto encoded = encodeFloatScalarAsI32(rewriter, loc, val, bitWidth);
+    if (failed(encoded))
+      return rewriter.notifyMatchFailure(op, "unsupported VS scalar bitwidth");
+    Value i32Value = *encoded;
 
     auto elemCount = inputType.getNumElements();
     auto inputPtr = createAddressFromMemref(rewriter, loc, input);
@@ -1083,18 +1368,11 @@ struct MKRelationVSOpConversionPattern : public OpConversionPattern<MKOpT> {
 
     auto loc = op.getLoc();
 
-    // Store float value on a integer type 32bit memory
     auto bitWidth = inputType.getElementTypeBitWidth();
-    assert(bitWidth == 16 || bitWidth == 32);
-    auto bitcastType =
-        bitWidth == 16 ? rewriter.getI16Type() : rewriter.getI32Type();
-    Value i32Value =
-        rewriter.create<arith::BitcastOp>(op.getLoc(), bitcastType, val);
-    // Extend bitcode to 32 bit
-    if (bitWidth == 16) {
-      i32Value = rewriter.create<arith::ExtSIOp>(
-          op.getLoc(), rewriter.getI32Type(), i32Value);
-    }
+    auto encoded = encodeFloatScalarAsI32(rewriter, loc, val, bitWidth);
+    if (failed(encoded))
+      return rewriter.notifyMatchFailure(op, "unsupported VS scalar bitwidth");
+    Value i32Value = *encoded;
 
     // BoolRelationVSOp need 8 bit alignment
     auto elemCount = inputType.getNumElements();
@@ -1209,11 +1487,31 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
     return success();
   }
 
+  /// Fallback for binary region ops whose generic has fewer memref inputs than
+  /// the VV converters below index. Such a generic appears when the region op
+  /// uses a scalar captured from outside the region (e.g. a constant hoisted by
+  /// an external CoreIR producer) instead of a second memref operand; the
+  /// vector formulas do not apply, so lower it with scalar loops.
+  template <typename TxVVOp>
+  LogicalResult
+  convertBinaryInsufficientInputs(linalg::GenericOp op, OpAdaptor /*adaptor*/,
+                                  ConversionPatternRewriter &rewriter,
+                                  RND_MODE /*roundMode*/) const {
+    return convertLinalgOpToLoops(op, rewriter);
+  }
+
   template <typename TxOpT>
   LogicalResult
   convertBinaryOp(linalg::GenericOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter,
                   RND_MODE roundMode = RND_MODE::RND_NEAREST_EVEN) const {
+    // Binary VV converters index getInputs()[1] unconditionally. A region op
+    // can capture a constant hoisted outside the generic, leaving a single
+    // memref operand -- fall back to loops instead of crashing.
+    if (op.getInputs().size() < 2)
+      return convertBinaryInsufficientInputs<TxOpT>(op, adaptor, rewriter,
+                                                    roundMode);
+
     Location loc = op->getLoc();
     auto input0 =
         createAddressFromMemref(rewriter, loc, adaptor.getInputs()[0]);
@@ -1263,6 +1561,11 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
   LogicalResult
   convertBoolBinaryLogicOp(linalg::GenericOp op, OpAdaptor adaptor,
                            ConversionPatternRewriter &rewriter) const {
+    // See convertBinaryOp: a captured scalar leaves fewer memref inputs than
+    // the converter indexes.
+    if (op.getInputs().size() < 2)
+      return convertLinalgOpToLoops(op, rewriter);
+
     Location loc = op->getLoc();
     auto input0 =
         createAddressFromMemref(rewriter, loc, adaptor.getInputs()[0]);
@@ -1349,6 +1652,11 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
   template <typename TxOpT>
   LogicalResult BoolRelationVVOp(linalg::GenericOp op, OpAdaptor adaptor,
                                  ConversionPatternRewriter &rewriter) const {
+    // See convertBinaryOp: a captured scalar leaves fewer memref inputs than
+    // the converter indexes.
+    if (op.getInputs().size() < 2)
+      return convertLinalgOpToLoops(op, rewriter);
+
     Location loc = op->getLoc();
     auto input0 =
         createAddressFromMemref(rewriter, loc, adaptor.getInputs()[0]);
@@ -1376,6 +1684,10 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
 
   LogicalResult FmaConvertOp(linalg::GenericOp op, OpAdaptor adaptor,
                              ConversionPatternRewriter &rewriter) const {
+    // FMA indexes getInputs()[2]; a captured scalar can leave fewer operands.
+    if (op.getInputs().size() < 3)
+      return convertLinalgOpToLoops(op, rewriter);
+
     Location loc = op->getLoc();
     auto input0 =
         createAddressFromMemref(rewriter, loc, adaptor.getInputs()[0]);
@@ -1403,6 +1715,11 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
 
   LogicalResult convertDivIntOp(linalg::GenericOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
+    // See convertBinaryOp: a captured scalar leaves fewer memref inputs than
+    // the converter indexes.
+    if (op.getInputs().size() < 2)
+      return convertLinalgOpToLoops(op, rewriter);
+
     Location loc = op->getLoc();
     auto input0 =
         createAddressFromMemref(rewriter, loc, adaptor.getInputs()[0]);
@@ -1503,10 +1820,17 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
                   ConversionPatternRewriter &rewriter) const override {
 
     auto regionOps = getRegionOps<linalg::GenericOp>(op);
+    bool hasF8TruncF = llvm::any_of(regionOps, isF8E4M3FNTruncF);
+    bool hasF8ExtF = llvm::any_of(regionOps, isF8E4M3FNExtF);
 
     if (!op.getOutputs().empty() &&
-        cast<MemRefType>(op.getOutputs()[0].getType()).getRank() == 0)
+        cast<MemRefType>(op.getOutputs()[0].getType()).getRank() == 0) {
+      if (hasF8TruncF)
+        return lowerGenericF32ToF8E4M3FN(op, rewriter);
+      if (hasF8ExtF)
+        return lowerGenericF8E4M3FNToF32(op, rewriter);
       return convertLinalgOpToLoops(op, rewriter);
+    }
 
     // Check if the operation is elementwise
     if (op.getIteratorTypesArray().front() !=
@@ -1525,7 +1849,31 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
          dyn_cast<MemRefType>(op.getInputs()[0].getType())
                  .getElementType()
                  .getIntOrFloatBitWidth() == 64)) {
+      if (hasF8TruncF)
+        return lowerGenericF32ToF8E4M3FN(op, rewriter);
+      if (hasF8ExtF)
+        return lowerGenericF8E4M3FNToF32(op, rewriter);
       return convertLinalgOpToLoops(op, rewriter);
+    }
+
+    // The vector converters read every operand as if it had the output's shape
+    // and contiguity, so an operand that is broadcast (a rank mismatch or a
+    // unit dimension) would be read at the wrong offsets -- silently wrong
+    // results, not a diagnostic. Those ops have to run as loops instead. The
+    // converters below also index getOutputs()[0] unconditionally, so a generic
+    // with no outputs at all (e.g. an unused result folded away) must take the
+    // loop fallback here rather than reach the TypeSwitch.
+    if (op.getOutputs().empty())
+      return convertLinalgOpToLoops(op, rewriter);
+    auto outputType = dyn_cast<MemRefType>(op.getOutputs()[0].getType());
+    if (!outputType)
+      return convertLinalgOpToLoops(op, rewriter);
+    auto outputShape = outputType.getShape();
+    for (Value input : op.getInputs()) {
+      auto inputType = dyn_cast<MemRefType>(input.getType());
+      if (!inputType || inputType.getShape() != outputShape) {
+        return convertLinalgOpToLoops(op, rewriter);
+      }
     }
 
     auto elemWiseOp = regionOps[0];
@@ -1636,6 +1984,8 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
                                                           rewriter);
           else if (isa<Float4E2M1FNType>(inputType) && targetType.isF16())
             return NormalConvertOp<tx::FP4E2M1ToFP16Op>(op, adaptor, rewriter);
+          else if (isa<Float8E4M3FNType>(inputType) && targetType.isF32())
+            return lowerGenericF8E4M3FNToF32(op, rewriter);
           else
             return rewriter.notifyMatchFailure(
                 op, "Unsupported input/output type combination for ExtFOp "
@@ -1750,10 +2100,13 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
             return RoundConvertOp<tx::FP32ToFP16Op>(op, adaptor, rewriter);
           else if (resultType.isBF16())
             return RoundConvertOp<tx::FP32ToBF16Op>(op, adaptor, rewriter);
-          else
+          else if (isa<Float8E4M3FNType>(resultType)) {
+            return lowerGenericF32ToF8E4M3FN(op, rewriter);
+          } else {
             return rewriter.notifyMatchFailure(
                 op, "Unsupported input/output type combination for trunc "
                     "conversion");
+          }
         })
         .Default([&](auto elemWiseOp) {
           // Affine dialect should handled before this pass. So here lower it
@@ -2536,6 +2889,8 @@ void mlir::triton::populateMKToTx81ConversionPatterns(
                MKArithVSOpConversionPattern<mk::AddVS, tx::AddVSOp>,
                MKArithVSOpConversionPattern<mk::SubVS, tx::SubVSOp>,
                MKArithVSOpConversionPattern<mk::MulVS, tx::MulVSOp>,
+               MKArithVSOpConversionPattern<mk::MaxVS, tx::MaxVSOp>,
+               MKArithVSOpConversionPattern<mk::MinVS, tx::MinVSOp>,
                MKRelationVVOpConversionPattern<mk::EqualVV,tx::EqualVV>,
                GatherConvertPattern,
                BarrierConversion<mk::BarrierOp, tx::BarrierOp>,

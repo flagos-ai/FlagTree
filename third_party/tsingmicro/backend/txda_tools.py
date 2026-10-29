@@ -1,13 +1,13 @@
+import errno
+import hashlib
+import logging
 import os
 import shutil
 import subprocess
-import hashlib
-import torch
-import errno
-import logging
-from posixpath import dirname
 from pathlib import Path
+from posixpath import dirname
 
+import torch
 from triton.backends.tsingmicro.logger_config import setup_logger
 
 logger = setup_logger("tsingmicro_launch")
@@ -96,19 +96,35 @@ def dump_cmd(cmd: list, flag: str):
     dump_cmd_count += 1
 
 
-def runLoweringCmd(srcFile: str, destFile: str, args: list):
+def runLoweringCmd(srcFile: str, args: list):
+    """Run a lowering command and surface its diagnostics when it fails.
+
+    Callers write outputs into a per-compile temp directory
+
+    TRITON_ALWAYS_COMPILE is not consulted here. It is handled by Triton's
+    compile cache in ``python/triton/compiler/compiler.py`` (via
+    ``knobs.compilation.always_compile``): when set, cache hits are ignored and
+    the full pipeline re-runs, which will call this helper again. By the time
+    we reach this function, lowering must always execute.
+
+    Failures used to be logged and then swallowed: the caller went on to read the
+    output file that was never written and reported a bare FileNotFoundError,
+    losing the compiler's own message. The stderr is now attached to the raised
+    error so the real cause is visible at the call site.
+    """
     try:
-        isAlwaysCompile = os.getenv("TRITON_ALWAYS_COMPILE", "0").lower() in ("1", "true", "yes")
-        if isAlwaysCompile or not os.path.exists(destFile):
-            if os.getenv("MLIR_ENABLE_DUMP", "0") == "1":
-                subprocess.check_call(args, stderr=subprocess.STDOUT)
-            else:
-                subprocess.check_call(args, stdout=subprocess.DEVNULL)
+        if os.getenv("MLIR_ENABLE_DUMP", "0") == "1":
+            subprocess.run(args, check=True, stderr=subprocess.STDOUT)
         else:
-            logger.debug(f"Skip lowering {destFile}")
-    except subprocess.CalledProcessError as e:
+            subprocess.run(args, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as err:
         dump_ir([srcFile])
         dump_cmd(args, "failed command")
+        detail = (err.stderr or err.stdout or "").strip()
+        logger.error("lowering command failed with exit code %s: %s\n%s", err.returncode, " ".join(map(str, args)),
+                     detail)
+        raise RuntimeError(
+            f"lowering command failed with exit code {err.returncode}: {' '.join(map(str, args))}\n{detail}") from err
 
 
 def is_use_profile():
@@ -264,7 +280,7 @@ def get_customized_ir() -> list:
 def get_customized_ir_file(ir_name: str):
     base_dir = _get_dump_env_path()
     if not base_dir:
-        logger.warning(f"The dump path has not been set, so the customized ir function cannot be used.")
+        logger.warning("The dump path has not been set, so the customized ir function cannot be used.")
         return ""
 
     dest_file = os.path.join(base_dir, ir_name)

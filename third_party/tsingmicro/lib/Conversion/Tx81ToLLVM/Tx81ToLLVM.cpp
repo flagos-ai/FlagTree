@@ -87,6 +87,8 @@ const char addVSFuncName[] = "__AddVS";
 const char subVSFuncName[] = "__SubVS";
 const char mulVSFuncName[] = "__MulVS";
 const char divVSFuncName[] = "__DivVS";
+const char maxVSFuncName[] = "__MaxVS";
+const char minVSFuncName[] = "__MinVS";
 const char argMinFuncName[] = "__ArgMin";
 const char argMaxFuncName[] = "__ArgMax";
 const char reduceSumFuncName[] = "__ReduceSum";
@@ -637,7 +639,8 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
         i32Type,     // fmt
         i32Type,     // action
         LLVMPtrType, // base_ddr_addr
-        LLVMPtrType  // kernel_name
+        LLVMPtrType, // kernel_name
+        LLVMPtrType  // loc
     };
 
     // Create or find global kernel name string constant
@@ -671,6 +674,8 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
     baseDdrAddr =
         rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType, baseDdrAddr);
 
+    Value locPtr = adaptor.getLocStr();
+
     Value action = rewriter.create<LLVM::ConstantOp>(
         loc, i32Type, rewriter.getI32IntegerAttr(getDmaActionFromEnv()));
 
@@ -678,7 +683,7 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
     auto call = rewriter.replaceOpWithNewOp<LLVM::CallOp>(
         op, TypeRange{}, funcPrefix,
         ValueRange{dstPtr, srcPtr, elemCount, fmt, action, baseDdrAddr,
-                   kernelNamePtr});
+                   kernelNamePtr, locPtr});
 
     return success();
   }
@@ -925,7 +930,8 @@ struct RdmaWdmaOpConversion : public OpConversionPattern<Tx81Op> {
         i32Ty,    // fmt
         i32Ty,    // action
         i8PtrTy,  // base_ddr_addr
-        i8PtrTy   // kernel_name
+        i8PtrTy,  // kernel_name
+        i8PtrTy   // loc
     };
 
     // Create or find global kernel name string constant (must be in module
@@ -983,6 +989,8 @@ struct RdmaWdmaOpConversion : public OpConversionPattern<Tx81Op> {
     Value baseDdrAddr = adaptor.getBaseDdrAddr();
     baseDdrAddr = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, baseDdrAddr);
 
+    Value locPtr = adaptor.getLocStr();
+
     // Create the call to __Rdma
     Value action = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr(getDmaActionFromEnv()));
@@ -990,7 +998,7 @@ struct RdmaWdmaOpConversion : public OpConversionPattern<Tx81Op> {
         loc, TypeRange{i8PtrTy}, funcPrefix,
         ValueRange{src, target, srcShapeArray, srcStridesArray, dstShapeArray,
                    dstStridesArray, rank, elemBytes, fmt, action, baseDdrAddr,
-                   kernelNamePtr});
+                   kernelNamePtr, locPtr});
 
     // Replace the op with the result of the call
     rewriter.replaceOp(op, call.getResult());
@@ -1138,54 +1146,68 @@ struct GatherScatterOpConversion
   matchAndRewrite(tx::GatherScatter op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
+    auto ctx = rewriter.getContext();
     // Get the module for function declarations
     auto module = op->getParentOfType<ModuleOp>();
 
-    // Declare the __GatherScatter runtime function if not already declared
-    /*
-    void __GatherScatter(uint64_t *src, uint64_t *dst, uint32_t bytes,
-                     uint32_t src_strideN, uint32_t src_strideH,
-                     uint32_t src_strideW, uint32_t src_iterN,
-                     uint32_t src_iterH, uint32_t src_iterW,
-                     uint32_t dst_strideN, uint32_t dst_strideH,
-                     uint32_t dst_strideW, uint32_t dst_iterN,
-                     uint32_t dst_iterH, uint32_t dst_ite_W, uint32_t action)
-    */
-    auto i8PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+    // Get kernel name from parent function (may be func::FuncOp or
+    // LLVM::LLVMFuncOp)
+    std::string kernelName;
+    if (auto funcOp = op->getParentOfType<func::FuncOp>())
+      kernelName = funcOp.getName().str();
+    else if (auto llvmFunc = op->getParentOfType<LLVM::LLVMFuncOp>())
+      kernelName = llvmFunc.getName().str();
+
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx);
     auto i32Ty = rewriter.getI32Type();
-    auto i32PtrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     // Types for function declaration
-    SmallVector<Type, 5> argTypes = {
+    SmallVector<Type> argTypes = {
         i8PtrTy, // src
         i8PtrTy, // dst
         i32Ty,   // bytes
-        i32Ty,   // src_StrideN
-        i32Ty,   // src_StrideH
-        i32Ty,   // src_StrideW
-        i32Ty,   // dst_StrideN
-        i32Ty,   // dst_StrideH
-        i32Ty,   // dst_StrideW
-        i32Ty,   // src_IterN
-        i32Ty,   // src_IterH
-        i32Ty,   // src_IterW
-        i32Ty,   // dst_IterN
-        i32Ty,   // dst_IterH
-        i32Ty,   // dst_IterW
-        i32Ty    // action
+        i32Ty,   // src_strideN
+        i32Ty,   // src_strideH
+        i32Ty,   // src_strideW
+        i32Ty,   // src_iterN
+        i32Ty,   // src_iterH
+        i32Ty,   // src_iterW
+        i32Ty,   // dst_strideN
+        i32Ty,   // dst_strideH
+        i32Ty,   // dst_strideW
+        i32Ty,   // dst_iterN
+        i32Ty,   // dst_iterH
+        i32Ty,   // dst_iterW
+        i32Ty,   // action
+        i8PtrTy  // kernel_name
     };
+
+    // Create or find global kernel name string constant (must be in module
+    // scope)
+    std::string globalName = "__dma_kernel_name";
+    auto savedIP = rewriter.saveInsertionPoint();
+    rewriter.setInsertionPointToStart(module.getBody());
+    if (!module.lookupSymbol<LLVM::GlobalOp>(globalName)) {
+      auto charType = IntegerType::get(ctx, 8);
+      auto strType = LLVM::LLVMArrayType::get(charType, kernelName.size() + 1);
+      rewriter.create<LLVM::GlobalOp>(
+          loc, strType, /*isConstant=*/true, LLVM::Linkage::Internal,
+          globalName, rewriter.getStringAttr(kernelName + '\0'));
+    }
+    rewriter.restoreInsertionPoint(savedIP);
+    auto kernelNamePtr = rewriter.create<LLVM::AddressOfOp>(
+        loc, LLVM::LLVMPointerType::get(ctx), globalName);
 
     StringRef funcName =
         gatherScatterAsync ? "__GatherScatterAsync" : "__GatherScatter";
     // Declare the function
-    Value funcPtr = triton::declareTx81Function(module, rewriter, loc, funcName,
-                                                i8PtrTy, argTypes);
+    triton::declareTx81Function(module, rewriter, loc, funcName, i8PtrTy,
+                                argTypes);
 
     // Get the operands
     Value src = adaptor.getSource();
     src = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, src);
 
-    // Get the operands
     Value dst = adaptor.getTarget();
     dst = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, dst);
 
@@ -1225,10 +1247,11 @@ struct GatherScatterOpConversion
     Value action = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr(getDmaActionFromEnv()));
     auto call = rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{i8PtrTy}, funcName, // funcPtr,
+        loc, TypeRange{i8PtrTy}, funcName,
         ValueRange{src, dst, bytes, srcStrideN, srcStrideH, srcStrideW,
                    srcIterN, srcIterH, srcIterW, dstStrideN, dstStrideH,
-                   dstStrideW, dstIterN, dstIterH, dstIterW, action});
+                   dstStrideW, dstIterN, dstIterH, dstIterW, action,
+                   kernelNamePtr});
 
     // Replace the op with the result of the call
     rewriter.replaceOp(op, call.getResult());
@@ -2883,6 +2906,8 @@ public:
                  BinaryVSOpConversion<tx::SubVSOp, subVSFuncName>,
                  BinaryVSOpConversion<tx::MulVSOp, mulVSFuncName>,
                  BinaryVSOpConversion<tx::DivVSOp, divVSFuncName>,
+                 BinaryVSOpConversion<tx::MaxVSOp, maxVSFuncName>,
+                 BinaryVSOpConversion<tx::MinVSOp, minVSFuncName>,
                  RelationVVOpConversion<tx::BoolEqualVV, boolEqualVVFuncName>,
                  RelationVVOpConversion<tx::BoolUnEqualVV, boolUnEqualVVFuncName>,
                  RelationVVOpConversion<tx::BoolGreaterEqualVV, boolGreaterEqualVVFuncName>,

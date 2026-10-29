@@ -330,10 +330,10 @@ public:
 
     // Now that all the PtrStates have been populated, we can wire up the states
     // with the tts.get_structured_state ops inserted in the prepass.
+    // On failure the analysis emits a remark at the op location and reverts
+    // (and erases) the op, so the op must not be touched afterwards.
     moduleOp.walk([&ptrAnalysis](tts::GetStructuredStateOp op) {
-      if (failed(ptrAnalysis.rewriteGetStructuredStateOp(op))) {
-        op.emitWarning("Rewriting GetStructuredStateOp failed.");
-      }
+      (void)ptrAnalysis.rewriteGetStructuredStateOp(op);
     });
   }
 };

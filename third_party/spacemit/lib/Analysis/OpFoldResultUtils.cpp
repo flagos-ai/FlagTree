@@ -267,6 +267,22 @@ OpFoldResult subOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
     rhsValue = rhsOp.getResult();
   }
 
+  // The two sides may have different types when one is an index-typed
+  // value/constant and the other is a tensor value tracked as an unstructured
+  // offset (PtrAnalysis::rebuildAsUnsupportedOp puts raw tensor operands into
+  // offsets, e.g. 0 - divsi_result). arith.subi requires all operands to
+  // share a type, so expand the non-tensor side to the tensor side's type
+  // (same convention as addState: the tensor type wins).
+  if (lhsValue.getType() != rhsValue.getType()) {
+    bool lhsIsTensor = isa<ShapedType>(lhsValue.getType());
+    bool rhsIsTensor = isa<ShapedType>(rhsValue.getType());
+    if (rhsIsTensor && !lhsIsTensor) {
+      lhsValue = cast<Value>(expandOFRIndex(lhsValue, rhsValue, loc, b));
+    } else if (lhsIsTensor && !rhsIsTensor) {
+      rhsValue = cast<Value>(expandOFRIndex(rhsValue, lhsValue, loc, b));
+    }
+  }
+
   auto sumOp = arith::SubIOp::create(b, loc, lhsValue, rhsValue);
   return sumOp.getResult();
 }

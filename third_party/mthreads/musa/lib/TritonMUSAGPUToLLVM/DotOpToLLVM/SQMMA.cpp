@@ -61,7 +61,7 @@ bool isFP8(triton::musa::SQMMAEltType type) {
 struct SqmmaDescriptorIntrinsicSpec {
   llvm::StringRef intrinsicName;
   Type loadType;
-  Type dataType;
+  int64_t elemsPerLeadingGroup;
   Value leadingStrideBytes;
   Value swizzleGranularity;
   Value swizzleStride;
@@ -143,24 +143,19 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   if (!loadType)
     return failure();
 
-  MLIRContext *ctx = rewriter.getContext();
   llvm::StringRef intrinsicName;
-  Type dataType;
   switch (eltType) {
   case triton::musa::SQMMAEltType::f16:
   case triton::musa::SQMMAEltType::bf16:
     intrinsicName = "llvm.musa.sqmma.desc.half";
-    dataType = rewriter.getI16Type();
     break;
   case triton::musa::SQMMAEltType::tf32:
     intrinsicName = "llvm.musa.sqmma.desc.fp32";
-    dataType = rewriter.getF32Type();
     break;
   case triton::musa::SQMMAEltType::s8:
   case triton::musa::SQMMAEltType::e4m3:
   case triton::musa::SQMMAEltType::e5m2:
     intrinsicName = "llvm.musa.sqmma.desc.i8";
-    dataType = IntegerType::get(ctx, 8);
     break;
   default:
     return failure();
@@ -170,7 +165,7 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   return SqmmaDescriptorIntrinsicSpec{
       intrinsicName,
       loadType,
-      dataType,
+      grouping->elemsPerGroupInLeadingDim,
       b.i32_val(static_cast<int32_t>(groupedLeadingWidthBytes)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleGranularity)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleStride)),
@@ -194,9 +189,7 @@ public:
     (void)ty;
     ord.assign(matrixView.order.begin(), matrixView.order.end());
     elemBytes = ty.getElementTypeBitWidth() / 8;
-    uint32_t widthInByte = this->physicalShape[ord[0]] * elemBytes;
-    elemsPerSwizzlingRow =
-        widthInByte > 256 ? 256 / elemBytes : this->physicalShape[ord[0]];
+    elemsPerSwizzlingRow = descriptorSpec.elemsPerLeadingGroup;
     elemsPerSwizzlingRowVal =
         TritonLLVMOpBuilder(loc, rewriter).i32_val(elemsPerSwizzlingRow);
   }
@@ -223,13 +216,9 @@ public:
     auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
     Value elemBase = b.bitcast(base, elemPtrTy);
     Value elemPtr = b.gep(elemPtrTy, descriptorSpec.loadType, elemBase, offset);
-    Value data =
-        LLVM::LoadOp::create(rewriter, loc, descriptorSpec.loadType, elemPtr);
-    if (data.getType() != descriptorSpec.dataType)
-      data = b.bitcast(data, descriptorSpec.dataType);
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
-        ValueRange{data, descriptorSpec.leadingStrideBytes,
+        ValueRange{elemPtr, descriptorSpec.leadingStrideBytes,
                    descriptorSpec.swizzleGranularity,
                    descriptorSpec.swizzleStride});
     return desc.getResult(0);
@@ -594,7 +583,8 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
 
   const unsigned instM = instrShape[0];
   const unsigned instN = instrShape[1];
-  const unsigned instK = instrShape[2];
+  const unsigned encodedInstK = instrShape[2];
+  unsigned instK = encodedInstK;
 
   Value opA = getDotOperandA(op);
   Value opB = getDotOperandB(op);
@@ -642,8 +632,16 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   if (elemBytes == 0)
     elemBytes = 1;
 
-  if (!isSupportedSqmma(eltTypeA, eltTypeB, eltTypeC, instM, instN, instK,
-                        *sqTraits, layoutA, layoutB, elemBytes, true, true))
+  const bool splitNarrowK128 = sqTraits->arch == triton::musa::MusaArch::PH1 &&
+                               encodedInstK == 128 && eltTypeA == eltTypeB &&
+                               (eltTypeA == triton::musa::SQMMAEltType::f16 ||
+                                eltTypeA == triton::musa::SQMMAEltType::bf16);
+  if (splitNarrowK128)
+    instK = 64;
+
+  if (!isSupportedSqmmaWithK128Compatibility(
+          eltTypeA, eltTypeB, eltTypeC, instM, instN, encodedInstK, *sqTraits,
+          layoutA, layoutB, elemBytes, true, true))
     return op.emitError("MUSA SQMMA: unsupported shape or element type");
   std::string sqmmaIntrinsic =
       triton::musa::lookupSqmmaIntrinsic(eltTypeA, instM, instN, instK);

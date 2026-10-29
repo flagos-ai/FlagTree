@@ -691,6 +691,8 @@ class ArithVSOp<string mnemonic, list<Trait> traits = [DestinationStyleOpInterfa
 def AddVS : ArithVSOp<"addvs">;
 def SubVS : ArithVSOp<"subvs">;
 def MulVS : ArithVSOp<"mulvs">;
+def MaxVS : ArithVSOp<"maxvs">;
+def MinVS : ArithVSOp<"minvs">;
 
 // =============================================================================
 // Relation Ops

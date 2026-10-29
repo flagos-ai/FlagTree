@@ -7,10 +7,12 @@ add_triton_library(TLEToLinalg
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
+  MLIRFuncDialect
   MLIRIR
+  MLIRParser
   MLIRPass
   MLIRTensorDialect
   MLIRTransforms
   MLIRSupport
-  TLEIR
+  TleIR
 )

@@ -41,7 +41,7 @@ def _slot_local_ptr_store_kernel(out_ptr, BLOCK: tl.constexpr):
     tl.store(out_ptr + idx, vals)
 
 
-@pytest.mark.require_tle("gpu.alloc", "gpu.buffered_tensor.slot", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.buffered_tensor.slot", "gpu.local_ptr")
 def test_buffered_tensor_slot_lowers_to_memdesc_index_and_executes():
     block = 64
     out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -75,7 +75,7 @@ def _slot_jit_argument_kernel(out_ptr, BLOCK: tl.constexpr, STAGES: tl.constexpr
         tl.store(out_ptr + stage * BLOCK + idx, tl.load(ptrs))
 
 
-@pytest.mark.require_tle("gpu.alloc", "gpu.buffered_tensor.slot", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.buffered_tensor.slot", "gpu.local_ptr")
 @pytest.mark.parametrize("stages", [1, 2])
 def test_buffered_tensor_slot_after_jit_argument_roundtrip(stages):
     block = 64

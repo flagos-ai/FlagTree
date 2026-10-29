@@ -224,6 +224,8 @@ public:
   LogicalResult visitOperandAdd(arith::AddIOp addOp, PtrState &state,
                                 const Location loc, OpBuilder &builder);
 
+  LogicalResult visitOperandSub(arith::SubIOp subOp, PtrState &state,
+                                const Location loc, OpBuilder &builder);
   // Operand is the result of arith.muli. Process both arguments and insert any
   // arith.muli instruction as needed.
   // Main assumptions:
