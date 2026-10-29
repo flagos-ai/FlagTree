@@ -37,6 +37,10 @@ override_dh_auto_install:
 		mv $(PYDIR)/bin/* debian/$(PKG)/usr/bin/; \
 		rmdir $(PYDIR)/bin; \
 	fi
+	# The wheel bundles CUPTI's static archives next to the shared ones. Only
+	# a linker reads a .a; nothing in the installed tree does, and they are
+	# 73 MB unpacked.
+	rm -f $(PYDIR)/triton/backends/nvidia/lib/cupti/*.a
 	# Strip *.dist-info/RECORD entries that reference removed bin/ paths,
 	# otherwise dh_python3 warns. Easiest: drop RECORD; pip doesn't need it.
 	rm -f $(PYDIR)/flagtree-*.dist-info/RECORD
