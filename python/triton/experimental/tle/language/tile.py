@@ -24,7 +24,7 @@ class tensor_view_type(tl.base_type):
     """Type of an N-dimensional logical TensorView."""
 
     def __init__(self, element_ty: tl.dtype, rank: int, view_kind=None, tile=(), traversal_strides=(), sparse_dims=(),
-                 padding_value="zero"):
+                 padding_value="zero", bounds_check=False):
         self.element_ty = element_ty
         self.rank = rank
         self.view_kind = view_kind
@@ -32,19 +32,20 @@ class tensor_view_type(tl.base_type):
         self.traversal_strides = tuple(traversal_strides)
         self.sparse_dims = tuple(sparse_dims)
         self.padding_value = padding_value
+        self.bounds_check = bounds_check
 
     def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["tensor_view", int]:
         return tensor_view(handles[cursor], self.element_ty, self.rank, self.view_kind, self.tile,
-                           self.traversal_strides, self.sparse_dims, self.padding_value), cursor + 1
+                           self.traversal_strides, self.sparse_dims, self.padding_value, self.bounds_check), cursor + 1
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
         out.append(
             builder.get_tensor_view_ty(self.element_ty.to_ir(builder), self.rank, self.view_kind or "", self.tile,
-                                       self.traversal_strides, self.sparse_dims, self.padding_value))
+                                       self.traversal_strides, self.sparse_dims, self.padding_value, self.bounds_check))
 
     def __str__(self) -> str:
-        suffix = (""
-                  if self.view_kind is None else f", {self.view_kind}, tile={self.tile}, padding={self.padding_value}")
+        suffix = ("" if self.view_kind is None else f", {self.view_kind}, tile={self.tile}, "
+                  f"padding={self.padding_value}, bounds_check={self.bounds_check}")
         return f"tensor_view<{self.element_ty}>[{self.rank}{suffix}]"
 
     def __eq__(self, other) -> bool:
@@ -52,7 +53,8 @@ class tensor_view_type(tl.base_type):
             return False
         return (self.element_ty == other.element_ty and self.rank == other.rank and self.view_kind == other.view_kind
                 and self.tile == other.tile and self.traversal_strides == other.traversal_strides
-                and self.sparse_dims == other.sparse_dims and self.padding_value == other.padding_value)
+                and self.sparse_dims == other.sparse_dims and self.padding_value == other.padding_value
+                and self.bounds_check == other.bounds_check)
 
     def __ne__(self, other) -> bool:
         return not self.__eq__(other)
@@ -63,18 +65,20 @@ class tensor_view_type(tl.base_type):
         traversal = "x".join(str(value) for value in self.traversal_strides)
         sparse = "x".join(str(value) for value in self.sparse_dims)
         padding = self.padding_value.upper().replace("-", "N")
-        return f"TV{self.element_ty.mangle()}R{self.rank}K{encoding}T{tile}V{traversal}S{sparse}P{padding}"
+        check = "C" if self.bounds_check else "N"
+        return f"TV{self.element_ty.mangle()}R{self.rank}K{encoding}T{tile}V{traversal}S{sparse}P{padding}{check}"
 
 
 class tensor_view(tl.base_value):
     """A logical tensor accessed by `tle.tile_load` and `tle.tile_store`."""
 
     def __init__(self, handle, element_ty: tl.dtype, rank: int, view_kind=None, tile=(), traversal_strides=(),
-                 sparse_dims=(), padding_value="zero"):
+                 sparse_dims=(), padding_value="zero", bounds_check=False):
         """Internal constructor."""
         super().__init__()
         self.handle = handle
-        self.type = tensor_view_type(element_ty, rank, view_kind, tile, traversal_strides, sparse_dims, padding_value)
+        self.type = tensor_view_type(element_ty, rank, view_kind, tile, traversal_strides, sparse_dims, padding_value,
+                                     bounds_check)
 
     def _flatten_ir(self, handles: List[ir.value]) -> None:
         handles.append(self.handle)
@@ -117,14 +121,22 @@ def make_strided_view(base: tensor, shape, strides, tile, traversal_strides, pad
 
 
 @tl.builtin
-def make_gather_scatter_view(base: tensor, shape, strides, tile, sparse_dim, padding_value="zero",
+def make_gather_scatter_view(base: tensor, shape, strides, tile, sparse_dim, padding_value="zero", bounds_check=False,
                              _semantic=None) -> "tensor_view":
     """Create a pointer view with tensor-valued indices in selected dimensions.
 
     ``padding_value`` must be one of ``"zero"``, ``"nan"``, ``"inf"``, or ``"-inf"``.
+
+    ``bounds_check`` is a constant. When true, a sparse index outside ``[0, shape[d])`` reads as
+    ``padding_value`` on load and is skipped on store, so an index of ``-1`` marks a row to skip, and
+    ``shape`` must be given for every dimension. When false, sparse indices must lie inside
+    ``[0, shape[d])``, an out-of-range index is undefined behavior, and ``shape[d]`` of a sparse
+    dimension may be ``None``, which keeps it out of the kernel arguments. The ``shape`` of a dense
+    dimension is always required because it clips the last tile.
     """
     from . import semantic
-    return semantic.make_gather_scatter_view(base, shape, strides, tile, sparse_dim, padding_value, _semantic.builder)
+    return semantic.make_gather_scatter_view(base, shape, strides, tile, sparse_dim, padding_value, bounds_check,
+                                             _semantic.builder)
 
 
 @tl.builtin

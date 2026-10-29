@@ -279,6 +279,7 @@ static TensorViewAccessInfo traceView(Value view, PatternRewriter &rewriter) {
     padding = getPaddingValue(gs.getPaddingValue());
     traversal.assign(tile.begin(), tile.end()); // contiguous step per dim
     sparseDims.assign(gs.getSparseDim().begin(), gs.getSparseDim().end());
+    info.boundsCheck = gs.getBoundsCheck();
     // A gather_scatter view keeps the base dimension order, so the tile
     // dimensions map onto the base dimensions identically.
     dimMapStorage.resize(tile.size());
