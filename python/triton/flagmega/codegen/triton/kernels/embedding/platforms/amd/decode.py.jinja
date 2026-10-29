@@ -1,0 +1,5 @@
+{#- AMD RDNA: the IQ4_XS embedding codebook uses the v_perm_b32 lookup in
+    _native_gguf_embedding.py.jinja; every other embedding path is generic. #}
+{% set embedding_platform = "amd" %}
+{% set embedding_native_gguf_helpers = "kernels/embedding/platforms/amd/_native_gguf_embedding.py.jinja" %}
+{% include "kernels/embedding/decode.py.jinja" %}

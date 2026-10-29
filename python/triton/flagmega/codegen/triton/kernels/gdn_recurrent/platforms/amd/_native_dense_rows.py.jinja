@@ -1,0 +1,25 @@
+{#- AMD RDNA: GDN gate projections (in_proj_b / in_proj_a) over native GGUF
+    weights. A uniform-row tile dots one row: every thread owns one 32-value
+    IQ4_XS group (v_perm_b32 codebook lookup, wide group loads, d*(scale-32)
+    once per group) and the row is reduced once, instead of 128-value element
+    steps with byte gathers and a tl.where codebook chain. Q4_K reuses the
+    8-row GEMV helper with every row naming the same row. #}
+{% include "kernels/block_fp8/platforms/amd/_native_gguf.py.jinja" %}
+@triton.jit
+def _flagmega_amd_gdn_native_row(source, weight, row, K: tl.constexpr, FORMAT: tl.constexpr):
+    """Dot of native GGUF weight row `row` (a scalar) with `source`."""
+    if FORMAT == "IQ4_XS":
+        GROUPS: tl.constexpr = K // 32
+        G: tl.constexpr = 128
+        row_bytes = row.to(tl.int64) * ((K // 256) * 136)
+        source_pairs = source.to(tl.pointer_type(tl.uint32))
+        accumulator = tl.zeros((G, ), tl.float32)
+        for group0 in tl.range(0, GROUPS, G):
+            accumulator += _flagmega_amd_iq4_xs_step(
+                source_pairs, weight, row_bytes, group0 + tl.arange(0, G), GROUPS % G != 0, GROUPS)
+        result = tl.sum(accumulator, axis=0)
+    else:
+        rows8 = tl.zeros((8, ), tl.int64) + row.to(tl.int64) * ((K // 256) * 144)
+        result = tl.max(_flagmega_amd_q4_k_rows8(source, weight, rows8, K), axis=0)
+    return result
+

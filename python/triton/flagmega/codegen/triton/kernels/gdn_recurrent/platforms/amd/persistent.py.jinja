@@ -1,0 +1,5 @@
+{#- AMD RDNA: native GGUF gate projections use the layout-aware row helper in
+    _native_dense_rows.py.jinja; every other GDN path is the generic one. #}
+{% set gdn_recurrent_platform = "amd" %}
+{% set gdn_native_dense_rows = "kernels/gdn_recurrent/platforms/amd/_native_dense_rows.py.jinja" %}
+{% include "kernels/gdn_recurrent/persistent.py.jinja" %}
