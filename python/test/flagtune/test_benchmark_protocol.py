@@ -200,6 +200,34 @@ def test_mthreads_replay_initializes_torchada_and_uses_shared_helper(monkeypatch
     )
 
 
+@pytest.mark.parametrize("import_fails", [False, True])
+def test_mthreads_replay_preserves_constexpr_helper_during_import(monkeypatch, import_fails):
+    import builtins
+    import triton
+
+    active = _driver_for("triton.backends.mthreads.driver", "musa")
+    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
+    original_helper = triton.next_power_of_2
+    original_import = builtins.__import__
+
+    def patched_import(name, *args, **kwargs):
+        if name == "torchada":
+            monkeypatch.setattr(triton, "next_power_of_2", lambda value: value)
+            if import_fails:
+                raise ImportError("missing TorchADA dependency")
+            return SimpleNamespace(get_backend=lambda: active.device_interface)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", patched_import)
+    if import_fails:
+        with pytest.raises(benchmark_module.FlagTuneDependencyError, match="requires torchada"):
+            benchmark_module.resolve_benchmarker("replay", warmup_ms=25, measurement_ms=100)
+    else:
+        benchmark_module.resolve_benchmarker("replay", warmup_ms=25, measurement_ms=100)
+
+    assert triton.next_power_of_2 is original_helper
+
+
 def test_unsupported_replay_backend_warns_and_resolves_event(monkeypatch):
     active = _driver_for("triton.backends.example.driver", backend="example")
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))

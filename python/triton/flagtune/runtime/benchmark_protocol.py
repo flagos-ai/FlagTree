@@ -177,7 +177,10 @@ def resolve_benchmarker(
         if implementation is not None:
             is_musa = type(active).__module__ == "triton.backends.mthreads.driver"
             if is_musa:
+                import triton
+
                 device_interface = active.get_device_interface()
+                next_power_of_2 = triton.next_power_of_2
                 try:
                     # Importing torchada installs the CUDA-to-MUSA API aliases.
                     import torchada
@@ -186,6 +189,9 @@ def resolve_benchmarker(
                         "FlagTune MUSA replay requires torchada and its MUSA dependencies; "
                         "install torchada with 'python -m pip install torchada' in the MUSA environment "
                         "and check the chained import error") from exc
+                finally:
+                    # TorchADA dependencies may replace this constexpr helper.
+                    triton.next_power_of_2 = next_power_of_2
                 get_backend = getattr(torchada, "get_backend", None)
                 if get_backend is None or get_backend() is not device_interface:
                     raise RuntimeError(
