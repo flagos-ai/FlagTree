@@ -1,56 +1,91 @@
 from pathlib import Path
+
 import torch
 import triton
+from triton import knobs
 import triton.language as tl
-from triton.experimental.tle.raw import dialect
 import triton.experimental.tle.language.raw as tle_raw
+from triton.experimental.tle.raw import dialect
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
-@dialect(name="cuda", file=Path(__file__).parent / "02-fused-softmax.cu")
-def edsl(*args, **kwargs):
+@dialect(
+    name="cuda",
+    file=Path(__file__).with_suffix(".cu"),
+    extern_func_name="SoftmaxKernel",
+)
+def cuda_softmax(*args, **kwargs):
     ...
 
 
-def naive_softmax(x):
-    x_max, _ = x.max(dim=1)
-    z = x - x_max[:, None]
-    numerator = torch.exp(z)
-    denominator = numerator.sum(dim=1)
-    ret = numerator / denominator[:, None]
-    return ret
-
-
+@triton.autotune(configs=[triton.Config({}, num_warps=n) for n in (1, 2, 4, 8)], key=["n_rows", "n_cols"])
 @triton.jit
-def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols,
-                   BLOCK_SIZE: tl.constexpr):
-    row_start = tl.program_id(0)
-    row_step = tl.num_programs(0)
-    for row_idx in tl.range(row_start, n_rows, row_step):
-        row_start_ptr = input_ptr + row_idx * input_row_stride
-        col_offsets = tl.arange(0, BLOCK_SIZE)
-        input_ptrs = row_start_ptr + col_offsets
-        mask = col_offsets < n_cols
-        row = tl.load(input_ptrs, mask=mask, other=-float("inf"))
-        softmax_output = tl.zeros_like(row)
-        output_row_start_ptr = output_ptr + row_idx * output_row_stride
-        output_ptrs = output_row_start_ptr + col_offsets
-        softmax_output = tle_raw.call(edsl, [softmax_output, row])
-        tl.store(output_ptrs, softmax_output, mask=mask)
+def softmax_kernel(
+    output_ptr,
+    output_row_stride,
+    input_ptr,
+    input_row_stride,
+    n_rows,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+    num_warps: tl.constexpr = 4,
+):
+    NUM_THREADS: tl.constexpr = num_warps * 32
+    row_idx = tl.program_id(0)
+    columns = tl.arange(0, BLOCK_SIZE)
+    mask = columns < n_cols
+    row = tl.load(input_ptr + row_idx * input_row_stride + columns, mask=mask, other=-float("inf")).to(tl.float32)
+    output = tl.zeros_like(row)
+    result = tle_raw.call(cuda_softmax, [output, row, NUM_THREADS], output_indices=[0])
+    tl.store(output_ptr + row_idx * output_row_stride + columns, result, mask=mask)
 
 
 def softmax(x):
+    if x.ndim != 2 or x.stride(1) != 1:
+        raise ValueError("softmax expects a 2D tensor with contiguous rows")
+    if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise TypeError("softmax supports float16, bfloat16, and float32")
+    if x.device.type != "cuda":
+        raise ValueError("softmax expects a CUDA tensor")
     n_rows, n_cols = x.shape
-    BLOCK_SIZE = triton.next_power_of_2(n_cols)
     y = torch.empty_like(x)
-    softmax_kernel[(1, 1, 1)](y, x, x.stride(0), y.stride(0), n_rows, n_cols, BLOCK_SIZE)
+    if n_rows == 0 or n_cols == 0:
+        return y
+    with torch.cuda.device(x.device), knobs.autotuning.scope():
+        # Disable AABS for this kernel; restore the caller's settings on exit.
+        # A bug in the current AABS mechanism will cause problems in this case.
+        knobs.autotuning.adjust_block_size = False
+        softmax_kernel[(n_rows, )](
+            y,
+            y.stride(0),
+            x,
+            x.stride(0),
+            n_rows,
+            n_cols,
+            BLOCK_SIZE=triton.next_power_of_2(n_cols),
+        )
     return y
 
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    x = torch.randn(8, 4, device=DEVICE)
-    y_triton = softmax(x)
-    y_torch = naive_softmax(x)
-    assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
+    device = triton.runtime.driver.active.get_active_torch_device()
+    # Exercise sub-warp rows, padding, multiple warps, and multiple items/thread.
+    for dtype in (torch.float32, torch.float16, torch.bfloat16):
+        for n_cols in (1, 4, 31, 32, 33, 127, 128, 129, 512, 1023, 4096):
+            x = torch.randn((8, n_cols), device=device, dtype=dtype)
+            expected = torch.softmax(x.float(), dim=1).to(dtype)
+            # Check every candidate, not just the autotuner's chosen config.
+            for num_warps in (1, 2, 4, 8):
+                actual = torch.empty_like(x)
+                softmax_kernel.fn[(x.shape[0], )](
+                    actual,
+                    actual.stride(0),
+                    x,
+                    x.stride(0),
+                    *x.shape,
+                    BLOCK_SIZE=triton.next_power_of_2(n_cols),
+                    num_warps=num_warps,
+                )
+                torch.testing.assert_close(actual, expected)
+            torch.testing.assert_close(softmax(x), expected)
+    print("Softmax correctness checks passed.")

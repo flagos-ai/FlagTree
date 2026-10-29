@@ -66,6 +66,9 @@ TleDSLRegionInlineConversion::TleDSLRegionInlineConversion(MLIRContext *context)
 LogicalResult
 TleDSLRegionInlineConversion::matchAndRewrite(tle::DSLRegionOp op,
                                               PatternRewriter &rewriter) const {
+  if (op.getBody().empty()) {
+    return failure();
+  }
   IRMapping mapper;
   Block *parent = op->getBlock(),
         *continuation = rewriter.splitBlock(parent, op->getIterator());

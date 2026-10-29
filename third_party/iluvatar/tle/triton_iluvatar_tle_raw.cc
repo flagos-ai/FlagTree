@@ -126,7 +126,8 @@ iluvatar_tle::DSLRegionOp createTLERawRegionDeferred(
     std::string_view regionDialect, std::string_view argDialect,
     const std::vector<Value> &args,
     const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
-    std::string_view dsl_file_name, std::string_view extern_func_name) {
+    std::string_view dsl_file_name, std::string_view extern_func_name,
+    std::optional<std::vector<std::string>> arg_info_list) {
   OpBuilder &builder = self.getBuilder();
   SmallVector<Type> outputTys =
       llvm::map_to_vector(aliasOperandIndices, [&](int64_t idx) -> Type {
@@ -138,19 +139,14 @@ iluvatar_tle::DSLRegionOp createTLERawRegionDeferred(
                         aliasOperandIndices, hint);
   setDeferredMetadataAttrs(dslRegionOp, builder, sourceId, dsl_file_name,
                            extern_func_name);
-
-  OpBuilder::InsertionGuard guard(builder);
-  Region &body = dslRegionOp.getBody();
-  SmallVector<Type> operandTys = llvm::map_to_vector(
-      operands, [](Value value) -> Type { return value.getType(); });
-  Block *newBlock = builder.createBlock(
-      &body, {}, operandTys,
-      SmallVector<Location>(operandTys.size(), self.getLastLoc()));
-  builder.setInsertionPointToStart(newBlock);
-  SmallVector<Value> yields;
-  for (int64_t idx : aliasOperandIndices)
-    yields.push_back(newBlock->getArgument(idx));
-  builder.create<iluvatar_tle::YieldOp>(self.getLastLoc(), yields);
+  if (arg_info_list.has_value()) {
+    SmallVector<StringRef> argInfos;
+    argInfos.reserve(arg_info_list.value().size());
+    for (const std::string &info : arg_info_list.value())
+      argInfos.push_back(info);
+    dslRegionOp->setAttr("tle_raw.arg_info_list",
+                         builder.getStrArrayAttr(argInfos));
+  }
   return dslRegionOp;
 }
 

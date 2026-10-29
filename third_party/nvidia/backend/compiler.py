@@ -486,6 +486,10 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm, capability)
+
+        pm.run(mod, 'make_llir.before_tle_passes')
+        pm = ir.pass_manager(mod.context)
+        pm.enable_debug()
         # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
         from .deferred_raw import (
             finish_deferred_raw_materialize,
@@ -497,6 +501,7 @@ class CUDABackend(BaseBackend):
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         # Keep this as an idempotent guard for externally provided TTGIR.
         tle.passes.add_allocate_named_barriers(pm)
+
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)

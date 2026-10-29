@@ -1,8 +1,8 @@
 #ifdef __ILUVATAR_TLE__
 
-#include "Transforms/ConvertArgToMemDesc.h"
 #include "IR/Dialect.h"
 #include "Transforms/Passes.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -11,6 +11,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/WalkPatternRewriteDriver.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
@@ -105,7 +106,7 @@ TleArgConversion::matchAndRewrite(iluvatar_tle::DSLRegionOp op,
   if (needSync) {
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(op);
-    rewriter.create<NVVM::Barrier0Op>(op.getLoc());
+    rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
   }
   iluvatar_tle::DSLRegionOp newOp = rewriter.create<iluvatar_tle::DSLRegionOp>(
       op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),
@@ -113,40 +114,42 @@ TleArgConversion::matchAndRewrite(iluvatar_tle::DSLRegionOp op,
       op->getAttrOfType<StringAttr>("hint"));
   newOp->setAttrs(op->getAttrs());
   PatternRewriter::InsertionGuard guard(rewriter);
-  for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
-    Block *newBlock = nullptr;
-    if (idx == 0) {
-      newBlock = rewriter.createBlock(
-          &newOp.getBody(), {}, newOp->getOperandTypes(),
-          SmallVector<Location>(newOp->getNumOperands(), op.getLoc()));
-    } else {
-      newBlock = rewriter.createBlock(
-          &newOp.getBody(), {}, oldBlock.getArgumentTypes(),
-          SmallVector<Location>(oldBlock.getNumArguments(), op.getLoc()));
-    }
-    for (auto [oldArg, newArg] :
-         llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
-      mapper.map(oldArg, newArg);
-    }
-    mapper.map(&oldBlock, newBlock);
-  }
-  for (auto [oldBlock, newBlock] :
-       llvm::zip(op.getBody().getBlocks(), newOp.getBody().getBlocks())) {
-    rewriter.setInsertionPointToEnd(&newBlock);
-    for (Operation &operation : oldBlock.getOperations()) {
-      if (iluvatar_tle::PackOp packOp =
-              dyn_cast<iluvatar_tle::PackOp>(operation)) {
-        if (auto tensorTy =
-                dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
-          iluvatar_tle::PackOp newPackOp =
-              rewriter.create<iluvatar_tle::PackOp>(
-                  packOp.getLoc(), getPlainMemDesc(tensorTy),
-                  mapper.lookup(packOp.getInput()));
-          mapper.map(packOp.getOutput(), newPackOp.getOutput());
-          continue;
-        }
+  if (!op.getBody().empty()) {
+    for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
+      Block *newBlock = nullptr;
+      if (idx == 0) {
+        newBlock = rewriter.createBlock(
+            &newOp.getBody(), {}, newOp->getOperandTypes(),
+            SmallVector<Location>(newOp->getNumOperands(), op.getLoc()));
+      } else {
+        newBlock = rewriter.createBlock(
+            &newOp.getBody(), {}, oldBlock.getArgumentTypes(),
+            SmallVector<Location>(oldBlock.getNumArguments(), op.getLoc()));
       }
-      rewriter.clone(operation, mapper);
+      for (auto [oldArg, newArg] :
+           llvm::zip(oldBlock.getArguments(), newBlock->getArguments())) {
+        mapper.map(oldArg, newArg);
+      }
+      mapper.map(&oldBlock, newBlock);
+    }
+    for (auto [oldBlock, newBlock] :
+         llvm::zip(op.getBody().getBlocks(), newOp.getBody().getBlocks())) {
+      rewriter.setInsertionPointToEnd(&newBlock);
+      for (Operation &operation : oldBlock.getOperations()) {
+        if (iluvatar_tle::PackOp packOp =
+                dyn_cast<iluvatar_tle::PackOp>(operation)) {
+          if (auto tensorTy =
+                  dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
+            iluvatar_tle::PackOp newPackOp =
+                rewriter.create<iluvatar_tle::PackOp>(
+                    packOp.getLoc(), getPlainMemDesc(tensorTy),
+                    mapper.lookup(packOp.getInput()));
+            mapper.map(packOp.getOutput(), newPackOp.getOutput());
+            continue;
+          }
+        }
+        rewriter.clone(operation, mapper);
+      }
     }
   }
   rewriter.setInsertionPointAfter(newOp);
@@ -166,15 +169,14 @@ TleArgConversion::matchAndRewrite(iluvatar_tle::DSLRegionOp op,
   return success();
 }
 
-void mlir::triton::iluvatar_tle::populateConvertArgToMemDescPatterns(
-    RewritePatternSet &patterns) {
-  patterns.add<TleArgConversion>(patterns.getContext());
-}
-
 void TritonIluvatarTleConvertArgToMemDesc::runOnOperation() {
   RewritePatternSet patterns(&getContext());
-  iluvatar_tle::populateConvertArgToMemDescPatterns(patterns);
-  if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+  patterns.add<TleArgConversion>(patterns.getContext());
+  walkAndApplyPatterns(getOperation(),
+                       FrozenRewritePatternSet(std::move(patterns)));
+  if (failed(applyPatternsGreedily(
+          getOperation(),
+          FrozenRewritePatternSet(RewritePatternSet(&getContext()))))) {
     signalPassFailure();
   }
 }

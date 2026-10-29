@@ -106,15 +106,10 @@ class MLIRJITFunction(RawJITFunction):
             extra={_pending_jit_fn_key: self},
         )
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_deferred(
-            source_id,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = "",
+                               arg_info_list=None):
+        return builder.create_tle_raw_region_deferred(source_id, self.region_dialect, self.arg_dialect, handles,
+                                                      alias_indices, hint=hint, arg_info_list=arg_info_list)
 
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):

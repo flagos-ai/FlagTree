@@ -41,7 +41,7 @@ def add_kernel(
     mask = offsets < n_elements
     x = tl.load(x_ptr + offsets, mask=mask)
     y = tl.load(y_ptr + offsets, mask=mask)
-    output = tle_raw.call(edsl_deferred, [output_ptr + block_start, x, y], output_indices=[0])
+    tle_raw.call(edsl_deferred, [output_ptr + block_start, x, y], output_indices=[])
 
 
 def add(x: torch.Tensor, y: torch.Tensor):

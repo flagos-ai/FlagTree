@@ -13,16 +13,19 @@
 #ifdef __TLE__
 #include "nvidia/tle_raw/include/DeferredRawSourceRegistry.h"
 #include "nvidia/tle_raw/include/Passes.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #endif
 #include "passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/raw_ostream.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
-
-#include "llvm/Support/raw_ostream.h"
+#include <unordered_set>
 
 namespace py = pybind11;
 namespace ttng = mlir::triton::nvidia_gpu;
@@ -183,6 +186,83 @@ static void setDeferredRawPendingSources(py::dict sources) {
 }
 
 void init_nvidia_tle_raw_passes(py::module &&m) {
+  m.def("register_raw_wrappers", [](mlir::ModuleOp &module) {
+    using namespace mlir;
+    py::object dumps = py::module_::import("json").attr("dumps");
+
+    py::list wrappers;
+    std::unordered_set<std::string> registeredSymbols;
+    module.walk([&](triton::tle::DSLRegionOp op) {
+      if (!op.getBody().empty())
+        return;
+      auto source = op->getAttrOfType<StringAttr>("tle_raw.source_id");
+      auto infos = op->getAttrOfType<ArrayAttr>("tle_raw.arg_info_list");
+      if (!source || !infos || op.getRegionDialect() != "cuda")
+        return;
+
+      py::list arguments;
+      for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
+        py::dict argument;
+        StringRef kind = cast<StringAttr>(infos[i]).getValue();
+        argument["kind"] = kind.str();
+
+        if (kind.starts_with("tensor_fragment_")) {
+          auto type = dyn_cast<RankedTensorType>(operand.getType());
+          if (!type || !type.getEncoding())
+            throw std::runtime_error(
+                "fragment arguments require distributed tensor layouts");
+          std::string element;
+          llvm::raw_string_ostream os(element);
+          type.getElementType().print(os);
+          argument["element_type"] = element;
+          argument["count"] = triton::gpu::getTotalElemsPerThread(type);
+        } else if (auto type =
+                       dyn_cast<triton::gpu::MemDescType>(operand.getType())) {
+          std::string element;
+          llvm::raw_string_ostream elementStream(element);
+          type.getElementType().print(elementStream);
+          std::string memorySpace;
+          llvm::raw_string_ostream memorySpaceStream(memorySpace);
+          type.getMemorySpace().print(memorySpaceStream);
+          argument["rank"] = type.getRank();
+          argument["element_type"] = element;
+          argument["memory_space"] = memorySpace;
+        } else {
+          std::string valueType;
+          llvm::raw_string_ostream os(valueType);
+          Type vtype = operand.getType();
+          vtype.print(os);
+          argument["value_type"] = valueType;
+          if (auto pointerType = dyn_cast<triton::PointerType>(vtype)) {
+            argument["address_space"] = pointerType.getAddressSpace();
+          }
+        }
+        arguments.append(argument);
+      }
+
+      auto dumpedArguments =
+          dumps(arguments, py::arg("sort_keys") = true,
+                py::arg("separators") = py::make_tuple(",", ":"));
+      std::string serializedArguments = dumpedArguments.cast<std::string>();
+      llvm::SHA256 hasher;
+      hasher.update(serializedArguments);
+      auto digest = hasher.final();
+      std::string hash = llvm::toHex(digest);
+
+      std::string symbol =
+          "__tle_raw_wrapper_" + source.getValue().str() + "_" + hash + "__";
+      if (registeredSymbols.insert(symbol).second) {
+        py::dict wrapper;
+        wrapper["source_id"] = source.getValue().str();
+        wrapper["symbol"] = symbol;
+        wrapper["arguments"] = arguments;
+        wrappers.append(wrapper);
+      }
+      op->setAttr("tle_raw.wrapper_symbol",
+                  FlatSymbolRefAttr::get(module.getContext(), symbol));
+    });
+    return wrappers;
+  });
   m.def("deferred_raw_materialize",
         [](py::dict sources, mlir::PassManager &pm) {
           setDeferredRawPendingSources(sources);

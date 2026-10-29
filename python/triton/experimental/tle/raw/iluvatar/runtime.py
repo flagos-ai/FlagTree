@@ -214,15 +214,10 @@ class CorexJITFunction(RawJITFunction):
                               extern_func_name: str = ""):
         return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_deferred(
-            source_id,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = "",
+                               arg_info_list=None):
+        return builder.create_tle_raw_region_deferred(source_id, self.region_dialect, self.arg_dialect, handles,
+                                                      alias_indices, hint=hint, arg_info_list=arg_info_list)
 
     def make_llvm(self, mlir_context) -> str:
         command = [

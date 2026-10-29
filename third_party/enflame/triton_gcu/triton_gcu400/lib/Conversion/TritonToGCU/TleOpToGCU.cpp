@@ -326,64 +326,72 @@ struct TleDSLRegionOpLowering
         }
       }
 
-      // Insert llvm.call before the region terminator.
       Region &body = newOp->getRegion(0);
-      if (!body.empty()) {
-        Block *entryBlock = &body.front();
-        Operation *terminator = entryBlock->getTerminator();
-        OpBuilder bodyBuilder(rewriter.getContext());
-        bodyBuilder.setInsertionPoint(terminator);
-
-        SmallVector<Value> callOperands;
-        TypeRange funcArgTys = funcOp.getArgumentTypes();
-        unsigned numArgs =
-            std::min(static_cast<unsigned>(entryBlock->getNumArguments()),
-                     static_cast<unsigned>(funcArgTys.size()));
-        if (numArgs != convertedInputs.size()) {
-          llvm::report_fatal_error(
-              "tle::DSLRegionOp arg number should same with input number!");
-        }
-        for (unsigned i = 0; i < numArgs; ++i) {
-          Value arg = entryBlock->getArgument(i);
-          Type paramTy = funcArgTys[i];
-          if (arg.getType() == paramTy) {
-            callOperands.push_back(arg);
-          } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
-                     isa<LLVM::LLVMPointerType>(paramTy)) {
-            // Address-space mismatch between block arg and func param.
-            callOperands.push_back(bodyBuilder.create<LLVM::AddrSpaceCastOp>(
-                loc, cast<LLVM::LLVMPointerType>(paramTy), arg));
-          } else {
-            callOperands.push_back(arg);
-          }
-          // For memref-derived operands, append rank dim values and rank
-          // stride values to match the extern "C" device function signature:
-          //   void VectorAdd(float *A, int A_dim0, int A_stride0, ...)
-          if (auto memrefTy =
-                  dyn_cast<MemRefType>(convertedInputs[i].getType())) {
-            unsigned rank = memrefTy.getRank();
-            // dims
-            for (unsigned d = 0; d < rank; ++d) {
-              int64_t dim = memrefTy.getDimSize(d);
-              Value dimVal = bodyBuilder.create<arith::ConstantOp>(
-                  loc,
-                  bodyBuilder.getI32IntegerAttr(static_cast<int32_t>(dim)));
-              callOperands.push_back(dimVal);
-            }
-            // strides
-            auto [strides, offset] = memrefTy.getStridesAndOffset();
-            for (unsigned d = 0; d < rank; ++d) {
-              Value strideVal = bodyBuilder.create<arith::ConstantOp>(
-                  loc, bodyBuilder.getI32IntegerAttr(
-                           static_cast<int32_t>(strides[d])));
-              callOperands.push_back(strideVal);
-            }
-          }
-        }
-        LLVM::CallOp callOp =
-            bodyBuilder.create<LLVM::CallOp>(loc, funcOp, callOperands);
-        callOp.setAlwaysInline(true);
+      if (body.empty()) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        Block *entryBlock = rewriter.createBlock(
+            &body, {}, newOp->getOperandTypes(),
+            SmallVector<Location>(newOp->getNumOperands(), loc));
+        rewriter.setInsertionPointToEnd(entryBlock);
+        SmallVector<Value> yields;
+        for (int32_t idx : outputIndicesAttr.asArrayRef())
+          yields.push_back(entryBlock->getArgument(idx));
+        rewriter.create<triton::tle::YieldOp>(loc, yields);
       }
+
+      // Insert llvm.call before the region terminator.
+      Block *entryBlock = &body.front();
+      Operation *terminator = entryBlock->getTerminator();
+      OpBuilder bodyBuilder(rewriter.getContext());
+      bodyBuilder.setInsertionPoint(terminator);
+      SmallVector<Value> callOperands;
+      TypeRange funcArgTys = funcOp.getArgumentTypes();
+      unsigned numArgs =
+          std::min(static_cast<unsigned>(entryBlock->getNumArguments()),
+                   static_cast<unsigned>(funcArgTys.size()));
+      if (numArgs != convertedInputs.size()) {
+        llvm::report_fatal_error(
+            "tle::DSLRegionOp arg number should same with input number!");
+      }
+      for (unsigned i = 0; i < numArgs; ++i) {
+        Value arg = entryBlock->getArgument(i);
+        Type paramTy = funcArgTys[i];
+        if (arg.getType() == paramTy) {
+          callOperands.push_back(arg);
+        } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                   isa<LLVM::LLVMPointerType>(paramTy)) {
+          // Address-space mismatch between block arg and func param.
+          callOperands.push_back(bodyBuilder.create<LLVM::AddrSpaceCastOp>(
+              loc, cast<LLVM::LLVMPointerType>(paramTy), arg));
+        } else {
+          callOperands.push_back(arg);
+        }
+        // For memref-derived operands, append rank dim values and rank
+        // stride values to match the extern "C" device function signature:
+        //   void VectorAdd(float *A, int A_dim0, int A_stride0, ...)
+        if (auto memrefTy =
+                dyn_cast<MemRefType>(convertedInputs[i].getType())) {
+          unsigned rank = memrefTy.getRank();
+          // dims
+          for (unsigned d = 0; d < rank; ++d) {
+            int64_t dim = memrefTy.getDimSize(d);
+            Value dimVal = bodyBuilder.create<arith::ConstantOp>(
+                loc, bodyBuilder.getI32IntegerAttr(static_cast<int32_t>(dim)));
+            callOperands.push_back(dimVal);
+          }
+          // strides
+          auto [strides, offset] = memrefTy.getStridesAndOffset();
+          for (unsigned d = 0; d < rank; ++d) {
+            Value strideVal = bodyBuilder.create<arith::ConstantOp>(
+                loc, bodyBuilder.getI32IntegerAttr(
+                         static_cast<int32_t>(strides[d])));
+            callOperands.push_back(strideVal);
+          }
+        }
+      }
+      LLVM::CallOp callOp =
+          bodyBuilder.create<LLVM::CallOp>(loc, funcOp, callOperands);
+      callOp.setAlwaysInline(true);
     }
     leaveTritionOp(rewriter, op.getOperation());
     SmallVector<Value> replacements;

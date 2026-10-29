@@ -68,11 +68,7 @@ def add_kernel(
     DEFERRED: tl.constexpr,
 ):
     if DEFERRED:
-        tle_raw.call(
-            edsl_deferred,
-            [output_ptr, x_ptr, y_ptr, n_elements],
-            output_indices=[0],
-        )
+        tle_raw.call(edsl_deferred, [output_ptr, x_ptr, y_ptr, n_elements], output_indices=[])
     else:
         tle_raw.call(edsl_eager, [output_ptr, x_ptr, y_ptr, n_elements])
 

@@ -3,7 +3,7 @@
 
 namespace {
 
-__device__ void radix_rank_8x2048_precomputed(
+__attribute__((device, always_inline)) void radix_rank_8x2048_precomputed(
     __attribute__((address_space(3))) uint16_t *digits, int64_t digits_offset,
     int64_t digits_stride,
     __attribute__((address_space(1))) const uint16_t *input,
@@ -38,7 +38,8 @@ __device__ void radix_rank_8x2048_precomputed(
   BlockSort(temp_storage).Sort(thread_digits, source_cols, 0, radix_bits);
   __syncthreads();
 
-  bin_starts[threadIdx.x] = static_cast<uint32_t>(valid_count);
+  // Every bin read below has its start written before the following barrier.
+  // Empty bins are never read, so initialization is unnecessary.
   thread_last_digit[threadIdx.x] = thread_digits[items_per_thread - 1];
   const int64_t offset =
       (static_cast<int64_t>(row) * tiles + tile) * radix_bins +
@@ -95,7 +96,7 @@ __device__ void radix_rank_8x2048_precomputed(
 
 // Fine-grained replacement for Triton's tl.histogram. Loading, ordered-key
 // conversion, digit extraction, and the final global store stay in Triton.
-__device__ void RadixHistogramDigits8x2048(
+__attribute__((device, always_inline)) void RadixHistogramDigits8x2048(
     __attribute__((address_space(3))) const uint16_t *digits_allocated,
     __attribute__((address_space(3))) const uint16_t *digits_aligned,
     int64_t digits_offset, int64_t digits_size, int64_t digits_stride,
@@ -110,8 +111,9 @@ __device__ void RadixHistogramDigits8x2048(
   constexpr int items_per_thread = 8;
   constexpr int radix_bins = 256;
 
-  __shared__ uint32_t histogram[radix_bins];
-  histogram[threadIdx.x] = 0;
+  // Accumulate directly into the caller-provided shared output.
+  counts_aligned[counts_offset +
+                 static_cast<int64_t>(threadIdx.x) * counts_stride] = 0;
   __syncthreads();
 
 #pragma unroll
@@ -120,18 +122,15 @@ __device__ void RadixHistogramDigits8x2048(
     if (local < valid_count) {
       const uint16_t digit =
           digits_aligned[digits_offset + local * digits_stride];
-      atomicAdd(histogram + static_cast<int>(digit), 1u);
+      atomicAdd((int32_t *)(counts_aligned + counts_offset +
+                            static_cast<int64_t>(digit) * counts_stride),
+                1);
     }
   }
   __syncthreads();
-
-  counts_aligned[counts_offset +
-                 static_cast<int64_t>(threadIdx.x) * counts_stride] =
-      static_cast<int32_t>(histogram[threadIdx.x]);
-  __syncthreads();
 }
 
-__device__ void RadixRank8x2048Precomputed(
+__attribute__((device, always_inline)) void RadixRank8x2048Precomputed(
     __attribute__((address_space(3))) uint16_t *digits_allocated,
     __attribute__((address_space(3))) uint16_t *digits_aligned,
     int64_t digits_offset, int64_t digits_size, int64_t digits_stride,

@@ -267,15 +267,10 @@ class CUDAJITFunction(RawJITFunction):
                               extern_func_name: str = ""):
         return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_deferred(
-            source_id,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = "",
+                               arg_info_list=None):
+        return builder.create_tle_raw_region_deferred(source_id, self.region_dialect, self.arg_dialect, handles,
+                                                      alias_indices, hint=hint, arg_info_list=arg_info_list)
 
     def make_llvm(self, mlir_context) -> str:
         build = subprocess.run(
@@ -304,6 +299,10 @@ class CUDAJITFunction(RawJITFunction):
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
     source_text = entry["source"]
+    required_wrappers = entry.get("required_wrappers")
+    if required_wrappers is not None:
+        from .wrapper import generate_raw_wrappers
+        source_text += generate_raw_wrappers(entry["extern_func_name"], required_wrappers)
 
     class _CudaSourceFile:
 
