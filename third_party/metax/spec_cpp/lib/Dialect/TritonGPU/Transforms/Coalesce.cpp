@@ -1,6 +1,9 @@
 #include <iterator>
 #include <numeric>
 
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
+#endif
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -83,10 +86,20 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     // the pointers should have for best memory coalescing
     llvm::MapVector<Operation *, Attribute> layoutMap;
     int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
+    bool invalidHint = false;
     moduleOp.walk([&](Operation *curr) {
       Value ptr = getMemAccessPtr(curr);
       if (!ptr)
         return;
+#ifdef __FLAGTREE_COMMON_IR__
+      Attribute explicitEncoding;
+      if (failed(tile::inferExplicitMemoryEncoding(curr, explicitEncoding))) {
+        invalidHint = true;
+        return;
+      }
+      if (explicitEncoding)
+        return;
+#endif
       // We only convert `tensor<tt.ptr<>>` load/store
       bool isPtrTensor = false;
       if (auto tensorType = dyn_cast<RankedTensorType>(ptr.getType()))
@@ -103,6 +116,9 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
                                            ctaLayout, shapePerCTA);
       layoutMap[curr] = layout;
     });
+
+    if (invalidHint)
+      return signalPassFailure();
 
     // Also pick a layout for descriptor load/store ops.
     pickDescriptorLoadStoreLayout(moduleOp, layoutMap);

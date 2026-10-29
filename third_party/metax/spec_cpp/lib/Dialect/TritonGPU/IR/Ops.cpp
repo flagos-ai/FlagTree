@@ -1,3 +1,6 @@
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
+#endif
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Support/DebugStringHelper.h"
@@ -56,6 +59,14 @@ bool hasDotOperandEncoding(Value value) {
   return hasEncoding<triton::gpu::DotOperandEncodingAttr>(value);
 }
 
+bool hasExplicitLayout(ConvertLayoutOp op) {
+#ifdef __FLAGTREE_COMMON_IR__
+  return op && bool(tile::getExplicitResultEncoding(op, 0));
+#else
+  return false;
+#endif
+}
+
 bool isConvertTrivial(ConvertLayoutOp op) {
   auto srcType = op.getSrc().getType();
   auto dstType = op.getType();
@@ -81,7 +92,7 @@ struct CanonicalizeConvertFromTMEMStore
   matchAndRewrite(nvidia_gpu::TMEMStoreOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || hasExplicitLayout(convert))
       return failure();
 
     // bail for incompatible layouts
@@ -106,7 +117,7 @@ struct CanonicalizeConvertFromReshape
   matchAndRewrite(triton::ReshapeOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || hasExplicitLayout(convert))
       return failure();
     // If the layouts are structurally the same, the convert is trivial
     if (isConvertTrivial(convert)) {
@@ -150,7 +161,7 @@ struct CanonicalizeConvertFromTranspose
 
     // If the layouts are structurally the same, the convert is trivial
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert || !isConvertTrivial(convert))
+    if (!convert || hasExplicitLayout(convert) || !isConvertTrivial(convert))
       return failure();
 
     rewriter.replaceOpWithNewOp<triton::TransOp>(
@@ -169,7 +180,7 @@ struct CanonicalizeConvertFromHistogram
                   PatternRewriter &rewriter) const override {
     auto src = op.getSrc();
     auto convert = src.getDefiningOp<ConvertLayoutOp>();
-    if (!convert) {
+    if (!convert || hasExplicitLayout(convert)) {
       return failure();
     }
     src = convert.getSrc();
@@ -204,7 +215,7 @@ struct CanonicalizeConvertFromGatherSource : public OpRewritePattern<GatherOp> {
       return failure();
 
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || hasExplicitLayout(convert))
       return failure();
 
     rewriter.replaceOpWithNewOp<GatherOp>(op, convert.getSrc(), op.getIndices(),
@@ -224,7 +235,7 @@ struct CanonicalizeConvertFromAlloc
     if (!op.getSrc())
       return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || hasExplicitLayout(convert))
       return failure();
     rewriter.replaceOpWithNewOp<triton::gpu::LocalAllocOp>(
         op, op->getResult(0).getType(), convert.getSrc());
@@ -241,7 +252,7 @@ struct CanonicalizeConvertFromLocalStore
   matchAndRewrite(triton::gpu::LocalStoreOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || hasExplicitLayout(convert))
       return failure();
     rewriter.replaceOpWithNewOp<triton::gpu::LocalStoreOp>(op, convert.getSrc(),
                                                            op.getDst());
@@ -257,7 +268,7 @@ struct CanonicalizeConvertFromSplit
   matchAndRewrite(triton::SplitOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || hasExplicitLayout(convert))
       return failure();
     auto srcEncoding = convert.getSrc().getType().getEncoding();
     // Multiple source layout can give the same output layout, if the source
@@ -275,11 +286,32 @@ struct CanonicalizeConvertFromConvert
     : public OpRewritePattern<ConvertLayoutOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  template <typename OpTy, typename... Args>
+  static void replaceWithHint(ConvertLayoutOp op, PatternRewriter &rewriter,
+                              Args &&...args) {
+#ifdef __FLAGTREE_COMMON_IR__
+    Attribute encoding = tile::getExplicitResultEncoding(op, 0);
+#endif
+    auto replacement = rewriter.replaceOpWithNewOp<OpTy>(
+        op, std::forward<Args>(args)...);
+#ifdef __FLAGTREE_COMMON_IR__
+    if (encoding)
+      tile::setExplicitResultEncoding(replacement, 0, encoding);
+#endif
+    (void)replacement;
+  }
+
   mlir::LogicalResult
   matchAndRewrite(ConvertLayoutOp op,
                   PatternRewriter &rewriter) const override {
-    // Convert to the same layout is redundant.
+    // A no-op conversion can still carry an explicit layout constraint. Only
+    // erase it when the source can safely carry that constraint instead.
     if (op->getResultTypes() == op->getOperandTypes()) {
+#ifdef __FLAGTREE_COMMON_IR__
+      if (Attribute encoding = tile::getExplicitResultEncoding(op, 0))
+        if (failed(tile::trySetExplicitValueEncoding(op.getSrc(), encoding)))
+          return failure();
+#endif
       rewriter.replaceOp(op, op->getOperands());
       return success();
     }
@@ -312,9 +344,8 @@ struct CanonicalizeConvertFromConvert
           hasDotOperandEncoding(op->getResult(0)))
         return failure();
 
-      rewriter.replaceOpWithNewOp<ReshapeOp>(op, op->getResult(0).getType(),
-                                             reshape.getResult(),
-                                             reshape.getAllowReorder());
+      replaceWithHint<ReshapeOp>(op, rewriter, op->getResult(0).getType(),
+                                reshape.getResult(), reshape.getAllowReorder());
       return success();
     }
 
@@ -322,9 +353,8 @@ struct CanonicalizeConvertFromConvert
     if (auto histogram = dyn_cast<HistogramOp>(arg)) {
       // For histogram ops the input and output layouts are independent, so we
       // can always fold convert into the histogram op.
-      rewriter.replaceOpWithNewOp<HistogramOp>(op, op->getResult(0).getType(),
-                                               histogram.getSrc(),
-                                               histogram.getMask());
+      replaceWithHint<HistogramOp>(op, rewriter, op->getResult(0).getType(),
+                                  histogram.getSrc(), histogram.getMask());
       return success();
     }
 
@@ -335,9 +365,8 @@ struct CanonicalizeConvertFromConvert
       // We insert at the point of the original op as there could be ops with
       // memory side-effects between the LocalLoad op and the ConvertLayout op
       rewriter.setInsertionPoint(arg);
-      rewriter.replaceOpWithNewOp<LocalLoadOp>(op, op->getResult(0).getType(),
-                                               sharedLoad.getSrc(),
-                                               sharedLoad.getToken());
+      replaceWithHint<LocalLoadOp>(op, rewriter, op->getResult(0).getType(),
+                                  sharedLoad.getSrc(), sharedLoad.getToken());
 
       return success();
     }
@@ -347,29 +376,31 @@ struct CanonicalizeConvertFromConvert
       if (isExpensiveCat(cat, op.getType().getEncoding()))
         return failure();
 
-      rewriter.replaceOpWithNewOp<CatOp>(op, op->getResult(0).getType(),
-                                         cat.getOperands());
+      replaceWithHint<CatOp>(op, rewriter, op->getResult(0).getType(),
+                            cat.getOperands());
       return success();
     }
 
     // cvt(cvt(x, type1), type2) -> cvt(x, type2)
     if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
-      rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
-          op, op->getResultTypes().front(), cvt.getSrc());
+      if (hasExplicitLayout(cvt))
+        return failure();
+      replaceWithHint<triton::gpu::ConvertLayoutOp>(
+          op, rewriter, op->getResultTypes().front(), cvt.getSrc());
       return success();
     }
 
     // cvt(type1, splat(type2, x)) -> splat(type1, x)
     if (auto splat = dyn_cast<triton::SplatOp>(arg)) {
-      rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op->getResultTypes(),
-                                                   splat.getSrc());
+      replaceWithHint<triton::SplatOp>(op, rewriter, op->getResultTypes(),
+                                       splat.getSrc());
       return success();
     }
 
     // cvt(type1, make_range(type2, x)) -> make_range(type1, x)
     if (auto range = dyn_cast<MakeRangeOp>(arg)) {
-      rewriter.replaceOpWithNewOp<MakeRangeOp>(
-          op, op->getResultTypes(), range.getStart(), range.getEnd());
+      replaceWithHint<MakeRangeOp>(op, rewriter, op->getResultTypes(),
+                                  range.getStart(), range.getEnd());
       return success();
     }
 
@@ -379,7 +410,7 @@ struct CanonicalizeConvertFromConvert
         auto ty = cast<ShapedType>(op->getResultTypes().front());
         auto newRet =
             SplatElementsAttr::get(ty, ret.getSplatValue<Attribute>());
-        rewriter.replaceOpWithNewOp<arith::ConstantOp>(op, newRet);
+        replaceWithHint<arith::ConstantOp>(op, rewriter, newRet);
         return success();
       }
     return failure();

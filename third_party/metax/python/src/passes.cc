@@ -7,6 +7,11 @@
 #include "triton/Analysis/Membar.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "mlir-ext/Dialect/CommonIR/Transforms/LayoutHints.h"
+#include "triton/Conversion/CommonIRToTTGIR/Passes.h"
+#endif
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -117,6 +122,38 @@ void init_triton_passes_llvmir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_di_local_variable", mlir::createLLVMDILocalVariable);
 }
 
+#ifdef __FLAGTREE_COMMON_IR__
+void init_triton_passes_commonir(py::module &&m) {
+  m.def("has_layout_hints", [](mlir::ModuleOp module) {
+    bool hasHints = false, hasMctle = false;
+    module.walk([&](mlir::Operation *op) {
+      hasHints |= mlir::isa<mlir::triton::tile::SetLayoutOp>(op);
+      hasMctle |= op->getName().getDialectNamespace() == "mctle";
+    });
+    if (hasHints && hasMctle)
+      throw std::invalid_argument(
+          "CommonIR set_layout cannot yet be combined with MCTLE operations");
+    return hasHints;
+  });
+  m.def("clear_layout_hints", [](mlir::ModuleOp module) {
+    mlir::triton::tile::clearLayoutHints(module);
+  });
+  ADD_PASS_WRAPPER_0("add_lower_tensor_tiles",
+                     mlir::triton::metax::createCommonIRLowerTensorTiles);
+  ADD_PASS_WRAPPER_0("add_propagate_layouts",
+                     mlir::triton::metax::createCommonIRPropagateLayouts);
+  ADD_PASS_WRAPPER_0("add_plan_shared_layouts",
+                     mlir::triton::metax::createCommonIRPlanSharedLayouts);
+  ADD_PASS_WRAPPER_0("add_legalize_async_copy",
+                     mlir::triton::metax::createCommonIRLegalizeAsyncCopy);
+  ADD_PASS_OPTION_WRAPPER_2("add_prepare_bsm_layouts",
+                            mlir::triton::metax::createCommonIRPrepareBsmLayouts,
+                            int, int);
+  ADD_PASS_WRAPPER_0("add_to_ttgir",
+                     mlir::triton::metax::createCommonIRToTTGIR);
+}
+#endif
+
 void init_gluon_passes(py::module &&m) {
   using namespace mlir;
   namespace gluon = mlir::triton::gluon;
@@ -136,4 +173,7 @@ PLUGIN_EXPORT void init_triton_passes(py::module &&m) {
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
   init_gluon_passes(m.def_submodule("gluon"));
+#ifdef __FLAGTREE_COMMON_IR__
+  init_triton_passes_commonir(m.def_submodule("commonir"));
+#endif
 }

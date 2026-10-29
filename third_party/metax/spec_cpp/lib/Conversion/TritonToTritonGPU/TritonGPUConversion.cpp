@@ -90,11 +90,13 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
 
-#ifdef __MCTLE__
-  addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
-                        triton::gpu::LocalLoadOp>(
+#if defined(__MCTLE__) || defined(__FLAGTREE_COMMON_IR__)
+  addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 #endif
+  addDynamicallyLegalOp<triton::gpu::LocalLoadOp, triton::gpu::BsmPermOp,
+                        triton::gpu::AsyncCopyGlobalToLocalOp>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
                              scf::SCFDialect, ub::UBDialect

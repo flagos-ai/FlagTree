@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 import builtins
 import triton.language.core as tl
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 
 if TYPE_CHECKING:
     from . import TLESemantic
@@ -408,7 +409,11 @@ def extract_tile(
             # Static index: encode compile-time constant as IR constant
             index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
 
-        output = _semantic.builder.create_extract_tile(x.handle, index_ir, tile_shape_ints)
+        builder = _semantic.builder
+        if COMMON_IR_ENABLED and hasattr(builder, "create_tile_extract_tile"):
+            output = builder.create_tile_extract_tile(x.handle, index_ir, tile_shape_ints)
+        else:
+            output = builder.create_extract_tile(x.handle, index_ir, tile_shape_ints)
         block_type = tl.block_type(x.type.element_ty, tile_shape_ints)
         return tl.tensor(output, block_type)
     except Exception as e:
@@ -534,11 +539,11 @@ def insert_tile(
             index_ir = index_ir_handle
         else:
             index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
-        output = _semantic.builder.create_insert_tile(
-            x.handle,
-            tile.handle,
-            index_ir,
-        )
+        builder = _semantic.builder
+        if COMMON_IR_ENABLED and hasattr(builder, "create_tile_insert_tile"):
+            output = builder.create_tile_insert_tile(x.handle, tile.handle, index_ir)
+        else:
+            output = builder.create_insert_tile(x.handle, tile.handle, index_ir)
         return tl.tensor(output, x.type)
     except Exception as e:
         raise RuntimeError(f"Failed to create insert_tile operation: {str(e)}") from e

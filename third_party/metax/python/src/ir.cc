@@ -37,6 +37,13 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "triton/Tools/LayoutUtils.h"
+#include <algorithm>
+#include <cctype>
+#endif
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
@@ -79,6 +86,55 @@ llvm::raw_ostream &mlir_dumps_or_dbgs() {
     return llvm::dbgs();
   }
 }
+
+#ifdef __FLAGTREE_COMMON_IR__
+template <typename Attr, typename... Args>
+static Attr checkedLayout(TritonOpBuilder &builder, Args &&...args) {
+  std::string message;
+  llvm::raw_string_ostream os(message);
+  ScopedDiagnosticHandler handler(builder.getContext(), [&](Diagnostic &diag) {
+    diag.print(os);
+  });
+  auto attr = Attr::getChecked(
+      [&] { return mlir::emitError(builder.getLastLoc()); },
+      std::forward<Args>(args)...);
+  if (!attr)
+    throw std::invalid_argument(message);
+  return attr;
+}
+
+// Lower-case textual form of an attribute, used to map a spelled memory space
+// (e.g. #ttg.shared / "shared") onto a CommonIR MemorySpace enum case.
+static std::string attrToLowerString(Attribute attr) {
+  if (!attr)
+    return "";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  attr.print(os);
+  os.flush();
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return text;
+}
+
+// Resolve an arbitrary attribute (string or dialect attr) to a CommonIR
+// MemorySpace. Kept string-based so the shared TLE Python layer can pass the
+// spelling produced by tile_get_string_attr without knowing enum values.
+static mlir::triton::tile::MemorySpace
+attrToCommonIRMemorySpace(Attribute attr) {
+  auto text = attrToLowerString(attr);
+  if (text.find("register") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Register;
+  if (text.find("shared") != std::string::npos ||
+      text.find("smem") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Shared;
+  if (text.find("global") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Global;
+  if (text.find("local") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Local;
+  return mlir::triton::tile::MemorySpace::Shared;
+}
+#endif
 
 // Function to parse a comma-separated string into a vector of C-style strings
 llvm::SmallVector<const char *, 3>
@@ -278,6 +334,16 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
   using ret = py::return_value_policy;
   using namespace pybind11::literals;
 
+  // MetaX does not build the tle Python module, so the shared TLE layer reads
+  // the CommonIR opt-in from libtriton.ir instead of libtriton.tle.
+  m.def("is_common_ir_enabled", []() {
+#ifdef __FLAGTREE_COMMON_IR__
+    return true;
+#else
+    return false;
+#endif
+  });
+
   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
       .value("PAD_NAN", PaddingOption::PAD_NAN)
@@ -385,6 +451,9 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                     ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
                     LLVM::LLVMDialect, mlir::ub::UBDialect,
                     mlir::triton::gluon::GluonDialect>();
+#ifdef __FLAGTREE_COMMON_IR__
+    registry.insert<mlir::triton::tile::CommonIRDialect>();
+#endif
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
@@ -552,7 +621,13 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("erase", [](Block &self) { self.erase(); })
       .def("id", [](Block &self) { return (uint64_t)&self; });
 
-  py::class_<Attribute>(m, "attribute", py::module_local());
+  py::class_<Attribute>(m, "attribute", py::module_local())
+      .def("__str__", [](Attribute self) {
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        self.print(os);
+        return os.str();
+      });
   py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
   py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
   py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
@@ -671,6 +746,11 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
   py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
                                 py::dynamic_attr())
       .def("dump", &ModuleOp::dump)
+      .def("clone", [](py::object self) {
+        auto result = py::cast(self.cast<ModuleOp>().clone());
+        result.attr("context") = self.attr("context");
+        return result;
+      })
       .def("str",
            [](ModuleOp &self) -> std::string {
              std::string str;
@@ -1852,6 +1932,56 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("create_gather",
            [](TritonOpBuilder &self, Value src, Value indices, int axis)
                -> Value { return self.create<GatherOp>(src, indices, axis); })
+      .def("get_memdesc_type",
+           [](TritonOpBuilder &self, const std::vector<int64_t> &shape,
+              Type elementType, Attribute encoding, const std::string &storage,
+              const std::vector<int64_t> &allocShape) -> Type {
+             if (storage != "smem")
+               throw py::value_error("MetaX TLE buffers require shared memory");
+             auto space = ttg::SharedMemorySpaceAttr::get(self.getContext());
+             return ttg::MemDescType::get(shape, elementType, encoding, space,
+                                          /*mutableMemory=*/true, allocShape);
+           })
+      .def("create_memdesc_index",
+           [](TritonOpBuilder &self, Type resultType, Value source,
+              Value index) -> Value {
+             return self.create<ttg::MemDescIndexOp>(resultType, source, index);
+           })
+      .def("create_metax_async_copy_global_to_local",
+           [](TritonOpBuilder &self, Value src, Value dst, Value mask,
+              Value other) {
+             self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 src, dst, mask, other, tt::CacheModifier::NONE,
+                 tt::EvictionPolicy::NORMAL, /*isVolatile=*/false,
+                 /*intrinsic=*/true);
+           })
+      .def("create_metax_local_load",
+           [](TritonOpBuilder &self, Type resultType, Value source,
+              bool intrinsic, bool isConstantOffs, int mmaMode) -> Value {
+             return self.create<ttg::LocalLoadOp>(resultType, source, Value(),
+                                                  intrinsic, isConstantOffs,
+                                                  mmaMode);
+           })
+      .def("create_metax_bsm_perm",
+           [](TritonOpBuilder &self, Type resultType, Value source) -> Value {
+             return self.create<ttg::BsmPermOp>(resultType, source);
+           })
+      .def("create_gvm_arrive",
+           [](TritonOpBuilder &self, int num) {
+             self.create<ttg::GVMArriveOp>(num);
+           })
+      .def("create_maca_barrier",
+           [](TritonOpBuilder &self) { self.create<ttg::BarrierOp>(); })
+      .def("create_maca_barrier_shared",
+           [](TritonOpBuilder &self) { self.create<ttg::BarrierSharedOp>(); })
+      .def("create_maca_sched_bound",
+           [](TritonOpBuilder &self) { self.create<ttg::SchedBoundOp>(); })
+      .def("create_maca_iglp",
+           [](TritonOpBuilder &self, int config0, int config1, int config2,
+              int config3, int config4, int config5, int config6, int config7) {
+             self.create<ttg::IGLPOp>(config0, config1, config2, config3,
+                                      config4, config5, config6, config7);
+           })
       // Force GPU barrier
       .def("create_barrier",
            [](TritonOpBuilder &self) { self.create<mlir::gpu::BarrierOp>(); })
@@ -1878,7 +2008,253 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
              return self.create<MakeTensorDescOp>(base, shape, strides,
                                                   tensorShape, isSignedInteger,
                                                   paddingOption);
-           });
+           })
+#ifdef __FLAGTREE_COMMON_IR__
+      // Builder methods mirror third_party/tle/triton_tle.cc so the shared TLE
+      // Python layer (semantic.py / types.py) drives the CommonIR path
+      // identically on the MetaX backend, which does not build the tle module.
+      .def("tile_get_string_attr",
+           [](TritonOpBuilder &self, const std::string &name) -> Attribute {
+             return self.getBuilder().getStringAttr(name);
+           })
+      .def("tile_get_buffer_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, const Attribute &memorySpace) -> Type {
+             auto memSpace = attrToCommonIRMemorySpace(memorySpace);
+             return mlir::triton::tile::BufType::get(
+                 self.getBuilder().getContext(), shape, elementType, memSpace);
+           })
+      .def("create_tile_alloc",
+           [](TritonOpBuilder &self, Type tileBufType,
+              std::optional<Attribute> targetLayout) -> Value {
+             auto bufType = mlir::cast<mlir::triton::tile::BufType>(tileBufType);
+             auto op = self.create<mlir::triton::tile::AllocOp>(
+                 tileBufType, bufType.getMemorySpace(),
+                 /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
+                 /*policy=*/mlir::triton::tile::PolicyAttr(),
+                 /*layout=*/
+                 mlir::triton::tile::LayoutAttr::get(
+                     self.getBuilder().getContext(),
+                     mlir::triton::tile::Layout::ND),
+                 /*lifetime=*/mlir::triton::tile::LifetimeAttr(),
+                 /*comment=*/mlir::StringAttr());
+             if (targetLayout)
+               op->setAttr("tle.gpu_layout", *targetLayout);
+             return op.getResult();
+           })
+      .def("get_blocked_encoding",
+           [](TritonOpBuilder &self, const std::vector<unsigned> &sizePerThread,
+              const std::vector<unsigned> &threadsPerWarp,
+              const std::vector<unsigned> &warpsPerCTA,
+              const std::vector<unsigned> &order,
+              const std::vector<std::vector<int32_t>> &cgaBases) -> Attribute {
+             if (!cgaBases.empty())
+               throw std::invalid_argument(
+                   "MetaX set_layout currently requires a single CTA");
+             auto ctx = self.getContext();
+             return checkedLayout<ttg::BlockedEncodingAttr>(
+                 self, ctx, ArrayRef<unsigned>(sizePerThread),
+                 ArrayRef<unsigned>(threadsPerWarp),
+                 ArrayRef<unsigned>(warpsPerCTA), ArrayRef<unsigned>(order),
+                 ttg::CTAEncodingAttr::getDefault(ctx, order.size()));
+           })
+      .def("get_distributed_linear_layout",
+           [](TritonOpBuilder &self,
+              const std::vector<std::vector<int32_t>> &regBases,
+              const std::vector<std::vector<int32_t>> &laneBases,
+              const std::vector<std::vector<int32_t>> &warpBases,
+              const std::vector<std::vector<int32_t>> &blockBases,
+              const std::vector<int64_t> &shape) -> Attribute {
+             auto ctx = self.getContext();
+             // Python checks dimensions and bounds. Report incomplete coverage
+             // as a compilation error rather than a LinearLayout assertion.
+             tt::LinearLayout layout(
+                 {{StringAttr::get(ctx, "register"), regBases},
+                  {StringAttr::get(ctx, "lane"), laneBases},
+                  {StringAttr::get(ctx, "warp"), warpBases},
+                  {StringAttr::get(ctx, "block"), blockBases}},
+                 tt::standardOutDimPairs(ctx, shape),
+                 /*requireSurjective=*/false);
+             if (!layout.isSurjective())
+               throw std::invalid_argument(
+                   "distributed linear layout must cover every element of shape");
+             return checkedLayout<ttg::LinearEncodingAttr>(self, ctx, layout);
+           })
+      .def("make_shared_linear_encoding_attr",
+           [](TritonOpBuilder &self,
+              const std::vector<std::vector<int32_t>> &offsetBases,
+              const std::vector<std::vector<int32_t>> &blockBases,
+              unsigned alignment, unsigned rank) -> Attribute {
+             if (!blockBases.empty())
+               throw std::invalid_argument(
+                   "MetaX shared linear layout currently requires a single CTA");
+             auto ctx = self.getContext();
+             SmallVector<int64_t> shape(rank, 1);
+             for (const auto &basis : offsetBases)
+               for (unsigned i = 0; i < rank; ++i)
+                 shape[i] = std::max<int64_t>(
+                     shape[i], llvm::NextPowerOf2(basis[i]));
+             tt::LinearLayout layout(
+                 {{StringAttr::get(ctx, "offset"), offsetBases},
+                  {StringAttr::get(ctx, "block"), blockBases}},
+                 tt::standardOutDimPairs(ctx, shape),
+                 /*requireSurjective=*/false);
+             return checkedLayout<ttg::SharedLinearEncodingAttr>(
+                 self, ctx, layout, alignment);
+           })
+      .def("get_metax_mma_layout",
+           [](TritonOpBuilder &self, const std::vector<unsigned> &version,
+              const std::vector<unsigned> &warpsPerCTA,
+              const std::vector<unsigned> &elementsMNK,
+              bool colMajor) -> Attribute {
+             if (version.size() != 2 || warpsPerCTA.size() != 2 ||
+                 elementsMNK.size() != 3)
+               throw std::invalid_argument(
+                   "MetaX MMA layout requires version[2], warps_per_cta[2], "
+                   "elements_mnk[3]");
+             auto ctx = self.getContext();
+             return ttg::MACAMmaEncodingAttr::get(
+                 ctx, version[0], version[1],
+                 ArrayRef<unsigned>(warpsPerCTA), ArrayRef<unsigned>(elementsMNK),
+                 unsigned(colMajor), ttg::CTAEncodingAttr::getDefault(ctx, 2),
+                 false, false, ArrayRef<unsigned>({1, 1}));
+           })
+      .def("get_dot_operand_layout",
+           [](TritonOpBuilder &self, unsigned opIdx, Attribute parent,
+              unsigned kWidth) -> Attribute {
+             return checkedLayout<ttg::DotOperandEncodingAttr>(
+                 self, self.getContext(), opIdx, parent, kWidth);
+           })
+      .def("get_sliced_encoding",
+           [](TritonOpBuilder &self, unsigned dim, Attribute parent) -> Attribute {
+             auto distributed = dyn_cast<ttg::DistributedEncodingTrait>(parent);
+             if (!distributed)
+               throw std::invalid_argument("expected a distributed parent layout");
+             return checkedLayout<ttg::SliceEncodingAttr>(
+                 self, self.getContext(), dim, distributed);
+           })
+      .def("ensure_ttg_layout_attrs",
+           [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
+              int numCTAs) {
+             auto *block = self.getBuilder().getInsertionBlock();
+             auto module = block ? block->getParentOp()->getParentOfType<ModuleOp>()
+                                 : ModuleOp();
+             if (!module)
+               throw std::invalid_argument("cannot find module for layout attributes");
+             auto &builder = self.getBuilder();
+             module->setAttr("ttg.num-warps", builder.getI32IntegerAttr(numWarps));
+             module->setAttr("ttg.threads-per-warp",
+                             builder.getI32IntegerAttr(threadsPerWarp));
+             module->setAttr("ttg.num-ctas", builder.getI32IntegerAttr(numCTAs));
+           })
+      .def("create_tile_set_layout",
+           [](TritonOpBuilder &self, Value value, Attribute layout) -> Value {
+             return self.create<mlir::triton::tile::SetLayoutOp>(
+                 value.getType(), value, layout);
+           })
+      .def("create_tile_copy",
+           [](TritonOpBuilder &self, Value &src, Value &dst,
+              bool interNoAlias) -> void {
+             auto op = self.create<mlir::triton::tile::CopyOp>(
+                 src, dst, /*engine=*/mlir::triton::tile::EngineAttr(),
+                 /*src_layout=*/
+                 mlir::triton::tile::LayoutAttr::get(
+                     self.getBuilder().getContext(),
+                     mlir::triton::tile::Layout::ND),
+                 /*dst_nz_layout=*/mlir::triton::tile::NZLayoutAttr(),
+                 /*transpose=*/mlir::UnitAttr(),
+                 /*comment=*/mlir::StringAttr());
+             if (interNoAlias)
+               op->setAttr("inter_no_alias",
+                           self.getBuilder().getBoolAttr(true));
+           })
+      .def("create_tile_get_memdesc",
+           [](TritonOpBuilder &self, Type resultTy, Value source) -> Value {
+             return self
+                 .create<UnrealizedConversionCastOp>(TypeRange{resultTy},
+                                                     ValueRange{source})
+                 .getResult(0);
+           })
+      .def("create_tile_subview",
+           [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
+              const std::vector<int64_t> &sizes,
+              const std::vector<int64_t> &strides,
+              Attribute targetLayout) -> Value {
+             SmallVector<Value> indexOffsets;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value offset : offsets) {
+               if (offset.getType() != indexType)
+                 offset = self.create<arith::IndexCastOp>(indexType, offset);
+               indexOffsets.push_back(offset);
+             }
+             auto srcBuf =
+                 mlir::cast<mlir::triton::tile::BufType>(source.getType());
+             auto resTy = mlir::triton::tile::BufType::get(
+                 builder.getContext(), sizes, srcBuf.getElementType(),
+                 srcBuf.getMemorySpace());
+             auto op = self.create<mlir::triton::tile::SubViewOp>(
+                 resTy, source, indexOffsets, builder.getI64ArrayAttr(sizes),
+                 builder.getI64ArrayAttr(strides));
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_to_tensor",
+           [](TritonOpBuilder &self, Value &src, bool /*writable*/) -> Value {
+             auto srcBuf =
+                 mlir::cast<mlir::triton::tile::BufType>(src.getType());
+             auto resTy = RankedTensorType::get(srcBuf.getShape(),
+                                                srcBuf.getElementType());
+             return self.create<mlir::triton::tile::ToTensorOp>(resTy, src)
+                 .getResult();
+           })
+      .def("create_tile_store_tensor",
+           [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
+             self.create<mlir::triton::tile::StoreTensorOp>(src, dst);
+           })
+      .def("create_tile_extract_tile",
+           [](TritonOpBuilder &self, Value source, Value index,
+              const std::vector<int64_t> &tileShape) -> Value {
+             auto srcTy = mlir::cast<RankedTensorType>(source.getType());
+             auto resTy = RankedTensorType::get(
+                 tileShape, srcTy.getElementType(), srcTy.getEncoding());
+             return self
+                 .create<mlir::triton::tile::ExtractTileOp>(resTy, source,
+                                                            index)
+                 .getResult();
+           })
+      .def("create_tile_insert_tile",
+           [](TritonOpBuilder &self, Value base, Value update,
+              Value index) -> Value {
+             return self
+                 .create<mlir::triton::tile::InsertTileOp>(base.getType(), base,
+                                                           update, index)
+                 .getResult();
+           })
+      .def("create_tile_gm_offset",
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &indices,
+              std::vector<Value> &strides) -> Value {
+             SmallVector<Value> indexValues;
+             SmallVector<Value> strideValues;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value index : indices) {
+               if (index.getType() != indexType)
+                 index = self.create<arith::IndexCastOp>(indexType, index);
+               indexValues.push_back(index);
+             }
+             for (Value stride : strides) {
+               if (stride.getType() != indexType)
+                 stride = self.create<arith::IndexCastOp>(indexType, stride);
+               strideValues.push_back(stride);
+             }
+             return self
+                 .create<mlir::triton::tile::GmOffsetOp>(
+                     base.getType(), base, indexValues, strideValues)
+                 .getResult();
+           })
+#endif
+      ;
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())
       .def(py::init<MLIRContext *>())
