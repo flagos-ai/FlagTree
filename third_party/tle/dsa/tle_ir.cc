@@ -708,19 +708,19 @@ void init_tle_dsa_ir(py::module &&m) {
            })
       .def("create_gather_scatter_view",
            [](TritonOpBuilder &self, Value view, std::vector<int64_t> tile,
-              std::vector<int64_t> sparseDims,
-              std::string paddingValue) -> Value {
+              std::vector<int64_t> sparseDims, std::string paddingValue,
+              bool boundsCheck) -> Value {
              return mlir::triton::tv::createGatherScatterView(
                  self.getBuilder(), self.getLastLoc(), view, tile, sparseDims,
-                 parseTensorViewPaddingValue(paddingValue));
+                 parseTensorViewPaddingValue(paddingValue), boundsCheck);
            })
       // Build the TensorView type used across IR boundaries.
       .def("get_tensor_view_ty",
            [](TritonOpBuilder &self, Type elementType, int64_t rank,
               std::string viewKind, std::vector<int64_t> tile,
               std::vector<int64_t> traversalStrides,
-              std::vector<int64_t> sparseDims,
-              std::string paddingValue) -> Type {
+              std::vector<int64_t> sparseDims, std::string paddingValue,
+              bool boundsCheck) -> Type {
              llvm::SmallVector<int64_t> dynShape(rank, ShapedType::kDynamic);
              llvm::SmallVector<int64_t> dynStrides(rank, ShapedType::kDynamic);
              Attribute encoding;
@@ -735,7 +735,8 @@ void init_tle_dsa_ir(py::module &&m) {
                    padding);
              } else if (viewKind == "gather_scatter") {
                encoding = mlir::triton::tv::GatherScatterViewAttr::get(
-                   self.getBuilder().getContext(), tile, sparseDims, padding);
+                   self.getBuilder().getContext(), tile, sparseDims, padding,
+                   boundsCheck);
              } else if (!viewKind.empty()) {
                throw py::value_error("unknown TensorView encoding: " +
                                      viewKind);

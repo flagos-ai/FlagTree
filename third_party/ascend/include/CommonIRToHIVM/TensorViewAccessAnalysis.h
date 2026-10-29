@@ -130,6 +130,9 @@ struct TensorViewAccessInfo {
   // base info
   Value base;
   PaddingValue padding = PaddingValue::ZERO;
+  /// Whether sparse indices are range-checked. Only a GatherScatterView can
+  /// turn this on.
+  bool boundsCheck = false;
   SmallVector<Value> shape;
   SmallVector<int64_t> staticShape;
 

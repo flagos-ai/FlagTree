@@ -6,6 +6,9 @@ from triton.language import semantic as tl_semantic
 
 from .tile import tensor_view
 
+# Extent given to a sparse dimension whose `shape` entry is omitted.
+_UNBOUNDED_EXTENT = 2**63 - 1
+
 
 def _convert_extent_to_ir(elem, builder: ir.builder):
     """Convert one `shape`/`strides` entry to an i64 IR Value."""
@@ -80,10 +83,31 @@ def make_strided_view(base, shape, strides, tile, traversal_strides, padding_val
     return tensor_view(handle, view.dtype, view.rank, "strided", tile, traversal, padding_value=padding_value)
 
 
-def make_gather_scatter_view(base, shape, strides, tile, sparse_dim, padding_value, builder: ir.builder) -> tensor_view:
-    view = _make_tensor_view(base, shape, strides, builder)
-    tile = _tv_constants(tile, "tile", view.rank)
+def _gather_scatter_shape(shape, sparse_dims, bounds_check):
+    # Without bounds checking a sparse extent is never compared, so an omitted one becomes a constant that
+    # adds no kernel argument.
+    shape = list(shape) if hasattr(shape, "__iter__") else [shape]
+    resolved = []
+    for dim, extent in enumerate(shape):
+        if tl._unwrap_if_constexpr(extent) is not None:
+            resolved.append(extent)
+        elif dim not in sparse_dims:
+            raise ValueError(f"Expected `shape[{dim}]` to be given: only sparse dimensions may omit it")
+        elif bounds_check:
+            raise ValueError(f"Expected `shape[{dim}]` to be given when `bounds_check` is enabled")
+        else:
+            resolved.append(_UNBOUNDED_EXTENT)
+    return resolved
+
+
+def make_gather_scatter_view(base, shape, strides, tile, sparse_dim, padding_value, bounds_check,
+                             builder: ir.builder) -> tensor_view:
+    bounds_check = tl._unwrap_if_constexpr(bounds_check)
+    if not isinstance(bounds_check, bool):
+        raise ValueError("Expected `bounds_check` to be a constant boolean")
     sparse_dims = _tv_constants(sparse_dim, "sparse_dim")
+    view = _make_tensor_view(base, _gather_scatter_shape(shape, sparse_dims, bounds_check), strides, builder)
+    tile = _tv_constants(tile, "tile", view.rank)
     padding_value = _tv_padding_value(padding_value, view.dtype)
     if not all(value > 0 for value in tile):
         raise ValueError("Expected positive values in `tile`")
@@ -91,8 +115,9 @@ def make_gather_scatter_view(base, shape, strides, tile, sparse_dim, padding_val
         raise ValueError("Expected at least one unique dimension in `sparse_dim`")
     if not all(0 <= value < view.rank for value in sparse_dims):
         raise ValueError(f"Expected `sparse_dim` entries in [0, {view.rank})")
-    handle = builder.create_gather_scatter_view(view.handle, tile, sparse_dims, padding_value)
-    return tensor_view(handle, view.dtype, view.rank, "gather_scatter", tile, (), sparse_dims, padding_value)
+    handle = builder.create_gather_scatter_view(view.handle, tile, sparse_dims, padding_value, bounds_check)
+    return tensor_view(handle, view.dtype, view.rank, "gather_scatter", tile, (), sparse_dims, padding_value,
+                       bounds_check)
 
 
 def _convert_index_to_ir(elem, builder: ir.builder):
