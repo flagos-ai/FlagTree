@@ -1,0 +1,56 @@
+# Template for debian/control. One binary package is produced per build; which
+# one is decided by the backend passed to build-helpers/render-packaging.sh,
+# which fills the @PLACEHOLDERS@ below from packaging/backends.conf.
+Source: flagtree
+Section: python
+Priority: optional
+Maintainer: FlagOS Contributors <contact@flagos.io>
+Build-Depends: debhelper-compat (= 13),
+               python3-all,
+               python3-pip,
+               python3-setuptools,
+               python3-wheel,
+               dh-python
+Standards-Version: 4.6.2
+Homepage: https://github.com/flagos-ai/FlagTree
+Vcs-Browser: https://github.com/flagos-ai/FlagTree
+Vcs-Git: https://github.com/flagos-ai/FlagTree.git
+Rules-Requires-Root: no
+X-Build-Environment: This package wraps a pre-built FlagTree wheel into a .deb.
+ Depending on the backend's "wheel" column in packaging/backends.conf the wheel
+ is either compiled from this tree in a container providing LLVM, CMake and
+ Ninja, or downloaded from the FlagOS Python index where the backend's own
+ delivery workflow published it. The Build-Depends above are only what
+ dpkg-buildpackage needs to assemble the .deb once the wheel exists.
+
+Package: python3-flagtree-@BACKEND@
+Architecture: @ARCH@
+Depends: ${python:Depends},
+         ${shlibs:Depends},
+         ${misc:Depends},
+         python3-filelock,
+         python3-setuptools
+# python3-torch is intentionally NOT declared. The distro 'python3-torch'
+# is CPU-only and unsuitable for GPU workloads; users install matching
+# vendor torch via pip — see packaging/INSTALL.md once published.
+Recommends: python3-numpy
+Provides: python3-flagtree, python3-triton
+# Every backend installs into the same "triton" Python namespace, so at most
+# one of them may be installed, alongside at most one upstream python3-triton.
+# Conflicting with the virtual package each of them provides covers every
+# present and future backend without listing them: a package that conflicts
+# with a virtual package it provides does not conflict with itself
+# (Debian Policy 7.4).
+Conflicts: python3-flagtree, python3-triton
+Replaces: python3-triton
+# Note: Breaks: without a version is equivalent to Conflicts:; using
+# Conflicts: above is enough (Debian Policy §7.4).
+Description: FlagTree compiler with @VENDOR@ backend
+ FlagTree is a unified compiler supporting multiple AI chip backends for
+ custom Deep Learning operations, forked from triton-lang/triton.
+ .
+ This package contains the FlagTree Python distribution built with the
+ @VENDOR@ backend enabled. It installs into the "triton" Python namespace
+ and conflicts with the upstream python3-triton package.
+ .
+ Requires @RUNTIME@ at runtime.
