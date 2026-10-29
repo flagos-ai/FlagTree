@@ -91,7 +91,24 @@ void init_triton_passes_ttgpuir(py::module &&m) {
   ADD_PASS_OPTION_WRAPPER_1("add_assign_latencies",
                             createTritonGPUAssignLatencies, int);
   ADD_PASS_WRAPPER_0("add_schedule_loops", createTritonGPUScheduleLoops);
-  ADD_PASS_OPTION_WRAPPER_2("add_pipeline", createTritonGPUPipeline, int, bool);
+  // flagtree pipeline enhance: same signature with or without the macro
+  m.def(
+      "add_pipeline",
+      [](mlir::PassManager &pm, int num_stages, bool dump_enabled,
+         bool enhance) {
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+        TritonGPUPipelineOptions options;
+        options.numStages = num_stages;
+        options.dumpIntermediateSteps = dump_enabled;
+        options.enablePipelineEnhance = enhance;
+        pm.addPass(createTritonGPUPipeline(options));
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
+        (void)enhance;
+        pm.addPass(createTritonGPUPipeline({num_stages, dump_enabled}));
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+      },
+      py::arg("pm"), py::arg("num_stages"), py::arg("dump_enabled"),
+      py::arg("enable_pipeline_enhance") = false);
   ADD_PASS_OPTION_WRAPPER_1("add_warp_specialize",
                             createTritonGPUAutomaticWarpSpecialization, int);
   ADD_PASS_WRAPPER_0("add_prefetch", createTritonGPUPrefetch);

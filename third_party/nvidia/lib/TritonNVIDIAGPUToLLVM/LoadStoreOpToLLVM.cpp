@@ -1370,11 +1370,9 @@ struct AsyncCopyGlobalToLocalOpConversion
       public LoadStoreConversionBase {
   AsyncCopyGlobalToLocalOpConversion(LLVMTypeConverter &converter,
                                      const NVIDIA::TargetInfo &targetInfo,
-                                     int computeCapability,
                                      ModuleAxisInfoAnalysis &axisAnalysisPass,
                                      PatternBenefit benefit)
       : ConvertOpToLLVMPattern(converter, benefit),
-        computeCapability(computeCapability),
         LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
 
   LogicalResult
@@ -1455,10 +1453,6 @@ struct AsyncCopyGlobalToLocalOpConversion
              << vecBytes << " bytes";
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
-    if (op.getCache() != CacheModifier::NONE &&
-        op.getCache() != CacheModifier::CA &&
-        op.getCache() != CacheModifier::CG)
-      return op.emitError("cp.async supports only ca/cg cache modifiers");
 
     auto freeVarMasks = getFreeVariableMasks(srcTy);
     // NOTE(@peterbell10): We load redundant data on different CTAs, so the data
@@ -1468,41 +1462,44 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
-    Value l2PolicyReg =
-        createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-
-    auto emitCpAsync =
-        [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
-         l2PolicyReg](RewriterBase &rewriter, Location loc,
-                      ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                      VectorType vecTy) -> SmallVector<Value> {
+    // Do not translate the eviction policy of the originating load into an
+    // L2::cache_hint on cp.async, matching upstream Triton. ptxas 12.8-13.1
+    // miscompiles the hinted form: the address-descriptor operands stay
+    // undefined and the kernel traps with an illegal instruction at runtime.
+    // The eviction policy is only a hint, so dropping it costs nothing.
+    auto emitCpAsync = [&b, threadPred, ptrTy, hasMask = bool(llMask),
+                        opCache = op.getCache()](
+                           RewriterBase &rewriter, Location loc,
+                           ArrayRef<Value> vals, Value shmemAddr, int startIdx,
+                           VectorType vecTy) -> SmallVector<Value> {
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
       auto elemTy = vecTy.getElementType();
       auto nBytes = vecTy.getNumElements() * elemTy.getIntOrFloatBitWidth() / 8;
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
-      // Keep Triton's historical default when the user does not specify a
-      // cache modifier, but honor tl.load/ttg.async_copy cache modifiers when
-      // they are present.
-      CacheModifier srcCacheModifier =
-          opCache == CacheModifier::NONE
-              ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
-              : opCache;
+      // cp.async only accepts `ca` and `cg`, and `cg` only for 16-byte copies.
+      // Honor the load's cache modifier where it is legal, and otherwise fall
+      // back to Triton's historical selection instead of rejecting the op: a
+      // pipelined `tl.load` may carry `.cg` on an 8-byte copy or `.cv`, neither
+      // of which can be expressed on cp.async.
+      CacheModifier srcCacheModifier = CacheModifier::NONE;
+      if (opCache == CacheModifier::CA ||
+          (opCache == CacheModifier::CG && nBytes == 16))
+        srcCacheModifier = opCache;
+      if (srcCacheModifier == CacheModifier::NONE)
+        srcCacheModifier = nBytes == 16 ? CacheModifier::CG : CacheModifier::CA;
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);
       auto maskElem = b.extract_val(i1_ty, structElem, 1);
 
       PTXBuilder ptxBuilder;
-      auto &copyAsyncOp = *ptxBuilder.create<PTXCpAsyncLoadInstr>(
-          srcCacheModifier, l2PolicyReg != Value());
+      auto &copyAsyncOp =
+          *ptxBuilder.create<PTXCpAsyncLoadInstr>(srcCacheModifier);
       auto *dstOperand = ptxBuilder.newAddrOperand(shmemAddr, "r");
       auto *srcOperand = ptxBuilder.newAddrOperand(srcElem, "l");
       auto *copySize = ptxBuilder.newConstantOperand(nBytes);
       auto *srcSize = copySize;
-      PTXBuilder::Operand *evictOpr = nullptr;
-      if (l2PolicyReg)
-        evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
       if (hasMask) {
         // We don't use predicate in this case, setting src-size to 0
         // if there's any mask. cp.async will automatically fill the
@@ -1514,11 +1511,8 @@ struct AsyncCopyGlobalToLocalOpConversion
         auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
         srcSize = ptxBuilder.newOperand(selectOp, "r");
       }
-      auto &copyExec =
-          evictOpr
-              ? copyAsyncOp(dstOperand, srcOperand, copySize, srcSize, evictOpr)
-              : copyAsyncOp(dstOperand, srcOperand, copySize, srcSize);
-      copyExec.maybePredicate(threadPred);
+      copyAsyncOp(dstOperand, srcOperand, copySize, srcSize)
+          .maybePredicate(threadPred);
       ptxBuilder.launch(rewriter, loc, void_ty(ctx));
       return {};
     };
@@ -1550,8 +1544,6 @@ struct AsyncCopyGlobalToLocalOpConversion
     rewriter.replaceOp(op, zero);
     return success();
   }
-
-  int computeCapability;
 };
 
 static LinearLayout getMsgToPackedOffsetLayout(ttg::MemDescType ty) {
@@ -2164,8 +2156,8 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
     int computeCapability, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, PatternBenefit benefit) {
-  patterns.add<AsyncCopyGlobalToLocalOpConversion>(
-      typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
+  patterns.add<AsyncCopyGlobalToLocalOpConversion>(typeConverter, targetInfo,
+                                                   axisInfoAnalysis, benefit);
   patterns.add<AtomicCASOpConversion, AtomicRMWOpConversion>(
       typeConverter, targetInfo, axisInfoAnalysis, benefit);
   patterns.add<LoadOpConversion, StoreOpConversion>(

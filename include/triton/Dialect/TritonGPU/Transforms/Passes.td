@@ -48,6 +48,11 @@ def TritonGPUPipeline : Pass<"tritongpu-pipeline", "mlir::ModuleOp"> {
     Option<"dumpIntermediateSteps", "dump-intermediate-steps",
            "bool", /*default*/"false",
            "Dump intermediate steps">
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    , Option<"enablePipelineEnhance", "enable-pipeline-enhance",
+             "bool", /*default*/"false",
+             "Enable the FlagTree pipelining fixes (FLAGTREE_PIPELINE_ENHANCE)">
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   ];
 }
 
