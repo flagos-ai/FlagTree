@@ -97,11 +97,28 @@ outlive the call; and quantizing once per call into global memory needs a grid
 barrier before the dot, about the cost of the per-block quantization it
 replaces. The NVIDIA optimized path also quantizes per CTA.
 
+On gfx1201 each native GEMV block also starts its row-tile loop at tile
+`(shard_index mod tiles)` (`native_gguf_rotate_tiles`, set by the agent templates under
+`platforms/amd/gfx1201/`), so at any moment the 128 blocks stream
+different offsets of their row slabs. Every row is still dotted by one tile in the same
+order: logits are bitwise equal to the build without it, with 248 VGPRs and 72 B of
+scratch. It shortens the big GEMV phases by 0.5–1% (qkv 54.8 → 53.7 µs, gate+up
+158.6 → 157.7 µs, down 87.5 → 86.7 µs per layer) but does not narrow their arrival skew,
+which is uneven memory access between blocks rather than uneven row counts (the slow
+blocks change from phase to phase). Graph replay, three interleaved rounds on one card:
+27.28/27.28/27.29 ms without vs 27.15/27.15/27.16 ms with it; llama.cpp 29.32/29.32/29.35 ms.
+Loading each IQ4 block header once per block instead of once per 32-value group was also
+tried and dropped: LLVM already merges the header into one 64-bit load per group, a
+lane broadcast cannot work because a block's eight groups span two waves, and a
+block-shaped header tile broadcast through a layout conversion cost 1.2 ms.
+gfx1100 renders unchanged; the rotation has not been run on the W7900.
+
 ## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores (default) | **27.3** | **36.6** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores + rotated row tiles (default) | **27.2** | **36.8** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores | 27.3 | 36.6 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch | 27.5 | 36.4 |
 | FlagMega, q8_1 activations + `v_dot4`, no prefetch | 28.2 | 35.4 |
 | FlagMega, floating-point activations (`--q8-activations off`) | 30.1 | 33.2 |

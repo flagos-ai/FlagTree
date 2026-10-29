@@ -90,6 +90,35 @@ def test_install_leaves_nvidia_sources_unchanged(tmp_path, monkeypatch, build):
     assert _source(tmp_path, "after", build, "IQ4_XS", "nvidia-sm120") == before
 
 
+
+def _wide_source(tmp_path, name, build, target, rows=4096):
+    # 4096 rows over the 128-block mesh: 32 rows, i.e. two 16-row tiles, per block.
+    gemv = _gemv()
+    module = gemv._projection("IQ4_XS", rows, 5120) if build == "projection" else gemv._glu("IQ4_XS", rows, 5120)
+    return (gemv._artifact(tmp_path, name, module, target) / "generated_kernels.py").read_text()
+
+
+@pytest.mark.parametrize("build", ("projection", "glu"))
+def test_installed_gfx1201_native_gemvs_start_at_a_block_rotated_tile(tmp_path, installed, build):
+    source = _wide_source(tmp_path, "rotated", build, "amd-gfx1201")
+    assert "for local_n_tile in tl.range(0, 2):" in source
+    assert "local_n_start = (((local_n_tile + shard_index) % 2) * 16).to(tl.int32)" in source
+    assert "for local_n_start in tl.range(0, 32, 16):" not in source
+
+
+@pytest.mark.parametrize("build", ("projection", "glu"))
+def test_uninstalled_native_gemvs_keep_the_ordered_tile_loop(tmp_path, build):
+    source = _wide_source(tmp_path, "ordered", build, "amd-gfx1201")
+    assert "for local_n_start in tl.range(0, 32, 16):" in source
+    assert "local_n_tile" not in source
+
+
+@pytest.mark.parametrize("build", ("projection", "glu"))
+def test_installed_gfx1100_native_gemvs_keep_the_ordered_tile_loop(tmp_path, installed, build):
+    source = _wide_source(tmp_path, "gfx1100", build, "amd-gfx1100")
+    assert "for local_n_start in tl.range(0, 32, 16):" in source
+    assert "local_n_tile" not in source
+
 def _amd_gpu():
     return torch.cuda.is_available() and bool(torch.version.hip) and \
         torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] in ("gfx1100", "gfx1201")

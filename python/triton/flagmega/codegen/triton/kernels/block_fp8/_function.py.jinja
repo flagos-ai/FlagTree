@@ -9,7 +9,13 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if native_activation %}
 {% include native_gguf_activation_prologue %}
 {% endif %}
+{% set native_tiles = (call.local_n_capacity + call.tile_n - 1) // call.tile_n %}
+{% if native_gguf_rotate_tiles is defined and native_gguf_rotate_tiles and native_tiles > 1 %}
+    for local_n_tile in tl.range(0, {{ native_tiles }}):
+        local_n_start = (((local_n_tile + shard_index) % {{ native_tiles }}) * {{ call.tile_n }}).to(tl.int32)
+{% else %}
     for local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
+{% endif %}
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
         n_mask = {{ call.n_mask }}
 {% if call.weight_encoding == "IQ4_XS" %}
