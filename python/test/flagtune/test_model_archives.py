@@ -1438,7 +1438,7 @@ def test_three_model_loads_reuse_one_parsed_platform_package(tmp_path, monkeypat
         parsed.append(args[0])
         return real_read(*args, **kwargs)
 
-    def load_members(_manager, identity, version, _members, outer_path, member):
+    def load_members(_manager, identity, version, _members, outer_path, member, *, package_version=None):
         return SimpleNamespace(
             identity=identity,
             variant=SimpleNamespace(),
@@ -1489,3 +1489,103 @@ def test_missing_bundle_raises_its_own_error_but_stays_an_incompatible_model_err
 
     assert "has no model for" in str(excinfo.value)
     assert isinstance(excinfo.value, IncompatibleModelError)
+
+
+def test_mixed_model_versions_preserve_child_bytes(tmp_path):
+    old_id, old = _platform_model_archive(tmp_path, "gemv", "1.0.0")
+    new_id, new = _platform_model_archive(tmp_path, "general_tma", "1.1.0")
+    path = tmp_path / platform_package_name("nvidia-h20", "2.0.0")
+    models = {old_id: old, new_id: new}
+    write_platform_package(path, platform_key="nvidia-h20", package_version="2.0.0", model_archives=models)
+    first = path.read_bytes()
+    write_platform_package(path, platform_key="nvidia-h20", package_version="2.0.0", model_archives=models)
+    assert path.read_bytes() == first
+    with tarfile.open(path, "r:gz") as archive:
+        manifest = json.load(archive.extractfile(PACKAGE_MANIFEST_NAME))
+    assert manifest["schema_version"] == 2
+    package = read_platform_package(path, expected_platform_key="nvidia-h20", expected_version="2.0.0")
+    for identity, child, version in ((old_id, old, "1.0.0"), (new_id, new, "1.1.0")):
+        entry = package.models[identity.artifact_key]
+        assert entry["model_version"] == version
+        assert entry["sha256"] == hashlib.sha256(child.read_bytes()).hexdigest()
+        assert package.archives[identity.artifact_key] == child.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"model_version": "9.0.0"}, "version mismatch"),
+        ({"model_version": "bad"}, "invalid child model version"),
+        ({"sha256": "0" * 64}, "sha256 mismatch"),
+        ({"sha256": "invalid"}, "invalid child model sha256"),
+        ({"unexpected": True}, "exact entry keys"),
+    ],
+)
+def test_schema_two_validates_child_version_and_digest(tmp_path, update, message):
+    identity, child = _platform_model_archive(tmp_path, "gemv")
+    manifest = _platform_manifest()
+    manifest.update(schema_version=2, package_version="2.0.0")
+    manifest["models"][identity.artifact_key].update(model_version="1.0.0",
+                                                     sha256=hashlib.sha256(child.read_bytes()).hexdigest())
+    manifest["models"][identity.artifact_key].update(update)
+    member = manifest["models"][identity.artifact_key]["path"]
+    with pytest.raises(ModelArchiveError, match=message):
+        read_platform_package_bytes(_raw_platform_package(manifest, [(member, child.read_bytes(), "file")]),
+                                    expected_platform_key="nvidia-h20", expected_version="2.0.0",
+                                    source="mixed package")
+
+
+def test_mixed_versions_download_load_and_cache_by_package(tmp_path, monkeypatch):
+    identity, old = _platform_model_archive(tmp_path, "gemv", "1.0.0")
+    new_id, new = _platform_model_archive(tmp_path, "general_tma", "1.1.0")
+    packages = []
+    for version in ("2.0.0", "3.0.0"):
+        path = tmp_path / platform_package_name("nvidia-h20", version)
+        write_platform_package(path, platform_key="nvidia-h20", package_version=version,
+                               model_archives={identity: old, new_id: new})
+        packages.append(path)
+    # Exercise config/summary validation while keeping this test CPU-only and
+    # independent of XGBoost; the predictor bytes are test markers.
+    monkeypatch.setattr(model_loader, "_XGBoostPredictorCompat", lambda *_args: object())
+    monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(tmp_path / "cache"))
+    requests = _configure_platform_download(monkeypatch, tmp_path / "manifest.json", "2.0.0", packages[0].read_bytes(),
+                                            skip_runtime_validation=False)
+    manager = FlagTuneModelManager()
+    kwargs = dict(platform_key="nvidia-h20", dtype_key="bf16-bf16-bf16", model_version="2.0.0")
+    first = manager.load("flaggems/mm", "gemv", **kwargs)
+    assert first.model_version == "1.0.0"
+    assert first.package_version == "2.0.0"
+    assert manager.load("flaggems/mm", "gemv", **kwargs) is first
+    assert len(requests) == 1
+    other = manager.load("flaggems/mm", "general_tma", **kwargs)
+    assert other.model_version == "1.1.0"
+    assert other.package_version == "2.0.0"
+    assert len(requests) == 1
+    # Selecting another outer release must not return the old cached object,
+    # even when it retains exactly the same child revision.
+    monkeypatch.setenv("FLAGTUNE_MODEL_DIR", str(tmp_path))
+    second = manager.load("flaggems/mm", "gemv", **{**kwargs, "model_version": "3.0.0"})
+    assert second.model_version == first.model_version
+    assert second.package_version == "3.0.0"
+    assert second is not first
+
+
+def test_explicit_schema_two_for_uniform_versions(tmp_path):
+    identity, child = _platform_model_archive(tmp_path, "gemv")
+    path = tmp_path / "nvidia-h20_v1.0.0.tar.gz"
+    write_platform_package(path, platform_key="nvidia-h20", package_version="1.0.0", model_archives={identity: child},
+                           schema_version=2)
+    package = read_platform_package(path, expected_platform_key="nvidia-h20", expected_version="1.0.0")
+    assert package.models[identity.artifact_key]["model_version"] == "1.0.0"
+    with tarfile.open(path, "r:gz") as archive:
+        assert json.load(archive.extractfile(PACKAGE_MANIFEST_NAME))["schema_version"] == 2
+    with pytest.raises(ModelArchiveError, match="schema 1 requires"):
+        write_platform_package(path, platform_key="nvidia-h20", package_version="2.0.0",
+                               model_archives={identity: child}, schema_version=1)
+
+
+@pytest.mark.parametrize("schema", [0, 3, True, "2"])
+def test_writer_rejects_invalid_schema_version(tmp_path, schema):
+    with pytest.raises(ModelArchiveError, match="schema_version"):
+        write_platform_package(tmp_path / "package.tar.gz", platform_key="nvidia-h20", package_version="1.0.0",
+                               model_archives={}, schema_version=schema)
