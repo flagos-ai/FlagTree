@@ -11,8 +11,11 @@ import triton.language.extra.cann.libdevice as libdevice
 pipe = tle.dsa.ascend.PIPE
 
 
-@triton.autotune(configs=[triton.Config({'disable_auto_inject_block_sync': True, 'unit_flag': True})],
-                 key=['K_TILE', 'N_CORE'])
+@triton.autotune(
+    configs=[
+        triton.Config(
+            {'disable_auto_inject_block_sync': True, 'unit_flag': True, 'disable_auto_cv_work_space_manage': True})
+    ], key=['K_TILE', 'N_CORE'])
 @triton.jit
 def lightning_indexer_tnd_pa_stage1_kernel(
     q_ptr,
