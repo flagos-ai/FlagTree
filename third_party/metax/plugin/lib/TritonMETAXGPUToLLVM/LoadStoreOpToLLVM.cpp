@@ -1,5 +1,4 @@
 #include "TargetInfo.h"
-#include "TritonMETAXGPUTransforms/AsyncCopyUtils.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 
@@ -1256,15 +1255,6 @@ struct AsyncCopyGlobalToLocalOpConversion
           op, "requires swizzled shared encoding for dst");
     auto resElemTy = getTypeConverter()->convertType(dstTy.getElementType());
 
-    unsigned minVec = METAX::getAsyncCopyVectorSize(
-        srcTy, dstTy, axisAnalysisPass.getAxisInfo(op.getSrc()));
-    if (!METAX::isAsyncCopyLayoutCompatible(srcTy, dstTy, minVec)) {
-      op.emitOpError(
-          "incompatible lane-to-shared addresses for MetaX async copy; run "
-          "tritonmetaxgpu-legalize-async-copy before shared memory allocation");
-      return failure();
-    }
-
     Value llDst = adaptor.getResult();
     Value llSrc = adaptor.getSrc();
     Value llMask = adaptor.getMask();
@@ -1294,8 +1284,23 @@ struct AsyncCopyGlobalToLocalOpConversion
     auto smemObj =
         getSharedMemoryObjectFromStruct(loc, llDst, resElemTy, rewriter);
 
+    // calculate load vector size
+    // We don't use getVec() here because we are copying from memory to memory.
+    // If contiguity > vector size, we can have one pointer maintaining the
+    // start of the vector and the other pointer moving to the next vector.
+    unsigned inVec = getContiguity(op.getSrc());
+    // TODO: check MaskAlignment? swizzleTensorOp and ldg.bsm must have same
+    // minVec value to ensure correctness if (mask) {
+    //   inVec = std::min(inVec, getMaskAlignment(mask));
+    // }
+    inVec = std::min(inVec, 128 / resElemTy.getIntOrFloatBitWidth());
+
     unsigned outVec = resSharedLayout.getVec();
+    unsigned minVec = std::min(outVec, inVec);
     unsigned maxPhase = resSharedLayout.getMaxPhase();
+    if (maxPhase == 1) {
+      minVec = inVec;
+    }
 
     bool hasSwizzling = maxPhase > 1;
     // If dst shared layout has swizzle, move swizzle pattern to src pointers.
@@ -1325,7 +1330,9 @@ struct AsyncCopyGlobalToLocalOpConversion
       auto noSwizzleSharedEnc = SwizzledSharedEncodingAttr::get(
           op->getContext(), outVec, 1, 1, resSharedLayout.getOrder(),
           resSharedLayout.getCTALayout());
-      noSwizzleDstTy = METAX::getAsyncCopyLinearDestination(dstTy);
+      noSwizzleDstTy =
+          MemDescType::get(dstTy.getShape(), dstTy.getElementType(),
+                           noSwizzleSharedEnc, dstTy.getMemorySpace());
       // 2. Get colOffset (size == srcElems.size() / minVec)
       SmallVector<Value> colOffsets = triton::gpu::emitSwizzleColOffsets(
           rewriter, op, srcTy, dstTy.getShape(), resSharedLayout,

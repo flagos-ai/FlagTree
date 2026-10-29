@@ -388,7 +388,8 @@ class MACABackend(BaseBackend):
         pm.enable_debug()
         # metax.passes.ttgpuir.add_decompose_unsupported_conversions(pm)
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
-        metax.passes.ttgpuir.add_legalize_async_copy(pm)
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_legalize_async_copy(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)

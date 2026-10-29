@@ -5,8 +5,6 @@
 
 namespace mlir {
 
-std::unique_ptr<Pass> createTritonMETAXGPULegalizeAsyncCopyPass();
-
 std::unique_ptr<Pass> createTritonMETAXGPUAccelerateMatmulPass(
     int numStages = 2, bool disablePrefetch = false, bool storeCoalesce = false,
     int computeCapability = 80);

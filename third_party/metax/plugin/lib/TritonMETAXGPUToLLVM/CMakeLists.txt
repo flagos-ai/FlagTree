@@ -24,5 +24,4 @@ add_triton_library(TritonMETAXGPUToLLVM
 
     LINK_LIBS PUBLIC
     TritonGPUToLLVM
-    TritonMETAXGPUTransforms
 )

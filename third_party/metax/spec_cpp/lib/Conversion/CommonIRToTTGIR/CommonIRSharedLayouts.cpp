@@ -1,6 +1,6 @@
 // MIT License
 // Copyright (c) 2026 The FlagOS Contributors
-#include "TritonMETAXGPUTransforms/AsyncCopyUtils.h"
+#include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
 #include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
 #include "mlir/IR/Matchers.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -142,9 +142,8 @@ LogicalResult checkSharedCopy(
   }
   // Validate the proposed shared type without prescribing a tensor layout.
   // Keep this planner's 16/8/4-byte policy; propagation chooses the source later.
-  if (METAX::chooseAsyncCopyLayout(source, destination, info,
-                                  /*minVec=*/std::max(4 / elemBytes, 1u),
-                                  maxVec))
+  if (chooseAsyncCopyLayout(source, destination, info,
+                            /*minVec=*/std::max(4 / elemBytes, 1u), maxVec))
     return success();
   return copy.emitError("no legal 16/8/4-byte async copy for the selected "
                         "shared layout and proven address continuity");

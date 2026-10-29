@@ -1,10 +1,12 @@
-#ifndef TRITON_METAX_GPU_TRANSFORMS_ASYNC_COPY_UTILS_H
-#define TRITON_METAX_GPU_TRANSFORMS_ASYNC_COPY_UTILS_H
+#ifndef TRITON_METAX_COMMON_IR_ASYNC_COPY_UTILS_H
+#define TRITON_METAX_COMMON_IR_ASYNC_COPY_UTILS_H
 
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
-namespace mlir::triton::METAX {
+namespace mlir::triton::metax {
+
+bool isAsyncCopyDestinationSupported(gpu::MemDescType destination);
 
 gpu::MemDescType getAsyncCopyLinearDestination(gpu::MemDescType destination);
 
@@ -24,6 +26,6 @@ gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
     RankedTensorType source, gpu::MemDescType destination,
     const AxisInfo *sourceInfo, unsigned minVec = 1, unsigned maxVec = ~0u);
 
-} // namespace mlir::triton::METAX
+} // namespace mlir::triton::metax
 
 #endif

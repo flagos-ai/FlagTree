@@ -60,6 +60,12 @@ def CommonIRPropagateLayouts
                            "mlir::triton::tile::CommonIRDialect"];
 }
 
+def CommonIRLegalizeAsyncCopy
+    : Pass<"commonir-legalize-async-copy", "mlir::ModuleOp"> {
+  let summary = "adapt async-copy operands to native MetaX shared addressing";
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def CommonIRPrepareBsmLayouts
     : Pass<"commonir-prepare-bsm-layouts", "mlir::ModuleOp"> {
   let summary = "prepare MetaX split-load/BSM dot and shared layouts";
