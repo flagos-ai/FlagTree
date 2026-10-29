@@ -1,0 +1,1205 @@
+# flagtree tle
+"""
+TLE (Triton Language Extensions) Unit Tests
+
+Tests core functionality of TLE module, including:
+- Memory allocation (alloc)
+- Async copy (copy)
+- Local pointer materialization (local_ptr)
+- Pipeline iterator (pipeline)
+- Type system
+"""
+
+# Enflame backend copy of the upstream TLE unit test suite.
+#
+# Keep the backend-neutral TLE cases in sync with
+# python/test/tle/unit/test_tle.py.  MUSA-specific cases (MThreads cache
+# policy) are guarded by an availability check so the suite can run in builds
+# where the MThreads TLE extension is not present.
+
+import pytest
+import torch
+import triton
+import importlib.util
+import inspect
+import triton.language as tl
+import triton.experimental.tle.language as tle
+#import triton.experimental.tle.mega as tlem
+from triton._filecheck import run_parser
+from triton.backends.compiler import GPUTarget
+from triton._internal_testing import is_ampere_or_newer
+from triton.language.core import base_value
+from triton.runtime.jit import MockTensor
+from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
+from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
+import triton._C.libtriton as libtriton
+
+
+def _mthreads_available():
+    """Return whether the MThreads TLE extension is available in this build."""
+    try:
+        return importlib.util.find_spec("triton.experimental.tle.language.gpu.mthreads") is not None
+    except ImportError:
+        return False
+
+
+_MTHREADS_AVAILABLE = _mthreads_available()
+_NEEDS_MTHREADS = pytest.mark.skipif(
+    not _MTHREADS_AVAILABLE,
+    reason="MThreads TLE extension is not available in this build",
+)
+
+
+@triton.jit
+def _encoding_frontend_kernel(layout: tl.constexpr):
+    x = tl.arange(0, 128)
+    y = tle.gpu.set_layout(x, layout)
+    z = y.to(tl.float32)  # noqa: F841
+
+
+@triton.jit
+def _dot_encoding_frontend_kernel(
+    mma_layout: tl.constexpr,
+    lhs_layout: tl.constexpr,
+    rhs_layout: tl.constexpr,
+):
+    lhs = tle.gpu.set_layout(tl.zeros((32, 32), tl.bfloat16), lhs_layout)
+    rhs = tle.gpu.set_layout(tl.zeros((32, 8), tl.bfloat16), rhs_layout)
+    acc = tle.gpu.set_layout(tl.zeros((32, 8), tl.float32), mma_layout)
+    result = tl.dot(lhs, rhs, acc=acc, out_dtype=tl.float32)  # noqa: F841
+
+
+@triton.jit
+def _masked_copy_frontend_kernel(src):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask)
+
+
+@triton.jit
+def _masked_copy_zero_fill_kernel(src, dst):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask)
+    values = tl.load(tle.gpu.local_ptr(smem, (offsets, )))
+    tl.store(dst + offsets, values)
+
+
+@triton.jit
+def _masked_copy_other_frontend_kernel(src):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+
+
+@triton.jit
+def _masked_copy_other_kernel(src, dst):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+    values = tl.load(tle.gpu.local_ptr(smem, (offsets, )))
+    tl.store(dst + offsets, values)
+
+
+@triton.jit
+def _masked_copy_other_f16_frontend_kernel(src):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+
+
+@triton.jit
+def _masked_copy_other_f16_kernel(src, dst):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+    values = tl.load(tle.gpu.local_ptr(smem, (offsets, )))
+    tl.store(dst + offsets, values)
+
+
+_HAS_TLE_EXPLICIT_LAYOUT = hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
+
+
+def _cuda_backend_available():
+    try:
+        from triton.compiler.compiler import get_backend
+        get_backend(GPUTarget("cuda", 90, 32))
+        return True
+    except Exception:
+        return False
+
+
+class TestLayoutEncoding:
+    """Test layout encoding"""
+
+    def test_swizzled_shared_layout_default(self):
+        """Test default swizzled shared layout creation"""
+        layout = tle.gpu.swizzled_shared_layout.make_default(2)
+        assert layout.vectorSize == 1
+        assert layout.perPhase == 1
+        assert layout.maxPhase == 1
+        assert layout.order == [1, 0]  # row-major for 2D
+
+    def test_swizzled_shared_layout_permute(self):
+        """Test layout permutation transformation"""
+        layout = tle.gpu.swizzled_shared_layout.make_default(3)
+        permuted = layout.make_permute([1, 0, 2])
+        # Original order for 3D rank is [2, 1, 0]
+        # Permuting with [1, 0, 2] gives: order[1], order[0], order[2] = [1, 2, 0]
+        assert permuted.order == (1, 2, 0)
+
+    @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
+    def test_explicit_distributed_encoding_frontend(self):
+        """Test explicit BlockEncoding/SlicedEncoding frontend lowering."""
+        parent = tle.gpu.BlockEncoding([1, 1], [1, 32], [8, 1], [1, 0])
+        layout = tle.gpu.SlicedEncoding(0, parent)
+        module = run_parser(
+            _encoding_frontend_kernel,
+            kwargs={"layout": layout, "num_warps": 8},
+            target=GPUTarget("cuda", 90, 32),
+        )
+        ir = module.str_nodebug()
+        assert "warpsPerCTA = [8, 1]" in ir
+        assert "tle.gpu.set_layout" in ir
+        assert "ttg.convert_layout" not in ir
+        assert "#ttg.slice<{dim = 0, parent = #blocked}>" in ir
+
+    @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
+    def test_explicit_dot_operand_encoding_frontend(self):
+        """Test explicit MMA and dot-operand frontend lowering."""
+        mma_layout = tle.gpu.MmaEncoding([2, 0], [4, 1], [16, 8])
+        lhs_layout = tle.gpu.DotOperandEncoding(0, mma_layout, 2)
+        rhs_layout = tle.gpu.DotOperandEncoding(1, mma_layout, 2)
+        module = run_parser(
+            _dot_encoding_frontend_kernel,
+            kwargs={
+                "mma_layout": mma_layout,
+                "lhs_layout": lhs_layout,
+                "rhs_layout": rhs_layout,
+                "num_warps": 4,
+            },
+            target=GPUTarget("cuda", 90, 32),
+        )
+        ir = module.str_nodebug()
+        assert "versionMajor = 2" in ir
+        assert "warpsPerCTA = [4, 1]" in ir
+        assert "opIdx = 0" in ir
+        assert "opIdx = 1" in ir
+        assert "kWidth = 2" in ir
+
+
+class TestCopyFrontend:
+    """Test validation of standard pointer-tensor copies."""
+
+    def test_copy_signature(self):
+        parameters = inspect.signature(tle.gpu.copy).parameters
+        assert list(parameters) == [
+            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "_semantic"
+        ]
+        assert parameters["cache_policy"].default is None
+        assert parameters["other"].default is None
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
+    def test_masked_copy_uses_implicit_zero_fill(self):
+        src = MockTensor(torch.float32)
+        target = GPUTarget("cuda", 90, 32)
+
+        module = run_parser(
+            _masked_copy_frontend_kernel,
+            args=(src, ),
+            kwargs={"num_warps": 4},
+            target=target,
+        )
+        ir = module.str_nodebug()
+        assert "arith.constant dense<0.000000e+00> : tensor<16xf32>" in ir
+        assert "tt.load" in ir
+
+    @pytest.mark.skipif(
+        not is_ampere_or_newer(),
+        reason="cp.async regression guard requires NVIDIA Ampere or newer",
+    )
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_masked_copy_implicitly_uses_other_zero_end_to_end(self):
+        # All source values are non-zero, so zeros in masked lanes must come
+        # from the global-to-shared copy's implicit other=0 contract.
+        src = torch.arange(1, 17, device="cuda", dtype=torch.float32)
+        dst = torch.full_like(src, -1)
+
+        compiled = _masked_copy_zero_fill_kernel.warmup(src, dst, grid=(1, ), num_warps=4)
+        assert "cp.async" in compiled.asm["ptx"]
+
+        _masked_copy_zero_fill_kernel[(1, )](src, dst, num_warps=4)
+        expected = torch.cat((src[:8], torch.zeros_like(src[8:])))
+        torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+
+    @staticmethod
+    def _make_copy_buffer():
+        semantic = TestBufferedTensor._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(1)
+        buffer = tle.gpu.buffered_tensor("smem", tl.float32, [16], tle.gpu.smem, layout, semantic)
+        return buffer, semantic
+
+    @staticmethod
+    def _make_global_tensor():
+        return tl.tensor(None, tl.pointer_type(tl.float32))
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    def test_masked_copy_uses_explicit_other(self):
+        src = MockTensor(torch.float32)
+        target = GPUTarget("cuda", 90, 32)
+
+        module = run_parser(
+            _masked_copy_other_frontend_kernel,
+            args=(src, ),
+            kwargs={"num_warps": 4},
+            target=target,
+        )
+        ir = module.str_nodebug()
+        assert "arith.constant dense<0xFF800000> : tensor<16xf32>" in ir
+        assert "tt.load" in ir
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    def test_masked_copy_casts_explicit_other_to_destination_dtype(self):
+        src = MockTensor(torch.float16)
+        target = GPUTarget("cuda", 90, 32)
+
+        module = run_parser(
+            _masked_copy_other_f16_frontend_kernel,
+            args=(src, ),
+            kwargs={"num_warps": 4},
+            target=target,
+        )
+        ir = module.str_nodebug()
+        assert ("arith.constant dense<0xFC00> : tensor<16xf16>" in ir
+                or ("arith.constant dense<0xFF800000> : tensor<16xf32>" in ir and
+                    ("arith.truncf" in ir or "tt.fp_to_fp" in ir)))
+        assert "tt.load" in ir
+
+    @pytest.mark.skipif(
+        not is_ampere_or_newer(),
+        reason="cp.async regression guard requires NVIDIA Ampere or newer",
+    )
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_masked_copy_explicit_other_end_to_end(self):
+        src = torch.arange(1, 17, device="cuda", dtype=torch.float32)
+        dst = torch.full_like(src, -1)
+
+        # A non-zero fill value must fall back from cp.async (which only
+        # implements zero fill) to the regular load/store path.
+        _masked_copy_other_kernel[(1, )](src, dst, num_warps=4)
+        expected = torch.cat((src[:8], torch.full_like(src[8:], float("-inf"))))
+        torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+        assert torch.isneginf(dst[8:]).all()
+
+    @pytest.mark.skipif(
+        not is_ampere_or_newer(),
+        reason="cp.async regression guard requires NVIDIA Ampere or newer",
+    )
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_masked_copy_other_dtype_conversion_end_to_end(self):
+        src = torch.arange(1, 17, device="cuda", dtype=torch.float16)
+        dst = torch.full_like(src, -1)
+
+        _masked_copy_other_f16_kernel[(1, )](src, dst, num_warps=4)
+        expected = torch.cat((src[:8], torch.full_like(src[8:], float("-inf"))))
+        torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+        assert torch.isneginf(dst[8:]).all()
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_requires_mask(self):
+        src = self._make_global_tensor()
+        buffer, semantic = self._make_copy_buffer()
+
+        with pytest.raises(ValueError, match="copy other requires a mask"):
+            tle.gpu.copy(src, buffer, [16], other=float("-inf"), _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_rejects_local_to_global(self):
+        buffer, semantic = self._make_copy_buffer()
+        dst = self._make_global_tensor()
+
+        with pytest.raises(ValueError, match="only supported for standard pointer-tensor global-to-local"):
+            tle.gpu.copy(buffer, dst, [16], mask=True, other=float("-inf"), _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_rejects_tma_copy(self):
+        desc = object.__new__(tl.tensor_descriptor)
+        buffer, semantic = self._make_copy_buffer()
+
+        with pytest.raises(ValueError, match="only supported for standard pointer-tensor global-to-local"):
+            tle.gpu.copy(desc, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_rejects_common_ir(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
+        src = self._make_global_tensor()
+        buffer, semantic = self._make_copy_buffer()
+
+        with pytest.raises(ValueError, match="GPU CommonIR copy does not yet support other"):
+            tle.gpu.copy(src, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
+
+
+class TestPipeline:
+    """Test pipeline iterator"""
+
+    def test_pipeline_single_arg(self):
+        """Test single argument pipeline creation"""
+        pipe = tle.gpu.pipeline(10)
+        assert pipe.start == 0
+        assert pipe.end == 10
+        assert pipe.step == 1
+
+    def test_pipeline_range_args(self):
+        """Test range argument pipeline creation"""
+        pipe = tle.gpu.pipeline(2, 8)
+        assert pipe.start == 2
+        assert pipe.end == 8
+        assert pipe.step == 1
+
+    def test_pipeline_with_step(self):
+        """Test pipeline creation with step"""
+        pipe = tle.gpu.pipeline(0, 10, 2)
+        assert pipe.start == 0
+        assert pipe.end == 10
+        assert pipe.step == 2
+
+    def test_pipeline_with_options(self):
+        """Test pipeline creation with options"""
+        pipe = tle.gpu.pipeline(0, 10, 1, num_stages=2, loop_unroll_factor=4)
+        assert pipe.num_stages == 2
+        assert pipe.loop_unroll_factor == 4
+
+
+class TestWarpSpecializeFrontend:
+    """Test warp_specialize front-end capture handling."""
+
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            "once",
+            ("once", "none"),
+            pytest.param(tle.gpu.mthreads.TMECachePolicy("once", "none"), marks=_NEEDS_MTHREADS),
+        ])
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_constexpr_policy_has_no_runtime_capture(self, policy, wrapped):
+        from triton.experimental.tle.language.gpu.core import _as_call_args
+        from triton.compiler.code_generator import flatten_values_to_ir
+
+        expected = policy
+        policy = tl.constexpr(policy) if wrapped else policy
+        args = _as_call_args((policy, ))
+        assert flatten_values_to_ir(args) == []
+        assert args[0].value == expected
+
+    def test_runtime_tuple_remains_a_runtime_capture(self):
+        from triton.experimental.tle.language.gpu.core import _as_call_args
+        from triton.compiler.code_generator import flatten_values_to_ir
+
+        handle = object()
+        value = tl.tensor(handle, tl.int32)
+        runtime_tuple = tl.tuple([value])
+        args = _as_call_args((runtime_tuple, ))
+        assert isinstance(args[0], tl.tuple)
+        assert flatten_values_to_ir(args) == [handle]
+
+    def test_worker_captures_are_deduplicated_across_endpoints(self):
+        shared_k = object()
+        shared_tail = object()
+        unique_q = object()
+
+        captures, items = _deduplicate_warp_specialize_captures([
+            ("consumer0", ("args0", ), [shared_k, shared_tail, unique_q, shared_k]),
+            ("consumer1", ("args1", ), [shared_tail, shared_k]),
+        ])
+
+        assert captures == [shared_k, shared_tail, unique_q]
+        assert items[0][3] == [0, 1, 2, 0]
+        assert items[1][3] == [1, 0]
+
+
+@pytest.mark.skipif(TLESemantic is None, reason="tle.gpu is not available on this backend")
+class TestTLESemantic:
+    """Test TLE semantic analysis"""
+
+    def test_validate_alloc_shape_valid(self):
+        """Test valid allocation shape validation"""
+
+        # Create mock builder
+        class MockBuilder:
+            pass
+
+        semantic = TLESemantic(MockBuilder())
+
+        # Test valid shapes
+        assert semantic.validate_alloc_shape([16, 32]) == [16, 32]
+        assert semantic.validate_alloc_shape((8, )) == [8]
+
+    def test_validate_alloc_shape_invalid(self):
+        """Test invalid allocation shape validation"""
+
+        class MockBuilder:
+            pass
+
+        semantic = TLESemantic(MockBuilder())
+
+        # Test empty shape
+        with pytest.raises(TLESemanticError):
+            semantic.validate_alloc_shape([])
+
+        # Test negative dimension
+        with pytest.raises(TLESemanticError):
+            semantic.validate_alloc_shape([16, -1])
+
+    def test_validate_alloc_dtype_valid(self):
+        """Test valid data type validation"""
+
+        class MockBuilder:
+            pass
+
+        semantic = TLESemantic(MockBuilder())
+
+        # Test supported data types
+        assert semantic.validate_alloc_dtype(tl.float32) == tl.float32
+        assert semantic.validate_alloc_dtype(tl.int32) == tl.int32
+        assert semantic.validate_alloc_dtype(tl.int1) == tl.int1
+
+    def test_validate_alloc_dtype_invalid(self):
+        """Test invalid data type validation"""
+
+        class MockBuilder:
+            pass
+
+        semantic = TLESemantic(MockBuilder())
+
+        # Test invalid data types
+        with pytest.raises(TLESemanticError):
+            semantic.validate_alloc_dtype("float32")
+
+        with pytest.raises(TLESemanticError):
+            semantic.validate_alloc_dtype(32)
+
+
+class TestBufferedTensor:
+    """Test buffered tensor type"""
+
+    class _FakeTensor:
+
+        def __init__(self, handle, ty):
+            self.handle = handle
+            self.type = ty
+            self.dtype = ty
+
+    class _FakeBlockType:
+
+        def is_block(self):
+            return True
+
+        def __str__(self):
+            return "tensor<4xi32>"
+
+    class _FakeBuilder:
+
+        def __init__(self):
+            self.memdesc_type_args = None
+            self.memdesc_index_args = None
+            self.memdesc_subslice_args = None
+            self.swizzled_encoding_args = None
+            self.pipe_create_args = None
+            self.tma_copy_args = None
+            self.pipe_ops = []
+
+        def get_half_ty(self):
+            return "fp16"
+
+        def get_int64_ty(self):
+            return "i64"
+
+        def make_swizzled_shared_encoding_attr(self, vector_size, per_phase, max_phase, order, ctas_per_cga,
+                                               cta_split_num, cta_order):
+            self.swizzled_encoding_args = (
+                vector_size,
+                per_phase,
+                max_phase,
+                list(order),
+                list(ctas_per_cga),
+                list(cta_split_num),
+                list(cta_order),
+            )
+            return "fake_layout"
+
+        def get_memdesc_type(self, shape, element_ty, layout, space, alloc_shape=None):
+            self.memdesc_type_args = (list(shape), element_ty, layout, space, alloc_shape)
+            return ("memdesc", tuple(shape), element_ty, layout, space,
+                    None if alloc_shape is None else tuple(alloc_shape))
+
+        def create_memdesc_index(self, result_ty, src, index):
+            self.memdesc_index_args = (result_ty, src, index)
+            return "slot_handle"
+
+        def create_memdesc_subslice(self, result_ty, src, offsets):
+            self.memdesc_subslice_args = (result_ty, src, list(offsets))
+            return "subslice_handle"
+
+        def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1):
+            self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
+
+        def create_tile_get_memdesc(self, result_ty, buffer):
+            return buffer
+
+        def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, reader_names, one_shot):
+            self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(reader_names),
+                                     one_shot)
+
+        def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(
+                ("writer_acquire", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+
+        def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(("writer_commit", list(fields), stage, capacity, scope, pipe_name, list(field_names)))
+
+        def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(
+                ("writer_close", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+
+        def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
+                                    reader_field_names):
+            self.pipe_ops.append(("reader_wait", list(fields), stage, phase, capacity, scope, pipe_name,
+                                  list(field_names), reader_name, list(reader_field_names)))
+            return "is_closed"
+
+        def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
+                                       reader_field_names):
+            self.pipe_ops.append(
+                ("reader_release", list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
+                 list(reader_field_names)))
+
+    class _FakeSemantic:
+
+        def __init__(self):
+            self.builder = TestBufferedTensor._FakeBuilder()
+
+        def to_tensor(self, value):
+            if isinstance(value, TestBufferedTensor._FakeTensor):
+                return value
+            if isinstance(value, bool):
+                return TestBufferedTensor._FakeTensor(f"pred_{value}", tl.int1)
+            if isinstance(value, int):
+                return TestBufferedTensor._FakeTensor(f"stage_{value}", tl.int32)
+            raise TypeError(f"unsupported fake tensor input: {value!r}")
+
+        def _convert_to_ir_values(self, values, require_i64=False):
+            return [self.to_tensor(value).handle for value in values]
+
+    def _make_buffer(self, shape):
+        semantic = self._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(len(shape))
+        return (
+            tle.gpu.buffered_tensor("base", tl.float16, shape, tle.gpu.smem, layout, semantic),
+            semantic,
+        )
+
+    def test_buffered_tensor_creation(self):
+        """Test buffered tensor creation"""
+        # This is a basic type checking test
+        # Actual buffered_tensor creation needs IR builder, difficult to mock in unit tests
+        assert hasattr(tle.gpu.buffered_tensor, '__annotations__')
+
+    def test_buffered_tensor_type_attributes(self):
+        """Test buffered tensor type attributes"""
+        # Check if type has necessary attributes
+        assert hasattr(tle.gpu.buffered_tensor, '__init__')
+        assert hasattr(tle.gpu.buffered_tensor, '_flatten_ir')
+        assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
+        assert hasattr(tle.gpu.buffered_tensor, 'slot')
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot")
+    def test_buffered_tensor_slot_indexes_leading_dimension(self):
+        """slot(stage) returns a typed view with the leading stage dimension removed."""
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        slot = buffer.slot(1, _semantic=semantic)
+
+        assert isinstance(slot, tle.gpu.buffered_tensor)
+        assert slot.handle == "slot_handle"
+        assert slot.shape == [16, 32]
+        assert slot.dtype == tl.float16
+        assert slot.type.storage is tle.gpu.smem
+        assert semantic.builder.swizzled_encoding_args == (1, 1, 1, [1, 0], [1, 1], [1, 1], [1, 0])
+        assert semantic.builder.memdesc_type_args == ([16, 32], "fp16", "fake_layout", "smem", [16, 32])
+        assert semantic.builder.memdesc_index_args == (
+            ("memdesc", (16, 32), "fp16", "fake_layout", "smem", (16, 32)),
+            "base",
+            "stage_1",
+        )
+
+    def test_buffered_tensor_slot_rejects_rank_zero_buffer(self):
+        """slot(stage) only indexes a real leading stage dimension."""
+        semantic = self._FakeSemantic()
+        buffer = object.__new__(tle.gpu.buffered_tensor)
+        buffer.shape = []
+
+        with pytest.raises(ValueError, match="rank >= 2"):
+            buffer.slot(0, _semantic=semantic)
+
+    def test_buffered_tensor_slot_rejects_block_stage(self):
+        """slot(stage) does not vectorize descriptor selection."""
+        buffer, semantic = self._make_buffer([2, 16])
+        stage = self._FakeTensor("stage_vec", self._FakeBlockType())
+
+        with pytest.raises(ValueError, match="scalar int32"):
+            buffer.slot(stage, _semantic=semantic)
+
+    def test_buffered_tensor_slot_rejects_non_int32_stage(self):
+        """slot(stage) lowers to ttg.memdesc_index, whose stage is int32."""
+        buffer, semantic = self._make_buffer([2, 16])
+        stage = self._FakeTensor("stage_i64", tl.int64)
+
+        with pytest.raises(ValueError, match="int32"):
+            buffer.slot(stage, _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_preserves_rank_layout_and_alloc_shape(self):
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        subslice = buffer.subslice(4, 8, 1, _semantic=semantic)
+
+        assert isinstance(subslice, tle.gpu.buffered_tensor)
+        assert subslice.handle == "subslice_handle"
+        assert subslice.shape == [4, 8, 32]
+        assert subslice.type.layout is buffer.type.layout
+        assert subslice.type.alloc_shape == [4, 16, 32]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (4, 8, 32), "fp16", "fake_layout", "smem", (4, 16, 32)),
+            "base",
+            [0, 4, 0],
+        )
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self):
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        slot = buffer.subslice(4, 8, 1, _semantic=semantic).slot(1, _semantic=semantic)
+
+        assert slot.shape == [8, 32]
+        assert slot.type.alloc_shape == [4, 16, 32]
+        assert semantic.builder.memdesc_index_args == (
+            ("memdesc", (8, 32), "fp16", "fake_layout", "smem", (4, 16, 32)),
+            "subslice_handle",
+            "stage_1",
+        )
+
+    @pytest.mark.parametrize("start,length,dim", [(-1, 1, 0), (0, 0, 0), (12, 8, 1), (0, 1, 3)])
+    def test_buffered_tensor_subslice_rejects_invalid_ranges(self, start, length, dim):
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        with pytest.raises(ValueError, match="out of range"):
+            buffer.subslice(start, length, dim, _semantic=semantic)
+
+
+class TestCachePolicyFrontend:
+
+    @_NEEDS_MTHREADS
+    def test_policy_is_an_immutable_value(self):
+        from dataclasses import FrozenInstanceError
+        policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
+        equal = tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none")
+        different = tle.gpu.mthreads.TMECachePolicy("normal", "none")
+        assert policy == equal
+        assert policy != different
+        assert hash(policy) == hash(equal)
+        assert repr(policy) == repr(equal)
+        assert {policy: 1, equal: 2, different: 3} == {policy: 2, different: 3}
+        with pytest.raises(FrozenInstanceError):
+            policy.inner = "persist"
+
+    @_NEEDS_MTHREADS
+    def test_policy_default_and_constexpr_fields(self):
+        policy = tle.gpu.mthreads.TMECachePolicy()
+        assert (policy.inner, policy.outer) == ("normal", "normal")
+        wrapped = tle.gpu.mthreads.TMECachePolicy(tl.constexpr("once"), tl.constexpr("none"))
+        assert wrapped == tle.gpu.mthreads.TMECachePolicy("once", "none")
+
+    @pytest.mark.parametrize("field", ["inner", "outer"])
+    @pytest.mark.parametrize("value", ["invalid", "last_use", "NORMAL", 0, None, ("once", "none")])
+    @_NEEDS_MTHREADS
+    def test_policy_rejects_invalid_fields(self, field, value):
+        with pytest.raises(ValueError, match=f"TMECachePolicy {field} must be a compile-time string"):
+            tle.gpu.mthreads.TMECachePolicy(**{field: value})
+
+    @pytest.mark.parametrize("enabled,common_ir", [(False, False), (False, True), (True, False), (True, True)])
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_normalize_none_preserves_all_backends(self, monkeypatch, enabled, common_ir, wrapped):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: enabled)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", common_ir)
+        policy = tl.constexpr(None) if wrapped else None
+        assert core.mthreads_copy.normalize_cache_policy(policy) is None
+
+    @pytest.mark.parametrize("enabled,common_ir", [(False, False), (False, True), (True, True)])
+    @pytest.mark.parametrize("wrapped", [False, True])
+    @_NEEDS_MTHREADS
+    def test_normalize_rejects_unsupported_backend(self, monkeypatch, enabled, common_ir, wrapped):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: enabled)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", common_ir)
+        policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
+        policy = tl.constexpr(policy) if wrapped else policy
+        with pytest.raises(ValueError, match="only supported by the MUSA TLE backend"):
+            core.mthreads_copy.normalize_cache_policy(policy)
+
+    @pytest.mark.parametrize("wrapped", [False, True])
+    @_NEEDS_MTHREADS
+    def test_normalize_accepts_musa_policy(self, monkeypatch, wrapped):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: True)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
+        policy = tl.constexpr(policy) if wrapped else policy
+        assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
+
+
+class TestTmaCopyBarrierFrontend:
+    """Test TMA copy explicit completion barrier validation."""
+
+    def _make_desc_buffer_semantic(self, shape):
+        semantic = TestBufferedTensor._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(len(shape))
+        buffer = tle.gpu.buffered_tensor("smem", tl.float16, shape, tle.gpu.smem, layout, semantic)
+        desc = object.__new__(tl.tensor_descriptor)
+        desc.handle = "desc"
+        desc.shape = list(shape)
+        return desc, buffer, semantic
+
+    def _make_barrier(self, semantic, expect_bytes, num_barriers=1, shape=None):
+        layout = tle.gpu.swizzled_shared_layout.make_default(2)
+        return tle.gpu.barrier(
+            "bar",
+            num_barriers,
+            1,
+            tle.gpu.PENDING,
+            expect_bytes,
+            layout,
+            semantic,
+            shape=list(shape if shape is not None else [num_barriers, 1]),
+            allocation_key="bar",
+        )
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
+    def test_copy_accepts_explicit_tma_completion_barrier(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512, shape=[1, 1])
+
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512)
+        assert semantic._tle_barrier_backend_uses == {("bar", 0): "mbarrier"}
+
+    @pytest.mark.parametrize("backend", ["generic", "iluvatar", "common_ir"])
+    @pytest.mark.parametrize("explicit_none", [False, True])
+    @pytest.mark.parametrize("with_barrier", [False, True])
+    def test_copy_default_preserves_other_backend_builder_signature(self, monkeypatch, backend, explicit_none,
+                                                                    with_barrier):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: False)
+        monkeypatch.setattr(core.iluvatar_copy, "enabled", lambda: backend == "iluvatar")
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", backend == "common_ir")
+
+        def unexpected_mthreads_copy(*args, **kwargs):
+            raise AssertionError("non-MUSA copy must not enter the MThreads implementation")
+
+        monkeypatch.setattr(core.mthreads_copy, "tmacopy", unexpected_mthreads_copy)
+        monkeypatch.setattr(core.mthreads_copy, "normalize_cache_policy", unexpected_mthreads_copy)
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        kwargs = {"cache_policy": None} if explicit_none else {}
+        if with_barrier:
+            kwargs["barrier"] = self._make_barrier(semantic, 512, shape=[1, 1])
+        # This fake builder deliberately retains the other backends' original
+        # five-argument signature. Passing MUSA's sixth argument is an error.
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), _semantic=semantic, **kwargs)
+        expected_barrier = "slot_handle" if with_barrier else None
+        expected_bytes = 512 if with_barrier else -1
+        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0",
+                                                                   "stage_0"], expected_barrier, expected_bytes)
+
+    @pytest.mark.parametrize("backend", ["generic", "iluvatar", "common_ir"])
+    @_NEEDS_MTHREADS
+    def test_copy_cache_policy_rejects_other_backends_before_builder(self, monkeypatch, backend):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: False)
+        monkeypatch.setattr(core.iluvatar_copy, "enabled", lambda: backend == "iluvatar")
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", backend == "common_ir")
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        with pytest.raises(ValueError, match="copy cache_policy is not supported by this backend"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), cache_policy=tle.gpu.mthreads.TMECachePolicy("once", "none"),
+                         _semantic=semantic)
+        assert semantic.builder.tma_copy_args is None
+
+    def test_copy_barrier_requires_barrier_value(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+
+        with pytest.raises(ValueError, match="expects tle.gpu barrier"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier="bar", _semantic=semantic)
+
+    def test_copy_barrier_requires_expect_bytes(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, None)
+
+        with pytest.raises(ValueError, match="expect_bytes"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+    def test_copy_barrier_requires_indexed_barrier_array(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512, num_barriers=2, shape=[2, 1])
+
+        with pytest.raises(ValueError, match="arrays must be indexed"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+    def test_copy_barrier_rejects_tma_store(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512)
+
+        with pytest.raises(ValueError, match="global-to-shared"):
+            tle.gpu.copy(buffer, desc, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+    def test_copy_barrier_rejects_mixed_backend(self):
+        desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+        barrier = self._make_barrier(semantic, 512)
+        semantic._tle_barrier_backend_uses = {("bar", 0): "named"}
+
+        with pytest.raises(ValueError, match="cannot mix"):
+            tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+
+
+class TestPipeFrontend:
+    """Test strict front-end validation for tle.pipe."""
+
+    def _make_buffer(self, shape, storage=None):
+        semantic = TestBufferedTensor._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(len(shape))
+        buffer = tle.gpu.buffered_tensor("base", tl.float16, shape, tle.gpu.smem if storage is None else storage,
+                                         layout, semantic)
+        return buffer, semantic
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_validates_and_keeps_fields(self):
+        a, semantic = self._make_buffer([4, 16, 32])
+        b, _ = self._make_buffer([4, 32, 16])
+
+        pipe = tle.pipe(capacity=4, scope="cta", name="ab", a=a, b=b, _semantic=semantic)
+
+        assert isinstance(pipe, tle.pipe_value)
+        assert pipe.capacity == 4
+        assert pipe.scope == "cta"
+        assert pipe.name == "ab"
+        assert pipe.fields == {"a": a, "b": b}
+        assert pipe.readers is None
+        assert pipe.one_shot is False
+        assert pipe.type.capacity == 4
+        assert pipe.type.fields == [("a", a.type), ("b", b.type)]
+        assert pipe.type.readers is None
+        assert pipe.type.one_shot is False
+        assert semantic.builder.pipe_create_args == (["base", "base"], 4, "cta", "ab", ["a", "b"], [], False)
+
+    def test_pipe_rejects_non_cta_scope(self):
+        a, semantic = self._make_buffer([4, 16])
+
+        with pytest.raises(ValueError, match="scope='cta'"):
+            tle.pipe(capacity=4, scope="device", a=a, _semantic=semantic)
+
+    def test_pipe_rejects_dynamic_or_invalid_capacity(self):
+        a, semantic = self._make_buffer([4, 16])
+
+        with pytest.raises(ValueError, match="compile-time int"):
+            tle.pipe(capacity="4", a=a, _semantic=semantic)
+        with pytest.raises(ValueError, match="positive"):
+            tle.pipe(capacity=0, a=a, _semantic=semantic)
+        with pytest.raises(ValueError, match="compile-time bool"):
+            tle.pipe(capacity=4, one_shot="yes", a=a, _semantic=semantic)
+
+    def test_pipe_rejects_missing_or_invalid_fields(self):
+        a, semantic = self._make_buffer([4, 16])
+        tmem, _ = self._make_buffer([4, 16], storage=tle.gpu.tmem)
+        wrong_capacity, _ = self._make_buffer([2, 16])
+        rank_one, _ = self._make_buffer([4])
+
+        with pytest.raises(ValueError, match="at least one"):
+            tle.pipe(capacity=4, _semantic=semantic)
+        with pytest.raises(ValueError, match="reserved"):
+            tle.pipe(capacity=4, fields=a, _semantic=semantic)
+        with pytest.raises(ValueError, match="buffered_tensor"):
+            tle.pipe(capacity=4, a="not-a-buffer", _semantic=semantic)
+        with pytest.raises(ValueError, match="smem"):
+            tle.pipe(capacity=4, a=tmem, _semantic=semantic)
+        with pytest.raises(ValueError, match="leading dimension"):
+            tle.pipe(capacity=4, a=wrong_capacity, _semantic=semantic)
+        with pytest.raises(ValueError, match="rank >= 2"):
+            tle.pipe(capacity=4, a=rank_one, _semantic=semantic)
+
+    def test_pipe_rejects_invalid_readers(self):
+        a, semantic = self._make_buffer([4, 16])
+
+        with pytest.raises(ValueError, match="tuple/list"):
+            tle.pipe(capacity=4, readers="left", a=a, _semantic=semantic)
+        with pytest.raises(ValueError, match="must not be empty"):
+            tle.pipe(capacity=4, readers=(), a=a, _semantic=semantic)
+        with pytest.raises(ValueError, match="duplicate"):
+            tle.pipe(capacity=4, readers=("left", "left"), a=a, _semantic=semantic)
+        with pytest.raises(ValueError, match="reserved"):
+            tle.pipe(capacity=4, readers=("readers", ), a=a, _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_default_reader_is_spsc_and_rejects_named_endpoint(self):
+        a, semantic = self._make_buffer([4, 16])
+        pipe = tle.pipe(capacity=4, a=a, _semantic=semantic)
+
+        reader = pipe.reader(_semantic=semantic)
+
+        assert isinstance(reader, tle.pipe_reader)
+        assert reader.reader_name is None
+        assert reader.fields == {"a": a}
+        with pytest.raises(ValueError, match="requires pipe readers"):
+            pipe.reader(name="left", _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_explicit_readers_require_named_endpoint(self):
+        a, semantic = self._make_buffer([4, 16])
+        pipe = tle.pipe(capacity=4, readers=("left", "right"), a=a, _semantic=semantic)
+
+        left = pipe.reader(name="left", _semantic=semantic)
+        left_again = pipe.reader(name="left", _semantic=semantic)
+
+        assert pipe.readers == ("left", "right")
+        assert pipe.type.readers == ("left", "right")
+        assert semantic.builder.pipe_create_args == (["base"], 4, "cta", "", ["a"], ["left", "right"], False)
+        assert left.reader_name == "left"
+        assert left_again.reader_name == "left"
+        with pytest.raises(ValueError, match="requires a reader name"):
+            pipe.reader(_semantic=semantic)
+        with pytest.raises(ValueError, match="not declared"):
+            pipe.reader(name="missing", _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_reader_field_subset_is_endpoint_type_view_only(self):
+        a, semantic = self._make_buffer([4, 16, 32])
+        b, _ = self._make_buffer([4, 32, 16])
+        pipe = tle.pipe(capacity=4, readers=("left", "right"), a=a, b=b, _semantic=semantic)
+
+        reader = pipe.reader(name="right", fields=("b", ), _semantic=semantic)
+        result = reader.wait(0, _semantic=semantic)
+        reader.release(0, _semantic=semantic)
+
+        assert reader.fields == {"b": b}
+        assert result.slot.fields == {"b": result.slot.b}
+        assert result.slot.b.shape == [32, 16]
+        assert not hasattr(result.slot, "a")
+        assert result.slot.type.fields == [("b", result.slot.b.type)]
+        assert semantic.builder.pipe_ops[0] == ("reader_wait", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
+                                                ["a", "b"], "right", ["b"])
+        assert semantic.builder.pipe_ops[1] == ("reader_release", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
+                                                "right", ["b"])
+
+    def test_pipe_reader_rejects_invalid_field_subset(self):
+        a, semantic = self._make_buffer([4, 16])
+        pipe = tle.pipe(capacity=4, readers=("left", ), a=a, _semantic=semantic)
+
+        with pytest.raises(ValueError, match="tuple/list"):
+            pipe.reader(name="left", fields="a", _semantic=semantic)
+        with pytest.raises(ValueError, match="must not be empty"):
+            pipe.reader(name="left", fields=(), _semantic=semantic)
+        with pytest.raises(ValueError, match="not a pipe field"):
+            pipe.reader(name="left", fields=("missing", ), _semantic=semantic)
+        with pytest.raises(ValueError, match="unique"):
+            pipe.reader(name="left", fields=("a", "a"), _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported(
+        "pipe",
+        "pipe_reader.release",
+        "pipe_reader.wait",
+        "pipe_writer.acquire",
+        "pipe_writer.close",
+        "pipe_writer.commit",
+    )
+    def test_pipe_lifecycle_emits_pipe_ir_ops(self):
+        a, semantic = self._make_buffer([4, 16])
+        pipe = tle.pipe(capacity=4, scope="cta", name="a", a=a, _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(_semantic=semantic)
+
+        prod_slot = writer.acquire(0, _semantic=semantic)
+        writer.commit(0, _semantic=semantic)
+        writer.close(1, _semantic=semantic)
+        wait_result = reader.wait(0, _semantic=semantic)
+        recv_slot = wait_result.slot
+        is_closed = wait_result.is_closed
+        reader.release(0, _semantic=semantic)
+
+        assert prod_slot.a.shape == [16]
+        assert recv_slot.a.shape == [16]
+        assert isinstance(writer, tle.pipe_writer)
+        assert isinstance(reader, tle.pipe_reader)
+        assert isinstance(wait_result, tle.pipe_wait_result)
+        assert isinstance(prod_slot, base_value)
+        assert prod_slot.type.fields == [("a", prod_slot.a.type)]
+        assert is_closed.dtype == tl.int1
+        assert [op[0] for op in semantic.builder.pipe_ops] == [
+            "writer_acquire",
+            "writer_commit",
+            "writer_close",
+            "reader_wait",
+            "reader_release",
+        ]
+        assert semantic.builder.pipe_ops[0] == ("writer_acquire", ["base"], "stage_0", "pred_False", 4, "cta", "a",
+                                                ["a"])
+        assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
+                                                "", ["a"])
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_one_shot_keeps_frontend_contract(self):
+        a, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, readers=("left", "right"), one_shot=True, a=a, _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(name="left", _semantic=semantic)
+
+        writer.acquire(0, _semantic=semantic)
+        writer.commit(0, _semantic=semantic)
+        wait_result = reader.wait(0, _semantic=semantic)
+        reader.release(0, _semantic=semantic)
+
+        assert pipe.one_shot is True
+        assert pipe.type.one_shot is True
+        assert semantic.builder.pipe_create_args == (["base"], 1, "cta", "", ["a"], ["left", "right"], True)
+        assert isinstance(wait_result, tle.pipe_wait_result)
+        with pytest.raises(ValueError, match="one_shot"):
+            writer.close(0, _semantic=semantic)
+
+
+class TestIntegration:
+    """Integration tests"""
+
+    def test_tle_module_import(self):
+        """Test TLE module import"""
+        # Check if main functions are importable
+        assert hasattr(tle, 'gpu')
+        assert hasattr(tle, 'cumsum')
+        assert hasattr(tle, 'pipe')
+        assert hasattr(tle, 'pipe_reader')
+        assert hasattr(tle, 'pipe_writer')
+        assert hasattr(tle.gpu, 'alloc')
+        assert not hasattr(tle.gpu, 'pipe')
+        assert hasattr(tle.gpu, 'copy')
+        assert hasattr(tle.gpu, 'local_ptr')
+        assert hasattr(tle.gpu, 'pipeline')
+        assert hasattr(tle.gpu, 'storage_kind')
+        assert hasattr(tle.gpu, 'buffered_tensor')
+        assert hasattr(tle.gpu, 'alloc_barriers')
+        assert hasattr(tle.gpu, 'alloc_barrier')
+        assert hasattr(tle.gpu, 'barrier_wait')
+        assert hasattr(tle.gpu, 'barrier_arrive')
+        assert hasattr(tle.gpu, 'PENDING')
+        assert hasattr(tle.gpu, 'READY')
+        assert not hasattr(tle.gpu, 'barrier_expect_bytes')
+        assert "barrier" in inspect.signature(tle.gpu.copy).parameters
+
+    def test_tle_functions_have_docstrings(self):
+        """Test TLE functions have docstrings"""
+        # Check if main functions have documentation
+        assert tle.pipe.__doc__ is not None
+        assert tle.gpu.alloc.__doc__ is not None
+        assert tle.gpu.copy.__doc__ is not None
+        assert tle.gpu.local_ptr.__doc__ is not None
+        assert tle.gpu.pipeline.__doc__ is not None
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    def test_tle_with_cuda(self):
+        """Test TLE compatibility with CUDA (if GPU available)"""
+        # This test should run in environments with GPU
+        # Since TLE operations need specific hardware support, only basic import testing here
+        # Ensure TLE module can be imported normally in GPU environment
+        assert tle.gpu is not None
+
+
+class TestErrorHandling:
+    """Test error handling"""
+
+    def test_alloc_parameter_validation(self):
+        """Test alloc function parameter validation"""
+        # These tests mainly validate function interface, do not involve actual IR operations
+
+        # Test invalid shape type will be caught at runtime
+        with pytest.raises(ValueError):
+            # Simulate parameter validation, actually needs semantic analyzer
+            if not isinstance("invalid", (tuple, list)):
+                raise ValueError("Shape parameter must be tuple or list")
+
+    def test_copy_parameter_validation(self):
+        """Test copy function parameter validation"""
+        # Simulate parameter validation logic
+        with pytest.raises(ValueError):
+            if not isinstance("invalid", (tuple, list)):
+                raise ValueError("Shape parameter must be tuple or list")
+
+    def test_local_ptr_parameter_validation(self):
+        """Test local_ptr function parameter validation"""
+        # Simulate parameter validation logic
+        with pytest.raises(ValueError):
+            # Simulate type checking
+            if not isinstance("invalid", str):  # This will be False, so the ValueError won't be raised
+                raise ValueError("Buffer parameter must be tle.gpu.buffered_tensor")
+            # Since the condition is False, we need to actually raise the error for the test
+            raise ValueError("Simulated validation error")
+
+
+if __name__ == "__main__":
+    # Run tests
+    pytest.main([__file__, "-v"])
