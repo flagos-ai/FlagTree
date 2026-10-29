@@ -567,7 +567,9 @@ def TTG_WarpReturnOp : TTG_Op<"warp_return", [
 }
 
 // flagtree tle
-def TTG_TMACopyOp : TTG_Op<"tma_copy", [Pure, MemoryEffects<[MemWrite]>]> {
+// No `Pure` alongside `MemWrite`: it expands to AlwaysSpeculatable +
+// NoMemoryEffect, so it promised speculatability for a copy that writes memory.
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [MemoryEffects<[MemWrite]>]> {
   let summary = "self-defined tma_copy operation";
   let description = [{
     'ttg.tma_copy' triton copy op is designed to copy data between memory regions.
