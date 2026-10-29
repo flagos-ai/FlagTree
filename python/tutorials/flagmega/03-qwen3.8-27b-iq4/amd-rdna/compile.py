@@ -20,6 +20,10 @@ REPO = TUTORIAL.parents[4]
 LOCAL = TUTORIAL / '.local'
 SKILL = REPO / 'skills/flagmega-developer/SKILL.md'
 TARGETS = {'gfx1201': 'amd-gfx1201', 'gfx1100': 'amd-gfx1100'}
+# 128 CTAs x 4 waves cannot keep the W7900's ECC GDDR6 busy; 8x24 = 192 CTAs stays co-resident at the
+# megakernel's 248 VGPRs. The R9700 already saturates at the targets' default 8x16 mesh.
+MESHES = {'gfx1201': '8x16', 'gfx1100': '8x24'}
+DEFAULT_MESH = '8x16'
 
 
 def source_identity():
@@ -40,6 +44,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, default=LOCAL / 'checkpoint' / FILENAME)
     parser.add_argument('--arch', choices=tuple(TARGETS), default='gfx1201')
+    parser.add_argument('--mesh', choices=('auto', '8x16', '8x24'), default='auto',
+                        help='Block mesh (y x x); auto: 8x24 on gfx1100, the 8x16 target default on gfx1201')
     destination = parser.add_mutually_exclusive_group()
     destination.add_argument('--trial', type=Path, help='Fresh trial directory; default: .local/trials/<UTC>-<arch>')
     destination.add_argument('--output', type=Path,
@@ -50,6 +56,7 @@ def main():
     parser.add_argument('--work-dir', type=Path, help='Fresh directory for compiler stage dumps')
     args = parser.parse_args()
     target = TARGETS[args.arch]
+    mesh = MESHES[args.arch] if args.mesh == 'auto' else args.mesh
     checkpoint = args.checkpoint.expanduser().resolve()
     if not checkpoint.is_file() or checkpoint.suffix.lower() != '.gguf':
         parser.error(f'GGUF checkpoint does not exist: {checkpoint}; run download_checkpoint.py first')
@@ -82,7 +89,8 @@ def main():
     report = {
         'workflow': 'flagmega-developer', 'skill': str(SKILL.relative_to(REPO)), 'checkpoint': str(checkpoint),
         'checkpoint_nbytes': checkpoint.stat().st_size, 'checkpoint_revision': revision, 'target': target,
-        'compiler_source_sha256': digest, 'trial': str(trial), 'artifact': str(artifact), 'rdata_cache_dir':
+        'mesh': mesh, 'compiler_source_sha256': digest, 'trial': str(trial), 'artifact': str(artifact),
+        'rdata_cache_dir':
         str(args.rdata_cache_dir.expanduser().resolve()), 'resumed_from':
         None if args.input is None else str(args.input.expanduser().resolve()), 'commands': commands,
         'status': 'running'
@@ -135,7 +143,8 @@ def main():
             str(checkpoint), '--target', target, '--emit-executable', '--dump-flags', 'compile,pass-ir', '--work-dir',
             str(dumps), '--output',
             str(artifact), '--rdata-cache-dir',
-            str(args.rdata_cache_dir.expanduser().resolve()), '--json'
+            str(args.rdata_cache_dir.expanduser().resolve()), '--json',
+            *([] if mesh == DEFAULT_MESH else ['--placement', f'yx={mesh}/bb'])
         ])
         verified = run('verify-artifact', ['artifact', 'verify', str(artifact), '--json'])
         if source_identity()[0] != digest:
