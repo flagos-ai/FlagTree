@@ -1,13 +1,11 @@
-from contextlib import nullcontext
 import inspect
+import sys
 from types import SimpleNamespace
 
 import pytest
 import triton.testing as triton_testing
 
 from triton.flagtune.runtime import benchmark_protocol as benchmark_module
-from triton.flagtune.runtime import graph_benchmark as graph_benchmark_module
-from triton.flagtune.runtime.graph_benchmark import do_bench_musa_graph
 from triton.testing import do_bench_cudagraph
 
 
@@ -21,8 +19,8 @@ class _FakeDriver:
     def get_current_target(self):
         return SimpleNamespace(backend=self.backend)
 
-    def replay_benchmark(self, kernel_call, **kwargs):
-        self.observed = dict(kwargs)
+    def replay_benchmark(self, kernel_call, n_retries=10, **kwargs):
+        self.observed = dict(kwargs, n_retries=n_retries)
         kernel_call()
         return [1.0, 0.8, 1.2]
 
@@ -75,127 +73,6 @@ def test_cudagraph_helper_waits_for_caller_stream(use_default_stream):
 
     torch.cuda.synchronize()
     assert prior_read.unique().tolist() == [1.0]
-
-
-def test_musa_graph_helper_uses_supplied_device_interface():
-    observed = {"captures": 0, "replays": 0, "synchronizes": 0}
-
-    class _Event:
-
-        def record(self):
-            pass
-
-        @staticmethod
-        def elapsed_time(_other):
-            return 5.0
-
-    class _Graph:
-
-        def replay(self):
-            observed["replays"] += 1
-
-    class _Interface:
-        MUSAGraph = _Graph
-        Stream = object
-
-        @staticmethod
-        def stream(_stream):
-            return nullcontext()
-
-        @staticmethod
-        def graph(_graph):
-
-            class _Capture:
-
-                def __enter__(self):
-                    observed["captures"] += 1
-
-                def __exit__(self, _exc_type, _exc, _traceback):
-                    return False
-
-            return _Capture()
-
-        @staticmethod
-        def Event(enable_timing):
-            assert enable_timing is True
-            return _Event()
-
-        @staticmethod
-        def synchronize():
-            observed["synchronizes"] += 1
-
-    result = do_bench_musa_graph(
-        lambda: None,
-        rep=1,
-        n_retries=2,
-        device_interface=_Interface(),
-    )
-
-    # Calibration uses five ordinary launches, so the fake 5.0ms elapsed time
-    # yields a 1.0ms estimate and rep=1 produces a one-launch timing graph.
-    assert result == pytest.approx(5.0)
-    # The implementation performs one formal capture and n_retries replays.
-    # Synchronization occurs after calibration, capture, and each replay.
-    assert observed == {"captures": 1, "replays": 2, "synchronizes": 4}
-
-
-def test_musa_graph_helper_uses_bounded_repeat_for_invalid_calibration():
-    """A zero event estimate must not divide by zero or skip graph capture."""
-    observed = {"captures": 0, "replays": 0}
-
-    class _Event:
-
-        def record(self):
-            pass
-
-        @staticmethod
-        def elapsed_time(_other):
-            return 0.0
-
-    class _Graph:
-
-        def replay(self):
-            observed["replays"] += 1
-
-    class _Interface:
-        MUSAGraph = _Graph
-        Stream = object
-
-        @staticmethod
-        def stream(_stream):
-            return nullcontext()
-
-        @staticmethod
-        def graph(_graph):
-
-            class _Capture:
-
-                def __enter__(self):
-                    observed["captures"] += 1
-
-                def __exit__(self, _exc_type, _exc, _traceback):
-                    return False
-
-            return _Capture()
-
-        @staticmethod
-        def Event(enable_timing):
-            assert enable_timing is True
-            return _Event()
-
-        @staticmethod
-        def synchronize():
-            pass
-
-    result = do_bench_musa_graph(
-        lambda: None,
-        rep=1,
-        n_retries=3,
-        device_interface=_Interface(),
-    )
-
-    assert result == pytest.approx(0.0)
-    assert observed == {"captures": 1, "replays": 3}
 
 
 @pytest.mark.parametrize(
@@ -269,14 +146,22 @@ def test_replay_splits_total_measurement_budget(monkeypatch, module_name, backen
     )
 
 
-def test_mthreads_replay_uses_flagtune_musa_graph_helper(monkeypatch):
+def test_mthreads_replay_initializes_torchada_and_uses_shared_helper(monkeypatch):
     active = _driver_for("triton.backends.mthreads.driver", "musa")
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    monkeypatch.setattr(
-        graph_benchmark_module,
-        "do_bench_musa_graph",
-        active.replay_benchmark,
-    )
+    initialized = []
+
+    def get_backend():
+        initialized.append(True)
+        return active.device_interface
+
+    monkeypatch.setitem(sys.modules, "torchada", SimpleNamespace(get_backend=get_backend))
+
+    def shared_benchmarker(kernel_call, n_retries=10, **kwargs):
+        assert initialized == [True]
+        return active.replay_benchmark(kernel_call, n_retries=n_retries, **kwargs)
+
+    monkeypatch.setattr(triton_testing, "do_bench_cudagraph", shared_benchmarker)
     launches = []
 
     resolved = benchmark_module.resolve_benchmarker(
@@ -289,27 +174,26 @@ def test_mthreads_replay_uses_flagtune_musa_graph_helper(monkeypatch):
 
     assert result == [1.0, 0.8, 1.2]
     assert launches == [True]
+    assert initialized == [True]
     assert active.observed == {
         "rep": 10.0,
         "quantiles": (0.5, 0.2, 0.8),
         "n_retries": 10,
-        "warmup_ms": 25,
-        "device_interface": active.device_interface,
     }
     assert resolved.protocol.as_dict() == {
         "requested_mode": "replay",
         "resolved_mode": "replay",
-        "implementation": "triton_musa_graph_replay_v1",
+        "implementation": "triton_musa_torchada_graph_replay_v3",
         "cache_policy": "warm_l2",
-        "warmup_ms": 25,
+        "warmup_ms": 0,
         "measurement_ms": 100,
         "n_retries": 10,
         "per_replay_ms": 10.0,
         "fallback_reason": None,
     }
     assert resolved.protocol.cache_key() == (
-        "triton_musa_graph_replay_v1",
-        25,
+        "triton_musa_torchada_graph_replay_v3",
+        0,
         100,
         10,
         10.0,

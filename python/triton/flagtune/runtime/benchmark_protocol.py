@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Sequence
 
+from triton.flagtune._dependencies import FlagTuneDependencyError
 from triton.runtime.driver import driver
 
 
@@ -114,7 +115,7 @@ _REPLAY_IMPLEMENTATIONS = {
     "triton.backends.amd.driver": "triton_hip_graph_replay_v1",
     "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
     "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
-    "triton.backends.mthreads.driver": "triton_musa_graph_replay_v1",
+    "triton.backends.mthreads.driver": "triton_musa_torchada_graph_replay_v3",
     "triton.backends.hcu.driver": "triton_hcu_graph_replay_v1",
 }
 _OFFICIAL_TRITON_REPLAY_COUNT = 10
@@ -165,53 +166,53 @@ def resolve_benchmarker(
     ``measurement_ms`` is a total timing budget.  Replay implementations
     receive ``measurement_ms / n_retries`` as their per-graph ``rep`` value so
     the existing graph helper can retain its internal algorithm while the
-    caller controls total timed work.
+    caller controls total timed work. All registered replay backends use
+    ``triton.testing.do_bench_cudagraph``. MUSA first imports torchada to alias
+    CUDA-style PyTorch APIs; capture size and warmup follow the shared helper.
     """
     selected = _validate_request(mode, warmup_ms, measurement_ms, n_retries)
     active = driver.active
     if selected is BenchmarkMode.REPLAY:
         implementation = _replay_implementation(active)
         if implementation is not None:
-            effective_retries = n_retries
+            is_musa = type(active).__module__ == "triton.backends.mthreads.driver"
+            if is_musa:
+                device_interface = active.get_device_interface()
+                try:
+                    # Importing torchada installs the CUDA-to-MUSA API aliases.
+                    import torchada
+                except ImportError as exc:
+                    raise FlagTuneDependencyError(
+                        "FlagTune MUSA replay requires torchada and its MUSA dependencies; "
+                        "install torchada with 'python -m pip install torchada' in the MUSA environment "
+                        "and check the chained import error") from exc
+                get_backend = getattr(torchada, "get_backend", None)
+                if get_backend is None or get_backend() is not device_interface:
+                    raise RuntimeError(
+                        "FlagTune MUSA replay requires torchada.get_backend() to select the active torch.musa backend")
+
+            from triton.testing import do_bench_cudagraph
+
+            configurable_retries = _supports_configurable_retries(do_bench_cudagraph)
+            effective_retries = (n_retries if configurable_retries else _OFFICIAL_TRITON_REPLAY_COUNT)
+            if not configurable_retries and n_retries != effective_retries:
+                warnings.warn(
+                    "official Triton's graph benchmark uses a fixed replay "
+                    f"count of {effective_retries}; ignoring "
+                    f"n_retries={n_retries}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             per_replay_ms = float(measurement_ms) / effective_retries
 
-            if type(active).__module__ == "triton.backends.mthreads.driver":
-                from triton.flagtune.runtime.graph_benchmark import (
-                    do_bench_musa_graph, )
-
-                def replay_benchmark(kernel_call, quantiles):
-                    return do_bench_musa_graph(
-                        kernel_call,
-                        rep=per_replay_ms,
-                        quantiles=quantiles,
-                        n_retries=n_retries,
-                        warmup_ms=warmup_ms,
-                        device_interface=active.get_device_interface(),
-                    )
-
-            else:
-                from triton.testing import do_bench_cudagraph
-
-                configurable_retries = _supports_configurable_retries(do_bench_cudagraph)
-                effective_retries = (n_retries if configurable_retries else _OFFICIAL_TRITON_REPLAY_COUNT)
-                if not configurable_retries and n_retries != effective_retries:
-                    warnings.warn(
-                        "official Triton's graph benchmark uses a fixed replay "
-                        f"count of {effective_retries}; ignoring "
-                        f"n_retries={n_retries}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                per_replay_ms = float(measurement_ms) / effective_retries
-
-                def replay_benchmark(kernel_call, quantiles):
-                    kwargs = {
-                        "rep": per_replay_ms,
-                        "quantiles": quantiles,
-                    }
-                    if configurable_retries:
-                        kwargs["n_retries"] = effective_retries
-                    return do_bench_cudagraph(kernel_call, **kwargs)
+            def replay_benchmark(kernel_call, quantiles):
+                kwargs = {
+                    "rep": per_replay_ms,
+                    "quantiles": quantiles,
+                }
+                if configurable_retries:
+                    kwargs["n_retries"] = effective_retries
+                return do_bench_cudagraph(kernel_call, **kwargs)
 
             return ResolvedBenchmarker(
                 protocol=BenchmarkProtocol(
@@ -219,7 +220,8 @@ def resolve_benchmarker(
                     resolved_mode=BenchmarkMode.REPLAY,
                     implementation=implementation,
                     cache_policy="warm_l2",
-                    warmup_ms=warmup_ms,
+                    # The shared helper has no configurable timed warmup.
+                    warmup_ms=0 if is_musa else warmup_ms,
                     measurement_ms=measurement_ms,
                     n_retries=effective_retries,
                     per_replay_ms=per_replay_ms,
