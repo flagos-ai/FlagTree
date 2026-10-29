@@ -13,7 +13,9 @@ loads, maps the IQ4_NL codebook with `v_perm_b32` table lookups (as llama.cpp's
 `get_int_from_table_16`), applies each group's `d*(scale-32)` once to the group
 sum and reduces across threads once per tile; a 16-row tile runs as two
 8-row halves and skips a half with no active row. Activations stay floating
-point.
+point. The GDN gate projections (`in_proj_b` / `in_proj_a`, one row per tile)
+and the IQ4_XS embedding use the same group step and lookup
+(`kernels/{gdn_recurrent,embedding}/platforms/amd/`).
 
 The native IQ4_XS GEMVs never quantize activations, so they also run on gfx1100,
 which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
@@ -24,23 +26,26 @@ templates.
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, RDNA native GGUF GEMV templates | 34.4 | 29.1 |
+| FlagMega, RDNA native GGUF templates | 32.1 | 31.2 |
 | FlagMega, generic native GGUF GEMV (before) | 257 | 3.9 |
 | llama.cpp (HIP, gfx1201) | 29.9 | 33.5 |
 
 Three rotated rounds per workload on one idle card (.101, no ECC); host time
 around graph replay, GPU greedy sampling and one CPU token return, the same
 boundary as the NVIDIA tutorial and `llama_performance.py`. Chinese64:
-34.35/34.42/34.42 ms vs llama.cpp 29.75/29.71/29.70 ms; Synthetic32:
-34.27/34.35/34.38 ms vs 29.93/29.97/30.21 ms. Model weight bandwidth is
-13,611,666,080 bytes per call / latency: about 396 GB/s, 61% of the R9700's
-644.6 GB/s (63% of the ~631 GB/s it streams). The IQ4 GEMVs were 97% of the
+32.07/32.10/32.18 ms (llama.cpp 29.75/29.71/29.70 ms); Synthetic32:
+31.97/32.02/32.12 ms (llama.cpp 29.93/29.97/30.21 ms). Model weight bandwidth
+is 13,611,666,080 bytes per call / latency: about 425 GB/s, 66% of the R9700's
+644.6 GB/s (67% of the ~631 GB/s it streams). The IQ4 GEMVs were 97% of the
 generic kernel's time: its 15-deep `tl.where` codebook, per-element byte loads
 and a cross-thread reduction every K step left it latency-bound at ~55 GB/s.
 In isolation the RDNA templates stream 450–560 GB/s on the model's projection
 shapes; skipping empty half tiles (owners of 40 and 8 rows end in a half-full
-tile) took decode from 37.0 to 34.4 ms. The megakernel still uses 248 VGPRs
-per thread (the GEMV helpers use 170), with no spills.
+tile) took decode from 37.0 to 34.4 ms. The GDN gate projections then still
+walked K in 40 serial 128-value steps of byte gathers and a `tl.where`
+codebook in each of the 48 GDN layers; dotting their row with the GEMV's group
+step took decode from 34.4 to 32.1 ms. The megakernel still uses 248 VGPRs per
+thread (the GEMV helpers use 170), with no spills.
 
 Correctness is checked against llama.cpp built for HIP from the same pinned
 commit on the same GGUF and GPU:
@@ -61,31 +66,32 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, RDNA native GGUF GEMV templates | 45.7 | 21.9 |
+| FlagMega, RDNA native GGUF templates | 42.7 | 23.4 |
 | FlagMega, generic native GGUF GEMV (before) | 192 | 5.2 |
 | llama.cpp (HIP, gfx1100) | 29.6 | 33.8 |
 
 Two rounds per workload, three repeats each. With the RDNA templates:
-Chinese64 45.67 / 45.82 ms, Synthetic32 45.65 / 45.76 ms. With the generic
-kernel: Chinese64 191.8 / 192.3 ms, Synthetic32 192.5 / 192.4 ms. llama.cpp:
-29.5 / 29.7 ms. That is about 298 GB/s of weight bandwidth (71 GB/s before), 43% of the
-~700 GB/s this W7900 streams. Its VRAM ECC is enabled, which limits streaming
+Chinese64 42.74 / 43.12 ms, Synthetic32 42.56 / 42.64 ms (45.7 ms with the
+RDNA GEMVs but the generic GDN gate projections). With the generic kernel:
+Chinese64 191.8 / 192.3 ms, Synthetic32 192.5 / 192.4 ms. llama.cpp: 29.5 /
+29.7 ms. That is about 318 GB/s of weight bandwidth (71 GB/s before), 45% of
+the ~700 GB/s this W7900 streams. Its VRAM ECC is enabled, which limits streaming
 bandwidth to about 700 of the 864 GB/s nominal (see the Qwen3-1.7B
 [amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)). The megakernel
 uses 248 VGPRs and 160 B of scratch, the same as with the generic kernel, and
-builds in about 73 s.
+builds in about 50–75 s.
 
 Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
 
 - **Chinese64**: all 64 tokens equal llama.cpp. The gfx1100 llama.cpp build
   itself picks 4960 at the step-22 near-tie, like FlagMega and the CUDA build.
-- **Synthetic32**: equal through step 17; at step 18 llama.cpp ranks 14791 over
-  56239 by 0.022 logits and FlagMega picks 56239, its second choice (a near-tie).
+- **Synthetic32**: all 32 tokens equal llama.cpp. (With the generic GDN gate
+  projections, step 18 was a near-tie: llama.cpp ranks 14791 over 56239 by
+  0.022 logits and FlagMega picked 56239, its second choice.)
 - Logits are finite.
-- With the RDNA templates, three independent processes reproduce the 64-step
-  Chinese64 tokens and logits bitwise, and the tokens above are unchanged. With
-  the generic kernel, four processes did (one before and three after a host
-  reboot).
+- Three independent processes reproduce the 64-step Chinese64 tokens and logits
+  bitwise, with the current templates as with each earlier kernel (four
+  processes for the generic kernel, one before and three after a host reboot).
 
 On gfx1100 every FlagMega change must reproduce bitwise across independent
 processes like this, because FlagTree's LLVM 22 has a schedule-sensitive
