@@ -5,14 +5,19 @@
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
 {% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
+{% set native_activation = native_gguf_activation_prologue is defined and call.weight_encoding == "IQ4_XS" %}
+{% if native_activation %}
+{% include native_gguf_activation_prologue %}
+{% endif %}
     for local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
         n_mask = local_n_offsets < ({{ call.active_n }})
         weight_rows = {{ call.weight_row_offset }}
         destination_offsets = {{ call.destination_offset }}
 {% if call.weight_encoding == "IQ4_XS" %}
-        gate = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
-        up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+{% set native_extra = (", " ~ native_gguf_activation_arguments) if native_activation else "" %}
+        gate = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }}{{ native_extra }})
+        up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }}{{ native_extra }})
 {% else %}
         gate = _flagmega_q4_k_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
         up = _flagmega_q4_k_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})

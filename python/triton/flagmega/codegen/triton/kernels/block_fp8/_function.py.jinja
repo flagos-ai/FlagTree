@@ -5,6 +5,10 @@
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
 {% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
+{% set native_activation = native_gguf_activation_prologue is defined and call.weight_encoding == "IQ4_XS" %}
+{% if native_activation %}
+{% include native_gguf_activation_prologue %}
+{% endif %}
     for local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
         n_mask = {{ call.n_mask }}
@@ -16,6 +20,9 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ call.value }}, {{ call.weight }}, {{ call.result }},
             {{ call.weight_row_offset }},
             {{ call.destination_offset }}, n_mask, {{ call.k }},
+{% if native_activation %}
+            {{ native_gguf_activation_arguments }},
+{% endif %}
         )
 {% else %}
     for local_n_start in tl.range(
