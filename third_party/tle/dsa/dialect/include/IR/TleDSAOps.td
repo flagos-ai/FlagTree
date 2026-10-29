@@ -21,7 +21,11 @@ class TLE_Op<string mnemonic, list<Trait> traits = []>:
 // Copy OP
 //
 //
-// The ops in this file used to declare `[Pure, MemoryEffects<[MemWrite]>]`.
+// The ops in this file used to declare `[Pure, MemoryEffects<[MemWrite]>]`,
+// added here by flagtree ([TLE] Add tle dsa extension to ascend3.5, b34efe490)
+// and therefore fixed rather than documented -- unlike the two ops in
+// third_party/ascend/.../TritonAscendOps.td, which are copied verbatim from
+// triton-ascend and are deliberately left untouched.
 // `Pure` expands to AlwaysSpeculatable + NoMemoryEffect
 // (mlir/Interfaces/SideEffectInterfaces.td:147), so the list asked for both "no
 // memory effects" and "writes memory", and promised speculatability for ops
