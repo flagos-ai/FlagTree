@@ -4,7 +4,6 @@ from pathlib import Path
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language as tle
 import triton.experimental.tle.language.gpu as tle_gpu
 import triton.experimental.tle.language.raw as tle_raw
 from triton.experimental.tle.raw import dialect
@@ -33,32 +32,34 @@ def softmax_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     VECTOR_SIZE: tl.constexpr = 1,
+    num_warps: tl.constexpr = 4,
 ):
-    NUM_WARPS: tl.constexpr = tle.get_hyperparam("num_warps")
-    WARP_SIZE: tl.constexpr = tle.get_hyperparam("warp_size")
-    tl.static_assert(WARP_SIZE == 32)
-    NUM_THREADS: tl.constexpr = NUM_WARPS * WARP_SIZE
+    NUM_THREADS: tl.constexpr = num_warps * 32
+
     # Every physical element has a unique logical position, including padding.
     PADDED_SIZE: tl.constexpr = max(BLOCK_SIZE, NUM_THREADS)
+
     # VECTOR_SIZE accounts for both pointers, row strides, and the tail mask.
     tl.static_assert(VECTOR_SIZE > 0 and (VECTOR_SIZE & (VECTOR_SIZE - 1)) == 0)
     SIZE_PER_THREAD: tl.constexpr = min(VECTOR_SIZE, PADDED_SIZE // NUM_THREADS)
+
     layout: tl.constexpr = tle_gpu.BlockEncoding(
         size_per_thread=[SIZE_PER_THREAD],
-        threads_per_warp=[WARP_SIZE],
-        warps_per_cta=[NUM_WARPS],
+        threads_per_warp=[32],
+        warps_per_cta=[num_warps],
         order=[0],
     )
-
     row_idx = tl.program_id(0)
     columns = tl.arange(0, PADDED_SIZE)
-    # Hint derived values: this compiler does not retain multiple_of on
-    # function arguments. Each vector starts aligned and has a uniform mask.
+
+    # Hint derived values: this compiler does not retain multiple_of on function arguments.
+    # Each vector starts aligned and has a uniform mask.
     mask = tl.max_constancy(columns < n_cols, VECTOR_SIZE)
     input_row = tl.multiple_of(input_ptr + row_idx * input_row_stride,
                                VECTOR_SIZE * (input_ptr.dtype.element_ty.primitive_bitwidth // 8))
     output_row = tl.multiple_of(output_ptr + row_idx * output_row_stride,
                                 VECTOR_SIZE * (output_ptr.dtype.element_ty.primitive_bitwidth // 8))
+
     row = tl.load(input_row + columns, mask=mask, other=-float("inf")).to(tl.float32)
     row = tle_gpu.set_layout(row, layout)
     result = tle_raw.call(cuda_softmax, [tle_raw.fragment(row)], output_indices=[0])
@@ -73,9 +74,10 @@ def softmax(x):
     if x.device.type != "cuda":
         raise ValueError("softmax expects a CUDA tensor")
     n_rows, n_cols = x.shape
-    y = torch.empty_like(x)
     if n_rows == 0 or n_cols == 0:
-        return y
+        return torch.empty_like(x)
+
+    y = torch.empty_like(x)
     with torch.cuda.device(x.device):
         softmax_kernel[(n_rows, )](
             y,

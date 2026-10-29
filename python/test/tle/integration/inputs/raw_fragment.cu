@@ -1,5 +1,6 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <cuda_fp8.h>
 #include <stdint.h>
 
 #define DEVICE __attribute__((device, always_inline))
@@ -31,16 +32,44 @@ ABI_CASE(BF16, __nv_bfloat16)
 ABI_CASE(F32, float)
 ABI_CASE(F64, double)
 
-#define ARITH_CASE(NAME, TYPE)                                                 \
-  DEVICE void Arithmetic_##NAME(TYPE *x, int64_t n) {                          \
-    for (int64_t i = 0; i < n; ++i)                                            \
-      x[i] = TYPE(x[i] + TYPE(0.5));                                           \
+DEVICE float fpx_to_float(__nv_fp8_e4m3 value) {
+  return static_cast<float>(value);
+}
+
+DEVICE float fpx_to_float(__half value) { return __half2float(value); }
+
+DEVICE float fpx_to_float(__nv_bfloat16 value) {
+  return __bfloat162float(value);
+}
+
+#define DOT_CASE(NAME, TYPE)                                                   \
+  DEVICE void Dot_##NAME(TYPE *a, int64_t na, TYPE *b, int64_t nb,             \
+                         GLOBAL float *out) {                                  \
+    const int lane = threadIdx.x % 32;                                         \
+    const int warp = threadIdx.x / 32;                                         \
+    const int num_warps = blockDim.x / 32;                                     \
+    __shared__ float partials[32];                                             \
+    float cv = 0.0F;                                                           \
+    for (int64_t i = 0; i < na && i < nb; ++i) {                               \
+      float av = fpx_to_float(a[i]);                                           \
+      float bv = fpx_to_float(b[i]);                                           \
+      cv += av * bv;                                                           \
+    }                                                                          \
+    for (int offset = 16; offset > 0; offset /= 2)                             \
+      cv += __shfl_xor_sync(0xFFFFFFFF, cv, offset);                           \
+    if (lane == 0)                                                             \
+      partials[warp] = cv;                                                     \
+    __syncthreads();                                                           \
+    cv = 0.0F;                                                                 \
+    for (unsigned i = 0; i < num_warps; ++i)                                   \
+      cv += partials[i];                                                       \
+    if (threadIdx.x == 0)                                                      \
+      *out = cv;                                                               \
   }
 
-ARITH_CASE(F16, __half)
-ARITH_CASE(BF16, __nv_bfloat16)
-ARITH_CASE(F32, float)
-ARITH_CASE(F64, double)
+DOT_CASE(FP8, __nv_fp8_e4m3)
+DOT_CASE(FP16, __half)
+DOT_CASE(BF16, __nv_bfloat16)
 
 DEVICE void BoolByte(int32_t *out, int64_t n, const bool *mask, int64_t m,
                      bool scalar) {

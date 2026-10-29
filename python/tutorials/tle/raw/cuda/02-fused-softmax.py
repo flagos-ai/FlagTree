@@ -4,7 +4,6 @@ import torch
 import triton
 from triton import knobs
 import triton.language as tl
-import triton.experimental.tle.language as tle
 import triton.experimental.tle.language.raw as tle_raw
 from triton.experimental.tle.raw import dialect
 
@@ -28,8 +27,9 @@ def softmax_kernel(
     n_rows,
     n_cols,
     BLOCK_SIZE: tl.constexpr,
+    num_warps: tl.constexpr = 4,
 ):
-    NUM_THREADS: tl.constexpr = tle.get_hyperparam("num_warps") * tle.get_hyperparam("warp_size")
+    NUM_THREADS: tl.constexpr = num_warps * 32
     row_idx = tl.program_id(0)
     columns = tl.arange(0, BLOCK_SIZE)
     mask = columns < n_cols

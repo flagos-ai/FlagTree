@@ -4,7 +4,6 @@ import torch
 import triton
 import triton.language as tl
 
-import triton.experimental.tle.language as tle
 from triton.experimental.tle.raw import dialect
 import triton.experimental.tle.language.gpu as tle_gpu
 import triton.experimental.tle.language.raw as tle_raw
@@ -22,11 +21,12 @@ def add_kernel(
     output_ptr,
     n_elements,
     BLOCK_SIZE: tl.constexpr,
+    num_warps: tl.constexpr = 4,
 ):
     layout: tl.constexpr = tle_gpu.BlockEncoding(
         size_per_thread=[4],
-        threads_per_warp=[tle.get_hyperparam("warp_size")],
-        warps_per_cta=[tle.get_hyperparam("num_warps")],
+        threads_per_warp=[32],
+        warps_per_cta=[num_warps],
         order=[0],
     )
     offset = tl.program_id(0) * BLOCK_SIZE
@@ -47,7 +47,8 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 def add(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)
-    assert x.device == DEVICE and y.device == DEVICE and output.device == DEVICE
+    assert x.device == DEVICE and y.device == DEVICE
+    assert output.device == DEVICE
     n_elements = output.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]), )
     add_kernel[grid](x, y, output, n_elements, BLOCK_SIZE=1024)

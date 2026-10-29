@@ -43,8 +43,7 @@ COPIES = {
     for name in ("Bool", "I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64", "F16", "BF16", "F32", "F64")
 }
 SCALARS = {name: bind("Scalar_" + name) for name in COPIES}
-ARITH = {name: bind("Arithmetic_" + name) for name in ("F16", "BF16", "F32", "F64")}
-copy_i32 = COPIES["I32"]
+DOTS = {name: bind("Dot_" + name) for name in ("FP8", "FP16", "BF16")}
 step = bind("Step")
 masked_modify = bind("MaskedModify")
 mixed_returns = bind("MixedReturns")
@@ -150,24 +149,58 @@ def bool_kernel(X, Y, flag, BLOCK: tl.constexpr):
     tl.store(Y + offsets, result)
 
 
-@pytest.mark.parametrize("dtype,symbol,tolerance", [(torch.float16, "F16", 1e-3), (torch.bfloat16, "BF16", 1e-2),
-                                                    (torch.float32, "F32", 1e-5), (torch.float64, "F64", 1e-12)])
-def test_floating_arithmetic(dtype, symbol, tolerance):
-    generator = torch.Generator().manual_seed(20261024)
-    host = torch.randn(256, generator=generator, dtype=torch.float64).to(dtype)
-    x = host.cuda()
-    y = torch.empty_like(x)
-    arithmetic_kernel[(1, )](x, y, ARITH[symbol], num_warps=4)
-    expected = (host.double() + 0.5).to(dtype)
-    torch.testing.assert_close(y.cpu(), expected, rtol=tolerance, atol=tolerance)
+@pytest.mark.parametrize("dtype,symbol", [
+    pytest.param(torch.float8_e4m3fn, "FP8", id="fp8"),
+    pytest.param(torch.float16, "FP16", id="fp16"),
+    pytest.param(torch.bfloat16, "BF16", id="bf16"),
+])
+@pytest.mark.parametrize("num_warps", [1, 2, 8])
+@pytest.mark.parametrize("M,N", [(4, 5), (5, 4)])
+@pytest.mark.parametrize("K", BOUNDARIES)
+def test_float_matmul(dtype, symbol, M, N, K, num_warps):
+    gen = torch.Generator().manual_seed(20261024)
+    host_a = torch.randint(-16, 16, (M, K), generator=gen).float() / 4
+    host_b = torch.randint(-16, 16, (K, N), generator=gen).float() / 4
+    a = host_a.to(device="cuda", dtype=dtype)
+    b = host_b.to(device="cuda", dtype=dtype)
+    buffer = torch.full((M + 2, N + 2), -12345, device="cuda", dtype=torch.float32)
+    c = buffer[1:-1, 1:-1]
+    expected = buffer.clone()
+    expected[1:-1, 1:-1] = a.float().cpu() @ b.float().cpu()
+    BLOCK_SIZE = max(triton.next_power_of_2(K), num_warps * 32)
+    LAYOUT: tl.constexpr = gpu.BlockEncoding(size_per_thread=[1], threads_per_warp=[32], warps_per_cta=[num_warps],
+                                             order=[0])
+    float_matmul_kernel[(M, N)](a, a.stride(0), a.stride(1), b, b.stride(0), b.stride(1), c, c.stride(0), c.stride(1),
+                                K, BLOCK_SIZE, LAYOUT, DOTS[symbol], num_warps=num_warps)
+    torch.testing.assert_close(buffer, expected, rtol=0, atol=0)
 
 
 @triton.jit
-def arithmetic_kernel(X, Y, FN: tl.constexpr):
-    offsets = tl.arange(0, 256)
-    x = tl.load(X + offsets)
-    result = raw.call(FN, (raw.fragment(x), ), output_indices=[0])
-    tl.store(Y + offsets, result)
+def float_matmul_kernel(
+    a_ptr,
+    a_row_stride,
+    a_col_stride,
+    b_ptr,
+    b_row_stride,
+    b_col_stride,
+    c_ptr,
+    c_row_stride,
+    c_col_stride,
+    K,
+    BLOCK_SIZE: tl.constexpr,
+    LAYOUT: tl.constexpr,
+    DOT: tl.constexpr,
+):
+    row = tl.program_id(0)
+    col = tl.program_id(1)
+    ks = tl.arange(0, BLOCK_SIZE)
+    mask = ks < K
+    a_row = tl.load(a_ptr + row * a_row_stride + ks * a_col_stride, mask=mask, other=0.0)
+    b_col = tl.load(b_ptr + ks * b_row_stride + col * b_col_stride, mask=mask, other=0.0)
+    out = c_ptr + row * c_row_stride + col * c_col_stride
+    a_row = gpu.set_layout(a_row, LAYOUT)
+    b_col = gpu.set_layout(b_col, LAYOUT)
+    raw.call(DOT, [raw.fragment(a_row), raw.fragment(b_col), out], output_indices=[])
 
 
 def test_wrapper_specializations_do_not_cross_contaminate():
@@ -424,7 +457,7 @@ def test_2d_layout_dynamic_loop_permutation(iterations):
     host = torch.arange(256, dtype=torch.int32) * 17 + 3
     x = host.cuda()
     y = torch.full_like(x, -1)
-    compiled = loop_permute_2d_kernel[(1, )](x, y, iterations, num_warps=4)
+    compiled = loop_permute_2d_kernel[(1, )](x, y, iterations, COPIES["I32"], num_warps=4)
 
     # Each layout covers (16, 16) exactly once, with two items per thread.
     # CUDA copies the same physical (warp, lane, item) from A to B.
@@ -446,7 +479,7 @@ def test_2d_layout_dynamic_loop_permutation(iterations):
 
 
 @triton.jit
-def loop_permute_2d_kernel(X, Y, iterations):
+def loop_permute_2d_kernel(X, Y, iterations, copy_fn: tl.constexpr):
     source_layout: tl.constexpr = gpu.BlockEncoding([1, 2], [4, 8], [4, 1], [1, 0])
     destination_layout: tl.constexpr = gpu.BlockEncoding([2, 1], [8, 4], [1, 4], [1, 0])
     offsets = tl.arange(0, 256).reshape(16, 16)
@@ -454,7 +487,7 @@ def loop_permute_2d_kernel(X, Y, iterations):
     for i in range(iterations):
         destination = gpu.set_layout(tl.full((16, 16), -1, tl.int32), destination_layout)
         # Achieve logical permutation by copying the physical storage.
-        result = raw.call(copy_i32, (raw.fragment(destination), raw.fragment(x)), output_indices=[0])
+        result = raw.call(copy_fn, (raw.fragment(destination), raw.fragment(x)), output_indices=[0])
         # Convert back to the source layout. Get a permuted x with the original layout.
         x = gpu.set_layout(result, source_layout)
     tl.store(Y + offsets, x)
