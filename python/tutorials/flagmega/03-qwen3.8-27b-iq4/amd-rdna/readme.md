@@ -66,28 +66,39 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, RDNA native GGUF templates | 42.7 | 23.4 |
+| FlagMega, RDNA native GGUF templates | 38.7 | 25.8 |
+| FlagMega, before the gfx1100 address changes | 42.7 | 23.4 |
 | FlagMega, generic native GGUF GEMV (before) | 192 | 5.2 |
 | llama.cpp (HIP, gfx1100) | 29.6 | 33.8 |
 
-Two rounds per workload, three repeats each. With the RDNA templates:
-Chinese64 42.74 / 43.12 ms, Synthetic32 42.56 / 42.64 ms (45.7 ms with the
-RDNA GEMVs but the generic GDN gate projections). With the generic kernel:
-Chinese64 191.8 / 192.3 ms, Synthetic32 192.5 / 192.4 ms. llama.cpp: 29.5 /
-29.7 ms. That is about 318 GB/s of weight bandwidth (71 GB/s before), 45% of
-the ~700 GB/s this W7900 streams. Its VRAM ECC is enabled, which limits streaming
+Three repeats per round. With the RDNA templates: Synthetic32 38.35 / 38.69
+ms, Chinese64 38.90 ms (38.96–39.04 ms in the three determinism runs). Before
+the two gfx1100 address changes below: Chinese64 42.74 / 43.12 ms, Synthetic32
+42.56 / 42.64 ms (45.7 ms with the RDNA GEMVs but the generic GDN gate
+projections). With the generic kernel: Chinese64 191.8 / 192.3 ms, Synthetic32
+192.5 / 192.4 ms. llama.cpp: 29.5 / 29.7 ms. That is about 352 GB/s of weight
+bandwidth (71 GB/s with the generic kernel), 50% of the ~700 GB/s this W7900
+streams. Its VRAM ECC is enabled, which limits streaming
 bandwidth to about 700 of the 864 GB/s nominal (see the Qwen3-1.7B
 [amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)). The megakernel
-uses 248 VGPRs and 160 B of scratch, the same as with the generic kernel, and
-builds in about 50–75 s.
+uses 248 VGPRs and 44 B of scratch (160 B before) and builds in about 50–75 s.
+
+gfx1100 still converts global loads to buffer loads (gfx1201 does not), and a
+buffer load needs its base in SGPRs. Activation pointers built from 32-bit
+offsets in the GEMVs, and pointer parameters of the noinline device functions
+(which arrive in VGPRs), turned into `readfirstlane` waterfall loops. 64-bit
+activation offsets keep the GEMV loads as global loads (42.6 → 39.6 ms), and
+on gfx1100 every non-GEMV device function reads its pointer parameters back
+into SGPRs (39.6 → 38.5 ms): `s_cbranch_execnz` loops drop from 258 to 28.
+Both keep the logits bitwise.
 
 Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
 
 - **Chinese64**: all 64 tokens equal llama.cpp. The gfx1100 llama.cpp build
   itself picks 4960 at the step-22 near-tie, like FlagMega and the CUDA build.
-- **Synthetic32**: all 32 tokens equal llama.cpp. (With the generic GDN gate
-  projections, step 18 was a near-tie: llama.cpp ranks 14791 over 56239 by
-  0.022 logits and FlagMega picked 56239, its second choice.)
+- **Synthetic32**: the first 18 tokens equal llama.cpp. Step 18 is a
+  near-tie: llama.cpp ranks 14791 over 56239 by 0.022 logits and FlagMega
+  picks 56239, its second choice.
 - Logits are finite.
 - Three independent processes reproduce the 64-step Chinese64 tokens and logits
   bitwise, with the current templates as with each earlier kernel (four
