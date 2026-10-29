@@ -424,13 +424,11 @@ class TestPipeline:
 class TestWarpSpecializeFrontend:
     """Test warp_specialize front-end capture handling."""
 
-    @pytest.mark.parametrize(
-        "policy",
-        [
-            "once",
-            ("once", "none"),
-            pytest.param(tle.gpu.mthreads.TMECachePolicy("once", "none"), marks=_NEEDS_MTHREADS),
-        ])
+    @pytest.mark.parametrize("policy", [
+        "once",
+        ("once", "none"),
+        pytest.param(tle.gpu.mthreads.TMECachePolicy("once", "none"), marks=_NEEDS_MTHREADS),
+    ])
     @pytest.mark.parametrize("wrapped", [False, True])
     def test_constexpr_policy_has_no_runtime_capture(self, policy, wrapped):
         from triton.experimental.tle.language.gpu.core import _as_call_args
