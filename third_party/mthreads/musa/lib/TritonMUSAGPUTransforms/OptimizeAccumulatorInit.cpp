@@ -158,7 +158,11 @@ struct TritonMUSAGPUOptimizeAccumulatorInitPass
       bool loopArgIsZero = false;
       std::optional<std::pair<Operation *, int>> zeroInitOp =
           findZeroInitOp(accUse, forOp, loopArgIsZero);
-      if (!zeroInitOp && !loopArgIsZero)
+      // Only rewrite a zeroing inside the loop.  When the only zero is the
+      // loop's init value, the rewrite would replace one zero fill before the
+      // loop with a use-C flag carried through it, and the MUSA MMA lowering
+      // pays for a non-constant flag on every issue.
+      if (!zeroInitOp)
         continue;
 #ifdef __TLE__
       if (zeroInitOp &&
@@ -213,10 +217,6 @@ struct TritonMUSAGPUOptimizeAccumulatorInitPass
               thenInitsToZero ? ifOp.thenYield() : ifOp.elseYield();
           zeroingYield.setOperand(resultIndex, oldValue);
         }
-      } else if (loopArgIsZero) {
-        setUseCValue(dotOp, loopArgFlagValue);
-        auto forYield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-        forYield->insertOperands(forYield->getNumOperands(), vTrue);
       }
     }
   }
