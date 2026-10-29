@@ -86,6 +86,15 @@ def MUSA_SquadDotOp : MUSA_Op<"squad_dot", [
     TypesMatchWith<"result's type matches accumulator's type",
                    "d", "c", "$_self">
   ]> {
+  let description = [{
+    In TLE-enabled builds, `m` and `n` must match the FP32 accumulator
+    encoding, while `k` selects the current instruction independently of the
+    encoding's K metadata. This contract applies with or without a TLE marker.
+    The complete M/N/K and element-type combination must be supported by the
+    target. Ordinary `tt.dot` lowering still selects K from its own encoding;
+    it does not inherit an async accumulator's instruction configuration.
+    Non-TLE builds require all three attributes to match the encoding.
+  }];
   let arguments = (ins TTG_TensorOrMemDesc:$a, TTG_TensorOrMemDesc:$b,
                    TT_FpIntTensor:$c, Optional<I1>:$useC,
                    I32Attr:$m, I32Attr:$n, I32Attr:$k,

@@ -232,6 +232,12 @@ static unsigned getMusaScratchSizeInBytes(Operation *op,
 
   Attribute srcLayout = srcTy.getEncoding();
   Attribute dstLayout = dstTy.getEncoding();
+#ifdef __TLE__
+  // This conversion forwards the accumulator in the LLVM lowering.
+  if (musa::isMusaSqmmaLike(srcLayout) && musa::isMusaSqmmaLike(dstLayout) &&
+      toLinearLayout(srcTy) == toLinearLayout(dstTy))
+    return 0;
+#endif // __TLE__
   if (musa::useMusaReplicatedScratch(srcLayout, dstLayout)) {
     if (!musa::isMusaSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout))
       return getFullLogicalScratchBytes(srcTy);

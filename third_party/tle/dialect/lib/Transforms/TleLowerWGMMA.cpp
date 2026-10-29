@@ -33,6 +33,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir::triton::tle {
@@ -76,20 +77,31 @@ static bool isAsyncAccumulatorUse(OpOperand &use) {
 }
 
 static LogicalResult verifyWGMMAUses(WGMMAOp op) {
-  for (OpOperand &use : op.getD().getUses()) {
-    Operation *user = use.getOwner();
-    if (auto next = dyn_cast<WGMMAOp>(user)) {
-      if (use.getOperandNumber() == 2)
+  SmallVector<Value> pending{op.getD()};
+  DenseSet<Value> visited;
+  while (!pending.empty()) {
+    Value value = pending.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    for (OpOperand &use : value.getUses()) {
+      if (isa<WGMMAOp>(use.getOwner()) && use.getOperandNumber() == 2)
         continue;
-      return op.emitOpError("result may only feed the accumulator operand of "
-                            "another tle.wgmma or tle.wgmma_wait");
+      if (isa<WGMMAWaitOp>(use.getOwner()))
+        continue;
+      if (auto index = getForInitArgIndex(use)) {
+        auto loop = cast<scf::ForOp>(use.getOwner());
+        pending.push_back(loop.getRegionIterArg(*index));
+        pending.push_back(loop.getResult(*index));
+        continue;
+      }
+      if (isForYield(use))
+        return op.emitOpError(
+            "unwaited async accumulators across scf.for yields are not "
+            "supported on NVIDIA; consume the result with tle.wgmma_wait "
+            "before yielding");
+      return op.emitOpError("async result must be consumed by tle.wgmma_wait "
+                            "before ordinary tensor use");
     }
-    if (isa<WGMMAWaitOp>(user))
-      continue;
-    if (getForInitArgIndex(use))
-      continue;
-    return op.emitOpError("async result must be consumed by tle.wgmma_wait "
-                          "before ordinary tensor use");
   }
   return success();
 }
