@@ -1,7 +1,7 @@
 H20 * 1
 harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.11.0_cu130-cuda13.0-ubuntu24.04:202609-3.6-vllm0.24.0
 KMD Version: 610.43.02
-cuda==13.3
+cuda==13.0
 vllm==0.24.0
 torch==2.11.0+cu130
 flashinfer-python==0.6.12
