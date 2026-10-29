@@ -19,6 +19,11 @@
 # SOFTWARE.
 """MetaX-specific TLE GPU primitives."""
 
+from triton._flagtree_backend import FLAGTREE_BACKEND
+from triton._flagtree_spec import spec_path
+
+spec_path(__path__)
+
 from .copy import async_copy_global_to_local
 from .sync import gvm_arrive, barrier, barrier_shared
 from .scheduling import sched_bound, iglp
@@ -28,3 +33,8 @@ __all__ = [
     "async_copy_global_to_local", "gvm_arrive", "barrier", "barrier_shared", "sched_bound", "iglp", "local_load",
     "bsm_perm"
 ]
+
+if FLAGTREE_BACKEND == "metax":
+    from .layouts import MmaEncoding, DotOperandEncoding
+
+    __all__ += ["MmaEncoding", "DotOperandEncoding"]

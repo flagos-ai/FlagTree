@@ -83,10 +83,7 @@ def set_layout(value, layout, _semantic=None):
     if not value.type.is_block():
         raise ValueError("tle.gpu.set_layout only supports block tensors")
     if not hasattr(_semantic.builder, "ensure_ttg_layout_attrs"):
-        raise RuntimeError("tle.gpu.set_layout requires a Triton build with __TLE__ explicit "
-                           "layout support (ir.builder.ensure_ttg_layout_attrs is missing). "
-                           "This backend likely uses its own TLE variant "
-                           "(e.g. __ILUVATAR_TLE__/__MCTLE__) that does not implement this op.")
+        raise RuntimeError("tle.gpu.set_layout requires explicit layout support in this backend build")
     options = _semantic.builder.options
     _semantic.builder.ensure_ttg_layout_attrs(
         int(getattr(options, "num_warps")),
@@ -94,6 +91,8 @@ def set_layout(value, layout, _semantic=None):
         int(getattr(options, "num_ctas", 1)),
     )
     target_encoding = layout.to_ir(_semantic.builder)
+    if tle_semantic.COMMON_IR_ENABLED and hasattr(_semantic.builder, "create_tile_set_layout"):
+        return tl.tensor(_semantic.builder.create_tile_set_layout(value.handle, target_encoding), value.type)
     return tl.tensor(
         _semantic.builder.create_tle_gpu_set_layout(value.handle, target_encoding),
         value.type,

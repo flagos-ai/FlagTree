@@ -40,6 +40,7 @@
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "triton/Tools/LayoutUtils.h"
 #include <algorithm>
 #include <cctype>
 #endif
@@ -87,6 +88,21 @@ llvm::raw_ostream &mlir_dumps_or_dbgs() {
 }
 
 #ifdef __FLAGTREE_COMMON_IR__
+template <typename Attr, typename... Args>
+static Attr checkedLayout(TritonOpBuilder &builder, Args &&...args) {
+  std::string message;
+  llvm::raw_string_ostream os(message);
+  ScopedDiagnosticHandler handler(builder.getContext(), [&](Diagnostic &diag) {
+    diag.print(os);
+  });
+  auto attr = Attr::getChecked(
+      [&] { return mlir::emitError(builder.getLastLoc()); },
+      std::forward<Args>(args)...);
+  if (!attr)
+    throw std::invalid_argument(message);
+  return attr;
+}
+
 // Lower-case textual form of an attribute, used to map a spelled memory space
 // (e.g. #ttg.shared / "shared") onto a CommonIR MemorySpace enum case.
 static std::string attrToLowerString(Attribute attr) {
@@ -2025,6 +2041,116 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
              if (targetLayout)
                op->setAttr("tle.gpu_layout", *targetLayout);
              return op.getResult();
+           })
+      .def("get_blocked_encoding",
+           [](TritonOpBuilder &self, const std::vector<unsigned> &sizePerThread,
+              const std::vector<unsigned> &threadsPerWarp,
+              const std::vector<unsigned> &warpsPerCTA,
+              const std::vector<unsigned> &order,
+              const std::vector<std::vector<int32_t>> &cgaBases) -> Attribute {
+             if (!cgaBases.empty())
+               throw std::invalid_argument(
+                   "MetaX set_layout currently requires a single CTA");
+             auto ctx = self.getContext();
+             return checkedLayout<ttg::BlockedEncodingAttr>(
+                 self, ctx, ArrayRef<unsigned>(sizePerThread),
+                 ArrayRef<unsigned>(threadsPerWarp),
+                 ArrayRef<unsigned>(warpsPerCTA), ArrayRef<unsigned>(order),
+                 ttg::CTAEncodingAttr::getDefault(ctx, order.size()));
+           })
+      .def("get_distributed_linear_layout",
+           [](TritonOpBuilder &self,
+              const std::vector<std::vector<int32_t>> &regBases,
+              const std::vector<std::vector<int32_t>> &laneBases,
+              const std::vector<std::vector<int32_t>> &warpBases,
+              const std::vector<std::vector<int32_t>> &blockBases,
+              const std::vector<int64_t> &shape) -> Attribute {
+             auto ctx = self.getContext();
+             // Python checks dimensions and bounds. Report incomplete coverage
+             // as a compilation error rather than a LinearLayout assertion.
+             tt::LinearLayout layout(
+                 {{StringAttr::get(ctx, "register"), regBases},
+                  {StringAttr::get(ctx, "lane"), laneBases},
+                  {StringAttr::get(ctx, "warp"), warpBases},
+                  {StringAttr::get(ctx, "block"), blockBases}},
+                 tt::standardOutDimPairs(ctx, shape),
+                 /*requireSurjective=*/false);
+             if (!layout.isSurjective())
+               throw std::invalid_argument(
+                   "distributed linear layout must cover every element of shape");
+             return checkedLayout<ttg::LinearEncodingAttr>(self, ctx, layout);
+           })
+      .def("make_shared_linear_encoding_attr",
+           [](TritonOpBuilder &self,
+              const std::vector<std::vector<int32_t>> &offsetBases,
+              const std::vector<std::vector<int32_t>> &blockBases,
+              unsigned alignment, unsigned rank) -> Attribute {
+             if (!blockBases.empty())
+               throw std::invalid_argument(
+                   "MetaX shared linear layout currently requires a single CTA");
+             auto ctx = self.getContext();
+             SmallVector<int64_t> shape(rank, 1);
+             for (const auto &basis : offsetBases)
+               for (unsigned i = 0; i < rank; ++i)
+                 shape[i] = std::max<int64_t>(
+                     shape[i], llvm::NextPowerOf2(basis[i]));
+             tt::LinearLayout layout(
+                 {{StringAttr::get(ctx, "offset"), offsetBases},
+                  {StringAttr::get(ctx, "block"), blockBases}},
+                 tt::standardOutDimPairs(ctx, shape),
+                 /*requireSurjective=*/false);
+             return checkedLayout<ttg::SharedLinearEncodingAttr>(
+                 self, ctx, layout, alignment);
+           })
+      .def("get_metax_mma_layout",
+           [](TritonOpBuilder &self, const std::vector<unsigned> &version,
+              const std::vector<unsigned> &warpsPerCTA,
+              const std::vector<unsigned> &elementsMNK,
+              bool colMajor) -> Attribute {
+             if (version.size() != 2 || warpsPerCTA.size() != 2 ||
+                 elementsMNK.size() != 3)
+               throw std::invalid_argument(
+                   "MetaX MMA layout requires version[2], warps_per_cta[2], "
+                   "elements_mnk[3]");
+             auto ctx = self.getContext();
+             return ttg::MACAMmaEncodingAttr::get(
+                 ctx, version[0], version[1],
+                 ArrayRef<unsigned>(warpsPerCTA), ArrayRef<unsigned>(elementsMNK),
+                 unsigned(colMajor), ttg::CTAEncodingAttr::getDefault(ctx, 2),
+                 false, false, ArrayRef<unsigned>({1, 1}));
+           })
+      .def("get_dot_operand_layout",
+           [](TritonOpBuilder &self, unsigned opIdx, Attribute parent,
+              unsigned kWidth) -> Attribute {
+             return checkedLayout<ttg::DotOperandEncodingAttr>(
+                 self, self.getContext(), opIdx, parent, kWidth);
+           })
+      .def("get_sliced_encoding",
+           [](TritonOpBuilder &self, unsigned dim, Attribute parent) -> Attribute {
+             auto distributed = dyn_cast<ttg::DistributedEncodingTrait>(parent);
+             if (!distributed)
+               throw std::invalid_argument("expected a distributed parent layout");
+             return checkedLayout<ttg::SliceEncodingAttr>(
+                 self, self.getContext(), dim, distributed);
+           })
+      .def("ensure_ttg_layout_attrs",
+           [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
+              int numCTAs) {
+             auto *block = self.getBuilder().getInsertionBlock();
+             auto module = block ? block->getParentOp()->getParentOfType<ModuleOp>()
+                                 : ModuleOp();
+             if (!module)
+               throw std::invalid_argument("cannot find module for layout attributes");
+             auto &builder = self.getBuilder();
+             module->setAttr("ttg.num-warps", builder.getI32IntegerAttr(numWarps));
+             module->setAttr("ttg.threads-per-warp",
+                             builder.getI32IntegerAttr(threadsPerWarp));
+             module->setAttr("ttg.num-ctas", builder.getI32IntegerAttr(numCTAs));
+           })
+      .def("create_tile_set_layout",
+           [](TritonOpBuilder &self, Value value, Attribute layout) -> Value {
+             return self.create<mlir::triton::tile::SetLayoutOp>(
+                 value.getType(), value, layout);
            })
       .def("create_tile_copy",
            [](TritonOpBuilder &self, Value &src, Value &dst,

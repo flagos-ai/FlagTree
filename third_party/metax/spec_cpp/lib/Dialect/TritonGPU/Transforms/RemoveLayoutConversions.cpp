@@ -1,3 +1,6 @@
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
+#endif
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -34,6 +37,14 @@ namespace mlir::triton::gpu {
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace {
+
+bool isCommonIRExplicitConvertLayoutOp(ConvertLayoutOp op) {
+#ifdef __FLAGTREE_COMMON_IR__
+  return bool(tile::getExplicitResultEncoding(op, 0));
+#else
+  return false;
+#endif
+}
 
 // -----------------------------------------------------------------------------
 //
@@ -183,6 +194,10 @@ void LayoutRematerialization::cleanup() {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
+  // Physical tensor slices select registers using layout-dependent indices.
+  // Preserve those layouts and propagate them to users, including loop yields.
+  if (isa<ExtractTensorOp, InsertTensorOp>(op))
+    return true;
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))
@@ -219,6 +234,11 @@ void LayoutPropagation::initAnchorLayout() {
   }
 
   funcOp.walk([&](Operation *op) {
+#ifdef __FLAGTREE_COMMON_IR__
+    for (OpResult result : op->getResults())
+      if (tile::getExplicitResultEncoding(op, result.getResultNumber()))
+        addAnchor(result);
+#endif
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
         addAnchor(result);
@@ -233,6 +253,10 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
   for (Value value : values) {
     if (!isa<RankedTensorType>(value.getType()))
       continue;
+#ifdef __FLAGTREE_COMMON_IR__
+    if (tile::getExplicitValueEncoding(value))
+      continue;
+#endif
     bool hasChanged = false;
     for (auto encoding : info.encodings) {
       Attribute dstEncoding;
@@ -722,6 +746,10 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
     auto newType = tensorType.cloneWithEncoding(encoding);
     auto cvt = ConvertLayoutOp::create(rewriter, op->getLoc(), newType, src);
+#ifdef __FLAGTREE_COMMON_IR__
+    if (Attribute explicitEncoding = tile::getExplicitResultEncoding(op, 0))
+      tile::setExplicitResultEncoding(cvt, 0, explicitEncoding);
+#endif
     map(op->getResult(0), cvt.getResult());
     return cvt.getOperation();
   }
@@ -996,8 +1024,19 @@ LogicalResult LayoutRematerialization::getConvertBackwardSlice(
     return Value();
   };
 
-  return mlir::getConvertBackwardSlice(root, slice, rootEncoding, layout,
-                                       stopPropagation, getExistingConversion);
+  if (failed(mlir::getConvertBackwardSlice(
+          root, slice, rootEncoding, layout, stopPropagation,
+          getExistingConversion)))
+    return failure();
+  // Rematerialization must not recreate an explicitly constrained value in
+  // another encoding. Leave a conversion at that boundary instead.
+#ifdef __FLAGTREE_COMMON_IR__
+  for (Value value : slice)
+    if (Attribute encoding = tile::getExplicitValueEncoding(value))
+      if (encoding != layout.lookup(value))
+        return failure();
+#endif
+  return success();
 }
 
 LogicalResult LayoutRematerialization::getRematerializableSlice(
@@ -1107,6 +1146,9 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 
 void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
+  if (isCommonIRExplicitConvertLayoutOp(convertOp))
+    return;
+
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -1276,6 +1318,9 @@ void LayoutRematerialization::hoistConvertDotOperand() {
 
 void LayoutRematerialization::hoistConvertDotOperand(
     ConvertLayoutOp convertOp) {
+  if (isCommonIRExplicitConvertLayoutOp(convertOp))
+    return;
+
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
 
@@ -1386,6 +1431,9 @@ void LayoutRematerialization::hoistConvertDotOperand(
 // of the convert.
 void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
     ConvertLayoutOp convertOp) {
+  if (isCommonIRExplicitConvertLayoutOp(convertOp))
+    return;
+
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -1484,6 +1532,9 @@ void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
 
 void LayoutRematerialization::hoistConvertIntoConditionals(
     ConvertLayoutOp convertOp) {
+  if (isCommonIRExplicitConvertLayoutOp(convertOp))
+    return;
+
   // Take the backward slice of tensor dependencies rooted at the conversion,
   // stopping at conditionals. This subslice is used to initialize the analysis.
   SetVector<Value> slice;

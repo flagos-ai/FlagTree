@@ -3,6 +3,12 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TritonMETAXGPULegalizeAsyncCopy : Pass<"tritonmetaxgpu-legalize-async-copy", "mlir::ModuleOp"> {
+  let summary = "Make async copy input layouts compatible with wave shared addressing";
+  let constructor = "mlir::createTritonMETAXGPULegalizeAsyncCopyPass()";
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def TritonMETAXGPUAccelerateMatmul : Pass<"tritonmetaxgpu-accelerate-matmul", "mlir::ModuleOp"> {
   let summary = "accelerate matmul";
 

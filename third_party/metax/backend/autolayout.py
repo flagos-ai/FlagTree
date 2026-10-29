@@ -2,8 +2,9 @@
 
 import hashlib
 import logging
+from dataclasses import replace
 
-from triton._C.libtriton import ir, metax, passes
+from triton._C.libtriton import metax
 from triton._common_ir import ENABLED
 from triton.runtime.cache import get_cache_manager
 
@@ -39,37 +40,11 @@ def compose_kernel_candidates(domains):
     return candidates or [fallback]
 
 
-def apply_dot_layout_candidate(module, candidate, capability, num_warps):
-    """Apply one dot_id -> plan assignment to TTGIR in the same context."""
-    layouts = {dot_id: [plan[key] for key in ("mma", "operand_a", "operand_b")] for dot_id, plan in candidate.items()}
-    pm = ir.pass_manager(module.context)
-    pm.enable_debug()
-    passes.commonir.add_apply_layout_plan(pm, capability, num_warps, layouts)
-    passes.commonir.add_lower_tensor_tiles(pm)
-    pm.run(module, "apply_dot_layout_candidate")
-    return module
-
-
-def prepare_dot_layouts(module, options, capability):
-    pm = ir.pass_manager(module.context)
-    passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", options.num_warps, 64, options.num_ctas)
-    passes.ttgpuir.add_coalesce(pm)
-    passes.ttgpuir.add_f32_dot_tc(pm, False)
-    passes.ttgpuir.add_remove_layout_conversions(pm)
-    passes.ttgpuir.add_optimize_thread_locality(pm)
-    pm.run(module, "commonir_prepare_dot_layouts")
-    return module
-
-
-def finalize_dot_layouts(module, capability):
-    pm = ir.pass_manager(module.context)
-    passes.ttgpuir.add_remove_layout_conversions(pm)
-    passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
-    passes.common.add_canonicalizer(pm)
-    passes.common.add_cse(pm)
-    passes.ttgpuir.add_reduce_data_duplication(pm)
-    passes.ttgpuir.add_reorder_instructions(pm)
-    pm.run(module, "commonir_finalize_dot_layouts")
+def insert_dot_layout_candidate(module, candidate, capability, num_warps):
+    """Insert candidate A/B/result anchors in unencoded TTIR."""
+    layouts = {dot_id: [plan[key] for key in ("mma", "operand_a", "operand_b")]
+               for dot_id, plan in candidate.items()}
+    metax.autolayout.insert_dot_layout_hints(module, capability, num_warps, layouts)
     return module
 
 
@@ -78,11 +53,11 @@ def make_ttgir_candidates(module, metadata, options, capability, backend):
         raise ValueError("autolayout requires a FLAGTREE_COMMON_IR build")
     dots = []
     module.walk(lambda op: dots.append(op) if op.get_name() == "tt.dot" else None)
+    normal_options = replace(options, autolayout=False)
     if not dots:
-        return backend.make_ttgir(module, metadata, options, capability)
+        return backend.make_ttgir(module, metadata, normal_options, capability)
 
-    prepared = prepare_dot_layouts(module, options, capability)
-    domains = metax.autolayout.enumerate_dot_layout_plans(prepared, capability, options.num_warps)
+    domains = metax.autolayout.enumerate_dot_layout_plans(module, capability, options.num_warps)
     assignments = compose_kernel_candidates(domains)
     cache = get_cache_manager(metadata["hash"])
     variants, failures = [], []
@@ -94,9 +69,10 @@ def make_ttgir_candidates(module, metadata, options, capability, backend):
             for dot_id, plan in assignment.items()
         }
         try:
-            variant = prepared.clone()
-            apply_dot_layout_candidate(variant, assignment, capability, options.num_warps)
-            finalize_dot_layouts(variant, capability)
+            variant = module.clone()
+            insert_dot_layout_candidate(variant, assignment, capability, options.num_warps)
+            variant_metadata = dict(metadata)
+            variant = backend.make_ttgir(variant, variant_metadata, normal_options, capability)
         except Exception as error:
             failures.append({"plans": selection, "error": str(error)})
             logging.getLogger(__name__).warning("CommonIR layout candidate %d failed: %s", index, error)
@@ -108,6 +84,7 @@ def make_ttgir_candidates(module, metadata, options, capability, backend):
         variants.append({"id": digest, "file": filename, "plans": selection})
         if fallback is None:
             fallback = variant
+            metadata.update(variant_metadata)
 
     if fallback is None:
         details = "; ".join(item["error"] for item in failures)
