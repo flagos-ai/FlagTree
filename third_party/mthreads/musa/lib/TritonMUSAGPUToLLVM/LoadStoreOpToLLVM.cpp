@@ -3,6 +3,9 @@
 #include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
+#ifdef __TLE__
+#include "MUSATLE/Transforms/TransformAttrs.h"
+#endif
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include <cstdlib>
@@ -1364,7 +1367,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
       auto ws = partitions ? dyn_cast<triton::gpu::WarpSpecializeOp>(
                                  partitions->getParentOp())
                            : triton::gpu::WarpSpecializeOp();
-      if (ws && ws->hasAttr("musa_tle.static_warp_specialize")) {
+      if (ws &&
+          ws->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr)) {
         std::optional<int> partitionStartThread =
             getWarpGroupStartThreadId(op->getBlock());
         if (!partitionStartThread || *partitionStartThread < 0) {

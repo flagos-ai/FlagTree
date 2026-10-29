@@ -1,4 +1,5 @@
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/BarrierUtils.h"
 #include "TritonMUSACommon/MemDescUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
@@ -245,15 +246,18 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
       auto asyncCopy = triton::musa::createAsyncTMECopyGlobalToLocal(
           rewriter, loc, op.getSrc(), *coord, completionBarrier, op.getDst(),
           pred, *config);
-      asyncCopy->setAttr("musa_tle.expect_bytes",
+      asyncCopy->setAttr(triton::musa::kTLEExpectBytesAttr,
                          rewriter.getI32IntegerAttr(expectBytes.getInt()));
       if (Attribute completionGroup =
               op->getAttr(triton::musa::kTLECompletionGroupAttr))
         asyncCopy->setAttr(triton::musa::kTLECompletionGroupAttr,
                            completionGroup);
-      if (op->hasAttr(triton::musa::kTLEPipeDeferredArrivalAttr))
+      if (op->hasAttr(triton::musa::kTLEPipeDeferredArrivalAttr)) {
         asyncCopy->setAttr(triton::musa::kTLEPipeDeferredArrivalAttr,
                            rewriter.getUnitAttr());
+        asyncCopy->setAttr(triton::musa_tle::kMUSATLEPipePayloadCopyAttr,
+                           rewriter.getUnitAttr());
+      }
       rewriter.eraseOp(op);
       return success();
     }

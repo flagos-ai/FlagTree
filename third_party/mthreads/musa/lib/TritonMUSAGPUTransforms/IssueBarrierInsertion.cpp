@@ -1,6 +1,7 @@
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
 #ifdef __TLE__
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #endif // __TLE__
 #include "TritonMUSAGPUTransforms/Passes.h"
@@ -64,7 +65,7 @@ static bool isIssueBarrier(ttg::BarrierOp barrier) {
 static bool isInsideStaticWarpSpecialize(Operation *op) {
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
-    if (parent->hasAttr("musa_tle.static_warp_specialize"))
+    if (parent->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr))
       return true;
   }
   return false;
@@ -91,7 +92,8 @@ shouldInsertIssueBarrierBefore(triton::musa::AsyncTMECopyLocalToGlobalOp op) {
 static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
 #ifdef __TLE__
   bool partitionLocal = isInsideStaticWarpSpecialize(op);
-  if (partitionLocal && op->hasAttr("musa_tle.explicit_sqmma"))
+  if (partitionLocal &&
+      op->hasAttr(triton::musa_tle::kMUSATLEExplicitSqmmaAttr))
     return false;
 
   Operation *prev = op->getPrevNode();

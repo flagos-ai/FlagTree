@@ -195,6 +195,52 @@ void __DivVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
   // Destroy the command buffer.
 }
 
+void __MaxVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
+             RND_MODE reserved, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
+  // Create command buffer.
+  RcsArith *cmd = g_intrinsic()->arith_pointer;
+  RcsArithInstr inst = {I_CGRA,
+                        {
+                            0,
+                        },
+                        {
+                            0,
+                        }};
+
+  cmd->MaxVS(&inst, (uint64_t)src0, src1, (uint64_t)dst, elem_count, reserved,
+             (Data_Format)fmt);
+
+  // Dispatch the command to accelerator
+  RcsExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
+
+  // Destroy the command buffer.
+}
+
+void __MinVS(uint64_t *src0, uint32_t src1, uint64_t *dst, uint32_t elem_count,
+             RND_MODE reserved, uint16_t fmt) {
+  INTRNISIC_RUN_SWITCH;
+  // Create command buffer.
+  RcsArith *cmd = g_intrinsic()->arith_pointer;
+  RcsArithInstr inst = {I_CGRA,
+                        {
+                            0,
+                        },
+                        {
+                            0,
+                        }};
+
+  cmd->MinVS(&inst, (uint64_t)src0, src1, (uint64_t)dst, elem_count, reserved,
+             (Data_Format)fmt);
+
+  // Dispatch the command to accelerator
+  RcsExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
+
+  // Destroy the command buffer.
+}
+
 void __MaxVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
              RND_MODE reserved, uint16_t fmt) {
   INTRNISIC_RUN_SWITCH;
