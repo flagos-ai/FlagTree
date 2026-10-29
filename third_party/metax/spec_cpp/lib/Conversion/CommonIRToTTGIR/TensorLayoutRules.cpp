@@ -1,5 +1,5 @@
 #include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
-#include "TritonMETAXGPUTransforms/AsyncCopyUtils.h"
+#include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -158,7 +158,7 @@ void collectLegalCopyLayoutRequirements(
   for (auto copy : copies) {
     auto type = copy.getSrc().getType();
     auto preferred = getCopyCoalescedPreference(module, copy, axisInfo);
-    auto encoding = METAX::chooseAsyncCopyLayout(
+    auto encoding = chooseAsyncCopyLayout(
         type.cloneWithEncoding(preferred), copy.getResult().getType(),
         axisInfo.getAxisInfo(copy.getSrc()));
     if (!encoding)

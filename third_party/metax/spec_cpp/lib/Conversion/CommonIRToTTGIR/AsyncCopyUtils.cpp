@@ -1,10 +1,18 @@
-#include "TritonMETAXGPUTransforms/AsyncCopyUtils.h"
+#include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
-namespace mlir::triton::METAX {
+namespace mlir::triton::metax {
+
+bool isAsyncCopyDestinationSupported(gpu::MemDescType destination) {
+  auto shared =
+      dyn_cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
+  // Native LLVM lowering drops allocShape when removing the swizzle.
+  return shared && (shared.getMaxPhase() == 1 ||
+                    destination.getAllocShape() == destination.getShape());
+}
 
 gpu::MemDescType getAsyncCopyLinearDestination(gpu::MemDescType destination) {
   auto shared = cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
@@ -43,7 +51,8 @@ gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
   auto blocked = dyn_cast<gpu::BlockedEncodingAttr>(source.getEncoding());
   auto shared =
       dyn_cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
-  if (!blocked || !shared || source.getShape() != destination.getShape())
+  if (!blocked || !shared || !isAsyncCopyDestinationSupported(destination) ||
+      source.getShape() != destination.getShape())
     return {};
   auto compatible = [&](RankedTensorType candidate) {
     unsigned vec = getAsyncCopyVectorSize(candidate, destination, sourceInfo);
@@ -71,7 +80,7 @@ gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
 bool isAsyncCopyLayoutCompatible(RankedTensorType source,
                                 gpu::MemDescType destination, unsigned vec) {
   if (!isa<gpu::BlockedEncodingAttr>(source.getEncoding()) ||
-      !isa<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding()) ||
+      !isAsyncCopyDestinationSupported(destination) ||
       source.getShape() != destination.getShape() || !llvm::isPowerOf2_32(vec))
     return false;
 
@@ -106,4 +115,4 @@ bool isAsyncCopyLayoutCompatible(RankedTensorType source,
   return true;
 }
 
-} // namespace mlir::triton::METAX
+} // namespace mlir::triton::metax

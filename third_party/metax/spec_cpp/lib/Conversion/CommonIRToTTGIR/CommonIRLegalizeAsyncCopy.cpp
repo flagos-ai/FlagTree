@@ -1,19 +1,17 @@
-#include "TritonMETAXGPUTransforms/AsyncCopyUtils.h"
-#include "TritonMETAXGPUTransforms/Passes.h"
+#include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
+#include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 
-using namespace mlir;
-using namespace mlir::triton;
-using namespace mlir::triton::METAX;
+namespace mlir::triton::metax {
 namespace ttg = mlir::triton::gpu;
 
-#define GEN_PASS_CLASSES
-#include "TritonMETAXGPUTransforms/Passes.h.inc"
+#define GEN_PASS_DEF_COMMONIRLEGALIZEASYNCCOPY
+#include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 namespace {
 
-class LegalizeAsyncCopy
-    : public TritonMETAXGPULegalizeAsyncCopyBase<LegalizeAsyncCopy> {
+class CommonIRLegalizeAsyncCopyPass
+    : public impl::CommonIRLegalizeAsyncCopyBase<CommonIRLegalizeAsyncCopyPass> {
 public:
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -31,6 +29,11 @@ public:
       if (!blocked || !shared) {
         copy.emitOpError(
             "requires blocked source and swizzled shared destination");
+        return signalPassFailure();
+      }
+      if (!isAsyncCopyDestinationSupported(dstTy)) {
+        copy.emitOpError("native MetaX async copy does not support swizzled "
+                         "shared views with a different allocation shape");
         return signalPassFailure();
       }
       auto *info = axisInfo.getAxisInfo(copy.getSrc());
@@ -57,7 +60,4 @@ public:
 };
 
 } // namespace
-
-std::unique_ptr<Pass> mlir::createTritonMETAXGPULegalizeAsyncCopyPass() {
-  return std::make_unique<LegalizeAsyncCopy>();
-}
+} // namespace mlir::triton::metax

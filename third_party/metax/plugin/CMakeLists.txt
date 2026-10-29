@@ -26,7 +26,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
   target_sources(metaxTritonPlugin PRIVATE
     $<TARGET_OBJECTS:TritonMETAXGPUToLLVM>
     $<TARGET_OBJECTS:TritonMETAXGPUTransforms>
-    $<TARGET_OBJECTS:MetaxAsyncCopyUtils>
   )
   target_link_libraries(metaxTritonPlugin PRIVATE
     $<TARGET_FILE:MLIRMACADialect>
