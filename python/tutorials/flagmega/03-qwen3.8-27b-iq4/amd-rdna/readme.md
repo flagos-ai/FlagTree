@@ -72,6 +72,23 @@ measured on one card (ms/token, Synthetic32 / Chinese64): none 28.26 / 28.27,
 72 B of scratch (13 SGPR spills go to VGPR lanes). gfx1100 has no
 `s_prefetch_data` and renders unchanged.
 
+On gfx1201 the GDN layers also write the fp32 recurrent state with a
+nontemporal store (`.cs`; only its owner reads it again, on the next token), and
+the convolution tile loads all history slots before it shifts the state, so the
+loads no longer wait behind the shifted stores
+(`gdn_{recurrent,convolution}/platforms/amd/gfx1201/`). Both keep the arithmetic
+order: logits are bitwise equal to the build without them, with 248 VGPRs and
+72 B of scratch. Together they take 0.14 ms off a token. gfx1100 renders
+unchanged: on the W7900 one of three processes with these changes diverged at
+step 3. Removing the GDN convolution and recurrent phases entirely saves about
+1.3 ms per token, against about 0.74 ms for llama.cpp's whole GDN. The
+recurrent core (about 1.1 ms of that) is latency-bound on layout conversions
+between the `[16, 128]` state tiles and the per-value vectors. Preloading the
+next state tile or deferring the state stores kept logits bitwise but was
+slower (28.6 vs 27.5 ms). Keeping the norm in the head-tile layout spilled to
+360 B of scratch and was 1.3 ms slower. All of these run inside the
+248-VGPR megakernel.
+
 Sharing one quantization across CTAs or across the calls that consume the same
 input (in_proj qkv/z, attention q/k/v) was evaluated and not done: the norm
 that produces a GEMV input writes 40-value shards per CTA (5120 / 128), so no
@@ -84,7 +101,8 @@ replaces. The NVIDIA optimized path also quantizes per CTA.
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch (default) | **27.5** | **36.4** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores (default) | **27.3** | **36.6** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch | 27.5 | 36.4 |
 | FlagMega, q8_1 activations + `v_dot4`, no prefetch | 28.2 | 35.4 |
 | FlagMega, floating-point activations (`--q8-activations off`) | 30.1 | 33.2 |
 | FlagMega, RDNA native GGUF templates (before the attention/GDN changes) | 32.1 | 31.2 |
@@ -103,6 +121,10 @@ With the gfx1201 weight prefetch (same card, three interleaved rounds against
 the build without it): Synthetic32 27.54/27.47/27.45 ms vs 28.29/28.24/28.24 ms,
 Chinese64 27.46/27.43/27.44 ms vs 28.30/28.25/28.25 ms, about 8% faster than
 llama.cpp; tokens and logits are bitwise equal to the build without prefetch.
+With the gfx1201 GDN stores (three interleaved rounds against the build without
+them, graph replay): Synthetic32 27.33/27.31/27.40 ms vs 27.48/27.53/27.45 ms;
+Chinese64 27.34 ms vs 27.45 ms, about 9% faster than llama.cpp; 64 tokens and
+logits bitwise equal.
 Floating-point activations, before:
 Synthetic32: 29.90/30.09/30.04/30.11 ms (llama.cpp 29.93/29.87 ms);
 Chinese64: 30.08/30.20 ms (llama.cpp 29.62/29.60 ms). Model weight bandwidth
