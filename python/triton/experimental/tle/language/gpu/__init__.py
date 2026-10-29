@@ -40,6 +40,7 @@ from .core import (
     reinterpret_tensor_map,
 )
 from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, DotOperandEncoding, SlicedEncoding,
+                    DistributedLinearLayout, SharedLinearLayout,
                     shared_layout, swizzled_shared_layout, tensor_memory_layout, nv_mma_shared_layout, scope,
                     buffered_tensor, buffered_tensor_type, barrier, barrier_type, smem, tmem, PENDING, READY)
 from . import metax
@@ -73,6 +74,8 @@ __all__ = [
     "MmaEncoding",
     "DotOperandEncoding",
     "SlicedEncoding",
+    "DistributedLinearLayout",
+    "SharedLinearLayout",
     "memory_space",
     "shared_layout",
     "swizzled_shared_layout",

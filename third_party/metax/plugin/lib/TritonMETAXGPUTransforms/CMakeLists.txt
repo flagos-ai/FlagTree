@@ -2,6 +2,7 @@
 add_triton_library(TritonMETAXGPUTransforms
   AccelerateMETAXMatmul.cpp
   MACACommon.cpp
+  LegalizeAsyncCopy.cpp
   PipelineMACABasic.cpp
   PipelineAsyncBase.cpp
   PipelineAsyncTN.cpp
@@ -17,6 +18,9 @@ add_triton_library(TritonMETAXGPUTransforms
   DEPENDS
   TritonMETAXGPUTransformsIncGen
   TritonGPUIR
+
+  LINK_LIBS PUBLIC
+  MetaxAsyncCopyUtils
 )
 
 target_include_directories(TritonMETAXGPUTransforms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)

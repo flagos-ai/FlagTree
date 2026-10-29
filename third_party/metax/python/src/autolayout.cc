@@ -3,6 +3,9 @@
 #include "mlir/IR/Diagnostics.h"
 #include "llvm/Support/raw_ostream.h"
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <array>
+#include <map>
 
 namespace py = pybind11;
 
@@ -58,4 +61,24 @@ void init_triton_metax_autolayout(py::module &&m) {
       "context.\n"
       "Leave the module unchanged; apply candidates to it or its clones.\n"
       "Raise ValueError for unsupported dots; return [] if there are no dots.");
+  m.def(
+      "insert_dot_layout_hints",
+      [](mlir::ModuleOp module, int capability, int numWarps,
+         const std::map<std::string, std::array<mlir::Attribute, 3>> &layouts) {
+        llvm::StringMap<mlir::triton::metax::DotLayoutPlan> plans;
+        for (const auto &[id, encodings] : layouts)
+          plans[id] = {encodings[0], encodings[1], encodings[2]};
+        std::string diagnostics;
+        mlir::ScopedDiagnosticHandler handler(
+            module.getContext(), [&](mlir::Diagnostic &diag) {
+              llvm::raw_string_ostream os(diagnostics);
+              os << diag << '\n';
+              return mlir::success();
+            });
+        if (mlir::failed(mlir::triton::metax::insertDotLayoutHints(
+                module, capability, numWarps, plans)))
+          throw py::value_error("failed to insert dot layout hints: " + diagnostics);
+      },
+      py::arg("module"), py::arg("capability"), py::arg("num_warps"),
+      py::arg("layouts"));
 }

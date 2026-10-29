@@ -26,6 +26,8 @@ namespace py = pybind11;
 
 PLUGIN_EXPORT void init_triton_metax_passes_ttgpuir(py::module &&m) {
   using namespace mlir::triton;
+  ADD_PASS_WRAPPER_0("add_legalize_async_copy",
+                     mlir::createTritonMETAXGPULegalizeAsyncCopyPass);
   m.def("add_to_llvmir", [](mlir::PassManager &pm, int32_t capability) {
     pm.addPass(
         mlir::triton::METAX::createConvertTritonGPUToLLVMPass(capability));

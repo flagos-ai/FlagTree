@@ -972,6 +972,11 @@ public:
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
 
+#ifdef __FLAGTREE_COMMON_IR__
+    if (failed(triton::metax::applyCommonIRLayoutHints(mod)))
+      return signalPassFailure();
+#endif
+
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
   }
