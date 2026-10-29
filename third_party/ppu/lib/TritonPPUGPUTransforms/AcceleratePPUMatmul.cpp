@@ -110,6 +110,14 @@ static int getMMAVersionSafe(int computeCapability, DotOp op) {
   return 0;
 }
 
+// Whether a warp layout gives every warp its own 16-wide MMA tiles along M and
+// N; a layout with more warps than tiles makes warps compute duplicate tiles.
+static bool warpsFitShape(ArrayRef<unsigned> warps, ArrayRef<int64_t> shape) {
+  auto rank = shape.size();
+  return warps.size() == rank && warps[rank - 2] * 16 <= shape[rank - 2] &&
+         warps[rank - 1] * 16 <= shape[rank - 1];
+}
+
 SmallVector<unsigned, 2> warpsPerTileMmaV1(DotOpInterface dotOp,
                                            const ArrayRef<int64_t> shape,
                                            int numWarps) {
@@ -124,6 +132,7 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1(DotOpInterface dotOp,
   };
   auto slices = mlir::getSlice(dotOp, {filter}, {filter});
   bool hasChainedDot = false;
+  std::optional<SmallVector<unsigned>> inherited;
   for (Operation *op : slices) {
     if (isa<DotOp>(op) && (op != dotOp)) {
       auto chainedDot = cast<DotOp>(op);
@@ -133,16 +142,27 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1(DotOpInterface dotOp,
       }
       if (auto mmaEncoding =
               dyn_cast<PPUMmaEncodingAttr>(resTy.getEncoding())) {
-        // return getWarpsPerCTA(mmaEncoding);
-        return to_vector(mmaEncoding.getWarpsPerCTA());
+        // Share the chained dot's warp layout unless it would replicate this
+        // dot's work; then use this dot's own heuristic below, unless that
+        // replicates work too (see orInherited).
+        auto warps = to_vector(mmaEncoding.getWarpsPerCTA());
+        if (warpsFitShape(warps, shape))
+          return warps;
+        inherited = warps;
+        continue;
       }
       hasChainedDot = true;
     }
   }
+  // A fallback that does not fit either gains nothing over the chained dot's
+  // layout and adds a layout conversion between the two dots.
+  auto orInherited = [&](SmallVector<unsigned> ret) {
+    return inherited && !warpsFitShape(ret, shape) ? *inherited : ret;
+  };
   if (hasChainedDot) {
     int64_t MaxWarpM = 16 * numWarps;
     if (MaxWarpM <= shape[0]) {
-      return {(unsigned)numWarps, 1};
+      return orInherited({(unsigned)numWarps, 1});
     }
   }
 
@@ -172,7 +192,7 @@ SmallVector<unsigned, 2> warpsPerTileMmaV1(DotOpInterface dotOp,
       reps[1] /= 2;
     }
   }
-  return {(unsigned)warps[0], (unsigned)warps[1]};
+  return orInherited({(unsigned)warps[0], (unsigned)warps[1]});
 }
 
 SmallVector<unsigned> warpsPerTileMmaV2(DotOpInterface dotOp,
@@ -189,7 +209,7 @@ SmallVector<unsigned> warpsPerTileMmaV2(DotOpInterface dotOp,
   };
   auto slices = mlir::getSlice(dotOp, {filter}, {filter});
   bool hasChainedDot = false;
-
+  std::optional<SmallVector<unsigned>> inherited;
   for (Operation *op : slices) {
     if (isa<DotOp>(op) && (op != dotOp)) {
       auto chainedDot = cast<DotOp>(op);
@@ -199,18 +219,30 @@ SmallVector<unsigned> warpsPerTileMmaV2(DotOpInterface dotOp,
       }
       if (auto mmaEncoding =
               dyn_cast<PPUMmaEncodingAttr>(resTy.getEncoding())) {
-        return to_vector(mmaEncoding.getWarpsPerCTA());
+        // Share the chained dot's warp layout unless it would replicate this
+        // dot's work; then use this dot's own heuristic below, unless that
+        // replicates work too (see orInherited).
+        auto warps = to_vector(mmaEncoding.getWarpsPerCTA());
+        if (warpsFitShape(warps, shape))
+          return warps;
+        inherited = warps;
+        continue;
       }
       hasChainedDot = true;
     }
   }
+  // A fallback that does not fit either gains nothing over the chained dot's
+  // layout and adds a layout conversion between the two dots.
+  auto orInherited = [&](SmallVector<unsigned> ret) {
+    return inherited && !warpsFitShape(ret, shape) ? *inherited : ret;
+  };
   if (hasChainedDot) {
     // PPUMmaV2 don't need chained dot optimization, but we still prefer to
     // assign warps to one axis to facilitate use cases like flash attention,
     // allowing reductions within the same warp.
     int64_t MaxWarpM = 16 * numWarps;
     if (MaxWarpM <= shape[0]) {
-      return {(unsigned)numWarps, 1};
+      return orInherited({(unsigned)numWarps, 1});
     }
   }
 
@@ -235,7 +267,7 @@ SmallVector<unsigned> warpsPerTileMmaV2(DotOpInterface dotOp,
       ret[1] *= 2;
     }
   } while (true);
-  return ret;
+  return orInherited(ret);
 }
 
 static LocalAllocOp
