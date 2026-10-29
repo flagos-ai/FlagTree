@@ -44,7 +44,11 @@ def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 //
 // Annotation Op
 //
-def AnnotationOp : TT_Ascend_Op<"annotation", [Pure, MemoryEffects<[MemWrite]>]> {
+// No `Pure`: this op carries `bind_buffer` / `debug_barrier` marks, so it must
+// not be speculatable (hoisting a buffer binding above the copy it binds is a
+// silent miscompile). `Pure` also contradicts the `MemWrite` effect below -- it
+// expands to AlwaysSpeculatable + NoMemoryEffect.
+def AnnotationOp : TT_Ascend_Op<"annotation", [MemoryEffects<[MemWrite]>]> {
   let summary = "Annotate a tensor with key-value attribute pairs";
   let description = [{
     `ascend.annotation` operation can be used to annotate a tensor with
@@ -377,7 +381,11 @@ def IndirectStoreOp : TT_Ascend_Op<"indirect_store", [
 //
 // Custom Op
 //
-def CustomOp : TT_Ascend_Op<"custom",  [Pure, MemoryEffects<[MemWrite]>]> {
+// No `Pure`: the ops that go through this carrier are the inter-core sync
+// builtins (`sync_block_all/set/wait`, see TritonToHIVM.cpp), which block. A
+// blocking op must not be speculated, duplicated or hoisted, and `Pure`
+// (AlwaysSpeculatable + NoMemoryEffect) also contradicts the `MemWrite` below.
+def CustomOp : TT_Ascend_Op<"custom",  [MemoryEffects<[MemWrite]>]> {
   let summary = "self-defined custom operation";
   let description = [{
     `ascend.custom` triton custom op is designed to pass self-defined custom operation.
