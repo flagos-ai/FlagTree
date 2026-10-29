@@ -1,0 +1,82 @@
+{#- AMD RDNA GDN recurrent body. A call whose value tiles provably stay inside
+    one value head (uniform_projection_rows) with native GGUF gate weights
+    computes both gates in one pass per head and keeps the core and norm tiles
+    in the [values, keys] layout: per-value quantities are [V, 1] columns.
+    Every other call keeps the generic body. #}
+{% set hoisted_calls = [] %}
+{% for call in render_calls %}
+{% if call.family == "gdn_recurrent" and call.variant == "persistent" and call.uniform_projection_rows | default(false)
+      and call.b_weight_encoding in ("IQ4_XS", "Q4_K") and call.a_weight_encoding in ("IQ4_XS", "Q4_K") %}
+{% set _ = hoisted_calls.append(call.symbol) %}
+{% endif %}
+{% endfor %}
+{% with render_calls = render_calls | rejectattr("symbol", "in", hoisted_calls) | list %}
+{% include "kernels/gdn_recurrent/_function.py.jinja" %}
+{% endwith %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.symbol in hoisted_calls %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    # Both gates and the normalized q/k rows are computed once per value head;
+    # per-value quantities are [V, 1] columns of the [V, K] tile layout.
+    cached_heads = tl.full((), -1, tl.int64)
+    beta = tl.zeros((), tl.float32)
+    decay = tl.zeros((), tl.float32)
+    normalized_key = tl.zeros(({{ call.value_tile }}, {{ call.head_block }}), tl.float32)
+    normalized_query = tl.zeros(({{ call.value_tile }}, {{ call.head_block }}), tl.float32)
+    for recurrent_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.value_tile }}
+    ):
+        local_values = recurrent_start + tl.arange(0, {{ call.value_tile }})[:, None]
+        recurrent_mask = (
+            (local_values < ({{ call.active_values }}))
+            & ({{ call.writer_active }})
+        )
+        global_values = {{ call.global_value }}
+        value_heads = (({{ call.global_projection_value }}) // {{ call.value_dim }}).to(tl.int64)
+        projection_active = (recurrent_start < ({{ call.active_values }})) & ({{ call.writer_active }})
+        if projection_active & (value_heads != cached_heads):
+            beta_projection, a_projection = _flagmega_amd_gdn_gate_rows(
+                {{ call.projection_input }}, {{ call.b_weight }}, {{ call.a_weight }}, value_heads,
+                {{ call.projection_dim }}, "{{ call.b_weight_encoding }}", "{{ call.a_weight_encoding }}",
+            )
+            beta, decay = _flagmega_gdn_head_gates(
+                beta_projection, a_projection, value_heads, projection_active,
+                {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }},
+                GATE_MATH_MODE="{{ call.gate_math_mode | default('accurate') }}",
+            )
+            # Every row is this head's row, whatever value the row holds.
+            normalized_key, normalized_query = _flagmega_amd_gdn_head_qk_columns(
+                {{ call.qkv }}, tl.zeros_like(global_values) + value_heads * {{ call.value_dim }},
+                tl.zeros_like(recurrent_mask) | projection_active,
+                {{ call.key_heads }}, {{ call.key_dim }}, {{ call.value_dim }}, {{ call.repeats }},
+                {{ call.head_block }}, {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }},
+                {{ call.round_normalized_qk }}, {{ call.tiled_value_heads | default(false) }},
+            )
+            cached_heads = tl.where(projection_active, value_heads, -1)
+        _flagmega_amd_gdn_core_hoisted(
+            {{ call.qkv }}, beta, decay, {{ call.state }},
+            {{ call.core_scratch }}, global_values, recurrent_mask,
+            normalized_key, normalized_query,
+            {{ call.key_heads }}, {{ call.key_dim }}, {{ call.head_block }}, {{ call.round_core }},
+        )
+{{ entry.stage_barrier() }}
+    for recurrent_norm_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.value_tile }}
+    ):
+        local_values = recurrent_norm_start + tl.arange(0, {{ call.value_tile }})[:, None]
+        recurrent_norm_mask = (
+            (local_values < ({{ call.active_values }}))
+            & ({{ call.writer_active }})
+        )
+        global_values = {{ call.global_value }}
+        _flagmega_amd_gdn_norm_columns(
+            {{ call.z }}, {{ call.result }}, {{ call.norm_weight }},
+            {{ call.core_scratch }}, {{ call.z_offset }}, {{ call.result_offset }}, global_values,
+            recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }},
+            ACCURATE_SILU={{ call.accurate_norm_silu | default(false) }},
+        )
+{% endif %}
+{% endfor %}

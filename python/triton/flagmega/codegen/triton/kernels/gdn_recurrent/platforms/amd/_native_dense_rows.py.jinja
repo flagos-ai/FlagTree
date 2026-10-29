@@ -22,4 +22,4 @@ def _flagmega_amd_gdn_native_row(source, weight, row, K: tl.constexpr, FORMAT: t
         rows8 = tl.zeros((8, ), tl.int64) + row.to(tl.int64) * ((K // 256) * 144)
         result = tl.max(_flagmega_amd_q4_k_rows8(source, weight, rows8, K), axis=0)
     return result
-
+{% include "kernels/gdn_recurrent/platforms/amd/_head_hoisted.py.jinja" %}

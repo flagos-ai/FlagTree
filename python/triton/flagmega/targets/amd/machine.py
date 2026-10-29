@@ -113,6 +113,12 @@ class _AmdRdnaMachine:
     # of RDNA-native tiles is later Target work; correctness first.)
     _COOPERATIVE_MAX_WARPS = 4
 
+    # RDNA parameter defaults for the machine's own model. A recipe-supplied
+    # model keeps its parameters. GDN recurrent: 16-value state tiles (the AMD
+    # template computes head-only q/k and gates once per head, so wider tiles
+    # mean fewer serialized per-tile load/update chains).
+    _RDNA_PARAMETERS = {"tir.gdn_recurrent.persistent": {"tile_state": (128, 16)}}
+
     def triton_implementation_model(self, supplied=None):
         # The cooperative warp cap is a correctness invariant for the grid-wide
         # launch, so it must apply to ANY implementation model -- including one
@@ -138,9 +144,14 @@ class _AmdRdnaMachine:
                 return replace(impl, parameters=params)
             return impl
 
+        def _rdna_parameters(impl):
+            if supplied is not None or self._implementation_model is not None or impl.id not in self._RDNA_PARAMETERS:
+                return impl
+            return replace(impl, parameters={**impl.parameters, **self._RDNA_PARAMETERS[impl.id]})
+
         return replace(
             model,
-            implementations=tuple(_cap_cooperative_warps(i) for i in model.implementations),
+            implementations=tuple(_cap_cooperative_warps(_rdna_parameters(i)) for i in model.implementations),
         )
 
     def bufferization_options(self):
