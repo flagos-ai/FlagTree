@@ -1,0 +1,10 @@
+{#- RDNA native IQ4_XS GEMVs with q8_1 activations (agent_optimizations):
+    each call quantizes its activation once per CTA into LDS and every row
+    tile dots it with v_dot4_i32_iu8. Q4_K keeps the core RDNA helpers. #}
+{% set block_fp8_simt_platform = "amd" %}
+{% set block_fp8_native_gguf_helpers = "kernels/block_fp8/platforms/amd/_native_gguf_q8_linear.py.jinja" %}
+{% set native_gguf_activation_prologue = "kernels/_amd_q8_prologue.py.jinja" %}
+{% set native_gguf_activation_arguments = "q8_words, q8_scales, q8_tail_words, q8_tail_scales, q8_main_groups" %}
+{% include "kernels/block_fp8/simt.py.jinja" %}
+{% include "kernels/block_fp8/platforms/amd/_native_gguf.py.jinja" %}
+{% include "kernels/_amd_q8.py.jinja" %}

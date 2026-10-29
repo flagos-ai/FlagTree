@@ -1,0 +1,20 @@
+@triton.jit
+def _flagmega_iq4_xs_linear_local_tile(
+    source, weight, destination, weight_row_offsets, destination_offsets,
+    n_mask, K: tl.constexpr, q8_words, q8_scales, q8_tail_words, q8_tail_scales,
+    Q8_MAIN_GROUPS: tl.constexpr,
+):
+    """IQ4_XS GEMV of q8_1 activations already quantized into LDS."""
+    result = _flagmega_amd_iq4_xs_q8_rows(q8_words, q8_scales, q8_tail_words, q8_tail_scales, weight,
+                                          weight_row_offsets, n_mask, K, Q8_MAIN_GROUPS, {{ tn }})
+    tl.store(destination + destination_offsets, result.to(destination.dtype.element_ty), mask=n_mask)
+
+@triton.jit
+def _flagmega_q4_k_linear_local_tile(
+    source, weight, destination, weight_row_offsets, destination_offsets,
+    n_mask, K: tl.constexpr,
+):
+    """Q4_K GEMV over 144-byte GGML super-blocks."""
+    result = _flagmega_amd_native_rows(source, weight, weight_row_offsets, n_mask, K, "Q4_K", {{ tn }})
+    tl.store(destination + destination_offsets, result.to(destination.dtype.element_ty), mask=n_mask)
+

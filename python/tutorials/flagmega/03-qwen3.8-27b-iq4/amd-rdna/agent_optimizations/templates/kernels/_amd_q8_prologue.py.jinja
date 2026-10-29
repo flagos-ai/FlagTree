@@ -1,0 +1,23 @@
+{#- Quantize this call's activation once per CTA into LDS (q8_1_rne). LDS
+    buffers must have power-of-two extents, so the groups are split into the
+    largest power-of-two prefix and a power-of-two tail. #}
+{% set q8_groups = call.k // 32 %}
+{% set q8 = namespace(main=1, tail=1) %}
+{% for _ in range(31) %}
+{% if q8.main * 2 <= q8_groups %}
+{% set q8.main = q8.main * 2 %}
+{% endif %}
+{% endfor %}
+{% for _ in range(31) %}
+{% if q8.tail < q8_groups - q8.main %}
+{% set q8.tail = q8.tail * 2 %}
+{% endif %}
+{% endfor %}
+    q8_main_groups: tl.constexpr = {{ q8.main }}
+    q8_words = tle.gpu.alloc([{{ q8.main * 8 }}], tl.int32, nv_mma_shared_layout=False)
+    q8_scales = tle.gpu.alloc([{{ q8.main }}], tl.float16, nv_mma_shared_layout=False)
+    q8_tail_words = tle.gpu.alloc([{{ q8.tail * 8 }}], tl.int32, nv_mma_shared_layout=False)
+    q8_tail_scales = tle.gpu.alloc([{{ q8.tail }}], tl.float16, nv_mma_shared_layout=False)
+    _flagmega_amd_q8_quantize({{ call.value }}, q8_words, q8_scales, q8_tail_words, q8_tail_scales, {{ call.k }},
+                              {{ q8.main if q8.main <= 256 else q8.main // 2 }}, {{ q8.tail }}, q8_main_groups)
+    tl.debug_barrier()

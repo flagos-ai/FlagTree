@@ -29,6 +29,9 @@ DEFAULT_MESH = '8x16'
 def source_identity():
     paths = [SKILL, *sorted(path for path in TUTORIAL.iterdir() if path.suffix == '.py')]
     paths.extend(
+        sorted(path for path in (TUTORIAL / 'agent_optimizations').rglob('*')
+               if path.suffix in ('.py', '.jinja') and '__pycache__' not in path.parts))
+    paths.extend(
         sorted(path for path in (REPO / 'python/triton/flagmega').rglob('*')
                if path.suffix in ('.py', '.jinja') and '__pycache__' not in path.parts))
     paths.append(REPO / 'third_party/amd/backend/tle_supported.py')
@@ -46,6 +49,9 @@ def main():
     parser.add_argument('--arch', choices=tuple(TARGETS), default='gfx1201')
     parser.add_argument('--mesh', choices=('auto', '8x16', '8x24'), default='auto',
                         help='Block mesh (y x x); auto: 8x24 on gfx1100, the 8x16 target default on gfx1201')
+    parser.add_argument('--q8-activations', choices=('on', 'off'), default='on',
+                        help='Quantize native IQ4_XS GEMV activations to q8_1 and dot them with v_dot4 '
+                        '(agent_optimizations; the NVIDIA tutorial\'s q8_1_rne contract)')
     destination = parser.add_mutually_exclusive_group()
     destination.add_argument('--trial', type=Path, help='Fresh trial directory; default: .local/trials/<UTC>-<arch>')
     destination.add_argument('--output', type=Path,
@@ -89,7 +95,7 @@ def main():
     report = {
         'workflow': 'flagmega-developer', 'skill': str(SKILL.relative_to(REPO)), 'checkpoint': str(checkpoint),
         'checkpoint_nbytes': checkpoint.stat().st_size, 'checkpoint_revision': revision, 'target': target,
-        'mesh': mesh, 'compiler_source_sha256': digest, 'trial': str(trial), 'artifact': str(artifact),
+        'mesh': mesh, 'q8_activations': args.q8_activations == 'on', 'compiler_source_sha256': digest, 'trial': str(trial), 'artifact': str(artifact),
         'rdata_cache_dir':
         str(args.rdata_cache_dir.expanduser().resolve()), 'resumed_from':
         None if args.input is None else str(args.input.expanduser().resolve()), 'commands': commands,
@@ -104,7 +110,13 @@ def main():
     def run(name, arguments):
         nonlocal command_name
         command_name = name
-        command = [sys.executable, '-m', 'triton.flagmega', *arguments]
+        if args.q8_activations == 'on':
+            bootstrap = (f'import sys; sys.path.insert(0, {str(TUTORIAL)!r}); '
+                         'from agent_optimizations import install; install(q8_activations=True); '
+                         'from triton.flagmega.cli import main; raise SystemExit(main())')
+            command = [sys.executable, '-c', bootstrap, *arguments]
+        else:
+            command = [sys.executable, '-m', 'triton.flagmega', *arguments]
         log = logs / (name + '.json')
         print(f'[{name}] {log}', flush=True)
         before = perf_counter()
