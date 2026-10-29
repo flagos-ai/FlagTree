@@ -18,6 +18,29 @@
 //
 //===----------------------------------------------------------------------===//
 
+// KNOWN ISSUE, left unchanged on purpose: six ops below declare `Pure` while
+// writing a destination through an operand. `Pure` expands to AlwaysSpeculatable
+// + NoMemoryEffect (mlir/Interfaces/SideEffectInterfaces.td:147), which both
+// contradicts the `[MemWrite]` on that operand and advertises a memory-writing
+// op as safe to speculate.
+//
+//   ConvOp                                        [Pure]        $dst  [MemWrite]
+//   SqrtVVOp, RsqrtVVOp, NegVVOp, RecipVVOp,
+//   SquareVVOp            [Pure, Elementwise]      $out inherited from `UnaryOp`
+//
+// It is latent rather than live for two reasons: tblgen merges effects per
+// interface, so the operand's Write still reaches `getEffects` and CSE/DCE stay
+// conservative; and `passes.common.add_licm` is commented out in
+// third_party/ascend/backend/compiler.py. Re-enabling a speculating pass turns it
+// into a silent miscompile.
+//
+// Not patched here because this file is copied from the TsingMicro backend: it
+// arrived in one bulk import (455777f41 "[BUILD] update flagtree backend to
+// version3.5 (#169)", 1211 files) and has not been modified since, with the
+// `[Pure]` lists already present at import. Keeping it byte-identical avoids a
+// conflict on every re-sync; the report belongs with the vendor. `CountOp` is
+// excluded: it declares `[Pure]` but writes no memory.
+
 #ifndef TSINGMICRO_TX81_OPS
 #define TSINGMICRO_TX81_OPS
 
