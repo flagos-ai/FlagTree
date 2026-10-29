@@ -31,6 +31,8 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'packaging/backends.conf'
+      - 'packaging/build-helpers/**'
       - 'packaging/rpm/**'
       - '.github/workflows/build-rpm.yml'
   workflow_dispatch:
@@ -43,7 +45,13 @@ jobs:
   build-rpm:
     # Skip backend-variant tags like 0.6.0+mthreads3.6.
     if: ${{ github.event_name != 'push' || !contains(github.ref_name, '+') }}
-    runs-on: ubuntu-latest
+    # A row whose backend compiles the wheel from source builds the full
+    # FlagTree LLVM/MLIR wheel; a row packaging a published wheel
+    # (rpm_wheel=index in packaging/backends.conf) only downloads and
+    # assembles, and finishes in minutes. The architecture comes from the
+    # backend's row: an aarch64 package is built on a hosted arm64 runner,
+    # which this public repository can use, so nothing here is emulated.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -51,11 +59,24 @@ jobs:
           # Original Fedora target — artifact name unchanged so
           # downstream collectors keep working.
           - target: fedora43
+            backend: nvidia
             base_image: fedora:43
+            runner: ubuntu-latest
             artifact: flagtree-nvidia-rpm-packages
           - target: openeuler2403
+            backend: nvidia
             base_image: openeuler/openeuler:24.03-lts
+            runner: ubuntu-latest
             artifact: flagtree-nvidia-oe2403-rpm-packages
+          # First rpm row packaging a wheel this workflow does not build: the
+          # ascend wheel is published by the backend's own delivery workflow
+          # from vendor hardware as cp311 + linux_aarch64, which is what
+          # openEuler 24.03 runs on aarch64. fetch-wheel.sh enforces both tags.
+          - target: openeuler2403
+            backend: ascend
+            base_image: openeuler/openeuler:24.03-lts
+            runner: ubuntu-24.04-arm
+            artifact: flagtree-ascend-oe2403-rpm-packages
     steps:
       # The wheel build peaks near the runner's free-disk limit.
       # Ephemeral GitHub-hosted VMs only — never a self-hosted machine.
@@ -77,8 +98,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build .rpm (${{ matrix.target }})
-        run: bash packaging/rpm/helpers/build-flagtree-rpm.sh
+      - name: Build .rpm (${{ matrix.backend }} / ${{ matrix.target }})
+        run: bash packaging/rpm/helpers/build-flagtree-rpm.sh ${{ matrix.backend }}
         env:
           RPM_BASE_IMAGE: ${{ matrix.base_image }}
 
