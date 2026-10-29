@@ -44,11 +44,15 @@ def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 //
 // Annotation Op
 //
-// No `Pure`: this op carries `bind_buffer` / `debug_barrier` marks, so it must
-// not be speculatable (hoisting a buffer binding above the copy it binds is a
-// silent miscompile). `Pure` also contradicts the `MemWrite` effect below -- it
-// expands to AlwaysSpeculatable + NoMemoryEffect.
-def AnnotationOp : TT_Ascend_Op<"annotation", [MemoryEffects<[MemWrite]>]> {
+// KNOWN ISSUE, left unchanged on purpose: `Pure` contradicts the `MemWrite`
+// (Pure = AlwaysSpeculatable + NoMemoryEffect, SideEffectInterfaces.td:147), and
+// it advertises a speculatable op for something that carries `bind_buffer` /
+// `debug_barrier` marks. This declaration is copied verbatim from triton-ascend
+// (same file, same two ops, imported here by 8c30adb6c "Upgrade to triton 3.5
+// from TA with commit c8552741"), so it is kept byte-identical to avoid a
+// conflict on every re-sync and reported there instead. The flagtree-authored
+// equivalents are fixed on this branch.
+def AnnotationOp : TT_Ascend_Op<"annotation", [Pure, MemoryEffects<[MemWrite]>]> {
   let summary = "Annotate a tensor with key-value attribute pairs";
   let description = [{
     `ascend.annotation` operation can be used to annotate a tensor with
@@ -381,11 +385,13 @@ def IndirectStoreOp : TT_Ascend_Op<"indirect_store", [
 //
 // Custom Op
 //
-// No `Pure`: the ops that go through this carrier are the inter-core sync
-// builtins (`sync_block_all/set/wait`, see TritonToHIVM.cpp), which block. A
-// blocking op must not be speculated, duplicated or hoisted, and `Pure`
-// (AlwaysSpeculatable + NoMemoryEffect) also contradicts the `MemWrite` below.
-def CustomOp : TT_Ascend_Op<"custom",  [MemoryEffects<[MemWrite]>]> {
+// KNOWN ISSUE, left unchanged on purpose: same contradiction as AnnotationOp
+// above. The ops carried by this op are the inter-core sync builtins
+// (`sync_block_all/set/wait`, see lib/TritonToHIVM/TritonToHIVM.cpp), which
+// block -- speculating, duplicating or hoisting one is a silent hang. Copied
+// verbatim from triton-ascend (c8552741, imported by 8c30adb6c), kept
+// byte-identical, reported upstream.
+def CustomOp : TT_Ascend_Op<"custom",  [Pure, MemoryEffects<[MemWrite]>]> {
   let summary = "self-defined custom operation";
   let description = [{
     `ascend.custom` triton custom op is designed to pass self-defined custom operation.
