@@ -29,7 +29,8 @@ def is_maca():
     return target.backend == "maca"
 
 
-@triton.jit(autolayout=True)
+@triton.layout_tune()
+@triton.jit
 def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
                   BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, GROUP_M: tl.constexpr):
     pid = tl.program_id(axis=0)
