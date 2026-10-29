@@ -38,7 +38,8 @@ def seed_random():
 @triton.jit
 def k_gather_sd(src, out, idx, n_rows: tl.constexpr, M: tl.constexpr, BL: tl.constexpr):
     """S D -- one sparse dim, one payload dim. The baseline shape."""
-    v = tle.make_gather_scatter_view(src, shape=[n_rows, M], strides=[M, 1], tile=[BL, M], sparse_dim=[0])
+    v = tle.make_gather_scatter_view(src, shape=[n_rows, M], strides=[M, 1], tile=[BL, M], sparse_dim=[0],
+                                     bounds_check=True)
     r = tl.load(idx + tl.arange(0, BL))
     t = tle.tile_load(v, index=(r, 0), dst_space=tle.language.dsa.ascend.UB)
     t2 = t * 1.0
@@ -50,7 +51,8 @@ def k_gather_sd(src, out, idx, n_rows: tl.constexpr, M: tl.constexpr, BL: tl.con
 @triton.jit
 def k_gather_ssd(src, out, ridx, cidx, D0: tl.constexpr, D1: tl.constexpr, T0: tl.constexpr, T1: tl.constexpr):
     """S S -- two sparse dims; the access is an outer product of the indices."""
-    v = tle.make_gather_scatter_view(src, shape=[D0, D1], strides=[D1, 1], tile=[T0, T1], sparse_dim=[0, 1])
+    v = tle.make_gather_scatter_view(src, shape=[D0, D1], strides=[D1, 1], tile=[T0, T1], sparse_dim=[0, 1],
+                                     bounds_check=True)
     r = tl.load(ridx + tl.arange(0, T0))
     c = tl.load(cidx + tl.arange(0, T1))
     t = tle.tile_load(v, index=(r, c), dst_space=tle.language.dsa.ascend.UB)
@@ -65,7 +67,7 @@ def k_gather_dsd(src, out, i1, D0: tl.constexpr, D1: tl.constexpr, D2: tl.conste
                  T2: tl.constexpr):
     """D S D -- the sparse dim is not a prefix; dim 0 is a plain loop level."""
     v = tle.make_gather_scatter_view(src, shape=[D0, D1, D2], strides=[D1 * D2, D2, 1], tile=[T0, T1, T2],
-                                     sparse_dim=[1])
+                                     sparse_dim=[1], bounds_check=True)
     c = tl.load(i1 + tl.arange(0, T1))
     t = tle.tile_load(v, index=(0, c, 0), dst_space=tle.language.dsa.ascend.UB)
     t2 = t * 1.0
@@ -78,7 +80,7 @@ def k_gather_dsd(src, out, i1, D0: tl.constexpr, D1: tl.constexpr, D2: tl.conste
 def k_gather_sdd(src, out, i0, D0: tl.constexpr, D1: tl.constexpr, D2: tl.constexpr, T0: tl.constexpr):
     """S D D -- the payload spans two dense dims and moves as one block."""
     v = tle.make_gather_scatter_view(src, shape=[D0, D1, D2], strides=[D1 * D2, D2, 1], tile=[T0, D1, D2],
-                                     sparse_dim=[0])
+                                     sparse_dim=[0], bounds_check=True)
     a = tl.load(i0 + tl.arange(0, T0))
     t = tle.tile_load(v, index=(a, 0, 0), dst_space=tle.language.dsa.ascend.UB)
     t2 = t * 1.0
@@ -148,7 +150,8 @@ def k_scatter_sd(src, dst, idx, n_rows: tl.constexpr, M: tl.constexpr, BL: tl.co
     cols = tl.arange(0, M)[None, :]
     val = tl.load(src + rows * M + cols)
     r = tl.load(idx + tl.arange(0, BL))
-    v = tle.make_gather_scatter_view(dst, shape=[n_rows, M], strides=[M, 1], tile=[BL, M], sparse_dim=[0])
+    v = tle.make_gather_scatter_view(dst, shape=[n_rows, M], strides=[M, 1], tile=[BL, M], sparse_dim=[0],
+                                     bounds_check=True)
     tle.tile_store(v, value=val, index=(r, 0), src_space=tle.language.dsa.ascend.UB)
 
 
@@ -162,7 +165,7 @@ def k_scatter_ssd(src, dst, i0, i1, D0: tl.constexpr, D1: tl.constexpr, D2: tl.c
     a = tl.load(i0 + tl.arange(0, T0))
     c = tl.load(i1 + tl.arange(0, T1))
     v = tle.make_gather_scatter_view(dst, shape=[D0, D1, D2], strides=[D1 * D2, D2, 1], tile=[T0, T1, T2],
-                                     sparse_dim=[0, 1])
+                                     sparse_dim=[0, 1], bounds_check=True)
     tle.tile_store(v, value=val, index=(a, c, 0), src_space=tle.language.dsa.ascend.UB)
 
 

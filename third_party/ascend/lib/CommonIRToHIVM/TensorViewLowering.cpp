@@ -60,9 +60,10 @@ Value emitLogicalCoord(OpBuilder &b, Location loc,
                        const TensorViewAccessInfo &info, ValueRange indices,
                        unsigned dim, Value coord) {
   if (llvm::is_contained(info.sparseDims, static_cast<int64_t>(dim))) {
-    Value raw =
+    auto raw =
         b.create<tensor::ExtractOp>(loc, indices[dim], ValueRange{coord});
-    return asIndexValue(b, loc, raw);
+    raw->setAttr("DiscreteMemAccess", b.getUnitAttr());
+    return asIndexValue(b, loc, raw.getResult());
   }
   Value index = asIndexValue(b, loc, indices[dim]);
   Value origin = emitDenseOrigin(b, loc, index, info.traversal[dim]);
@@ -80,7 +81,8 @@ Value emitAccumulateFlatOffset(OpBuilder &b, Location loc,
   return offset ? b.create<arith::AddIOp>(loc, offset, physical) : physical;
 }
 
-// Resolve each coordinate, check bounds, and accumulate its flat offset.
+// Resolve each coordinate, check bounds, and accumulate its flat offset. A
+// sparse dim is checked only when the view enables bounds checking.
 ElementAccess emitElementAccess(OpBuilder &b, Location loc,
                                 const TensorViewAccessInfo &info,
                                 ValueRange indices, ValueRange coords) {
@@ -91,13 +93,17 @@ ElementAccess emitElementAccess(OpBuilder &b, Location loc,
     unsigned baseDim = static_cast<unsigned>(info.dimMap[dim]);
     Value logical = emitLogicalCoord(b, loc, info, indices, dim, coords[dim]);
 
-    Value extent = asIndexValue(b, loc, info.shape[baseDim]);
-    Value nonNeg =
-        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, logical, zero);
-    Value below = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
-                                          logical, extent);
-    Value dimIn = b.create<arith::AndIOp>(loc, nonNeg, below);
-    inBounds = b.create<arith::AndIOp>(loc, inBounds, dimIn);
+    bool sparse =
+        llvm::is_contained(info.sparseDims, static_cast<int64_t>(dim));
+    if (!sparse || info.boundsCheck) {
+      Value extent = asIndexValue(b, loc, info.shape[baseDim]);
+      Value nonNeg = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                             logical, zero);
+      Value below = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+                                            logical, extent);
+      Value dimIn = b.create<arith::AndIOp>(loc, nonNeg, below);
+      inBounds = b.create<arith::AndIOp>(loc, inBounds, dimIn);
+    }
 
     physOffset =
         emitAccumulateFlatOffset(b, loc, info, dim, logical, physOffset);
@@ -148,10 +154,13 @@ SmallVector<Value> emitLeadingLogical(OpBuilder &b, Location loc,
 /// Per-dim bounds masks for the leading segment, indexed by view dim and null
 /// for a dense dim. Dense bounds are handled by clipping the loop upper bound;
 /// sparse dims still need masks because valid indices need not form a prefix.
+/// Without bounds checking no sparse mask is built and every entry is null.
 SmallVector<Value> emitLeadingMasks(OpBuilder &b, Location loc,
                                     const TensorViewAccessInfo &info,
                                     ValueRange indices, unsigned nLeading) {
   SmallVector<Value> masks(nLeading, Value());
+  if (!info.boundsCheck)
+    return masks;
   for (unsigned d = 0; d < nLeading; ++d)
     if (llvm::is_contained(info.sparseDims, static_cast<int64_t>(d)))
       masks[d] = emitSparseInBoundsMask(b, loc, info, indices, d);
@@ -380,8 +389,7 @@ Value emitPerIndexPayloadGather(OpBuilder &b, Location loc,
       coords.push_back(loop.getInductionVar());
 
       // Dense bounds are enforced by the loop upper bound. Fold each sparse
-      // mask at its own level. firstDenseDim == lastSparseDim + 1 guarantees
-      // at least one sparse dim here, so inBounds is never null.
+      // mask at its own level. inBounds stays null when bounds checking is off.
       if (masks[d]) {
         Value lane =
             b.create<tensor::ExtractOp>(loc, masks[d], ValueRange{coords[d]});
@@ -390,20 +398,27 @@ Value emitPerIndexPayloadGather(OpBuilder &b, Location loc,
       }
     }
 
-    b.create<scf::IfOp>(
-        loc, inBounds, [&](OpBuilder &nested, Location nestedLoc) {
-          SmallVector<Value> leadingLogical =
-              emitLeadingLogical(nested, nestedLoc, info, indices, coords);
-          Value offset = emitPayloadBaseOffset(nested, nestedLoc, info, indices,
-                                               leadingLogical);
-          Value gm = emitPayloadGmView(nested, nestedLoc, info, offset,
-                                       nLeading, validLengths);
-          Value ubBlock = emitPayloadBufferSubview(nested, nestedLoc, buffer,
-                                                   info, coords, validLengths);
+    auto loadBlock = [&](OpBuilder &nested, Location nestedLoc) {
+      SmallVector<Value> leadingLogical =
+          emitLeadingLogical(nested, nestedLoc, info, indices, coords);
+      Value offset = emitPayloadBaseOffset(nested, nestedLoc, info, indices,
+                                           leadingLogical);
+      Value gm = emitPayloadGmView(nested, nestedLoc, info, offset, nLeading,
+                                   validLengths);
+      Value ubBlock = emitPayloadBufferSubview(nested, nestedLoc, buffer, info,
+                                               coords, validLengths);
 
-          nested.create<hivm::LoadOp>(nestedLoc, TypeRange{}, gm, ubBlock);
-          nested.create<scf::YieldOp>(nestedLoc);
-        });
+      nested.create<hivm::LoadOp>(nestedLoc, TypeRange{}, gm, ubBlock);
+    };
+    if (!inBounds) {
+      loadBlock(b, loc);
+    } else {
+      b.create<scf::IfOp>(loc, inBounds,
+                          [&](OpBuilder &nested, Location nestedLoc) {
+                            loadBlock(nested, nestedLoc);
+                            nested.create<scf::YieldOp>(nestedLoc);
+                          });
+    }
   }
 
   return b.create<bufferization::ToTensorOp>(loc, type, buffer, true, false);
@@ -453,8 +468,7 @@ LogicalResult emitPerIndexPayloadScatter(OpBuilder &b, Location loc,
     coords.push_back(loop.getInductionVar());
 
     // Dense bounds are enforced by the loop upper bound. Fold each sparse
-    // mask at its own level. firstDenseDim == lastSparseDim + 1 guarantees
-    // at least one sparse dim here, so inBounds is never null.
+    // mask at its own level. inBounds stays null when bounds checking is off.
     if (masks[d]) {
       Value lane =
           b.create<tensor::ExtractOp>(loc, masks[d], ValueRange{coords[d]});
@@ -462,20 +476,27 @@ LogicalResult emitPerIndexPayloadScatter(OpBuilder &b, Location loc,
     }
   }
 
-  b.create<scf::IfOp>(
-      loc, inBounds, [&](OpBuilder &nested, Location nestedLoc) {
-        SmallVector<Value> leadingLogical =
-            emitLeadingLogical(nested, nestedLoc, info, indices, coords);
-        Value offset = emitPayloadBaseOffset(nested, nestedLoc, info, indices,
-                                             leadingLogical);
-        Value gm = emitPayloadGmView(nested, nestedLoc, info, offset, nLeading,
-                                     validLengths);
-        Value ubBlock = emitPayloadBufferSubview(nested, nestedLoc, ub, info,
-                                                 coords, validLengths);
+  auto storeBlock = [&](OpBuilder &nested, Location nestedLoc) {
+    SmallVector<Value> leadingLogical =
+        emitLeadingLogical(nested, nestedLoc, info, indices, coords);
+    Value offset =
+        emitPayloadBaseOffset(nested, nestedLoc, info, indices, leadingLogical);
+    Value gm = emitPayloadGmView(nested, nestedLoc, info, offset, nLeading,
+                                 validLengths);
+    Value ubBlock = emitPayloadBufferSubview(nested, nestedLoc, ub, info,
+                                             coords, validLengths);
 
-        nested.create<hivm::StoreOp>(nestedLoc, TypeRange{}, ubBlock, gm);
-        nested.create<scf::YieldOp>(nestedLoc);
-      });
+    nested.create<hivm::StoreOp>(nestedLoc, TypeRange{}, ubBlock, gm);
+  };
+  if (!inBounds) {
+    storeBlock(b, loc);
+    return success();
+  }
+  b.create<scf::IfOp>(loc, inBounds,
+                      [&](OpBuilder &nested, Location nestedLoc) {
+                        storeBlock(nested, nestedLoc);
+                        nested.create<scf::YieldOp>(nestedLoc);
+                      });
 
   return success();
 }
