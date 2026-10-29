@@ -1,0 +1,4 @@
+{#- gfx1201: before the q8 quantize, scalar-prefetch the first weight rows this
+    block streams, so DRAM is busy while the activation is quantized. #}
+{% set q8_weight_prefetch_kb = q8_weight_prefetch_kb | default(64) %}
+{% include "kernels/block_fp8/platforms/amd/simt.py.jinja" %}

@@ -13,6 +13,16 @@
 {% set q8.tail = q8.tail * 2 %}
 {% endif %}
 {% endfor %}
+{% if q8_weight_prefetch_kb is defined and q8_weight_prefetch_kb > 0 %}
+{% set q8_row_bytes = call.k // 256 * 136 %}
+{% set q8_span = call.local_n_capacity * q8_row_bytes %}
+{% set q8_chunks = [q8_weight_prefetch_kb // 4, (q8_span + 4095) // 4096] | min %}
+    local_n_offsets = tl.arange(0, {{ call.tile_n }})
+    q8_prefetch_row = tl.min({{ call.weight_row_offset }}, axis=0)
+{% for q8_prefetch_weight in ([call.gate_weight, call.up_weight] if call.gate_weight is defined else [call.weight]) %}
+    _flagmega_amd_q8_prefetch({{ q8_prefetch_weight }} + q8_prefetch_row, {{ q8_chunks }})
+{% endfor %}
+{% endif %}
     q8_main_groups: tl.constexpr = {{ q8.main }}
     q8_words = tle.gpu.alloc([{{ q8.main * 8 }}], tl.int32, nv_mma_shared_layout=False)
     q8_scales = tle.gpu.alloc([{{ q8.main }}], tl.float16, nv_mma_shared_layout=False)

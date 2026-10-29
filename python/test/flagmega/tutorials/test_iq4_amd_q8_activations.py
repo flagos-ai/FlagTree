@@ -211,3 +211,20 @@ def test_prologue_split_is_a_power_of_two_main_buffer_and_tail(installed):
         assert f"q8_tail_scales = tle.gpu.alloc([{tail}], tl.float16" in prologue
         assert re.search(rf"{k},\s*{chunk}, {tail}, q8_main_groups\)", prologue), prologue
         assert ceil(k / 32) - main <= tail
+
+
+@pytest.mark.parametrize("build", ("projection", "glu"))
+def test_gfx1201_prefetches_first_weight_rows_before_quantizing(tmp_path, installed, build):
+    source = _source(tmp_path, "pf", build, "IQ4_XS", "amd-gfx1201")
+    calls = re.findall(r"^    _flagmega_amd_q8_prefetch\(", source, re.MULTILINE)
+    assert len(calls) == (2 if build == "glu" else 1)
+    assert "s_prefetch_data" in source
+    # The prefetch is issued before the activation is quantized.
+    assert source.index("    _flagmega_amd_q8_prefetch(") < source.index("    _flagmega_amd_q8_quantize(")
+
+
+@pytest.mark.parametrize("build", ("projection", "glu"))
+def test_gfx1100_and_disabled_prefetch_render_no_prefetch(tmp_path, installed, monkeypatch, build):
+    assert "_flagmega_amd_q8_prefetch" not in _source(tmp_path, "nopf", build, "IQ4_XS", "amd-gfx1100")
+    monkeypatch.setenv("FLAGMEGA_AMD_Q8_PREFETCH_KB", "0")
+    assert "_flagmega_amd_q8_prefetch" not in _source(tmp_path, "off", build, "IQ4_XS", "amd-gfx1201")

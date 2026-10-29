@@ -62,11 +62,30 @@ a TG=128 loop with derived indices and four masked stores, gave all of that back
 (30.0 ms either way); loading every piece first and the cheaper rounding brought
 its cost to 1.6 ms, of which 0.6 ms is the activation load latency.
 
+On gfx1201 each IQ4_XS call first issues `s_prefetch_data` for the first 64 KB
+of every weight it streams (gate and up for the GLU), from this block's first
+row, so DRAM is already busy while the activation is quantized. The prefetch
+changes no arithmetic: logits are bitwise equal to the build without it. Sizes
+measured on one card (ms/token, Synthetic32 / Chinese64): none 28.26 / 28.27,
+16 KB 28.19 / 28.18, 32 KB 27.86 / 27.87, **64 KB 27.48 / 27.45**, 128 KB
+27.61 / 27.57, 256 KB 27.76 / 27.77, the whole block slice 28.70 / 28.70. The 64 KB build keeps 248 VGPRs and
+72 B of scratch (13 SGPR spills go to VGPR lanes). gfx1100 has no
+`s_prefetch_data` and renders unchanged.
+
+Sharing one quantization across CTAs or across the calls that consume the same
+input (in_proj qkv/z, attention q/k/v) was evaluated and not done: the norm
+that produces a GEMV input writes 40-value shards per CTA (5120 / 128), so no
+producer owns whole 32-value q8 groups; an invocation-scoped workspace cannot
+outlive the call; and quantizing once per call into global memory needs a grid
+barrier before the dot, about the cost of the per-block quantization it
+replaces. The NVIDIA optimized path also quantizes per CTA.
+
 ## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, q8_1 activations + `v_dot4` (default) | **28.2** | **35.4** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch (default) | **27.5** | **36.4** |
+| FlagMega, q8_1 activations + `v_dot4`, no prefetch | 28.2 | 35.4 |
 | FlagMega, floating-point activations (`--q8-activations off`) | 30.1 | 33.2 |
 | FlagMega, RDNA native GGUF templates (before the attention/GDN changes) | 32.1 | 31.2 |
 | FlagMega, generic native GGUF GEMV (before) | 257 | 3.9 |
@@ -80,6 +99,10 @@ q8_1 activations, three interleaved rounds of q8 / floating point / llama.cpp
 29.93/30.12/29.96 ms and llama.cpp 29.99/29.98/29.88 ms; Chinese64
 28.24/28.22/28.30 ms vs 30.10/30.18/30.13 ms and llama.cpp 29.77/29.70/29.78 ms,
 5–6% faster than llama.cpp at about 481 GB/s (75% of 644.6 GB/s).
+With the gfx1201 weight prefetch (same card, three interleaved rounds against
+the build without it): Synthetic32 27.54/27.47/27.45 ms vs 28.29/28.24/28.24 ms,
+Chinese64 27.46/27.43/27.44 ms vs 28.30/28.25/28.25 ms, about 8% faster than
+llama.cpp; tokens and logits are bitwise equal to the build without prefetch.
 Floating-point activations, before:
 Synthetic32: 29.90/30.09/30.04/30.11 ms (llama.cpp 29.93/29.87 ms);
 Chinese64: 30.08/30.20 ms (llama.cpp 29.62/29.60 ms). Model weight bandwidth

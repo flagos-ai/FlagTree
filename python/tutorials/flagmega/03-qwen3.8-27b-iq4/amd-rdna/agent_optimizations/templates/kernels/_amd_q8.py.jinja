@@ -147,3 +147,18 @@ def _flagmega_amd_iq4_xs_q8_rows(words, scales, tail_words, tail_scales, weight,
         result = tl.reshape(tl.permute(tl.join(first, second), (1, 0)), (16, ))
     return result
 
+{% if q8_weight_prefetch_kb is defined and q8_weight_prefetch_kb > 0 %}
+
+@triton.jit
+def _flagmega_amd_q8_prefetch(base, CHUNKS: tl.constexpr):
+    """gfx12 scalar prefetch of CHUNKS consecutive 4 KB blocks from base (made uniform once)."""
+    address = base.to(tl.int64, bitcast=True)
+    low = tl.inline_asm_elementwise("v_readfirstlane_b32 $0, $1", "=s,v", [address.to(tl.int32)],
+                                    dtype=tl.int32, is_pure=True, pack=1)
+    high = tl.inline_asm_elementwise("v_readfirstlane_b32 $0, $1", "=s,v", [(address >> 32).to(tl.int32)],
+                                     dtype=tl.int32, is_pure=True, pack=1)
+    address = (high.to(tl.int64) << 32) | (low.to(tl.int64) & 0xFFFFFFFF)
+    for chunk in tl.static_range(CHUNKS):
+        tl.inline_asm_elementwise("s_prefetch_data $1, 0x0, null, 31", "=s,s", [address + chunk * 4096],
+                                  dtype=tl.int32, is_pure=False, pack=1)
+{% endif %}

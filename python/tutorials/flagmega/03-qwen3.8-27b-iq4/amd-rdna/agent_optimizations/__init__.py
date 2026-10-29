@@ -9,6 +9,7 @@ contract and llama.cpp's MMVQ activations) in LDS and dot it with
 ``v_dot4_i32_iu8``. Q4_K and every other projection keep the default path.
 """
 
+import os
 from pathlib import Path
 
 from jinja2 import ChoiceLoader, FileSystemLoader
@@ -29,6 +30,12 @@ class RdnaIQ4Registry(TritonTemplateRegistry):
             if (ROOT / path).is_file():
                 return path
         return super().resolve(spec)
+
+    def render(self, template_name, context):
+        prefetch = os.environ.get('FLAGMEGA_AMD_Q8_PREFETCH_KB')
+        if prefetch is not None:
+            context = {**context, 'q8_weight_prefetch_kb': int(prefetch)}
+        return super().render(template_name, context)
 
 
 def install(*, q8_activations=True):
