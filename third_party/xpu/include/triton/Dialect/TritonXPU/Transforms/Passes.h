@@ -30,6 +30,10 @@ constexpr llvm::StringLiteral kBF16ToFP32VecOptOffAttrName =
 std::unique_ptr<mlir::Pass> createTritonXPUMaterializeDeferredRawWithSources(
     const llvm::StringMap<std::string> &sources);
 
+// P800 SDNN: preserve rank-1 wrapped loads across the prebuilt lowering.
+std::unique_ptr<mlir::Pass> createCaptureRank1WrapPass();
+std::unique_ptr<mlir::Pass> createRepairRank1WrapPass();
+
 } // namespace xpu
 } // namespace triton
 } // namespace mlir

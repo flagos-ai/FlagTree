@@ -436,6 +436,10 @@ class XPUBackend(BaseBackend):
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, 2)
                 else:
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, TTSDNN_F_MATMUL_FAST_MODE)
+            if opt.arch == 3:
+                # The prebuilt rank-1 split-pointer lowering drops modulo.
+                # Capture its address contract before that information is lost.
+                xpu.passes.ttsdnnir.add_capture_rank1_wrap_pass(pm)
             xpu.passes.ttsdnnir.add_convert_triton_to_tritonsdnn_pass(pm, opt.arch, opt.load_tile_size)
             passes.ttir.add_loop_aware_cse(pm)
             xpu.passes.ttsdnnir.add_linalg_to_tritonsdnn_pass(pm, opt.arch)
@@ -474,6 +478,10 @@ class XPUBackend(BaseBackend):
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, res)
             else:
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, None)
+            if opt.arch == 3:
+                # Repair after fusion: earlier SDNN passes cannot consume the
+                # loop of DMA segments used to preserve all wrap boundaries.
+                xpu.passes.ttsdnnir.add_repair_rank1_wrap_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_loop_grid_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_hoist_loop_invariant_dma_pass(pm, opt.arch)
             # FlagTree: defer_event_coloring (arch5-only wiring) needs the
