@@ -31,12 +31,21 @@ except Exception:
     enabled = False
 
 if enabled:
-    from .flagcx_wrapper import (
-        FLAGCXLibrary,
-        flagcxDevCommRequirements,
-        flagcxUniqueId,  # noqa: F401
-        FLAGCX_WIN_COLL_SYMMETRIC,
-    )
+    try:
+        from .flagcx_wrapper import (
+            FLAGCXLibrary,
+            flagcxDevCommRequirements,
+            flagcxUniqueId,  # noqa: F401
+            FLAGCX_WIN_COLL_SYMMETRIC,
+        )
+    except ImportError:
+        # no FlagCX bundled into this wheel -- use the installed distribution
+        from flagcx.api import (
+            FLAGCXLibrary,
+            flagcxDevCommRequirements,
+            flagcxUniqueId,  # noqa: F401
+            FLAGCX_WIN_COLL_SYMMETRIC,
+        )
     import os
     import tempfile
     import torch
