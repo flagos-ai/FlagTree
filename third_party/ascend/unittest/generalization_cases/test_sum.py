@@ -330,3 +330,26 @@ def test_sum_5d(dtype, shape, dims):
     grid = (1, )
     triton_sum_multi_d[grid](x, y_cal, *triton_shape, len(shape), dim, reduce_numel)
     test_common.validate_cmp(dtype, y_cal, y_ref)
+
+
+@triton.jit
+def tt_sum_mask(in_ptr, out_ptr, XB: tl.constexpr):
+    idx = tl.arange(0, XB)
+    x = tl.load(in_ptr + idx)
+    ret = tl.sum(x > 0)
+    tl.store(out_ptr + tl.arange(0, 1), ret)
+
+
+@pytest.mark.parametrize('xb', [32, 256, 1024])
+def test_sum_i1_counts(xb):
+    # Summing an i1 mask must count the set lanes. Reducing at the native 1-bit
+    # width turns `a + b` into a logical or, which saturates to 1.
+    torch.manual_seed(0)
+    x = torch.randn(xb).npu()
+
+    y_ref = (x > 0).sum().to(torch.int32).reshape(1)
+    y_cal = torch.empty(1, dtype=torch.int32, device="npu")
+
+    tt_sum_mask[1, 1, 1](x, y_cal, xb)
+    assert y_ref.item() > 1, "shape does not exercise the saturation bug"
+    test_common.validate_cmp('int32', y_cal, y_ref)

@@ -301,11 +301,19 @@ def _pick_sum_dtype(in_dtype, dtype):
 @core._add_reduction_docstr("sum", dtype_arg="dtype")
 def sum(input, axis=None, keep_dims=False, dtype: core.constexpr = None):
     # Pick a default dtype for the reduction if one was not specified.
-    # out_dtype: core.constexpr = _pick_sum_dtype(input.dtype, dtype)
+    out_dtype: core.constexpr = _pick_sum_dtype(input.dtype, dtype)
 
-    # if out_dtype is not None:
-    #     input = input.to(out_dtype)
-    # Triton Ascend not need the type promotion logic of community as commented above, perform the operation normally
+    # Triton Ascend keeps the native width for integer reductions instead of
+    # promoting to 32 bits the way the community implementation does. i1 is the
+    # one width that cannot carry a sum: `a + b` on i1 is a 1-bit add, which is
+    # a logical or, so any non-zero number of set lanes saturates to 1 instead
+    # of being counted. Promote it so reducing a mask yields the count. int32
+    # rather than the community's uint32 keeps unsigned types out of the
+    # backend.
+    out_dtype = core.int32 if input.dtype.is_int1() else None
+
+    if out_dtype is not None:
+        input = input.to(out_dtype)
     return core.reduce(input, axis, _sum_combine, keep_dims=keep_dims)
 
 

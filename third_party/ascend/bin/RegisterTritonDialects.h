@@ -12,6 +12,7 @@
 #include "ascend/include/TritonToGraph/Passes.h"
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
 #include "incubated/Conversion/TritonToUnstructureIncubated/Passes.h"
+#include "triton-shared/Dialect/TensorView/IR/TensorViewDialect.h"
 
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "bishengir/Dialect/HACC/IR/HACC.h"
@@ -181,6 +182,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::proton::gpu::ProtonGPUDialect,
 #endif
       mlir::ROCDL::ROCDLDialect, mlir::triton::gluon::GluonDialect,
+      mlir::triton::tv::TensorViewDialect,
       mlir::triton::ascend::TritonAscendDialect, mlir::hivm::HIVMDialect,
       mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,
       mlir::annotation::AnnotationDialect, mlir::hfusion::HFusionDialect,

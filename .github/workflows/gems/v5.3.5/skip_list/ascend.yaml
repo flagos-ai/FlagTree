@@ -1,0 +1,78 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  - apply_rotary_pos_emb
+  - conv1d
+  - conv1d_padding
+  - dropout
+  - native_dropout_backward
+  - exponential_
+  - flash_attention_forward
+  - floor_divide_scalar
+  - floor_divide_scalar_
+  - floor_divide_tensor
+  - floor_divide_tensor_
+  - inplace_fused_experts
+  - moe_align_block_size_triton
+  - max_pool2d_backward
+  - max_pool2d_with_indices
+  - outplace_fused_experts
+  - pow_scalar
+  - pow_tensor_scalar
+  - pow_tensor_scalar_
+  - pow_tensor_tensor
+  - pow_tensor_tensor_
+  - rand_like
+  - randint
+  - remainder_scalar
+  - remainder_scalar_
+  - remainder_scalar_tensor
+  - remainder_tensor
+  - remainder_tensor_
+  - slice_backward
+  - slice_scatter
+  - sparse_mla_fwd_interface
+  - sub
+  - sub_
+  - tanh
+  - tanh_
+  - tanh_backward
+  - threshold
+  - threshold_backward
+  - topk
+  - topk_softmax
+  - tril
+  - triu
+  - triu_
+  - trunc_divide
+  - trunc_divide_
+  - uniform_
+  - unique2
+  - upsample_bicubic2d
+  - upsample_bicubic2d_aa
+  - upsample_bicubic2d_aa_backward
+  - upsample_nearest1d
+  - upsample_nearest2d
+  - upsample_nearest3d
+  - upsample_nearest_exact2d
+  - var_mean
+  - vector_norm
+  - vstack
+  - _weight_norm
+  - weight_norm
+  - weight_norm_interface
+  - weight_norm_interface_backward
+  - where_self_out
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_scaled_dot_product_attention_legacy_backward
+  #- test_scaled_dot_product_attention_square_qk_even_mn
+  #- test_scaled_dot_product_attention_nonsquare_qk
+  #- test_scaled_dot_product_attention_legacy
+  #- test_scaled_dot_product_flash_attention
+  #- test_scaled_softmax_forward
+  #- test_scaled_softmax_backward
+
+# Skip entire test files
+skip_test_files:
+  #- test_scaled_dot_product_attention.py

@@ -12,6 +12,9 @@
 #ifdef __TLE_DSA__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 
+#include "triton-shared/Dialect/TensorView/IR/TensorViewBuilder.h"
+#include "triton-shared/Dialect/TensorView/IR/TensorViewDialect.h"
+
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #endif
 
@@ -107,6 +110,30 @@ static mlir::triton::tile::MemorySpace attrToMemSpace(Attribute attr) {
   }
 #endif
   return MS::UB;
+}
+
+// Build a CommonIR MemorySpaceAttr from a Python-supplied address-space
+// attribute. A null attribute yields a null MemorySpaceAttr, which the
+// lowering treats as UB.
+static mlir::triton::tile::MemorySpaceAttr
+makeMemSpaceAttr(TritonOpBuilder &self, Attribute attr) {
+  if (!attr)
+    return mlir::triton::tile::MemorySpaceAttr();
+  return mlir::triton::tile::MemorySpaceAttr::get(self.getContext(),
+                                                  attrToMemSpace(attr));
+}
+
+static mlir::triton::tv::PaddingValue
+parseTensorViewPaddingValue(const std::string &value) {
+  if (value == "zero")
+    return mlir::triton::tv::PaddingValue::ZERO;
+  if (value == "nan")
+    return mlir::triton::tv::PaddingValue::NAN_VALUE;
+  if (value == "inf")
+    return mlir::triton::tv::PaddingValue::POS_INF;
+  if (value == "-inf")
+    return mlir::triton::tv::PaddingValue::NEG_INF;
+  throw py::value_error("unknown TensorView padding value: " + value);
 }
 #endif
 
@@ -572,8 +599,149 @@ void init_tle_dsa_ir(py::module &&m) {
                  /*comment=*/mlir::StringAttr());
            })
       // tile.cube_wait
-      .def("create_tile_cube_wait", [](TritonOpBuilder &self) -> void {
-        self.create<mlir::triton::tile::CubeWaitOp>();
-      });
+      .def("create_tile_cube_wait",
+           [](TritonOpBuilder &self) -> void {
+             self.create<mlir::triton::tile::CubeWaitOp>();
+           })
+      // tile.load — load from GM pointer into a tile tensor
+      .def("create_tile_load",
+           [](TritonOpBuilder &self, Value &src, Type resultTy) -> Value {
+             return self
+                 .create<mlir::triton::tile::LoadOp>(
+                     resultTy, src,
+                     /*indices=*/ValueRange{},
+                     /*engine=*/mlir::triton::tile::EngineAttr(),
+                     /*dst_space=*/mlir::triton::tile::MemorySpaceAttr())
+                 .getResult();
+           })
+      // tile.load — tensor_view + indices overload with explicit dst_space.
+      .def("create_tile_load",
+           [](TritonOpBuilder &self, Value &src, std::vector<Value> &indices,
+              Type resultTy, const Attribute &dstSpace) -> Value {
+             auto indexType = IndexType::get(self.getContext());
+             SmallVector<Value> castIndices;
+             for (auto &idx : indices) {
+               // Scalar coordinates lower to `index`; a tensor of
+               // gather/scatter coordinates is carried through unchanged.
+               if (idx.getType().isIndex() ||
+                   isa<RankedTensorType>(idx.getType())) {
+                 castIndices.push_back(idx);
+               } else {
+                 castIndices.push_back(
+                     self.create<arith::IndexCastOp>(indexType, idx));
+               }
+             }
+             auto spaceAttr = makeMemSpaceAttr(self, dstSpace);
+             return self
+                 .create<mlir::triton::tile::LoadOp>(
+                     resultTy, src, ValueRange(castIndices),
+                     /*engine=*/mlir::triton::tile::EngineAttr(),
+                     /*dst_space=*/spaceAttr)
+                 .getResult();
+           })
+      // tile.store — store a tile tensor to GM pointer
+      .def("create_tile_store",
+           [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
+             self.create<mlir::triton::tile::StoreOp>(
+                 src, dst,
+                 /*indices=*/ValueRange{},
+                 /*engine=*/mlir::triton::tile::EngineAttr(),
+                 /*src_layout=*/mlir::triton::tile::LayoutAttr(),
+                 /*dst_layout=*/mlir::triton::tile::LayoutAttr(),
+                 /*comment=*/mlir::StringAttr(),
+                 /*src_space=*/mlir::triton::tile::MemorySpaceAttr());
+           })
+      // tile.store — tensor_view + indices overload with explicit src_space.
+      .def("create_tile_store",
+           [](TritonOpBuilder &self, Value &src, Value &dst,
+              std::vector<Value> &indices, const Attribute &srcSpace) -> void {
+             auto indexType = IndexType::get(self.getContext());
+             SmallVector<Value> castIndices;
+             for (auto &idx : indices) {
+               // Scalar coordinates lower to `index`; a tensor of
+               // gather/scatter coordinates is carried through unchanged.
+               if (idx.getType().isIndex() ||
+                   isa<RankedTensorType>(idx.getType())) {
+                 castIndices.push_back(idx);
+               } else {
+                 castIndices.push_back(
+                     self.create<arith::IndexCastOp>(indexType, idx));
+               }
+             }
+             auto spaceAttr = makeMemSpaceAttr(self, srcSpace);
+             self.create<mlir::triton::tile::StoreOp>(
+                 src, dst, ValueRange(castIndices),
+                 /*engine=*/mlir::triton::tile::EngineAttr(),
+                 /*src_layout=*/mlir::triton::tile::LayoutAttr(),
+                 /*dst_layout=*/mlir::triton::tile::LayoutAttr(),
+                 /*comment=*/mlir::StringAttr(),
+                 /*src_space=*/spaceAttr);
+           })
+      //===----------------------------------------------------------------===//
+      // Direct-construction API for `tle.tensor_view`. The tile.load /
+      // tile.store overloads above are what access these views.
+      //===----------------------------------------------------------------===//
+      .def("create_tensor_view",
+           [](TritonOpBuilder &self, Value base, std::vector<Value> shape,
+              std::vector<Value> strides) -> Value {
+             FailureOr<Value> view = mlir::triton::tv::createTensorViewBase(
+                 self.getBuilder(), self.getLastLoc(), base, shape, strides);
+             if (failed(view))
+               throw py::value_error(
+                   "TensorView base pointers must not contain pointer offsets");
+             return *view;
+           })
+      .def("create_partition_view",
+           [](TritonOpBuilder &self, Value view, std::vector<int64_t> tile,
+              std::string paddingValue) -> Value {
+             return mlir::triton::tv::createPartitionView(
+                 self.getBuilder(), self.getLastLoc(), view, tile,
+                 parseTensorViewPaddingValue(paddingValue));
+           })
+      .def("create_strided_view",
+           [](TritonOpBuilder &self, Value view, std::vector<int64_t> tile,
+              std::vector<int64_t> traversalStrides,
+              std::string paddingValue) -> Value {
+             return mlir::triton::tv::createStridedView(
+                 self.getBuilder(), self.getLastLoc(), view, tile,
+                 traversalStrides, parseTensorViewPaddingValue(paddingValue));
+           })
+      .def("create_gather_scatter_view",
+           [](TritonOpBuilder &self, Value view, std::vector<int64_t> tile,
+              std::vector<int64_t> sparseDims,
+              std::string paddingValue) -> Value {
+             return mlir::triton::tv::createGatherScatterView(
+                 self.getBuilder(), self.getLastLoc(), view, tile, sparseDims,
+                 parseTensorViewPaddingValue(paddingValue));
+           })
+      // Build the TensorView type used across IR boundaries.
+      .def("get_tensor_view_ty",
+           [](TritonOpBuilder &self, Type elementType, int64_t rank,
+              std::string viewKind, std::vector<int64_t> tile,
+              std::vector<int64_t> traversalStrides,
+              std::vector<int64_t> sparseDims,
+              std::string paddingValue) -> Type {
+             llvm::SmallVector<int64_t> dynShape(rank, ShapedType::kDynamic);
+             llvm::SmallVector<int64_t> dynStrides(rank, ShapedType::kDynamic);
+             Attribute encoding;
+             mlir::triton::tv::PaddingValue padding =
+                 parseTensorViewPaddingValue(paddingValue);
+             if (viewKind == "partition") {
+               encoding = mlir::triton::tv::PartitionViewAttr::get(
+                   self.getBuilder().getContext(), tile, padding);
+             } else if (viewKind == "strided") {
+               encoding = mlir::triton::tv::StridedViewAttr::get(
+                   self.getBuilder().getContext(), tile, traversalStrides,
+                   padding);
+             } else if (viewKind == "gather_scatter") {
+               encoding = mlir::triton::tv::GatherScatterViewAttr::get(
+                   self.getBuilder().getContext(), tile, sparseDims, padding);
+             } else if (!viewKind.empty()) {
+               throw py::value_error("unknown TensorView encoding: " +
+                                     viewKind);
+             }
+             return mlir::triton::tv::TensorViewType::get(dynShape, elementType,
+                                                          dynStrides, encoding);
+           });
 #endif
 }

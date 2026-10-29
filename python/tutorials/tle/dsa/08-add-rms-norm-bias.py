@@ -80,7 +80,8 @@ def add_rms_norm_bias_kernel(
 
         rrms = 1 / tl.sqrt(var + eps)
 
-        y = (x * rrms * w).to(X.dtype.element_ty)
+        y = (x * rrms).to(X.dtype.element_ty)
+        y = y * w
 
         if HAS_BIAS:
             y = y + b
@@ -151,10 +152,20 @@ def add_rms_norm_bias(x, residual, weight, bias: Optional[torch.Tensor] = None, 
 
 
 def _torch_fused_add_rms_norm_with_bias(x, residual, weight, bias, eps):
+    dtype = x.dtype
     x = x + residual
-    variance = x.pow(2).mean(-1, keepdim=True)
-    hidden_states = x * torch.rsqrt(variance + eps)
-    return weight * hidden_states + bias, x
+    x_fp32 = x.float()
+    variance = (x_fp32 * x_fp32 / x_fp32.shape[-1]).sum(-1, keepdim=True)
+    hidden_states = x_fp32 / torch.sqrt(variance + eps)
+    if dtype == torch.bfloat16:
+        # bfloat16 rounds the normalized value but keeps the affine part in
+        # float32, unlike float16 which stays in the narrow dtype throughout.
+        y = hidden_states.to(dtype).float() * weight.float() + bias.float()
+    elif dtype == torch.float16:
+        y = hidden_states.to(dtype) * weight + bias
+    else:
+        y = hidden_states * weight.float() + bias.float()
+    return y.to(dtype), x
 
 
 if enable_vllm:
@@ -243,8 +254,8 @@ def test_accuracy_add_rms_norm_with_bias(input_shape, residual_shape, weight_sha
 
     if enable_vllm:
         ref_ascendc_out, ref_ascendc_residual = _ascendc_add_rms_norm_bias(
-            inp,
-            residual,
+            inp.clone(),
+            residual.clone(),
             weight=weight,
             bias=bias,
             eps=eps,
@@ -260,11 +271,14 @@ def test_accuracy_add_rms_norm_with_bias(input_shape, residual_shape, weight_sha
 
     res_triton_out, res_triton_residual = add_rms_norm_bias(inp, residual, weight=weight, bias=bias, eps=eps)
 
-    # both ascendc kernel and triton kernel on npu should be close to torch kernel, but absolute tolerance should be larger on float16
-    tk_assert_close(res_triton_out, ref_torch_out, dtype, reduce_dim=100)
+    # the triton kernel follows the ascendc precision schedule, so compare the
+    # two directly and keep the torch reference as an independent check
     if enable_vllm:
-        tk_assert_close(ref_ascendc_out, ref_torch_out, dtype, reduce_dim=100)
+        tk_assert_close(res_triton_out, ref_ascendc_out, dtype, reduce_dim=100)
         tk_assert_close(res_triton_residual, ref_ascendc_residual, dtype)
+        tk_assert_close(ref_ascendc_out, ref_torch_out, dtype, reduce_dim=100)
+    tk_assert_close(res_triton_out, ref_torch_out, dtype, reduce_dim=100)
+    tk_assert_close(res_triton_residual, ref_torch_residual, dtype)
 
 
 # ==============================================================================
