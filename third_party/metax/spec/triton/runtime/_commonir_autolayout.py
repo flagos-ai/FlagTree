@@ -1,4 +1,4 @@
-"""Opt-in CommonIR layout tuning using the existing JIT launch hook."""
+"""CommonIR layout tuning around an unmodified JITFunction."""
 
 import hashlib
 import json
@@ -7,11 +7,15 @@ import math
 import os
 import statistics
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from triton.runtime.cache import get_cache_manager
-from triton.runtime.jit import JITFunction
+from triton import knobs
+from triton.runtime.driver import driver
+from triton.runtime.jit import JITFunction, KernelInterface
+from triton.runtime._distributed import DistributedRtContext, validate_node_launch_bindings
 
 _LOGGER = logging.getLogger(__name__)
 # One elimination look after 16 samples, then refine survivors to 32.
@@ -129,25 +133,52 @@ def _benchmark(kernel, grid, stream, args, reset, *, warmup=_WARMUP, repetitions
     return samples
 
 
-class CommonIRAutolayoutJITFunction(JITFunction):
+class LayoutTuner(KernelInterface):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, fn):
+        if knobs.runtime.interpret:
+            raise ValueError("layout_tune requires GPU compilation")
+        if not isinstance(fn, JITFunction) or fn.is_gluon():
+            raise TypeError("layout_tune() must directly wrap @triton.jit")
+        self.fn = fn
+        self.arg_names = fn.arg_names
         self._layout_lock = threading.RLock()
         self._layout_kernels = {}
+        self._winners = defaultdict(dict)
         self.autolayout_results = {}
 
-    def create_binder(self):
+    def run(self, *args, grid, warmup, **kwargs):
         from triton._common_ir import ENABLED
 
-        result = super().create_binder()
-        if result[2].backend != "maca" or not ENABLED:
-            raise ValueError("autolayout requires the MetaX CommonIR backend")
-        return result
-
-    def run(self, *args, grid, warmup, **kwargs):
+        device = driver.active.get_current_device()
+        _, _, target, _, binder = self.fn.device_caches[device]
+        if target.backend != "maca" or not ENABLED:
+            raise ValueError("layout_tune requires the MetaX CommonIR backend")
         kwargs["autolayout"] = True
-        return super().run(*args, grid=grid, warmup=warmup, **kwargs)
+        # JIT owns specialization, compilation, pre-run hooks and global checks.
+        kernel = self.fn.run(*args, grid=grid, warmup=True, **kwargs)
+        if kernel is None:
+            return None
+        winners = self._winners[device]
+        if warmup:
+            return winners.get(getattr(kernel, "hash", None), kernel)
+        if hasattr(kernel, "result"):
+            kernel = kernel.result()
+
+        bound_args, specialization, _ = binder(*args, **kwargs)
+        assert grid is not None
+        if callable(grid):
+            grid = grid(bound_args)
+        launch_grid = (grid[0], grid[1] if len(grid) > 1 else 1, grid[2] if len(grid) > 2 else 1)
+        stream = driver.active.get_current_stream(device)
+        kernel = self._select_kernel(kernel, launch_grid, stream, bound_args, kernel_cache=winners, key=kernel.hash)
+        validate_node_launch_bindings(kernel, bound_args, specialization)
+        launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
+        ctx = DistributedRtContext()
+        dist_params = [ctx.comm_ptr, ctx.mem_ptr] if ctx.is_lite_mode else []
+        kernel.run(*launch_grid, stream, kernel.function, kernel.packed_metadata, launch_metadata,
+                   knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *dist_params, *bound_args.values())
+        return kernel
 
     def _compile_variant(self, fallback, manifest, variant):
         if variant is manifest["variants"][0]:
@@ -163,7 +194,7 @@ class CommonIRAutolayoutJITFunction(JITFunction):
 
         options = {name: getattr(fallback.metadata, name) for name in MACAOptions.__dataclass_fields__}
         options["autolayout"] = False
-        kernel = self.compile(path, target=fallback.metadata.target, options=options)
+        kernel = self.fn.compile(path, target=fallback.metadata.target, options=options)
         if list(kernel.src.signature.values()) != manifest["signature"]:
             raise RuntimeError("CommonIR candidate changed the device argument signature")
         # IRSource omits constexpr host arguments. Reuse the AST launch ABI
@@ -263,15 +294,12 @@ class CommonIRAutolayoutJITFunction(JITFunction):
         return timings, report
 
     def _remember_winner(self, kernel_cache, key, winner):
-        # The selected candidate may be the original manifest-bearing kernel.
-        # Mark it too, so subsequent launches never re-enter layout selection.
-        winner._commonir_autolayout_selected = True
         kernel_cache[key] = winner
         return winner
 
-    def _prepare_kernel_for_launch(self, kernel, grid, stream, bound_args, *, kernel_cache, key):
-        if getattr(kernel, "_commonir_autolayout_selected", False):
-            return kernel
+    def _select_kernel(self, kernel, grid, stream, bound_args, *, kernel_cache, key):
+        if key in kernel_cache:
+            return kernel_cache[key]
         manifest = getattr(kernel.metadata, "commonir_layout_candidates", None)
         if manifest is None or len(manifest["variants"]) == 1:
             return kernel
@@ -284,11 +312,9 @@ class CommonIRAutolayoutJITFunction(JITFunction):
 
         jit_key = key
         with self._layout_lock:
-            # Another caller may have selected this specialization while we
-            # waited. The ordinary JIT cache is also the in-memory winner cache.
-            cached = kernel_cache.get(jit_key, kernel)
-            if getattr(cached, "_commonir_autolayout_selected", False):
-                return cached
+            # Another caller may have selected this specialization while we waited.
+            if jit_key in kernel_cache:
+                return kernel_cache[jit_key]
             key = _specialization_key(kernel)
             if torch.cuda.is_current_stream_capturing():
                 raise RuntimeError("run autolayout once before capturing this specialization in a GPU graph")

@@ -172,7 +172,8 @@ def _flash_fwd_tile(
     return next_k_register, acc_o, m_i, l_i
 
 
-@triton.jit(autolayout=True)
+@triton.layout_tune()
+@triton.jit
 def flash_fwd_hdim128_generic_kernel(
     q_ptr,
     k_ptr,
