@@ -83,6 +83,17 @@ def test_amd_native_gguf_source_uses_the_lookup_kernel(tmp_path, target, build, 
     assert GENERIC_CODEBOOK not in source
 
 
+@pytest.mark.parametrize("encoding,offset", (("IQ4_XS", "x_group.to(tl.int64) * 16"), ("Q4_K", "p.to(tl.int64) * 32")))
+@pytest.mark.parametrize("target", ("amd-gfx1201", "amd-gfx1100"))
+def test_amd_native_gguf_activation_offsets_are_64_bit(tmp_path, target, encoding, offset):
+    # A 32-bit offset from the function-argument pointer becomes a readfirstlane
+    # waterfall buffer_load on targets that keep buffer ops (gfx1100).
+    source = (_artifact(tmp_path, "amd", _projection(encoding, 64, 512), target) / "generated_kernels.py").read_text()
+    assert f"x_pairs = source_pairs + {offset}" in source
+    assert "x_pairs = source_pairs + x_group * 16" not in source
+    assert "x_pairs = source_pairs + p * 32" not in source
+
+
 @pytest.mark.parametrize("build", ("projection", "glu"))
 @pytest.mark.parametrize("target", ("nvidia-sm120", "nvidia-sm90"))
 def test_nvidia_native_gguf_source_keeps_the_generic_kernel(tmp_path, target, build):

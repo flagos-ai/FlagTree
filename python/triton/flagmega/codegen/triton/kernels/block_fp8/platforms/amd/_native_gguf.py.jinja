@@ -88,7 +88,9 @@ def _flagmega_amd_iq4_xs_step(source_pairs, weight, rows, group, MASK_GROUPS: tl
     delta = (h0 & 0xFFFF).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
     scale_code = ((h1 >> (in_block * 4)) & 0xF) | ((((h0 >> 16) >> (in_block * 2)) & 0x3) << 4)
     scale = delta * (scale_code.to(tl.float32) - 32.0)
-    x_pairs = source_pairs + x_group * 16
+    # A 64-bit offset keeps ConvertToBufferOps from turning these loads into
+    # readfirstlane waterfalls on targets that still use buffer ops (gfx1100).
+    x_pairs = source_pairs + x_group.to(tl.int64) * 16
     dot = (
         _flagmega_amd_iq4_xs_word((first & 0xFFFFFFFF).to(tl.uint32), x_pairs, 0)
         + _flagmega_amd_iq4_xs_word((first >> 32).to(tl.uint32), x_pairs, 1)
@@ -146,7 +148,7 @@ def _flagmega_amd_q4_k_rows8(source, weight, rows8, K: tl.constexpr):
         scale_odd = tl.where(low_pair, s0o & 0x3F, (s2o & 0xF) | ((s0o >> 2) & 0x30)).to(tl.float32)
         min_odd = tl.where(low_pair, s1o & 0x3F, (s2o >> 4) | ((s1o >> 2) & 0x30)).to(tl.float32)
         q_index = rows // 8 + block * 18 + 2 + in_block * 4
-        x_pairs = source_pairs + p * 32
+        x_pairs = source_pairs + p.to(tl.int64) * 32
         dot_even = tl.zeros(delta.shape, tl.float32)
         dot_odd = tl.zeros(delta.shape, tl.float32)
         sum_even = tl.zeros(delta.shape, tl.float32)
