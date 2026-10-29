@@ -130,7 +130,7 @@ jobs:
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
         uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
-          github-token: ${{ secrets.github-token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ${{ inputs.backend }}
 
       - name: Run FlagGems Test
@@ -142,10 +142,10 @@ jobs:
           gpus: '${{ steps.setup.outputs.gpus }}'
           output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/PR'
           pr-number: '${{ github.event.pull_request.number }}'
-          run-script: 'tools/ci/ci_run_tests.py'
-          skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'
           pre-command: ${{ inputs.flaggems-pre-command }}
+          flaggems-tag: ${{ inputs.flaggems-tag }}
+          backend: ${{ inputs.backend }}
 
       - name: Compare with Baseline
         id: compare-baseline
@@ -154,8 +154,6 @@ jobs:
         with:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
-          compare-script: 'tools/ci/compare_test_result.py'
-          working-directory: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           fail-on-missing-baseline: 'true'
 
       - name: Cleanup FlagGems Repo

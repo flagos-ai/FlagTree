@@ -57,7 +57,7 @@ export ENABLE_I64_CHECK=0
 export TORCHGCU_INDUCTOR_ENABLE=1
 
 nohup vllm serve ./Qwen3.6-27B/  \
-    --tensor-parallel-size 4 \
+    --tensor-parallel-size 2 \
     --port "${VLLM_QWEN3_PORT}" \
     --served-model-name qwen36 \
     --max-model-len 32768 \

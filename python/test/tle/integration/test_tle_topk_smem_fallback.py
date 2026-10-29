@@ -278,7 +278,7 @@ def _minimal_fallback_kernel(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.require_tle("cumsum", "gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("cumsum", "gpu.alloc", "gpu.local_ptr")
 def test_tle_topk_smem_fallback_fullscan_recall_seq262144():
     torch.manual_seed(1)
     seq_len = 262144
@@ -306,7 +306,7 @@ def test_tle_topk_smem_fallback_fullscan_recall_seq262144():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("num_warps", [8, 16])
-@pytest.mark.require_tle("cumsum", "gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("cumsum", "gpu.alloc", "gpu.local_ptr")
 def test_tle_topk_fallback_fullscan_stable_high_warps(num_warps):
     torch.manual_seed(1)
     seq_len = 262144

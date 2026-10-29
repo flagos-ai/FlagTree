@@ -39,14 +39,17 @@ def tme_descriptor_attrs(signature):
             if isinstance(ty, str) and ty.startswith("tensordesc<")}
 
 
-def compile_musa(fn, signature, constexprs=None, attrs=None):
+def compile_musa(fn, signature, constexprs=None, attrs=None, options=None):
     src = ASTSource(
         fn=fn,
         signature=signature,
         constexprs=constexprs or {},
         attrs={**tme_descriptor_attrs(signature), **(attrs or {})},
     )
-    return triton.compile(src, target=musa_target())
+    compile_kwargs = {"target": musa_target()}
+    if options is not None:
+        compile_kwargs["options"] = options
+    return triton.compile(src, **compile_kwargs)
 
 
 def compile_to_ttir(fn, signature, constexprs=None):

@@ -669,6 +669,7 @@ class musa_knobs(base_knobs):
     replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
     replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
     libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
+    libprintf_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBPRINTF_PATH")
 
 
 # flagtree ppu

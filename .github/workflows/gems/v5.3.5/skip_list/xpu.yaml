@@ -1,0 +1,42 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  - atan2
+  - flash_mla
+  - get_scheduler_metadata
+  - hc_head_fused_kernel
+  - index_add
+  - index_add_
+  - index_put
+  - index_put_
+  - index_select
+  - inplace_fused_experts
+  - masked_select
+  - moe_align_block_size_triton
+  - nll_loss2d_backward
+  - nll_loss2d_forward
+  - nll_loss_backward
+  - nll_loss_forward
+  - nll_loss_nd_backward
+  - nll_loss_nd_forward
+  - nonzero
+  - outplace_fused_experts
+  - softmax
+  - softmax_backward
+  - softmax_backward_out
+  - softmax_out
+  - to_copy
+  - unique2
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_scaled_dot_product_attention_legacy_backward
+  #- test_scaled_dot_product_attention_square_qk_even_mn
+  #- test_scaled_dot_product_attention_nonsquare_qk
+  #- test_scaled_dot_product_attention_legacy
+  #- test_scaled_dot_product_flash_attention
+  #- test_scaled_softmax_forward
+  #- test_scaled_softmax_backward
+
+# Skip entire test files
+skip_test_files:
+  #- test_scaled_dot_product_attention.py

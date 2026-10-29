@@ -128,6 +128,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
 #ifdef __TLE__
   // flagtree tle raw
+  addIllegalOp<triton::tle::SetLayoutOp>();
   addDynamicallyLegalDialect<triton::tle::TleDialect>([&](Operation *op) {
     bool hasLegalRegions = true;
     for (auto &region : op->getRegions()) {

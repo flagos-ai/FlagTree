@@ -379,6 +379,8 @@ handle_float_type(PyObject *backend, PyObject *arg, bool is_const,
 std::pair<py::object, py::object>
 handle_tensor_descriptor(PyObject *backend, PyObject *arg, bool is_const,
                          bool specialize_value, bool align) {
+  // return specialize_tensordesc(arg, false);
+  // flagtree: get_tensor_descriptor_specialization
   auto result = specialize_tensordesc(arg, false);
   if (!result.first)
     return {};

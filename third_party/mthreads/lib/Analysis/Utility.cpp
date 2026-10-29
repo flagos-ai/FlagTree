@@ -50,6 +50,31 @@ unsigned ReduceOpHelper::getThreadOffsetOnReductionAxis() {
   return offset;
 }
 
+SmallVector<unsigned> ReduceOpHelper::getReductionLaneMasks() {
+  auto linearLayout = toLinearLayout(srcTy);
+  auto kLane = mlir::StringAttr::get(srcEncoding.getContext(), "lane");
+  auto it = linearLayout.getBases().find(kLane);
+  if (it == linearLayout.getBases().end())
+    return {};
+
+  SmallVector<unsigned> masks;
+  for (auto [bit, basis] : llvm::enumerate(it->second)) {
+    if (basis[axis] == 0)
+      continue;
+    bool onlyReductionAxis = true;
+    for (unsigned dim = 0; dim < basis.size(); ++dim) {
+      if (dim != static_cast<unsigned>(axis) && basis[dim] != 0) {
+        onlyReductionAxis = false;
+        break;
+      }
+    }
+    if (!onlyReductionAxis)
+      return {};
+    masks.push_back(1u << bit);
+  }
+  return masks;
+}
+
 // Cases where distributed shared memory is not required in ConvertLayout:
 // (1) numCTAs == 1
 // (2) numCTAs > 1 but srcCGALayout == dstCGALayout
