@@ -6,6 +6,7 @@
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #define DEBUG_TYPE "axis-info"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -993,6 +994,79 @@ public:
   }
 };
 
+// A full reduction of a rank-1 tensor to a scalar preserves the divisibility of
+// its elements when the combine region is a bare add/mul/max/min on integers: a
+// sum, product, maximum or minimum of values that are all divisible by `d` is
+// itself divisible by `d`.  Divisions, remainders and shifts do not have that
+// property and are rejected, so are combiners that do not read the region
+// arguments directly (e.g. `associative_scan`-style trees).
+//
+// Without this rule the fact never leaves the operand: `visitOperation` resets
+// every rank-0 operand to its entry state and falls back to
+// `setAllToEntryStates` as soon as a visitor returns `AxisInfo()` (rank 0), so
+// a divisibility carried by a scalar load is dropped the moment it is fed
+// through `tl.sum`.  Gated by TRITONJUPITER_REDUCE_AXISINFO (see
+// triton/Tools/Sys/GetEnv.hpp) because it widens vector widths on every backend
+// that shares this analysis.
+class ReduceOpAxisInfoVisitor final
+    : public AxisInfoVisitorImpl<triton::ReduceOp> {
+public:
+  using AxisInfoVisitorImpl<triton::ReduceOp>::AxisInfoVisitorImpl;
+
+  AxisInfo
+  getAxisInfo(triton::ReduceOp op,
+              ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
+    // Only the shape that produces a scalar is described here; anything else
+    // has per-axis information this rule cannot characterise.
+    if (op.getSrcs().size() != 1 || op->getNumResults() != 1)
+      return AxisInfo();
+    auto srcTy = dyn_cast<RankedTensorType>(op.getSrcs().front().getType());
+    if (!srcTy || srcTy.getRank() != 1 ||
+        isa<RankedTensorType>(op->getResult(0).getType()) ||
+        !srcTy.getElementType().isInteger())
+      return AxisInfo();
+    if (!isDivisibilityPreservingCombine(op))
+      return AxisInfo();
+
+    AxisInfo srcInfo = operands[0]->getValue();
+    if (srcInfo.getRank() != 1)
+      return AxisInfo();
+    // divisibility[d] divides the first element of every group of length
+    // contiguity[d], so a contiguity of 1 makes it a property of *every*
+    // element along the axis.
+    int64_t divisibility =
+        srcInfo.getContiguity(0) == 1 ? srcInfo.getDivisibility(0) : 1;
+    if (divisibility <= 1)
+      return AxisInfo();
+    // A scalar result is described by the rank-1 vector
+    // `getPessimisticValueState` gives scalars.
+    return AxisInfo(/*contiguity=*/{1}, /*divisibility=*/{divisibility},
+                    /*constancy=*/{1});
+  }
+
+private:
+  static bool isDivisibilityPreservingCombine(triton::ReduceOp op) {
+    Region &region = op.getCombineOp();
+    if (!region.hasOneBlock())
+      return false;
+    Block &block = region.front();
+    if (block.getNumArguments() != 2 || block.getOperations().size() != 2)
+      return false;
+    auto term = dyn_cast<triton::ReduceReturnOp>(block.getTerminator());
+    if (!term || term->getNumOperands() != 1)
+      return false;
+    Operation *combine = term->getOperand(0).getDefiningOp();
+    if (!combine || combine->getNumOperands() != 2)
+      return false;
+    if (!isa<arith::AddIOp, arith::MulIOp, arith::MaxSIOp, arith::MaxUIOp,
+             arith::MinSIOp, arith::MinUIOp>(combine))
+      return false;
+    Value lhs = combine->getOperand(0), rhs = combine->getOperand(1);
+    return (lhs == block.getArgument(0) && rhs == block.getArgument(1)) ||
+           (lhs == block.getArgument(1) && rhs == block.getArgument(0));
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // AxisInfoAnalysis
 //===----------------------------------------------------------------------===//
@@ -1040,6 +1114,11 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver)
                   MaxMinOpAxisInfoVisitor<arith::MinSIOp>,
                   MaxMinOpAxisInfoVisitor<arith::MinUIOp>>();
   visitors.append<LoadOpAxisInfoVisitor>();
+  // TRITONJUPITER_REDUCE_AXISINFO: keep divisibility through `tt.reduce`
+  // (ReduceOpAxisInfoVisitor).  Off by default; registered in
+  // CACHE_INVALIDATING_ENV_VARS so flipping it invalidates the JIT cache.
+  if (triton::tools::getBoolEnv("TRITONJUPITER_REDUCE_AXISINFO"))
+    visitors.append<ReduceOpAxisInfoVisitor>();
 }
 
 void AxisInfoAnalysis::visitOperation(

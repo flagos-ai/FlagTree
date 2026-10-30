@@ -66,7 +66,12 @@ using OperationTree = llvm::SetVector<mlir::Operation *>;
   math::ExpOp, math::SqrtOp, math::SinOp, math::CosOp, arith::ExtFOp,          \
       arith::TruncFOp, math::AbsFOp, math::LogOp
 
-#define REDUCE_COMBINE_OP COMBINE_OP, triton::xpu::ReduceReturnOp
+// ScanReturnOp rides along with ReduceReturnOp: both are the region's
+// terminator, and the shared region-admission walk visits it (its operand
+// is the combine result, defined in-block). Terminators carry no results,
+// so every results-touching consumer is a no-op on them.
+#define REDUCE_COMBINE_OP \
+  COMBINE_OP, triton::xpu::ReduceReturnOp, triton::xpu::ScanReturnOp
 
 // The scalar -> vector op table, single-sourced (redesign-v2.md §3.1,
 // step 2.1).
@@ -234,8 +239,28 @@ unsigned getVectorWidth(Type elemTy);
 // REDUCE_COMBINE_OP, and when they disagree the rewrite does not fall back, it
 // hits llvm_unreachable.
 //
-// E-independent: only looks at op kinds.
+// E-independent: looks at op kinds and operand element widths (both known
+// pre-tiling, per the E factorization above). Mixed-width combines -- e.g. an
+// f16-value argmax beside its i32 index -- stay scalar; equal-width ones fall
+// through to the op-kind check.
 bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp);
+
+// Same question for ScanOp's combine region. Deliberately shares the reduce's
+// admission lists (REDUCE_COMBINE_REGION_OP / COMBINE_OP) so the scan
+// walk, Vectorize's retyping and the scan lowering's emitter cannot drift:
+// all three ends are new together and single-sourced on the same macro lists.
+bool scanCombineIsVectorizable(triton::xpu::ScanOp scanOp);
+
+// Master switch for scan vectorization. Default on; TRITONXPU_SCAN_VEC=0 makes
+// the closure walk veto on ScanOp again, which keeps the whole tree scalar
+// (the pre-scan-vec state, byte-identical escape hatch).
+inline bool scanVecEnabled() {
+  static const bool enabled =
+      mlir::triton::tools::isEnvValueBool(
+          mlir::triton::tools::getStrEnvXPU("TRITONXPU_SCAN_VEC"))
+          .value_or(true);
+  return enabled;
+}
 
 // Root-level report, shared by `tritonxpu-vectorizability-analysis` and by
 // Vectorize's own root enumeration.
@@ -310,14 +335,18 @@ public:
   // temporary. `tleSmemVec` mirrors the pass option of the same name: false
   // makes a scope=smem TLE read inadmissible so this analysis and the rewrite
   // agree. Defaulted true so report-only callers stay unchanged.
+  // `scanOperandFits` is the ScanOp counterpart of `reduceOperandFits`,
+  // defaulted null so report-only callers stay unchanged; a null oracle makes
+  // the walk veto on ScanOp (nothing retypes the scan).
   VectorizabilityAnalysis(
       bool reduceVec, bool dumpFlag,
       std::function<bool(triton::xpu::ReduceOp, Type)> reduceOperandFits,
-      FitOracle fitOracle, bool tleSmemVec = true, bool tleVec = true)
+      FitOracle fitOracle, bool tleSmemVec = true, bool tleVec = true,
+      std::function<bool(triton::xpu::ScanOp, Type)> scanOperandFits = nullptr)
       : ReduceVec(reduceVec), dumpFlag(dumpFlag),
         reduceOperandFits(std::move(reduceOperandFits)),
         fitOracle(std::move(fitOracle)), tleSmemVec(tleSmemVec),
-        tleVec(tleVec) {}
+        tleVec(tleVec), scanOperandFits(std::move(scanOperandFits)) {}
 
   // Every op that can be retyped if `root` is, or an empty result when the
   // closure cannot be formed. The closure is bidirectional (operands and users)
@@ -325,6 +354,7 @@ public:
   bool getVectorizableClosure(Operation *root, OperationTree &visited,
                               OperationTree &vectorizedOps) {
     fitCandidates.clear();
+    failedOps.clear();
     return vectorize(root, visited, vectorizedOps);
   }
 
@@ -334,6 +364,16 @@ public:
   // since a veto propagates to the root, a failed closure discards them.
   const llvm::SmallVector<FitCandidate> &getFitCandidates() const {
     return fitCandidates;
+  }
+
+  // The intrinsic ops the last closure walk vetoed on, i.e. the ops that made
+  // the root fall back to scalar. Empty when the walk succeeded. Reported by
+  // the transform so a developer sees *which* op blocked vectorization, not
+  // just that the root stayed scalar. Only the leaves are recorded (op kinds
+  // with no vector form, or a footprint/guard veto) -- the ancestors that
+  // merely propagate the veto are not.
+  const llvm::SmallVector<Operation *> &getFailedOps() const {
+    return failedOps;
   }
 
 private:
@@ -351,8 +391,10 @@ private:
   bool tleVec = true;
   bool dumpFlag;
   std::function<bool(triton::xpu::ReduceOp, Type)> reduceOperandFits;
+  std::function<bool(triton::xpu::ScanOp, Type)> scanOperandFits;
   FitOracle fitOracle;
   llvm::SmallVector<FitCandidate> fitCandidates;
+  llvm::SmallVector<Operation *> failedOps;
 };
 
 //===----------------------------------------------------------------------===//

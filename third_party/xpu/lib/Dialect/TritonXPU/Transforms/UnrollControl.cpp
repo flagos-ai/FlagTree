@@ -34,7 +34,7 @@ COMOP(arith::MinNumFOp, triton::xpu::VvminNumFOp);
 COMOP(arith::OrIOp, triton::xpu::VvorIOp);
 COMOP(arith::XOrIOp, triton::xpu::VvxorIOp);
 COMOP(arith::AndIOp, triton::xpu::VvandIOp);
-// TLE-ext combine ops (see COMBINE_OP_TLE_EXT in Analysis/Utility.h): the
+// Integer combine ops (now folded into COMBINE_OP, Analysis/Utility.h): the
 // reduces that carry them are admitted by reduceCombineIsVectorizable, so
 // these fire only where that predicate already let the op into a combine.
 COMOP(arith::AddIOp, triton::xpu::VvaddIOp);
@@ -732,6 +732,45 @@ public:
                          getRowsPerCore(valTy)))
         return true;
     return false;
+  }
+
+  // Under TRITONXPU_TILE_REPORT, name a store/reduce root the pass has no
+  // tiling option for, with why. Mirrors `canTile`'s gate so the two never
+  // disagree: it prints exactly `canTile`'s genuine-failure false branches and
+  // stays silent on the two that are not failures (already inside a tile loop
+  // this pass built, or a width small enough that no tiling is needed). Safe to
+  // call unconditionally after the gate -- it self-filters, so a root canTile
+  // accepts produces no line. Off unless TRITONXPU_TILE_REPORT=1.
+  void reportUnrollFail(const char *site, Operation *op, Type valTy,
+                        int64_t numCol, int64_t numUnroll) {
+    if (!mlir::triton::tools::getBoolEnvXPU("TRITONXPU_TILE_REPORT"))
+      return;
+    const char *why = nullptr;
+    if (inUnrollLoop(op)) {
+      return; // already tiled by this pass -- not a failure
+    } else if (!this->budgetTiling) {
+      if (numCol > numUnroll && numCol % numUnroll != 0)
+        why = "factor-not-divisor"; // wants tiling, factor does not divide width
+      else
+        return; // numCol <= numUnroll: no tiling needed
+    } else {
+      int64_t widthPerCore = 1, coresPerGroup = 1;
+      getTileGeometry(valTy, numCol, widthPerCore, coresPerGroup);
+      if (widthPerCore <= 1)
+        return; // one element per core -- nothing to tile, not a failure
+      for (int64_t iterNum = 2; iterNum <= widthPerCore; ++iterNum)
+        if (isLegalIterNum(iterNum, numCol, widthPerCore, /*minVecWidth=*/0,
+                           getRowsPerCore(valTy)))
+          return; // a legal factor exists -- canTile would have accepted
+      why = "no-legal-iternum";
+    }
+    StringRef kernel = "<unknown>";
+    if (auto funcOp = op->getParentOfType<triton::FuncOp>())
+      kernel = funcOp.getName();
+    llvm::errs() << "[UnrollControl][fail] " << kernel << " site=" << site
+                 << " op=" << op->getName() << " numCol=" << numCol
+                 << " numUnroll=" << numUnroll << " reason=" << why
+                 << " loc=" << op->getLoc() << "\n";
   }
 
   void remarkDecision(const char *site, Operation *insertPt, int64_t numCol,
@@ -1711,7 +1750,27 @@ public:
         auto tensorTy = cast<RankedTensorType>(resTy);
         auto shape = tensorTy.getShape().vec();
         if (sliceShape) {
-          shape[shape.size() - 1] = ceil<int64_t>(shape.back(), iterNum);
+          // A tt.trans permutes its result axes, so narrowing the *last*
+          // dimension of the result -- correct for elementwise/load/store ops
+          // -- produces a shape that TransOp::verify rejects ("result shape
+          // must match the permutation of the source shape").  Rebuild the
+          // result from the (already sliced) source, permuted by `order`, the
+          // same idiom handleTransInLoop uses in
+          // TritonXPU/Transforms/Legalize.cpp.
+          if (auto transOp = dyn_cast<triton::TransOp>(op)) {
+            auto srcTy =
+                dyn_cast<RankedTensorType>(transOp.getSrc().getType());
+            auto order = transOp.getOrder();
+            if (srcTy && order.size() == srcTy.getShape().size()) {
+              shape.clear();
+              for (int32_t d : order)
+                shape.push_back(srcTy.getShape()[d]);
+            } else {
+              shape[shape.size() - 1] = ceil<int64_t>(shape.back(), iterNum);
+            }
+          } else {
+            shape[shape.size() - 1] = ceil<int64_t>(shape.back(), iterNum);
+          }
         }
         RankedTensorType controledTensorTy;
         Attribute enc = tensorTy.getEncoding();
@@ -1869,6 +1928,42 @@ public:
         builder.create<triton::xpu::ExtractSliceOp>(
             loc, controledTensorTy, op->getOperand(operandIndex));
     return extractSliceOp;
+  }
+
+  // Main-DAG counterpart of setHoistedOperand's SameTypeOperands branch. After
+  // a cloned op's result is narrowed by setTensorType, a splat-constant operand
+  // that is a DAG leaf keeps its full width and no longer matches the sibling
+  // operand, failing the SameTypeOperands verifier (e.g. the `0.0 - abs(x)`
+  // subf in log's extern lowering under create_log, seen as
+  // "triton_xpu.vvsubf op requires the same type for all operands"). Narrow
+  // such splat operands with extract_slice (its lowering always reads slice 0,
+  // exact for a splat) so the op verifies. Only splat constants carrying a
+  // ClusterLayout are touched; any other mismatch is left exactly as before,
+  // so kernels that already compile are unaffected.
+  void sliceSplatConstOperands(MLIRContext *context, OpBuilder &builder,
+                               Location &loc, Operation *op, int64_t iterNum) {
+    // vvsubf/vvaddf/... carry SameOperandsAndResultType; vcmpf requires lhs==rhs
+    // only via its lowering assertion (no MLIR trait), so name it explicitly.
+    bool sameOperandTy = op->hasTrait<OpTrait::SameTypeOperands>() ||
+                         op->hasTrait<OpTrait::SameOperandsAndResultType>() ||
+                         isa<triton::xpu::VCmpFOp>(op);
+    if (!sameOperandTy)
+      return;
+    if (op->getNumOperands() != 2)
+      return;
+    for (unsigned i = 0; i < 2; ++i) {
+      if (op->getOperand(i).getType() == op->getOperand(i ^ 1).getType())
+        continue;
+      if (!isSliceInvariant(op->getOperand(i)))
+        continue; // only a splat constant may be narrowed via extract_slice
+      auto tensorTy = dyn_cast<RankedTensorType>(op->getOperand(i).getType());
+      if (!tensorTy || !isa<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding()))
+        continue; // getExtractedOperand needs a ClusterLayout; else leave as-is
+      auto extractSliceOp =
+          getExtractedOperand(context, builder, loc, op, i, iterNum);
+      extractSliceOp->moveBefore(op);
+      op->setOperand(i, extractSliceOp->getResult(0));
+    }
   }
 
   // Determine whether the operand has been hoisted
@@ -2164,6 +2259,7 @@ public:
         newOp = builder.clone(*op, mapping);
       }
       setTensorType(context, newOp, iterNum, isOuter);
+      sliceSplatConstOperands(context, builder, loc, newOp, iterNum);
       TypeSwitch<Operation *>(newOp)
           .Case<triton::xpu::LoadOp>([&](auto loadOp) {
             if (auto tensorTy =
@@ -2766,6 +2862,7 @@ public:
       int64_t numUnroll = getNumUnroll(valType);
       if (dryRun)
         reportGate("pointwise", op, numCol, numUnroll);
+      reportUnrollFail("pointwise", op, valType, numCol, numUnroll);
       if (canTile(op, valType, numCol, numUnroll)) {
         getDAG(op, visitedOps, unrollOpTrees, excludeChainOps);
       }
@@ -2904,6 +3001,8 @@ public:
       getUnrollInfoReduce(reduceOp, numCol, numUnroll);
       if (dryRun)
         reportGate("reduce", reduceOp, numCol, numUnroll);
+      reportUnrollFail("reduce", reduceOp, reduceOp.getInputTypes()[0], numCol,
+                       numUnroll);
       if (canTile(reduceOp, reduceOp.getInputTypes()[0], numCol, numUnroll)) {
         llvm::SetVector<Operation *> reduceOpDefsBwd;
         getOpChainBwd(reduceOpDefsBwd, reduceOp);
@@ -3303,6 +3402,18 @@ public:
     bool isScan = false;
     m.walk([&](triton::xpu::ScanOp scanOp) { isScan = true; });
     if (isScan) {
+      // The whole module is abandoned here, so every root that would have been
+      // unroll-controlled is skipped; name the scan op(s) that force it.
+      if (mlir::triton::tools::getBoolEnvXPU("TRITONXPU_TILE_REPORT"))
+        m.walk([&](triton::xpu::ScanOp scanOp) {
+          StringRef kernel = "<unknown>";
+          if (auto funcOp = scanOp->getParentOfType<triton::FuncOp>())
+            kernel = funcOp.getName();
+          llvm::errs() << "[UnrollControl][fail] " << kernel
+                       << " site=module op=" << scanOp->getName()
+                       << " reason=scan-in-module loc=" << scanOp.getLoc()
+                       << "\n";
+        });
       return;
     }
 

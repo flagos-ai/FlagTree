@@ -12,6 +12,7 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include <map>
 // clang-format on
@@ -511,6 +512,35 @@ struct TritonXPUVectorizePass
             castOp.erase();
           })
           .Case<arith::ConstantOp>([&](auto constOp) {
+            // A constant that also feeds a masked load's `other` keeps a
+            // scalar clone for that use: the fill path stores `other` into
+            // the LM buffer through the scalar-shaped store (OtherSim.cpp),
+            // and a vector form there corrupts the fill. The walk already
+            // refuses to enter the closure through the other edge
+            // (VectorizabilityAnalysis.cpp's LoadOp-other skip); this clone
+            // keeps a constant shared with a vector consumer (a carry
+            // zero-init, CSE'd with other=0) from vectorizing underneath it.
+            SmallVector<OpOperand *, 4> otherUses;
+            for (OpOperand &use : constOp->getUses()) {
+              Operation *owner = use.getOwner();
+              bool isOtherUse = false;
+              if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(owner))
+                isOtherUse = (use.get() == loadOp.getOther());
+              else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMOp>(owner))
+                isOtherUse = (use.get() == gm2lmOp.getOther());
+              else if (auto gm2lmMaskOp =
+                           dyn_cast<triton::xpu::GM2LMMaskOp>(owner))
+                isOtherUse = (use.get() == gm2lmMaskOp.getOther());
+              if (isOtherUse)
+                otherUses.push_back(&use);
+            }
+            if (!otherUses.empty()) {
+              OpBuilder sbuilder(constOp);
+              auto scalarClone = sbuilder.create<arith::ConstantOp>(
+                  constOp.getLoc(), constOp.getType(), constOp.getValue());
+              for (OpOperand *use : otherUses)
+                use->set(scalarClone.getResult());
+            }
             auto newVectorizedTensorTy =
                 getVectorType(constOp.getResult().getType());
             OpBuilder builder(constOp);
@@ -629,7 +659,77 @@ struct TritonXPUVectorizePass
           .Case<triton::ExpandDimsOp>([&](auto expandOp) {
             auto newVectorizedTensorTy =
                 getVectorType(expandOp.getResult().getType());
-            expandOp.getResult().setType(newVectorizedTensorTy);
+             expandOp.getResult().setType(newVectorizedTensorTy);
+           })
+          .Case<triton::xpu::ScanOp>([&](auto scanOp) {
+            // Width-preserving pass-through: the results follow getVectorType
+            // like every other op in the tree, so the users above (truncf,
+            // store) see the vector form. The combine region must follow the
+            // new element type (Ops.cpp verifyRegionsImpl) the same way the
+            // reduce's retyping block does it: block args and region ops go
+            // vector, and scalar constants are rematerialized as in-region
+            // vector splats. Region op kinds are the exact set
+            // scanCombineIsVectorizable admits -- Default is unreachable.
+            for (Value res : scanOp->getResults())
+              res.setType(getVectorType(res.getType()));
+            for (Block &block : scanOp.getCombineOp().getBlocks()) {
+              auto inputSize = scanOp.getInputTypes().size();
+              int vecSize = 16;
+              for (unsigned i = 0; i < inputSize; ++i) {
+                // Derive from the freshly retyped result, not the operand:
+                // producers may or may not have been retyped yet, the result
+                // was scalar until two lines ago either way.
+                auto vecTy = cast<RankedTensorType>(
+                                 scanOp->getResult(i).getType())
+                                 .getElementType();
+                vecSize = cast<VectorType>(vecTy).getNumElements();
+                auto arg1 = block.getArguments()[i];
+                auto arg2 = block.getArguments()[inputSize + i];
+                arg1.setType(vecTy);
+                arg2.setType(vecTy);
+              }
+              {
+                OpBuilder builder(&block, block.begin());
+                for (Operation &op : block) {
+                  for (OpOperand &use : op.getOpOperands()) {
+                    Value v = use.get();
+                    if (isa<VectorType>(v.getType()))
+                      continue;
+                    auto cstOp = v.getDefiningOp<arith::ConstantOp>();
+                    if (!cstOp)
+                      continue; // excluded by scanCombineIsVectorizable
+                    auto newVecTy = VectorType::get(vecSize, v.getType());
+                    auto splat = DenseElementsAttr::get(
+                        cast<ShapedType>(Type(newVecTy)),
+                        ArrayRef<Attribute>{cstOp.getValue()});
+                    use.set(builder.create<arith::ConstantOp>(
+                        cstOp.getLoc(), newVecTy, splat));
+                  }
+                }
+              }
+              for (auto &op : block) {
+                TypeSwitch<Operation *>(&op)
+                    .template Case<REDUCE_COMBINE_OP, arith::SubFOp,
+                                   arith::DivFOp, arith::SelectOp>(
+                        [&](auto comOp) {
+                          for (auto res : comOp->getResults()) {
+                            auto elemTy = res.getType();
+                            VectorType vecType =
+                                VectorType::get(vecSize, elemTy);
+                            res.setType(vecType);
+                          }
+                        })
+                    .template Case<arith::ConstantOp>([&](auto cstOp) {
+                      // Left scalar on purpose: the lowering's emitter splats
+                      // it to whichever shape consumes it.
+                    })
+                    .Default([&](auto defaultOp) {
+                      defaultOp->dump();
+                      llvm_unreachable(
+                          "[Vectorization]: Unsupported scan combine op");
+                    });
+              }
+            }
           })
           .Case<triton::ExternElementwiseOp>([&](auto extElemwiseOp) {
             auto symbol = extElemwiseOp.getSymbol();
@@ -789,9 +889,9 @@ struct TritonXPUVectorizePass
                                         ArrayRef<Operation *> rootOps,
                                         Type rootOpTy, std::string logMessage,
                                         triton::xpu::ReduceOp redOp = {}) {
-    VectorizabilityAnalysis analysis(ReduceVec, dumpFlag,
-                                     vectorFitsReduceOperand, vectorFitsValue,
-                                     this->tleSmemVec, this->tleVec);
+    VectorizabilityAnalysis analysis(
+        ReduceVec, dumpFlag, vectorFitsReduceOperand, vectorFitsValue,
+        this->tleSmemVec, this->tleVec, vectorFitsScanOperand);
     if (!vectorFitsRoot(rootOpTy)) {
       if (vecReportEnabled() && !rootOps.empty())
         reportVecRoot("in-vectorize", "reduce-operand-shared", rootOps.front(),
@@ -806,6 +906,7 @@ struct TritonXPUVectorizePass
         if (vecReportEnabled())
           reportVecRoot("in-vectorize", "reduce-operand-shared", rootOp,
                         rootOpTy, /*eligible=*/true, /*closureSize=*/0);
+        reportVecFail(rootOp, "reduce-operand-shared", analysis.getFailedOps());
         return; // all-or-nothing: the reduce needs every operand in vector form
       }
 
@@ -834,9 +935,9 @@ struct TritonXPUVectorizePass
         isa_and_nonnull<triton::xpu::StoreOp, triton::StoreOp>(rootOp)
             ? "store"
             : "reduce-operand";
-    VectorizabilityAnalysis analysis(ReduceVec, dumpFlag,
-                                     vectorFitsReduceOperand, vectorFitsValue,
-                                     this->tleSmemVec, this->tleVec);
+    VectorizabilityAnalysis analysis(
+        ReduceVec, dumpFlag, vectorFitsReduceOperand, vectorFitsValue,
+        this->tleSmemVec, this->tleVec, vectorFitsScanOperand);
     if (!vectorFitsRoot(rootOpTy)) {
       if (vecReportEnabled() && rootOp) {
         reportVecRoot("in-vectorize", site, rootOp, rootOpTy,
@@ -856,8 +957,22 @@ struct TritonXPUVectorizePass
                     closed ? int64_t(vectorizedOps.size()) : 0);
     if (!closed) {
       reportOpenGate(rootOp, site, "walk-vetoed", vectorizedOps.size());
+      reportVecFail(rootOp, site, analysis.getFailedOps());
       cutVectorSegment(rootOp, site, mod);
       return;
+    }
+    // Front-door pricing, report-only (the step 3.2i+ pattern): a closed set
+    // carrying a scan is priced with the core-cost term so the census sees
+    // what an enforcing gate would have answered. The cut path cannot see
+    // scan terms -- the walk vetoes before such a segment exists -- so the
+    // growth door is the only observation post for scan pricing.
+    if (vecReportEnabled()) {
+      bool hasScan = false;
+      for (Operation *op : vectorizedOps)
+        if (isa<triton::xpu::ScanOp>(op))
+          hasScan = true;
+      if (hasScan)
+        reportOpenGate(rootOp, site, "growth-scan-priced", 0);
     }
 
     LLVM_DEBUG({
@@ -1167,6 +1282,32 @@ struct TritonXPUVectorizePass
     llvm::errs() << " loc=" << storeOp->getLoc() << "\n";
   }
 
+  // Names the op(s) that made a vectorization root fall back to scalar, so a
+  // developer can see *which* op blocked it rather than only that the root
+  // stayed scalar. `getFailedOps()` holds the intrinsic leaves the all-or-
+  // nothing walk vetoed on (no vector form / footprint / guard), not the
+  // ancestors that only propagated the veto. Off unless TRITONXPU_VEC_REPORT=1.
+  void reportVecFail(Operation *rootOp, const char *site, Operation *op,
+                     const char *reason) {
+    if (!vecReportEnabled() || !rootOp || !op)
+      return;
+    StringRef kernel = "<unknown>";
+    if (auto funcOp = rootOp->getParentOfType<triton::FuncOp>())
+      kernel = funcOp.getName();
+    llvm::errs() << "[VecFail] " << kernel << " site=" << site
+                 << " root=" << rootOp->getName() << " op=" << op->getName()
+                 << " reason=" << reason << " loc=" << op->getLoc() << "\n";
+  }
+  void reportVecFail(Operation *rootOp, const char *site,
+                     ArrayRef<Operation *> failedOps) {
+    if (!vecReportEnabled())
+      return;
+    llvm::SmallPtrSet<Operation *, 8> seen;
+    for (Operation *op : failedOps)
+      if (op && seen.insert(op).second)
+        reportVecFail(rootOp, site, op, "no-vector-form");
+  }
+
   // Step 3.2 stage 2: the first change here that alters emitted code, so it
   // sits behind `per-op-decision` and the default path is untouched.
   //
@@ -1327,7 +1468,13 @@ struct TritonXPUVectorizePass
     int64_t unpricedEdge = 0; // edge P4's formula does not apply to
     int64_t unpricedTerm = 0; // term op whose own width is unpriceable
     int64_t free = 0;         // splat constants: one materialisation either way
-    int64_t net() const { return save - price; }
+    // Core rewrite cost of cross-lane ops the scalar form does not pay:
+    // a vectorized scan's lane prefix runs a shift-add network per chunk
+    // (~10 ops/chunk network path, ~48 serial), priced in P4's static
+    // instruction unit; calibrated against P800 device measurements
+    // (2026-09-21: 41ns/chunk network vs 164ns/chunk serial).
+    int64_t coreCost = 0;
+    int64_t net() const { return save - price - coreCost; }
   };
 
   // The out-edges of a segment, enumerated the way `cutVectorSegment` actually
@@ -1384,6 +1531,29 @@ struct TritonXPUVectorizePass
           continue;
         ++sp.matIn;
         priceEdge(operand);
+      }
+      // Core-cost term: a vectorized scan pays a lane-prefix network per
+      // chunk; scalar scans pay nothing here, and the save side only counts
+      // the memory edges, so this is where the network enters the ledger.
+      if (auto scanOp = dyn_cast<triton::xpu::ScanOp>(op)) {
+        int64_t cn = 0, cw = 0;
+        Value crepr = decisionKeyValue(op);
+        if (crepr && p4EdgePrice(crepr, cn, cw) && cn > cw) {
+          // Per-chunk network cost by combine shape, not a flat rate: a plain
+          // add is a maskless shift-add (cheapest); every other combine adds
+          // the keep-lane<k select (icmp + vvor) each step, and a multi-op
+          // region folds more ops per step. Under-pricing max/min would admit
+          // a network barely cheaper than the serial replay.
+          Block &body = scanOp.getCombineOp().front();
+          int64_t combineOps = std::distance(body.without_terminator().begin(),
+                                             body.without_terminator().end());
+          bool plainAdd = combineOps == 1 &&
+                          isa<arith::AddFOp, arith::AddIOp>(body.front());
+          int64_t perChunk = 10; // maskless shift-add network
+          if (!plainAdd)
+            perChunk += 4 + 4 * (combineOps - 1); // +mask, +extra fold ops
+          sp.coreCost += (cn / cw) * perChunk;
+        }
       }
       // A splat constant is one materialisation either way, so counting it as
       // `N -> N/W` would inflate the saving of exactly the segments worth
@@ -1458,6 +1628,7 @@ struct TritonXPUVectorizePass
                  << ",none=" << cover[unsigned(VecTyCoverage::None)] << "}"
                  << " mat{in=" << sp.matIn << ",out=" << sp.matOut << "}"
                  << " p4{price=" << sp.price << ",save=" << sp.save
+                 << ",core=" << sp.coreCost
                  << ",net=" << sp.net() << ",unpriced=" << sp.unpricedEdge
                  << "/" << sp.unpricedTerm << ",free=" << sp.free << "}"
                  << " unpricedEdgeTys={";
@@ -2200,7 +2371,7 @@ struct TritonXPUVectorizePass
       return false;
     // A loop's result comes from its BODY (the yield chain), not just from
     // the iter-arg init values the plain operand walk would follow. A
-    // k29-style `acc = scf.for(...)` hides the whole compute tree --
+    // TLE-style `acc = scf.for(...)` hides the whole compute tree --
     // including the lane-index-derived mask feeding a select -- inside the
     // region, and skipping it wrongly let the bf16 unordered (lane-
     // permuting) placement through: the mask's bits no longer lined up
@@ -2544,6 +2715,8 @@ struct TritonXPUVectorizePass
           LLVM_DEBUG(llvm::dbgs()
                      << "[Vectorization]: Reduce combine region is not "
                         "vector-representable, leaving the reduce scalar\n");
+          reportVecFail(redOp, "reduce-combine", redOp,
+                        "combine-region-not-vectorizable");
           continue;
         }
 
@@ -2631,7 +2804,7 @@ struct TritonXPUVectorizePass
             for (auto &op : block) {
               TypeSwitch<Operation *>(&op)
                   .Case<REDUCE_COMBINE_OP, arith::SubFOp, arith::DivFOp,
-                        arith::SelectOp, COMBINE_OP_TLE_EXT>(
+                        arith::SelectOp>(
                       [&](auto redComOp) {
                         // The non-COMBINE_OP kinds are only admitted by
                         // reduceCombineIsVectorizable while the region lowering
@@ -2849,7 +3022,13 @@ private:
   bool VMAC_Fusion = true;
   bool cvtOp_clean = true;
   bool Div2Mul = true;
-  bool ReduceVec = true;
+  // Measurement hatch for the reduce-vectorization A/B (per-op core-cost work):
+  // TRITONXPU_REDUCE_VEC=0 keeps the whole [Load->Reduce] growth path scalar so
+  // the two sides of the A/B differ (ReduceVec hardcoded true made both sides
+  // byte-identical). Mirrors TRITONXPU_SCAN_VEC's default-on semantics.
+  bool ReduceVec = mlir::triton::tools::isEnvValueBool(
+                        mlir::triton::tools::getStrEnv("TRITONXPU_REDUCE_VEC"))
+                        .value_or(true);
   bool BF16ToFP32VecOpt = true;
 };
 

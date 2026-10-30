@@ -1,6 +1,10 @@
 #include "PatternTritonXPUOpToLLVM.h"
+#include "Utility.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Analysis/VectorizabilityAnalysis.h"
 #include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // LLVM22 dragon-style macros for XPU only
+#include "CombineEmit.h"
+#include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/TypeSwitch.h"
@@ -67,10 +71,18 @@ struct XPUReduceOpConversion
     ReduceOpHelper helper(op);
     SmallVector<int64_t> offsets;
     // auto curIdx = helper.getReduceId();
-    auto prevSMOffset =
-        helper.getReduceId() == 0
-            ? 0
-            : helper.getSMOffsets(helper.getReduceId() - 1)->endOffset;
+    // getSMOffsets() returns null when the predecessor id has no recorded
+    // offsets. That is the normal case when the predecessor is
+    // core-synchronous: assignReduceScanIds() numbers *every* reduce, but only
+    // a non-core-synchronous one reaches initSharedMemory() and so calls
+    // setSMOffsets(). setSMOffsets() itself already treats a missing
+    // predecessor as a zero offset; do the same here rather than dereferencing
+    // null (which segfaults the compiler and, under the crash reproducer, is
+    // reported as a bare "Failures have been detected ..." with no diagnostic).
+    unsigned prevSMOffset = 0;
+    if (helper.getReduceId() != 0)
+      if (const auto *prev = helper.getSMOffsets(helper.getReduceId() - 1))
+        prevSMOffset = prev->endOffset;
     // op->dump();
     // LLVM_DEBUG(llvm::dbgs() << "\nprevSMOffset = " << prevSMOffset << "\n");
 
@@ -156,8 +168,22 @@ struct XPUReduceOpConversion
     Location loc = op->getLoc();
     auto srcValues = unpackInputs(loc, op, adaptor, rewriter);
 
+    // A reduce that lives inside the core-tiling slicing loop carries its
+    // accumulation across iterations through the shared-memory loop cache
+    // (see accumulatePartialReductions / loadReductionAndPackResult, guarded by
+    // isNeedLoopCacheResult).  packResults() is register-only and has no such
+    // cache, so taking the core-synchronous shortcut for a loop-carried reduce
+    // silently returns the *current* iteration's partial instead of the
+    // accumulated result: the value result degenerates to the value operand
+    // and, for a multi-operand combine such as tl.argmax, the index result
+    // degenerates to the index operand -- which is the loop index itself when
+    // the index operand is the loop's out_range.  A consumer comparing against
+    // that operand then folds to a constant.
+    bool coreSync = helper.isCoreSynchronous();
+    bool loopCarried = op.getLoopNum() > 1 && isNeedLoopCacheResult(op);
+
     // Init shared memory for mask.
-    if (!targetInfo.getXPUIsUseMaskZero() && !helper.isCoreSynchronous()) {
+    if (!targetInfo.getXPUIsUseMaskZero() && !(coreSync && !loopCarried)) {
       initSharedMemory(helper, rewriter, loc);
     }
     std::map<SmallVector<unsigned>, SmallVector<Value>> accs;
@@ -165,7 +191,7 @@ struct XPUReduceOpConversion
     // First reduce all the values along axis within each thread.
     reduceWithinThreads(helper, srcValues, accs, indices, rewriter);
 
-    if (helper.isCoreSynchronous()) {
+    if (coreSync && !loopCarried) {
       LLVM_DEBUG(llvm::dbgs() << "\nisCoreSynchronous=True\n");
 
       // If all the values to be reduced are within the same warp there is
@@ -671,16 +697,8 @@ private:
 
   // Must stay in sync with the TypeSwitch in emitCombineOp.
   static bool isSupportedCombineOp(Operation *op) {
-    // arith::NegFOp is absent on purpose: Triton's unary minus lowers to
-    // `subf(0.0, x)`, so a combine region never contains one
-    // (findings.md 1.24).
-    return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
-               arith::MaxNumFOp, arith::MinNumFOp, arith::OrIOp, arith::XOrIOp,
-               arith::AndIOp, arith::CmpFOp, arith::CmpIOp, arith::AddIOp,
-               arith::SubIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,
-               arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp,
-               arith::MinimumFOp, arith::DivSIOp, arith::DivUIOp,
-               arith::SelectOp, arith::ConstantOp>(op);
+    // Bodies live in CombineEmit.cpp now, shared with the scan lowering.
+    return mlir::triton::xpu::isSupportedCombineOp(op);
   }
 
   // All rejection happens here, before anything is emitted, so a region we
@@ -690,40 +708,11 @@ private:
   // (within-core) and on scalars (across cores), so the constant has to be
   // narrowable and widenable at will.
   static bool isUniformConstant(Value v) {
-    auto cstOp = v.getDefiningOp<arith::ConstantOp>();
-    if (!cstOp)
-      return false;
-    if (!isa<VectorType>(cstOp.getType()))
-      return true;
-    auto dense = dyn_cast<DenseElementsAttr>(cstOp.getValue());
-    return dense && dense.isSplat();
+    return mlir::triton::xpu::isUniformConstant(v);
   }
 
   bool canInterpretCombine(Region &combine) const {
-    if (!llvm::hasSingleElement(combine))
-      return false;
-    Block &block = combine.front();
-    if (!isa<triton::xpu::ReduceReturnOp>(block.getTerminator()))
-      return false;
-    llvm::SmallPtrSet<Value, 8> defined;
-    for (Value arg : block.getArguments())
-      defined.insert(arg);
-    for (Operation &op : block.without_terminator()) {
-      if (!isSupportedCombineOp(&op) || op.getNumResults() != 1)
-        return false;
-      for (Value operand : op.getOperands())
-        // Anything but a uniform constant is captured from outside and has no
-        // lowered counterpart here. Constants get rematerialized instead: the
-        // canonicalizer hoists them out of the region, so rejecting them would
-        // reject welford's combine outright.
-        if (!defined.contains(operand) && !isUniformConstant(operand))
-          return false;
-      defined.insert(op.getResult(0));
-    }
-    for (Value v : block.getTerminator()->getOperands())
-      if (!defined.contains(v))
-        return false;
-    return true;
+    return mlir::triton::xpu::canInterpretCombine(combine);
   }
 
   // Widen a scalar to `width` lanes *keeping its own element type*: a cmpf mask
@@ -731,13 +720,7 @@ private:
   // from a neighbouring operand gets that wrong.
   Value splatToWidth(ConversionPatternRewriter &rewriter, Location loc, Value v,
                      int64_t width) const {
-    if (isa<VectorType>(v.getType()))
-      return v;
-    auto vecTy = VectorType::get({width}, v.getType());
-    Value splat = undef(vecTy);
-    for (int64_t i = 0; i < width; ++i)
-      splat = insert_element(vecTy, splat, v, i32_val(i));
-    return splat;
+    return mlir::triton::xpu::splatToWidth(rewriter, loc, v, width);
   }
 
   // Always emit the constant scalar first and widen afterwards: the region may
@@ -745,12 +728,7 @@ private:
   // stage being lowered is scalar, or the other way round.
   Value materializeConstant(ConversionPatternRewriter &rewriter, Location loc,
                             arith::ConstantOp cstOp, int64_t width) const {
-    Attribute attr = cstOp.getValue();
-    if (auto dense = dyn_cast<DenseElementsAttr>(attr))
-      attr = dense.getSplatValue<Attribute>(); // isUniformConstant checked this
-    Value cst = rewriter.create<LLVM::ConstantOp>(
-        loc, getElementTypeOrSelf(cstOp.getType()), attr);
-    return width > 0 ? splatToWidth(rewriter, loc, cst, width) : cst;
+    return mlir::triton::xpu::materializeConstant(rewriter, loc, cstOp, width);
   }
 
   // `width` is the lane count of the stage: > 0 while combining vector
@@ -758,86 +736,7 @@ private:
   Value emitCombineOp(ConversionPatternRewriter &rewriter, Location loc,
                       Operation *op, SmallVector<Value> &args,
                       int64_t width) const {
-    if (width > 0)
-      for (Value &a : args)
-        a = splatToWidth(rewriter, loc, a, width);
-
-    return TypeSwitch<Operation *, Value>(op)
-        .Case<arith::AddFOp>(
-            [&](auto) -> Value { return fadd(args[0], args[1]); })
-        .Case<arith::SubFOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::FSubOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MulFOp>(
-            [&](auto) -> Value { return fmul(args[0], args[1]); })
-        .Case<arith::DivFOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::FDivOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MaxNumFOp>(
-            [&](auto) -> Value { return fmax(args[0], args[1]); })
-        .Case<arith::MinNumFOp>(
-            [&](auto) -> Value { return fmin(args[0], args[1]); })
-        .Case<arith::OrIOp>(
-            [&](auto) -> Value { return or_(args[0], args[1]); })
-        .Case<arith::XOrIOp>(
-            [&](auto) -> Value { return xor_(args[0], args[1]); })
-        .Case<arith::AndIOp>(
-            [&](auto) -> Value { return and_(args[0], args[1]); })
-        .Case<arith::CmpFOp>([&](arith::CmpFOp cmpfOp) -> Value {
-          Type resTy = rewriter.getI1Type();
-          if (auto ty = dyn_cast<VectorType>(args[0].getType()))
-            resTy = VectorType::get(ty.getShape(), resTy);
-          return rewriter.create<LLVM::FCmpOp>(
-              loc, resTy, ArithCmpFPredicateToLLVM(cmpfOp.getPredicate()),
-              args[0], args[1]);
-        })
-        .Case<arith::CmpIOp>([&](arith::CmpIOp cmpiOp) -> Value {
-          Type resTy = rewriter.getI1Type();
-          if (auto ty = dyn_cast<VectorType>(args[0].getType()))
-            resTy = VectorType::get(ty.getShape(), resTy);
-          return rewriter.create<LLVM::ICmpOp>(
-              loc, resTy, ArithCmpIPredicateToLLVM(cmpiOp.getPredicate()),
-              args[0], args[1]);
-        })
-        .Case<arith::AddIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::AddOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::SubIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::SubOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MulIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::MulOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MaxSIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::SMaxOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MinSIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::SMinOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MaxUIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::UMaxOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MinUIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::UMinOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MaximumFOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::MaximumOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::MinimumFOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::MinimumOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::DivSIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::SDivOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::DivUIOp>([&](auto) -> Value {
-          return rewriter.create<LLVM::UDivOp>(loc, args[0], args[1]);
-        })
-        .Case<arith::SelectOp>(
-            [&](auto) -> Value { return select(args[0], args[1], args[2]); })
-        .Case<arith::ConstantOp>([&](arith::ConstantOp cstOp) -> Value {
-          return materializeConstant(rewriter, loc, cstOp, width);
-        })
-        .Default([](auto) -> Value { return Value(); });
+    return mlir::triton::xpu::emitCombineOp(rewriter, loc, op, args, width);
   }
 
   // One combine step: acc = combine(acc, cur), emitted from the region itself.
@@ -845,41 +744,7 @@ private:
   void interpretCombine(ConversionPatternRewriter &rewriter, Location loc,
                         Region &combine, SmallVector<Value> &acc,
                         ValueRange cur) const {
-    Block &block = combine.front();
-    assert(block.getNumArguments() == acc.size() + cur.size() &&
-           "combine arity does not match the accumulator");
-
-    llvm::DenseMap<Value, Value> map;
-    for (unsigned i = 0; i < acc.size(); ++i) {
-      map[block.getArgument(i)] = acc[i];
-      map[block.getArgument(acc.size() + i)] = cur[i];
-    }
-
-    // The accumulators decide the stage: vector within a core, scalar across
-    // cores. Everything else in the region is brought to that shape.
-    int64_t width = 0;
-    for (Value v : acc)
-      if (auto vecTy = dyn_cast<VectorType>(v.getType()))
-        width = vecTy.getNumElements();
-
-    for (Operation &op : block.without_terminator()) {
-      SmallVector<Value> args;
-      for (Value operand : op.getOperands()) {
-        Value mapped = map.lookup(operand);
-        if (!mapped) // hoisted out of the region; rematerialize it here
-          mapped = materializeConstant(
-              rewriter, loc, operand.getDefiningOp<arith::ConstantOp>(), width);
-        args.push_back(mapped);
-      }
-      Value res = emitCombineOp(rewriter, loc, &op, args, width);
-      assert(res && "isSupportedCombineOp is out of sync with emitCombineOp");
-      map[op.getResult(0)] = res;
-    }
-
-    SmallVector<Value> results;
-    for (Value v : block.getTerminator()->getOperands())
-      results.push_back(map.lookup(v));
-    acc = results;
+    mlir::triton::xpu::interpretCombine(rewriter, loc, combine, acc, cur);
   }
 
   // Horizontal collapse to lane 0, done *jointly* across outputs: one combine
@@ -899,15 +764,48 @@ private:
       (void)v;
     }
 
-    // A log2(vecSize) pairwise tree was tried here and reverted (2026-08-03):
-    // it does cut the LLVM IR (16 shufflevectors replacing ~30 extract/insert
-    // pairs on softmax), but xpu3 has no cross-lane permute, so llc synthesizes
-    // each `shufflevector <16 x float>` from per-lane moves (~40 machine ops:
-    // vmmov 242->660, vor.f.mz 0->462, vextract.f 0->224 on softmax). Measured
-    // with TRITONXPU_REDUCE_REGION=1: softmax 1774->2890 (vspill 0->5),
-    // layernorm 677->1643, welford 2715->5100 (vspill 14->18). The serial
-    // replay below reaches a lane with one `vextracti.f` each, which is the
-    // cheapest lane access this target has.
+    // Network path -- the same Hillis-Steele lane-prefix the scan lowering
+    // uses: fold the k-lane-shifted vector into the running one via
+    // interpretCombine, and for any combine whose identity is not the shift's
+    // zero fill (min/max/...), keep lane<k at its pre-step value with the vvor
+    // masked select. The reduction is lane (vecSize-1) of the resulting
+    // inclusive prefix. Restricted to what the packed shift + masked select
+    // model: any interpretable combine at one register width; the mask is
+    // float-only, so plain add also runs for integer (svsllp_s, maskless --
+    // 0 is its identity), but an integer min/max keeps the serial replay
+    // below, as does a mixed-width or otherwise un-interpretable region.
+    bool netEligible = combine.getBlocks().size() == 1 &&
+                       mlir::triton::xpu::canInterpretCombine(combine);
+    Type netElemTy;
+    bool plainAdd = false;
+    if (netEligible) {
+      Block &body = combine.front();
+      netElemTy = getElementTypeOrSelf(accVecs[0].getType());
+      for (Value v : accVecs)
+        if (getElementTypeOrSelf(v.getType()) != netElemTy)
+          netEligible = false;
+      for (Value arg : body.getArguments())
+        if (getElementTypeOrSelf(arg.getType()) != netElemTy)
+          netEligible = false;
+      if (std::distance(body.without_terminator().begin(),
+                        body.without_terminator().end()) == 1)
+        plainAdd = isa<arith::AddFOp, arith::AddIOp>(body.front());
+      if (!plainAdd && !isa<FloatType>(netElemTy))
+        netEligible = false; // masked (non-add) collapse needs the float vvor;
+                             // i32 max/min stay serial (network net-negative,
+                             // KTC-148 asm A/B). Plain int add still nets below.
+    }
+    if (netEligible) {
+      // Shared masked lane-prefix network (with the scan lowering); the total
+      // is lane (vecSize-1) of the resulting inclusive prefix.
+      mlir::triton::xpu::emitMaskedLanePrefix(rewriter, loc, combine, accVecs,
+                                              /*needsMask=*/!plainAdd);
+      // lane (vecSize-1) of the inclusive prefix holds the reduction total.
+      for (Value &v : accVecs)
+        v = extract_element(netElemTy, v, i32_val(vecSize - 1));
+      return;
+    }
+
     SmallVector<Value> acc;
     for (Value v : accVecs)
       acc.push_back(laneOf(v, 0));

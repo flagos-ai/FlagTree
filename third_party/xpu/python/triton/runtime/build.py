@@ -43,6 +43,7 @@ def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_di
     cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", so]
     cc_cmd += [_library_flag(lib) for lib in libraries]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
+    cc_cmd += [f"-Wl,-rpath,{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
     cc_cmd.extend(ccflags)
     subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
