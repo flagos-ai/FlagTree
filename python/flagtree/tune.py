@@ -27,7 +27,6 @@ from inspect import signature
 import json
 from math import isfinite
 from numbers import Real
-from time import perf_counter
 from typing import TYPE_CHECKING, Callable
 import warnings
 
@@ -258,17 +257,21 @@ class AutoTuner:
     def _bench_distributed(self, call, device_interface, autotune_pg):
         import torch.distributed as dist
 
+        start_event = device_interface.Event(enable_timing=True)
+        end_event = device_interface.Event(enable_timing=True)
+
         dist.barrier(group=autotune_pg)
         for _ in range(5):
             call()
         device_interface.synchronize()
         dist.barrier(group=autotune_pg)
-        # Wall time + device completion covers side streams and host communication.
-        start = perf_counter()
+        # The callable must order side-stream work between these current-stream events.
+        start_event.record()
         for _ in range(10):
             call()
+        end_event.record()
         device_interface.synchronize()
-        return (perf_counter() - start) * 1000 / 10
+        return start_event.elapsed_time(end_event) / 10
 
     def tune(self, config_space, *args, **kwargs):
         benchmark = self.do_bench
@@ -330,8 +333,12 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     candidate once, without benchmarking or resolving a benchmark device.
 
     With tuning enabled, the group benchmarks candidates in the common order
-    with exactly 5 warmup and 10 measured calls each. Device-synchronized
-    wall time measures end-to-end milliseconds per call, including host overhead.
+    with exactly 5 warmup and 10 measured calls each. The backend must support
+    timing events; their elapsed milliseconds divided by 10 give the amortized
+    time per call. Events are recorded on the current stream, which the function
+    must preserve. Side-stream work must depend on the starting event and join
+    the timing stream before the ending event; the final device synchronization
+    alone does not include independent side-stream work in the event interval.
     The winner minimizes the maximum rank latency and is broadcast by group rank 0.
     Each rank then executes the winner once more and returns its local result.
 
