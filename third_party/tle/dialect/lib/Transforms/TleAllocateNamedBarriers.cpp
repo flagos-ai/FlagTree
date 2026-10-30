@@ -31,6 +31,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <optional>
 
@@ -74,10 +75,10 @@ static std::optional<int64_t> getConstantI32(Value value) {
   return std::nullopt;
 }
 
-static void reserveWarpSpecializeBarrierIds(triton::FuncOp func,
+static void reserveWarpSpecializeBarrierIds(ModuleOp module,
                                             llvm::SmallBitVector &reserved) {
   int64_t maxPartitions = 0;
-  func.walk([&](ttg::WarpSpecializeOp ws) {
+  module.walk([&](ttg::WarpSpecializeOp ws) {
     maxPartitions =
         std::max<int64_t>(maxPartitions, ws.getPartitionRegions().size());
   });
@@ -95,9 +96,7 @@ static void reserveWarpSpecializeBarrierIds(triton::FuncOp func,
 }
 
 static LogicalResult
-collectNamedBarrierId(Operation *op, Value idValue,
-                      llvm::SmallBitVector &reserved,
-                      llvm::SmallBitVector &used,
+collectNamedBarrierId(Operation *op, Value idValue, llvm::SmallBitVector &used,
                       llvm::MapVector<int64_t, int64_t> &virtualToPhysical) {
   std::optional<int64_t> id = getConstantI32(idValue);
   if (!id)
@@ -121,13 +120,20 @@ collectNamedBarrierId(Operation *op, Value idValue,
 }
 
 static LogicalResult
-allocateVirtualIds(triton::FuncOp func, llvm::SmallBitVector &reserved,
+allocateVirtualIds(ModuleOp module, llvm::SmallBitVector &reserved,
                    llvm::SmallBitVector &used,
                    llvm::MapVector<int64_t, int64_t> &virtualToPhysical) {
   for (int64_t i = 0; i < kNumPhysicalNamedBarriers; ++i)
     if (reserved.test(i))
       used.set(i);
-  for (auto &entry : virtualToPhysical) {
+
+  SmallVector<int64_t> virtualIds;
+  virtualIds.reserve(virtualToPhysical.size());
+  for (const auto &entry : virtualToPhysical)
+    virtualIds.push_back(entry.first);
+  std::sort(virtualIds.begin(), virtualIds.end());
+
+  for (int64_t virtualId : virtualIds) {
     int64_t physicalId = -1;
     for (int64_t candidate = kFirstTleAllocatedPhysicalNamedBarrierId;
          candidate < kNumPhysicalNamedBarriers; ++candidate) {
@@ -138,14 +144,14 @@ allocateVirtualIds(triton::FuncOp func, llvm::SmallBitVector &reserved,
     }
 
     if (physicalId < 0)
-      return func.emitError("cannot allocate physical NVIDIA named barrier "
-                            "id for virtual TLE named barrier ")
-             << entry.first << "; all ids in allocatable range ["
+      return module.emitError("cannot allocate physical NVIDIA named barrier "
+                              "id for virtual TLE named barrier ")
+             << virtualId << "; all ids in allocatable range ["
              << kFirstTleAllocatedPhysicalNamedBarrierId << ", "
              << (kNumPhysicalNamedBarriers - 1)
              << "] are already reserved or used";
 
-    entry.second = physicalId;
+    virtualToPhysical.find(virtualId)->second = physicalId;
     used.set(physicalId);
   }
   return success();
@@ -168,20 +174,24 @@ static void rewriteNamedBarrierId(
   op->setOperand(0, physicalId);
 }
 
-static LogicalResult allocateForFunction(triton::FuncOp func) {
+static LogicalResult allocateForModule(ModuleOp module) {
   llvm::SmallBitVector reserved(kNumPhysicalNamedBarriers, false);
   llvm::SmallBitVector used(kNumPhysicalNamedBarriers, false);
   llvm::MapVector<int64_t, int64_t> virtualToPhysical;
 
-  reserveWarpSpecializeBarrierIds(func, reserved);
+  // NVIDIA named barrier ids are CTA-wide resources. A virtual barrier can be
+  // allocated in the kernel and consumed by any number of outlined helpers,
+  // so reservation, allocation, and rewriting must all use one module-wide
+  // map rather than independent maps for each tt.func.
+  reserveWarpSpecializeBarrierIds(module, reserved);
 
-  WalkResult collectResult = func.walk([&](Operation *op) -> WalkResult {
+  WalkResult collectResult = module.walk([&](Operation *op) -> WalkResult {
     if (auto wait = dyn_cast<ttng::NamedBarrierWaitOp>(op)) {
-      if (failed(collectNamedBarrierId(op, wait.getBar(), reserved, used,
+      if (failed(collectNamedBarrierId(op, wait.getBar(), used,
                                        virtualToPhysical)))
         return WalkResult::interrupt();
     } else if (auto arrive = dyn_cast<ttng::NamedBarrierArriveOp>(op)) {
-      if (failed(collectNamedBarrierId(op, arrive.getBar(), reserved, used,
+      if (failed(collectNamedBarrierId(op, arrive.getBar(), used,
                                        virtualToPhysical)))
         return WalkResult::interrupt();
     }
@@ -191,10 +201,10 @@ static LogicalResult allocateForFunction(triton::FuncOp func) {
   if (collectResult.wasInterrupted())
     return failure();
 
-  if (failed(allocateVirtualIds(func, reserved, used, virtualToPhysical)))
+  if (failed(allocateVirtualIds(module, reserved, used, virtualToPhysical)))
     return failure();
 
-  func.walk([&](Operation *op) {
+  module.walk([&](Operation *op) {
     if (auto wait = dyn_cast<ttng::NamedBarrierWaitOp>(op))
       rewriteNamedBarrierId(op, wait.getBar(), virtualToPhysical);
     else if (auto arrive = dyn_cast<ttng::NamedBarrierArriveOp>(op))
@@ -209,12 +219,7 @@ struct TritonTleAllocateNamedBarriers
           TritonTleAllocateNamedBarriers> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    WalkResult result = module.walk([&](triton::FuncOp func) -> WalkResult {
-      if (failed(allocateForFunction(func)))
-        return WalkResult::interrupt();
-      return WalkResult::advance();
-    });
-    if (result.wasInterrupted())
+    if (failed(allocateForModule(module)))
       signalPassFailure();
   }
 };

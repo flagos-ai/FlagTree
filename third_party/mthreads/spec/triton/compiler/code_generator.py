@@ -1356,7 +1356,22 @@ class CodeGenerator(ast.NodeVisitor):
         args_val = flatten_values_to_ir(args)
         call_op = self.builder.call(symbol, args_val)
         handles = [call_op.get_result(i) for i in range(call_op.get_num_results())]
-        return next(unflatten_ir_values(handles, [callee_ret_type]))
+        if callee_ret_type is None:
+            if handles:
+                raise CompilationError(
+                    self.jit_fn.src,
+                    self.cur_node,
+                    "JIT function returned no value but produced IR results",
+                )
+            return None
+        values = list(unflatten_ir_values(handles, [callee_ret_type]))
+        if not values:
+            raise CompilationError(
+                self.jit_fn.src,
+                self.cur_node,
+                "JIT function return type has no materialized IR value",
+            )
+        return values[0]
 
     def inline_JitFunction(self, fn: JITFunction, args, kwargs, caller_context=None):
         """Inline a JITFunction body into the current insertion block.

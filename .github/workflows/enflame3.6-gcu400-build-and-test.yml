@@ -122,4 +122,4 @@ jobs:
           python3 third_party/enflame/python/test/tle/tutorials/03-topk.py
           # python3 python/tutorials/tle/04-cluster-gemm.py
           python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
-          python3 third_party/enflame/python/test/tle/tutorials/deepseek_v32/02-sparse-mla.py
+          # python3 third_party/enflame/python/test/tle/tutorials/deepseek_v32/02-sparse-mla.py

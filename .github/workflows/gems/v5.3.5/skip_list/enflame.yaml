@@ -1,0 +1,59 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  - add
+  - add_
+  - addmv
+  - addmv_out
+  - ceil
+  - ceil_
+  - ceil_out
+  - copy
+  - copy_
+  - div_mode
+  - div_mode_
+  - div_out
+  - div_scalar
+  - div_scalar_
+  - div_tensor
+  - div_tensor_
+  - index_put
+  - index_put_
+  - mul
+  - mul_
+  - quantile
+  - resolve_neg
+  - scaled_dot_product_attention
+  - scaled_dot_product_attention_backward
+  - scaled_dot_product_attention_forward
+  - scatter_add_
+  - scatter_reduce
+  - scatter_reduce_
+  - scatter_src
+  - scatter_src_
+  - stack
+  - sub
+  - sub_
+  - topk
+  - topk_softmax
+  - trace
+  - upsample_bicubic2d
+  - upsample_bicubic2d_aa
+  - upsample_bicubic2d_aa_backward
+  - _weight_norm
+  - weight_norm
+  - weight_norm_interface
+  - weight_norm_interface_backward
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_scaled_dot_product_attention_legacy_backward
+  #- test_scaled_dot_product_attention_square_qk_even_mn
+  #- test_scaled_dot_product_attention_nonsquare_qk
+  #- test_scaled_dot_product_attention_legacy
+  #- test_scaled_dot_product_flash_attention
+  #- test_scaled_softmax_forward
+  #- test_scaled_softmax_backward
+
+# Skip entire test files
+skip_test_files:
+  #- test_scaled_dot_product_attention.py
