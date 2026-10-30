@@ -654,12 +654,24 @@ class SpecPackageHelper:
         spec_install_dir = os.path.join("python", "triton", "spec")
         yield "triton.spec", spec_install_dir
 
-        spec_dirs = sorted(
-            (entry for entry in os.scandir(spec_install_dir) if entry.is_dir() and entry.name != "__pycache__"),
-            key=lambda entry: entry.name)
-        for spec_dir in spec_dirs:
-            name = spec_dir.name
-            source_dir = spec_dir.path
+        spec_dirs = {
+            entry.name: entry.path
+            for entry in os.scandir(spec_install_dir)
+            if entry.is_dir() and entry.name != "__pycache__"
+        }
+
+        # Backend spec trees live under third_party/<backend>/spec.  Package
+        # discovery must not require a source-tree symlink under
+        # python/triton/spec; build-time linking is handled by setup.py's
+        # add_links() hook.  Use the backend tree directly when the link is
+        # absent, while preserving the existing mapping for other backends.
+        if flagtree_backend:
+            backend_spec_dir = os.path.join("third_party", flagtree_backend, "spec")
+            if os.path.isdir(backend_spec_dir) and flagtree_backend not in spec_dirs:
+                spec_dirs[flagtree_backend] = backend_spec_dir
+
+        for name in sorted(spec_dirs):
+            source_dir = spec_dirs[name]
             for root, dirs, _files in os.walk(source_dir):
                 dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
                 relative_dir = os.path.relpath(root, source_dir)
