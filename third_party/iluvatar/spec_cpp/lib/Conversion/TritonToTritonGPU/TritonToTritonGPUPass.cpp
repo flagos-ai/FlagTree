@@ -5,6 +5,9 @@
 #include "mlir/Transforms/DialectConversion.h"
 #ifdef __ILUVATAR_TLE__
 #include "IR/Dialect.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/PriorityWorklist.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -30,6 +33,510 @@ static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
   for (const NamedAttribute attr : dictAttrs.getValue())
     if (!op->hasAttr(attr.getName()))
       op->setAttr(attr.getName(), attr.getValue());
+}
+
+static LogicalResult
+validateIluvatarTleSetLayout(iluvatar_tle::SetLayoutOp op) {
+  // Structural layout restrictions belong to the op verifier. This pass adds
+  // the launch-context checks once the module attributes have been populated.
+  if (failed(op.verify()))
+    return failure();
+  Attribute encoding = op.getTargetEncoding();
+  Attribute parent = encoding;
+  while (auto slice = dyn_cast<SliceEncodingAttr>(parent))
+    parent = slice.getParent();
+  auto blocked = cast<BlockedEncodingAttr>(parent);
+
+  auto mod = op->getParentOfType<ModuleOp>();
+  unsigned threadsPerWarp = product<unsigned>(blocked.getThreadsPerWarp());
+  unsigned requiredThreadsPerWarp = TritonGPUDialect::getThreadsPerWarp(mod);
+  if (threadsPerWarp != requiredThreadsPerWarp)
+    return op.emitOpError("target encoding has ")
+           << threadsPerWarp << " threads per warp, but the target requires "
+           << requiredThreadsPerWarp;
+  unsigned numWarps = product<unsigned>(blocked.getWarpsPerCTA());
+  if (numWarps != static_cast<unsigned>(lookupNumWarps(op)))
+    return op.emitOpError("target encoding has ")
+           << numWarps << " warps per CTA, but the context requires "
+           << lookupNumWarps(op);
+  if (getNumCTAs(encoding) != 1 || TritonGPUDialect::getNumCTAs(mod) != 1)
+    return op.emitOpError("Iluvatar set_layout requires num_ctas = 1");
+  return success();
+}
+
+struct TleEncodingInfo {
+  Attribute encoding;
+  bool mayVary = false;
+
+  explicit operator bool() const { return bool(encoding); }
+};
+
+static bool tleEncodingsMayVary(Operation *op) {
+  return isa<triton::JoinOp, triton::SplitOp, triton::ReshapeOp, triton::CatOp,
+             triton::TransOp>(op);
+}
+
+static LogicalResult mergeTleEncodingInfo(TleEncodingInfo oldInfo,
+                                          TleEncodingInfo newInfo,
+                                          Operation *op,
+                                          TleEncodingInfo &merged) {
+  if (!oldInfo) {
+    merged = newInfo;
+    return success();
+  }
+  if (!newInfo) {
+    merged = oldInfo;
+    return success();
+  }
+  if (oldInfo.encoding == newInfo.encoding) {
+    merged = oldInfo;
+    merged.mayVary = oldInfo.mayVary && newInfo.mayVary;
+    return success();
+  }
+  if (oldInfo.mayVary && !newInfo.mayVary) {
+    merged = newInfo;
+    return success();
+  }
+  if (!oldInfo.mayVary && newInfo.mayVary) {
+    merged = oldInfo;
+    return success();
+  }
+  if (oldInfo.mayVary && newInfo.mayVary) {
+    merged = oldInfo;
+    return success();
+  }
+
+  op->emitOpError("found conflicting TLE encoding hints for value:\n  ")
+      << oldInfo.encoding << "\nand\n  " << newInfo.encoding;
+  return failure();
+}
+
+struct TleLayoutDomainMember {
+  Attribute encoding;
+  Operation *op;
+};
+
+struct TleLayoutProducerFamily {
+  SmallVector<Value> originalOperands;
+  SmallVector<TleLayoutDomainMember> members;
+};
+
+using TleLayoutProducerFamilies =
+    llvm::MapVector<Operation *, TleLayoutProducerFamily>;
+
+static bool isTleLayoutPolymorphicProducer(Operation *op) {
+  if (op->getNumRegions() != 0 || op->getNumSuccessors() != 0 ||
+      op->getNumResults() != 1 || !isPure(op) ||
+      op->hasTrait<OpTrait::IsTerminator>() ||
+      isa<iluvatar_tle::SetLayoutOp, triton::CallOp>(op) || getMemAccessPtr(op))
+    return false;
+
+  auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  return resultType && !resultType.getEncoding();
+}
+
+static Value materializeTleLayoutDomain(Value value, Attribute encoding,
+                                        TleLayoutProducerFamilies &families) {
+  Operation *producer = value.getDefiningOp();
+  if (!producer || !isTleLayoutPolymorphicProducer(producer))
+    return value;
+
+  auto [it, inserted] = families.insert(
+      {producer,
+       TleLayoutProducerFamily{llvm::to_vector(producer->getOperands()), {}}});
+  TleLayoutProducerFamily &family = it->second;
+  for (const TleLayoutDomainMember &member : family.members)
+    if (member.encoding == encoding)
+      return member.op->getResult(0);
+
+  Operation *member = producer;
+  if (!family.members.empty()) {
+    OpBuilder builder(producer);
+    builder.setInsertionPointAfter(family.members.back().op);
+    member = builder.clone(*producer);
+    member->setOperands(family.originalOperands);
+  }
+  family.members.push_back({encoding, member});
+  SmallVector<Value> originalOperands = family.originalOperands;
+
+  Attribute operandEncoding = inferSrcEncoding(producer, encoding);
+  if (!operandEncoding)
+    return member->getResult(0);
+
+  for (auto [index, operand] : llvm::enumerate(originalOperands)) {
+    // Gather ties only its indices to the result layout; its source can use
+    // an independent encoding.
+    if (isa<triton::GatherOp>(producer) && index == 0)
+      continue;
+    if (!isa<RankedTensorType>(operand.getType()))
+      continue;
+    member->setOperand(
+        index, materializeTleLayoutDomain(operand, operandEncoding, families));
+  }
+  return member->getResult(0);
+}
+
+// A pure producer can be specialized independently, but its operands may
+// include shared loads or loop-carried values that cannot be cloned. Keep
+// those values in their selected layout and convert at each domain boundary.
+static void materializeTleLayoutProducerOperands(
+    const TleLayoutProducerFamilies &families) {
+  for (const auto &[_, family] : families) {
+    for (const TleLayoutDomainMember &domain : family.members) {
+      Operation *member = domain.op;
+      auto resultType = cast<RankedTensorType>(member->getResult(0).getType());
+      Attribute operandEncoding =
+          inferSrcEncoding(member, resultType.getEncoding());
+      if (!operandEncoding)
+        continue;
+
+      OpBuilder builder(member);
+      llvm::MapVector<Value, Value> conversions;
+      for (OpOperand &operand : member->getOpOperands()) {
+        if (isa<triton::GatherOp>(member) && operand.getOperandNumber() == 0)
+          continue;
+        Value value = operand.get();
+        auto type = dyn_cast<RankedTensorType>(value.getType());
+        if (!type || type.getEncoding() == operandEncoding)
+          continue;
+        auto [it, inserted] = conversions.insert({value, Value{}});
+        if (inserted)
+          it->second = ConvertLayoutOp::create(
+              builder, member->getLoc(),
+              type.cloneWithEncoding(operandEncoding), value);
+        operand.set(it->second);
+      }
+    }
+  }
+}
+
+static void
+mergeTleLayoutProducerDomains(const TleLayoutProducerFamilies &families) {
+  for (const auto &[_, family] : families) {
+    llvm::MapVector<Type, Operation *> representatives;
+    for (const TleLayoutDomainMember &domain : family.members) {
+      Operation *member = domain.op;
+      Type resultType = member->getResult(0).getType();
+      auto [it, inserted] = representatives.insert({resultType, member});
+      if (inserted)
+        continue;
+      if (Attribute encoding = getTleExplicitResultEncoding(member, 0))
+        setTleExplicitResultEncoding(it->second, 0, encoding);
+      member->getResult(0).replaceAllUsesWith(it->second->getResult(0));
+      member->erase();
+    }
+  }
+}
+
+static LogicalResult
+updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
+                  llvm::MapVector<Value, TleEncodingInfo> &valueToEncoding,
+                  llvm::PriorityWorklist<Value> &worklist) {
+  for (Value value : values) {
+    if (!isa<RankedTensorType>(value.getType()))
+      continue;
+
+    // Layout propagation is intraprocedural. Mutating a tensor argument or
+    // call result would otherwise leave the function signature/callers with
+    // the old type. Normal JIT helper functions are inlined before this pass.
+    if (auto arg = dyn_cast<BlockArgument>(value)) {
+      if (arg.getOwner() == &func.getBody().front())
+        return func.emitOpError("Iluvatar set_layout requires tensor function "
+                                "boundaries to be inlined");
+    }
+    if (auto call = value.getDefiningOp<triton::CallOp>())
+      return call.emitOpError("Iluvatar set_layout requires tensor function "
+                              "boundaries to be inlined");
+
+    auto [it, inserted] = valueToEncoding.insert({value, info});
+    if (!inserted) {
+      Operation *defOp = value.getDefiningOp();
+      Operation *diagOp = defOp ? defOp : func.getOperation();
+      TleEncodingInfo merged;
+      if (failed(mergeTleEncodingInfo(it->second, info, diagOp, merged)))
+        return failure();
+      if (merged.encoding == it->second.encoding &&
+          merged.mayVary == it->second.mayVary)
+        continue;
+      it->second = merged;
+    }
+    worklist.insert(value);
+  }
+  return success();
+}
+
+static LogicalResult
+propagateTleEncodingHints(FuncOp func,
+                          ArrayRef<iluvatar_tle::SetLayoutOp> setLayoutOps) {
+  TleLayoutProducerFamilies producerFamilies;
+  for (iluvatar_tle::SetLayoutOp op : setLayoutOps) {
+    Value source = materializeTleLayoutDomain(
+        op.getSrc(), op.getTargetEncoding(), producerFamilies);
+    op->setOperand(0, source);
+  }
+
+  SmallVector<std::pair<Value, TleEncodingInfo>> seedEncodings;
+  for (iluvatar_tle::SetLayoutOp op : setLayoutOps) {
+    // Pure producers may serve multiple requested layouts. The set_layout
+    // result is the hard contract; its source may retain another encoding.
+    // Reductions and scans have restricted native result layouts. If the
+    // request cannot be propagated to their inputs, convert their result at
+    // the set_layout boundary instead of assigning an invalid source hint.
+    Operation *producer = op.getSrc().getDefiningOp();
+    if (!isa_and_nonnull<triton::ReduceOp, triton::ScanOp>(producer) ||
+        inferSrcEncoding(producer, op.getTargetEncoding()))
+      seedEncodings.push_back(
+          {op.getSrc(), TleEncodingInfo{op.getTargetEncoding(), true}});
+    seedEncodings.push_back(
+        {op.getResult(), TleEncodingInfo{op.getTargetEncoding(), false}});
+  }
+
+  llvm::MapVector<Value, TleEncodingInfo> valueToEncoding;
+  llvm::PriorityWorklist<Value> worklist;
+  for (auto &[value, info] : seedEncodings) {
+    if (failed(
+            updateTleEncoding({value}, info, func, valueToEncoding, worklist)))
+      return failure();
+  }
+
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    TleEncodingInfo info = valueToEncoding[value];
+    assert(info && "worklist value must have an encoding");
+
+    for (OpOperand &use : value.getUses()) {
+      Operation *op = use.getOwner();
+      if (isa<triton::CallOp, triton::ReturnOp>(op))
+        return op->emitOpError("Iluvatar set_layout requires tensor function "
+                               "boundaries to be inlined");
+      if (isa<scf::ForOp, scf::WhileOp>(op)) {
+        int offset = 3 * isa<scf::ForOp>(op);
+        int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs = getTiedArgs(op, tiedIndex);
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+        continue;
+      }
+      if (isa<scf::YieldOp, scf::ConditionOp>(op)) {
+        Operation *parentOp = op->getParentOp();
+        if (!isa_and_nonnull<scf::ForOp, scf::WhileOp, scf::IfOp>(parentOp))
+          continue;
+        int offset = isa<scf::ConditionOp>(op);
+        int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs = getTiedArgs(parentOp, tiedIndex);
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+        continue;
+      }
+      if (auto dot = dyn_cast<triton::DotOpInterface>(op)) {
+        // A/B use dot-operand encodings, while C and D use the parent MMA
+        // encoding. Only C and D are layout-equivalent across a dot.
+        if (use.getOperandNumber() == 2 &&
+            failed(updateTleEncoding({dot.getD()}, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+        continue;
+      }
+      if (isa<iluvatar_tle::SetLayoutOp>(op))
+        continue;
+      if (isa<triton::GatherOp>(op) && use.getOperandNumber() == 0)
+        continue;
+
+      if (isa<iluvatar_tle::LocalPointersOp>(op)) {
+        if (failed(
+                updateTleEncoding(llvm::to_vector_of<Value>(op->getResults()),
+                                  info, func, valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+
+      Attribute dstEncoding = inferDstEncoding(op, info.encoding);
+      if (!dstEncoding)
+        continue;
+      TleEncodingInfo dstInfo{dstEncoding,
+                              info.mayVary || tleEncodingsMayVary(op)};
+      if (failed(updateTleEncoding(llvm::to_vector_of<Value>(op->getResults()),
+                                   dstInfo, func, valueToEncoding, worklist)))
+        return failure();
+    }
+
+    if (auto opResult = dyn_cast<OpResult>(value)) {
+      Operation *definingOp = opResult.getOwner();
+      if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
+        auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+      } else if (isa<triton::DotOpInterface>(definingOp)) {
+        if (failed(updateTleEncoding({definingOp->getOperand(2)}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+      } else if (auto gather = dyn_cast<triton::GatherOp>(definingOp)) {
+        if (failed(updateTleEncoding({gather.getIndices()}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+      } else if (auto localPointers =
+                     dyn_cast<iluvatar_tle::LocalPointersOp>(definingOp)) {
+        llvm::SmallVector<Value> tensorIndices;
+        for (Value index : localPointers.getIndices())
+          if (isa<RankedTensorType>(index.getType()))
+            tensorIndices.push_back(index);
+        if (failed(updateTleEncoding(tensorIndices, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+      } else if (!isa<iluvatar_tle::SetLayoutOp>(definingOp)) {
+        Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
+        if (srcEncoding) {
+          TleEncodingInfo srcInfo{
+              srcEncoding, info.mayVary || tleEncodingsMayVary(definingOp)};
+          llvm::SmallVector<Value> tensorOperands;
+          for (Value operand : definingOp->getOperands())
+            if (isa<RankedTensorType>(operand.getType()))
+              tensorOperands.push_back(operand);
+          if (failed(updateTleEncoding(tensorOperands, srcInfo, func,
+                                       valueToEncoding, worklist)))
+            return failure();
+        }
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      Operation *parentOp = blockArg.getOwner()->getParentOp();
+      if (isa<scf::ForOp, scf::WhileOp>(parentOp)) {
+        int offset = isa<scf::ForOp>(parentOp);
+        int tiedIndex = static_cast<int>(blockArg.getArgNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs = getTiedArgs(parentOp, tiedIndex);
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+      }
+    }
+  }
+
+  for (auto &[value, info] : valueToEncoding) {
+    auto existingTy = cast<RankedTensorType>(value.getType());
+    if (existingTy.getEncoding() != info.encoding) {
+      auto newTy = existingTy.cloneWithEncoding(info.encoding);
+      value.setType(newTy);
+
+      if (auto opResult = dyn_cast<OpResult>(value)) {
+        if (auto constant = dyn_cast<arith::ConstantOp>(opResult.getOwner())) {
+          if (auto elements =
+                  dyn_cast<DenseElementsAttr>(constant.getValueAttr()))
+            constant.setValueAttr(elements.reshape(newTy));
+        }
+      }
+    }
+
+    // The source hint is only a preference. Turning it into a hard anchor
+    // would make stores in another requested domain spuriously conflict.
+    if (!info.mayVary)
+      if (auto opResult = dyn_cast<OpResult>(value))
+        setTleExplicitResultEncoding(opResult, info.encoding);
+  }
+
+  materializeTleLayoutProducerOperands(producerFamilies);
+  mergeTleLayoutProducerDomains(producerFamilies);
+
+  WalkResult memoryWalk = func.walk([&](Operation *op) {
+    if (!getMemAccessPtr(op))
+      return WalkResult::advance();
+
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)))
+      return WalkResult::interrupt();
+
+    // Block arguments cannot carry per-result attributes, but their hard
+    // constraints still apply to memory operations inside loops.
+    for (Value operand : op->getOperands()) {
+      auto it = valueToEncoding.find(operand);
+      if (it == valueToEncoding.end() || it->second.mayVary)
+        continue;
+      Attribute encoding = it->second.encoding;
+      if (explicitEncoding && explicitEncoding != encoding) {
+        op->emitOpError("has conflicting explicit TLE memory encodings:\n  ")
+            << explicitEncoding << "\nand\n  " << encoding;
+        return WalkResult::interrupt();
+      }
+      explicitEncoding = encoding;
+    }
+
+    if (explicitEncoding)
+      setTleExplicitMemoryEncoding(op, explicitEncoding);
+    return WalkResult::advance();
+  });
+  if (memoryWalk.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
+// Conversion assigns default layouts to previously unconstrained pointer
+// and mask computations. Reconcile them only at each memory operation, after
+// all operand types have been converted, so a shared address computation can
+// serve several explicit data layouts without changing its other users.
+static void materializeTleMemoryOperands(FuncOp func) {
+  func.walk([](Operation *op) {
+    if (!getMemAccessPtr(op))
+      return;
+    Attribute encoding = getTleExplicitMemoryEncoding(op);
+    // A load/atomic result or stored value can have a soft layout preference
+    // independent of a shared address computation. Reconcile its operands
+    // without turning that preference into a hard constraint on either the
+    // memory operation or the address producer.
+    if (!encoding && op->getNumResults() == 1)
+      if (auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType()))
+        encoding = type.getEncoding();
+    if (!encoding)
+      if (auto store = dyn_cast<triton::StoreOp>(op))
+        if (auto type = dyn_cast<RankedTensorType>(store.getValue().getType()))
+          encoding = type.getEncoding();
+    if (!encoding)
+      return;
+    OpBuilder builder(op);
+    llvm::MapVector<Value, Value> conversions;
+    for (OpOperand &operand : op->getOpOperands()) {
+      Value value = operand.get();
+      auto type = dyn_cast<RankedTensorType>(value.getType());
+      if (!type || type.getEncoding() == encoding)
+        continue;
+      auto [it, inserted] = conversions.insert({value, Value{}});
+      if (inserted)
+        it->second = ConvertLayoutOp::create(
+            builder, op->getLoc(), type.cloneWithEncoding(encoding), value);
+      operand.set(it->second);
+    }
+  });
+}
+
+static LogicalResult
+applyTleEncodingHints(ModuleOp mod,
+                      SmallVectorImpl<StringAttr> &layoutFunctions) {
+  WalkResult validation = mod.walk([](iluvatar_tle::SetLayoutOp op) {
+    return failed(validateIluvatarTleSetLayout(op)) ? WalkResult::interrupt()
+                                                    : WalkResult::advance();
+  });
+  if (validation.wasInterrupted())
+    return failure();
+
+  for (FuncOp func : mod.getOps<FuncOp>()) {
+    SmallVector<iluvatar_tle::SetLayoutOp> setLayoutOps;
+    func.walk(
+        [&](iluvatar_tle::SetLayoutOp op) { setLayoutOps.push_back(op); });
+    if (setLayoutOps.empty())
+      continue;
+    if (failed(propagateTleEncodingHints(func, setLayoutOps)))
+      return failure();
+    // FuncOp is replaced during conversion; retain its stable symbol name.
+    layoutFunctions.push_back(func.getSymNameAttr());
+  }
+  return success();
 }
 
 template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
@@ -245,6 +752,11 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
         getContext(), origShape, retSizePerThread, retOrder, numWarps,
         threadsPerWarp, numCTAs);
+    // Explicit blocked results must keep the exact encoding, including the
+    // Iluvatar-specific fields. Rebuilding a default blocked encoding can
+    // produce a distinct type and leave live source materializations behind.
+    if (isa_and_nonnull<BlockedEncodingAttr>(origType.getEncoding()))
+      dEncoding = origType.getEncoding();
     RankedTensorType retType = origType.cloneWithEncoding(dEncoding);
     // a & b must be of smem layout
     auto aType = cast<RankedTensorType>(adaptor.getA().getType());
@@ -274,6 +786,22 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     }
     c = triton::gpu::ConvertLayoutOp::create(rewriter, c.getLoc(), retType, c);
 
+    // Dot operands require a native parent encoding. A requested sliced
+    // result is represented by a conversion after the dot, with C converted
+    // to the native accumulator type above.
+    if (origType.getEncoding() && origType != retType) {
+      auto newDot = triton::DotOp::create(rewriter, op.getLoc(), retType, a, b,
+                                          c, adaptor.getInputPrecision(),
+                                          adaptor.getMaxNumImpreciseAcc());
+      addNamedAttrs(newDot, adaptor.getAttributes());
+      newDot->removeAttr(getTleExplicitEncodingAttrName(0));
+      auto converted = ConvertLayoutOp::create(rewriter, op.getLoc(), origType,
+                                               newDot.getResult());
+      setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                   origType.getEncoding());
+      rewriter.replaceOp(op, converted.getResult());
+      return success();
+    }
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotOp>(
                       op, retType, a, b, c, adaptor.getInputPrecision(),
                       adaptor.getMaxNumImpreciseAcc()),
@@ -827,10 +1355,36 @@ public:
   }
 };
 
+class TleSetLayoutOpPattern
+    : public OpConversionPattern<iluvatar_tle::SetLayoutOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(iluvatar_tle::SetLayoutOp op,
+                  iluvatar_tle::SetLayoutOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType = getTypeConverter()->convertType(op.getResult());
+    auto resultType = dyn_cast<RankedTensorType>(convertedType);
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor result");
+
+    // Keep a boundary even for identical types: block arguments cannot carry
+    // result attributes, and canonicalization may replace the source producer.
+    // LLVM lowering removes identity conversions after layout selection.
+    Attribute targetEncoding = op.getTargetEncoding();
+    auto convert = rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
+        op, resultType, adaptor.getSrc());
+    convert->setAttr(getTleExplicitEncodingAttrName(0), targetEncoding);
+    return success();
+  }
+};
+
 void populateIluvatarTlePatterns(TritonGPUTypeConverter &typeConverter,
                                  RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns.add<TleDSLRegionOpPattern>(typeConverter, context);
+  patterns.add<TleSetLayoutOpPattern, TleDSLRegionOpPattern>(typeConverter,
+                                                             context);
   patterns.add<GenericOpPattern<triton::iluvatar_tle::YieldOp>,
                GenericOpPattern<triton::iluvatar_tle::ExtractAllocatedPtrOp>,
                GenericOpPattern<triton::iluvatar_tle::ExtractAlignedPtrOp>,
@@ -896,8 +1450,14 @@ public:
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
 
+    SmallVector<StringAttr> layoutFunctions;
+    if (failed(applyTleEncodingHints(mod, layoutFunctions)))
+      return signalPassFailure();
+
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
+    for (StringAttr name : layoutFunctions)
+      materializeTleMemoryOperands(mod.lookupSymbol<FuncOp>(name));
   }
 };
 

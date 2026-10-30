@@ -170,6 +170,10 @@ public:
     if (computeCapability <= 70)
       return failure();
     auto loadOp = dyn_cast<LoadOp>(op);
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)) ||
+        explicitEncoding)
+      return failure();
     // Idempotency guard: a load whose result is already SME-encoded was
     // produced by this pattern, so do not re-process it. Explicit
     // tl.load(stride=...) starts as a normal blocked load with inputStride, and

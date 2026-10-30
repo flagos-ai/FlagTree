@@ -64,6 +64,7 @@ public:
     LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
     LayoutInfo() {}
     llvm::SmallSetVector<Attribute, 8> encodings;
+    llvm::SmallSetVector<Attribute, 8> hardEncodings;
   };
   LayoutPropagation(FuncOp F) : funcOp(F) {}
   // Find the anchor ops and set their layout in the data structure.
@@ -183,6 +184,8 @@ void LayoutRematerialization::cleanup() {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
+  if (hasTleExplicitEncoding(op))
+    return true;
 #ifdef __ILUVATAR__
   // Preserve the cloned masked-SME predicate DAG as a distinct layout island.
   // Without this anchor, forward propagation rewrites it into the pointer
@@ -235,6 +238,12 @@ void LayoutPropagation::initAnchorLayout() {
   auto addAnchor = [&](Value v) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
       layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
+      if (Attribute encoding = getTleExplicitValueEncoding(v)) {
+        auto &info = layouts[v];
+        info.encodings.clear();
+        info.encodings.insert(encoding);
+        info.hardEncodings.insert(encoding);
+      }
     }
   };
 
@@ -270,8 +279,12 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
       } else {
         dstEncoding = inferDstEncoding(op, encoding);
       }
-      if (dstEncoding)
-        hasChanged |= layouts[value].encodings.insert(dstEncoding);
+      if (dstEncoding) {
+        auto &dstInfo = layouts[value];
+        hasChanged |= dstInfo.encodings.insert(dstEncoding);
+        if (info.hardEncodings.contains(encoding))
+          hasChanged |= dstInfo.hardEncodings.insert(dstEncoding);
+      }
     }
     if (hasChanged)
       changed.push_back(value);
@@ -371,6 +384,23 @@ void LayoutPropagation::resolveConflicts() {
   for (auto &it : layouts) {
     Operation *op = it.first.getDefiningOp();
     LayoutInfo &info = it.second;
+    // A value's own constraint wins even when another hard layout reaches it
+    // across a conversion. Keep that conversion as the boundary.
+    if (Attribute encoding = getTleExplicitValueEncoding(it.first)) {
+      info.encodings.clear();
+      info.encodings.insert(encoding);
+      info.hardEncodings.clear();
+      info.hardEncodings.insert(encoding);
+      continue;
+    }
+    if (!info.hardEncodings.empty()) {
+      Attribute encoding = *info.hardEncodings.begin();
+      info.encodings.clear();
+      info.encodings.insert(encoding);
+      info.hardEncodings.clear();
+      info.hardEncodings.insert(encoding);
+      continue;
+    }
     if (info.encodings.size() <= 1)
       continue;
     // Hacky resolve, prefer block encoding.
@@ -800,6 +830,8 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+  if (hasTleExplicitEncoding(op))
+    return false;
 #ifdef __ILUVATAR__
   // smeMask is a semantic boundary, not just a physical layout choice. The
   // cloned mask DAG must not be rematerialized into the SME pointer encoding,
@@ -1168,6 +1200,8 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 
 void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -1337,6 +1371,8 @@ void LayoutRematerialization::hoistConvertDotOperand() {
 
 void LayoutRematerialization::hoistConvertDotOperand(
     ConvertLayoutOp convertOp) {
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
 
@@ -1384,6 +1420,8 @@ void LayoutRematerialization::hoistConvertDotOperand(
   bool isDotOperandTarget =
       isa<DotOperandEncodingAttr>(targetType.getEncoding());
   auto noDataMovement = [isDotOperandTarget](Operation *op) {
+    if (hasTleExplicitEncoding(op))
+      return false;
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op) &&
             !(isDotOperandTarget &&
               isa<arith::SIToFPOp, arith::UIToFPOp>(op))) ||
@@ -1464,6 +1502,8 @@ void LayoutRematerialization::hoistConvertDotOperand(
 // of the convert.
 void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
     ConvertLayoutOp convertOp) {
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -1562,6 +1602,8 @@ void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
 
 void LayoutRematerialization::hoistConvertIntoConditionals(
     ConvertLayoutOp convertOp) {
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
   // Take the backward slice of tensor dependencies rooted at the conversion,
   // stopping at conditionals. This subslice is used to initialize the analysis.
   SetVector<Value> slice;

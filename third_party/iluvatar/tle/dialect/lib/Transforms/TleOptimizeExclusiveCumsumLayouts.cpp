@@ -28,6 +28,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
@@ -49,10 +50,12 @@ public:
     module.walk([&](ExclusiveCumsumOp op) { ops.push_back(op); });
 
     for (ExclusiveCumsumOp op : ops) {
+      if (hasTleExplicitEncoding(op))
+        continue;
       // Only fold when the cumsum input is produced by a convert_layout, so we
       // can push the cumsum back onto the pre-convert (canonical) layout.
       auto srcCvt = op.getSrc().getDefiningOp<ttg::ConvertLayoutOp>();
-      if (!srcCvt)
+      if (!srcCvt || isTleExplicitConvertLayoutOp(srcCvt))
         continue;
 
       auto srcBaseTy = dyn_cast<RankedTensorType>(srcCvt.getSrc().getType());
@@ -72,7 +75,8 @@ public:
       bool allUsersMatch = true;
       for (OpOperand &use : op.getExclusive().getUses()) {
         auto outCvt = dyn_cast<ttg::ConvertLayoutOp>(use.getOwner());
-        if (!outCvt || outCvt.getSrc() != op.getExclusive()) {
+        if (!outCvt || outCvt.getSrc() != op.getExclusive() ||
+            isTleExplicitConvertLayoutOp(outCvt)) {
           allUsersMatch = false;
           break;
         }

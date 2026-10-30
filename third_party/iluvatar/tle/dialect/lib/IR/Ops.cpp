@@ -21,6 +21,25 @@ constexpr int kSharedMemoryAddressSpace = 3;
 constexpr int kClusterSharedMemoryAddressSpace = 7;
 } // namespace
 
+LogicalResult SetLayoutOp::verify() {
+  Attribute encoding = getTargetEncoding();
+  auto distributed = dyn_cast<ttg::DistributedEncodingTrait>(encoding);
+  if (!distributed)
+    return emitOpError(
+        "requires a distributed BlockEncoding or SlicedEncoding");
+  while (auto slice = dyn_cast<ttg::SliceEncodingAttr>(encoding))
+    encoding = slice.getParent();
+  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(encoding);
+  if (!blocked || blocked.getIsSme())
+    return emitOpError("only supports BlockEncoding and SlicedEncoding of "
+                       "BlockEncoding on Iluvatar");
+  unsigned rank = cast<ttg::LayoutEncodingTrait>(getTargetEncoding()).getRank();
+  if (rank != static_cast<unsigned>(
+                  cast<RankedTensorType>(getSrc().getType()).getRank()))
+    return emitOpError("layout rank must match the tensor rank");
+  return success();
+}
+
 void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
                           Value index, ArrayRef<int64_t> tileShape) {
   auto srcType = cast<RankedTensorType>(src.getType());

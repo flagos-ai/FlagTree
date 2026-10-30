@@ -14,6 +14,7 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttg-utility"
@@ -26,6 +27,97 @@ namespace ttng = mlir::triton::nvidia_gpu;
 namespace mlir {
 
 using namespace triton;
+
+static constexpr const char *kTleExplicitEncodingAttrPrefix =
+    "tle.explicit_encoding.";
+static constexpr const char *kTleExplicitMemoryEncodingAttrName =
+    "tle.explicit_memory_encoding";
+
+std::string getTleExplicitEncodingAttrName(unsigned resultNumber) {
+  return (llvm::Twine(kTleExplicitEncodingAttrPrefix) +
+          llvm::Twine(resultNumber))
+      .str();
+}
+
+Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber) {
+  return op->getAttr(getTleExplicitEncodingAttrName(resultNumber));
+}
+
+void setTleExplicitResultEncoding(Operation *op, unsigned resultNumber,
+                                  Attribute encoding) {
+  op->setAttr(getTleExplicitEncodingAttrName(resultNumber), encoding);
+}
+
+void setTleExplicitResultEncoding(OpResult result, Attribute encoding) {
+  setTleExplicitResultEncoding(result.getOwner(), result.getResultNumber(),
+                               encoding);
+}
+
+Attribute getTleExplicitMemoryEncoding(Operation *op) {
+  return op->getAttr(kTleExplicitMemoryEncodingAttrName);
+}
+
+void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding) {
+  op->setAttr(kTleExplicitMemoryEncodingAttrName, encoding);
+}
+
+Attribute getTleExplicitValueEncoding(Value value) {
+  if (auto result = dyn_cast<OpResult>(value))
+    return getTleExplicitResultEncoding(result.getOwner(),
+                                        result.getResultNumber());
+  return nullptr;
+}
+
+static LogicalResult mergeTleExplicitMemoryEncoding(Operation *op, Value value,
+                                                    Attribute candidate,
+                                                    Attribute &encoding) {
+  if (!candidate)
+    return success();
+
+  if (auto tensorType = dyn_cast<RankedTensorType>(value.getType())) {
+    if (tensorType.getEncoding() != candidate)
+      return op->emitOpError("has explicit TLE encoding that does not match "
+                             "the tensor type encoding");
+  }
+
+  if (!encoding) {
+    encoding = candidate;
+    return success();
+  }
+
+  if (encoding == candidate)
+    return success();
+
+  op->emitOpError("has conflicting explicit TLE memory encodings:\n  ")
+      << encoding << "\nand\n  " << candidate;
+  return failure();
+}
+
+LogicalResult inferTleExplicitMemoryEncoding(Operation *op,
+                                             Attribute &encoding) {
+  encoding = getTleExplicitMemoryEncoding(op);
+
+  for (OpResult result : op->getResults()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, result,
+            getTleExplicitResultEncoding(op, result.getResultNumber()),
+            encoding)))
+      return failure();
+  }
+
+  for (OpOperand &operand : op->getOpOperands()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, operand.get(), getTleExplicitValueEncoding(operand.get()),
+            encoding)))
+      return failure();
+  }
+
+  return success();
+}
+
+bool isTleExplicitConvertLayoutOp(Operation *op) {
+  return isa<ttg::ConvertLayoutOp>(op) && getTleExplicitResultEncoding(op, 0);
+}
 
 SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
                                                 const ArrayRef<int64_t> &shape,
@@ -633,6 +725,8 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
 }
 
 bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
+  if (hasTleExplicitEncoding(op))
+    return false;
   if (isa<triton::CatOp>(op))
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);
@@ -907,6 +1001,10 @@ LogicalResult getConvertBackwardSlice(
     // TODO: enable this based on needs.
     if (currentValue.getDefiningOp<scf::ForOp>() ||
         currentValue.getDefiningOp<scf::WhileOp>())
+      return failure();
+    // A backward rewrite must never retag an explicitly encoded producer.
+    if (auto *def = currentValue.getDefiningOp();
+        def && hasTleExplicitEncoding(def))
       return failure();
     if (failed(updateLayout(currentValue, encoding)))
       return failure();
@@ -1230,8 +1328,14 @@ Operation *convertDistributedOpEncoding(Attribute encoding, Operation *op) {
   for (size_t i = 0; i < op->getNumResults(); i++) {
     Value newResult = newOp->getResult(i);
     if (newTypes[i] != op->getResultTypes()[i]) {
-      newResult = triton::gpu::ConvertLayoutOp::create(
+      auto convert = triton::gpu::ConvertLayoutOp::create(
           builder, op->getLoc(), op->getResult(i).getType(), newResult);
+      newResult = convert.getResult();
+      if (Attribute explicitEncoding = getTleExplicitResultEncoding(op, i)) {
+        newOp->removeAttr(getTleExplicitEncodingAttrName(i));
+        setTleExplicitResultEncoding(convert.getOperation(), 0,
+                                     explicitEncoding);
+      }
     }
     op->getResult(i).replaceAllUsesWith(newResult);
   }

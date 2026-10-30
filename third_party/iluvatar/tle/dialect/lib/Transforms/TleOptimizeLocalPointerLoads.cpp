@@ -29,6 +29,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -492,7 +493,7 @@ static std::optional<RematerializedValue> rematerializeForLayout(
     return std::nullopt;
 
   Operation *def = value.getDefiningOp();
-  if (!def)
+  if (!def || hasTleExplicitEncoding(def))
     return std::nullopt;
 
   std::optional<RematerializedValue> rematerialized;
@@ -693,11 +694,14 @@ class OptimizeLocalPointerLoadsPass
     struct RewriteItem {
       triton::LoadOp load;
       StaticSubviewMatch match;
+      Attribute explicitEncoding;
     };
     SmallVector<ConvertRewriteItem> convertRewrites;
     SmallVector<RewriteItem> rewrites;
 
     module.walk([&](ttg::ConvertLayoutOp convert) {
+      if (isTleExplicitConvertLayoutOp(convert))
+        return;
       auto targetTy = dyn_cast<RankedTensorType>(convert.getType());
       auto sourceTy = dyn_cast<RankedTensorType>(convert.getSrc().getType());
       if (!targetTy || !sourceTy || targetTy.getShape() != sourceTy.getShape())
@@ -721,10 +725,18 @@ class OptimizeLocalPointerLoadsPass
     }
     eraseDeadRematerializableOps(module);
 
-    module.walk([&](triton::LoadOp load) {
+    WalkResult result = module.walk([&](triton::LoadOp load) {
+      Attribute explicitEncoding;
+      if (failed(inferTleExplicitMemoryEncoding(load, explicitEncoding)))
+        return WalkResult::interrupt();
       if (auto match = matchStaticSubviewMemDesc(load))
-        rewrites.push_back({load, std::move(*match)});
+        rewrites.push_back({load, std::move(*match), explicitEncoding});
+      return WalkResult::advance();
     });
+    if (result.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     for (RewriteItem &item : rewrites) {
       if (!item.load || !item.match.baseMemDesc)
@@ -734,6 +746,12 @@ class OptimizeLocalPointerLoadsPass
                                            std::move(item.match));
       auto localLoad = ttg::LocalLoadOp::create(builder, item.load.getLoc(),
                                                 item.load.getType(), memDesc);
+      // This rewrite keeps the result layout. Carry the constraint onto the
+      // shared load so later passes cannot retag it.
+      if (item.explicitEncoding) {
+        setTleExplicitResultEncoding(localLoad, 0, item.explicitEncoding);
+        setTleExplicitMemoryEncoding(localLoad, item.explicitEncoding);
+      }
       item.load.replaceAllUsesWith(localLoad.getResult());
       item.load.erase();
     }

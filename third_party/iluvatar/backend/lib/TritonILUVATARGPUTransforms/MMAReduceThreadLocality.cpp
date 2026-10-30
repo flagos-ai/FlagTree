@@ -91,6 +91,8 @@ private:
   //===--------------------------------------------------------------------===//
 
   bool isCandidate(triton::ReduceOp reduce) const {
+    if (hasTleExplicitEncoding(reduce))
+      return false;
     auto srcType = cast<RankedTensorType>(reduce.getOperands()[0].getType());
     int64_t rank = srcType.getShape().size();
     auto srcEncoding = srcType.getEncoding();
@@ -121,6 +123,8 @@ private:
     if (!reduce->hasOneUse())
       return false;
     Operation *update = *(reduce->getUsers().begin());
+    if (hasTleExplicitEncoding(update))
+      return false;
     // The accumulator update must be `addf` (the running sum).
     if (!isa<arith::AddFOp>(update) || update->getNumOperands() != 2)
       return false;
@@ -162,6 +166,8 @@ private:
     if (v == blockArg || v == reduceResult)
       return true;
     Operation *def = v.getDefiningOp();
+    if (def && hasTleExplicitEncoding(def))
+      return false;
     if (def && isa<arith::MulFOp>(def) &&
         dependsOn(v, blockArg, reduceResult)) {
       for (Value o : def->getOperands())

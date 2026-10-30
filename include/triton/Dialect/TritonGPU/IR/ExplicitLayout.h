@@ -1,0 +1,50 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#ifndef TRITON_DIALECT_TRITONGPU_IR_EXPLICIT_LAYOUT_H_
+#define TRITON_DIALECT_TRITONGPU_IR_EXPLICIT_LAYOUT_H_
+
+#include "mlir/IR/Operation.h"
+#include "llvm/ADT/Twine.h"
+
+namespace mlir {
+
+// Explicit layout constraints are carried by operation attributes regardless
+// of which backend or TLE frontend produced the IR. Layout-changing rewrites
+// must preserve these constraints even when no TLE dialect is registered.
+inline bool hasTleExplicitEncoding(Operation *op) {
+  if (op->hasAttr("tle.explicit_memory_encoding"))
+    return true;
+  for (unsigned index = 0; index < op->getNumResults(); ++index) {
+    if (op->hasAttr(
+            (llvm::Twine("tle.explicit_encoding.") + llvm::Twine(index)).str()))
+      return true;
+  }
+  return false;
+}
+
+} // namespace mlir
+
+#endif // TRITON_DIALECT_TRITONGPU_IR_EXPLICIT_LAYOUT_H_
