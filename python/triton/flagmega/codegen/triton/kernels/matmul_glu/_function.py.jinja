@@ -10,6 +10,32 @@ def {{ call.symbol }}({{ call.signature }}):
 {% include native_gguf_activation_prologue %}
 {% endif %}
 {% set native_tiles = (call.local_n_capacity + call.tile_n - 1) // call.tile_n %}
+{% set queue = native_gguf_tile_queue.get(call.symbol) if native_gguf_tile_queue is defined else none %}
+{% if queue %}
+{#- Dynamic row tiles over the whole output: every block takes tile
+    shard_index first, then claims more from a template counter.  Each
+    invocation makes exactly queue.claims claims; the block holding the last
+    one returns the counter to zero for the next invocation. #}
+{% set native_extra = (", " ~ native_gguf_activation_arguments) if native_activation else "" %}
+    queue_counter = {{ counter_slot_argument }} + {{ queue.counter }}
+    queue_tile = shard_index.to(tl.int64)
+    for queue_step in tl.range(0, {{ queue.steps }}):
+        queue_next = tl.full((), {{ queue.tiles }}, tl.int64)
+        if queue_step < {{ queue.steps - 1 }}:
+            queue_claim = tl.atomic_add(queue_counter, 1, sem="relaxed")
+            if queue_claim == {{ queue.claims - 1 }}:
+                tl.atomic_xchg(queue_counter, 0, sem="relaxed")
+            queue_next = {{ queue.programs }} + queue_claim
+        if queue_tile < {{ queue.tiles }}:
+            queue_rows = queue_tile * {{ queue.rows }} + tl.arange(0, {{ queue.rows }})
+            n_mask = queue_rows < {{ queue.total_rows }}
+            weight_rows = {{ queue.weight_row_offset }}
+            destination_offsets = {{ queue.destination_offset }}
+            gate = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }}{{ native_extra }})
+            up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }}{{ native_extra }})
+            tl.store({{ call.result }} + destination_offsets, (_flagmega_silu(gate) * up).to(tl.bfloat16), mask=n_mask)
+        queue_tile = queue_next
+{% else %}
 {% if native_gguf_rotate_tiles is defined and native_gguf_rotate_tiles and native_tiles > 1 %}
     for local_n_tile in tl.range(0, {{ native_tiles }}):
         local_n_start = (((local_n_tile + shard_index) % {{ native_tiles }}) * {{ call.tile_n }}).to(tl.int32)
@@ -29,6 +55,7 @@ def {{ call.symbol }}({{ call.signature }}):
         up = _flagmega_q4_k_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
 {% endif %}
         tl.store({{ call.result }} + destination_offsets, (_flagmega_silu(gate) * up).to(tl.bfloat16), mask=n_mask)
+{% endif %}
 {% else %}
     for local_n_start in tl.range(
         0, {{ call.local_n_capacity }}, {{ call.tile_n }}

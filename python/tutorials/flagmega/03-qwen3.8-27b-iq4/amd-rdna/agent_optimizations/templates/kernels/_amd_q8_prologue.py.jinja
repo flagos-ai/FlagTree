@@ -17,8 +17,14 @@
 {% set q8_row_bytes = call.k // 256 * 136 %}
 {% set q8_span = call.local_n_capacity * q8_row_bytes %}
 {% set q8_chunks = [q8_weight_prefetch_kb // 4, (q8_span + 4095) // 4096] | min %}
+{% set q8_queue = native_gguf_tile_queue.get(call.symbol) if native_gguf_tile_queue is defined else none %}
+{% if q8_queue %}
+    queue_rows = shard_index.to(tl.int64) * {{ q8_queue.rows }} + tl.arange(0, {{ q8_queue.rows }})
+    q8_prefetch_row = tl.min({{ q8_queue.weight_row_offset }}, axis=0)
+{% else %}
     local_n_offsets = tl.arange(0, {{ call.tile_n }})
     q8_prefetch_row = tl.min({{ call.weight_row_offset }}, axis=0)
+{% endif %}
 {% for q8_prefetch_weight in ([call.gate_weight, call.up_weight] if call.gate_weight is defined else [call.weight]) %}
     _flagmega_amd_q8_prefetch({{ q8_prefetch_weight }} + q8_prefetch_row, {{ q8_chunks }})
 {% endfor %}

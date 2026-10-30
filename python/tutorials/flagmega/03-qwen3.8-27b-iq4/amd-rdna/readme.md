@@ -124,24 +124,37 @@ lane broadcast cannot work because a block's eight groups span two waves, and a
 block-shaped header tile broadcast through a layout conversion cost 1.2 ms.
 gfx1100 renders unchanged; the rotation has not been run on the W7900.
 
-Changing which rows a block owns does narrow that skew. In a prototype of the
-gate+up phase, each block takes its first 8-row tile statically, then claims
-further tiles from one relaxed atomic counter (a bounded loop with at most 24
-tiles per block; block 0 resets the counter in the down phase, after the grid
-barrier). Every row is still computed whole by one block, so logits stay
-bitwise. It ran at 26.78 ms vs 27.15 ms (static 8-row tiles alone: 27.08 ms).
-It is not in the templates. The counter has to live in device memory that is
-zero at the first launch, survives from gate+up to down, and that no other
-buffer aliases. The planned workspace is uninitialized (`torch.empty`) and
-reused between phases, and the zero-initialized compiler scratch that the grid
-barrier uses is not reachable from kernel code. Doing this needs a
-compiler-owned, zero-initialized slot for synchronization counters.
+Changing which rows a block owns does narrow that skew. On gfx1201 and gfx1100 the gate+up
+GEMVs take their rows from a tile queue over the whole output
+(`native_gguf_tile_queue`, planned by `agent_optimizations`): each block computes
+8-row tile `shard_index` first, then claims further tiles from a relaxed atomic
+counter, at most 24 tiles per block, so blocks that stream slower DRAM pages take
+fewer tiles. Each invocation makes exactly 128 x 23 claims (192 x 18 on the
+gfx1100 8x24 mesh) and the block holding
+the last one resets the counter to zero, so it is ready for the next layer, call
+or graph replay without a reset elsewhere. The counter is a template counter
+slot: the agent registry requests one int64 counter for `matmul_glu`, and the
+compiler threads it only to those calls and the functions that lead to them.
+The runtime allocates the counter and zeroes it when it prepares the kernel.
+Without a request, nothing is allocated, threaded or recorded. The planner evaluates
+each call's owner-local row expressions over the whole mesh and uses the queue
+only if the rows form one progression, each owned once. Every row is still
+dotted once by one tile in the same order, so logits are bitwise equal to the
+build without it (three processes, 64 graph-replayed steps). The megakernel keeps
+248 VGPRs; SGPR spills drop from 17 to 6 and spill sites from 22 to 18 (none
+left in gate+up), but the attention-layer function that carries the counter to
+its gate+up call needs 16 B more scratch (88 B in total). Graph replay, three
+interleaved rounds on one card: 27.11/27.12/27.12 ms without vs
+26.83/26.83/26.83 ms with it; llama.cpp 29.37/29.33/29.37 ms, i.e. 1.09x
+llama.cpp (1.08x before). `FLAGMEGA_AMD_TILE_QUEUE=0` renders the rotated static
+tiles instead.
 
 ## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + rotated row tiles (default) | **27.1** | **36.9** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + gate+up tile queue (default) | **26.8** | **37.3** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + rotated row tiles | 27.1 | 36.9 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores + rotated row tiles | 27.2 | 36.8 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores | 27.3 | 36.6 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch | 27.5 | 36.4 |
@@ -211,7 +224,8 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` (default) | **28.4** | **35.2** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue (default) | **27.3** | **36.7** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` | 28.4 | 35.2 |
 | FlagMega, 8x24 block mesh, floating-point activations | 34.3 | 29.2 |
 | FlagMega, 8x16 block mesh (`--mesh 8x16`) | 37.2 | 26.9 |
 | FlagMega, 8x16, before the attention/GDN changes | 38.7 | 25.8 |
@@ -228,6 +242,17 @@ per block leave 4 blocks per WGP (5 with 4 KB), 192 on 48 WGPs: still the whole
 8x24 grid. The megakernel keeps 248 VGPRs and 44 B of scratch (the quantization
 holds its loaded activations as bf16 until it packs them; converting them first
 spilled the down projection to 128 B).
+
+With the gate+up tile queue (three repeats per run): Synthetic32 27.21 / 27.32 ms
+vs 28.37 ms without it, Chinese64 27.32 ms vs 28.39 ms, about 1.1 ms (4%) per token,
+more than on the R9700. On the 8x24 mesh the GEMV owners are two 64-row
+cycles per block, which the queue replaces with 8-row tiles over all 17,408 rows.
+Three processes reproduce the 64-step Chinese64 tokens and logits of the build
+without the queue bitwise; the megakernel keeps 248 VGPRs and 44 B of scratch.
+The second round of the build without the queue hung in the megakernel (GPU busy,
+memory idle) after its first round and the five queue runs had passed, so
+that round is missing; llama.cpp was not rerun on this card (29.5 / 29.7 ms
+above, about 1.08x).
 
 128 blocks of 4 waves cannot keep the W7900's ECC
 GDDR6 busy (the GEMV streams 371–389 GB/s at 128 blocks but 456–495 GB/s with

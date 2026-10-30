@@ -99,7 +99,9 @@ def _wide_source(tmp_path, name, build, target, rows=4096):
 
 
 @pytest.mark.parametrize("build", ("projection", "glu"))
-def test_installed_gfx1201_native_gemvs_start_at_a_block_rotated_tile(tmp_path, installed, build):
+def test_installed_gfx1201_native_gemvs_start_at_a_block_rotated_tile(tmp_path, installed, monkeypatch, build):
+    # The gate+up tile queue replaces the rotation; this checks the static fallback.
+    monkeypatch.setenv("FLAGMEGA_AMD_TILE_QUEUE", "0")
     source = _wide_source(tmp_path, "rotated", build, "amd-gfx1201")
     assert "for local_n_tile in tl.range(0, 2):" in source
     assert "local_n_start = (((local_n_tile + shard_index) % 2) * 16).to(tl.int32)" in source
@@ -114,10 +116,136 @@ def test_uninstalled_native_gemvs_keep_the_ordered_tile_loop(tmp_path, build):
 
 
 @pytest.mark.parametrize("build", ("projection", "glu"))
-def test_installed_gfx1100_native_gemvs_keep_the_ordered_tile_loop(tmp_path, installed, build):
+def test_installed_gfx1100_native_gemvs_keep_the_ordered_tile_loop(tmp_path, installed, monkeypatch, build):
+    monkeypatch.setenv("FLAGMEGA_AMD_TILE_QUEUE", "0")
     source = _wide_source(tmp_path, "gfx1100", build, "amd-gfx1100")
     assert "for local_n_start in tl.range(0, 32, 16):" in source
     assert "local_n_tile" not in source
+
+
+def _artifact_codegen(tmp_path, name, build, target, rows=4096):
+    import json
+    gemv = _gemv()
+    module = gemv._projection("IQ4_XS", rows, 5120) if build == "projection" else gemv._glu("IQ4_XS", rows, 5120)
+    artifact = gemv._artifact(tmp_path, name, module, target)
+    return (artifact / "generated_kernels.py").read_text(), json.loads((artifact / "artifact.json").read_text())
+
+
+def _codegen_keys(value):
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in _codegen_keys(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in _codegen_keys(item)}
+    return set()
+
+
+@pytest.mark.parametrize("target", ("amd-gfx1201", "amd-gfx1100", "nvidia-sm120"))
+def test_default_registry_requests_no_counter_slots(tmp_path, target):
+    source, artifact = _artifact_codegen(tmp_path, "plain", "glu", target)
+    assert "_flagmega_counters" not in source and "atomic_add" not in source
+    assert not {"counter_slots", "counter_slot_argument"} & _codegen_keys(artifact)
+
+
+def test_installed_gfx1201_gate_up_takes_tiles_from_the_counter_queue(tmp_path, installed):
+    source, artifact = _artifact_codegen(tmp_path, "queue", "glu", "amd-gfx1201")
+    # 4096 rows = 512 8-row tiles over 128 blocks: 4 even shares + 7 spare claims.
+    assert "_flagmega_counters" in artifact_signature(artifact)
+    assert "queue_counter = _flagmega_counters + 0" in source
+    assert "for queue_step in tl.range(0, 11):" in source
+    # 128 * 10 claims per invocation; the last claimer returns the counter to zero.
+    assert "queue_claim = tl.atomic_add(queue_counter, 1, sem=\"relaxed\")" in source
+    assert "if queue_claim == 1279:\n                tl.atomic_xchg(queue_counter, 0, sem=\"relaxed\")" in source
+    assert "queue_next = 128 + queue_claim" in source
+    assert "weight_rows = (0 + queue_rows * 2720)" in source
+    assert "destination_offsets = (0 + queue_rows * 1)" in source
+    assert "n_mask, K, Q8_MAIN_GROUPS, 8)" in source and "local_n_offsets" not in source.split("queue_counter =")[1].split("@triton.jit")[0]
+    # The counter is threaded into the GLU device function from its caller.
+    assert re.search(r"_glu\([^)]*_flagmega_counters\)", source)
+
+
+def artifact_signature(artifact):
+    return [name for value in _string_lists(artifact) for name in value if name == "_flagmega_counters"]
+
+
+def _string_lists(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _string_lists(item)
+    elif isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            yield value
+        for item in value:
+            yield from _string_lists(item)
+
+
+def test_installed_gfx1100_gate_up_takes_tiles_from_the_counter_queue(tmp_path, installed):
+    source, _ = _artifact_codegen(tmp_path, "queue1100", "glu", "amd-gfx1100")
+    assert "queue_counter = _flagmega_counters + 0" in source and "queue_next = 128 + queue_claim" in source
+
+
+@pytest.mark.parametrize("target", ("nvidia-sm120",))
+def test_installed_tile_queue_stays_off_other_targets(tmp_path, installed, target):
+    source, artifact = _artifact_codegen(tmp_path, "other", "glu", target)
+    assert "_flagmega_counters" not in source
+    assert not {"counter_slots", "counter_slot_argument"} & _codegen_keys(artifact)
+
+
+def test_disabled_tile_queue_restores_the_rotated_loop(tmp_path, installed, monkeypatch):
+    monkeypatch.setenv("FLAGMEGA_AMD_TILE_QUEUE", "0")
+    source, artifact = _artifact_codegen(tmp_path, "off", "glu", "amd-gfx1201")
+    assert "_flagmega_counters" not in source
+    assert "local_n_start = (((local_n_tile + shard_index) % 2) * 16).to(tl.int32)" in source
+
+
+def test_installed_queue_skips_projections(tmp_path, installed):
+    # No GLU call uses the counter, so none is allocated or threaded.
+    projection, artifact = _artifact_codegen(tmp_path, "projection", "projection", "amd-gfx1201")
+    assert "_flagmega_counters" not in projection and "for local_n_tile in tl.range(0, 2):" in projection
+    assert not {"counter_slots", "counter_slot_argument"} & _codegen_keys(artifact)
+
+
+def test_installed_queue_covers_cyclic_owners(tmp_path, installed):
+    # 4100 rows over 128 blocks render owner rows as two 32-row cycles; the
+    # queue still covers each global row once.
+    source, _ = _artifact_codegen(tmp_path, "cyclic", "glu", "amd-gfx1201", rows=4100)
+    assert "queue_next = tl.full((), 513, tl.int64)" in source
+    assert "n_mask = queue_rows < 4100" in source
+
+
+def _glu_call(active_n, rows, capacity=136):
+    return {"active_n": active_n, "local_n_capacity": capacity,
+            "weight_row_offset": f"({rows}) * (5120 // 256) * 136",
+            "destination_offset": f"((0)) * 17408 + ({rows}) * 1"}
+
+
+CONTIGUOUS = "((local_n_offsets) + ((shard_x) * 136) + ((shard_y) * 2176))"
+# gfx1100 8x24: 64-row cycles of 12288 rows, the second cycle 5120 rows long.
+CYCLIC = ("(((shard_x) * 64) + ((shard_y) * 1536) + ((((local_n_offsets)) // (64)) * 12288)"
+          " + (((local_n_offsets)) % (64)))")
+CYCLIC_ACTIVE = "(tl.minimum(64, tl.maximum(0, (((shard_y) * -1536) + ((shard_x) * -64) + 5120))) + 64)"
+
+
+@pytest.mark.parametrize(("call", "mesh"), (
+    (_glu_call("136", CONTIGUOUS), (8, 16)),
+    (_glu_call(CYCLIC_ACTIVE, CYCLIC, capacity=128), (8, 24)),
+))
+def test_queue_rows_cover_the_output_once(installed, call, mesh):
+    assert installed._row_progression(call, *mesh) == (17408, "(0 + queue_rows * 1)", "(0 + queue_rows * 2720)")
+
+
+@pytest.mark.parametrize("call", (
+    # Every block computes the same rows.
+    _glu_call("136", "(local_n_offsets)"),
+    # One row left out after every block: not one progression.
+    _glu_call("136", "((local_n_offsets) + ((shard_x) * 137) + ((shard_y) * 2192))"),
+    # Weight rows not affine in the output row.
+    {**_glu_call("136", CONTIGUOUS), "weight_row_offset": f"({CONTIGUOUS}) % 1000"},
+    # A symbol the planner cannot evaluate.
+    _glu_call("active_rows", CONTIGUOUS),
+))
+def test_queue_declines_other_row_layouts(installed, call):
+    assert installed._row_progression(call, 8, 16) is None
+
 
 def _amd_gpu():
     return torch.cuda.is_available() and bool(torch.version.hip) and \
