@@ -42,6 +42,14 @@ def test_amd_template_hoists_head_quantities_and_generic_is_unchanged():
     assert "def _flagmega_gdn_recurrent_local_core_tile(" in amd  # the generic body remains available
 
 
+def test_amd_state_store_is_write_through_on_gfx1201_only():
+    registry = TritonTemplateRegistry()
+    store = "tl.store(recurrent_state + state_offsets, new_state, mask=mask"
+    rdna4 = registry.render_kernel(KernelTemplateSpec("gdn_recurrent", "persistent", "amd", "gfx1201"), CONTEXT).source
+    rdna3 = registry.render_kernel(KernelTemplateSpec("gdn_recurrent", "persistent", "amd", "gfx1100"), CONTEXT).source
+    assert f'{store}, cache_modifier=".wt")' in rdna4
+    assert f"{store})" in rdna3 and "cache_modifier" not in rdna3.split(store)[1].split("\n")[0]
+
 def _amd_gpu():
     return torch.cuda.is_available() and bool(torch.version.hip) and \
         torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] in ("gfx1100", "gfx1201")

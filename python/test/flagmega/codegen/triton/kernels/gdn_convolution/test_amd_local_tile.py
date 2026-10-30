@@ -30,9 +30,9 @@ def test_amd_template_loads_history_before_the_shift_and_generic_is_unchanged():
     assert registry.render_kernel(GFX1100, CONTEXT).source == generic
 
 
-def test_nontemporal_recurrent_state_store_is_gfx1201_only():
+def test_write_through_recurrent_state_store_is_gfx1201_only():
     registry = TritonTemplateRegistry()
-    store = 'cache_modifier=".cs"'
+    store = 'cache_modifier=".wt"'
     gfx1201 = registry.render_kernel(KernelTemplateSpec("gdn_recurrent", "persistent", "amd", "gfx1201"), CONTEXT)
     gfx1100 = registry.render_kernel(KernelTemplateSpec("gdn_recurrent", "persistent", "amd", "gfx1100"), CONTEXT)
     assert gfx1201.source.count(store) == 1

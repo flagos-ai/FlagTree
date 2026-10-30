@@ -72,15 +72,26 @@ measured on one card (ms/token, Synthetic32 / Chinese64): none 28.26 / 28.27,
 72 B of scratch (13 SGPR spills go to VGPR lanes). gfx1100 has no
 `s_prefetch_data` and renders unchanged.
 
-On gfx1201 the GDN layers also write the fp32 recurrent state with a
-nontemporal store (`.cs`; only its owner reads it again, on the next token), and
+On gfx1201 the GDN layers also write the fp32 recurrent state through the
+cache (`.wt`; only its owner reads it again, on the next token), and
 the convolution tile loads all history slots before it shifts the state, so the
 loads no longer wait behind the shifted stores
 (`gdn_{recurrent,convolution}/platforms/amd/gfx1201/`). Both keep the arithmetic
 order: logits are bitwise equal to the build without them, with 248 VGPRs and
-72 B of scratch. Together they take 0.14 ms off a token. gfx1100 renders
+72 B of scratch. Together they take about 0.18 ms off a token. gfx1100 renders
 unchanged: on the W7900 one of three processes with these changes diverged at
-step 3. Removing the GDN convolution and recurrent phases entirely saves about
+step 3. The 3 MB of state written per token has to reach DRAM somewhere.
+Per-CTA timestamps show where (µs per GDN layer, recurrent phase / out_proj
+GEMV that follows it): `.cs` 17.1 / 39.2, `.wt` 21.7 / 34.0, no state store at
+all 16.9 / 34.1. A nontemporal store finishes inside the phase and its drain
+slows out_proj by 5 µs. A write-through store moves that drain into the
+recurrent phase, and the grid barrier waits for it there, so it costs slightly
+less. Plain write-back is slower (27.27 ms), and so is storing each tile right
+after its update (27.14 to 27.33 ms). Dropping the store entirely, which is
+wrong, would save only 0.27 ms. Graph replay, three interleaved rounds on one card:
+`.cs` 27.15/27.14/27.16 ms vs `.wt` 27.11/27.11/27.11 ms; llama.cpp
+29.35/29.36/29.35 ms. Three `.wt` processes reproduce the 64-step tokens and
+logits of the `.cs` build bitwise. Removing the GDN convolution and recurrent phases entirely saves about
 1.3 ms per token, against about 0.74 ms for llama.cpp's whole GDN. The
 recurrent core (about 1.1 ms of that) is latency-bound on layout conversions
 between the `[16, 128]` state tiles and the per-value vectors. Preloading the
@@ -113,11 +124,25 @@ lane broadcast cannot work because a block's eight groups span two waves, and a
 block-shaped header tile broadcast through a layout conversion cost 1.2 ms.
 gfx1100 renders unchanged; the rotation has not been run on the W7900.
 
+Changing which rows a block owns does narrow that skew. In a prototype of the
+gate+up phase, each block takes its first 8-row tile statically, then claims
+further tiles from one relaxed atomic counter (a bounded loop with at most 24
+tiles per block; block 0 resets the counter in the down phase, after the grid
+barrier). Every row is still computed whole by one block, so logits stay
+bitwise. It ran at 26.78 ms vs 27.15 ms (static 8-row tiles alone: 27.08 ms).
+It is not in the templates. The counter has to live in device memory that is
+zero at the first launch, survives from gate+up to down, and that no other
+buffer aliases. The planned workspace is uninitialized (`torch.empty`) and
+reused between phases, and the zero-initialized compiler scratch that the grid
+barrier uses is not reachable from kernel code. Doing this needs a
+compiler-owned, zero-initialized slot for synchronization counters.
+
 ## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores + rotated row tiles (default) | **27.2** | **36.8** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + rotated row tiles (default) | **27.1** | **36.9** |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores + rotated row tiles | 27.2 | 36.8 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores | 27.3 | 36.6 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch | 27.5 | 36.4 |
 | FlagMega, q8_1 activations + `v_dot4`, no prefetch | 28.2 | 35.4 |

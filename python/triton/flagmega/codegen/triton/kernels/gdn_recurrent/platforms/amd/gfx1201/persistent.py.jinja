@@ -1,5 +1,7 @@
-{#- AMD RDNA4 (gfx1201): the RDNA GDN body with the recurrent state written
-    nontemporally (only its owner reads it again, on the next token). gfx1100
-    keeps the plain store (a 3-process W7900 determinism check with it diverged). #}
-{% set gdn_amd_nontemporal_state = true %}
+{#- AMD RDNA4 (gfx1201): the RDNA GDN body with the fp32 recurrent state written
+    through (".wt"). The ~3 MB of state write-back then drains inside the
+    recurrent phase instead of slowing the next GEMV (out_proj), as the
+    nontemporal ".cs" store did; values are unchanged. gfx1100 keeps the plain
+    store (a 3-process W7900 determinism check with ".cs" diverged). #}
+{% set gdn_amd_state_cache_modifier = ".wt" %}
 {% include "kernels/gdn_recurrent/platforms/amd/persistent.py.jinja" %}
