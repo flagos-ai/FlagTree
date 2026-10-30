@@ -25,9 +25,10 @@ python/triton/FileCheck
 third_party/mthreads/python/triton/_C/*.so
 third_party/mthreads/python/triton/FileCheck
 third_party/mthreads/python/*.egg-info
-third_party/xpu/python/triton/_C/*.so
-third_party/xpu/python/triton/FileCheck
-third_party/xpu/python/triton/instrumentation/*.so
+python/triton/_C/*.so
+python/triton/FileCheck
+python/triton/instrumentation/*.so
+python/triton/spec/xpu
 third_party/xpu/python/*.egg-info
 third_party/nvidia/backend/flagcx*
 third_party/nvidia/backend/lib/libflagcx*

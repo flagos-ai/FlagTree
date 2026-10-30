@@ -840,8 +840,20 @@ def add_link_to_proton():
     update_symlink(proton_install_dir, proton_dir)
 
 
+def add_link_to_backend_spec():
+    backend_name = os.environ.get("FLAGTREE_BACKEND", "")
+    if not backend_name:
+        return
+    spec_dir = Path(__file__).parent / "third_party" / backend_name / "spec"
+    if not spec_dir.is_dir():
+        return
+    spec_install_dir = Path(__file__).parent / "python" / "triton" / "spec" / backend_name
+    update_symlink(spec_install_dir, spec_dir)
+
+
 def add_links(external_only):
     add_link_to_backends(external_only=external_only)
+    add_link_to_backend_spec()
     if not external_only and check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         add_link_to_proton()
 

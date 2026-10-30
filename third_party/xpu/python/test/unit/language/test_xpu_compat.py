@@ -92,7 +92,7 @@ def test_xpu_libdevice_extern_calls_use_semantic():
 
 
 def test_build_extern_generates_semantic_stubs():
-    source = (Path(__file__).resolve().parents[6] / "third_party/xpu/python/triton/tools/build_extern.py").read_text()
+    source = (Path(__file__).resolve().parents[6] / "third_party/xpu/spec/triton/tools/build_extern.py").read_text()
     assert "_builder" not in source
     assert "_semantic=None" in source
     assert "_semantic=_semantic" in source
@@ -140,7 +140,7 @@ def test_xpu_elementwise_dedup_fallback_is_vendored():
 
 
 def test_xpu_masked_load_materializes_other_in_frontend():
-    semantic = (Path(__file__).resolve().parents[6] / "third_party/xpu/python/triton/language/semantic.py").read_text()
+    semantic = (Path(__file__).resolve().parents[6] / "third_party/xpu/spec/triton/language/semantic.py").read_text()
     assert "load_value = self.tensor(" in semantic
     assert "ret = self.where(mask, load_value, other)" in semantic
 

@@ -144,21 +144,23 @@ inline bool getBoolEnvXPU(const std::string &env) {
 - `lib/Conversion/TritonXPUToLLVM/XPUPrintOpToLLVM.cpp`：`TRITON_PRINT_VERBOSE` → `getStrEnvXPU`。
 - `python/src/llvm.cc`：`TRITON_TUNE_BUFFER_LM_SIZE` / `LLVM_ERROR_LM_SIZE` → `getStrEnvXPU`。
 
-## 5. 构建系统 / Python overlay 接线
+## 5. 构建系统 / Python 特化接线
 
-- `python/setup_tools/utils/xpu.py`（新增，mthreads 风格）：`XPU_PYTHON_ROOT="third_party/xpu/python"`，
-  `_merge_xpu_packages()`、`_merge_xpu_package_dir()`（设置 `package_dir[""]=XPU_PYTHON_ROOT`）、
-  `XpuBuildPy`、`_patch_setup_for_xpu_python_root()`（import 时自动执行）。
-- `setup.py`：+1 行接入 XPU overlay 逻辑。
+- Python 特化源统一放在 `third_party/xpu/spec/triton/`，并通过
+  `python/triton/spec/xpu` 接入主树的 `spec_path` 机制。
+- `python/setup_tools/utils/xpu.py` 只负责把预编译 XPU Python 扩展和 intrinsic
+  tables staged 到主树 `python/triton/`；不再把 `third_party/xpu/python/triton`
+  作为 Python overlay 根目录。
+- 共享 Python 模块直接由主树 `python/triton/` 提供，XPU 目录不再保存镜像副本。
 
 ## 6. 构建产物排除
 
 `.gitignore` 新增：
 
 ```
-third_party/xpu/python/triton/_C/*.so
-third_party/xpu/python/triton/FileCheck
-third_party/xpu/python/triton/instrumentation/*.so
+python/triton/_C/*.so
+python/triton/FileCheck
+python/triton/instrumentation/*.so
 third_party/xpu/python/*.egg-info
 ```
 
