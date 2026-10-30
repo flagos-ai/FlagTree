@@ -8,6 +8,7 @@
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -18,6 +19,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 #include <algorithm>
@@ -44,9 +46,44 @@ struct SelectedSqmmaConfig {
   SmallVector<unsigned, 2> warpsPerCTA;
 };
 
+static SmallVector<unsigned, 2> getPreferredWarpsPerCTA(
+    musa_tle::SqmmaOp dot, unsigned numWarps,
+    const DenseMap<musa_tle::SqmmaOp, ttg::MUSASqmmaEncodingAttr> &encodings) {
+  SetVector<Operation *> slice;
+  mlir::getForwardSlice(dot.getD(), &slice);
+  if (llvm::any_of(slice, [](Operation *op) {
+        return isa<tt::DotOpInterface, musa_tle::SqmmaOp>(op);
+      }))
+    return {numWarps, 1};
+
+  // Keep the last dot's split aligned with its input producer when possible.
+  slice.clear();
+  BackwardSliceOptions options;
+  options.omitBlockArguments = true;
+  (void)getBackwardSlice(dot.getA(), &slice, options);
+  (void)getBackwardSlice(dot.getB(), &slice, options);
+  for (Operation *op : llvm::reverse(slice)) {
+    if (auto previous = dyn_cast<musa_tle::SqmmaOp>(op)) {
+      if (auto encoding = encodings.lookup(previous))
+        return to_vector(encoding.getWarpsPerCTA());
+    }
+  }
+
+  unsigned m = cast<RankedTensorType>(dot.getD().getType()).getShape()[0];
+  SmallVector<unsigned, 2> warps{4, 1};
+  while (warps[0] * warps[1] < numWarps) {
+    if (m > 16 * warps[0])
+      warps[0] *= 2;
+    else
+      warps[1] *= 2;
+  }
+  return warps;
+}
+
 static std::optional<SelectedSqmmaConfig>
 selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
                   musa::SQMMAEltType operandType,
+                  ArrayRef<unsigned> preferredWarps,
                   bool disableMSplitPreference) {
   if (numWarps < 4 || numWarps % 4 != 0)
     return std::nullopt;
@@ -56,7 +93,7 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
 
   std::optional<SelectedSqmmaConfig> best;
   unsigned bestCount = std::numeric_limits<unsigned>::max();
-  unsigned bestVolume = 0;
+  bool bestPreferred = false;
   for (unsigned instM : kMN) {
     if (m % instM != 0)
       continue;
@@ -79,21 +116,16 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
           if (m % tileM != 0 || n % tileN != 0)
             continue;
           unsigned count = (m / tileM) * (n / tileN) * (k / instK);
-          unsigned volume = instM * instN * instK;
-          // On a full tie prefer a pure M-split (warpsN == 1) as long as
-          // the instruction M stays >= 32: attention-style kernels reduce the
-          // dot result along axis=1, and an M-split keeps every output row
-          // inside one squad so the reduction never crosses warps. Finer M
-          // splits (instM 16) measure slower and are never preferred.
-          bool preferMSplit = !disableMSplitPreference && warpsN == 1 &&
-                              instM >= 32 && best && best->warpsPerCTA[1] != 1;
-          if (!best || count < bestCount ||
-              (count == bestCount &&
-               (volume > bestVolume ||
-                (volume == bestVolume && preferMSplit)))) {
+          bool preferred = !disableMSplitPreference &&
+                           warpsM == preferredWarps[0] &&
+                           warpsN == preferredWarps[1];
+          // PH1's legal instruction shapes differ from NVIDIA's. Prefer its
+          // warp split when realizable, then minimize SQMMA work within it.
+          if (!best || (preferred && !bestPreferred) ||
+              (preferred == bestPreferred && count < bestCount)) {
             best = SelectedSqmmaConfig{{instM, instN, instK}, {warpsM, warpsN}};
             bestCount = count;
-            bestVolume = volume;
+            bestPreferred = preferred;
           }
         }
       }
@@ -891,9 +923,18 @@ struct TritonMUSAGPUTLELowerSqmmaPass
         return signalPassFailure();
       }
       unsigned numWarps = ttg::maybeLookupNumWarps(dot).value_or(0);
+      SmallVector<unsigned, 2> preferredWarps;
+      // An async C dependency cannot redistribute its producer's registers.
+      if (auto previous = dot.getC().getDefiningOp<musa_tle::SqmmaOp>())
+        preferredWarps = to_vector(encodings[previous].getWarpsPerCTA());
+      else if (auto explicitEnc = dyn_cast_or_null<ttg::MUSASqmmaEncodingAttr>(
+                   cast<RankedTensorType>(dot.getC().getType()).getEncoding()))
+        preferredWarps = to_vector(explicitEnc.getWarpsPerCTA());
+      else
+        preferredWarps = getPreferredWarpsPerCTA(dot, numWarps, encodings);
       auto config = selectSqmmaConfig(aTy.getShape()[0], bTy.getShape()[1],
                                       aTy.getShape()[1], numWarps, *operandType,
-                                      disableMSplitPreference);
+                                      preferredWarps, disableMSplitPreference);
       if (!config) {
         dot.emitOpError("cannot select a supported SQMMA configuration");
         return signalPassFailure();

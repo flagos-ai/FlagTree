@@ -40,6 +40,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TleUtility.h"
 #endif
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -226,37 +227,7 @@ SmallVector<unsigned, 2>
 warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
                int numWarps, const SmallVector<unsigned, 3> &instrShape) {
 #ifdef __TLE__
-  auto isChainWrapper = [](Operation *op) {
-    return isa<ConvertLayoutOp, arith::TruncFOp, arith::ExtFOp>(op);
-  };
-
-  auto hasDirectABChainedDotUser = [&](Value v) {
-    SmallVector<Value> worklist = {v};
-    DenseSet<Value> visited;
-    while (!worklist.empty()) {
-      Value current = worklist.pop_back_val();
-      if (!visited.insert(current).second)
-        continue;
-      for (Operation *user : current.getUsers()) {
-        if (auto dotUser = dyn_cast<DotOpInterface>(user)) {
-          if (dotUser.getA() == current || dotUser.getB() == current)
-            return true;
-          continue;
-        }
-        if (!isChainWrapper(user))
-          continue;
-        for (Value result : user->getResults())
-          worklist.push_back(result);
-      }
-    }
-    return false;
-  };
-
-  // Contains a direct chained dot through the A/B operand path. We prefer to
-  // assign warps to one axis to facilitate use cases like flash attention,
-  // allowing reductions within the same warp.
-  if (hasDirectABChainedDotUser(dotOp.getD()))
-    return {(unsigned)numWarps, 1};
+  return getNvidiaMmaV3WarpsPerCTA(dotOp.getD(), shape, numWarps);
 #else
   SetVector<Operation *> slices;
   mlir::getForwardSlice(dotOp.getD(), &slices);
@@ -267,7 +238,6 @@ warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
         return isa<mlir::triton::DotOpInterface>(op);
       }) != slices.end())
     return {(unsigned)numWarps, 1};
-#endif
 
   // For MMAv3, the smallest indivisible unit of warp shape is (4, 1).
   SmallVector<unsigned, 2> ret = {4, 1};
@@ -282,6 +252,7 @@ warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
     }
   } while (true);
   return ret;
+#endif
 }
 
 // Returns a shared memory allocation that can be used by a dotMMA op for the
