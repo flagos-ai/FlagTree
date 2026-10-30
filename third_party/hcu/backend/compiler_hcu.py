@@ -2,6 +2,7 @@ from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
+from triton.runtime._distributed import DistributedRtContext
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 from types import ModuleType
@@ -13,6 +14,7 @@ import functools
 import warnings
 import os
 from pathlib import Path
+from .distributed import Distributed, extern_libs_hash, link_flagcx
 
 
 def get_min_dot_size(target: GPUTarget):
@@ -126,11 +128,16 @@ class HIPOptions:
             extern_libs[lib] = str(default_libdir / f'{lib}.bc')
         # rocshmem_device_lib = str(default_libdir / 'librocshmem_device.bc')
 
+        if "flagcx" not in extern_libs:
+            extern_libs.update(Distributed().get_extern_libs())
+
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         # object.__setattr__(self, 'rocshmem_device_lib', rocshmem_device_lib)
 
     def hash(self):
-        key = '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
+        values = dict(self.__dict__)
+        values["extern_libs"] = extern_libs_hash(self.extern_libs)
+        key = '_'.join([f'{name}-{val}' for name, val in values.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -404,6 +411,11 @@ class HIPBackend(BaseBackend):
     def make_ttgir(mod, metadata, options):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        # Fuse node transfers before inserting the implicit runtime arguments,
+        # while pointer bindings still refer to the original argument indices.
+        tle.passes.add_fuse_node_remote_transfers(pm)
+        if DistributedRtContext().is_lite_mode:
+            tle.passes.add_params_for_distribution(pm)
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
                                            options.num_ctas)
         # flagtree tle: lower tle.extract_tile
@@ -551,6 +563,7 @@ class HIPBackend(BaseBackend):
         passes.convert.add_index_to_llvmir(pm)
 
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
+        passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if HIPBackend.instrumentation:
             HIPBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
@@ -681,6 +694,7 @@ class HIPBackend(BaseBackend):
                 metadata['use_nvshmem'] = True
                 break
 
+        link_flagcx(llvm_mod, options.extern_libs, llvm, hcu, options.arch)
         if knobs.compilation.enable_asan:
             default_libdir = Path(__file__).parent / 'lib'
             paths = [
@@ -690,7 +704,10 @@ class HIPBackend(BaseBackend):
             ]
             llvm.link_extern_libs(llvm_mod, paths)
         elif options.extern_libs:
-            paths = [path for (name, path) in options.extern_libs if hcu.need_extern_lib(llvm_mod, name)]
+            paths = [
+                path for (name, path) in options.extern_libs
+                if name != "flagcx" and hcu.need_extern_lib(llvm_mod, name)
+            ]
             if len(paths) > 0:
                 llvm.link_extern_libs(llvm_mod, paths)
 
@@ -715,6 +732,10 @@ class HIPBackend(BaseBackend):
 
         # Get some metadata
         metadata["shared"] = src.get_int_attr("ttg.shared")
+        has_grid_barrier = src.get_int_attr("tle.grid_barrier_scratch_offset") is not None
+        metadata["launch_cooperative_grid"] = options.launch_cooperative_grid or has_grid_barrier
+        metadata["global_scratch_size"] = src.get_int_attr("ttg.global_scratch_memory_size") or 0
+        metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment") or 1
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
 
@@ -796,8 +817,22 @@ class HIPBackend(BaseBackend):
             clang_path = HIPBackend.path_to_rocm_clang()
             clang_args = HIPBackend._get_clang_args(metadata, options)
 
+            # Linked device libraries can make the emitted assembly require
+            # explicit target-ID features (for example sramecc+). Assemble with
+            # that exact ID, rather than dropping features from the directive.
+            target = re.search(r'^\s*\.amdgcn_target\s+"([^"]+)"', src, re.MULTILINE)
+            if target is not None:
+                prefix = hcu.TARGET_TRIPLE + "--"
+                target_id = target.group(1)
+                if not target_id.startswith(prefix):
+                    raise HSACOError(f"Unexpected assembly target: {target_id}")
+                target_id = target_id[len(prefix):]
+                if target_id.split(":", 1)[0] != options.arch.split(":", 1)[0]:
+                    raise HSACOError(f"Assembly targets {target_id}, but the kernel targets {options.arch}")
+                clang_args = [f"-mcpu={target_id}" if arg.startswith("-mcpu=") else arg for arg in clang_args]
+
             # Compile to HSACO
-            hsaco_command = [clang_path] + clang_args + [asm_file, "-x", "assembler", "-o", hsaco_file]
+            hsaco_command = [clang_path] + clang_args + ["-x", "assembler", asm_file, "-o", hsaco_file]
             subprocess.run(hsaco_command, check=True, capture_output=True, text=True)
 
             with open(hsaco_file, "rb") as fd_out:

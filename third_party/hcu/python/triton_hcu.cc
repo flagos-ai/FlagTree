@@ -9,9 +9,12 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "passes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -400,6 +403,20 @@ void init_triton_hcu(py::module &&m) {
     // Also various OpenCL version details.
     if (auto *openclVersion = module->getNamedMetadata("opencl.ocl.version"))
       module->eraseNamedMetadata(openclVersion);
+
+    // LLVM 22 drops the size operand from lifetime intrinsics, while DTK's
+    // older Clang still expects it. Drop these optimization markers at the
+    // final IR handoff, after LLVM optimization, preserving executable memory
+    // and synchronization operations.
+    for (llvm::Function &function : llvm::make_early_inc_range(*module)) {
+      auto id = function.getIntrinsicID();
+      if (id != llvm::Intrinsic::lifetime_start &&
+          id != llvm::Intrinsic::lifetime_end)
+        continue;
+      for (llvm::User *user : llvm::make_early_inc_range(function.users()))
+        llvm::cast<llvm::CallInst>(user)->eraseFromParent();
+      function.eraseFromParent();
+    }
   });
 
   m.def("disable_print_inline", [](llvm::Module *module) {

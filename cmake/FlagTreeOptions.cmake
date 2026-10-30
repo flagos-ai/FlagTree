@@ -38,7 +38,7 @@ macro(flagtree_configure_options)
   endif()
 
   set(FLAGCX_ENABLED OFF)
-  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar)
+  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar hcu)
   if(NOT FLAGTREE_BACKEND OR
      "${FLAGTREE_BACKEND}" IN_LIST FLAGCX_SUPPORT_BACKENDS)
     add_compile_definitions(FLAGCX_ENABLED)
@@ -645,6 +645,8 @@ function(flagtree_add_tle_generated_header_dependencies)
   foreach(_flagtree_tle_header_target IN ITEMS
       TritonAnalysis
       TritonAMDAnalysis
+      TritonHCUAnalysis
+      TritonHCUGPUToLLVM
       TritonToTritonGPU
       TritonGPUTransforms
       TritonNvidiaGPUTransforms

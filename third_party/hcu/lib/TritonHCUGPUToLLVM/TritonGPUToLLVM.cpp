@@ -19,8 +19,18 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+#ifdef FLAGCX_ENABLED
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxSignalOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetWorldRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
+#endif
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #endif
@@ -96,6 +106,10 @@ public:
                     mlir::scf::SCFDialect>();
     addIllegalDialect<triton::tle::TleDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
+    // Lower these together with their pointer/tensor producers in the main
+    // conversion, rather than materializing temporary casts here.
+    addLegalOp<triton::tle::RemotePointersOp, triton::tle::NodePutOp,
+               triton::tle::NodeGetOp>();
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
 };
@@ -140,12 +154,26 @@ struct ConvertTritonHCUGPUToLLVM
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<LLVM::LLVMDialect, NVVM::NVVMDialect, mlir::ROCDL::ROCDLDialect,
+                mlir::gpu::GPUDialect, arith::ArithDialect,
                 mlir::triton::hcugpu::TritonHCUGPUDialect>();
   }
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
+
+#ifdef __TLE__
+    // The shared cluster lowering emits NVIDIA-specific instructions.
+    WalkResult supported = mod.walk([](triton::tle::RemotePointersOp op) {
+      if (op.getSpace() == "cluster") {
+        op.emitError("cluster remote pointers are not supported on HCU");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (supported.wasInterrupted())
+      return signalPassFailure();
+#endif
 
     HCU::TargetInfo targetInfo(this->arch.getValue());
     if (targetInfo.getISAFamily() == HCU::ISAFamily::Unknown) {
@@ -223,6 +251,32 @@ struct ConvertTritonHCUGPUToLLVM
       mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
           typeConverter, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions, &targetInfo);
+#ifdef FLAGCX_ENABLED
+      mlir::triton::tle::populateFlagCxBarrierOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateGetDeviceIdOpToFlagCxPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateGetLocalRankOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateGetWorldRankOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateSignalOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateFlagCxSignalOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+#endif
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
         return signalPassFailure();
@@ -270,6 +324,12 @@ struct ConvertTritonHCUGPUToLLVM
                                              targetInfo, HCUBenefit);
     HCU::populateLoadStoreOpToLLVMPatterns(typeConverter, targetInfo, patterns,
                                            axisInfoAnalysis, HCUBenefit);
+#if defined(__TLE__) && defined(FLAGCX_ENABLED)
+    mlir::triton::tle::populateRemotePointersOpToLLVMPatterns(
+        typeConverter, targetInfo, patterns, HCUBenefit + 1);
+    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(
+        typeConverter, patterns, HCUBenefit + 1);
+#endif
     HCU::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
     HCU::populateBarrierOpToLLVMPatterns(typeConverter, patterns, HCUBenefit);
     HCU::populateTensorPtrOpsToLLVMPatterns(typeConverter, patterns,

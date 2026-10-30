@@ -27,11 +27,15 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/IR/PatternMatch.h"
 
+namespace mlir::triton {
+class TargetInfoBase;
+}
+
 namespace mlir::triton::tle {
 
 void populateDistributedBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit);
+    PatternBenefit benefit, const TargetInfoBase *targetInfo = nullptr);
 
 } // namespace mlir::triton::tle
 

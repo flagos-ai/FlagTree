@@ -137,13 +137,16 @@ class FlagCXRegistrar:
                 "wrapper": Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py", "include":
                 Path(self.flagcx_src_dir) / "flagcx" / "include"
             }
-        return {"wrapper": whl_path / "api.py", "include": whl_path / "include"}
+        include = whl_path / "include"
+        if not include.is_dir():
+            include = whl_path / "lib" / "include"
+        return {"wrapper": whl_path / "api.py", "include": include}
 
     def _get_required_dst_files_paths(self):
         return {
             "wrapper":
             (Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py",
-             Path(self.flagtree_dir) / "third_party" / "nvidia" / "backend" / "flagcx_wrapper.py"), "include":
+             Path(self.flagtree_dir) / "third_party" / self.backend_name / "backend" / "flagcx_wrapper.py"), "include":
             (Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "include", )
         }
 
@@ -153,6 +156,7 @@ class FlagCXRegistrar:
         wrapper_src = src_paths["wrapper"]
         include_src = src_paths["include"]
         for wrapper_dst in dst_paths["wrapper"]:
+            wrapper_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(wrapper_src, wrapper_dst)
             printinfo(f"flagcx_wrapper.py copied from {wrapper_src} to {wrapper_dst}")
         for include_dst in dst_paths["include"]:
