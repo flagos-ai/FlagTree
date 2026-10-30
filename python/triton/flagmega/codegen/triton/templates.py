@@ -51,6 +51,9 @@ class RenderedKernelTemplate:
     source: str
 
 
+COUNTER_SLOT_ARGUMENT = "_flagmega_counters"
+
+
 class TritonTemplateRegistry:
     """Resolve per-kernel implementations with deterministic specialization fallback."""
 
@@ -66,6 +69,21 @@ class TritonTemplateRegistry:
             autoescape=False,
         )
         self.environment.globals["require_codegen"] = _require_codegen
+
+    def counter_slots(self, platform: str, architecture: str) -> int:
+        """int64 device counters the templates of ``counter_families`` use.
+
+        A positive count adds ``COUNTER_SLOT_ARGUMENT`` to those families'
+        kernel calls and to every function on a call path to one.  The runtime
+        allocates the counters once and zeroes them when it prepares the
+        kernel; launches and graph replays do not clear them, so every launch
+        must leave each counter at zero.
+        """
+        return 0
+
+    def counter_families(self, platform: str, architecture: str) -> frozenset[str]:
+        """Kernel families whose calls receive the ``counter_slots`` counters."""
+        return frozenset()
 
     def candidates(self, spec: KernelTemplateSpec) -> tuple[str, ...]:
         # Constructing another value applies validation even when callers use
@@ -140,6 +158,7 @@ def module_template_target(module: IRModule) -> tuple[str, str]:
 
 
 __all__ = [
+    "COUNTER_SLOT_ARGUMENT",
     "KernelTemplateSpec",
     "RenderedKernelTemplate",
     "TritonTemplateRegistry",

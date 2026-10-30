@@ -14,6 +14,7 @@ from triton.flagmega.codegen.triton.pool_abi import emit_pool_scope_base
 from triton.flagmega.codegen.triton.runtime_binding import (
     describe_function_runtime_binding,
 )
+from triton.flagmega.codegen.triton.templates import COUNTER_SLOT_ARGUMENT
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import IRModule
 
@@ -88,7 +89,8 @@ def emit_function_call_arguments(
 
     try:
         result = tuple(
-            expressions[str(name)] for name in callee_binding["signature"] if name != "device_dptr"
+            expressions[str(name)] for name in callee_binding["signature"]
+            if name not in {"device_dptr", COUNTER_SLOT_ARGUMENT}
         )
     except KeyError as error:
         raise CodegenError(
@@ -100,6 +102,9 @@ def emit_function_call_arguments(
     # explicitly only when the caller's generated signature declares it.
     if "device_dptr" in caller_binding.get("signature", ()):
         result = (*result, "device_dptr")
+    # Template counters reach only the functions that lead to their users.
+    if COUNTER_SLOT_ARGUMENT in callee_binding["signature"]:
+        result = (*result, COUNTER_SLOT_ARGUMENT)
     return result
 
 
