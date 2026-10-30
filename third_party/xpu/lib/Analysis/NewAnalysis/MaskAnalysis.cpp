@@ -23,6 +23,8 @@ LogicalResult MaskState::parse(Value operand, const Location loc,
     return this->parseAnd(op, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::CmpIOp>()) {
     return this->parseCmp(op, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::CmpFOp>()) {
+    return this->parseCmp(op, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {
     return this->parseMakeRange(op, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::BroadcastOp>()) {
@@ -42,13 +44,13 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
                                                   const Location loc,
                                                   OpBuilder &builder) const {
   auto sourceType = cast<RankedTensorType>(source.getType());
-  SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
+  SmallVector<OpFoldResult> offsets = getWindowOffsets(builder);
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
 
   // XTDK MLIR had a 5-arg inferResultType(source, offsets, sizes, strides);
-  // public MLIR 22 only exposes the sizes-based overload.  With all offsets
-  // 0 and strides 1 (the case here), the result shape is exactly `dims`,
-  // so build the type directly.
+  // public MLIR 22 only exposes the sizes-based overload.  The result shape is
+  // exactly `dims` (offsets only move the window, they do not resize it), so
+  // build the type directly.
   SmallVector<int64_t> shape;
   for (auto d : dims) {
     std::optional<int64_t> c = mlir::getConstantIntValue(d);
@@ -66,13 +68,20 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
 memref::SubViewOp MaskState::getSubview(Value source, const Location loc,
                                         OpBuilder &builder) const {
   auto sourceType = cast<MemRefType>(source.getType());
-  SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
+  SmallVector<OpFoldResult> offsets = getWindowOffsets(builder);
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
   auto dstType =
       memref::SubViewOp::inferResultType(sourceType, offsets, dims, strides);
 
   return builder.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType),
                                            source, offsets, dims, strides);
+}
+
+SmallVector<OpFoldResult>
+MaskState::getWindowOffsets(OpBuilder &builder) const {
+  SmallVector<OpFoldResult> result(offsets.begin(), offsets.end());
+  result.resize(getRank(), builder.getIndexAttr(0));
+  return result;
 }
 
 static memref::SubViewOp createSubview(Value src, Location loc, OpBuilder &b,
@@ -219,10 +228,32 @@ LogicalResult MaskState::minStates(const MaskState &lhsState,
     return failure();
   }
 
+  // `and` of two masks is the intersection of the two windows, per dimension:
+  //
+  //   off = max(off_a, off_b)
+  //   end = min(off_a + dim_a, off_b + dim_b)
+  //   dim = max(0, end - off)
+  //
+  // With both offsets zero this is the plain `min(dim_a, dim_b)` it used to be,
+  // and the arithmetic folds back to it.
+  SmallVector<OpFoldResult> lhsOffsets = lhsState.getWindowOffsets(builder);
+  SmallVector<OpFoldResult> rhsOffsets = rhsState.getWindowOffsets(builder);
   for (uint32_t i = 0; i < lhsState.getRank(); i++) {
     auto lhsDim = lhsState.dims[i];
     auto rhsDim = rhsState.dims[i];
-    dims.push_back(minOFRs(lhsDim, rhsDim, loc, builder));
+    if (hasConstZero(lhsOffsets[i]) && hasConstZero(rhsOffsets[i])) {
+      offsets.push_back(builder.getIndexAttr(0));
+      dims.push_back(minOFRs(lhsDim, rhsDim, loc, builder));
+      continue;
+    }
+    auto newOffset = maxOFRs(lhsOffsets[i], rhsOffsets[i], loc, builder);
+    auto lhsEnd = addOFRs(lhsOffsets[i], lhsDim, loc, builder);
+    auto rhsEnd = addOFRs(rhsOffsets[i], rhsDim, loc, builder);
+    auto newEnd = minOFRs(lhsEnd, rhsEnd, loc, builder);
+    // Disjoint windows would give a negative length; clamp instead.
+    newEnd = maxOFRs(newEnd, newOffset, loc, builder);
+    offsets.push_back(newOffset);
+    dims.push_back(subOFRs(newEnd, newOffset, loc, builder));
   }
   return success();
 }
@@ -301,29 +332,158 @@ LogicalResult MaskState::parseExtSI(arith::ExtSIOp op, const Location loc,
   return parse(op.getIn(), loc, builder);
 }
 
+// Map an ordered comparison onto the two forms the window model understands:
+// a scalar bound above the range, or one below it.
+//   slt/ult/olt        range <  bound    upper bound at bound
+//   sle/ule/ole        range <= bound    upper bound at bound + 1
+//   sgt/ugt/ogt        range >  bound    lower bound at bound + 1
+//   sge/uge/oge        range >= bound    lower bound at bound
+// `upperBound` reports the first two forms, `adjustBound` the strict ones whose
+// window edge sits one past the bound.  Signed and unsigned spellings normalise
+// identically: the window arithmetic below is sign-agnostic, and only the
+// predicate name differs.
+// eq/ne and the unordered float predicates do not describe a contiguous window
+// at all and are rejected.
+//
+// The predicate decides only which SIDE of the range the bound is on.  It never
+// decides which operand is the range: `idx > N` and `idx >= N` put the range on
+// the left exactly like `idx < N` does, and exchanging the operands by predicate
+// -- which this used to do -- is what made those legal forms fail the
+// scalar-bound check in parseOrderedCmp.  triton_shared's parseCmp selects the
+// range side by the operand for the same reason.
+static bool normalizeOrderedCmp(arith::CmpIPredicate pred, bool &upperBound,
+                                bool &adjustBound) {
+  switch (pred) {
+  case arith::CmpIPredicate::slt:
+  case arith::CmpIPredicate::ult:
+    upperBound = true;
+    return true;
+  case arith::CmpIPredicate::sle:
+  case arith::CmpIPredicate::ule:
+    upperBound = true;
+    adjustBound = true;
+    return true;
+  case arith::CmpIPredicate::sgt:
+  case arith::CmpIPredicate::ugt:
+    upperBound = false;
+    adjustBound = true;
+    return true;
+  case arith::CmpIPredicate::sge:
+  case arith::CmpIPredicate::uge:
+    upperBound = false;
+    return true;
+  default:
+    return false;
+  }
+}
+static bool normalizeOrderedCmp(arith::CmpFPredicate pred, bool &upperBound,
+                                bool &adjustBound) {
+  switch (pred) {
+  case arith::CmpFPredicate::OLT:
+  case arith::CmpFPredicate::ULT:
+    upperBound = true;
+    return true;
+  case arith::CmpFPredicate::OLE:
+  case arith::CmpFPredicate::ULE:
+    upperBound = true;
+    adjustBound = true;
+    return true;
+  case arith::CmpFPredicate::OGT:
+  case arith::CmpFPredicate::UGT:
+    upperBound = false;
+    adjustBound = true;
+    return true;
+  case arith::CmpFPredicate::OGE:
+  case arith::CmpFPredicate::UGE:
+    upperBound = false;
+    return true;
+  default:
+    return false;
+  }
+}
+
 LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
                                   OpBuilder &builder) {
-  assert(this->isEmpty());
-
-  if (cmpOp.getPredicate() != arith::CmpIPredicate::slt &&
-      cmpOp.getPredicate() != arith::CmpIPredicate::ult) {
+  bool upperBound = false, adjustBound = false;
+  if (!normalizeOrderedCmp(cmpOp.getPredicate(), upperBound, adjustBound)) {
     InFlightDiagnostic diag = emitError(loc) << "Unsupported cmpi";
     return failure();
   }
+  return parseOrderedCmp(cmpOp.getLhs(), cmpOp.getRhs(), upperBound, adjustBound,
+                         loc, builder);
+}
+
+LogicalResult MaskState::parseCmp(arith::CmpFOp cmpOp, const Location loc,
+                                  OpBuilder &builder) {
+  bool upperBound = false, adjustBound = false;
+  if (!normalizeOrderedCmp(cmpOp.getPredicate(), upperBound, adjustBound)) {
+    InFlightDiagnostic diag = emitError(loc) << "Unsupported cmpf";
+    return failure();
+  }
+  return parseOrderedCmp(cmpOp.getLhs(), cmpOp.getRhs(), upperBound, adjustBound,
+                         loc, builder);
+}
+LogicalResult MaskState::parseOrderedCmp(Value lowerValue, Value upperValue,
+                                         bool upperBound, bool adjustBound,
+                                         const Location loc,
+                                         OpBuilder &builder) {
+  assert(this->isEmpty());
 
   MaskState lhsState;
-  if (failed(lhsState.parse(cmpOp.getLhs(), loc, builder)))
+  if (failed(lhsState.parse(lowerValue, loc, builder)))
     return failure();
 
   MaskState rhsState;
-  if (failed(rhsState.parse(cmpOp.getRhs(), loc, builder)))
+  if (failed(rhsState.parse(upperValue, loc, builder)))
     return failure();
 
-  assert((!lhsState.scalar && rhsState.scalar) && "Unsupported cmpi scenario");
+  // The range side is the operand that carries a range, and that is decided by
+  // the operand itself rather than by the predicate.  `idx > N` puts the range
+  // on the left exactly like `idx < N` does; only the side the bound sits on
+  // differs, and that is already carried by upperBound/adjustBound.
+  //
+  // MaskState holds a const member, so the two sides cannot be assigned; the
+  // range side is selected by pointer instead.
+  MaskState *rangeState = &lhsState;
+  MaskState *boundState = &rhsState;
+  if (lhsState.scalar && !rhsState.scalar) {
+    // The window is on the right (`N < idx` is `idx > N`): exchange the roles
+    // and mirror the bound's sense.
+    rangeState = &rhsState;
+    boundState = &lhsState;
+    upperBound = !upperBound;
+    adjustBound = !adjustBound;
+  }
+  // The window model carries exactly one bound and it must be a scalar: a
+  // comparison whose bound is itself a range (two vectors compared with each
+  // other), or one with no range at all (two scalars), has no representation
+  // here.  Reject it explicitly instead of feeding a null OpFoldResult into the
+  // min/max/sub below, which used to corrupt the state or trip the assertion on
+  // the next line.
+  if (rangeState->scalar || !boundState->scalar) {
+    InFlightDiagnostic diag =
+        emitError(loc)
+        << "Unsupported cmpi: the compared range must be bounded by a scalar";
+    return failure();
+  }
+
+  // The range side must actually carry a window: an operand that is itself a
+  // mask (`(a < b) < c`) has dims but no start/end, and a null OpFoldResult
+  // reaching the min/max/sub below would corrupt the state rather than fail.
+  if (!rangeState->start || !rangeState->end) {
+    InFlightDiagnostic diag =
+        emitError(loc)
+        << "Unsupported cmpi: the compared range is not a make_range chain";
+    return failure();
+  }
+
+  if (adjustBound)
+    boundState->scalar =
+        addOFRs(boundState->scalar, builder.getIndexAttr(1), loc, builder);
 
   int32_t cmpDim = -1;
-  for (int32_t i = 0; i < lhsState.getRank(); i++) {
-    auto dimIntAttr = getIntAttr(lhsState.dims[i]);
+  for (int32_t i = 0; i < rangeState->getRank(); i++) {
+    auto dimIntAttr = getIntAttr(rangeState->dims[i]);
     if (!dimIntAttr || dimIntAttr.value() != 1) {
       if (cmpDim != -1) {
         InFlightDiagnostic diag = emitError(loc)
@@ -336,15 +496,35 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
   }
   assert(cmpDim != -1 &&
          "Unexpected case where no dimension has size larger than 1");
+  OpFoldResult newDim;
+  OpFoldResult newOffset = builder.getIndexAttr(0);
+  if (upperBound) {
+    // An upper bound pulls the window end down to the scalar.  The clamp keeps
+    // a bound below the range start from turning into a negative length:
+    //   newEnd = min(end, bound), then max(newEnd, start)
+    auto newEnd = minOFRs(rangeState->end, boundState->scalar, loc, builder);
+    newEnd = maxOFRs(newEnd, rangeState->start, loc, builder);
+    newDim = subOFRs(newEnd, rangeState->start, loc, builder);
+  } else {
+    // Mirror image: a lower bound pushes the window start up to the scalar,
+    // clamped to the range end so a bound past the end collapses to an empty
+    // window rather than a negative length.
+    auto newStart =
+        maxOFRs(rangeState->start, boundState->scalar, loc, builder);
+    newStart = minOFRs(newStart, rangeState->end, loc, builder);
+    newOffset = subOFRs(newStart, rangeState->start, loc, builder);
+    newDim = subOFRs(rangeState->end, newStart, loc, builder);
+  }
 
-  auto newEnd = minOFRs(lhsState.end, rhsState.scalar, loc, builder);
-  auto newDim = subOFRs(newEnd, lhsState.start, loc, builder);
-
-  for (int32_t i = 0; i < lhsState.getRank(); i++) {
-    if (i == cmpDim)
+  SmallVector<OpFoldResult> rangeOffsets = rangeState->getWindowOffsets(builder);
+  for (int32_t i = 0; i < rangeState->getRank(); i++) {
+    if (i == cmpDim) {
       this->dims.push_back(newDim);
-    else
-      this->dims.push_back(lhsState.dims[i]);
+      this->offsets.push_back(newOffset);
+    } else {
+      this->dims.push_back(rangeState->dims[i]);
+      this->offsets.push_back(rangeOffsets[i]);
+    }
   }
 
   return success();

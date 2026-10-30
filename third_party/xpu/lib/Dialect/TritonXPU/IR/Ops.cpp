@@ -120,8 +120,15 @@ template <class Op> LogicalResult verifyReduceScan(Op &op) {
 
   for (auto [opElemTy, resTy] :
        llvm::zip(op.getElementTypes(), op.getResultTypes())) {
-    auto _opElemTy = getElementTypeOrSelf(opElemTy);
-    if (_opElemTy != getElementType(resTy)) {
+    // The reduce folds width: a vector operand element unwraps to the scalar
+    // the narrow result carries. The scan is width-preserving: its operand
+    // and result elements agree as-is, vector or scalar, so no unwrap.
+    Type lhsElemTy;
+    if (isa<ScanOp>(op.getOperation()))
+      lhsElemTy = opElemTy;
+    else
+      lhsElemTy = getElementTypeOrSelf(opElemTy);
+    if (lhsElemTy != getElementType(resTy)) {
       return op.emitOpError() << "operand types and result types must agree";
     }
   }

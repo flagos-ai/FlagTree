@@ -7,6 +7,7 @@ import numbers
 
 from triton.runtime import driver
 
+from .._utils import get_xpu_arch
 from .._C.libtriton import ir
 from . import core as tl
 
@@ -80,7 +81,7 @@ class TritonSemantic(Generic[TensorTy]):
             # the comparison and the surrounding select in the same (f32) domain,
             # which the XPU SDNN select lowering requires. This is only needed on
             # TRITON_XPU_ARCH == 3 (SDNN), hence the arch gate below.
-            float_scalar_vs_float_tensor = (int(os.environ.get("TRITON_XPU_ARCH", "3")) == 3
+            float_scalar_vs_float_tensor = (get_xpu_arch(3) == 3
                                             and scalar_ty.is_floating() and tensor_ty.is_floating())
             if (scalar_ty.kind().value <= tensor_ty.kind().value and not float_scalar_vs_float_tensor):
                 # Upcast because of 3) and 4) below!
@@ -1397,7 +1398,7 @@ class TritonSemantic(Generic[TensorTy]):
         if ptr.type.is_const() or ptr.type.element_ty.is_const():
             raise ValueError("Cannot store to a constant pointer")
         element_ty = ptr.type.scalar.element_ty
-        if element_ty is tl.float16 and op != 'add':
+        if element_ty is tl.float16 and op != 'add' and op != 'mul':
             raise ValueError("atomic_" + op + " does not support fp16")
         if element_ty is tl.bfloat16 and op != 'add':
             raise ValueError("atomic_" + op + " does not support bf16")

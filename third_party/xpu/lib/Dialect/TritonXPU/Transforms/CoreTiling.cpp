@@ -145,6 +145,7 @@ struct TritonXPUCoreTilingPass
   // Get ReduceOps' Shape To Check If Can Be Optimized
   bool canBeOptimized(ModuleOp &mod) {
     bool canBeOpt = false;
+    bool allReducesOptimizable = true;
     int colSize = 0;
 
     auto checkGroupInfo = [&](RankedTensorType &tensorType) {
@@ -196,18 +197,24 @@ struct TritonXPUCoreTilingPass
           auto tensorType =
               cast<RankedTensorType>(reduceOp.getOperandTypes()[0]);
           checkGroupInfo(tensorType);
+        } else {
+          // 2D reductions along axis 0 do not fit the optimized tiling.
+          allReducesOptimizable = false;
         }
       } else if (isAxisNone(reduceOp)) {
         canBeOpt = true;
-      } else if (canBeOpt) {
-        llvm_unreachable("Not All Reduce Op can be Optimized");
+      } else {
+        // A reduce outside the optimized patterns (e.g. rank-1) is mixed
+        // with optimized ones: disable the tiling optimization for the
+        // module instead of aborting the compiler.
+        allReducesOptimizable = false;
       }
     });
 
     if (!getTensorColSize(mod) || colSize < rawColSize)
       rowsPerCore = 1;
 
-    return canBeOpt;
+    return canBeOpt && allReducesOptimizable;
   }
 
   mlir::Operation *findRootOp(mlir::Operation *op) {

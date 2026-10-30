@@ -966,37 +966,15 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
     cache.store(
         file="xpu-sdnn-objects", condition=is_xpu,
-        # v0.3.6.9.0: **public-LLVM leg** (the toolchain the
-        # public-LLVM compatibility layer and the rest of this branch are built
-        # against).  Numbered from the newest *published* package (v0.3.6.8.1,
-        # verified present on BOS) -- locally built candidates do not consume a
-        # version number, they are invisible to consumers.
-        # Earlier local drafts on the XTDK leg were cut under the same name; they
-        # were never uploaded.  Their SDNN objects and `libTritonSharedForXPU.a`
-        # reference the XTDK MLIR signature
-        # `...visitRegionSuccessors(...RegionBranchPoint...)` and the out-of-line
-        # `APFloatBase::PPCDoubleDouble()`, neither of which the public LLVM 22
-        # provides -- `import triton` died on the first missing symbol.
-        # See evidence 2026-09-24-import-broken-sdnn-xdk-leg.
-        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.9.0.tar.gz",
+        # v0.3.6.9.1: prebuilt SDNN objects (TritonSDNN dialect / conversions /
+        # analysis) plus libTritonSharedForXPU.a, linked into libtriton at build
+        # time. libTritonSharedForXPU.a is a CMake IMPORTED target with no build
+        # rule of its own, so it must be present for a cold-cache build to link.
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.9.1.tar.gz",
         # Only the first 8 hex chars of the digest are compared (see
-        # setup_helper.check_file). The value was verified by re-downloading the
-        # artifact: for multipart uploads BOS's ETag (prefixed with '-') is not
-        # the file's md5, so the ETag cannot serve as a digest.
-        # Re-issued under the same version: the closed-source packaging added
-        # gluon_ir_sdnn.cc.o and abi_table.cc.o to this package.  A rebuilt
-        # candidate does not consume a version number, so only the digest moves.
-        # Re-issued under the same version twice: the first re-issue added
-        # gluon_ir_sdnn.cc.o and abi_table.cc.o, the second restored
-        # libTritonSharedForXPU.a, which the first one dropped.  That `.a` is a
-        # CMake IMPORTED target with no build rule, so a cold-cache build died
-        # on it while every warm cache (which still had the old copy) passed.
-        # A rebuilt candidate does not consume a version number, so only the
-        # digest moves.
-        # Third re-issue (2026-10-07): split gluon_ir_sdnn.cc.o restored
-        # <pybind11/stl.h> (vector args were un-callable); triton_xpu_sdnn.cc.o
-        # v12 -> v11.
-        md5_digest="e92ded7a", version="v0.3.6.9.0",
+        # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
+        # (an ETag prefixed with '-' is not the file md5).
+        md5_digest="f125a682", version="v0.3.6.9.1",
         post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
         file="xpu-python-impl-so", condition=is_xpu,

@@ -129,6 +129,11 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
     auto storeOp = builder.create<triton::xpu::StoreOp>(
         loc, ptr, arithOp->getResults()[0], mask, Value(), -1, false,
         Dtype::UNKNOWN, MemorySyncMode::SYNC);
+    // The replacement LoadOp carries the old value that the atomic RMW
+    // result returns; rewire all users before erasing, otherwise MLIR
+    // aborts with "tt.atomic_rmw destroyed but still has uses".
+    for (OpResult r : atomicRMWOp->getResults())
+      r.replaceAllUsesWith(loadOp.getResult());
     atomicRMWOp.erase();
   });
 

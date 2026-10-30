@@ -38,8 +38,9 @@ from torch._inductor.triton_heuristics import (cached_autotune, HeuristicType)
 from torch._inductor.ir import TileHint, ReductionHint
 
 from xpu.backend.driver import get_xpu_spec
+from triton._utils import get_xpu_arch
 
-arch = int(os.environ.get('TRITON_XPU_ARCH', '3'))
+arch = get_xpu_arch(3)
 CLUSTER_NUM = get_xpu_spec(arch)[0]
 CORE_NUM = get_xpu_spec(arch)[1]
 

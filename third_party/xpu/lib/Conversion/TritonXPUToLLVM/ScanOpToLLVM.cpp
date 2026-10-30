@@ -2,6 +2,8 @@
 #include "Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // LLVM22 dragon-style macros for XPU only
+#include "CombineEmit.h"
+#include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 
 using ::mlir::triton::gpu::getTotalElemsPerThread;
@@ -97,7 +99,53 @@ static SmallVector<Value> accumulate(ScanLoweringHelper &helper,
                                      Value pred = {}) {
   auto loc = helper.getXPULoc();
   auto &combineOp = helper.getXPUCombineOp();
+  // An uninitialized acc means "use cur as the neutral element" (upstream
+  // scan semantics, applyCombineOp's first branch): the cross-core prefix's
+  // base case relies on it, so keep it ahead of the vectorized dispatch.
+  if (acc.size() == 0)
+    return SmallVector<Value>(cur.begin(), cur.end());
+  if (helper.isVectorized()) {
+    // A vectorized scan runs some combine steps on scalars (the SM cross-core
+    // partials) and some on vectors (the per-chunk carry add-back), while the
+    // retyped region's ops all carry vector result types. Inlining would
+    // clone ops whose operand and result types disagree; emit through the
+    // interpreter, which stamps each op with its actual operand types (same
+    // reason ReduceOpToLLVM avoids the inline path once vectorized).
+    assert(mlir::triton::xpu::canInterpretCombine(combineOp) &&
+           "scanCombineIsVectorizable admitted a region the emitter cannot "
+           "interpret");
+    SmallVector<Value> accV(acc.begin(), acc.end());
+    SmallVector<Value> curV(cur.begin(), cur.end());
+    mlir::triton::xpu::interpretCombine(rewriter, loc, combineOp, accV, curV);
+    return accV;
+  }
   return applyCombineOp(loc, rewriter, combineOp, acc, cur, pred);
+}
+
+// Select on vector values needs the condition broadcast to the vector width:
+// llc cannot select a scalar-i1-conditioned vector select on this target, it
+// wants a vselect-shaped <N x i1> condition (the shape VectorizedOpToLLVM's
+// VSelectOp lowers). f16 goes one step further -- llc has no v<32xf16> vselect
+// pattern at all -- so route it through the vvor_hf_mh masked-or (cond ? (0 |
+// ifTrue) : ifFalse), the same form the per-thread network's mask uses.
+static Value selectLike(ConversionPatternRewriter &rewriter, Location loc,
+                        Value cond, Value ifTrue, Value ifFalse) {
+  if (auto vecTy = dyn_cast<VectorType>(ifTrue.getType())) {
+    cond = mlir::triton::xpu::splatToWidth(rewriter, loc, cond,
+                                           vecTy.getNumElements());
+    if (vecTy.getElementType().isF16()) {
+      auto zEltTy = IntegerType::get(rewriter.getContext(), 16);
+      auto zIntTy = VectorType::get(vecTy.getNumElements(), zEltTy);
+      Value zeros = bitcast(
+          rewriter.create<LLVM::ConstantOp>(
+              loc, zIntTy,
+              SplatElementsAttr::get(zIntTy, rewriter.getIntegerAttr(zEltTy, 0))),
+          vecTy);
+      return rewriter.create<mlir::LLVM::XPU::VVOR_HF_MHOp>(
+          loc, vecTy, cond, zeros, ifTrue, ifFalse);
+    }
+  }
+  return select(cond, ifTrue, ifFalse);
 }
 
 // Scan a contiguous elements within a thread and update `srcValues` in place.
@@ -121,6 +169,204 @@ scanThreadContiguousElements(SmallVector<SmallVector<Value>> &srcValues,
           accumulate(helper, rewriter, accs[srcIndex - 1], srcValues[srcIndex]);
     }
     srcValues[srcIndex] = accs[accIndex];
+  }
+}
+
+// Scan the contiguous vector chunks within a thread, updating `srcValues` in
+// place. A chunk's lanes run along the scan axis, so each chunk first needs a
+// prefix across its own lanes; the chunk total then folds into every lane of
+// the next chunk. The lane prefix runs as a 4-step Hillis-Steele shift-add
+// network (vsll.p + vector add) when the combine is a plain n-ary addf -- the
+// shape XDNN's hand cumsum uses; anything else keeps the extract/insert
+// serial replay, which is also what the general fallback documents: no
+// cross-lane permute on this target (the reverted shuffle tree in
+// ReduceOpToLLVM, same reason).
+// There is no identity constant on purpose -- the first chunk simply skips
+// the carry fold, mirroring the isFirst select the cross-core part uses.
+static void
+scanThreadContiguousVectorElements(SmallVector<SmallVector<Value>> &srcValues,
+                                   ConversionPatternRewriter &rewriter,
+                                   ScanLoweringHelper &helper) {
+  // `loc` must be in scope: the LegacyLLVMHelpers macros reference it.
+  Location loc = helper.getXPULoc();
+  (void)loc;
+  if (srcValues.empty())
+    return;
+  unsigned numData = srcValues[0].size();
+  auto vecTy = cast<VectorType>(srcValues[0][0].getType());
+  unsigned lanes = vecTy.getNumElements();
+
+  // Network path: any combine the interpreter (CombineEmit) accepts, folded
+  // step-by-step over the whole region via interpretCombine -- not a per-op
+  // special case. Restricted to f32 / f16, the element types with a
+  // matching-width lane-shift + masked select:
+  //  * f32 -> svsllp_f + vvor_f_mh (16 lanes of a 512-bit register); f16 ->
+  //    svsllp_hf + vvor_hf_mh (32 lanes). bf16/int/i64/f64, or a value+index
+  //    pair combine (f32 value + i64 index) spanning two widths, take the
+  //    serial replay -- feeding svsllp the wrong-width vector aborts llc.
+  //  * one register width -- every block arg rides the chunk element type.
+  //  * the keep-lane<k mask is the vvor masked select; a masked (non-plain-add)
+  //    combine keeps lane<k, plain add stays maskless (0 is its identity).
+  Region &combine = helper.getXPUCombineOp();
+  Type chunkElemTy = vecTy.getElementType();
+  Type elemTy = chunkElemTy;
+  Operation *singleOp = nullptr; // non-null iff the body is exactly one op
+  bool networkEligible = combine.getBlocks().size() == 1 &&
+                         (chunkElemTy.isF32() || chunkElemTy.isF16()) &&
+                         mlir::triton::xpu::canInterpretCombine(combine);
+  if (networkEligible) {
+    Block &body = combine.front();
+    // Single register width: every operand rides the chunk element type.
+    for (BlockArgument arg : body.getArguments())
+      if (getElementTypeOrSelf(arg.getType()) != chunkElemTy)
+        networkEligible = false;
+    if (std::distance(body.without_terminator().begin(),
+                      body.without_terminator().end()) == 1)
+      singleOp = &body.front();
+  }
+  // A plain add's identity is the shift's zero-fill, so it skips the per-step
+  // mask; every other combine keeps lane<k through the float-only vvor_f/hf_mh.
+  bool plainAdd = singleOp && isa<arith::AddFOp, arith::AddIOp>(singleOp);
+  bool needsMask = networkEligible && !plainAdd;
+  if (needsMask && !isa<FloatType>(chunkElemTy))
+    networkEligible = false;
+
+  if (networkEligible) {
+    // Same-width lane data: the add/shift run at the combine's element type.
+    auto netTy = VectorType::get(lanes, elemTy);
+    // The combine's element type can be wider than the chunk operand (f16
+    // chunk promoted to f32 scan): bitcast the lane data to the combine
+    // width so the adds and the shift stay one width throughout.
+    auto materialize = [&](Value v) -> Value {
+      auto vVecTy = cast<VectorType>(v.getType());
+      if (vVecTy == netTy)
+        return v;
+      return bitcast(v, netTy);
+    };
+    SmallVector<Value> carryV(numData);
+    // Carry fold fast path: a single associative op folds the previous chunk
+    // total (one scalar per operand) into every lane with a single SV
+    // (scalar-first) intrinsic -- svadd/svmax/svmin, validated by mini .ll
+    // against llc. Any other admitted combine folds the splatted carry through
+    // interpretCombine instead (svName stays null).
+    const char *svName = nullptr;
+    if (singleOp) {
+      bool hf = elemTy.isF16();
+      if (isa<arith::MaxNumFOp>(singleOp))
+        svName = hf ? "llvm.xpu.svmax_hf_mr1_rn" : "llvm.xpu.svmax_f_mr1_rn";
+      else if (isa<arith::MinNumFOp>(singleOp))
+        svName = hf ? "llvm.xpu.svmin_hf_mr1_rn" : "llvm.xpu.svmin_f_mr1_rn";
+      else if (isa<arith::AddFOp>(singleOp))
+        svName = hf ? "llvm.xpu.svadd_hf_mr1_rn" : "llvm.xpu.svadd_f_mr1_rn";
+    }
+    auto svFold = [&](Value scalar, Value vec) -> Value {
+      auto mod = vec.getParentRegion()->getParentOfType<mlir::ModuleOp>();
+      LLVM::LLVMFuncOp callee = mod.lookupSymbol<LLVM::LLVMFuncOp>(svName);
+      if (!callee) {
+        OpBuilder builder(mod.getContext());
+        builder.setInsertionPointToStart(mod.getBody());
+        callee = mlir::intrinsic_attr_table::getOrCreateDeclaration(
+            builder, mod, loc, svName,
+            LLVM::LLVMFunctionType::get(netTy,
+                                        {netTy.getElementType(), netTy}));
+      }
+      return rewriter.create<LLVM::CallOp>(loc, callee,
+                                           ValueRange{scalar, vec})
+          .getResult();
+    };
+    for (unsigned c = 0; c < srcValues.size(); ++c) {
+      SmallVector<Value> out(numData);
+      for (unsigned j = 0; j < numData; ++j)
+        out[j] = materialize(srcValues[c][j]);
+      // Masked Hillis-Steele lane-prefix, shared with the reduce collapse:
+      // out[j][i] <- combine(out[j][0..i]); a non-plain-add combine keeps
+      // lane<k via the vvor mask so the shift's zero fill can't pollute it.
+      mlir::triton::xpu::emitMaskedLanePrefix(rewriter, loc, combine, out,
+                                              needsMask);
+      // Carry chain in vector form: after the network, every lane l holds
+      // prefix(<=l) of this chunk; the LAST lane is the chunk total (plus any
+      // earlier carry). Fold the previous chunk's total vector into every
+      // lane -- a splat of one lane -- by keeping the carry as a vector whose
+      // every lane equals that total: adding it lane-wise is the fold. The
+      // chunk's own network already includes it, so just add the previous
+      // total vector (uniform across its lanes).
+      // A single associative op folds the scalar carry with one SV intrinsic;
+      // any other combine splats the carry to a vector and folds through
+      // interpretCombine (combine(carry, chunk), same order the SV form uses).
+      if (c > 0) {
+        if (svName) {
+          for (unsigned j = 0; j < numData; ++j)
+            out[j] = svFold(carryV[j], out[j]);
+        } else {
+          SmallVector<Value> carryVec(numData);
+          for (unsigned j = 0; j < numData; ++j)
+            carryVec[j] = mlir::triton::xpu::splatToWidth(rewriter, loc,
+                                                          carryV[j], lanes);
+          mlir::triton::xpu::interpretCombine(rewriter, loc, combine, carryVec,
+                                              out);
+          out = carryVec;
+        }
+      }
+      // next carry vector: out's last lane broadcast to every lane. The SV
+      // add form does scalar+vector lane-wise, so the splat is one vadd away
+      // -- but we only need the VALUE; keep it as extract + per-lane svadd
+      // against the next chunk, mirroring the bench's validated shape.
+      // Simplest: broadcast with the SV add itself next round (carryV holds
+      // the scalar and the fold becomes one SV add).
+      for (unsigned j = 0; j < numData; ++j)
+        carryV[j] = extract_element(netTy.getElementType(), out[j],
+                                    i32_val(lanes - 1));
+      for (unsigned j = 0; j < numData; ++j) {
+        // back to the chunk's own element width for the store
+        auto chunkTy = cast<VectorType>(srcValues[c][j].getType());
+        srcValues[c][j] =
+            out[j].getType() == chunkTy ? out[j] : bitcast(out[j], chunkTy);
+      }
+    }
+    return;
+  }
+  (void)numData;
+
+  SmallVector<Value> carry(numData);
+  for (unsigned c = 0; c < srcValues.size(); ++c) {
+    SmallVector<Value> out(numData);
+    SmallVector<Value> acc(numData);
+    for (unsigned lane = 0; lane < lanes; ++lane) {
+      if (lane == 0) {
+        for (unsigned j = 0; j < numData; ++j) {
+          auto vecTy = cast<VectorType>(srcValues[c][j].getType());
+          acc[j] = extract_element(vecTy.getElementType(), srcValues[c][j],
+                                   i32_val(0));
+          out[j] = undef(vecTy);
+        }
+      } else {
+        SmallVector<Value> cur(numData);
+        for (unsigned j = 0; j < numData; ++j) {
+          auto vecTy = cast<VectorType>(srcValues[c][j].getType());
+          cur[j] = extract_element(vecTy.getElementType(), srcValues[c][j],
+                                   i32_val(lane));
+        }
+        acc = accumulate(helper, rewriter, acc, cur);
+      }
+      // Fold the running total of the previous chunks into this lane, jointly
+      // across operands (the combine region is n-ary).
+      SmallVector<Value> laneVal = acc;
+      if (c > 0) {
+        SmallVector<Value> carried = carry;
+        carried = accumulate(helper, rewriter, carried, laneVal);
+        laneVal = carried;
+      }
+      // The chunk's outgoing carry is the folded value at its last lane
+      // (incoming carry + local total) -- not the local `acc`, which drops
+      // the incoming carry and would lose it again on every chunk.
+      if (lane == lanes - 1)
+        carry = laneVal;
+      for (unsigned j = 0; j < numData; ++j) {
+        auto vecTy = cast<VectorType>(srcValues[c][j].getType());
+        out[j] = insert_element(vecTy, out[j], laneVal[j], i32_val(lane));
+      }
+    }
+    srcValues[c] = out;
   }
 }
 
@@ -204,7 +450,8 @@ static void applyLastElemScanOnSM(
         auto withCarry =
             accumulate(helper, rewriter, carry, readValues[srcIdx]);
         for (unsigned k = 0; k < accs[srcIdx].size(); ++k)
-          accs[srcIdx][k] = select(isFirst, accs[srcIdx][k], withCarry[k]);
+          accs[srcIdx][k] =
+              selectLike(rewriter, loc, isFirst, accs[srcIdx][k], withCarry[k]);
       }
 
       //   ValueRange operandValueRange({accs[srcIdx][0], i32_val(srcIdx)});
@@ -438,13 +685,14 @@ static void applyCoreElemScanWithSMAcc(
       SmallVector<Value> carry(carryIn.begin(), carryIn.end());
       auto withCarry = accumulate(helper, rewriter, carry, srcValues[srcIndex]);
       for (unsigned k = 0; k < core0Vals.size(); ++k)
-        core0Vals[k] = select(isFirst, core0Vals[k], withCarry[k]);
+        core0Vals[k] =
+            selectLike(rewriter, loc, isFirst, core0Vals[k], withCarry[k]);
     }
     for (unsigned operandIdx = 0; operandIdx < (helper.getXPUNumOperands() - 1);
          ++operandIdx) { // skip loopIndex
       srcValues[srcIndex][operandIdx] =
-          select(coreIdInGroupZero, core0Vals[operandIdx],
-                 newSrcValues[srcIndex][operandIdx]);
+          selectLike(rewriter, loc, coreIdInGroupZero, core0Vals[operandIdx],
+                     newSrcValues[srcIndex][operandIdx]);
     }
   }
 
@@ -465,6 +713,9 @@ struct XPUScanOpConversion
   // Return the pointee type of the shared memory pointer for operand i.
   Type getElementType(triton::xpu::ScanOp op, int i) const {
     auto ty = getElementTypeOrSelf(op.getInputTypes()[i].getElementType());
+    // Vectorized operands: the SM partials stay scalar (one per core), so
+    // unwrap the vector element type for the scratch pointers.
+    ty = getElementTypeOrSelf(ty);
     return getTypeConverter()->convertType(ty);
   }
 
@@ -492,10 +743,14 @@ struct XPUScanOpConversion
     ScanLoweringHelper helper(op);
     SmallVector<int64_t> offsets;
 
-    auto prevSMOffset =
-        helper.getScanId() == 0
-            ? 0 // [TODO]: find reduceOp and replace the last endOffset
-            : helper.getSMOffsets(helper.getScanId() - 1)->endOffset;
+    // Same contract as the reduce twin: getSMOffsets() returns null when the
+    // predecessor id never recorded offsets (its scan was core-synchronous and
+    // so never reached this function), and setSMOffsets() already treats that
+    // as a zero offset.  [TODO]: find reduceOp and replace the last endOffset
+    unsigned prevSMOffset = 0;
+    if (helper.getScanId() != 0)
+      if (const auto *prev = helper.getSMOffsets(helper.getScanId() - 1))
+        prevSMOffset = prev->endOffset;
 
     auto loc = op.getLoc();
     // indices will store the index of the op operands in descending order
@@ -605,10 +860,16 @@ struct XPUScanOpConversion
 
       for (unsigned i = 0; i < lastElement.size();
            ++i) { // lastElement.size() == operand size
+        // Vectorized: the exchanged partial is the chunk's last lane, i.e.
+        // this core's running total. The SM partials stay scalar.
+        Value partial = lastElement[i];
+        if (auto vecTy = dyn_cast<VectorType>(partial.getType()))
+          partial = extract_element(vecTy.getElementType(), partial,
+                                    i32_val(vecTy.getNumElements() - 1));
         Value writePtr =
             gep(ptr_ty(rewriter.getContext(), 2), smemTypes[i], smemBases[i],
                 /*writeOffset*/ threadId);
-        store_sm(lastElement[i], writePtr);
+        store_sm(partial, writePtr);
       }
     }
   }
@@ -674,7 +935,10 @@ struct XPUScanOpConversion
     }
 
     // Scan contiguous elements in a thread and update `srcValues`.
-    scanThreadContiguousElements(srcValues, rewriter, helper);
+    if (helper.isVectorized())
+      scanThreadContiguousVectorElements(srcValues, rewriter, helper);
+    else
+      scanThreadContiguousElements(srcValues, rewriter, helper);
     // llvm::errs() << "\n After scanThreadContiguousElements:"
     //              << op->getParentOfType<ModuleOp>() << "\n";
     // llvm::errs() << "\n [After scanThreadContiguousElements] Dump

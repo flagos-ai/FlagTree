@@ -69,9 +69,10 @@ bool slotIsShared(unsigned h, unsigned H, bool originIsShared) {
 }
 
 std::string localMemBudgetMessage(unsigned bytes, unsigned limit) {
-  return (llvm::Twine("per-core local memory ") + llvm::Twine(bytes) +
-          " bytes exceeds the " + llvm::Twine(limit) +
-          " byte budget (min(XTDK stack limit, 8KB physical))")
+  return (llvm::Twine("kernel's per-core local memory (") + llvm::Twine(bytes) +
+          " B) exceeds the " + llvm::Twine(limit) +
+          " B budget (min(XTDK stack limit, 8KB physical)); it will not launch."
+          " Reduce the tile (shrink the tle.gpu.alloc shape / block).")
       .str();
 }
 
@@ -245,11 +246,55 @@ struct TritonXPUTLEPipelinePass
   /// Baseline footprint of `func`, split by space. LM is replicated per core so
   /// it is charged per core; an SM region is a single cluster-wide block, so it
   /// is charged 64x. Mixing the two units up mis-budgets by 64x.
+  /// Is this alloc destined for cluster shared memory?
+  ///
+  /// Two ways to tell, and at THIS point in the pipeline only the second one
+  /// works: `tritonxpu-tle-sm-alloc` (which rewrites the memdesc's space to
+  /// `#triton_xpu.smem`, so that `isSharedMemDesc` answers true) runs *after*
+  /// `tritonxpu-tle-pipeline` -- see the pass order in `backend/compiler.py`
+  /// (core-tiling -> pipeline -> legalize -> **sm-alloc**).  Until it does, a
+  /// `scope=smem` buffer still carries the default shared space and is only
+  /// identifiable by the discardable attribute the TLE frontend stamped on it
+  /// (`xpu.mem_scope = "smem"`, same marker `TLESharedMemAlloc` itself keys on).
+  ///
+  /// Missing the attribute made `collectBaseFootprint` charge every SM weight
+  /// buffer against the **LM** budget, using its pre-tiling (whole-array)
+  /// shape.  Concrete consequence seen on a large dense LayerNorm kernel: it
+  /// reports `per-core local memory (10240 B) exceeds the 8000 B budget` with
+  /// its 2 weights in SM, while the very same kernel with both weights in
+  /// LM needs only 5120 B and compiles -- i.e. moving a buffer *out* of LM made
+  /// the LM budget check fail.
+  static bool allocIsShared(LocalAllocOp alloc) {
+    if (isSharedMemDesc(alloc.getType()))
+      return true;
+    auto scope = alloc->getAttrOfType<StringAttr>("xpu.mem_scope");
+    return scope && scope.getValue() == "smem";
+  }
+
+  /// A `scope=smem` weight buffer is ONE cluster-wide copy of the whole array
+  /// (`TLESharedMemAlloc` sizes it `align64(numElems * elemBytes)` and stacks it
+  /// down from the top of SM), so it belongs in NEITHER accumulator here: this
+  /// pass's `lmBytes` / `smPerCoreBytes` are *per-core slice* units -- note the
+  /// `sm * kCoresPerCluster` in `fitBudget` -- because they describe the staged
+  /// slots the pipeline itself creates.  Charging a whole-array buffer into
+  /// `smPerCoreBytes` and then multiplying by 64 over-counts it by ~64x
+  /// (concretely: a dense LayerNorm kernel's two `[4096] fp32` weights, 32 KB
+  /// per cluster in reality, were reported as `per-cluster shared memory 524288
+  /// bytes (8192 per core x 64 cores)`).  These buffers already have their own
+  /// authoritative check at the end of `TLESharedMemAlloc` (the 128 KB staging
+  /// window above the reduce/scan scratch), and they are never pipeline
+  /// candidates, so skip them.
+  ///
+  /// ⚠️ 一致性：`collectCandidates` 必须**同样**排除这些 buffer（不能只在这里跳过、
+  /// 却又让它们进入 `fitBudget` 的 `sm -= perCoreBytes` —— `sm` 是 `unsigned`，
+  /// 从 0 减会下溢）；见 `collectCandidates` 里的显式 `return`。
   void collectBaseFootprint(triton::FuncOp func, unsigned groupSize,
                             unsigned &lmBytes, unsigned &smPerCoreBytes) {
     lmBytes = 0;
     smPerCoreBytes = 0;
     func.walk([&](LocalAllocOp alloc) {
+      if (allocIsShared(alloc) && !isSharedMemDesc(alloc.getType()))
+        return;   // cluster-wide `scope=smem` buffer -- different unit, see above
       unsigned bytes = getPerCoreBytes(alloc, groupSize);
       if (isSharedMemDesc(alloc.getType()))
         smPerCoreBytes += bytes;
@@ -392,6 +437,18 @@ struct TritonXPUTLEPipelinePass
             << "destination buffer is not a ttg.local_alloc outside the loop";
         return;
       }
+      // A cluster-wide `scope=smem` buffer (see `allocIsShared`) is ONE copy of
+      // the whole array, charged by `TLESharedMemAlloc` in **cluster** units, so
+      // it is not a budget participant here at all: `collectBaseFootprint`
+      // skips it (both accumulators) and `fitBudget` must therefore never see
+      // it either -- otherwise `sm` starts at 0 and `sm -= perCoreBytes`
+      // underflows (both are `unsigned`).  Exclude it explicitly rather than
+      // relying on the current shapes never staging an SM fill.
+      if (allocIsShared(alloc) && !isSharedMemDesc(alloc.getType())) {
+        op->emitRemark() << "cluster-wide scope=smem buffer is not a pipeline "
+                            "candidate";
+        return;
+      }
       if (fillCount.lookup(dst) > 1) {
         op->emitRemark()
             << "destination buffer is filled more than once in the loop body";
@@ -422,6 +479,9 @@ struct TritonXPUTLEPipelinePass
       }
       c.copyOp = op;
       c.allocOp = alloc;
+      // 只认 space 已改写为 `#triton_xpu.smem` 的（= 真正的 per-core slice，单位与
+      // `fitBudget` 一致）。仅带 `xpu.mem_scope` 属性的 cluster-wide buffer 在上面的
+      // 显式排除里已经 return，到不了这行。
       c.originIsShared = isSharedMemDesc(alloc.getType());
       c.perCoreBytes = getPerCoreBytes(alloc, groupSize);
       cands.push_back(std::move(c));

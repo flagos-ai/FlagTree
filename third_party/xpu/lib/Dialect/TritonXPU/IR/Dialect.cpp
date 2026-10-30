@@ -765,9 +765,40 @@ struct TritonXPUInferLayoutInterface
   inferTransOpEncoding(Attribute operandEncoding, ArrayRef<int64_t> shape,
                        ArrayRef<int32_t> order, Attribute &resultEncoding,
                        std::optional<Location> loc) const override {
-    llvm_unreachable(
-        "TODO[dyq]: Add triton::xpu::GlobalEncodingAttr Calculation Logic");
-    return failure(); // unhandled encoding
+    // [t2] Implement the derivation documented above for the XPU cluster
+    // layout: an encoding's `order` names the dims from fastest to slowest
+    // moving, so the transposed layout keeps the same relative element order
+    // and only relabels the dims:
+    //     out.order[k] = invTrans[in.order[k]]
+    // while the per-dimension fields follow the transposed dims (result dim i
+    // comes from input dim order[i]).
+    auto enc = dyn_cast<triton::xpu::ClusterLayoutAttr>(operandEncoding);
+    if (!enc)
+      return failure(); // unhandled encoding
+    if (static_cast<int64_t>(order.size()) !=
+            static_cast<int64_t>(shape.size()) ||
+        static_cast<int64_t>(enc.getOrder().size()) !=
+            static_cast<int64_t>(order.size()))
+      return emitOptionalError(loc, "rank mismatch in inferTransOpEncoding");
+    SmallVector<int64_t> invTrans(order.size());
+    for (size_t i = 0; i < order.size(); ++i)
+      invTrans[order[i]] = static_cast<int64_t>(i);
+    auto permutePerDim = [&](ArrayRef<unsigned> v) {
+      SmallVector<unsigned> r;
+      r.reserve(v.size());
+      for (int32_t d : order)
+        r.push_back(v[d]);
+      return r;
+    };
+    SmallVector<unsigned> newOrder;
+    newOrder.reserve(enc.getOrder().size());
+    for (unsigned d : enc.getOrder())
+      newOrder.push_back(static_cast<unsigned>(invTrans[d]));
+    resultEncoding = triton::xpu::ClusterLayoutAttr::get(
+        enc.getContext(), permutePerDim(enc.getSizePerCore()),
+        permutePerDim(enc.getCoresPerGroup()),
+        permutePerDim(enc.getGroupsPerCluster()), newOrder);
+    return success();
   }
 
   LogicalResult

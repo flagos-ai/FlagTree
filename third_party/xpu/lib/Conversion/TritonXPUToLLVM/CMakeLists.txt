@@ -1,5 +1,6 @@
 add_triton_library(TritonXPUToLLVM
   AllocateXPUSharedMemory.cpp
+  CombineEmit.cpp
   ConvertLayoutOpToLLVM.cpp
   ElementwiseOpToLLVM.cpp
   FuncOpToLLVM.cpp

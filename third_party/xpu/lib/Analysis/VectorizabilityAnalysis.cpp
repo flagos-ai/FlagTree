@@ -21,44 +21,32 @@ unsigned getVectorWidth(Type elemTy) {
   return 512 / elemTy.getIntOrFloatBitWidth();
 }
 
-// TLE kernels admit the COMBINE_OP_TLE_EXT kinds (int arithmetic / compares in
-// combine regions -- integer max via select(cmp), int sums). The generic path
-// keeps the historical list: widening it there changes which reduces of
-// non-TLE kernels vectorize, and the reference kernels ams tests compile with
-// are part of the parity surface. Same op-name test as the `is_tle_kernel`
-// binding, so the two can never drift apart.
-static bool moduleHasTLEOp(Operation *anyOp) {
-  ModuleOp mod = anyOp->getParentOfType<ModuleOp>();
-  if (!mod)
-    return false;
-  bool has = false;
-  mod.walk([&](Operation *op) {
-    auto name = op->getName().getStringRef();
-    if (name == "ttg.local_alloc" || name == "triton_xpu.tle_copy_g2l" ||
-        name == "triton_xpu.tle_copy_l2g" || name == "triton_xpu.tle_local_ptr")
-      has = true;
-  });
-  return has;
-}
+// The integer combine ops (int arithmetic / compares in combine regions --
+// integer max via select(cmp), int sums) are admitted for every kernel, not only TLE ones. They were gated to TLE kernels while the
+// non-TLE parity surface was unverified; that gate is lifted here -- integer
+// reductions vectorize wherever their combine region is interpretable.
 
-bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
+namespace {
+// Shared region-admission walk for reduce and scan combines. The two callers
+// differ only in the region they hand in; the admission lists and the
+// captured-operand rule are the contract Vectorize's retyping and the
+// lowering's emitter (CombineEmit.cpp) both depend on, so it lives once.
+bool regionCombineIsVectorizableImpl(Region &combine) {
   // The region lowering emits the combine region op by op
-  // (ReduceOpToLLVM::interpretCombine) instead of applying the single defining
+  // (CombineEmit.cpp interpretCombine) instead of applying the single defining
   // op of each output, so a wider set of ops has a vector form. This predicate
   // and Vectorize's retyping must widen together: that TypeSwitch ends in
   // llvm_unreachable, it does not fall back.
   bool region = reduceCombineRegionEnabled();
-  bool tleAdmit = moduleHasTLEOp(redOp.getOperation());
-  for (Block &block : redOp.getCombineOp().getBlocks())
+  for (Block &block : combine.getBlocks())
     for (auto &op : block) {
       if (region ? !isa<REDUCE_COMBINE_REGION_OP>(op)
                  : !isa<REDUCE_COMBINE_OP>(op))
-        if (!(tleAdmit && isa<COMBINE_OP_TLE_EXT>(op)))
-          return false;
+        return false;
       // A value captured from outside the region is not retyped when Vectorize
-      // retypes the region, so it would leave a vector op with a scalar
-      // operand. Constants are the exception: Vectorize rematerializes those as
-      // in-region splats.
+      // retypes the region, so it would leave a vector op with a scalar operand.
+      // Constants are the exception: Vectorize rematerializes those as in-region
+      // splats.
       for (Value operand : op.getOperands())
         if (operand.getParentBlock() != &block &&
             !operand.getDefiningOp<arith::ConstantOp>())
@@ -66,6 +54,68 @@ bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
     }
   return true;
 }
+} // namespace
+
+bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
+  // Integer max/min/sum reductions stay scalar (not vectorized): on P800
+  // vectorizing them is net-negative vs single-cycle scalar int ops -- the
+  // vectorized path converges to ~one speed and loses to the fast scalar
+  // reduction (KTC-148 A/B on i32: reduce_sum +21%, reduce_max/min +1.6%).
+  // Scoped to the single-op int add/max/min combines that were measured; other
+  // integer reductions (e.g. the and/or/xor bit reduction) keep their
+  // vectorized load.
+  Region &combine = redOp.getCombineOp();
+  Block &body = combine.front();
+  if (std::distance(body.without_terminator().begin(),
+                    body.without_terminator().end()) == 1 &&
+      isa<arith::AddIOp, arith::MaxSIOp, arith::MinSIOp, arith::MaxUIOp,
+          arith::MinUIOp>(body.front()))
+    return false;
+  // The vectorized reduce runs all operands through one common 512-bit vector
+  // encoding (512/elem-bits lanes), so they must share an element width -- the
+  // triton_xpu.reduce verifier enforces "same encoding for all operands". A
+  // mixed-width combine (argmax/argmin with an f16 value = 32 lanes beside an
+  // i32 index = 16 lanes) cannot, so keep it scalar. Equal-width reduces stay
+  // eligible and vectorize: f32/bf16 argmax (value+index both 32-bit; the
+  // compare masks lower via convertVectorType's i1 case), plain sum/max/min,
+  // fused sum+max, welford/pairmax, and the and/or/xor bit reduction.
+  unsigned elemBits = 0;
+  for (BlockArgument arg : body.getArguments()) {
+    Type elemTy = getElementTypeOrSelf(arg.getType());
+    if (!elemTy.isIntOrFloat())
+      return false;
+    unsigned bits = elemTy.getIntOrFloatBitWidth();
+    if (elemBits == 0)
+      elemBits = bits;
+    else if (bits != elemBits)
+      return false;
+  }
+  return regionCombineIsVectorizableImpl(combine);
+}
+
+bool scanCombineIsVectorizable(triton::xpu::ScanOp scanOp) {
+  // Only a SINGLE associative float op the masked Hillis-Steele lane network
+  // computes correctly: add/maxnumf/minnumf (svadd/svmax/svmin fast carry) and
+  // mulf (cumprod; interpretCombine carry). Multi-operand or non-arith combines
+  // (linear_recurrence, roll, get_first_element) computed wrong results once
+  // admitted (test_scan2d f32 regression), so they stay scalar -- same
+  // discipline as reduceCombineIsVectorizable. Gated to f32 (svsllp_f/vvor_f_mh,
+  // 16 lanes) / f16 (svsllp_hf/vvor_hf_mh, 32 lanes); bf16/i32/i64/f64 or a
+  // value+index pair (mixed width) would feed svsllp a wrong-width vector.
+  Block &body = scanOp.getCombineOp().front();
+  if (std::distance(body.without_terminator().begin(),
+                    body.without_terminator().end()) != 1 ||
+      !isa<arith::AddFOp, arith::MaxNumFOp, arith::MinNumFOp, arith::MulFOp>(
+          body.front()))
+    return false;
+  for (auto arg : body.getArguments())
+    if (!(arg.getType().isF32() || arg.getType().isF16()))
+      return false;
+  return regionCombineIsVectorizableImpl(scanOp.getCombineOp());
+}
+
+
+
 
 bool hasVectorForm(Operation *op) {
   if (!op)
@@ -87,6 +137,12 @@ VecTyCoverage processOpVecTyCoverage(Operation *op, bool allowSmemVec,
   // ExternElementwiseOp as fully covered.
   if (isa<triton::ExternElementwiseOp, arith::TruncIOp>(op))
     return VecTyCoverage::Conditional;
+  // ScanOp: the processOpVecTy Case is total (results + combine-region
+  // retype) while scanVecEnabled is on, and the closure walk vetoes the whole
+  // tree when it is off, so the kind never reaches the rewrite uncovered
+  // either way.
+  if (isa<triton::xpu::ScanOp>(op))
+    return scanVecEnabled() ? VecTyCoverage::Full : VecTyCoverage::None;
   // The one instance-aware arm. The arith::SelectOp Case builds a VSelectOp for
   // any element type, but VSelect only lowers f32/i32/f16 and is
   // `llvm_unreachable` otherwise (VectorizedOpToLLVM.cpp). The growth walk
@@ -283,6 +339,10 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
     return true;
 
   bool isVectorized = false;
+  // Marks failedOps before the walk recurses into this op's operands: if the
+  // count is unchanged at the veto below, no child was recorded and this op is
+  // itself the blocker rather than a propagator of one.
+  size_t failMark = failedOps.size();
   TypeSwitch<const Operation *>(op)
       .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { isVectorized = true; })
       .Case<triton::xpu::GM2LMMaskOp>(
@@ -373,6 +433,32 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
 
           if (!reduceCombineIsVectorizable(reduceOp))
             isVectorized = false;
+        } else {
+          isVectorized = false;
+        }
+      })
+      .Case<triton::xpu::ScanOp>([&](auto scanOp) {
+        // Unlike a reduce, a scan is width-preserving: its result must be
+        // available in vector form for the users above it, so the walk treats
+        // it as a pass-through -- gate on the same pair as the reduce (operand
+        // fit + combine region), then keep walking into the data operands so
+        // the whole store-rooted chain forms one closure. The last operand is
+        // the loop index and is skipped.
+        if (ReduceVec && scanVecEnabled() && scanOperandFits) {
+          isVectorized = true;
+          for (unsigned i = 0; i + 1 < scanOp.getOperands().size(); ++i) {
+            if (!scanOperandFits(scanOp, scanOp.getOperands()[i].getType())) {
+              isVectorized = false;
+            }
+          }
+          if (!scanCombineIsVectorizable(scanOp))
+            isVectorized = false;
+          if (isVectorized) {
+            for (unsigned i = 0; i + 1 < scanOp.getOperands().size(); ++i) {
+              if (auto *defOp = scanOp.getOperands()[i].getDefiningOp())
+                isVectorized &= vectorize(defOp, visited, vectorizedOps);
+            }
+          }
         } else {
           isVectorized = false;
         }
@@ -470,13 +556,12 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         auto fv = selectOp.getFalseValue();
         auto tType = getElementTypeOrSelf(tv.getType());
         auto fType = getElementTypeOrSelf(fv.getType());
-        // Element gate widened from a stale f16/f32-only subset to the
-        // canonical predicate -- but only for TLE kernels: an i32 masked select
-        // (max-reduce's INT_MIN fill) is just as vectorizable there. The
-        // generic path keeps the f16/f32 gate so non-TLE kernels are unchanged.
-        bool elemOK = moduleHasTLEOp(selectOp.getOperation())
-                          ? vectorizedTyValid(tType)
-                          : (tType.isF16() || tType.isF32());
+        // Element gate matches what VSelectOpConversion actually lowers -- F16,
+        // F32, i32 (the last is max-reduce's INT_MIN-fill masked select). bf16
+        // rides the f32 promotion; i8/i16 have no vector select and abort
+        // lowering, so they stay scalar. (Formerly f16/f32-only outside TLE.)
+        bool elemOK =
+            tType.isF16() || tType.isF32() || tType.isInteger(32);
         isVectorized = (tType == fType && elemOK &&
                         binLikeOpVectorize(tv, fv, visited, vectorizedOps));
       })
@@ -626,8 +711,13 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         }
       })
       .Case<arith::SIToFPOp>([&](arith::SIToFPOp unaryOp) {
-        auto inType = getElementTypeOrSelf(unaryOp.getIn().getType());
-        isVectorized = inType.isInteger(32) &&
+        Type inTy = getElementTypeOrSelf(unaryOp.getIn().getType());
+        Type outTy = getElementTypeOrSelf(unaryOp.getResult().getType());
+        // Same in/out gating as ExtF/TruncF below: VSIToFPOpConversion only
+        // lowers i32 -> f32 (one 16-lane VREG each). i32 -> f16/bf16 has no pack
+        // primitive (16 int lanes vs 32 narrow-float lanes) and would emit an
+        // invalid `sitofp vector<16xi32> to vector<32xf16>`, so it stays scalar.
+        isVectorized = inTy.isInteger(32) && outTy.isF32() &&
                        vectorize(unaryOp.getOperand().getDefiningOp(), visited,
                                  vectorizedOps);
       })
@@ -668,6 +758,10 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
       });
 
   if (!isVectorized) {
+    // Record only the intrinsic leaf: if a recursive call already appended a
+    // culprit, that child is the real blocker and this op merely propagates it.
+    if (failedOps.size() == failMark)
+      failedOps.push_back(op);
     if (dumpFlag) {
       LLVM_DEBUG({
         op->dump();
@@ -957,6 +1051,35 @@ void VectorFlowAnalysis::visit(Operation *op) {
         // Vector. That disagreement is the modelled boundary; VFlow's per-root
         // line classifies it as `kind=boundary` rather than folding it into
         // agree=1.
+      })
+      .Case<triton::xpu::ScanOp>([&](auto scanOp) {
+        // Width-preserving: when the scan admits -- the same combine-region and
+        // fit pair the closure walk gates on -- the result joins its data
+        // operand's class, so all of them retype together and no boundary
+        // exists. When it does not, only the result is pinned Scalar and the
+        // operands keep their own class: the scan's entry becomes a boundary,
+        // so a producer segment can still go Vector and end at an inserted
+        // unpack (the pre-scan-vec shape). perOpDecisionSet intersects this
+        // partition with the closure walk, so the two have to agree here --
+        // a scan admitted by the walk but Scalar here would be dropped from
+        // the rewrite set while its retyped producer breaks its verifier.
+        unsigned numData = scanOp.getOperands().size() - 1; // skip loopIndex
+        bool combineVec = scanVecEnabled() && scanCombineIsVectorizable(scanOp);
+        for (unsigned i = 0; i < numData; ++i) {
+          Value operand = scanOp.getOperands()[i];
+          Type elemTy =
+              getElementTypeOrSelf(getElementTypeOrSelf(operand.getType()));
+          bool fits = false;
+          if (elemTy.isIntOrFloat() && vectorizedTyValid(elemTy)) {
+            Fit fit = fitOracle(operand, FitQuery::WholeVectors,
+                                getVectorWidth(elemTy));
+            fits = (fit == Fit::Yes);
+          }
+          if (combineVec && fits)
+            unite(scanOp->getResult(i), operand);
+          else
+            pin(scanOp->getResult(i), VState::Scalar);
+        }
       })
       .Case<triton::xpu::UnpackOp>([&](auto unpackOp) {
         pin(unpackOp.getSrc(), VState::Vector);

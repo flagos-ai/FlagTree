@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
 from functools import reduce
-from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
+from typing import Any, Callable, Optional, TYPE_CHECKING, Union, List, Dict
 
 if TYPE_CHECKING:
     from .language import core
@@ -46,6 +47,59 @@ def find_paths_if(iterable: Union[IterableType, Any], pred: Callable[[ObjPath, A
 
 def is_power_of_two(x):
     return (x & (x - 1)) == 0
+
+
+def parse_xpu_arch(raw: Optional[str], default: Optional[int] = None) -> Optional[int]:
+    """Return ``raw`` as an architecture number, or ``default`` when it is not one.
+
+    Why: architecture values arrive as strings from more than one place -- an
+    environment variable, or an explicitly passed ``arch=`` -- and every site
+    needs the same answer for "this is not a number": treat it as absent rather
+    than raising.  get_xpu_arch() is the TRITON_XPU_ARCH-specific wrapper over
+    this; the tle raw runtime uses it directly because it iterates a
+    configurable list of variable names (TRITON_XCN_ARCH before TRITON_XPU_ARCH).
+
+    How:
+      - accept only a non-empty ASCII all-digit string, matching the full-string
+        integer parse is_xpu3_backend() documents (whitespace, underscores and
+        non-ASCII digits are rejected);
+      - return ``default`` for anything else, including None -- so a caller that
+        wants "absent" to be distinguishable passes default=None;
+      - guard the conversion too: isdigit() alone is not enough, because Python
+        3.11+ (and 3.10 with the limit enabled, which is the default) refuses a
+        digit string longer than sys.get_int_max_str_digits().
+    """
+    if raw is None or not raw.isascii() or not raw.isdigit():
+        return default
+    try:
+        return int(raw, 10)
+    except ValueError:
+        return default
+
+
+def get_xpu_arch(default: int = 3) -> int:
+    """Return TRITON_XPU_ARCH as an int, or ``default`` when it is unset or malformed.
+
+    Why: the variable is parsed in several places that each have their own
+    default (3 for the xpu backend, 4 for xcn, 5 for jupiter), but only some of
+    them guarded the conversion, so a malformed value produced a bare
+    ValueError from whichever site ran first -- for a plain ``import triton``
+    that is python/triton/backends/__init__.py.  A malformed value is not a
+    meaningful architecture, so treat it like an out-of-range one and keep the
+    caller's default: that is already what _select_xpu_backend does for an
+    unknown number (_XPU_ARCH_BACKEND.get(arch, "xpu")) and what
+    is_xpu3_backend() does for its predicate.  Never raises.
+
+    How:
+      - delegate the parse to parse_xpu_arch(), the one place that decides what
+        a malformed value means, so no caller can disagree about it;
+      - the default is the caller's, because it genuinely differs per backend.
+
+    Callers that need to distinguish "unset" from "bad value" should read
+    os.environ themselves; this helper deliberately collapses both to the
+    default, like every existing call site that used os.environ.get(..., "N").
+    """
+    return parse_xpu_arch(os.environ.get("TRITON_XPU_ARCH"), default)
 
 
 def validate_block_shape(shape: List[int]):

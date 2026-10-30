@@ -196,6 +196,7 @@ triton.TritonOverrides = XPUTritonOverrides
 # ===-------------------- For XPytorch Inductor -----------------------===
 # Modifed Base Pytorch(v2.0.1) torch/_inductor/codegen/triton.py::TritonKernel
 from xpu.backend.driver import get_xpu_spec
+from triton._utils import get_xpu_arch
 import math
 
 pexpr = PythonPrinter().doprint
@@ -226,7 +227,7 @@ class XPUTritonKernel(triton.TritonKernel):
 
         # ===-------------------- For Triton XPU -----------------------===
         from xpu.backend.driver import get_xpu_spec
-        arch = int(os.environ.get('TRITON_XPU_ARCH', '3'))
+        arch = get_xpu_arch(3)
         cluster_num = get_xpu_spec(arch)[0]
         core_num_per_cluster = get_xpu_spec(arch)[1]
         core_num = cluster_num * core_num_per_cluster
