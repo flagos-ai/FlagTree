@@ -69,7 +69,11 @@ if enabled:
     atexit.register(_cleanup_flagcx_mem_pool)
     atexit.register(_cleanup_flagcx_allocator_wrapper)
     flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
-    global comm, rank, dev_mem, dev_comm, win
+    comm = None
+    rank = None
+    dev_comm = None
+    dev_comm_dptr = None
+    _dist_resources = []
 
     flagcx_allocator_source = """
     #include <flagcx.h>
@@ -166,15 +170,28 @@ def get_mem_pool():
 
 
 def cleanup_communicator():
-    global comm, rank, dev_mem, dev_comm, win
+    global comm, dev_comm, dev_comm_dptr, _init_communicator_
+    if not enabled or not _init_communicator_:
+        return
+
+    backend_adapter.device_module.synchronize()
     dist.barrier()
-    flagcx.flagcxDevMemFreeDevicePtr(dev_mem)
-    flagcx.flagcxDevCommFreeDevicePtr(dev_comm)
-    flagcx.flagcxDevMemDestroy(comm, dev_mem)
-    flagcx.flagcxDevCommDestroy(comm, dev_comm)
-    flagcx.flagcxCommWindowDeregister(comm, win)
-    # buf_tensor memory is managed by torch, no explicit free needed
+    for win, dev_mem, buf_tensor in _dist_resources:
+        flagcx.flagcxDevMemFreeDevicePtr(dev_mem)
+    if dev_comm is not None:
+        flagcx.flagcxDevCommFreeDevicePtr(dev_comm)
+    for win, dev_mem, buf_tensor in _dist_resources:
+        flagcx.flagcxDevMemDestroy(comm, dev_mem)
+    if dev_comm is not None:
+        flagcx.flagcxDevCommDestroy(comm, dev_comm)
+    for win, dev_mem, buf_tensor in _dist_resources:
+        flagcx.flagcxCommWindowDeregister(comm, win)
     flagcx.flagcxCommDestroy(comm)
+    _dist_resources.clear()
+    comm = None
+    dev_comm = None
+    dev_comm_dptr = None
+    _init_communicator_ = False
 
     dist.destroy_process_group()
     print(f"[Rank {rank}] Done")
@@ -214,7 +231,7 @@ def init_communicator():
 
 
 def create_dist_tensor(buf_tensor):
-    global comm, rank, dev_mem, dev_comm, win
+    global dev_comm, dev_comm_dptr
     buf_ptr = buf_tensor.data_ptr()
     buf_size = buf_tensor.numel() * buf_tensor.element_size()
 
@@ -222,29 +239,34 @@ def create_dist_tensor(buf_tensor):
     win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
     print(f"[Rank {rank}] Window registered (symmetric)")
 
-    # Create DevComm with 1 intra barrier
-    reqs = flagcxDevCommRequirements()
-    reqs.intraMulticast = False
-    reqs.barrierCount = 8
-    reqs.intraBarrierCount = 8
-    reqs.interBarrierCount = 8
-    reqs.intraLLA2ABlockCount = 0
-    reqs.intraLLA2ASlotCount = 0
-    reqs.interForceEnable = False
-    reqs.interContextCount = 4
-    reqs.interSignalCount = 8
-    reqs.interCounterCount = 8
+    if dev_comm is None:
+        # All registered buffers share the communicator and its synchronization slots.
+        reqs = flagcxDevCommRequirements()
+        reqs.intraMulticast = False
+        reqs.barrierCount = 8
+        reqs.intraBarrierCount = 8
+        reqs.interBarrierCount = 8
+        reqs.intraLLA2ABlockCount = 0
+        reqs.intraLLA2ASlotCount = 0
+        reqs.interForceEnable = False
+        reqs.interContextCount = 4
+        reqs.interSignalCount = 8
+        reqs.interCounterCount = 8
 
-    dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
-    print(f"[Rank {rank}] DevComm created")
+        dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
+        print(f"[Rank {rank}] DevComm created")
+        dev_comm_dptr = flagcx.flagcxDevCommGetDevicePtr(dev_comm)
+    else:
+        print(f"[Rank {rank}] DevComm reused")
 
     # Create DevMem (with window)
     dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr, buf_size, win)
     print(f"[Rank {rank}] DevMem created")
 
-    # Get device pointers for Triton
-    dev_comm_dptr = flagcx.flagcxDevCommGetDevicePtr(dev_comm)
+    # Get the per-buffer device pointer for Triton.
     dev_mem_dptr = flagcx.flagcxDevMemGetDevicePtr(dev_mem)
+    # Keep each allocation alive until its window is deregistered.
+    _dist_resources.append((win, dev_mem, buf_tensor))
     print(f"[Rank {rank}] Device pointers: comm={dev_comm_dptr.value:#x}, "
           f"mem={dev_mem_dptr.value:#x}")
 
