@@ -5,9 +5,8 @@ cuda==13.0
 vllm==0.24.0
 torch==2.11.0+cu130
 flashinfer-python==0.6.12
-flagcx==0.14.0rc2.post2+cuda13.3
 
-[2026/10/29] vllm-plugin-fl==0.3.0rc0 (2026/08/21), flag_gems==5.4.0 (2026/09/22), flagtree===0.7.0 (2026/09/23)
+[2026/10/29] vllm-plugin-fl==0.3.0rc0 (2026/08/21), flagcx==0.14.0rc2.post2+cuda13.3(2026/09/21), flag_gems==5.4.0 (2026/09/22), flagtree===0.7.0 (2026/09/23)
 # 服务冷启动时间: 14分21秒, 服务热启动时间: 1分30秒
 # 输入长度: 32K, 输出长度: 1K, 并发数: 16
   Output token throughput (tok/s): 50.97
