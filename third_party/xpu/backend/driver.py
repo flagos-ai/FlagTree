@@ -555,6 +555,8 @@ def make_launcher(constants, signature, ids, metadata):
     # and injected at device-launch time (see device/xpu3/launch.cpp), so they
     # must NOT be passed via the python launcher either.
     signature = {i: ty for i, ty in signature.items() if ty != "constexpr"}
+    if getattr(metadata, "flagcx_implicit_args", False):
+        signature = {0: "i64", 1: "i64", **{i + 2: ty for i, ty in enumerate(signature.values())}}
 
     # TensorDescType is lowered to a single ptr<1> in the LLVM kernel (no
     # multi-arg expansion). Map "tensordesc<...>" to a pointer type in the
@@ -972,6 +974,7 @@ class XPULauncher(object):
         # rank .strides (i64) follow the base pointer -- the old unconditional SDNN-style
         # expansion doubled the args and zeroed the trailing grid params.
         self._is_sdnn = bool(getattr(metadata, "is_sdnn", False))
+        self._implicit_dist = bool(getattr(metadata, "flagcx_implicit_args", False))
         src = make_launcher(constants, signature, ids, metadata)
         mod = compile_module_from_src(src, "__triton_launcher_xpu", metadata.xpu_arch)
         self.launch = mod.launch
@@ -1008,6 +1011,10 @@ class XPULauncher(object):
                 expanded.extend(arg.strides)  # .strides, i64
             else:
                 expanded.append(arg)
+        if self._implicit_dist:
+            from triton.backends.xpu.distributed import get_implicit_context
+            ctx = get_implicit_context()
+            expanded[:0] = [int(ctx.comm_ptr), int(ctx.mem_ptr)]
         self.launch(*fixed, *expanded)
 
 

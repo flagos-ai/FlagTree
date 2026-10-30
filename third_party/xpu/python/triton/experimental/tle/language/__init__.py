@@ -6,27 +6,30 @@ from . import dsa
 from . import gpu
 from . import raw
 from .dsa.pipe import pipe
+from .distributed import (B, P, S, MeshConfig, ShardedTensor, ShardingSpec, _get_local_rank, device_mesh,
+                          distributed_barrier, make_sharded_tensor, n_pes, remote, sharding, shard_id)
 
+__all__ = [
+    "gpu", "dsa", "pipe", "raw", "MeshConfig", "device_mesh", "B", "S", "P", "sharding", "ShardingSpec",
+    "ShardedTensor", "make_sharded_tensor", "distributed_barrier", "shard_id", "n_pes", "remote"
+]
 
-def device_mesh(*args, **kwargs):
-    raise NotImplementedError("tle.device_mesh is not implemented for the XPU TLE backend")
+from triton.backends.xpu.distributed import (clear_implicit_context, flagcx_rt_conf, register_implicit_context)
 
+if flagcx_rt_conf.is_available:
+    from . import communication
+    from .communication import get_mem_pool
 
-def distributed_barrier(*args, **kwargs):
-    raise NotImplementedError("tle.distributed_barrier is not implemented for the XPU TLE backend")
+    def create_dist_tensor(buf_tensor):
+        ctx = communication.create_dist_tensor(buf_tensor)
+        ctx.register_buffer(buf_tensor)
+        register_implicit_context(ctx)
+        return ctx
 
+    def cleanup_communicator():
+        try:
+            communication.cleanup_communicator()
+        finally:
+            clear_implicit_context()
 
-def shard_id(*args, **kwargs):
-    raise NotImplementedError("tle.shard_id is not implemented for the XPU TLE backend")
-
-
-def remote(*args, **kwargs):
-    raise NotImplementedError("tle.remote is not implemented for the XPU TLE backend")
-
-
-for _fn in [device_mesh, distributed_barrier, shard_id, remote]:
-    _fn.__triton_builtin__ = True
-
-del _fn
-
-__all__ = ["gpu", "dsa", "pipe", "device_mesh", "distributed_barrier", "shard_id", "remote", "raw"]
+    __all__ += ["get_mem_pool", "create_dist_tensor", "cleanup_communicator"]

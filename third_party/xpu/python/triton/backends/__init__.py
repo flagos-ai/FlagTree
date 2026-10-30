@@ -68,9 +68,15 @@ def _discover_backends() -> dict[str, Backend]:
     if skip_entrypoints_env == "1":
         root = os.path.dirname(__file__)
         for name in os.listdir(root):
-            if not os.path.isdir(os.path.join(root, name)):
+            backend_dir = os.path.join(root, name)
+            if not os.path.isdir(backend_dir):
                 continue
             if name.startswith('__'):
+                continue
+            # Only dirs that actually ship a compiler/driver pair are backends.
+            # Non-backend package dirs (e.g. `_tables`) must be skipped.
+            if not (os.path.isfile(os.path.join(backend_dir, "compiler.py"))
+                    and os.path.isfile(os.path.join(backend_dir, "driver.py"))):
                 continue
             compiler = importlib.import_module(f"triton.backends.{name}.compiler")
             driver = importlib.import_module(f"triton.backends.{name}.driver")

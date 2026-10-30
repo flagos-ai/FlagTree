@@ -21,7 +21,6 @@ mlir_tablegen(AttrInterfaces.h.inc -gen-attr-interface-decls)
 mlir_tablegen(AttrInterfaces.cpp.inc -gen-attr-interface-defs)
 add_public_tablegen_target(TritonXPUTableGen)
 
-
 set(LLVM_TARGET_DEFINITIONS TritonXPUAttrDefs.td)
 mlir_tablegen(TritonXPUAttrInterfaces.h.inc -gen-attr-interface-decls) # TritonXPU_AttrTrait
 mlir_tablegen(TritonXPUAttrInterfaces.cpp.inc -gen-attr-interface-defs)

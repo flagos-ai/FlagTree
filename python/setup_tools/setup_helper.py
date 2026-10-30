@@ -39,7 +39,7 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
-FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar", "xpu"}
 
 
 def get_console_colors() -> Tuple[str, str]:

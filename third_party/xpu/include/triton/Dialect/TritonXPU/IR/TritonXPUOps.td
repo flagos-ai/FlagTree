@@ -800,4 +800,32 @@ def TTX_RawOp : TTX_Op<"raw", []> {
     }];
 }
 
+def TTX_GetDeviceIdOp : TTX_Op<"get_device_id", [Pure]> {
+  let arguments = (ins Optional<I64>:$comm);
+  let results = (outs I32:$result);
+}
+
+def TTX_GetLocalRankOp : TTX_Op<"get_local_rank", [Pure]> {
+  let arguments = (ins I64:$comm);
+  let results = (outs I32:$result);
+}
+
+def TTX_GetNumPesOp : TTX_Op<"get_num_pes", [Pure]> {
+  let arguments = (ins I64:$comm);
+  let results = (outs I32:$result);
+}
+
+def TTX_DistributedBarrierOp : TTX_Op<"distributed_barrier"> {
+  let arguments = (ins I64:$comm, StrAttr:$kind, I32Attr:$coopKind,
+                   I32Attr:$barrierIndex, I32Attr:$order);
+  let hasVerifier = 1;
+}
+
+def TTX_RemotePointerOp : TTX_Op<"remote_pointer", [Pure]> {
+  let arguments = (ins I64:$memory, I32:$peer, I64:$offset,
+                   I32Attr:$elementBytes);
+  let results = (outs TT_Ptr:$result);
+  let hasVerifier = 1;
+}
+
 #endif // TRITONXPU_OPS

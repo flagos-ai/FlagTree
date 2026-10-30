@@ -919,6 +919,34 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self) -> ModuleOp {
              return self.create<ModuleOp>();
            })
+      .def("get_device_id",
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> comm) -> Value {
+             return self.create<triton::xpu::GetDeviceIdOp>(
+                 resultTy, comm.value_or(Value()));
+           })
+      .def("get_n_pes",
+           [](TritonOpBuilder &self, Type resultTy, Value comm) -> Value {
+             return self.create<triton::xpu::GetNumPesOp>(resultTy, comm);
+           })
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self, Value comm, std::string kind,
+              int32_t coopKind, int32_t barrierIndex, int32_t order) {
+             auto &builder = self.getBuilder();
+             self.create<triton::xpu::DistributedBarrierOp>(
+                 comm, builder.getStringAttr(kind),
+                 builder.getI32IntegerAttr(coopKind),
+                 builder.getI32IntegerAttr(barrierIndex),
+                 builder.getI32IntegerAttr(order));
+           })
+      .def("create_remote_pointers",
+           [](TritonOpBuilder &self, Type resultTy, Value memory, Value peer,
+              Value offset, int32_t elementBytes) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<triton::xpu::RemotePointerOp>(
+                 resultTy, memory, peer, offset,
+                 builder.getI32IntegerAttr(elementBytes));
+           })
       // insertion block/point
       .def("set_insertion_point_to_start",
            [](TritonOpBuilder &self, Block &block) -> void {
