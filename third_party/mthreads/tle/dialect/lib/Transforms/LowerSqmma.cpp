@@ -218,9 +218,10 @@ inferTransposeSourceType(ttg::MemDescTransOp trans, ttg::MemDescType targetTy) {
                                sourceTy.getMutableMemory(), sourceAllocShape);
 }
 
-static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
-                                         unsigned operandIdx,
-                                         ttg::MUSASqmmaEncodingAttr mmaEnc) {
+static LogicalResult updateOperandLayout(
+    musa_tle::SqmmaOp op, unsigned operandIdx,
+    ttg::MUSASqmmaEncodingAttr mmaEnc,
+    DenseMap<Operation *, ttg::MemDescType> &physicalRootTypes) {
   Value operand = operandIdx == 0 ? op.getA() : op.getB();
   auto operandTy = cast<ttg::MemDescType>(operand.getType());
   int64_t elemBytes =
@@ -291,6 +292,11 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
       ttg::MemDescType::get(rootTy.getShape(), rootTy.getElementType(),
                             rootEncoding, rootTy.getMemorySpace(),
                             rootTy.getMutableMemory(), rootTy.getAllocShape());
+  auto [rootIt, inserted] =
+      physicalRootTypes.try_emplace(root.getOperation(), newRootTy);
+  if (!inserted && rootIt->second != newRootTy)
+    return op.emitOpError(
+        "SQMMA consumers require incompatible physical shared layouts");
   // A rank-preserving operand slice (for example B[64, 256] viewed as two
   // B[64, 128] tiles) must not shrink the stage returned by memdesc_index.
   // Build that stage from the root allocation and reserve landingTy for the
@@ -346,9 +352,11 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
     musa::setSqmmaAttrs(target, operandIdx, elemBytes, rowMajor);
     return success();
   };
-  if (failed(checkAndSet(root.getOperation())) ||
-      failed(checkAndSet(landing.getDefiningOp())) ||
-      failed(checkAndSet(operand.getDefiningOp())))
+  // The final view owns the logical operand contract. A staged allocation can
+  // serve both K^T and V when their physical shared layouts are identical.
+  // Propagating that view's row/column contract to the root would reject this
+  // valid reuse even though no data needs to move.
+  if (failed(checkAndSet(operand.getDefiningOp())))
     return failure();
 
   // Keep stage views and warp-specialize explicit captures type-consistent.
@@ -363,7 +371,6 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
         return;
       if (index.getResult().getType() != stageTy) {
         index.getResult().setType(stageTy);
-        (void)checkAndSet(index.getOperation());
         changed = true;
       }
     });
@@ -906,9 +913,12 @@ struct TritonMUSAGPUTLELowerSqmmaPass
     }
 
     // Infer all physical layouts before replacing any TLE SQMMA op.
+    DenseMap<Operation *, ttg::MemDescType> physicalRootTypes;
     for (musa_tle::SqmmaOp dot : dots) {
-      if (failed(updateOperandLayout(dot, 0, encodings[dot])) ||
-          failed(updateOperandLayout(dot, 1, encodings[dot])))
+      if (failed(
+              updateOperandLayout(dot, 0, encodings[dot], physicalRootTypes)) ||
+          failed(
+              updateOperandLayout(dot, 1, encodings[dot], physicalRootTypes)))
         return signalPassFailure();
     }
 
