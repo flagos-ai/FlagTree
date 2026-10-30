@@ -94,6 +94,14 @@ try:
 except ImportError:
     pass
 
+try:
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND == "hcu":
+        from .hcu import HCUJITFunction
+        registry["hcu"] = HCUJITFunction
+except ImportError:
+    pass
+
 
 def dialect(
     *,
