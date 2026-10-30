@@ -295,6 +295,8 @@ class CUDABackend(BaseBackend):
             # Logical copy planning needs the CTA warp count before TTGPU conversion.
             mod.set_attr("ttg.num-warps", ir.builder(mod.context).get_int32_attr(opt.num_warps))
             tle.passes.add_plan_logical_domains(pm)
+        # custom-types: lower !tt.struct/!tt.array to byte offsets before leaving TTIR.
+        passes.ttir.add_lower_structs(pm)
         pm.run(mod, 'make_ttir')
         return mod
 

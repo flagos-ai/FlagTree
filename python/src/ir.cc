@@ -1147,6 +1147,22 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Type &type, int addrSpace) -> Type {
              return PointerType::get(type, addrSpace);
            })
+      .def("get_array_ty",
+           [](TritonOpBuilder &self, Type &elementType, int64_t count) -> Type {
+             return ArrayType::get(self.getContext(), elementType, count);
+           })
+      .def("get_struct_ty",
+           [](TritonOpBuilder &self, std::vector<std::string> &fieldNames,
+              std::vector<Type> &fieldTypes, std::vector<int64_t> &fieldOffsets,
+              int64_t size, int64_t align) -> Type {
+             auto *ctx = self.getContext();
+             SmallVector<StringAttr> names;
+             names.reserve(fieldNames.size());
+             for (auto &name : fieldNames)
+               names.push_back(StringAttr::get(ctx, name));
+             return StructType::get(ctx, names, fieldTypes, fieldOffsets, size,
+                                    align);
+           })
       .def("get_block_ty",
            [](TritonOpBuilder &self, Type &elementType,
               std::vector<int64_t> &shape) -> Type {
@@ -1468,6 +1484,26 @@ void init_triton_ir(py::module &&m) {
       .def("create_addptr",
            [](TritonOpBuilder &self, Value &ptr, Value &offset) -> Value {
              return self.create<AddPtrOp>(ptr.getType(), ptr, offset);
+           })
+      .def("create_struct_gep",
+           [](TritonOpBuilder &self, Value &ptr,
+              const std::string &field) -> Value {
+             auto ptrTy = cast<PointerType>(ptr.getType());
+             auto structTy = cast<StructType>(ptrTy.getPointeeType());
+             int64_t index = structTy.getFieldIndex(field);
+             assert(index >= 0 && "unknown struct field");
+             auto resTy = PointerType::get(structTy.getFieldTypes()[index],
+                                           ptrTy.getAddressSpace());
+             auto fieldAttr = StringAttr::get(self.getContext(), field);
+             return self.create<StructGepOp>(resTy, ptr, fieldAttr);
+           })
+      .def("create_array_gep",
+           [](TritonOpBuilder &self, Value &ptr, Value &index) -> Value {
+             auto ptrTy = cast<PointerType>(ptr.getType());
+             auto arrTy = cast<ArrayType>(ptrTy.getPointeeType());
+             auto resTy = PointerType::get(arrTy.getElementType(),
+                                           ptrTy.getAddressSpace());
+             return self.create<ArrayGepOp>(resTy, ptr, index);
            })
       // Comparison (int)
       .def("create_icmpSLE",

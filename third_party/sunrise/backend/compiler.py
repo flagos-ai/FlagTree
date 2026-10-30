@@ -204,6 +204,8 @@ class SunriseBackend(BaseBackend):
         passes.ttir.add_triton_licm(pm)
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
+        # custom-types: lower !tt.struct/!tt.array to byte offsets before leaving TTIR.
+        passes.ttir.add_lower_structs(pm)
         pm.run(mod, 'make_ttir')
         return mod
 

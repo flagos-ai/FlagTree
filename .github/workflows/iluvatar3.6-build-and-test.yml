@@ -138,6 +138,7 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/test_filecheck.py
           pytest third_party/iluvatar/python/test/unit/test_knobs.py
           UMD_CUDAMODULELOADING=0 pytest third_party/iluvatar/python/test/unit/test_link.py
+          pytest python/test/unit/language/test_custom_types.py
           pytest third_party/iluvatar/python/test/unit/test_perf_warning.py
 
           # triton regression test

@@ -99,3 +99,4 @@ jobs:
           python3 -m pytest third_party/sunrise/python/test/07-tle-load.py
           python3 -m pytest third_party/sunrise/python/test/08-tle-dot-local-ptr.py
           python3 -m pytest third_party/sunrise/python/test/09-tle-negative-contract.py
+          python3 -m pytest -s python/test/unit/language/test_custom_types.py

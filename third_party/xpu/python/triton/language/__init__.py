@@ -279,7 +279,23 @@ __all__ = [
     "xor_sum",
     "zeros",
     "zeros_like",
+    "struct_type",
 ]
+
+
+def struct_type(cls=None):
+    """custom struct/array types are not supported on this backend.
+
+    xpu ships its own copy of the frontend, so the check in the shared
+    ``triton.language._custom_types`` module (which the shared
+    ``language/__init__.py`` exports ``struct_type`` from) never runs here.
+    This stub keeps the failure explicit instead of an AttributeError.
+    See docs/custom-types/RFC.md ("Backend support").
+    """
+    from triton.language._custom_types import check_backend_supported
+    check_backend_supported()
+    raise RuntimeError("custom struct/array types are not supported on this backend; "
+                       "see docs/custom-types/RFC.md (\"Backend support\")")
 
 
 def str_to_ty(name, c):
