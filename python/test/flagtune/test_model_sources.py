@@ -41,7 +41,7 @@ def test_default_manifest_url(monkeypatch):
     monkeypatch.delenv("FLAGTUNE_MANIFEST_URL", raising=False)
 
     assert model_sources._manifest_url() == ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
-                                             "flagtune-xgb-manifest-v1.0.0.tar.gz")
+                                             "flagtune-xgb-manifest-v1.1.0.tar.gz")
 
 
 def manifest_with(entry, *, platform_key=PLATFORM_KEY):

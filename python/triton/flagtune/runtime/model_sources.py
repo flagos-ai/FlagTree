@@ -59,7 +59,7 @@ _MANIFEST_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 _MANIFEST_MAX_MEMBER_BYTES = 4 * 1024 * 1024
 _DEFAULT_MANIFEST_TTL = 24 * 60 * 60
 _DEFAULT_MANIFEST_URL = ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
-                         "flagtune-xgb-manifest-v1.0.0.tar.gz")
+                         "flagtune-xgb-manifest-v1.1.0.tar.gz")
 
 
 @dataclass(frozen=True)
