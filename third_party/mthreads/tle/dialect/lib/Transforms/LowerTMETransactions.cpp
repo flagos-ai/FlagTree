@@ -2,6 +2,7 @@
 
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "MUSATLE/Transforms/PipePartitionUtils.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 
@@ -36,7 +37,7 @@ resolveIssueThread(ttmg::AsyncTMECopyGlobalToLocalOp copy) {
   // Only the marked MUSA TLE static warp-specialize path uses arbitrary
   // default/worker partition starts.
   auto ws = copy->getParentOfType<ttg::WarpSpecializeOp>();
-  if (ws && !ws->hasAttr("musa_tle.static_warp_specialize")) {
+  if (ws && !ws->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr)) {
     Region *copyRegion = copy->getParentRegion();
     if (ws.getDefaultRegion().isAncestor(copyRegion))
       return copy.emitOpError(
