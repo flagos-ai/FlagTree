@@ -160,6 +160,27 @@ def test_pipe_mixed_readers_drain_before_peer_wait_and_exit(mode):
         assert torch.count_nonzero(local_out[local_tiles * block:]).item() == 0
 
 
+@pytest.mark.parametrize("capacity,depth,block,specialized", [(2, 2, 512, True), (3, 2, 512, True), (4, 3, 256, False),
+                                                              (4, 3, 1024, True)])
+def test_pipe_fifo_specialization_preserves_overflow_fallback(capacity, depth, block, specialized):
+    n_tiles = 7
+    x = torch.randn(n_tiles * block, device="cuda")
+    local_out, remote_out = torch.zeros_like(x), torch.zeros_like(x)
+    # Compile the boundary without executing its billions of iterations. Both
+    # bounds are odd, so the ordinary run uses the same specialization key.
+    ck = _mixed_copy_kernel.warmup(x, local_out, remote_out, 2**31 - 1, capacity, depth, block, grid=(1, ), num_warps=4)
+    bound = f"arith.constant {2**31 - 1 - depth} : i32"
+    assert (bound in ck.asm["ttgir"]) == specialized
+    if specialized:
+        assert "arith.cmpi sle" in ck.asm["ttgir"]
+        assert "iter_args" in ck.asm["ttgir"]  # The general FIFO remains available.
+    executed = _mixed_copy_kernel[(1, )](x, local_out, remote_out, n_tiles, capacity, depth, block, num_warps=4)
+    assert executed.hash == ck.hash
+    torch.cuda.synchronize()
+    torch.testing.assert_close(local_out, 2 * x)
+    torch.testing.assert_close(remote_out, 3 * x)
+
+
 # ---------------------------------------------------------------- ring: register-store payload
 
 

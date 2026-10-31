@@ -48,11 +48,13 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/Support/MathExtras.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
@@ -700,6 +702,8 @@ public:
   }
 
   void lowerDeferred(Region &region) {
+    if (lowerRegularSchedule(region))
+      return;
     OpBuilder builder(&region.front(), region.front().begin());
     Location loc = pipe.create.getLoc();
     Pending pending{i32Const(builder, loc, 0), i32Const(builder, loc, 0)};
@@ -710,6 +714,201 @@ public:
   }
 
 private:
+  // Guarding a second schedule can outweigh the saved queue control for small
+  // four-stage transfers. Require at least 16 payload bytes per writer thread
+  // at that capacity; smaller queues also benefit on narrow transfers.
+  bool shouldSpecializeFifo() {
+    if (pipe.capacity < 4)
+      return true;
+    uint64_t bits = 0;
+    for (Value field : pipe.create.getFields()) {
+      auto type = cast<ttg::MemDescType>(field.getType());
+      if (!isa<IntegerType, FloatType>(type.getElementType()))
+        return false;
+      uint64_t fieldBits = type.getElementType().getIntOrFloatBitWidth();
+      for (int64_t dim : type.getShape().drop_front())
+        fieldBits = llvm::SaturatingMultiply(fieldBits, uint64_t(dim));
+      bits = llvm::SaturatingAdd(bits, fieldBits);
+    }
+    return bits >= uint64_t(pipe.writerThreads) * 128;
+  }
+
+  // Recognize a bounded prefetch followed by consume/refill in FIFO order.
+  // The loop bounds prove every committed stage is consumed exactly once, so
+  // its wait distance needs no dynamic queue or slot-membership checks.
+  bool lowerRegularSchedule(Region &region) {
+    if (!shouldSpecializeFifo())
+      return false;
+    SmallVector<scf::ForOp> loops;
+    for (Operation &op : region.front())
+      if (auto loop = dyn_cast<scf::ForOp>(op))
+        loops.push_back(loop);
+    if (region.front().getTerminator()->getNumOperands() || loops.size() != 2)
+      return false;
+    auto prefetch = loops[0], consume = loops[1];
+    for (auto loop : loops)
+      if (loop.getUnsignedCmp() || getConstantI32(loop.getLowerBound()) != 0 ||
+          getConstantI32(loop.getStep()) != 1)
+        return false;
+    auto bound = prefetch.getUpperBound().getDefiningOp<arith::MinSIOp>();
+    if (!bound)
+      return false;
+    Value limit = consume.getUpperBound();
+    if (!limit.getType().isInteger(32))
+      return false;
+    Value depthValue =
+        bound.getLhs() == limit ? bound.getRhs() : bound.getLhs();
+    auto depth = getConstantI32(depthValue);
+    if ((bound.getLhs() != limit && bound.getRhs() != limit) || !depth ||
+        *depth < 1 || *depth > pipe.capacity)
+      return false;
+
+    SmallVector<Operation *> endpoints;
+    for (Operation *op : pipe.ops)
+      if (getPartition(op) == pipe.writer->partition)
+        endpoints.push_back(op);
+    if (endpoints.size() != 6)
+      return false;
+    tle::PipeWriterAcquireOp initialAcquire, refillAcquire;
+    tle::PipeWriterCommitOp initialCommit, refillCommit;
+    tle::PipeReaderWaitOp readerWait;
+    tle::PipeReaderReleaseOp readerRelease;
+    for (Operation *op : endpoints) {
+      if (auto acquire = dyn_cast<tle::PipeWriterAcquireOp>(op)) {
+        if (op->getBlock() == prefetch.getBody())
+          initialAcquire = acquire;
+        else
+          refillAcquire = acquire;
+      } else if (auto commit = dyn_cast<tle::PipeWriterCommitOp>(op)) {
+        if (op->getBlock() == prefetch.getBody())
+          initialCommit = commit;
+        else
+          refillCommit = commit;
+      } else if (auto wait = dyn_cast<tle::PipeReaderWaitOp>(op))
+        readerWait = wait;
+      else if (auto release = dyn_cast<tle::PipeReaderReleaseOp>(op))
+        readerRelease = release;
+    }
+    if (!initialAcquire || !initialCommit || !refillAcquire || !refillCommit ||
+        !readerWait || !readerRelease ||
+        readerWait->getBlock() != consume.getBody() ||
+        readerRelease->getBlock() != consume.getBody() ||
+        &readerOf(readerWait) != &readerOf(readerRelease))
+      return false;
+    auto refill = dyn_cast<scf::IfOp>(refillAcquire->getParentOp());
+    if (!refill || refill->getBlock() != consume.getBody() ||
+        refillAcquire->getBlock() != &refill.getThenRegion().front() ||
+        refillCommit->getBlock() != refillAcquire->getBlock() ||
+        !initialAcquire->isBeforeInBlock(initialCommit) ||
+        !refillAcquire->isBeforeInBlock(refillCommit) ||
+        !readerWait->isBeforeInBlock(readerRelease) ||
+        !readerRelease->isBeforeInBlock(refill))
+      return false;
+    auto condition = refill.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!condition || condition.getPredicate() != arith::CmpIPredicate::slt ||
+        condition.getRhs() != limit)
+      return false;
+    Value next = condition.getLhs();
+    auto increment = next.getDefiningOp<arith::AddIOp>();
+    if (!increment || !((increment.getLhs() == consume.getInductionVar() &&
+                         getConstantI32(increment.getRhs()) == depth) ||
+                        (increment.getRhs() == consume.getInductionVar() &&
+                         getConstantI32(increment.getLhs()) == depth)))
+      return false;
+    auto matchesStage = [&](Value stage, Value position) {
+      if (auto rem = stage.getDefiningOp<arith::RemSIOp>())
+        return rem.getLhs() == position &&
+               getConstantI32(rem.getRhs()) == pipe.capacity;
+      if (auto mask = stage.getDefiningOp<arith::AndIOp>())
+        return llvm::isPowerOf2_64(pipe.capacity) &&
+               mask.getLhs() == position &&
+               getConstantI32(mask.getRhs()) == pipe.capacity - 1;
+      return false;
+    };
+    if (!matchesStage(initialAcquire.getStage(), prefetch.getInductionVar()) ||
+        !matchesStage(initialCommit.getStage(), prefetch.getInductionVar()) ||
+        !matchesStage(readerWait.getStage(), consume.getInductionVar()) ||
+        !matchesStage(readerRelease.getStage(), consume.getInductionVar()) ||
+        !matchesStage(refillAcquire.getStage(), next) ||
+        !matchesStage(refillCommit.getStage(), next))
+      return false;
+
+    bool safe = true;
+    region.walk([&](Operation *op) {
+      if ((op->getNumRegions() && op != prefetch && op != consume &&
+           op != refill) ||
+          isa<ttng::NamedBarrierWaitOp, tt::AtomicRMWOp, tt::AtomicCASOp>(op) ||
+          (isa<tt::LoadOp>(op) && cast<tt::LoadOp>(op).getIsVolatile()))
+        safe = false;
+      if (isa<ttg::AsyncCopyGlobalToLocalOp>(op)) {
+        auto acquire = op->getBlock() == prefetch.getBody() ? initialAcquire
+                                                            : refillAcquire;
+        auto commit =
+            op->getBlock() == prefetch.getBody() ? initialCommit : refillCommit;
+        if (op->getBlock() != acquire->getBlock() ||
+            !acquire->isBeforeInBlock(op) || !op->isBeforeInBlock(commit))
+          safe = false;
+      }
+    });
+    if (!safe)
+      return false;
+
+    // The refill expression is signed i32 addition. Above this bound it may
+    // wrap, so preserve the general lowering instead of assuming small inputs.
+    OpBuilder guardBuilder(prefetch);
+    Location guardLoc = prefetch.getLoc();
+    Value bounded = arith::CmpIOp::create(
+        guardBuilder, guardLoc, arith::CmpIPredicate::sle, limit,
+        i32Const(guardBuilder, guardLoc, INT32_MAX - *depth));
+    auto schedules =
+        scf::IfOp::create(guardBuilder, guardLoc, TypeRange{}, bounded, true);
+    Block &fast = schedules.getThenRegion().front();
+    Block &general = schedules.getElseRegion().front();
+    IRMapping mapping;
+    SmallVector<Operation *> suffix;
+    for (Operation *op = prefetch; !op->hasTrait<OpTrait::IsTerminator>();
+         op = op->getNextNode())
+      suffix.push_back(op);
+    OpBuilder fallback(general.getTerminator());
+    for (Operation *op : suffix)
+      fallback.clone(*op, mapping);
+    for (Operation *op : suffix)
+      op->moveBefore(fast.getTerminator());
+    // No publications precede the prefetch, and the fast schedule consumes
+    // each committed group once. The fallback retains the original queue,
+    // reuse checks, blocking-operation drains and exit drain.
+    OpBuilder pendingBuilder(&general, general.begin());
+    Pending pending{i32Const(pendingBuilder, guardLoc, 0),
+                    i32Const(pendingBuilder, guardLoc, 0)};
+    pending = lowerDeferredBlock(general, pending);
+    pendingBuilder.setInsertionPoint(general.getTerminator());
+    drainIfPending(pendingBuilder, general.getTerminator(), pending);
+
+    OpBuilder b(readerWait);
+    Location loc = readerWait.getLoc();
+    Value remaining =
+        arith::SubIOp::create(b, loc, limit, consume.getInductionVar());
+    remaining = arith::SubIOp::create(b, loc, remaining, i32Const(b, loc, 1));
+    Value keep =
+        arith::MinSIOp::create(b, loc, remaining, i32Const(b, loc, *depth - 1));
+    waitCopies(b, loc, keep, *depth);
+    currentOp = readerWait;
+    publish(b, loc, readerWait.getStage());
+    for (auto loop : loops)
+      loop->setAttr("tt.num_stages", b.getI32IntegerAttr(1));
+    for (Operation *op : endpoints) {
+      if (isa<tle::PipeWriterCommitOp>(op)) {
+        b.setInsertionPoint(op);
+        ttg::AsyncCommitGroupOp::create(
+            b, op->getLoc(), ttg::AsyncTokenType::get(b.getContext()),
+            ValueRange{});
+        op->erase();
+      } else
+        lower(op);
+    }
+    return true;
+  }
+
   // Up to four stages, packed into two bits each, oldest in the low bits.
   struct Pending {
     Value count;
@@ -740,15 +939,17 @@ private:
   }
 
   // Emit only constant wait counts, as required by cp.async.wait_group.
-  void waitCopies(OpBuilder &b, Location loc, Value keep) {
-    forStage(b, loc, keep, pipe.capacity, [&](OpBuilder &nested, int64_t n) {
-      auto wait = ttg::AsyncWaitOp::create(
-          nested, loc, ttg::AsyncTokenType::get(b.getContext()), ValueRange{},
-          nested.getI32IntegerAttr(n));
-      // The queue crosses structured joins through scalar registers rather
-      // than async tokens. updateWaits cannot reconstruct its distance.
-      wait->setAttr("ppugpu.pipe_wait", nested.getUnitAttr());
-    });
+  void waitCopies(OpBuilder &b, Location loc, Value keep, int64_t counts = 0) {
+    forStage(b, loc, keep, counts ? counts : pipe.capacity,
+             [&](OpBuilder &nested, int64_t n) {
+               auto wait = ttg::AsyncWaitOp::create(
+                   nested, loc, ttg::AsyncTokenType::get(b.getContext()),
+                   ValueRange{}, nested.getI32IntegerAttr(n));
+               // The queue crosses structured joins through scalar registers
+               // rather than async tokens. updateWaits cannot reconstruct its
+               // distance.
+               wait->setAttr("ppugpu.pipe_wait", nested.getUnitAttr());
+             });
   }
 
   // Complete the oldest `count - keep` groups and publish exactly those slots.
@@ -848,7 +1049,8 @@ private:
         init.append({pending.count, pending.stages});
         auto replacement =
             scf::ForOp::create(b, loc, loop.getLowerBound(),
-                               loop.getUpperBound(), loop.getStep(), init);
+                               loop.getUpperBound(), loop.getStep(), init,
+                               /*bodyBuilder=*/nullptr, loop.getUnsignedCmp());
         replacement->setAttrs(loop->getAttrs());
         // This explicit schedule owns the writer's copy groups. Later automatic
         // pipelining must not insert untracked groups between them.
