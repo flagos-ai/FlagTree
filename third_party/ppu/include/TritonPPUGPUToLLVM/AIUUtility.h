@@ -24,6 +24,8 @@
 #ifndef TRITON_CONVERSION_TRITONPPUGPU_TO_LLVM_AIU_UTILITY_H
 #define TRITON_CONVERSION_TRITONPPUGPU_TO_LLVM_AIU_UTILITY_H
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 
 namespace mlir {
@@ -136,6 +138,63 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
     assert(false && "Unknown PPU AIU version");
   }
   return {};
+}
+
+// The PPU0010 AIU descriptor has no row stride: the 2d form copies from a dense
+// [X, Z] tensor and the 3d form from a dense [Y, X, Z] tensor, whose sizes are
+// 15-bit fields, and both zero fill out of bounds. Rows that are S elements
+// apart are copied as the 2d tensor [rows, S] when nothing past the row length
+// V has to be zero filled, and as the 3d tensor [rows, S / V, V] at x = 0
+// otherwise, which needs S to be a multiple of V.
+constexpr int64_t kAIU3DMaxDim = 1 << 15;
+
+// Looks through the extensions that widen block-pointer shapes and strides to
+// i64.
+inline Value stripAIUIntExtensions(Value v) {
+  while (isa_and_nonnull<arith::ExtSIOp, arith::ExtUIOp>(v.getDefiningOp()))
+    v = v.getDefiningOp()->getOperand(0);
+  return v;
+}
+
+inline std::optional<int64_t> getAIUConstantInt(Value v) {
+  return getConstantIntValue(stripAIUIntExtensions(v));
+}
+
+// How the rows of a 2-D AIU tile lie in memory, from the strides and shape of
+// its block pointer. `rowDim` is the dimension that order[0] does not name.
+enum class AIURowLayout {
+  Dense,   // the row stride is the row length
+  Strided, // the row stride and the row length are different constants
+  Runtime, // only known at run time
+};
+
+inline AIURowLayout getAIURowLayout(ValueRange strides, ValueRange shape,
+                                    unsigned rowDim) {
+  unsigned colDim = 1 - rowDim;
+  // Without a unit stride on the dimension order[0] names, the copy reads the
+  // tile in the dense layout `order` gives, which the PPU AIU tests expect
+  // (test_bp_gemm_order01).
+  if (strides.empty() || getAIUConstantInt(strides[colDim]) != 1)
+    return AIURowLayout::Dense;
+  Value rowStride = strides[rowDim];
+  Value rowLength = shape[colDim];
+  if (stripAIUIntExtensions(rowStride) == stripAIUIntExtensions(rowLength))
+    return AIURowLayout::Dense;
+  std::optional<int64_t> stride = getAIUConstantInt(rowStride);
+  std::optional<int64_t> length = getAIUConstantInt(rowLength);
+  if (!stride || !length)
+    return AIURowLayout::Runtime;
+  return *stride == *length ? AIURowLayout::Dense : AIURowLayout::Strided;
+}
+
+// Whether rows of `length` elements that are a constant `stride` apart can be
+// copied, zero filling past the row length if `zeroFillColumns`.
+inline bool isAIUStrideExpressible(int64_t stride, int64_t length,
+                                   bool zeroFillColumns) {
+  if (length <= 0 || stride < length)
+    return false;
+  return !zeroFillColumns || (stride % length == 0 && length <= kAIU3DMaxDim &&
+                              stride / length <= kAIU3DMaxDim);
 }
 
 } // namespace PPU
