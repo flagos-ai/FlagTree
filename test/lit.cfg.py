@@ -21,6 +21,8 @@ config.suffixes = ['.mlir', '.ll']
 
 if getattr(config, "flagtree_common_ir_enabled", False):
     config.available_features.add("flagtree-common-ir")
+if getattr(config, "flagtree_backend", ""):
+    config.available_features.add(f"flagtree-backend-{config.flagtree_backend}")
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)

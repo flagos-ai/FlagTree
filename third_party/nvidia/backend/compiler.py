@@ -348,7 +348,8 @@ class CUDABackend(BaseBackend):
         # begin flagtree tle
         tle.passes.add_select_encodings(pm)
         tle.passes.add_insert_local_pointer_barriers(pm)
-        tle.passes.add_optimize_local_pointer_loads(pm)
+        # flagtree keep smem read order
+        tle.passes.add_optimize_local_pointer_loads(pm, knobs.compilation.keep_smem_read_order)
         tle.passes.add_optimize_local_pointer_stores(pm)
         # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
@@ -421,7 +422,8 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        # flagtree keep smem read order
+        passes.ttgpuir.add_reorder_instructions(pm, knobs.compilation.keep_smem_read_order)
         # flagtree tle: Lowering load with tt.load.async attribute
         tle.passes.add_lower_async_load(pm)
         passes.ttir.add_loop_aware_cse(pm)
