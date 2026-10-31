@@ -1,8 +1,9 @@
-"""PPU runtime tests of TLE warp specialization.
+"""PPU runtime tests of TLE warp specialization and shared-memory views.
 
 * ``tle.gpu.warp_specialize`` with named-barrier handover (``alloc_barriers`` +
   ``barrier_wait`` / ``barrier_arrive`` without a phase): lowered to the PPU hardware
   named barriers, one per barrier slot, with the partitions running concurrently.
+* ``buffered_tensor.subslice`` as a dot operand of a swizzled ring slot.
 """
 
 import re
@@ -224,3 +225,42 @@ def test_async_load_in_worker_partition():
     _async_load_kernel[(1, )](x, y, n_tiles, BLOCK=block, num_warps=4)
     torch.cuda.synchronize()
     torch.testing.assert_close(y, 2 * x)
+
+
+@triton.constexpr_function
+def _ring_layout(vec, max_phase):
+    return tle.gpu.swizzled_shared_layout(vec, 1, max_phase, [2, 1, 0], [1] * 3, [1] * 3, [1] * 3, [2, 1, 0])
+
+
+@triton.jit
+def _subslice_ring_kernel(a, b, out, n_blk, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
+    """out = a @ sum_k b[k]: the tiles of b go through a three-slot swizzled ring; the dot reads the two column halves
+    of a slot as subslices."""
+    offs_m = tl.arange(0, BM)
+    offs_k = tl.arange(0, BK)
+    offs_n = tl.arange(0, BN)
+    ring = tle.gpu.alloc([3, BK, BN], dtype=tl.bfloat16, layout=_ring_layout(8, 8), scope=tle.gpu.smem)
+    a_t = tl.load(a + offs_m[:, None] * BK + offs_k[None, :])
+    b_ptr = b + offs_k[:, None] * BN + offs_n[None, :]
+    acc0 = tl.zeros([BM, BN // 2], dtype=tl.float32)
+    acc1 = tl.zeros([BM, BN // 2], dtype=tl.float32)
+    for g in range(n_blk):
+        slot = ring.slot(g % 3)
+        tle.gpu.copy(b_ptr + g * BK * BN, slot, [BK, BN])
+        acc0 = tl.dot(a_t, tl.load(tle.gpu.local_ptr(slot.subslice(0, BN // 2, 1))), acc0)
+        acc1 = tl.dot(a_t, tl.load(tle.gpu.local_ptr(slot.subslice(BN // 2, BN // 2, 1))), acc1)
+    o_ptr = out + offs_m[:, None] * BN + tl.arange(0, BN // 2)[None, :]
+    tl.store(o_ptr, acc0)
+    tl.store(o_ptr + BN // 2, acc1)
+
+
+@pytest.mark.parametrize("n_blk", [1, 2, 7])
+def test_subslice_dot_operands_of_ring_slot(n_blk):
+    bm, bk, bn = 64, 64, 128
+    a = torch.randn(bm, bk, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(n_blk, bk, bn, device="cuda", dtype=torch.bfloat16)
+    out = torch.empty(bm, bn, device="cuda", dtype=torch.float32)
+    _subslice_ring_kernel[(1, )](a, b, out, n_blk, BM=bm, BN=bn, BK=bk, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    ref = sum(a.float() @ b[k].float() for k in range(n_blk))
+    torch.testing.assert_close(out, ref, atol=1e-2 * n_blk, rtol=1e-2)

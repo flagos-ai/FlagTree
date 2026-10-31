@@ -152,6 +152,11 @@ LogicalResult lowerPPULdMatrix(
   if (rank > 2)
     return failure();
 
+  // Limitation: a subslice is addressed by lowerLdStMatrix, not from its own
+  // shape.
+  if (memDescType.getAllocShape().take_back(rank) != memDescType.getShape())
+    return failure();
+
   // Limitation: Minimum tile size
   if (bitwidth == 8) {
     if (shape[kOrder] < 32 || shape[nonKOrder] < 16)
