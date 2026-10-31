@@ -537,6 +537,8 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             for bitcode in bitcodes:
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
+        for bitcode in get_extra_link_bitcodes():
+            _compile_option_list += [f"--link-aicore-bitcode={bitcode}"]
 
         disable_auto_cv_work_space_manage = metadata.get("disable_auto_cv_work_space_manage")
         if disable_auto_cv_work_space_manage is not None:
@@ -791,6 +793,8 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             for bitcode in bitcodes:
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
+        for bitcode in get_extra_link_bitcodes():
+            _compile_option_list += [f"--link-aicore-bitcode={bitcode}"]
 
         _compile_option_list += [f"--link-aicore-bitcode={get_libdevice()}"]
 
@@ -872,6 +876,17 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
 def get_libdevice():
     current = os.path.dirname(__file__)
     return os.path.join(current, "lib/libdevice.10.bc")
+
+
+def get_extra_link_bitcodes():
+    """Extra --link-aicore-bitcode paths (cann op mix BCs, etc.)."""
+    paths: list[str] = []
+    try:
+        from triton.experimental.tle.raw.cann.runtime import get_op_extra_link_bitcodes
+        paths.extend(get_op_extra_link_bitcodes())
+    except ImportError:
+        pass
+    return paths
 
 
 @dataclass(frozen=True)
