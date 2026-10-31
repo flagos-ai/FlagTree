@@ -85,11 +85,30 @@ struct NamedBarrierWaitOpConversion
 };
 #endif
 
+// The barrier Membar inserts between conflicting shared-memory accesses (also
+// after every async_wait). It only has to order shared memory.
+struct LocalBarrierOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalBarrierOp> {
+  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    unsigned numThreads = triton::gpu::lookupNumWarps(op) *
+                          triton::gpu::lookupThreadsPerWarp(rewriter);
+    ppu::createPPUSharedMemoryBarrier(rewriter, op.getLoc(), numThreads);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::ppu::populateBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
+  patterns.add<LocalBarrierOpConversion>(typeConverter,
+                                         benefit.getBenefit() + 1);
 #ifdef __TLE__
   patterns.add<NamedBarrierArriveOpConversion, NamedBarrierWaitOpConversion>(
       typeConverter, benefit);

@@ -120,18 +120,36 @@ enum BarrierIndex {
   kNumBarriers = kPPUNumBarriers
 };
 
-// A CTA barrier (`__syncthreads`, Membar) inside a warp group synchronizes only
-// that group. It keeps the full fence of barrier0: shared-memory stores for
-// visibility and outstanding global accesses for CTA-wide memory ordering.
-static void createBarrier(TritonLLVMIRRewriter &b, Value barIdx,
-                          unsigned numThreads) {
-  createPPUBarrierSync(b, b.getLoc(), barIdx, numThreads, kPPUBarrierFenceAll);
+// CTA-wide barriers inside warp-specialized code: `nvvm.barrier0` (full fence)
+// and the shared-memory barrier calls the lowering emits (shared fence). Both
+// become a barrier of the enclosing warp group with the same fence.
+static bool isCtaBarrier(Operation *op) {
+  if (isa<NVVM::Barrier0Op>(op))
+    return true;
+  auto call = dyn_cast<LLVM::CallOp>(op);
+  return call && isPPUCtaBarrierCall(call);
 }
 
-static void createBarrier(TritonLLVMIRRewriter &b, unsigned barIdx,
-                          unsigned numThreads) {
+// A CTA barrier inside a warp group synchronizes only that group. It keeps the
+// fence of the original barrier: shared-memory stores for visibility, plus the
+// outstanding global accesses for `nvvm.barrier0`.
+static void retargetCtaBarrier(Operation *op, Value barIdx,
+                               unsigned numThreads) {
+  TritonLLVMIRRewriter b(op->getLoc(), op);
+  unsigned fence = kPPUBarrierFenceAll;
+  if (auto call = dyn_cast<LLVM::CallOp>(op))
+    if (auto cst =
+            call.getCalleeOperands()[2].getDefiningOp<LLVM::ConstantOp>())
+      fence = cast<IntegerAttr>(cst.getValue()).getInt();
+  createPPUBarrierSync(b, op->getLoc(), barIdx, numThreads, fence);
+  op->erase();
+}
+
+static void retargetCtaBarrier(Operation *op, unsigned barIdx,
+                               unsigned numThreads) {
   assert(barIdx < kNumBarriers && "not enough barriers");
-  createBarrier(b, b.i32_val(barIdx), numThreads);
+  TritonLLVMIRRewriter b(op->getLoc(), op);
+  retargetCtaBarrier(op, b.i32_val(barIdx), numThreads);
 }
 
 // Barrier of all warps of the CTA used to hand over the partition state and
@@ -345,11 +363,9 @@ rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
       wsOps.push_back(cast<WarpSpecializeOp>(partitions->getParentOp()));
       return WalkResult::skip();
     }
-    if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
-      TritonLLVMIRRewriter b(bar.getLoc(), bar);
-      createBarrier(b, kDefaultWarpGroupBarrierIdx,
-                    defaultNumWarps * threadsPerWarp);
-      bar.erase();
+    if (isCtaBarrier(op)) {
+      retargetCtaBarrier(op, kDefaultWarpGroupBarrierIdx,
+                         defaultNumWarps * threadsPerWarp);
       // This is a pre-order walk, so do not visit an erased operation.
       return WalkResult::skip();
     }
@@ -377,12 +393,9 @@ rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
       }
       unsigned numThreads = wsOp.getPartitionNumWarps()[idx] * threadsPerWarp;
       WalkResult partitionResult = partition->walk([&](Operation *op) {
-        if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
-          TritonLLVMIRRewriter b(bar.getLoc(), bar);
-          createBarrier(b, barIdx, numThreads);
-          bar.erase();
+        if (isCtaBarrier(op)) {
+          retargetCtaBarrier(op, barIdx, numThreads);
           // Do not continue walking an operation that has just been erased.
-          // This is required even though Barrier0Op has no regions today.
           return WalkResult::skip();
         }
         if (auto callOp = dyn_cast<LLVM::CallOp>(op)) {
@@ -427,10 +440,8 @@ static LogicalResult rewriteInnerFunctionWarpGroupBarriers(
   unsigned numThreads = numWarpsAttr.getInt() * threadsPerWarp;
 
   func.walk([&](Operation *op) {
-    if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
-      TritonLLVMIRRewriter b(bar.getLoc(), bar);
-      createBarrier(b, barrier, numThreads);
-      bar.erase();
+    if (isCtaBarrier(op)) {
+      retargetCtaBarrier(op, barrier, numThreads);
       return;
     }
     if (auto callOp = dyn_cast<LLVM::CallOp>(op)) {
