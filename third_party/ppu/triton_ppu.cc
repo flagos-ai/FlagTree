@@ -59,6 +59,10 @@ void init_triton_ppu_passes_ttgpuir(py::module &&m) {
 
 void init_triton_ppu_passes_ttppugpuir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_aiu_lowering", mlir::createTritonPPUAIULoweringPass);
+  ADD_PASS_WRAPPER_0("add_tle_lower_tma_copy",
+                     mlir::createTritonPPUTleLowerTmaCopy);
+  ADD_PASS_WRAPPER_0("add_tle_zero_pad_descriptor_copies",
+                     mlir::createTritonPPUTleZeroPadDescriptorCopies);
   ADD_PASS_WRAPPER_0("add_tle_promote_async_load_to_aiu",
                      mlir::createTlePromoteAsyncLoadToAIUPass);
   ADD_PASS_WRAPPER_0("add_ppugpu_to_llvm",
