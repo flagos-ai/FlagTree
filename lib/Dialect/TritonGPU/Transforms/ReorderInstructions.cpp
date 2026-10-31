@@ -65,11 +65,17 @@ static bool willIncreaseRegisterPressure(Operation *op) {
   return false;
 }
 
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+constexpr bool kUnknownEffectsAreWrites = true;
+#else  // __FLAGTREE_KEEP_SMEM_READ_ORDER__
+constexpr bool kUnknownEffectsAreWrites = false;
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
+
 // Return true if it has side effects that are either unknown or writes.
 static bool hasWriteSideEffect(Operation *op) {
   auto effects = getEffectsRecursively(op);
   if (!effects)
-    return false;
+    return kUnknownEffectsAreWrites;
   return llvm::any_of(*effects, [](MemoryEffects::EffectInstance effect) {
     return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
                 MemoryEffects::Free>(effect.getEffect());
@@ -100,6 +106,11 @@ class TritonGPUReorderInstructionsPass
           TritonGPUReorderInstructionsPass> {
 public:
   TritonGPUReorderInstructionsPass() = default;
+
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+  using impl::TritonGPUReorderInstructionsBase<
+      TritonGPUReorderInstructionsPass>::TritonGPUReorderInstructionsBase;
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
 
   Operation *getFirstUse(Operation *op) {
     std::vector<Operation *> users;
@@ -142,6 +153,15 @@ public:
       if (user_begin->getParentOfType<scf::ForOp>() ==
           op->getParentOfType<scf::ForOp>())
         return;
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+      // A load of mutable shared memory must not move past a write that may
+      // change what it reads (e.g. a buffer refilled inside the loop).
+      if (keepSmemReadOrder)
+        if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op))
+          if (load.getSrc().getType().getMutableMemory() &&
+              crossWriteSideEffectingOp(op, *user_begin))
+            return;
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
       opToMove.insert({op, *user_begin});
     });
     for (auto &kv : opToMove)

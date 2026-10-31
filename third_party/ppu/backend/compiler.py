@@ -394,7 +394,8 @@ class PPUBackend(BaseBackend):
             tle.passes.add_early_assign_memory_space(pm)
             tle.passes.add_select_encodings(pm)
             tle.passes.add_insert_local_pointer_barriers(pm)
-            tle.passes.add_optimize_local_pointer_loads(pm)
+            # flagtree keep smem read order
+            tle.passes.add_optimize_local_pointer_loads(pm, knobs.compilation.keep_smem_read_order)
             tle.passes.add_optimize_local_pointer_stores(pm)
         ppu.passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -427,7 +428,8 @@ class PPUBackend(BaseBackend):
         ppu.passes.ttppugpuir.add_aiu_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        # flagtree keep smem read order
+        passes.ttgpuir.add_reorder_instructions(pm, knobs.compilation.keep_smem_read_order)
         if tle is not None:
             tle.passes.add_lower_async_load(pm)
         passes.ttir.add_loop_aware_cse(pm)

@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -55,6 +56,13 @@ struct RematerializationCacheEntry {
   Value source;
   Type targetType;
   RematerializedValue rematerialized;
+};
+
+struct RematerializationState {
+  SmallVector<RematerializationCacheEntry> cache;
+  // Re-issue a local pointer load only within its block and with no write in
+  // between (keep-smem-read-order).
+  bool keepSmemReadOrder = false;
 };
 
 static Value stripConvertLayouts(Value value) {
@@ -277,10 +285,10 @@ static void cacheRematerialization(
   cache.push_back({source, targetType, rematerialized});
 }
 
-static std::optional<RematerializedValue> rematerializeForLayout(
-    Value value, RankedTensorType targetTy, OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache,
-    unsigned depth = 0);
+static std::optional<RematerializedValue>
+rematerializeForLayout(Value value, RankedTensorType targetTy,
+                       OpBuilder &builder, RematerializationState &state,
+                       unsigned depth = 0);
 
 static std::optional<RematerializedValue>
 rematerializeConstant(arith::ConstantOp constant, RankedTensorType targetTy,
@@ -333,10 +341,10 @@ rematerializeSplat(triton::SplatOp splat, RankedTensorType targetTy,
   return RematerializedValue{newSplat, false};
 }
 
-static std::optional<RematerializedValue> rematerializeBroadcast(
-    triton::BroadcastOp broadcast, RankedTensorType targetTy,
-    OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache, unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeBroadcast(triton::BroadcastOp broadcast, RankedTensorType targetTy,
+                       OpBuilder &builder, RematerializationState &state,
+                       unsigned depth) {
   auto sourceResultTy = dyn_cast<RankedTensorType>(broadcast.getType());
   auto sourceInputTy = dyn_cast<RankedTensorType>(broadcast.getSrc().getType());
   if (!sourceResultTy || !sourceInputTy ||
@@ -348,7 +356,7 @@ static std::optional<RematerializedValue> rematerializeBroadcast(
                                              sourceInputTy.getElementType(),
                                              targetTy.getEncoding());
   auto input = rematerializeForLayout(broadcast.getSrc(), targetInputTy,
-                                      builder, cache, depth + 1);
+                                      builder, state, depth + 1);
   if (!input)
     return std::nullopt;
 
@@ -359,9 +367,10 @@ static std::optional<RematerializedValue> rematerializeBroadcast(
   return RematerializedValue{newBroadcast, input->usesLocalPointerLoad};
 }
 
-static std::optional<RematerializedValue> rematerializeExpandDims(
-    triton::ExpandDimsOp expand, RankedTensorType targetTy, OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache, unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeExpandDims(triton::ExpandDimsOp expand, RankedTensorType targetTy,
+                        OpBuilder &builder, RematerializationState &state,
+                        unsigned depth) {
   auto sourceResultTy = dyn_cast<RankedTensorType>(expand.getType());
   auto sourceInputTy = dyn_cast<RankedTensorType>(expand.getSrc().getType());
   if (!sourceResultTy || !sourceInputTy ||
@@ -381,7 +390,7 @@ static std::optional<RematerializedValue> rematerializeExpandDims(
   auto targetInputTy = RankedTensorType::get(
       sourceInputTy.getShape(), sourceInputTy.getElementType(), inputEncoding);
   auto input = rematerializeForLayout(expand.getSrc(), targetInputTy, builder,
-                                      cache, depth + 1);
+                                      state, depth + 1);
   if (!input)
     return std::nullopt;
 
@@ -393,9 +402,10 @@ static std::optional<RematerializedValue> rematerializeExpandDims(
   return RematerializedValue{newExpand, input->usesLocalPointerLoad};
 }
 
-static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
-    triton::LoadOp load, RankedTensorType targetTy, OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache, unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeLocalPointerLoad(triton::LoadOp load, RankedTensorType targetTy,
+                              OpBuilder &builder, RematerializationState &state,
+                              unsigned depth) {
   if (load.getMask() || load.getOther())
     return std::nullopt;
   if (!load.getBoundaryCheck().empty() || load.getPadding())
@@ -410,6 +420,25 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
   if (!sourceTy || sourceTy.getShape() != targetTy.getShape() ||
       sourceTy.getElementType() != targetTy.getElementType())
     return std::nullopt;
+
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+  // The load is re-issued at the conversion: keep it in its block, with no
+  // write in between.
+  if (state.keepSmemReadOrder) {
+    Block *insertBlock = builder.getInsertionBlock();
+    if (!insertBlock || insertBlock != load->getBlock())
+      return std::nullopt;
+    for (Operation *op = load->getNextNode();
+         op && op != &*builder.getInsertionPoint(); op = op->getNextNode()) {
+      auto effects = getEffectsRecursively(op);
+      if (!effects || llvm::any_of(*effects, [](const auto &effect) {
+            return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
+                        MemoryEffects::Free>(effect.getEffect());
+          }))
+        return std::nullopt;
+    }
+  }
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
 
   Value ptr = stripConvertLayouts(load.getPtr());
   auto localPointers = ptr.getDefiningOp<tle::LocalPointersOp>();
@@ -431,7 +460,7 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
     auto targetIndexTy = RankedTensorType::get(
         targetTy.getShape(), indexTy.getElementType(), targetTy.getEncoding());
     auto rematerializedIndex =
-        rematerializeForLayout(index, targetIndexTy, builder, cache, depth + 1);
+        rematerializeForLayout(index, targetIndexTy, builder, state, depth + 1);
     if (!rematerializedIndex || rematerializedIndex->usesLocalPointerLoad)
       return std::nullopt;
     indices.push_back(rematerializedIndex->value);
@@ -456,18 +485,19 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
 }
 
 template <typename OpTy>
-static std::optional<RematerializedValue> rematerializeSameTypeBinary(
-    OpTy op, RankedTensorType targetTy, OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache, unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeSameTypeBinary(OpTy op, RankedTensorType targetTy,
+                            OpBuilder &builder, RematerializationState &state,
+                            unsigned depth) {
   auto sourceTy = dyn_cast<RankedTensorType>(op.getType());
   if (!sourceTy || sourceTy.getShape() != targetTy.getShape() ||
       sourceTy.getElementType() != targetTy.getElementType())
     return std::nullopt;
 
   auto lhs =
-      rematerializeForLayout(op.getLhs(), targetTy, builder, cache, depth + 1);
+      rematerializeForLayout(op.getLhs(), targetTy, builder, state, depth + 1);
   auto rhs =
-      rematerializeForLayout(op.getRhs(), targetTy, builder, cache, depth + 1);
+      rematerializeForLayout(op.getRhs(), targetTy, builder, state, depth + 1);
   if (!lhs || !rhs)
     return std::nullopt;
 
@@ -478,16 +508,17 @@ static std::optional<RematerializedValue> rematerializeSameTypeBinary(
                                          rhs->usesLocalPointerLoad};
 }
 
-static std::optional<RematerializedValue> rematerializeForLayout(
-    Value value, RankedTensorType targetTy, OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache, unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeForLayout(Value value, RankedTensorType targetTy,
+                       OpBuilder &builder, RematerializationState &state,
+                       unsigned depth) {
   if (depth > 32)
     return std::nullopt;
 
   if (value.getType() == targetTy)
     return RematerializedValue{value, false};
 
-  if (auto cached = findCachedRematerialization(value, targetTy, cache))
+  if (auto cached = findCachedRematerialization(value, targetTy, state.cache))
     return cached;
 
   auto sourceTy = dyn_cast<RankedTensorType>(value.getType());
@@ -503,20 +534,20 @@ static std::optional<RematerializedValue> rematerializeForLayout(
     rematerialized = rematerializeConstant(constant, targetTy, builder);
   } else if (auto convert = dyn_cast<ttg::ConvertLayoutOp>(def)) {
     rematerialized = rematerializeForLayout(convert.getSrc(), targetTy, builder,
-                                            cache, depth + 1);
+                                            state, depth + 1);
   } else if (auto range = dyn_cast<triton::MakeRangeOp>(def)) {
     rematerialized = rematerializeMakeRange(range, targetTy, builder);
   } else if (auto splat = dyn_cast<triton::SplatOp>(def)) {
     rematerialized = rematerializeSplat(splat, targetTy, builder);
   } else if (auto broadcast = dyn_cast<triton::BroadcastOp>(def)) {
     rematerialized =
-        rematerializeBroadcast(broadcast, targetTy, builder, cache, depth);
+        rematerializeBroadcast(broadcast, targetTy, builder, state, depth);
   } else if (auto expand = dyn_cast<triton::ExpandDimsOp>(def)) {
     rematerialized =
-        rematerializeExpandDims(expand, targetTy, builder, cache, depth);
+        rematerializeExpandDims(expand, targetTy, builder, state, depth);
   } else if (auto load = dyn_cast<triton::LoadOp>(def)) {
     rematerialized =
-        rematerializeLocalPointerLoad(load, targetTy, builder, cache, depth);
+        rematerializeLocalPointerLoad(load, targetTy, builder, state, depth);
   } else if (auto addPtr = dyn_cast<triton::AddPtrOp>(def)) {
     auto offsetTy = dyn_cast<RankedTensorType>(addPtr.getOffset().getType());
     auto sourceResultTy = dyn_cast<RankedTensorType>(addPtr.getType());
@@ -527,9 +558,9 @@ static std::optional<RematerializedValue> rematerializeForLayout(
           RankedTensorType::get(targetTy.getShape(), offsetTy.getElementType(),
                                 targetTy.getEncoding());
       auto ptr = rematerializeForLayout(addPtr.getPtr(), targetTy, builder,
-                                        cache, depth + 1);
+                                        state, depth + 1);
       auto offset = rematerializeForLayout(addPtr.getOffset(), targetOffsetTy,
-                                           builder, cache, depth + 1);
+                                           builder, state, depth + 1);
       if (ptr && offset) {
         Value result = builder
                            .create<triton::AddPtrOp>(addPtr.getLoc(), targetTy,
@@ -549,9 +580,9 @@ static std::optional<RematerializedValue> rematerializeForLayout(
           targetTy,
           cast<RankedTensorType>(cmp.getRhs().getType()).getElementType(),
           targetTy.getEncoding());
-      auto lhs = rematerializeForLayout(cmp.getLhs(), lhsTy, builder, cache,
+      auto lhs = rematerializeForLayout(cmp.getLhs(), lhsTy, builder, state,
                                         depth + 1);
-      auto rhs = rematerializeForLayout(cmp.getRhs(), rhsTy, builder, cache,
+      auto rhs = rematerializeForLayout(cmp.getRhs(), rhsTy, builder, state,
                                         depth + 1);
       if (lhs && rhs) {
         Value result =
@@ -568,11 +599,11 @@ static std::optional<RematerializedValue> rematerializeForLayout(
       auto condTy = cloneWithElementAndEncoding(targetTy, builder.getI1Type(),
                                                 targetTy.getEncoding());
       auto cond = rematerializeForLayout(select.getCondition(), condTy, builder,
-                                         cache, depth + 1);
+                                         state, depth + 1);
       auto trueValue = rematerializeForLayout(select.getTrueValue(), targetTy,
-                                              builder, cache, depth + 1);
+                                              builder, state, depth + 1);
       auto falseValue = rematerializeForLayout(select.getFalseValue(), targetTy,
-                                               builder, cache, depth + 1);
+                                               builder, state, depth + 1);
       if (cond && trueValue && falseValue) {
         Value result =
             builder
@@ -591,7 +622,7 @@ static std::optional<RematerializedValue> rematerializeForLayout(
         cast<RankedTensorType>(ext.getIn().getType()).getElementType(),
         targetTy.getEncoding());
     auto in =
-        rematerializeForLayout(ext.getIn(), inTy, builder, cache, depth + 1);
+        rematerializeForLayout(ext.getIn(), inTy, builder, state, depth + 1);
     if (in) {
       Value result =
           builder.create<arith::ExtSIOp>(ext.getLoc(), targetTy, in->value)
@@ -604,7 +635,7 @@ static std::optional<RematerializedValue> rematerializeForLayout(
         cast<RankedTensorType>(ext.getIn().getType()).getElementType(),
         targetTy.getEncoding());
     auto in =
-        rematerializeForLayout(ext.getIn(), inTy, builder, cache, depth + 1);
+        rematerializeForLayout(ext.getIn(), inTy, builder, state, depth + 1);
     if (in) {
       Value result =
           builder.create<arith::ExtUIOp>(ext.getLoc(), targetTy, in->value)
@@ -617,7 +648,7 @@ static std::optional<RematerializedValue> rematerializeForLayout(
         cast<RankedTensorType>(trunc.getIn().getType()).getElementType(),
         targetTy.getEncoding());
     auto in =
-        rematerializeForLayout(trunc.getIn(), inTy, builder, cache, depth + 1);
+        rematerializeForLayout(trunc.getIn(), inTy, builder, state, depth + 1);
     if (in) {
       Value result =
           builder.create<arith::TruncIOp>(trunc.getLoc(), targetTy, in->value)
@@ -626,27 +657,27 @@ static std::optional<RematerializedValue> rematerializeForLayout(
     }
   } else if (auto add = dyn_cast<arith::AddIOp>(def)) {
     rematerialized =
-        rematerializeSameTypeBinary(add, targetTy, builder, cache, depth);
+        rematerializeSameTypeBinary(add, targetTy, builder, state, depth);
   } else if (auto sub = dyn_cast<arith::SubIOp>(def)) {
     rematerialized =
-        rematerializeSameTypeBinary(sub, targetTy, builder, cache, depth);
+        rematerializeSameTypeBinary(sub, targetTy, builder, state, depth);
   } else if (auto mul = dyn_cast<arith::MulIOp>(def)) {
     rematerialized =
-        rematerializeSameTypeBinary(mul, targetTy, builder, cache, depth);
+        rematerializeSameTypeBinary(mul, targetTy, builder, state, depth);
   } else if (auto andOp = dyn_cast<arith::AndIOp>(def)) {
     rematerialized =
-        rematerializeSameTypeBinary(andOp, targetTy, builder, cache, depth);
+        rematerializeSameTypeBinary(andOp, targetTy, builder, state, depth);
   } else if (auto orOp = dyn_cast<arith::OrIOp>(def)) {
     rematerialized =
-        rematerializeSameTypeBinary(orOp, targetTy, builder, cache, depth);
+        rematerializeSameTypeBinary(orOp, targetTy, builder, state, depth);
   } else if (auto xorOp = dyn_cast<arith::XOrIOp>(def)) {
     rematerialized =
-        rematerializeSameTypeBinary(xorOp, targetTy, builder, cache, depth);
+        rematerializeSameTypeBinary(xorOp, targetTy, builder, state, depth);
   }
 
   if (!rematerialized)
     return std::nullopt;
-  cacheRematerialization(value, targetTy, *rematerialized, cache);
+  cacheRematerialization(value, targetTy, *rematerialized, state.cache);
   return rematerialized;
 }
 
@@ -687,6 +718,10 @@ static void eraseDeadRematerializableOps(ModuleOp module) {
 class OptimizeLocalPointerLoadsPass
     : public impl::TritonTleOptimizeLocalPointerLoadsBase<
           OptimizeLocalPointerLoadsPass> {
+public:
+  using impl::TritonTleOptimizeLocalPointerLoadsBase<
+      OptimizeLocalPointerLoadsPass>::TritonTleOptimizeLocalPointerLoadsBase;
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
@@ -709,9 +744,10 @@ class OptimizeLocalPointerLoadsPass
         return;
 
       OpBuilder builder(convert);
-      SmallVector<RematerializationCacheEntry> rematerializationCache;
-      auto rematerialized = rematerializeForLayout(
-          convert.getSrc(), targetTy, builder, rematerializationCache);
+      RematerializationState state;
+      state.keepSmemReadOrder = keepSmemReadOrder;
+      auto rematerialized =
+          rematerializeForLayout(convert.getSrc(), targetTy, builder, state);
       if (!rematerialized || !rematerialized->usesLocalPointerLoad)
         return;
       convertRewrites.push_back(
