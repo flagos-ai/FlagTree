@@ -64,6 +64,24 @@ def TlePromoteAsyncLoadToAIUPass : Pass<"tle-promote-async-load-to-aiu", "mlir::
   let dependentDialects = ["mlir::triton::TritonDialect"];
 }
 
+def TritonPPUTleLowerPipe : Pass<"tritonppu-tle-lower-pipe", "mlir::ModuleOp"> {
+  let summary = "Lower TLE pipes to PPU hardware named barriers";
+
+  let description = [{
+    Lowers tle.pipe.* lifecycle ops to ttng named barrier ops that the PPU
+    backend maps to hardware barriers: per stage, one full barrier for each
+    reader group and one empty barrier. Pipes that do not fit the 16 hardware
+    barriers use counters in shared memory instead. cp.async copy groups are
+    drained before a stage is published. Must run after the TLE barrier
+    lowering and before the software pipeliner.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
+}
 
 def TritonPPUTleLowerTmaCopy : Pass<"tritonppu-tle-lower-tma-copy", "mlir::ModuleOp"> {
   let summary = "Rewrite TLE tensor-descriptor copies for PPU";

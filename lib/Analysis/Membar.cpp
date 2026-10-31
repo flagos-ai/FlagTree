@@ -607,6 +607,36 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     return;
   }
 
+#if defined(__PPU__) && defined(__TLE__)
+  auto target =
+      op->getParentOfType<ModuleOp>()->getAttrOfType<StringAttr>("ttg.target");
+  if (auto wait = dyn_cast<triton::nvidia_gpu::NamedBarrierWaitOp>(op);
+      wait && target && target.getValue().starts_with("ppu:")) {
+    if (auto count = wait.getNumThreads().getDefiningOp<arith::ConstantOp>()) {
+      auto value = dyn_cast<IntegerAttr>(count.getValue());
+      unsigned groupThreads = triton::gpu::lookupNumWarps(op) *
+                              triton::gpu::TritonGPUDialect::getThreadsPerWarp(
+                                  op->getParentOfType<ModuleOp>());
+      // A named wait whose count covers this partition is taken as a wait of
+      // every warp in it: it already orders their shared-memory accesses,
+      // including reads before a pipe refill. A wait that only some warps of
+      // the partition execute, with the rest of the count from other groups,
+      // is not a group-wide synchronization.
+      if (value && value.getInt() >= groupThreads) {
+        blockInfo->sync();
+        return;
+      }
+    }
+  }
+  // Pipe lowering places its own group barrier before local consumption, or
+  // publishes to a peer that waits on a named barrier. Keep tracking pending
+  // memory effects here; the rendezvous belongs at consumption, not at the
+  // per-thread completion wait.
+  if (isa<triton::gpu::AsyncWaitOp>(op) && op->hasAttr("ppugpu.pipe_wait") &&
+      target && target.getValue().starts_with("ppu:"))
+    return;
+#endif
+
   if (isa<triton::gpu::AsyncWaitOp, triton::nvidia_gpu::TMAStoreWaitOp>(op) &&
       !isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op->getNextNode())) {
     // If the current op is an async wait and the next op is not a barrier we

@@ -67,6 +67,8 @@ static constexpr llvm::StringLiteral
     kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
 
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
+  if (waitOp->hasAttr("ppugpu.pipe_wait"))
+    return true;
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))

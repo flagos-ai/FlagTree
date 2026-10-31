@@ -433,6 +433,7 @@ class PPUBackend(BaseBackend):
             # Named barriers (tle.gpu.barrier_wait/arrive without a phase) only:
             # PPU has no mbarrier, which reject_unsupported_tle diagnoses.
             tle.passes.add_lower_barriers(pm)
+            ppu.passes.ttppugpuir.add_tle_lower_pipe(pm)
         if capability // 10 in [8, 9]:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
