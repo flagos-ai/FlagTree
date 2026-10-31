@@ -2,6 +2,7 @@ add_triton_library(TritonPPUGPUTransforms
   AcceleratePPUMatmul.cpp
   AIULowering.cpp
   TlePromoteAsyncLoadToAIU.cpp
+  TleLowerPipe.cpp
   TleLowerTmaCopy.cpp
 
   DEPENDS
