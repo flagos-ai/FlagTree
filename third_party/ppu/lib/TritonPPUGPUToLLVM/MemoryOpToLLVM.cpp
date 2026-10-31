@@ -418,6 +418,9 @@ public:
     auto result =
         lowerLdStMatrix(op.getLoc(), regLayout, memDescType, values, smemObj,
                         rewriter, targetInfo, getTypeConverter());
+    if (failed(result))
+      result = lowerLaneBroadcastLoad(op, regLayout, llvmElemTy, smemObj,
+                                      values, rewriter);
     if (failed(result)) {
       return failure();
     }
@@ -426,6 +429,61 @@ public:
     auto value =
         packLLElements(op.getLoc(), typeConverter, values, rewriter, structTy);
     rewriter.replaceOp(op, value);
+    return success();
+  }
+
+  // A load whose layout is broadcast over the lanes of a warp (e.g. a slice
+  // along the lane dimension): all lanes read the same addresses. They are
+  // computed from a warp ID marked warp-uniform, so ppu-llc keeps the
+  // addresses, and the loaded values, in scalar registers. Otherwise it only
+  // proves this for some forms of threadIdx.x / 32, which LLVM may fold away.
+  // The marking is a side-effecting builtin, emitted once per load. A dot
+  // operand stays on the generic path: moving its elements to scalar registers
+  // costs a move per element.
+  LogicalResult
+  lowerLaneBroadcastLoad(triton::gpu::LocalLoadOp op,
+                         const LinearLayout &regLayout, Type llvmElemTy,
+                         SharedMemoryObject smemObj, SmallVector<Value> &values,
+                         ConversionPatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    MemDescType memDescType = op.getSrc().getType();
+    auto kReg = str_attr("register");
+    auto kLane = str_attr("lane");
+    auto kWarp = str_attr("warp");
+    auto kBlock = str_attr("block");
+    auto kOffset = str_attr("offset");
+    if (isa<DotOperandEncodingAttr>(op.getType().getEncoding()) ||
+        isa<PaddedSharedEncodingAttr>(memDescType.getEncoding()))
+      return failure();
+    LinearLayout cvt = regLayout.invertAndCompose(toLinearLayout(memDescType));
+    if (!cvt.isTrivialOver({kBlock}))
+      return failure();
+    cvt = cvt.sublayout({kReg, kLane, kWarp}, {kOffset});
+    if (llvm::any_of(cvt.getBases().lookup(kLane),
+                     [](ArrayRef<int32_t> basis) { return basis[0] != 0; }))
+      return failure();
+
+    auto removeBroadcast = actionRemoveBroadcastedRegs(cvt);
+    LinearLayout ldCvt = removeBroadcast.apply(cvt);
+    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+    if (!matchPattern(warpId, m_Constant()))
+      warpId = LLVM::PPU::toUniformB32(loc, rewriter, warpId);
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto emitLd = [&](RewriterBase &rewriter, Location loc, ArrayRef<Value>,
+                      Value shmemAddr, int, VectorType vecTy) {
+      Value vec = targetInfo.loadDShared(rewriter, loc, shmemAddr, std::nullopt,
+                                         vecTy, /*pred=*/b.true_val(), op);
+      return unpackLLVector(loc, vec, rewriter);
+    };
+    values = lowerLdSt(
+        loc, ctx, ldCvt, {}, llvmElemTy, smemObj.getBase(),
+        [](Value offset) { return offset; },
+        smemObj.getShmemOffset(loc, rewriter, memDescType),
+        smemObj.getMaskSpanOffsets(memDescType), laneId, warpId, rewriter,
+        targetInfo, /*maybeMaxVecElems=*/std::nullopt, emitLd);
+    if (!removeBroadcast.isIdentity())
+      values = broadcastAs(values, cvt);
     return success();
   }
 
