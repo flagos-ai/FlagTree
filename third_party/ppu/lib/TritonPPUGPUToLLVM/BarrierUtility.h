@@ -24,6 +24,7 @@
 #ifndef TRITON_PPU_BARRIER_UTILITY_H
 #define TRITON_PPU_BARRIER_UTILITY_H
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Value.h"
@@ -62,6 +63,18 @@ void createPPUBarrierArrive(OpBuilder &b, Location loc, Value id,
                             unsigned numThreads, unsigned fence);
 void createPPUBarrierArrive(OpBuilder &b, Location loc, unsigned id,
                             unsigned numThreads, unsigned fence);
+
+// A CTA-wide barrier (id 0) that the lowering inserts to order shared memory:
+// Membar hazards and the scratch buffers synchronized through
+// TargetInfo::barrier (e.g. layout conversions). It drains only the warp's
+// shared-memory accesses. Inside a warp-specialized kernel the warp
+// specialization lowering retargets it to the barrier of the warp group.
+void createPPUSharedMemoryBarrier(OpBuilder &b, Location loc,
+                                  unsigned numThreads);
+
+// True for a call emitted by createPPUSharedMemoryBarrier (barrier id 0). TLE
+// allocates named barriers from id 1 up, so they do not use it.
+bool isPPUCtaBarrierCall(LLVM::CallOp call);
 
 } // namespace mlir::triton::ppu
 

@@ -87,4 +87,20 @@ void createPPUBarrierArrive(OpBuilder &b, Location loc, unsigned id,
   createPPUBarrierArrive(b, loc, constId(b, loc, id), numThreads, fence);
 }
 
+void createPPUSharedMemoryBarrier(OpBuilder &b, Location loc,
+                                  unsigned numThreads) {
+  createPPUBarrierSync(b, loc, /*id=*/0u, numThreads, kPPUBarrierFenceShared);
+}
+
+bool isPPUCtaBarrierCall(LLVM::CallOp call) {
+  auto callee = call.getCalleeAttr();
+  if (!callee || callee.getValue() != "__ppukernel_barrier_sync_cnt_void")
+    return false;
+  auto id = call.getCalleeOperands().front().getDefiningOp<LLVM::ConstantOp>();
+  if (!id)
+    return false;
+  auto attr = dyn_cast<IntegerAttr>(id.getValue());
+  return attr && attr.getInt() == 0;
+}
+
 } // namespace mlir::triton::ppu
