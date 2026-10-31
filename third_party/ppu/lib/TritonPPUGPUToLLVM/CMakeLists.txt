@@ -28,6 +28,9 @@ add_triton_library(TritonPPUGPUToLLVM
     TargetInfo.cpp
     Allocation.cpp
     ConvertLibdeviceFuncToPPU.cpp
+    ConvertWarpSpecializeToLLVM.cpp
+    BarrierUtility.cpp
+    BarrierOpToLLVM.cpp
 
     DEPENDS
     TritonPPUGPUConversionPassIncGen
@@ -37,6 +40,7 @@ add_triton_library(TritonPPUGPUToLLVM
     TritonAnalysis
     TritonGPUToLLVM
     TritonInstrumentToLLVM
+    TritonNvidiaGPUIR
     MLIRReconcileUnrealizedCasts
     PPUGPUIR
     MLIRUBToLLVM

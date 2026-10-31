@@ -46,6 +46,11 @@ void init_triton_ppu_passes_ttgpuir(py::module &&m) {
   m.def("add_to_llvmir", [](mlir::PassManager &pm, int32_t capability) {
     pm.addPass(mlir::triton::createConvertTritonGPUToLLVMPPUPass(capability));
   });
+  m.def("add_warp_specialize_to_llvm",
+        [](mlir::PassManager &pm, int32_t capability) {
+          pm.addPass(mlir::triton::createConvertWarpSpecializeToLLVMPPUPass(
+              capability));
+        });
   ADD_PASS_WRAPPER_0("add_accelerate_matmul",
                      mlir::createTritonPPUGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_convert_libdevice_func_to_ppu",

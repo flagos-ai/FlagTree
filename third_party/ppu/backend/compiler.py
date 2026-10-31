@@ -41,11 +41,8 @@ from pathlib import Path
 # TLE ops the PPU backend has no lowering for, mapped to the TLE API that emits
 # them. Checked on the frontend-emitted TTIR so the error names the API the user
 # called instead of surfacing as an opaque MLIR legalization failure much later.
-# ttg.warp_specialize and ttg.tma_copy reach TTIR only from the TLE builtins:
-# tl.range(warp_specialize=True) merely sets a loop attribute, and PPU never runs
-# the pass that would turn it into an op.
+# ttg.tma_copy reaches TTIR only from the TLE builtins.
 PPU_UNSUPPORTED_TLE_OPS = {
-    "ttg.warp_specialize": "tle.warp_specialize",
     "ttg.tma_copy": "tle.gpu.copy.tensor_descriptor",
     "tle.distributed_barrier": "tle.distributed_barrier",
     "tle.remote_pointers": "tle.remote",
@@ -58,9 +55,14 @@ def reject_unsupported_tle(mod):
     # mod.walk takes a void callback and cannot be interrupted from Python, so
     # collect during the walk and report every unsupported feature at once.
     def visit(op):
-        feature = PPU_UNSUPPORTED_TLE_OPS.get(op.get_name())
+        name = op.get_name()
+        feature = PPU_UNSUPPORTED_TLE_OPS.get(name)
         if feature is not None:
             features.add(feature)
+        # PPU has hardware named barriers but no mbarrier: barrier_wait/arrive
+        # without phaseIdx are supported, the phased forms are not.
+        if name in ("tle.barrier.wait", "tle.barrier.arrive") and op.get_str_attr("backend") == "mbarrier":
+            features.add("tle.gpu.barrier_" + name.split(".")[-1] + "(phaseIdx=...)")
 
     mod.walk(visit)
     if features:
@@ -400,6 +402,10 @@ class PPUBackend(BaseBackend):
         if tle is not None:
             tle.passes.add_promote_local_store_staging(pm)
         passes.ttir.add_loop_aware_cse(pm)
+        if tle is not None:
+            # Named barriers (tle.gpu.barrier_wait/arrive without a phase) only:
+            # PPU has no mbarrier, which reject_unsupported_tle diagnoses.
+            tle.passes.add_lower_barriers(pm)
         if capability // 10 in [8, 9]:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
@@ -426,6 +432,10 @@ class PPUBackend(BaseBackend):
             tle.passes.add_lower_async_load(pm)
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
+        if tle is not None:
+            # Physical named barrier ids, above the ids that warp
+            # specialization reserves.
+            tle.passes.add_allocate_named_barriers(pm)
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
@@ -479,7 +489,10 @@ class PPUBackend(BaseBackend):
         ppu.passes.ttgpuir.add_convert_libdevice_func_to_ppu(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
+        # ppugpu.warp_id is relative to its warp group, which only the partition
+        # regions of ttg.warp_specialize tell: convert it before they are lowered.
         ppu.passes.ttppugpuir.add_ppugpu_to_llvm(pm)
+        ppu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, capability)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)

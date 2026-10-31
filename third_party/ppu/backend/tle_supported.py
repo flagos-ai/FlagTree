@@ -8,6 +8,10 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.warp_specialize",
+    "gpu.alloc_barrier",
+    "gpu.alloc_barriers",
+    "gpu.barrier_wait",
+    "gpu.barrier_arrive",
     "gpu.buffered_tensor.slot",
     "gpu.pipeline",
 ]
