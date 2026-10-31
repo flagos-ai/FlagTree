@@ -26,6 +26,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,8 +126,11 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         enable_mask_fallback_conversion = metadata["enable_mask_fallback_conversion"]
         optimize_dynamic_offset = metadata["optimize_dynamic_offset"]
         auto_blockify_size = metadata["auto_blockify_size"]
-        if not _is_auto_map_parallel_blocks_enabled():
+        if not metadata["enable_auto_blockify"]:
             auto_blockify_size = 1
+        builder = ir.builder(mod.context)
+        mod.set_attr("flagtree.auto_blockify", builder.get_bool_attr(metadata["enable_auto_blockify"]))
+        mod.set_attr("flagtree.structured_join_lowering", builder.get_string_attr(opt.structured_join_lowering))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         ascend.passes.ttir.add_auto_blockify(pm, auto_blockify_size)
@@ -223,12 +227,15 @@ def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
         Path(ttadapter_path).write_text(linalg)
 
         triton_mlir_opt_path = _get_triton_mlir_opt_path()
+        custom_compat = "hivm.hir.custom" in linalg
+        compat_options = (["--export-cann-custom-ops", "--allow-unregistered-dialect"] if custom_compat else [])
 
         # The --emit-bytecode flag ensures output is in BC format
         subprocess.run([
             triton_mlir_opt_path,
             ttadapter_path,
             "--emit-bytecode",
+            *compat_options,
             "-o",
             bc_path,
         ], check=True, capture_output=True, text=True)
@@ -242,6 +249,92 @@ def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
             dump_manager.put(bc_data, "kernel.mlirbc", binary=True)
 
         return bc_data
+
+
+def _split_mlir_attributes(text):
+    """Split an attribute dictionary without splitting nested values."""
+    fields, start, depth, quoted, escaped = [], 0, 0, False, False
+    for i, char in enumerate(text):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "([{<":
+            depth += 1
+        elif char == ">" and i and text[i - 1] == "-":
+            pass  # Function types and affine maps contain -> inside brackets.
+        elif char in ")]}>":
+            depth -= 1
+        elif char == "," and depth == 0:
+            fields.append(text[start:i].strip())
+            start = i + 1
+    fields.append(text[start:].strip())
+    return [field for field in fields if field]
+
+
+def _restore_cann_custom_ops(text, segment_arity=3):
+    lines = []
+    marker = '"cann_compat.custom"('
+    for line in text.splitlines(keepends=True):
+        if marker not in line:
+            lines.append(line)
+            continue
+        begin = line.index(" {", line.index(marker))
+        end = line.rindex("} :")
+        fields = _split_mlir_attributes(line[begin + 2:end])
+        properties, attrs = None, []
+        for field in fields:
+            if field.startswith("cann_compat.properties = "):
+                properties = field.split("=", 1)[1].strip()
+            else:
+                attrs.append(field)
+        if properties is None:
+            raise RuntimeError("Custom-op transport is missing its properties")
+        if segment_arity == 2:
+            props = _split_mlir_attributes(properties[1:-1])
+            for i, prop in enumerate(props):
+                if prop.startswith("operandSegmentSizes = "):
+                    match = re.fullmatch(r"operandSegmentSizes = array<i32:\s*([\d,\s-]+)>", prop)
+                    if match is None:
+                        raise RuntimeError("Unsupported custom-op operand segment attribute")
+                    sizes = [int(value) for value in match.group(1).split(",")]
+                    if len(sizes) == 3:
+                        if sizes[2] != 0:
+                            raise RuntimeError("This CANN custom-op schema does not support temp-buffer operands")
+                        props[i] = "operandSegmentSizes = array<i32: " + ", ".join(map(str, sizes[:2])) + ">"
+            properties = "{" + ", ".join(props) + "}"
+        prefix = line[:begin].replace('"cann_compat.custom"', '"hivm.hir.custom"')
+        lines.append(prefix + " <" + properties + "> {" + ", ".join(attrs) + "}" + line[end + 1:])
+    return "".join(lines)
+
+
+_CANN_CUSTOM_SEGMENT_ARITY = {}
+
+
+def _decode_cann_custom_ops(text, tool, env, tmpdir):
+    """Probe the installed reader's schema, without assuming a CANN version."""
+    stat = os.stat(tool)
+    key = (os.path.realpath(tool), stat.st_size, stat.st_mtime_ns)
+    known = _CANN_CUSTOM_SEGMENT_ARITY.get(key)
+    choices = [known] if known is not None else [3, 2]
+    source = Path(tmpdir) / "kernel.custom.mlir"
+    checked = Path(tmpdir) / "kernel.custom.checked.mlir"
+    for arity in choices:
+        source.write_text(_restore_cann_custom_ops(text, arity))
+        cmd = [tool, str(source), "--allow-unregistered-dialect", "--mlir-print-debuginfo", "-o", str(checked)]
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        if result.returncode == 0:
+            _CANN_CUSTOM_SEGMENT_ARITY[key] = arity
+            return checked.read_text()
+        if arity == 3 and known is None and "size mismatch in attribute conversion: 3 vs 2" in result.stderr:
+            continue
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    raise RuntimeError("Could not determine the CANN custom-op schema")
 
 
 def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
@@ -267,6 +360,7 @@ def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
         subprocess.run([
             bishengir_opt_path,
             bc_path,
+            "--allow-unregistered-dialect",
             "--mlir-print-debuginfo",
             "-o",
             mlir_path,
@@ -274,6 +368,10 @@ def bc_to_linalg_by_bishengir_opt(bc_data: bytes, metadata, opt):
 
         # Read the generated MLIR text
         linalg_text = Path(mlir_path).read_text()
+        # Detect the transport in the artifact itself, including when the
+        # preceding stage was loaded from a partial compiler cache.
+        if '"cann_compat.custom"(' in linalg_text:
+            linalg_text = _decode_cann_custom_ops(linalg_text, bishengir_opt_path, env, tmpdir)
 
         if opt.debug:
             dump_manager = get_dump_manager(metadata["hash"])
@@ -339,7 +437,44 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     # Parse all bitcode paths
     bitcodes = re.findall(BITCODES_REGEX, linalg)
     metadata["bitcodes"] = [val for group in bitcodes for val in group if val]
+    metadata["uses_computed_dot_transfer"] = "flagtree.vector_to_cube" in linalg
+    metadata["uses_structured_permutation"] = any(
+        name in linalg for name in ("custom_flagtree_stride_gather_", "custom_flagtree_split_",
+                                    "custom_flagtree_byte_to_word", "custom_flagtree_word_to_byte",
+                                    "custom_flagtree_short_row_store_", "custom_flagtree_short_row_load_"))
+    if metadata["uses_structured_permutation"]:
+        # This is a compiler-generated primitive; callers need not import TLE
+        # or annotate kernels with a bitcode path. The Ascend build produces
+        # this package resource together with the backend.
+        bitcode = get_structured_permutation_bitcode()
+        if not bitcode.is_file():
+            raise RuntimeError("Missing structured permutation bitcode; rebuild the Ascend backend")
+        if str(bitcode) not in metadata["bitcodes"]:
+            metadata["bitcodes"].append(str(bitcode))
     return linalg, metadata
+
+
+def _configure_structured_permutation_compiler(metadata, compiler, env, tmpdir):
+    if not metadata.get("uses_structured_permutation"):
+        return env
+    import shutil
+    real = Path(compiler).resolve().with_name("hivmc")
+    if not real.is_file():
+        real = Path(shutil.which("hivmc", path=env.get("PATH")))
+    tool, _ = _get_bishengir_opt_path()
+    script = Path(__file__).with_name("structured_permute_hivmc.py")
+    launcher = Path(tmpdir) / "hivmc"
+    launcher.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(script)) + ' "$@"\n')
+    launcher.chmod(0o700)
+    env = env.copy()
+    env["FLAGTREE_REAL_HIVMC"] = str(real)
+    env["FLAGTREE_CANN_OPT"] = tool
+    env["FLAGTREE_PERMUTE_OPT"] = _get_triton_mlir_opt_path()
+    env["FLAGTREE_PERMUTE_ADDRESS_HOIST"] = str(int(metadata.get("structured_address_hoisting", True)))
+    env["FLAGTREE_PERMUTE_STORE_SYNC"] = str(int(metadata.get("structured_store_sync_optimization", True)))
+    env["FLAGTREE_ORIGINAL_BISHENG_INSTALL_PATH"] = env.get("BISHENG_INSTALL_PATH", "")
+    env["BISHENG_INSTALL_PATH"] = tmpdir
+    return env
 
 
 def _parse_ttir_metadata(ttir: str, metadata: dict):
@@ -375,6 +510,11 @@ def get_common_bishengir_compile_options(metadata):
 
 
 def get_auto_bind_sub_block_option(metadata):
+    # CANN 9's sub-block slice propagation crashes on this unblocked graph.
+    # This is pass eligibility, including when enabling the optional tiler was
+    # explicitly requested. Keep its normal defaults for all other kernels.
+    if metadata.get("uses_computed_dot_transfer") and metadata.get("enable_auto_blockify") is False:
+        return False
     # auto_tile_and_bind_subblock is read from the module.
     # enable_auto_bind_sub_block is set by the user and has a higher priority.
     enable_auto_bind_sub_block = metadata["enable_auto_bind_sub_block"]
@@ -562,6 +702,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 _compile_option_list += ["--enable-auto-blockify-loop"]
 
         npu_compiler_path, env = _get_npucompiler_path()
+        env = _configure_structured_permutation_compiler(metadata, npu_compiler_path, env, tmpdir)
         if npu_compiler_path.endswith("bishengir-compile"):
             _compile_option_list += [
                 "--enable-hfusion-compile=true",
@@ -812,9 +953,10 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-tuning-mode={enable_tuning_mode}"]
 
-        if _is_auto_map_parallel_blocks_enabled():
+        if metadata["enable_auto_blockify"]:
             _compile_option_list += ["--enable-auto-blockify-loop"]
         npu_compiler_path, env = _get_npucompiler_path()
+        env = _configure_structured_permutation_compiler(metadata, npu_compiler_path, env, tmpdir)
         if npu_compiler_path.endswith("bishengir-compile"):
             _compile_option_list += [
                 "--enable-hfusion-compile=true",
@@ -874,6 +1016,17 @@ def get_libdevice():
     return os.path.join(current, "lib/libdevice.10.bc")
 
 
+def get_structured_permutation_bitcode():
+    import triton
+    return Path(triton.__file__).resolve().parent / ("experimental/tle/language/dsa/ascend/custom_ops/custom_ops.bc")
+
+
+@functools.lru_cache()
+def _permutation_bitcode_hash(path, size, mtime_ns):
+    # Size and mtime select the cache entry; file contents select the JIT key.
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 @dataclass(frozen=True)
 class NPUOptions:
     debug: bool = False
@@ -896,6 +1049,9 @@ class NPUOptions:
 
     auto_blockify_size: int = 1
     enable_auto_blockify: bool = None
+    structured_join_lowering: str = "auto"
+    structured_address_hoisting: bool = True
+    structured_store_sync_optimization: bool = True
     compile_on_910_95: bool = is_compile_on_910_95
     optimize_dynamic_offset: bool = False
     enable_mask_fallback_conversion: bool = False
@@ -986,6 +1142,11 @@ class NPUOptions:
     disable_fma: bool = False
 
     def __post_init__(self):
+        for name in ("structured_address_hoisting", "structured_store_sync_optimization"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(name + " must be a bool")
+        if self.structured_join_lowering not in ("auto", "native", "packed"):
+            raise ValueError("structured_join_lowering must be auto, native or packed")
         # Parse compile_mode and set related fields
         if self.compile_mode == "simd":
             object.__setattr__(self, "parallel_mode", "simd")
@@ -1085,6 +1246,11 @@ class AscendBackend(BaseBackend):
         if self.target.backend == "npu":
             args = {k: opts[k] for k in NPUOptions.__dataclass_fields__.keys() if k in opts}
             args.setdefault("arch", self.target.arch)
+            # Resolve the environment default before hashing or storing metadata.
+            # Launch geometry must never be reconstructed from a different env
+            # than the one that compiled a cached binary.
+            if args.get("enable_auto_blockify") is None:
+                args["enable_auto_blockify"] = _is_auto_map_parallel_blocks_enabled()
             options = NPUOptions(**args)
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
@@ -1143,7 +1309,19 @@ class AscendBackend(BaseBackend):
     @functools.lru_cache()
     def hash(self):
         # TODO fetch compiler version
-        version_key = self.target
+        bitcode = get_structured_permutation_bitcode()
+        if bitcode.is_file():
+            stat = bitcode.stat()
+            implementation = _permutation_bitcode_hash(str(bitcode), stat.st_size, stat.st_mtime_ns)
+        else:
+            implementation = "missing-permutation-bitcode"
+        optimizer = Path(_get_triton_mlir_opt_path())
+        stat = optimizer.stat()
+        optimizer_hash = _permutation_bitcode_hash(str(optimizer), stat.st_size, stat.st_mtime_ns)
+        adapters = tuple(
+            hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+            for name in ("structured_permute_hivmc.py", "structured_permute_ir.py"))
+        version_key = (self.target, implementation, optimizer_hash, adapters)
         return str(version_key)
 
     def get_module_map(self) -> Dict[str, ModuleType]:

@@ -178,7 +178,7 @@ target_link_libraries(triton-tensor-layout PRIVATE
   )
 
 # triton-mlir-opt: Triton-Ascend optimizer combining MLIR and BishengIR dialects
-add_llvm_executable(triton-mlir-opt triton-mlir-opt.cpp PARTIAL_SOURCES_INTENDED)
+add_llvm_executable(triton-mlir-opt triton-mlir-opt.cpp StructuredPermutationOpt.cpp PARTIAL_SOURCES_INTENDED)
 llvm_update_compile_flags(triton-mlir-opt)
 
 target_link_libraries(triton-mlir-opt PRIVATE

@@ -9,7 +9,7 @@ from ..backends.compiler import BaseBackend, GPUTarget
 from .. import __version__, knobs
 from flagtree import _flagprism  # FlagPrism
 from ..runtime.autotuner import OutOfResources
-from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
+from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key, _is_complete_kernel_cache
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
 from .errors import MLIRCompilationError
@@ -261,9 +261,9 @@ def compile(src, target=None, options=None, _env_vars=None):
     file_name = src.name[:150]
     metadata_filename = f"{file_name}.json"
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
-    metadata_path = metadata_group.get(metadata_filename)
+    binary_filename = f"{file_name}.{backend.binary_ext}"
     always_compile = knobs.compilation.always_compile
-    if not always_compile and metadata_path is not None:
+    if not always_compile and _is_complete_kernel_cache(metadata_group, metadata_filename, binary_filename):
         # cache hit!
         res = CompiledKernel(src, metadata_group, hash)
         if compilation_listener:
@@ -365,8 +365,8 @@ def compile(src, target=None, options=None, _env_vars=None):
             module=next_module,
             metadata=metadata,
         )
-        # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
-        if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
+        # Binary-only caches must retain this backend's executable format.
+        if (not store_only_binary) or (ext in ("cubin", "hsaco", "json", backend.binary_ext)):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
         if fn_dump_manager is not None:
             fn_dump_manager.put(next_module, ir_filename)
