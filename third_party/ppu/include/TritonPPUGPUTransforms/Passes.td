@@ -64,4 +64,35 @@ def TlePromoteAsyncLoadToAIUPass : Pass<"tle-promote-async-load-to-aiu", "mlir::
   let dependentDialects = ["mlir::triton::TritonDialect"];
 }
 
+
+def TritonPPUTleLowerTmaCopy : Pass<"tritonppu-tle-lower-tma-copy", "mlir::ModuleOp"> {
+  let summary = "Rewrite TLE tensor-descriptor copies for PPU";
+
+  let description = [{
+    Rewrites ttg.tma_copy (tle.gpu.copy with a tensor descriptor) to the
+    pointer form of the transfer: a descriptor load or store paired with a
+    store or load through tle.local_pointers over the whole shared buffer.
+    PPU has no TMA unit; the descriptor accesses become bounds-checked pointer
+    accesses in the descriptor-to-pointer rewrite, which must run afterwards.
+  }];
+
+  let dependentDialects = ["mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
+
+def TritonPPUTleZeroPadDescriptorCopies : Pass<"tritonppu-tle-zero-pad-descriptor-copies", "mlir::ModuleOp"> {
+  let summary = "Zero-fill the pointer loads of TLE descriptor copies on PPU";
+
+  let description = [{
+    After the descriptor-to-pointer rewrite, the loads created by
+    tritonppu-tle-lower-tma-copy fill out-of-bounds elements with
+    select(padding, nan, 0). cp.async can only fill with zero, so the fill
+    becomes the zero constant and a device assert checks that the descriptor
+    does not pad with NaN.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 #endif

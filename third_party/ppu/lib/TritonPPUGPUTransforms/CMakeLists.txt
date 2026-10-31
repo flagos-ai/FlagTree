@@ -2,10 +2,17 @@ add_triton_library(TritonPPUGPUTransforms
   AcceleratePPUMatmul.cpp
   AIULowering.cpp
   TlePromoteAsyncLoadToAIU.cpp
+  TleLowerTmaCopy.cpp
 
   DEPENDS
   TritonPPUGPUTransformsIncGen
   TritonGPUIR
+  TritonNvidiaGPUIR
+
+  LINK_LIBS PUBLIC
+  TritonGPUIR
+  TritonNvidiaGPUIR
+  MLIRSCFDialect
 )
 
 target_include_directories(TritonPPUGPUTransforms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)

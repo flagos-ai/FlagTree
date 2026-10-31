@@ -41,9 +41,7 @@ from pathlib import Path
 # TLE ops the PPU backend has no lowering for, mapped to the TLE API that emits
 # them. Checked on the frontend-emitted TTIR so the error names the API the user
 # called instead of surfacing as an opaque MLIR legalization failure much later.
-# ttg.tma_copy reaches TTIR only from the TLE builtins.
 PPU_UNSUPPORTED_TLE_OPS = {
-    "ttg.tma_copy": "tle.gpu.copy.tensor_descriptor",
     "tle.distributed_barrier": "tle.distributed_barrier",
     "tle.remote_pointers": "tle.remote",
 }
@@ -60,9 +58,17 @@ def reject_unsupported_tle(mod):
         if feature is not None:
             features.add(feature)
         # PPU has hardware named barriers but no mbarrier: barrier_wait/arrive
-        # without phaseIdx are supported, the phased forms are not.
+        # without phaseIdx are supported, the phased forms are not, nor is a
+        # descriptor copy that signals an mbarrier on completion.
         if name in ("tle.barrier.wait", "tle.barrier.arrive") and op.get_str_attr("backend") == "mbarrier":
             features.add("tle.gpu.barrier_" + name.split(".")[-1] + "(phaseIdx=...)")
+        if name == "ttg.tma_copy":
+            # Operands: descriptor, buffer, coordinates and, with a completion
+            # barrier, the barrier: a second shared-memory descriptor.
+            memdescs = sum(
+                str(op.get_operand(i).get_type()).startswith("!ttg.memdesc") for i in range(op.get_num_operands()))
+            if memdescs > 1:
+                features.add("tle.gpu.copy(barrier=...)")
 
     mod.walk(visit)
     if features:
@@ -256,6 +262,24 @@ class PPUBackend(BaseBackend):
     def supports_target(target: GPUTarget):
         return target.backend == "cuda"
 
+    # A TLE descriptor copy becomes a bounds-checked pointer copy on PPU (no
+    # TMA unit). The cache key records what makes it a vectorized cp.async: a
+    # 16-byte aligned base, and the dimensions whose extent is a multiple of
+    # 16 elements, whose bounds mask is then constant over every vector.
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        bits = int(arg.base.data_ptr() % 16 == 0)
+        for dim, extent in enumerate(arg.shape):
+            if extent % 16 == 0:
+                bits |= 2 << dim
+        return f"ppuD{bits}"
+
+    @staticmethod
+    def parse_attr(desc):
+        if desc.startswith("ppuD"):
+            return [["ppu.tensordesc_divisibility", int(desc[4:])]]
+        return BaseBackend.parse_attr(desc)
+
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"
         match = re.fullmatch(pattern, arch)
@@ -356,10 +380,12 @@ class PPUBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        ppu.passes.ttppugpuir.add_tle_lower_tma_copy(pm)
         ppu.passes.ttppugpuir.add_tle_promote_async_load_to_aiu(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         if capability // 10 < 9:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
+            ppu.passes.ttppugpuir.add_tle_zero_pad_descriptor_copies(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
         passes.ttir.add_reorder_broadcast(pm)
