@@ -2,7 +2,7 @@
 // Copyright 2026 FlagOS Contributors
 // A dead block deliberately has bottom AxisInfo. It must not be a coalescing
 // root or contribute a same-order memory dependency. Live paths still vectorize.
-// CHECK-DAG: #[[VEC:[[:alnum:]_]+]] = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+// CHECK-DAG: #[[$VEC:[[:alnum:]_]+]] = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 
 #blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
@@ -25,10 +25,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 
   // This dead load shares the live address chain and is found by slice closure.
   // CHECK-LABEL: tt.func @live_with_dead_dependency
-  // CHECK: tt.load {{.*}} : tensor<1024x!tt.ptr<f32>, #[[VEC]]>
+  // CHECK: tt.load {{.*}} : tensor<1024x!tt.ptr<f32>, #[[$VEC]]>
   // CHECK: scf.if
   // CHECK: tt.load
-  // CHECK: tt.store {{.*}} : tensor<1024x!tt.ptr<f32>, #[[VEC]]>
+  // CHECK: tt.store {{.*}} : tensor<1024x!tt.ptr<f32>, #[[$VEC]]>
   // CHECK: tt.return
   tt.func @live_with_dead_dependency(%base: !tt.ptr<f32> {tt.divisibility = 16 : i32}) {
     %false = arith.constant false
@@ -48,11 +48,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // A dynamic condition leaves both branches executable.
   // CHECK-LABEL: tt.func @dynamic_live_memory
   // CHECK: scf.if
-  // CHECK: tt.load {{.*}} : tensor<1024x!tt.ptr<f32>, #[[VEC]]>
-  // CHECK: tt.store {{.*}} : tensor<1024x!tt.ptr<f32>, #[[VEC]]>
+  // CHECK: tt.load {{.*}} : tensor<1024x!tt.ptr<f32>, #[[$VEC]]>
+  // CHECK: tt.store {{.*}} : tensor<1024x!tt.ptr<f32>, #[[$VEC]]>
   // CHECK: else
-  // CHECK: tt.load {{.*}} : tensor<1024x!tt.ptr<f32>, #[[VEC]]>
-  // CHECK: tt.store {{.*}} : tensor<1024x!tt.ptr<f32>, #[[VEC]]>
+  // CHECK: tt.load {{.*}} : tensor<1024x!tt.ptr<f32>, #[[$VEC]]>
+  // CHECK: tt.store {{.*}} : tensor<1024x!tt.ptr<f32>, #[[$VEC]]>
   // CHECK: tt.return
   tt.func @dynamic_live_memory(%base: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %condition: i1) {
     scf.if %condition {
