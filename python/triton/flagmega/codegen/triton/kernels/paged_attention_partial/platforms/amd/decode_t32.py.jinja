@@ -1,0 +1,9 @@
+{#- AMD: issue the V tile load next to the K tile load. Otherwise the backend
+    drains the K loads before the score/softmax math and only then issues V,
+    so each tile waits for memory twice; the arithmetic is unchanged. #}
+{% set paged_attention_partial_variant = "decode_t32" %}
+{% set paged_attention_partial_issue_value_with_key = true %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

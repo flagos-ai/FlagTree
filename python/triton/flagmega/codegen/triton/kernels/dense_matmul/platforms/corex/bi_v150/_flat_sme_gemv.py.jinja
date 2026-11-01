@@ -1,0 +1,69 @@
+from triton.experimental.tle.language.gpu.iluvatar import sme
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls if call.corex_flat_sme_gemv is defined %}
+{% if call.local_n_capacity >= 512 %}
+{% include "kernels/dense_matmul/platforms/corex/bi_v150/_wide_sme_gemv.py.jinja" %}
+{% else %}
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    # Two adjacent warps own the two K16 groups for each N32 tile.
+    ce: tl.constexpr = tle.gpu.BlockEncoding([1,1],[1,64],[16,1],[1,0])
+    ae: tl.constexpr = tle.gpu.BlockEncoding([1,8],[32,2],[8,2],[1,0])
+    cp = tle.gpu.set_layout(tl.arange(0,16)[:,None],ce)
+    group = cp%2
+    tile = cp//2
+    arena = tle.gpu.alloc([32768],dtype=tl.bfloat16,
+        layout=tle.gpu.swizzled_shared_layout(1,1,1,[0],1,[1],[1],[0]),nv_mma_shared_layout=False)
+    base = tle.gpu.local_ptr(arena,(0,))
+    n = tl.arange(0,256)[:,None]
+    k = tl.arange(0,64)[None,:]
+    indices = tle.gpu.set_layout(tl.broadcast_to((k//16)*4096+n*16+k%16,[256,64]),ae)
+    # Four K16 payloads occupy each K64 generation; keep two generations live.
+    for ns in range(0,{{ call.local_n_capacity }},256):
+        active_rows = tl.minimum({{ call.local_n_capacity }}-ns,256)
+        weight = {{ call.corex_flat_sme_gemv.weight }} + ns*16
+        acc = tle.gpu.set_layout(tl.zeros([256,64],tl.float32),ae)
+        for initial in tl.static_range(2):
+            off = (initial*4+group)*{{ call.corex_flat_sme_gemv.weight_k_group_stride }}+tile*512
+            for kpart in tl.static_range(2):
+                sme.copy(weight+off+kpart*2*{{ call.corex_flat_sme_gemv.weight_k_group_stride }},base+initial*16384+(group+kpart*2)*4096+tile*512,active=tile*32+32<=active_rows)
+        for step in range({{ call.local_k_capacity//64 }}):
+            slot=(step%2)*16384
+            if step<{{ call.local_k_capacity//64-2 }}:
+                sme.wait(2)
+            else:
+                sme.wait(0)
+            matrix=tl.load(tle.gpu.set_layout(base+slot+indices,ae),mask=n//32*32+32<=active_rows,other=0).to(tl.float32)
+            # Tail rows which lack a complete N32 transfer use their actual packed loads.
+            direct=tl.load(tle.gpu.set_layout(weight+(step*4+k//16)*{{ call.corex_flat_sme_gemv.weight_k_group_stride }}+n*16+k%16,ae),mask=(n<active_rows)&(n//32*32+32>active_rows),other=0).to(tl.float32)
+            matrix=tl.where(n//32*32+32<=active_rows,matrix,direct)
+            source=tl.load(tle.gpu.set_layout({{ call.corex_flat_sme_gemv.source }}+step*64+tl.arange(0,64),tle.gpu.SlicedEncoding(0,ae))).to(tl.float32)
+            acc=tle.gpu.set_layout(acc+matrix*source[None,:],ae)
+            sme.wait(2,drain_reads=True)
+            if step<{{ call.local_k_capacity//64-2 }}:
+                off=((step+2)*4+group)*{{ call.corex_flat_sme_gemv.weight_k_group_stride }}+tile*512
+                for kpart in tl.static_range(2):
+                    sme.copy(weight+off+kpart*2*{{ call.corex_flat_sme_gemv.weight_k_group_stride }},base+slot+(group+kpart*2)*4096+tile*512,active=tile*32+32<=active_rows)
+        sme.wait(0,drain_reads=True)
+{% if call.corex_flat_sme_gemv.strided_k16_fold | default(false) %}
+        # Scalar packed ABIs originally fold K0/K16/K32/K48 registers first.
+        folds=tl.trans(acc.reshape(256,4,16),(0,2,1)).reshape(256,16,2,2)
+        even,odd=tl.split(folds)
+        v0,v2=tl.split(even)
+        v1,v3=tl.split(odd)
+        partials=((v0+v1)+v2)+v3
+{% else %}
+        # Keep the original sequential four-register fold and XOR 8/4/2/1
+        # while the consuming warps retain their accumulator ownership.
+        partials=tl.sum(acc.reshape(256,16,4),2)
+{% endif %}
+        partials=tl.sum(partials.reshape(256,2,8),1)
+        partials=tl.sum(partials.reshape(256,2,4),1)
+        partials=tl.sum(partials.reshape(256,2,2),1)
+        partials=tl.sum(partials.reshape(256,2,1),1)
+        result=partials.reshape(256)
+        tl.store(tle.gpu.set_layout({{ call.corex_flat_sme_gemv.result }}+ns+tl.arange(0,256),tle.gpu.SlicedEncoding(1,ae)),result.to({{ call.output_type }}),mask=tl.arange(0,256)<active_rows)
+
+{% endif %}
+{% endfor %}

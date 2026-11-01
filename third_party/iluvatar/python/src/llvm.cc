@@ -1,3 +1,7 @@
+#ifdef __ILUVATAR_TLE__
+#include "Support/Convergence.h"
+#include "Support/FPContract.h"
+#endif
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
@@ -296,6 +300,10 @@ std::string translateLLVMIRToASM(llvm::Module &module,
                                  const std::string &features,
                                  const std::vector<std::string> &flags,
                                  bool enable_fp_fusion, bool isObject) {
+#ifdef __ILUVATAR_TLE__
+  mlir::triton::iluvatar_tle::ScopedFPContract fpContract(triple, enable_fp_fusion);
+  mlir::triton::iluvatar_tle::propagateConvergence(module);
+#endif
   using namespace mlir;
   // options
   auto options = llvm::cl::getRegisteredOptions();
@@ -572,6 +580,9 @@ void init_triton_llvm(py::module &&m) {
       [](llvm::Module *mod, const llvm::OptimizationLevel &opt,
          std::string arch, std::string features, std::vector<std::string> flags,
          bool enable_fp_fusion) {
+#ifdef __ILUVATAR_TLE__
+        mlir::triton::iluvatar_tle::propagateConvergence(*mod);
+#endif
         mlir::triton::tools::installLLVMWarningFilter(mod->getContext());
         if (mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT"))
           return;

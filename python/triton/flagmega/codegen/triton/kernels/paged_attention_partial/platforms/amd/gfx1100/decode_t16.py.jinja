@@ -1,0 +1,13 @@
+{#- gfx1100: the AMD per-row decode_t16 partial, with each tile reduced to one
+    dependent memory round trip (the next tile's block ids load with this
+    tile's K/V) and branch-free clamped tile loads. W7900's long-context
+    partial is latency-bound on the block-id -> K/V chain. #}
+{% set paged_attention_partial_variant = "decode_t16" %}
+{% set paged_attention_partial_issue_value_with_key = true %}
+{% set paged_attention_partial_per_row_softmax = true %}
+{% set paged_attention_partial_unmasked_tiles = true %}
+{% set paged_attention_partial_prefetch_block_ids = true %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

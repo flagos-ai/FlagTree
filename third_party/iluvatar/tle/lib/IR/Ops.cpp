@@ -5,6 +5,8 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 
@@ -17,6 +19,44 @@ namespace mlir::triton::iluvatar_tle {
 namespace {
 constexpr int kSharedMemoryAddressSpace = 3;
 } // namespace
+
+LogicalResult SmeCopyOp::verify() {
+  if (getNbytes() != 512 && getNbytes() != 1024)
+    return emitOpError("nbytes must be 512 or 1024");
+  auto src = dyn_cast<triton::PointerType>(getElementTypeOrSelf(getSrc()));
+  auto dst = dyn_cast<triton::PointerType>(getElementTypeOrSelf(getDst()));
+  if (!src || src.getAddressSpace() != 1 || !dst ||
+      dst.getAddressSpace() != kSharedMemoryAddressSpace)
+    return emitOpError("requires global source and shared destination pointers");
+  auto srcTensor = dyn_cast<RankedTensorType>(getSrc().getType());
+  auto dstTensor = dyn_cast<RankedTensorType>(getDst().getType());
+  if (bool(srcTensor) != bool(dstTensor) ||
+      (srcTensor && srcTensor.getShape() != dstTensor.getShape()))
+    return emitOpError("source and destination pointer shapes must match");
+  if (!getElementTypeOrSelf(getByteOffset()).isInteger(32) ||
+      !getElementTypeOrSelf(getActive()).isInteger(1))
+    return emitOpError("requires int32 byte offset and bool predicate");
+  for (Value value : {getSrc(), getDst(), getByteOffset(), getActive()}) {
+    auto tensor = dyn_cast<RankedTensorType>(value.getType());
+    if (!tensor || !tensor.getEncoding())
+      continue;
+    auto layout = ttg::toLinearLayout(tensor);
+    auto lane = StringAttr::get(getContext(), "lane");
+    auto bases = layout.getBases().find(lane);
+    if (bases == layout.getBases().end())
+      continue;
+    for (const auto &basis : bases->second)
+      if (llvm::any_of(basis, [](int32_t offset) { return offset != 0; }))
+        return emitOpError("pointer, offset and predicate tensors must be warp-uniform");
+  }
+  return success();
+}
+
+LogicalResult SmeWaitOp::verify() {
+  if (getMaxPending() < 0 || getMaxPending() > 63)
+    return emitOpError("max_pending must be in [0, 63]");
+  return success();
+}
 
 void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
                           Value index, ArrayRef<int64_t> tileShape) {

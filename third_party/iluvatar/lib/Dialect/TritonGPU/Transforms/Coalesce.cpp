@@ -9,6 +9,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/CoalesceUtils.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#ifdef __ILUVATAR_TLE__
+#include "Transforms/ExplicitEncoding.h"
+#endif
 #include "triton/Tools/StrUtil.h"
 #include "llvm/Support/Debug.h"
 
@@ -93,6 +96,12 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
         isPtrTensor = isa<PointerType>(tensorType.getElementType());
       if (!isPtrTensor)
         return;
+#ifdef __ILUVATAR_TLE__
+      if (Attribute encoding = iluvatar_tle::explicitMemoryEncoding(curr)) {
+        curr->setAttr("tle.explicit_memory_encoding", encoding);
+        return;
+      }
+#endif
       int numWarps = lookupNumWarps(curr);
 
       auto tensorType = cast<RankedTensorType>(ptr.getType());

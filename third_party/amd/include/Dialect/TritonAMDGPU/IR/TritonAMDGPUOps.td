@@ -850,12 +850,16 @@ def InitBarrierOp : TT_AMDGPU_Op<"init_barrier"> {
   let description = [{
       Initializes a shared memory allocation with mbarrier information.
       `alloc` is a descriptor to the shared memory allocation. `count` is the
-      number of arrives expected by the barrier.
+      number of arrives expected by the barrier. `init_phase` seeds the barrier
+      phase bit (default 0); set it to 1 to start the barrier already "flipped"
+      (e.g. a producer/consumer `empty` barrier whose slots start free), which
+      decouples the initial state from the number of participating threads.
   }];
 
   let arguments = (ins
     Arg<TTG_MemDescType, "", [MemWrite<SharedMemory>]>:$alloc,
-    I32Attr:$count
+    I32Attr:$count,
+    DefaultValuedAttr<I32Attr, "0">:$init_phase
   );
   let assemblyFormat = "$alloc `,` $count attr-dict `:` qualified(type($alloc))";
   let hasVerifier = 1;

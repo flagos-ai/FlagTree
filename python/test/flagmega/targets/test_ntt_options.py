@@ -76,7 +76,7 @@ def test_ntt_options_round_trip_and_configure_backend_rules():
     assert target.packing_policy.vector_bytes == 32
     assert target.packing_policy.k_pack == 4
     assert target.distribution_policy.identity.startswith(
-        "ntt-auto-distributed/v8("
+        "ntt-auto-distributed/v11("
     )
     assert "block_bytes=128" in target.distribution_policy.identity
 

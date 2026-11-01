@@ -228,3 +228,94 @@ def test_permuted_vector_packing_transfers_without_cpu_reordering(tmp_path, devi
     actual = load_source_rdata(assets, index, module, chip=0, device=device).cpu().numpy()
     np.testing.assert_array_equal(actual[:expected.numel() * 4], expected.view(torch.uint8).numpy().reshape(-1))
     verify_rdata(assets, module=module)
+
+
+class _FakeDriverFunction:
+    def __init__(self, calls, name, status=0, pointer=None):
+        self.calls, self.name, self.status, self.pointer = calls, name, status, pointer
+        self.argtypes = None
+
+    def __call__(self, *args):
+        self.calls.append((self.name, args))
+        if self.pointer is not None:
+            args[0]._obj.value = self.pointer
+        return self.status
+
+
+class _FakeDriver:
+    POINTER = 0x7F00DEAD0000
+
+    def __init__(self, names, *, register=0, get_pointer=0, unregister=0):
+        self.calls = []
+        register_name, pointer_name, unregister_name = names
+        setattr(self, register_name, _FakeDriverFunction(self.calls, "register", register))
+        setattr(self, pointer_name, _FakeDriverFunction(self.calls, "get_pointer", get_pointer, self.POINTER))
+        setattr(self, unregister_name, _FakeDriverFunction(self.calls, "unregister", unregister))
+
+
+_DRIVERS = {
+    "hip": ("6.4", "libamdhip64.so",
+            ("hipHostRegister", "hipHostGetDevicePointer", "hipHostUnregister"), 0x03),
+    "cuda": (None, "libcuda.so.1",
+             ("cuMemHostRegister_v2", "cuMemHostGetDevicePointer_v2", "cuMemHostUnregister"), 0x0B),
+}
+
+
+def _registered_file(tmp_path, monkeypatch, build, **statuses):
+    from triton.flagmega.runtime import source_rdata
+    hip_version, library, names, _ = _DRIVERS[build]
+    driver = _FakeDriver(names, **statuses)
+    opened = []
+    monkeypatch.setattr(torch.version, "hip", hip_version, raising=False)
+    monkeypatch.setattr(source_rdata.ctypes, "CDLL", lambda name: opened.append(name) or driver)
+    path = tmp_path / "source.bin"
+    path.write_bytes(bytes(range(64)))
+    return source_rdata._RegisteredFile, path, driver, opened, library
+
+
+@pytest.mark.parametrize("build", ["hip", "cuda"])
+def test_source_pages_register_through_the_build_driver(tmp_path, monkeypatch, build):
+    registered_file, path, driver, opened, library = _registered_file(tmp_path, monkeypatch, build)
+    mapping = registered_file(path)
+    assert opened == [library]
+    assert mapping.device_pointer == driver.POINTER
+    (register, (address, nbytes, flags)), (get_pointer, (_, pointer_address, pointer_flags)) = driver.calls
+    assert (register, get_pointer) == ("register", "get_pointer")
+    assert (address, nbytes, flags) == (mapping.address, 64, _DRIVERS[build][3])
+    assert (pointer_address, pointer_flags) == (mapping.address, 0)
+    mapping.close()
+    assert driver.calls[-1] == ("unregister", (mapping.address,))
+    assert mapping.array._mmap.closed
+
+
+@pytest.mark.parametrize("build", ["hip", "cuda"])
+def test_source_page_registration_failure_releases_the_mapping(tmp_path, monkeypatch, build):
+    registered_file, path, driver, _, _ = _registered_file(tmp_path, monkeypatch, build, register=1)
+    arrays = []
+    monkeypatch.setattr(np, "memmap", lambda *args, _memmap=np.memmap, **kwargs:
+                        arrays.append(_memmap(*args, **kwargs)) or arrays[-1])
+    with pytest.raises(ArtifactError, match="cannot register"):
+        registered_file(path)
+    assert [name for name, _ in driver.calls] == ["register"]
+    assert arrays[0]._mmap.closed
+
+
+@pytest.mark.parametrize("build", ["hip", "cuda"])
+def test_source_page_mapping_failure_unregisters(tmp_path, monkeypatch, build):
+    registered_file, path, driver, _, _ = _registered_file(tmp_path, monkeypatch, build, get_pointer=1)
+    arrays = []
+    monkeypatch.setattr(np, "memmap", lambda *args, _memmap=np.memmap, **kwargs:
+                        arrays.append(_memmap(*args, **kwargs)) or arrays[-1])
+    with pytest.raises(ArtifactError, match="cannot map"):
+        registered_file(path)
+    assert [name for name, _ in driver.calls] == ["register", "get_pointer", "unregister"]
+    assert arrays[0]._mmap.closed
+
+
+@pytest.mark.parametrize("build", ["hip", "cuda"])
+def test_source_page_unregister_failure_still_closes_the_mapping(tmp_path, monkeypatch, build):
+    registered_file, path, driver, _, _ = _registered_file(tmp_path, monkeypatch, build, unregister=1)
+    mapping = registered_file(path)
+    with pytest.raises(ArtifactError, match="cannot unregister"):
+        mapping.close()
+    assert mapping.array._mmap.closed

@@ -8,6 +8,10 @@ import re
 from collections.abc import Mapping
 from math import prod
 
+from triton.flagmega.codegen.triton.amd_prefetch import (
+    add_next_invocation_qkv_prefetch,
+    add_split_k_weight_tile_prefetch,
+)
 from triton.flagmega.codegen.triton.function_call import (
     emit_function_call_arguments,
 )
@@ -49,8 +53,21 @@ from .kernel_programs import describe_kernel_programs
 TIR_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.triton-package-descriptor/v1"
 
 
-def describe_tir_package(module: IRModule) -> dict[str, object]:
-    """Derive source-generation facts solely from executable TIR contracts."""
+def describe_tir_package(
+    module: IRModule, *, pool_function_arguments: bool = True,
+    specialize_readonly_layout: bool = False,
+) -> dict[str, object]:
+    """Derive source-generation facts solely from executable TIR contracts.
+
+    ``pool_function_arguments`` forwards the reusable-function calling
+    convention to the source schedule; see
+    ``build_pipeline_source_schedule``. A backend whose device functions take
+    one pointer per buffer clears it.
+
+    ``specialize_readonly_layout`` enables Triton's proved device weight
+    addresses. C++ describes canonical calls here and selects its own layout
+    later, so sharing this descriptor builder does not repack its pool twice.
+    """
 
     try:
         verify_module(module)
@@ -145,6 +162,7 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
             )
         ),
         _instantiate_descriptor_requests,
+        pool_function_arguments=pool_function_arguments,
     )
     pipeline_schedule = source_schedule if source_schedule and source_schedule["stages"] else None
     if source_schedule is not None:
@@ -206,6 +224,23 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
                 call["partial_owner_index"] = "0"
 
     platform, architecture = module_template_target(module)
+    readonly_layout = None
+    if platform == "corex" and architecture == "bi_v150" and int(plan_launch["num_warps"]) == 16:
+        from triton.flagmega.codegen.triton.corex_sme_abi import attach_flat_sme_calls
+        attach_flat_sme_calls(encoded_calls, source_schedule)
+        if specialize_readonly_layout:
+            from triton.flagmega.codegen.triton.corex_readonly_layout import select_readonly_layouts
+            readonly_layout = select_readonly_layouts(module, wrappers)
+    amd_prefetch = add_next_invocation_qkv_prefetch(
+        source_schedule["device_functions"] if source_schedule else (),
+        encoded_calls,
+        platform=platform,
+        architecture=architecture,
+    )
+    if cooperative:
+        amd_prefetch = add_split_k_weight_tile_prefetch(
+            wrappers, mesh, platform=platform, architecture=architecture,
+        ) or amd_prefetch
     if (platform != "nvidia" or architecture != "sm90") and any(
         call.get("decode_schedule") == "bf16_mma" for calls in encoded_calls.values() for call in calls
     ):
@@ -318,9 +353,11 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         }),
         "replicated_block_runtime_pool": replicated_block_runtime_pool,
         "render_calls": wrappers,
+        **({"triton_readonly_device_layout": readonly_layout} if readonly_layout is not None else {}),
         "entry_events": entry_events,
         "pipeline_schedule": pipeline_schedule,
         "device_functions": source_schedule["device_functions"] if source_schedule else [],
+        "amd_prefetch": amd_prefetch,
         "use_tle": pipeline_schedule is not None or cooperative,
         "kernel_templates": kernel_templates,
         "kernel_template_specs": plain_package_value(raw_templates),

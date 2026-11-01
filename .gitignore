@@ -110,6 +110,9 @@ docs/sg_execution_times.rst
 !python/tutorials/*.py
 !python/tutorials/*.rst
 
+# Figure benchmark data
+**/figures/data/
+
 # clangd index. (".clangd" is a config file now, thus trailing slash)
 .clangd/
 .cache

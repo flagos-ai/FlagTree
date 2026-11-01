@@ -40,6 +40,7 @@ from .core import (
     reinterpret_tensor_map,
 )
 from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, DotOperandEncoding, SlicedEncoding,
+                    IluvatarSmeBlockEncoding, iluvatar_sme_shared_layout,
                     shared_layout, swizzled_shared_layout, tensor_memory_layout, nv_mma_shared_layout, scope,
                     buffered_tensor, buffered_tensor_type, barrier, barrier_type, smem, tmem, PENDING, READY)
 
@@ -68,6 +69,8 @@ __all__ = [
     "layout",
     "distributed_encoding",
     "BlockEncoding",
+    "IluvatarSmeBlockEncoding",
+    "iluvatar_sme_shared_layout",
     "MmaEncoding",
     "DotOperandEncoding",
     "SlicedEncoding",

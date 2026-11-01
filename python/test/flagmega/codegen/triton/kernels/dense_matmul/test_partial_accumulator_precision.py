@@ -10,6 +10,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.selection import override_plan
+from python.test.flagmega.devices import requires_nvidia_sm90
 
 
 def matmul_module(wide):
@@ -40,7 +41,7 @@ def matmul_module(wide):
                  metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 @pytest.mark.parametrize("wide", [False, True])
 def test_partition_rounding_does_not_erase_cancellation_residue(tmp_path, wide):
     proposed = Compiler().compile(matmul_module(wide), stop_after="propose-tir").module

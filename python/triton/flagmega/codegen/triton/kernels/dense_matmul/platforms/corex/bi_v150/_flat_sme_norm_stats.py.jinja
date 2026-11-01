@@ -1,0 +1,67 @@
+from triton.experimental.tle.language.gpu.iluvatar import sme
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls if call.corex_flat_sme_down is defined %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    # Four N32 tiles and four K warp groups each consume their own copies.
+    p = tl.arange(0,16)[:,None]
+    ce: tl.constexpr = tle.gpu.BlockEncoding([1,1],[1,64],[16,1],[1,0])
+    ae: tl.constexpr = tle.gpu.BlockEncoding([1,8],[32,2],[4,4],[1,0])
+    cp = tle.gpu.set_layout(p,ce)
+    arena = tle.gpu.alloc([32768],dtype=tl.bfloat16,
+        layout=tle.gpu.swizzled_shared_layout(1,1,1,[0],1,[1],[1],[0]),nv_mma_shared_layout=False)
+    base = tle.gpu.local_ptr(arena,(0,))
+    n = tl.arange(0,128)[:,None]
+    k = tl.arange(0,128)[None,:]
+    indices = tle.gpu.set_layout(tl.broadcast_to((k//16)*2048+n*16+k%16,[128,128]),ae)
+    acc = tle.gpu.set_layout(tl.zeros([128,128],tl.float32),ae)
+    weight = {{ call.corex_flat_sme_down.weight }}
+    for preload in tl.static_range(2):
+        group = cp%4
+        tile = cp//4
+        off = (preload*8+group)*{{ call.corex_flat_sme_down.weight_k_group_stride }}+tile*512
+        sme.copy(weight+off,base+preload*16384+group*2048+tile*512,active=tile<{{ call.local_n_capacity//32 }})
+        sme.copy(weight+off+4*{{ call.corex_flat_sme_down.weight_k_group_stride }},base+preload*16384+(group+4)*2048+tile*512,active=tile<{{ call.local_n_capacity//32 }})
+    # Expose four consecutive pipeline generations to the scheduler while
+    # preserving the K128 accumulator order and the two-slot lifetime.
+    for step in tl.range(0,{{ call.local_k_capacity//128 }},loop_unroll_factor=4):
+        slot = (step%2)*16384
+        if step<{{ call.local_k_capacity//128-2 }}:
+            sme.wait(2)
+        else:
+            sme.wait(0)
+        matrix = tl.load(tle.gpu.set_layout(base+slot+indices,ae),mask=tl.arange(0,128)[:,None]<{{ call.local_n_capacity }},other=0).to(tl.float32)
+        dense_local_k_offsets = step*128+tl.arange(0,128)
+        value = tl.load({{ call.corex_flat_sme_down.source }}+dense_local_k_offsets).to(tl.float32)
+        acc = tle.gpu.set_layout(acc+matrix*value[None,:],ae)
+        sme.wait(2,drain_reads=True)
+        if step<{{ call.local_k_capacity//128-2 }}:
+            group = cp%4
+            tile = cp//4
+            off = ((step+2)*8+group)*{{ call.corex_flat_sme_down.weight_k_group_stride }}+tile*512
+            sme.copy(weight+off,base+slot+group*2048+tile*512,active=tile<{{ call.local_n_capacity//32 }})
+            sme.copy(weight+off+4*{{ call.corex_flat_sme_down.weight_k_group_stride }},base+slot+(group+4)*2048+tile*512,active=tile<{{ call.local_n_capacity//32 }})
+    sme.wait(0,drain_reads=True)
+    # Preserve the four-register sequential fold, then XOR 16/8/4/2/1,
+    # while keeping the warp-owned consumer mapping through each fold.
+    partials = tl.sum(acc.reshape(128,32,4),2)
+    partials = tl.sum(partials.reshape(128,2,16),1)
+    partials = tl.sum(partials.reshape(128,2,8),1)
+    partials = tl.sum(partials.reshape(128,2,4),1)
+    partials = tl.sum(partials.reshape(128,2,2),1)
+    partials = tl.sum(partials.reshape(128,2,1),1)
+    projected = partials.reshape(128).to({{ call.projection_type }}).to(tl.float32)
+    dense_local_n_offsets = tl.arange(0,128)
+    residual = tl.load({{ call.residual }}+({{ call.residual_offset }}),mask=dense_local_n_offsets<{{ call.local_n_capacity }},other=0)
+{% for dtype in call.addend_cast_types %}
+    residual = residual.to({{ dtype }})
+{% endfor %}
+    value = (projected+residual).to({{ call.output_type }})
+    tl.store({{ call.result }}+({{ call.result_offset }}),value,mask=(dense_local_n_offsets<{{ call.local_n_capacity }}) & ({{ call.result_writer_active }}))
+    value = tl.where(dense_local_n_offsets<{{ call.local_n_capacity }},value.to(tl.float32),0.)
+    pairs = tl.reshape(value,[2,64])
+    square = tl.sum(pairs*pairs,0)
+    folded = tle.gpu.set_layout(tl.reshape(square,[32,2]),tle.gpu.BlockEncoding([1,1],[32,2],[16,1],[0,1]))
+    tl.store({{ call.stats }}+({{ call.stats_offset }}),tl.sum(tl.sum(folded,1),0),mask={{ call.stats_writer_active }})
+{% endfor %}

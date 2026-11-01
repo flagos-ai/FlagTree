@@ -9,9 +9,10 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import requires_nvidia_sm90
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 @pytest.mark.parametrize("dtype,values", [("bool", (True, False)), ("int32", (17, -3)),
                                          ("float32", (1.25, -2.5))])
 def test_rank_zero_tensor_load_uses_scalar_pointer_and_mask(tmp_path, dtype, values):

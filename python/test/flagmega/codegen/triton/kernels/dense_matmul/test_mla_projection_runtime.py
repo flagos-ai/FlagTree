@@ -12,9 +12,10 @@ from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
 from python.test.flagmega.ir.ops.nn.test_mla_projection import graph
+from python.test.flagmega.devices import requires_nvidia_sm90
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 @pytest.mark.parametrize("direction", ["absorb_query", "expand_value"])
 @pytest.mark.parametrize("lanes", [(), (2, 4)])
 @pytest.mark.parametrize("fp8", [False, True])

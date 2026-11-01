@@ -1,0 +1,88 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% macro consume(kv) %}
+        FTT_UNROLL
+        for(int u=0;u<4;u++){
+            const auto a=ftt::load_run<8>(act+u*32);
+            const auto w=ftt::load_run<8>(&buf[warp][cur+u][lane*8]);
+            const int s={{ "u" if kv else "u%2" }};
+            FTT_UNROLL
+            for(int p=0;p<4;p++)partial[s]=ftt::dot2_step(w,a,p,partial[s]);
+        }
+        act+=128;
+{% endmacro %}
+{% macro consume_batches(kv) %}
+    #pragma unroll 1
+    for(int g=0;g<{{ call.local_k_capacity // call.k_lane - 16 }};g+=8){
+{{ consume(kv) }}
+        ftt::arch::sme_read_drain();
+        if(lane==0){
+            FTT_UNROLL
+            for(int u=0;u<4;u++)ftt::arch::sme_copy_block_from(&buf[warp][cur+u][0],src,(g+goff+16LL+u*2LL)*{{ call.weight_k_group_stride }}LL*2);
+            ftt::arch::sme_wait_pending<4>();
+        }
+        cur=4-cur;
+    }
+{{ consume(kv) }}
+    if(lane==0)ftt::arch::sme_wait_pending<0>();
+    cur=4-cur;
+{{ consume(kv) }}
+{% endmacro %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_source={{ call.source | cppexpr }};
+    auto *const ftt_weight={{ call.weight | cppexpr }};
+    auto *const buf=reinterpret_cast<ftt::bfloat16_t (*)[8][512]>(_ftt_sme_arena);
+    int warp=ftt_thread/64,lane=ftt_thread%64;
+    int tile=warp%8,goff=warp/8;
+    const auto src=ftt::arch::sme_source_for(ftt_weight+shard_index*{{ call.weight_owner_stride }}LL+tile*512LL,64);
+    const auto *act=ftt_source{% if call.cpp_sme_source_base | default(0) %}+{{ call.cpp_sme_source_base }}LL{% endif %}+goff*16+lane%2*8;
+    float partial[4]={};
+    if(lane==0){
+        FTT_UNROLL
+        for(int u=0;u<8;u++)ftt::arch::sme_copy_block_from(&buf[warp][u][0],src,(goff+u*2LL)*{{ call.weight_k_group_stride }}LL*2);
+        ftt::arch::sme_wait_pending<4>();
+    }
+    int cur=0;
+    if (tile < 4) {
+{{ consume_batches(false) }}
+    } else {
+{{ consume_batches(true) }}
+    }
+    float *cross=reinterpret_cast<float *>(&buf[warp][0][0]);
+    FTT_UNROLL
+    for(int s=0;s<2;s++){
+        float p=ftt::arch::lane_group_reduce_sum<2>(partial[s]);
+        if(lane%2==0)cross[s*32+lane/2]=p;
+    }
+    if(tile>=4){
+        FTT_UNROLL
+        for(int s=2;s<4;s++){
+            float p=ftt::arch::lane_group_reduce_sum<2>(partial[s]);
+            if(lane%2==0)cross[s*32+lane/2]=p;
+        }
+    }
+    ftt::arch::cta_sync();
+{% for output in call.outputs %}
+    {
+        auto *const ftt_result={{ output.result | cppexpr }};
+        for(ftt::dim_t qkv_out=ftt_thread;qkv_out<{{ output.local_n_capacity }}LL;qkv_out+=ftt_threads){
+            const ftt::dim_t qkv_local_n_offsets=qkv_out;
+            if({{ output.active | cppexpr }}){
+                float acc=0;
+                FTT_UNROLL
+                for(int gi=0;gi<{{ 4 if loop.index0==0 else 8 }};gi++){
+                    int tile_id=({{ output.weight_group_start }}*{{ call.n_lane }}+qkv_out)/32;
+                    int w=(gi%2)*8+tile_id;
+                    int s=gi/2;
+                    acc+=reinterpret_cast<float *>(&buf[w][0][0])[s*32+qkv_out%32];
+                }
+                ftt_result[{{ output.result_offset | cppexpr }}]=ftt::store_as(ftt_result,acc);
+            }
+        }
+    }
+{% endfor %}
+{% if not call.cpp_shared_exit_barrier_in_schedule | default(false) %}
+    ftt::arch::cta_sync();
+{% endif %}
+}

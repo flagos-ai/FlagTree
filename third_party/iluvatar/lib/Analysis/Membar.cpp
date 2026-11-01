@@ -256,6 +256,30 @@ bool blockHasOnlySmeAsyncCopies(Operation *op) {
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
+#ifdef __ILUVATAR_TLE__
+  if (op->getName().getStringRef() == "iluvatar_tle.sme_wait") {
+    auto pending = op->getAttrOfType<IntegerAttr>("max_pending");
+    if (pending && pending.getInt() == 0) {
+      // A terminal warp-local drain completes the issuer's queue, but other
+      // warps can still be writing an interval recycled as conversion scratch.
+      // Retain the completed destination intervals until a CTA rendezvous.
+      for (auto &[interval, writers] : blockInfo->syncWriteIntervals) {
+        if (llvm::any_of(writers, [](Operation *writer) {
+              return writer->getName().getStringRef() ==
+                     "iluvatar_tle.sme_copy";
+            })) {
+          Operation *copy = *llvm::find_if(writers, [](Operation *writer) {
+            return writer->getName().getStringRef() == "iluvatar_tle.sme_copy";
+          });
+          writers.clear();
+          writers.insert(copy);
+          writers.insert(op);
+        }
+      }
+      return;
+    }
+  }
+#endif
   if (isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op)
 #ifdef __ILUVATAR__
       || isIluvatarAluBarrier(op)
@@ -341,6 +365,27 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   // atomics on overlapping shared intervals do not require an extra CTA
   // barrier here.
   MembarFilterFn effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
+    // Flat SME callers own their per-warp copy/load/reuse protocol. A terminal
+    // drain remains visible to the ordinary overlap analysis, which supplies
+    // the CTA rendezvous when subsequent scratch uses recycle its interval.
+    if (lhs->getName().getStringRef() == "iluvatar_tle.sme_copy" ||
+        rhs->getName().getStringRef() == "iluvatar_tle.sme_copy")
+      return true;
+    auto isFlatSharedLoad = [](Operation *candidate) {
+      auto load = dyn_cast<triton::LoadOp>(candidate);
+      if (!load)
+        return false;
+      Type type = load.getPtr().getType();
+      if (auto tensor = dyn_cast<RankedTensorType>(type))
+        type = tensor.getElementType();
+      auto pointer = dyn_cast<triton::PointerType>(type);
+      return pointer && pointer.getAddressSpace() == 3;
+    };
+    if ((lhs->getName().getStringRef() == "iluvatar_tle.sme_wait" &&
+         isFlatSharedLoad(rhs)) ||
+        (rhs->getName().getStringRef() == "iluvatar_tle.sme_wait" &&
+         isFlatSharedLoad(lhs)))
+      return true;
     if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
         isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
       return true;

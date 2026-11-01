@@ -129,6 +129,7 @@ class CorexOptions:
     enable_fp_fusion: bool = True
     enable_reflect_ftz: bool = True  # ftz in libdevice
     launch_cooperative_grid: bool = False
+    supports_cooperative_grid: bool = False
     launch_pdl: bool = False
     # OCP only: fp8e5 always; fp8e4nv added for sm71 (ivcore11 SW) / sm89+.
     # fp8e4b15 is NVIDIA PTX-asm software format — not supported on Iluvatar.

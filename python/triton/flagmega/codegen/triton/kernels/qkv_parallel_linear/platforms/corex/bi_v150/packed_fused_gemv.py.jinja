@@ -1,0 +1,16 @@
+{% set corex_preserve_k_reduction = num_warps is defined and num_warps == 16 %}
+{% set all_render_calls = render_calls | default([]) %}
+{% set ns = namespace(batched=[], separate=[]) %}
+{% for call in all_render_calls %}
+{% if corex_preserve_k_reduction and call.family == "qkv_parallel_linear" and call.variant == "packed_fused_gemv" and call.block_k == 64 and call.tile_n >= 128 and call.n_lane in [4, 8] and call.k_lane == 16 and call.outputs | length == 3 and call.outputs[0].local_n_capacity == 128 and call.outputs[1].local_n_capacity == 64 and call.outputs[2].local_n_capacity == 64 and call.outputs[0].weight_group_start == 0 and call.outputs[1].weight_group_start * call.n_lane == 128 and call.outputs[2].weight_group_start * call.n_lane == 192 %}
+{% set ns.batched = ns.batched + [call] %}
+{% else %}
+{% set ns.separate = ns.separate + [call] %}
+{% endif %}
+{% endfor %}
+{% set render_calls = ns.batched %}
+{% if render_calls %}
+{% include "kernels/qkv_parallel_linear/platforms/corex/bi_v150/_batched_gemv.py.jinja" %}
+{% endif %}
+{% set render_calls = ns.separate %}
+{% include "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja" %}

@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img">
+<title>Request throughput incl. prefill (higher is better)</title>
+<desc>Qwen3-1.7B BF16, one BI-V150, batch one. Bars are measured medians. Each scenario starts at most 70°C; cooling before warmup is outside timing. CLI uses compiled token-scan prefill; vLLM uses batched prefill. Terminal I/O excluded.</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<g font-family="sans-serif" fill="#243343">
+<text x="85" y="37" font-size="24">Request throughput incl. prefill (higher is better)</text>
+<text x="85" y="64" font-size="14">BF16 / BI-V150 / batch 1 / 64 output tokens / host-visible timing / scenario start ≤70°C</text>
+<text x="85" y="89" font-size="14">Output tokens / complete request time, including prefill; not inverse decode latency.</text>
+<text x="85" y="113" font-size="14">CLI: token-scan prefill; vLLM: batched prefill. BF16 outputs may differ; CLI terminal I/O excluded.</text>
+<path d="M 85 540.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="545.0" text-anchor="end" font-size="13">0.0</text>
+<path d="M 85 461.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="466.0" text-anchor="end" font-size="13">28.3</text>
+<path d="M 85 382.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="387.0" text-anchor="end" font-size="13">56.7</text>
+<path d="M 85 303.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="308.0" text-anchor="end" font-size="13">85.0</text>
+<path d="M 85 224.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="229.0" text-anchor="end" font-size="13">113.4</text>
+<path d="M 85 145.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="150.0" text-anchor="end" font-size="13">141.7</text>
+<rect x="109.4" y="296.2" width="67.4" height="243.8" fill="#556579"/>
+<text x="143.1" y="288.2" text-anchor="middle" font-size="12">87.46</text>
+<rect x="186.9" y="205.3" width="67.4" height="334.7" fill="#198269"/>
+<text x="220.6" y="197.3" text-anchor="middle" font-size="12">120.08</text>
+<rect x="264.4" y="254.1" width="67.4" height="285.9" fill="#8252b3"/>
+<text x="298.1" y="246.1" text-anchor="middle" font-size="12">102.54</text>
+<text x="220.6" y="568" text-anchor="middle" font-size="14">Prompt 32</text>
+<rect x="380.7" y="308.6" width="67.4" height="231.4" fill="#556579"/>
+<text x="414.4" y="300.6" text-anchor="middle" font-size="12">83.00</text>
+<rect x="458.2" y="210.8" width="67.4" height="329.2" fill="#198269"/>
+<text x="491.9" y="202.8" text-anchor="middle" font-size="12">118.08</text>
+<rect x="535.7" y="398.1" width="67.4" height="141.9" fill="#8252b3"/>
+<text x="569.4" y="390.1" text-anchor="middle" font-size="12">50.91</text>
+<text x="491.9" y="568" text-anchor="middle" font-size="14">Prompt 128</text>
+<rect x="651.9" y="336.8" width="67.4" height="203.2" fill="#556579"/>
+<text x="685.6" y="328.8" text-anchor="middle" font-size="12">72.90</text>
+<rect x="729.4" y="256.9" width="67.4" height="283.1" fill="#198269"/>
+<text x="763.1" y="248.9" text-anchor="middle" font-size="12">101.53</text>
+<rect x="806.9" y="516.7" width="67.4" height="23.3" fill="#8252b3"/>
+<text x="840.6" y="508.7" text-anchor="middle" font-size="12">8.36</text>
+<text x="763.1" y="568" text-anchor="middle" font-size="14">Prompt 1024</text>
+<rect x="923.2" y="384.2" width="67.4" height="155.8" fill="#556579"/>
+<text x="956.9" y="376.2" text-anchor="middle" font-size="12">55.89</text>
+<rect x="1000.7" y="341.3" width="67.4" height="198.7" fill="#198269"/>
+<text x="1034.4" y="333.3" text-anchor="middle" font-size="12">71.27</text>
+<rect x="1078.2" y="528.9" width="67.4" height="11.1" fill="#8252b3"/>
+<text x="1111.9" y="520.9" text-anchor="middle" font-size="12">3.99</text>
+<text x="1034.4" y="568" text-anchor="middle" font-size="14">Prompt 2048</text>
+<text x="16" y="129" font-size="13">tokens/s</text>
+<rect x="85" y="588" width="14" height="14" fill="#556579"/>
+<text x="107" y="600" font-size="13">Native vLLM (FULL CUDA Graph)</text>
+<rect x="545" y="588" width="14" height="14" fill="#198269"/>
+<text x="567" y="600" font-size="13">FlagMega C++ decode (worker CUDA Graph)</text>
+<rect x="85" y="613" width="14" height="14" fill="#8252b3"/>
+<text x="107" y="625" font-size="13">FlagMega chat CLI (CUDA Graph, no vLLM)</text>
+</g>
+</svg>

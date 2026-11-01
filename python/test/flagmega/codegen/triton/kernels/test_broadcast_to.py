@@ -12,6 +12,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("shape,output_shape,vector,split", [
@@ -27,8 +28,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 ])
 def test_broadcast_to_local_kernel_preserves_shape_lanes_and_owners(tmp_path, shape, output_shape, vector, split):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     lanes = (2, 4) if vector else ()
     dtype = fm.vector_type("bfloat16", lanes) if vector else "float32"
     value_type = fm.tensor_type(dtype, shape)

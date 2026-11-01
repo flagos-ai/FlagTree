@@ -22,6 +22,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#ifdef __ILUVATAR_TLE__
+#include "Transforms/ExplicitEncoding.h"
+#endif
 #include <deque>
 
 namespace mlir::triton::gpu {
@@ -112,6 +115,9 @@ private:
   DenseMap<std::pair<Value, Attribute>, Value> rewriteMapping;
   SetVector<Operation *> opToDelete;
   FuncOp funcOp;
+#ifdef __ILUVATAR_TLE__
+  Operation *rewritePoint = nullptr;
+#endif
 };
 
 class LayoutRematerialization {
@@ -183,6 +189,11 @@ void LayoutRematerialization::cleanup() {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
+#ifdef __ILUVATAR_TLE__
+  for (Value value : op->getResults())
+    if (iluvatar_tle::explicitEncoding(value))
+      return true;
+#endif
 #ifdef __ILUVATAR__
   // Preserve the cloned masked-SME predicate DAG as a distinct layout island.
   // Without this anchor, forward propagation rewrites it into the pointer
@@ -247,6 +258,12 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
   for (Value value : values) {
     if (!isa<RankedTensorType>(value.getType()))
       continue;
+#ifdef __ILUVATAR_TLE__
+    // The requested encoding is a contract at this use. Other producers
+    // may be rematerialized, but cannot replace this hard layout anchor.
+    if (iluvatar_tle::explicitEncoding(value))
+      continue;
+#endif
     bool hasChanged = false;
     for (auto encoding : info.encodings) {
       Attribute dstEncoding;
@@ -406,6 +423,9 @@ void LayoutPropagation::rewriteRegion(Region &region) {
     Region *currentRegion = queue.front();
     queue.pop_front();
     for (Operation &op : currentRegion->getOps()) {
+#ifdef __ILUVATAR_TLE__
+      rewritePoint = &op;
+#endif
       bool needRewrite = false;
       SmallVector<Value> results = op.getResults();
       for (Value result : results) {
@@ -484,6 +504,21 @@ Value LayoutPropagation::getValueAs(Value value, Attribute encoding) {
       return rewrittenValue;
     OpBuilder rewriter(value.getContext());
     rewriter.setInsertionPointAfterValue(rewrittenValue);
+#ifdef __ILUVATAR_TLE__
+    // A register conversion can later allocate shared scratch. Do not hoist
+    // it across a flat-SME completion boundary: the old shared allocation's
+    // SSA lifetime may have ended while its asynchronous writes are pending.
+    if (rewritePoint && rewrittenValue.getDefiningOp() &&
+        rewrittenValue.getParentBlock() == rewritePoint->getBlock()) {
+      for (Operation *between = rewrittenValue.getDefiningOp()->getNextNode();
+           between && between != rewritePoint; between = between->getNextNode()) {
+        if (between->getName().getStringRef() == "iluvatar_tle.sme_wait") {
+          rewriter.setInsertionPoint(rewritePoint);
+          break;
+        }
+      }
+    }
+#endif
     auto tmpType = tensorType.cloneWithEncoding(encoding);
     Value converted = ConvertLayoutOp::create(rewriter, value.getLoc(), tmpType,
                                               rewrittenValue);
@@ -736,6 +771,9 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
     auto newType = tensorType.cloneWithEncoding(encoding);
     auto cvt = ConvertLayoutOp::create(rewriter, op->getLoc(), newType, src);
+#ifdef __ILUVATAR_TLE__
+    iluvatar_tle::preserveExplicitEncoding(op, cvt);
+#endif
     map(op->getResult(0), cvt.getResult());
     return cvt.getOperation();
   }
@@ -768,6 +806,13 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+#ifdef __ILUVATAR_TLE__
+  // Rematerializing a hard-layout value in another encoding erases its
+  // contract even when forward propagation preserves the original anchor.
+  for (Value value : op->getResults())
+    if (iluvatar_tle::explicitEncoding(value))
+      return false;
+#endif
 #ifdef __ILUVATAR__
   // smeMask is a semantic boundary, not just a physical layout choice. The
   // cloned mask DAG must not be rematerialized into the SME pointer encoding,
@@ -953,6 +998,22 @@ void LayoutRematerialization::rewriteSlice(SetVector<Value> &slice,
       continue;
     }
     if (isa<arith::ConstantOp>(op)) {
+#ifdef __ILUVATAR_TLE__
+      // Cloning the old constant and adding another marked conversion
+      // recreates the same candidate on every fixed-point iteration. A
+      // constant can be materialized directly in the requested encoding.
+      if (iluvatar_tle::explicitEncoding(convertOp.getResult())) {
+        auto constant = cast<arith::ConstantOp>(op);
+        auto tensorType = cast<RankedTensorType>(constant.getType());
+        auto newType = tensorType.cloneWithEncoding(layout[constant.getResult()]);
+        auto value = cast<DenseElementsAttr>(constant.getValue()).reshape(newType);
+        auto replacement = arith::ConstantOp::create(builder, op->getLoc(), newType, value);
+        mapping.map(constant.getResult(), replacement.getResult());
+        addRematValue(constant.getResult(), layout[constant.getResult()],
+                      replacement.getResult());
+        continue;
+      }
+#endif
       Operation *newOp = builder.clone(*op);
       auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
       auto newType = tensorType.cloneWithEncoding(layout[op->getResult(0)]);
@@ -975,6 +1036,10 @@ void LayoutRematerialization::rewriteSlice(SetVector<Value> &slice,
     }
   }
   // Check mapping and see if there are existing convertOps on the old Argument
+#ifdef __ILUVATAR_TLE__
+  iluvatar_tle::preserveExplicitEncoding(
+      convertOp.getResult(), mapping.lookup(convertOp.getSrc()));
+#endif
   convertOp.replaceAllUsesWith(mapping.lookup(convertOp.getSrc()));
   opToDelete.insert(convertOp);
 
@@ -1148,6 +1213,9 @@ void LayoutRematerialization::backwardRematerialization(
   Value newV = getRematValue(oldV, targetType.getEncoding());
   if (newV && domInfo.properlyDominates(newV, convertOp)) {
     // Replace it with the remat'ed value.
+#ifdef __ILUVATAR_TLE__
+    iluvatar_tle::preserveExplicitEncoding(convertOp.getResult(), newV);
+#endif
     convertOp.replaceAllUsesWith(newV);
     opToDelete.insert(convertOp);
     LDBG("found remat'ed value" << newV);

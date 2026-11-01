@@ -146,23 +146,77 @@ def _requirements(node, candidate, module, mesh_hierarchy):
             return ()
         value = tensor_of(node.type.fields[0])
         workspace("collective", value.dtype, value.shape)
-        rows = prod(dimension.fixed_value for dimension in value.shape[:-1])
-        workspace("norm_stats_partials", DType.FLOAT32, (mesh_size * rows,), 128)
+        # One RMS partial per (mesh owner, owner-local PARTIAL-input row). The
+        # partials kernel writes `shard_index * local_rows + row`, where local_rows
+        # is the partial INPUT's local row count (token-replicated, so it spans
+        # the token axis). The statistics OUTPUT may be token-sharded to a single
+        # row per owner, so sizing by the output would undersize the workspace --
+        # size by the input. M==1 (decode) keeps the flat (mesh_size,) layout.
+        partial_type = module.node_map[node.inputs[0]].type
+        local_partial = (
+            local_tensor_type(partial_type)
+            if isinstance(partial_type, DistributedType)
+            else partial_type
+        )
+        from math import prod as _prod
+        local_rows = _prod(dim.fixed_value for dim in local_partial.shape[:-1]) if local_partial.shape[:-1] else 1
+        partials_shape = (mesh_size,) if local_rows == 1 else (mesh_size, local_rows)
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
 
     if family == "gather_reduce_add_norm_apply":
         components = 2 if bool(node.attrs.get("use_mean", False)) else 1
         collective_owner_count = int(
             candidate.parameters.get("owner_count", mesh_size)
         )
-        workspace(
-            "norm_stats_partials",
-            DType.FLOAT32,
-            (components, collective_owner_count),
-            128,
+        # One (components, owner) statistics slab per owner-local outer (token)
+        # row. The outer rows are the dimensions BEFORE the normalization axis;
+        # the suffix shape[axis:] is reduced into a single statistic. M==1
+        # (decode) keeps the flat single-row layout; M>1 (prefill) prepends the
+        # row axis so each token reduces its own independent RMS. The renderer
+        # iterates the FINER of the partial-input / value-output local domains
+        # (by scalar capacity) and indexes the workspace by THAT domain's outer
+        # rows; equal total capacity need not mean equal row count, so size from
+        # the selected domain, not the output, or the store overruns the buffer.
+        value_type = node.type.fields[0] if isinstance(node.type, TupleType) else node.type
+        partial_type = module.node_map[node.inputs[0]].type
+        local_value = (
+            local_tensor_type(value_type)
+            if isinstance(value_type, DistributedType)
+            else value_type
         )
+        local_partial = (
+            local_tensor_type(partial_type)
+            if isinstance(partial_type, DistributedType)
+            else partial_type
+        )
+        partial_capacity = prod((dim.fixed_value for dim in local_partial.shape), start=1)
+        value_capacity = prod((dim.fixed_value for dim in local_value.shape), start=1)
+        domain_local = local_partial if partial_capacity <= value_capacity else local_value
+        axis = int(node.attrs.get("axis", 0))
+        axis = axis + len(domain_local.shape) if axis < 0 else axis
+        local_rows = prod(
+            (dim.fixed_value for dim in domain_local.shape[:axis]), start=1
+        )
+        partials_shape = (
+            (components, collective_owner_count)
+            if local_rows == 1
+            else (local_rows, components, collective_owner_count)
+        )
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
 
     if family == "add_norm_stats" and variant == "rms":
-        workspace("norm_stats_partials", DType.FLOAT32, (mesh_size,), 128)
+        # One RMS partial per (outer row, block owner): the dimensions before
+        # the normalized axis are independent per-token statistics. A single
+        # outer row keeps the flat (mesh_size,) layout.
+        value = tensor_of(node.type.fields[0]) if isinstance(node.type, TupleType) else None
+        outer_rows = 1
+        if value is not None:
+            axis = int(node.attrs.get("axis", -1))
+            axis = axis + len(value.shape) if axis < 0 else axis
+            if value.shape[:axis]:
+                outer_rows = prod(dim.fixed_value for dim in value.shape[:axis])
+        partials_shape = (mesh_size,) if outer_rows == 1 else (outer_rows, mesh_size)
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
 
     if (
         node.op == "ntt.matmul_norm_stats"

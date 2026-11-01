@@ -8,6 +8,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.functions.function_boundary_layout import propagate_function_boundary_layouts
 from triton.flagmega.passes.functions.graph import function_nodes
+from python.test.flagmega.devices import requires_nvidia_sm90
 
 
 def module(*, axis=1, raw_output=False, compute=False):
@@ -94,7 +95,7 @@ def test_conflicting_physical_result_bindings_are_rejected():
         _nested_call("main", SimpleNamespace(id="call"), record, None, ())
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 def test_compatible_input_views_execute_through_reusable_device_calls(tmp_path):
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.compiler import Compiler

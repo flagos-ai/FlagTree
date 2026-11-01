@@ -874,7 +874,11 @@ def _apply_mesh_grid_launch(mesh: device_mesh, _semantic: TLESemantic | None) ->
     cluster_dims = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
     if cluster_dims != (1, 1, 1):
         raise ValueError("mesh-driven grid distributed_barrier requires cluster_dims=(1, 1, 1)")
-    object.__setattr__(options, "launch_cooperative_grid", True)
+    # Atomic grid barriers can use a resident ordinary launch on backends
+    # without the CUDA cooperative-launch API. Honor the backend capability
+    # when deriving the mesh contract, before codegen creates launch metadata.
+    object.__setattr__(options, "launch_cooperative_grid",
+                       bool(getattr(options, "supports_cooperative_grid", True)))
 
 
 def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
@@ -945,6 +949,10 @@ def shard_id(
     dim = launch_shape[axis_idx]
     if dim > 1:
         coord = _semantic.mod(coord, dim)
+    else:
+        # A unit axis always has coordinate zero, independently of the
+        # program's coordinates on the other launch axes.
+        coord = tl.full((), 0, tl.int32, _semantic=_semantic)
     return coord
 
 

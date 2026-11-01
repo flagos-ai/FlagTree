@@ -9,8 +9,8 @@ artifact carries a shared library, and launching means calling its plain-C
 
 Everything above the launch -- pool allocation, rdata, external-argument
 validation, workspace diagnostics, the paged-attention state ABI -- is backend
-independent, so this subclasses the Triton call-graph module and replaces only
-the two methods that touch a kernel.
+independent. This subclasses the Triton call-graph module for launch and applies
+the C++ package's readonly device-layout contract after canonical rdata loading.
 """
 
 from __future__ import annotations
@@ -90,6 +90,14 @@ _EXPECTED_ABI_VERSION = 1
 
 class _CppLaunchMixin:
     """Replace Triton JIT prepare/launch with the generated library's."""
+
+    def _load_rdata(self, torch, device: str, expected_nbytes: int):
+        pool = super()._load_rdata(torch, device, expected_nbytes)
+        contract = self.codegen.get("readonly_device_layout")
+        if contract is not None:
+            from triton.flagmega.codegen.cpp.readonly_layout import apply_readonly_layout
+            apply_readonly_layout(pool, contract, self.ir_module)
+        return pool
 
     def _cpp_library(self) -> _CppPackageLibrary:
         library = getattr(self, "_library_handle", None)

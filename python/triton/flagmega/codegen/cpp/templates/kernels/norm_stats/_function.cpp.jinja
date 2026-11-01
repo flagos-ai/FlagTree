@@ -16,9 +16,17 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    function's declaration is co-resident -- and oversizing these five buffers
    cost 40 KB of a 64 KB budget. Exceeding it does not fail the launch, it
    silently reads garbage. #}
-__shared__ float ftt_norm_partial[{{ warps }}];
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_norm_partial = reinterpret_cast<float *>(_ftt_sme_arena);
+{% else %}
+    __shared__ float ftt_norm_partial[{{ warps }}];
+{% endif %}
 {% if call.use_mean %}
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_norm_mean_partial = reinterpret_cast<float *>(_ftt_sme_arena) + {{ warps }};
+{% else %}
     __shared__ float ftt_norm_mean_partial[{{ warps }}];
+{% endif %}
 {% endif %}
     for (ftt::dim_t norm_outer_index = 0;
          norm_outer_index < {{ call.outer_capacity }}LL; ++norm_outer_index) {

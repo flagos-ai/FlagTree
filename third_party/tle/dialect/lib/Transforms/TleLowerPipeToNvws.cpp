@@ -48,6 +48,8 @@
 #include <map>
 #include <optional>
 
+#include "tle/dialect/include/Transforms/PipeReaderContract.h"
+
 namespace mlir::triton::tle {
 
 namespace tt = mlir::triton;
@@ -466,40 +468,6 @@ static LogicalResult setWriterFullCount(PipeState &state, Operation *op,
   return success();
 }
 
-static bool hasDeclaredReader(ArrayRef<std::string> readerNames,
-                              StringRef readerName) {
-  return llvm::any_of(readerNames, [&](const std::string &declared) {
-    return StringRef(declared) == readerName;
-  });
-}
-
-static FailureOr<std::string>
-getPipeReaderName(ArrayRef<std::string> readerNames, Operation *op) {
-  std::string readerName;
-  if (auto attr = op->getAttrOfType<StringAttr>("reader_name"))
-    readerName = attr.getValue().str();
-
-  if (readerNames.empty()) {
-    if (!readerName.empty()) {
-      op->emitOpError("uses named reader ")
-          << readerName << " but pipe was created without readers";
-      return failure();
-    }
-    return readerName;
-  }
-
-  if (readerName.empty()) {
-    op->emitOpError("requires reader_name because pipe was created "
-                    "with explicit readers");
-    return failure();
-  }
-  if (!hasDeclaredReader(readerNames, readerName)) {
-    op->emitOpError("uses undeclared pipe reader ") << readerName;
-    return failure();
-  }
-  return readerName;
-}
-
 static void updateTokenEmptyCount(PipeState &state) {
   int32_t emptyCount = 0;
   for (const auto &reader : state.readerTasks)
@@ -529,16 +497,6 @@ static LogicalResult recordReaderTask(PipeState &state, Operation *op,
   if (updateEmptyCountForReader)
     updateTokenEmptyCount(state);
   return success();
-}
-
-static SmallVector<std::string> getDeclaredReaderNames(PipeCreateOp op) {
-  SmallVector<std::string> readerNames;
-  if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
-    readerNames.reserve(readersAttr.size());
-    for (Attribute attr : readersAttr)
-      readerNames.push_back(cast<StringAttr>(attr).getValue().str());
-  }
-  return readerNames;
 }
 
 static StringRef getTransportName(PipeCommitTransport transport) {

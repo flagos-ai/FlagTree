@@ -1,0 +1,15 @@
+{% set corex_preserve_k_reduction = num_warps is defined and num_warps == 16 %}
+{% set all_render_calls = render_calls | default([]) %}
+{% set render_calls = all_render_calls | selectattr('corex_flat_sme_gemv', 'defined') | list %}
+{% if render_calls %}
+{% include "kernels/dense_matmul/platforms/corex/bi_v150/_flat_sme_gemv.py.jinja" %}
+{% endif %}
+{% set ns = namespace(calls=[]) %}
+{% for call in all_render_calls | rejectattr('corex_flat_sme_gemv', 'defined') %}
+{% if corex_preserve_k_reduction and call.family == "dense_matmul" and call.variant == "split_k_n_packed_k_major_gemv" and call.local_m_capacity == 1 and call.local_n_capacity >= 256 and call.tile_n == 128 and call.block_k == 64 %}
+{% set call = dict(call, tile_n=256) %}
+{% endif %}
+{% set ns.calls = ns.calls + [call] %}
+{% endfor %}
+{% set render_calls = ns.calls %}
+{% include "kernels/dense_matmul/split_k_n_packed_k_major_gemv.py.jinja" %}

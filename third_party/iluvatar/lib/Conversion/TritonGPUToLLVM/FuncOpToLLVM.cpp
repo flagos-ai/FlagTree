@@ -200,8 +200,17 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
 
     // Set an attribute for reqntidx, it could be used in latter LLVM codegen
     // for `nvvm.annotation` metadata.
+#ifdef __ILUVATAR_TLE__
+    // Encode the physical CTA size in metadata consistently with the launch
+    // and tensor layouts. Iluvatar warps contain 64 lanes, rather than 32.
+    int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(
+        funcOp->getParentOfType<ModuleOp>());
+    newFuncOp->setAttr(NVVM::NVVMDialect::getReqntidAttrName(),
+                      rewriter.getDenseI32ArrayAttr(threadsPerWarp * numWarps));
+#else
     newFuncOp->setAttr(NVVM::NVVMDialect::getReqntidAttrName(),
                        rewriter.getDenseI32ArrayAttr(32 * numWarps));
+#endif
 
     rewriter.eraseOp(funcOp);
     rewriter.eraseOp(amendedFuncOp);

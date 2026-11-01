@@ -1,0 +1,61 @@
+{# A warp owns a contiguous 512-element N tile and streams its K groups.
+   Full tiles are staged; the remainder stays in the bounded payload loop.
+   Origin is evaluated from the call's actual address algebra, including both
+   N and K shard coordinates, rather than inferred from a layout name. #}
+    auto *const dense_payload_buf =
+        reinterpret_cast<ftt::bfloat16_t (*)[{{ sme_slots }}][512 + {{ sme_pad }}]>(
+            _ftt_sme_arena);
+    const ftt::dim_t dense_payload_warp = ftt_thread / {{ warp_size }}LL;
+    const ftt::dim_t dense_payload_lane = ftt_thread % {{ warp_size }}LL;
+    for (ftt::dim_t dense_n_start = 0; dense_n_start < {{ sme_full_n }}LL;
+         dense_n_start += {{ warps * sme_tile_n }}LL) {
+        const ftt::dim_t dense_tile_n =
+            dense_n_start + dense_payload_warp * {{ sme_tile_n }}LL;
+        if (dense_tile_n < {{ sme_full_n }}LL) {
+            ftt::dim_t dense_weight_base;
+            {
+                const ftt::dim_t dense_local_n_offsets = dense_tile_n;
+                const ftt::dim_t dense_local_k_offsets = 0;
+                const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                dense_weight_base = {{ call.weight_offset | cppexpr }};
+            }
+            const auto dense_payload_source = ftt::arch::sme_source_for(
+                &ftt_weight[dense_weight_base], 64);
+            const ftt::dim_t dense_payload_run = dense_payload_lane * {{ chunk }}LL;
+            const ftt::dim_t dense_k_in_lane = dense_payload_run % {{ lane }}LL;
+            const ftt::dim_t dense_local_n_offsets =
+                dense_tile_n + dense_payload_run / {{ lane }}LL;
+            const ftt::bfloat16_t *dense_payload_act;
+            {
+                const ftt::dim_t dense_local_k_offsets = dense_k_in_lane;
+                dense_payload_act = &ftt_source[{{ call.source_offset | cppexpr }}];
+            }
+            float dense_payload_acc = 0.0f;
+{% with sme_issuer_lane="dense_payload_lane", sme_buffer="dense_payload_buf",
+        sme_warp="dense_payload_warp", sme_goff="0LL", sme_groups=groups,
+        sme_concurrency=1, sme_lane=lane,
+        sme_stride=(call.weight_group_stride|string) + "LL",
+        sme_act="dense_payload_act", sme_run="dense_payload_run", sme_projections=1,
+        sme_sources=["dense_payload_source"], sme_accumulators=["dense_payload_acc"],
+        sme_partial_streams=sme_keep_streams %}
+{% include "kernels/_sme_batches.cpp.jinja" %}
+{% endwith %}
+            dense_payload_acc = ftt::arch::lane_group_reduce_sum<{{ lane // chunk }}>(
+                dense_payload_acc);
+            if (dense_k_in_lane == 0 && ({{ call.result_active | cppexpr }})) {
+                ftt_result[{{ call.result_offset | cppexpr }}] =
+                    ftt::store_as(ftt_result, dense_payload_acc);
+            }
+        }
+{% if tail_overlap | default(false) %}
+{# The last SME round leaves whole warps idle. Assign the canonical scalar
+   tail to those warps, preserving each N's lane group and K reduction order.
+   Its global reads and disjoint output stores do not reuse the SME arena. #}
+        else if (dense_n_start == {{ tail_last_round }}LL) {
+{% with scalar_thread_base=tail_first_warp * warp_size %}
+{% include "kernels/dense_matmul/_scalar_payload.cpp.jinja" %}
+{% endwith %}
+        }
+{% endif %}
+    }

@@ -1,0 +1,16 @@
+# flagmega-kernel: dense_matmul/split_k_n_packed_k_major_gemv platform=amd
+{% set dense_matmul_variant = "split_k_n_packed_k_major_gemv" %}
+{% set dense_matmul_uses_descriptor = false %}
+{% set dense_matmul_accumulate_helper = "_flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate" %}
+{#- The AMD backend cannot see K contiguity through the block-cyclic split-K
+    coordinate (lm_head) and falls back to 16-bit loads; assert the run the
+    renderer proved (call.weight_k_contiguity) so it emits 128-bit loads. #}
+{% set dense_matmul_weight_k_hint = true %}
+{#- gfx1201: when the renderer planned it (call.weight_tile_prefetch), each
+    owner of a mesh row prefetches its share of the row's weight tile a few K
+    steps ahead (s_prefetch_data). #}
+{% set dense_matmul_weight_prefetch = true %}
+{% include "kernels/dense_matmul/_local_accumulate.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/dense_matmul/_function.py.jinja" %}
+{% endif %}

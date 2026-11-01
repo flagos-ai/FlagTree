@@ -9,6 +9,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_attention_state
 from triton.flagmega.runtime import load
+from python.test.flagmega.devices import requires_nvidia_sm90
 
 
 def attention_module(config, width, *, probability_rounding=None, index_traversal=None):
@@ -48,7 +49,7 @@ def prepare(module, directory, inputs, state, output):
     return runtime, arguments
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 @pytest.mark.parametrize("slot", [0, 64, 129])
 def test_visible_key_survives_leading_and_trailing_empty_tiles(tmp_path, slot):
     config = PagedAttentionStateConfig(1, 1, 16, num_blocks=2)
@@ -75,7 +76,7 @@ def test_visible_key_survives_leading_and_trailing_empty_tiles(tmp_path, slot):
         runtime.close()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 def test_indices_after_current_query_are_not_visible(tmp_path):
     config = PagedAttentionStateConfig(1, 1, 16, num_blocks=2)
     state = create_paged_attention_state(config, device="cuda")
@@ -95,7 +96,7 @@ def test_indices_after_current_query_are_not_visible(tmp_path):
         runtime.close()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@requires_nvidia_sm90
 def test_probabilities_round_before_value_product(tmp_path):
     config = PagedAttentionStateConfig(1, 1, 16, num_blocks=2)
     state = create_paged_attention_state(config, device="cuda")

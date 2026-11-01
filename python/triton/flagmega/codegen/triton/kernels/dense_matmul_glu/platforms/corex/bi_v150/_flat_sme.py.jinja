@@ -1,0 +1,82 @@
+from triton.experimental.tle.language.gpu.iluvatar import sme
+
+
+@triton.jit
+def _flagmega_glu_sme_flat(x, g, u, y, N: tl.constexpr, K: tl.constexpr, STRIDE: tl.constexpr,
+                           ROUND: tl.constexpr, GATE_CLAMP: tl.constexpr, UP_CLAMP: tl.constexpr):
+    p = tl.arange(0, 16)[:, None]
+    ce: tl.constexpr = tle.gpu.BlockEncoding([1, 1], [1, 64], [16, 1], [1, 0])
+    ae: tl.constexpr = tle.gpu.BlockEncoding([1, 8], [32, 2], [16, 1], [1, 0])
+    # Each warp owns one N32 row tile and both K16 halves of each generation.
+    cp = tle.gpu.set_layout(p, ce)
+    gs = tle.gpu.alloc([N*64], dtype=tl.bfloat16,
+                       layout=tle.gpu.swizzled_shared_layout(1, 1, 1, [0], 1, [1], [1], [0]), nv_mma_shared_layout=False)
+    us = tle.gpu.alloc([N*64], dtype=tl.bfloat16,
+                       layout=tle.gpu.swizzled_shared_layout(1, 1, 1, [0], 1, [1], [1], [0]), nv_mma_shared_layout=False)
+    gp = tle.gpu.local_ptr(gs, (0,))
+    up = tle.gpu.local_ptr(us, (0,))
+    n = tl.arange(0, 512)[:, None]
+    k = tl.arange(0, 32)[None, :]
+    ag = tle.gpu.set_layout(tl.zeros((512, 32), tl.float32), ae)
+    au = tle.gpu.set_layout(tl.zeros((512, 32), tl.float32), ae)
+    indices = tle.gpu.set_layout(tl.broadcast_to((k//16)*(N*16)+n*16+k % 16, [512, 32]), ae)
+    for preload in tl.static_range(2):
+        tile = cp
+        for half in tl.static_range(2):
+            off = (preload*2+half)*STRIDE+tile*512
+            sme.copy(g+off, gp+preload*(N*32)+half*(N*16)+tile*512, active=tile < N//32)
+            sme.copy(u+off, up+preload*(N*32)+half*(N*16)+tile*512, active=tile < N//32)
+    for kg in range(K//32):
+        slot = (kg % 2)*(N*32)
+        if kg < K//32-2:
+            sme.wait(4)
+        else:
+            sme.wait(0)
+        xv = tl.load(tle.gpu.set_layout(x+kg*32+tl.arange(0,32), tle.gpu.SlicedEncoding(0,ae))).to(tl.float32)
+        gv = tl.load(tle.gpu.set_layout(gp+slot+indices, ae), mask=n < N, other=0).to(tl.float32)
+        uv = tl.load(tle.gpu.set_layout(up+slot+indices, ae), mask=n < N, other=0).to(tl.float32)
+        ag = tle.gpu.set_layout(ag+gv*xv[None,:], ae)
+        au = tle.gpu.set_layout(au+uv*xv[None,:], ae)
+        sme.wait(4, drain_reads=True)
+        if kg < K//32-2:
+            tile = cp
+            for half in tl.static_range(2):
+                off = (kg*2+4+half)*STRIDE+tile*512
+                sme.copy(g+off, gp+slot+half*(N*16)+tile*512, active=tile < N//32)
+                sme.copy(u+off, up+slot+half*(N*16)+tile*512, active=tile < N//32)
+    sme.wait(0, drain_reads=True)
+    # Retain the original K32 tree: adjacent register pairs, then XOR
+    # distances 8/4/2/1. The consuming warp owns every K stream for each row.
+    ag = tl.sum(tl.reshape(ag, (512, 16, 2)), 2)
+    au = tl.sum(tl.reshape(au, (512, 16, 2)), 2)
+    ag = tl.sum(tl.reshape(ag, (512, 2, 8)), 1)
+    au = tl.sum(tl.reshape(au, (512, 2, 8)), 1)
+    ag = tl.sum(tl.reshape(ag, (512, 2, 4)), 1)
+    au = tl.sum(tl.reshape(au, (512, 2, 4)), 1)
+    ag = tl.sum(tl.reshape(ag, (512, 2, 2)), 1)
+    au = tl.sum(tl.reshape(au, (512, 2, 2)), 1)
+    ag = tl.sum(tl.reshape(ag, (512, 2, 1)), 1)
+    au = tl.sum(tl.reshape(au, (512, 2, 1)), 1)
+    gate = tl.sum(ag, 1).to(tl.bfloat16).to(tl.float32)
+    uv = tl.sum(au, 1).to(tl.bfloat16).to(tl.float32)
+    if GATE_CLAMP is not None:
+        gate = tl.minimum(gate, GATE_CLAMP)
+    if UP_CLAMP is not None:
+        uv = tl.clamp(uv, -UP_CLAMP, UP_CLAMP)
+    activated = gate*tl.sigmoid(gate)
+    if ROUND:
+        activated = activated.to(tl.bfloat16).to(tl.float32)
+    tl.store(tle.gpu.set_layout(y+tl.arange(0, 512), tle.gpu.SlicedEncoding(1, ae)), activated*uv, mask=tl.arange(0, 512) < N)
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls if call.corex_flat_sme_glu is defined %}
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _flagmega_glu_sme_flat(
+        {{ call.corex_flat_sme_glu.source }}, {{ call.corex_flat_sme_glu.gate_weight }},
+        {{ call.corex_flat_sme_glu.up_weight }}, {{ call.corex_flat_sme_glu.result }},
+        {{ call.local_n_capacity }}, {{ call.local_k_capacity }},
+        {{ call.corex_flat_sme_glu.weight_k_group_stride }}, {{ call.round_activation | default(true) }},
+        {{ call.gate_clamp_max }}, {{ call.up_clamp }},
+    )
+{% endfor %}

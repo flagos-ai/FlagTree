@@ -61,6 +61,41 @@ def test_distributed_argmax_declares_value_and_index_reductions(batch, split, lo
     assert workspaces[1]["type"] == fm.tensor_type("int32", (local_batch, 128))
 
 
+def test_gather_reduce_norm_stats_partials_follow_the_partial_input_row_count():
+    # The partials kernel writes `shard_index * local_rows + row`, where local_rows
+    # is the PARTIAL input's local row count. Here the partial input is token-
+    # replicated with 4 local rows while the statistics output is token-sharded to
+    # a single row -- sizing the workspace by the output would undersize it to
+    # (mesh_size,); it must follow the input rows: (mesh_size, 4).
+    mesh = fm.Placement((8, 16), "yx", "bb")
+    partial_type = fm.DistributedType(
+        fm.tensor_type("bfloat16", (4, 2048)),
+        (fm.SBP.broadcast(), fm.SBP.broadcast()),
+        mesh,
+    )
+    partial = fm.Node("partial", "builtin.var", (), partial_type, attrs={"name": "partial"})
+    addend = fm.Node("addend", "builtin.var", (), partial_type, attrs={"name": "addend"})
+    node = fm.Node(
+        "stats",
+        "nn.add_norm_stats",
+        (partial.id, addend.id),
+        fm.TupleType((
+            fm.tensor_type("bfloat16", (1, 2048)),
+            fm.tensor_type("float32", (1, 1, 1)),
+        )),
+    )
+
+    workspaces = _attach(
+        node,
+        _candidate("gather_reduce_add_norm_stats", "sum_rms"),
+        (partial, addend),
+    )
+
+    partials = {value["name"]: value["type"] for value in workspaces}
+    assert "norm_stats_partials" in partials
+    assert partials["norm_stats_partials"] == fm.tensor_type("float32", (128, 4))
+
+
 def test_gdn_recurrent_declares_cross_owner_core_scratch():
     node = fm.Node(
         "recurrent",

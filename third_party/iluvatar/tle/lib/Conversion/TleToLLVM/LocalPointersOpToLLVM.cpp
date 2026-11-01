@@ -185,7 +185,14 @@ struct LocalPointersOpConversion
       Value elemOffset;
       if (bufferRank == 0) {
         elemOffset = b.i32_val(0);
-      } else if (isa<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
+      } else if (isa<ttg::PaddedSharedEncodingAttr>(sharedEnc) ||
+                 (isa<ttg::SwizzledSharedEncodingAttr>(sharedEnc) &&
+                  cast<ttg::SwizzledSharedEncodingAttr>(sharedEnc).getMaxPhase() == 1 &&
+                  llvm::all_of(ttg::getCTASplitNum(sharedEnc),
+                               [](unsigned split) { return split == 1; }))) {
+        // An unswizzled, single-CTA pointer uses an ordinary affine byte
+        // walk. MemDesc explicitly permits non-power-of-two leading extents;
+        // a binary LinearLayout inverse cannot represent those arenas.
         auto order = ttg::getOrder(sharedEnc, memDescTy.getShape());
         elemOffset =
             LLVM::linearize(rewriter, loc, idxCoords, bufferShape, order);

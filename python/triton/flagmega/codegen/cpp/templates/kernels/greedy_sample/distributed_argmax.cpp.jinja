@@ -9,8 +9,13 @@
 static FTT_DEVICE void {{ call.symbol }}__partials({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
+{% if shared_arena_reuse | default(false) %}
+    auto *const ftt_argmax_value = reinterpret_cast<float *>(_ftt_sme_arena);
+    auto *const ftt_argmax_index = reinterpret_cast<ftt::dim_t *>(_ftt_sme_arena + {{ block_threads * 2 }});
+{% else %}
     __shared__ float ftt_argmax_value[{{ block_threads }}];
     __shared__ ftt::dim_t ftt_argmax_index[{{ block_threads }}];
+{% endif %}
     auto *const ftt_logits = {{ call.logits | cppexpr }};
     auto *const ftt_partial_max = {{ call.partial_max | cppexpr }};
     auto *const ftt_partial_index = {{ call.partial_index | cppexpr }};

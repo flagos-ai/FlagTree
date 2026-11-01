@@ -1,0 +1,17 @@
+{# Batch the eight original gather rounds while retaining each FP32 fold. #}
+{% set ns = namespace(batched=[], portable=[]) %}
+{% for call in render_calls | default([]) %}
+{% if call.family == "gather_reduce_add_norm_apply" and call.variant == "sum" %}
+{% if num_warps | default(0) == 16 and mesh_hierarchy | default([]) | list == [4,4] and call.tile == 16 and call.local_capacity == 512 and call.work_partition_count == 4 and call.partial_owner_count == 4 and call.partial_reduction_width == 4 and call.stats_owner_count == 16 and call.reduction_width == 16 and not call.use_mean and not call.has_bias and not call.round_before_scale and call.output_type == "tl.float32" and call.norm_output_type == "tl.bfloat16" %}
+{% set ns.batched = ns.batched + [call] %}
+{% else %}
+{% set ns.portable = ns.portable + [call] %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% set render_calls = ns.batched %}
+{% if render_calls %}
+{% include "kernels/gather_reduce_add_norm_apply/platforms/corex/bi_v150/_batched.py.jinja" %}
+{% endif %}
+{% set render_calls = ns.portable %}
+{% include "kernels/gather_reduce_add_norm_apply/sum.py.jinja" %}

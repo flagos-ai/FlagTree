@@ -5,6 +5,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #ifdef __ILUVATAR_TLE__
 #include "IR/Dialect.h"
+#include "Conversion/SetLayoutConversion.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -39,11 +40,27 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   matchAndRewrite(Op op, typename Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> retTypes;
+#ifdef __ILUVATAR_TLE__
+    for (Value result : op->getResults()) {
+      Type type = this->getTypeConverter()->convertType(result);
+      if (!type)
+        return failure();
+      retTypes.push_back(type);
+    }
+#else
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       retTypes)))
       return failure();
+#endif
+#ifdef __ILUVATAR_TLE__
+    SmallVector<Value> operands(adaptor.getOperands());
+    iluvatar_tle::legalizeElementwiseEncodings(op, retTypes, operands, rewriter);
+    rewriter.replaceOpWithNewOp<Op>(op, retTypes, operands,
+                                    op->getAttrs());
+#else
     rewriter.replaceOpWithNewOp<Op>(op, retTypes, adaptor.getOperands(),
                                     op->getAttrs());
+#endif
 
     return success();
   }
@@ -56,7 +73,11 @@ public:
   LogicalResult
   matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __ILUVATAR_TLE__
+    Type retType = getTypeConverter()->convertType(op.getResult());
+#else
     Type retType = getTypeConverter()->convertType(op.getType());
+#endif
     auto retShapedType = cast<ShapedType>(retType);
     auto value = dyn_cast<DenseElementsAttr>(adaptor.getValue());
     if (isa<RankedTensorType>(retShapedType)) {
@@ -513,6 +534,22 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto converter = getTypeConverter();
     TypeConverter::SignatureConversion result(op.getNumArguments());
+#ifdef __ILUVATAR_TLE__
+    SmallVector<Type> resultTypes;
+    if (failed(converter->convertSignatureArgs(
+            op.getFunctionType().getInputs(), result)) ||
+        failed(converter->convertTypes(op.getResultTypes(), resultTypes)))
+      return failure();
+    auto functionType = FunctionType::get(
+        op.getContext(), result.getConvertedTypes(), resultTypes);
+    // Keep the existing region operations on the conversion driver's worklist.
+    // Replacing a function with unchanged pointer arguments moves its body into
+    // a newly legal operation before its tensor returns have been converted.
+    if (!op.getBody().empty())
+      rewriter.applySignatureConversion(&op.getBody().front(), result, converter);
+    rewriter.modifyOpInPlace(op, [&] { op.setFunctionType(functionType); });
+    return success();
+#else
     auto newOp = rewriter.replaceOpWithNewOp<triton::FuncOp>(
         op, op.getName(), op.getFunctionType());
     addNamedAttrs(newOp, adaptor.getAttributes());
@@ -524,6 +561,7 @@ public:
       rewriter.applySignatureConversion(&newOp.getBody().front(), result,
                                         converter);
     return success();
+#endif
   }
 };
 
@@ -801,6 +839,8 @@ void populateIluvatarTlePatterns(TritonGPUTypeConverter &typeConverter,
                                  RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<triton::iluvatar_tle::ExtractTileOp>,
+               GenericOpPattern<triton::iluvatar_tle::SmeCopyOp>,
+               GenericOpPattern<triton::iluvatar_tle::SmeWaitOp>,
                GenericOpPattern<triton::iluvatar_tle::InsertTileOp>,
                GenericOpPattern<triton::iluvatar_tle::ExclusiveCumsumOp>,
                GenericOpPattern<triton::iluvatar_tle::LocalPointersOp>,
@@ -846,6 +886,9 @@ public:
     populateCFPatterns(typeConverter, patterns);
 #ifdef __ILUVATAR_TLE__
     populateIluvatarTlePatterns(typeConverter, patterns);
+    iluvatar_tle::populateSetLayoutConversion(typeConverter, patterns, target);
+    iluvatar_tle::populateAsyncCopyConversion(typeConverter, patterns, target);
+    iluvatar_tle::populateMemoryAccessConversion(typeConverter, patterns, target);
 #endif
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 

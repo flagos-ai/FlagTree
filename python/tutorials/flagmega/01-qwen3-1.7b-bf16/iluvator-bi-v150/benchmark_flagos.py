@@ -2,9 +2,8 @@
 
 Both variants use BF16, batch/concurrency one, 256-token cache pages, 16
 pages, no prefix reuse, and identical native scheduling and sampling. The
-native FlagOS path can optionally use a vLLM FULL CUDA graph; FlagMega keeps
-the eager worker-extension contract until graph capture is moved after the
-extension is installed. All warmup and measured independent greedy
+native FlagOS path can optionally use a vLLM FULL CUDA graph; FlagMega uses
+its worker-extension decode graph with eager native prefill. All warmup and measured independent greedy
 sequences must agree.
 """
 import argparse
@@ -17,6 +16,7 @@ from pathlib import Path
 import statistics
 import subprocess
 import time
+from benchmark_conditions import scenario_start
 
 
 def sha256(path):
@@ -62,6 +62,8 @@ def main():
     parser.add_argument('--warmups', type=int, default=1)
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--rotation', type=int, default=0)
+    parser.add_argument('--max-start-temperature', type=int,
+                        help='Cool each scenario before warmup, outside request timing (BI-V150)')
     parser.add_argument('--chat-smoke', action='store_true', help='Use Chinese and arithmetic chat prompts')
     parser.add_argument('--cuda-graph', action=argparse.BooleanOptionalAction, default=False,
                         help='Use vLLM FULL CUDA Graph for native FlagOS (default: eager)')
@@ -107,12 +109,14 @@ def main():
               block_size=256, num_gpu_blocks_override=16, enable_prefix_caching=False,
               enable_chunked_prefill=False, disable_log_stats=True, seed=0, **extra)
     engine = llm.llm_engine
-    report = {'schema': 'flagmega.flagos-benchmark/v2',
+    report = {'schema': 'flagmega.flagos-benchmark/v3',
               'label': 'flagmega_decode' if args.artifact else 'vllm_flagos',
               'boundary': 'engine.step: scheduler+forward+sampler+output processing; initialization excluded',
               'prefill': 'native FlagOS vLLM', 'decode': 'FlagMega' if args.artifact else 'native FlagOS vLLM',
               'batch': 1, 'concurrency': 1, 'block_size': 256, 'num_blocks': 16,
               'cuda_graph': args.cuda_graph,
+              'decode_execution': ('flagmega_worker_graph' if args.artifact else
+                                   'vllm_full_graph' if args.cuda_graph else 'eager'),
               'cudagraph_mode': 'FULL' if args.cuda_graph else 'NONE',
               'compilation_mode': 0, 'enforce_eager': not args.cuda_graph,
               'prefix_caching': False, 'decode_tokens': args.decode_tokens,
@@ -121,10 +125,13 @@ def main():
               'vllm_source': source_identity(vllm.__file__), 'flaggems_source': source_identity(flag_gems.__file__),
               'plugin_source': source_identity(vllm_fl.__file__), 'compiler_sha256': sha256(libtriton.__file__),
               'adapter_sha256': sha256(Path(__file__).with_name('flagos_adapter.py')),
+              'decode_inputs_sha256': sha256(Path(__file__).with_name('decode_inputs.py')),
               'benchmark_sha256': sha256(__file__), 'device': torch.cuda.get_device_name(),
               'visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'),
               'timestamp_utc': datetime.now(timezone.utc).isoformat(), 'warmups': args.warmups,
               'repeats': args.repeats, 'rotation': args.rotation, 'scenarios': [],
+              'max_start_temperature_c': args.max_start_temperature,
+              'conditions_sha256': sha256(Path(__file__).with_name('benchmark_conditions.py')),
               'native_token_agreement': False if expected_report else None, 'performance_valid': False}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     current = None
@@ -172,10 +179,13 @@ def main():
             if len(tokens) != args.decode_tokens or len(steps) != args.decode_tokens:
                 raise RuntimeError('Expected exactly one token per engine step')
             return {'prompt_tokens':prompt, 'token_ids':tokens, 'text':output.outputs[0].text,
-                    'ttft_ms':steps[0], 'decode_step_ms':steps[1:], 'e2e_ms':elapsed}
+                    'ttft_ms':steps[0], 'decode_step_ms':steps[1:], 'e2e_ms':elapsed,
+                    'output_tokens_per_second':len(tokens)*1000/elapsed}
 
         for name, prompt in scenarios:
-            current = {'scenario':name, 'prompt_length':len(prompt), 'warmup_runs':[], 'runs':[]}
+            current = {'scenario':name, 'prompt_length':len(prompt),
+                       'start_conditions': scenario_start(args.max_start_temperature),
+                       'warmup_runs':[], 'runs':[]}
             truth = expected[name] if expected else None
             for _ in range(args.warmups):
                 run = request(prompt)
@@ -200,6 +210,10 @@ def main():
                 raise AssertionError('Not every decode step used FlagMega')
             if report['executor_stats'][0]['native_prefill_calls'] != len(scenarios)*(args.warmups+args.repeats):
                 raise AssertionError('Not every prompt used native prefill')
+            if report['executor_stats'][0]['graph_replays'] != calls:
+                raise AssertionError('Not every FlagMega decode step replayed its graph')
+            if report['executor_stats'][0]['fused_decode_input_calls'] != calls:
+                raise AssertionError('Not every FlagMega decode step used fused input preparation')
         report['performance_valid'] = True
         report['native_token_agreement'] = True if expected_report else None
     except BaseException as error:

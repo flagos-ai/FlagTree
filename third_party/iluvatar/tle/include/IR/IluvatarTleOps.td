@@ -16,6 +16,25 @@ class IluvatarTle_Op<string mnemonic, list<Trait> traits = []>
 
 def IluvatarTle_SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
 
+// Explicit warp-owned flat transfers preserve byte order. They do not imply
+// a CTA rendezvous: callers own the transaction and shared-slot lifetimes.
+def IluvatarTle_SmeCopyOp : IluvatarTle_Op<"sme_copy",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins TT_PtrLike:$src,
+    Arg<TT_PtrLike, "", [MemWrite<IluvatarTle_SharedMemory>]>:$dst,
+    TT_IntLike:$byte_offset, TT_BoolLike:$active,
+    DefaultValuedAttr<I32Attr, "1024">:$nbytes);
+  let assemblyFormat = "$src `,` $dst `,` $byte_offset `,` $active attr-dict `:` type($src) `,` type($dst) `,` type($byte_offset) `,` type($active)";
+  let hasVerifier = 1;
+}
+
+def IluvatarTle_SmeWaitOp : IluvatarTle_Op<"sme_wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins I32Attr:$max_pending, BoolAttr:$drain_reads);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
 def IluvatarTle_ExtractTileOp : IluvatarTle_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
   let results = (outs TT_Tensor:$result);

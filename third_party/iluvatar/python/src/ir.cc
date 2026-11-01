@@ -898,6 +898,12 @@ void init_triton_ir(py::module &&m) {
                  ctaLayout, /*isSme=*/false, /*smeMask=*/false,
                  smeWarpsPerCta);
            })
+      .def("get_sliced_encoding",
+           [](TritonOpBuilder &self, unsigned dim,
+              Attribute parent) -> Attribute {
+             auto dist = cast<ttg::DistributedEncodingTrait>(parent);
+             return ttg::SliceEncodingAttr::get(self.getContext(), dim, dist);
+           })
       .def("get_iluvatar_sme_blocked_encoding",
            [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
               std::vector<unsigned> &threadsPerWarp,

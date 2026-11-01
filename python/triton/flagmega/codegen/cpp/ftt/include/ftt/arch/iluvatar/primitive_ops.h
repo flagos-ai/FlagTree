@@ -207,79 +207,23 @@ FTT_DEVICE_INLINE void grid_barrier(unsigned int *counter, int blocks) {
 }
 
 
-// Asynchronous global->shared tile copy on the SME engine.
+// Flat global->shared SME copies and FIFO completion.
 //
-// `rowxfb16` moves 16 source rows of 64-bit granules into shared memory and
-// interleaves two rows per 32-bit word: shared slot `i` holds
-// `src(row = i % 2, col = i / 2)`. That is exactly the `k_major_n8_k16` packed
-// weight order, which is why the GEMV kernels can consume the tile directly.
+// The flat form used below preserves byte order. The 2-D rowxfb form instead
+// swizzles its destination and requires a source row pitch of at least 64
+// bytes; it is intended for matrix operands, not the GEMV payload walk.
 //
-// Three things about this engine are load-bearing, all measured (see the
-// tutorial's .local/perf-iteration/cpp-backend-iteration.zh.md):
+// Waits cover only work issued by the calling lane. Every issuing lane must
+// wait for its own FIFO; a CTA barrier alone does not complete G2S copies.
+// sme_wait_pending<Pending> completes the older transfers while retaining
+// the newer batch. Slot reuse additionally needs sme_read_drain on every
+// consumer lane to complete its independent shared-read queue.
 //
-//   * `sme_wait()` drains *every* outstanding G2S transaction; there is no
-//     "wait for the oldest N" form. So a classic double-buffer that issues the
-//     next tile and then waits on the current one gains nothing -- measured
-//     61 GB/s against 88 for plain scalar loads.
-//   * MANY transactions queue per thread. Issuing 12 tiles back to back from
-//     one thread and draining once with `__ivcorex_sl_waitcnt` lands all
-//     6144 elements, under both wait masks 8 and 12.
-//
-//     An earlier note here claimed "only ONE transaction per CTA is in
-//     flight", from a probe whose filled-slot count scaled as 1/N. That was a
-//     defect in the probe, not the engine: it dispatched one tile per *thread*
-//     (`threadIdx.x < n`), and `sl_waitcnt` is per-thread, so the inspecting
-//     thread awaited only its own transaction and read the rest before they
-//     landed. Same tile count issued from a single thread lands completely;
-//     dispatched one-per-thread it reports 512/6144. Issue a batch from one
-//     thread, or have every issuing thread wait for its own tiles.
-//
-//     An even earlier claim of 816 GB/s was also wrong, for a different
-//     reason: that probe only accumulated a checksum and never validated the
-//     staged bytes. Validate staged data before believing any number here.
-//   * Cross-warp staging works: a producer warp can stage tiles that other
-//     warps consume, with the producer's `waitcnt` making the data visible and
-//     a CTA barrier making the producer's issue visible (measured 0 unfilled
-//     slots of 6144 from the consumer side). A CTA barrier alone does NOT
-//     drain the queue -- the wait is required.
-//
-//     Even so, SME producer staging does not pay for the GEMV path here, and
-//     the reason is not the engine: those kernels are bound by load-issue
-//     slots, and staging does not reduce the consumer's load count, it only
-//     moves the reads from global to shared. A 16-byte shared read measures
-//     0.95x the cost of a 16-byte global one -- the same issue port -- so the
-//     consumer saves ~5%, worth ~0.15 ms/token on the measured 3.58 ms GLU
-//     cost, while dedicating 2 of 16 warps to production costs ~0.45 ms of
-//     consumer issue throughput. Net negative before counting the per-k-group
-//     producer/consumer handshake. This is the same reason round 10.3's
-//     shared-memory activation staging lost 30.69 vs 19.91 ms/token.
-//
-//     SME is the right tool when the consumer is an MMA that reads its
-//     operands from shared anyway, which is how the Triton backend uses it
-//     (`emitIluvatarSmeTileLoads`, predicated on `smeWarpsPerCTA`): there the
-//     shared read is not an added cost because it was already required. A
-//     batch-1 GEMV reads its weights exactly once, so there is no reuse to
-//     amortize the extra hop.
-//   * The descriptor's third lane must be -1 and its fourth the source row
-//     stride in *bytes*.
-//   * The row stride has a 64-byte minimum. Below it the instruction silently
-//     reads only 16 source elements and repeats them across the destination --
-//     no fault, no partial write, just duplicated data. A 32-byte stride
-//     (16 bf16, which is what a `k_major_n8_k16` lane looks like) is therefore
-//     unusable, and that single fact produced four rounds of apparently
-//     unrelated wrong-token bugs.
-//   * One instruction moves 16 rows x 32 columns = 512 elements, independent of
-//     the stride; the stride only sets the row pitch. So it cannot densely copy
-//     a contiguous run whose rows are narrower than 32 elements -- it is built
-//     for taking a 16x32 tile out of a wider matrix, which is how the Triton
-//     backend uses it for dot operands.
-//   * The destination permutation is regular only over the first 256 slots
-//     (`smem[i] = src(row = 2*(i/32) + i%2, col = (i/2)%16)`); slots 256..511
-//     follow a different pattern (slot 256 holds row 4, not row 0). Measure it
-//     with an integer-only probe before relying on it. `__bf16` and FTT's own
-//     `bfloat16_t` both read back as zero in a standalone translation unit on
-//     this toolchain, which makes float-based probes report "nothing was
-//     copied" when the copy in fact succeeded.
+// Cross-warp consumers require CTA publication after the producer's wait.
+// A warp consuming its own tile needs no cross-warp publication, and can
+// overlap the next FIFO batch with its current packed BF16 arithmetic.
+// Integer payload, long-K FIFO and shared-lifetime regressions live in
+// python/test/flagmega/codegen/cpp/test_sme_batches.py.
 //
 // The destination must be 64-bit aligned shared memory with room for
 // 16 * `granules_per_row` 16-bit elements.
@@ -318,6 +262,194 @@ FTT_DEVICE_INLINE void sme_copy_tile(void *destination, const void *source,
 // 6144. The Triton backend uses mask 8 (G2S only) where this uses 12 (G2S plus
 // shared stores); both land the data, and 12 is the safer default when the
 // caller may also have written the same buffer with ordinary shared stores.
+// Stage one contiguous 1 KB block global->shared, warp granularity.
+//
+// `sme_load_1x16b64` is the flat form: 1024 bytes (512 bf16) laid out in
+// shared exactly as in global. A whole 6144-element weight group stages as an
+// exact copy, verified element by element.
+//
+// Preferred over the 2-D forms for two reasons:
+//   * It is stride-independent. Verified correct at row strides 0, 32, 64 and
+//     1024, because a flat copy never consults the stride. `16x1b64` is a
+//     16 x 32 tile and silently corrupts 480 of 512 elements at a sub-64-byte
+//     stride, which is a standing trap for any caller that computes one.
+//   * Same bandwidth: 513 vs 509 GB/s at 4 issuing warps, 593 vs 585 at 12.
+//
+// The `rowxfb`/`colxfb` variants permute through a swizzle and exist for MMA
+// dot operands; the Triton backend emits those because its SME path is bound
+// to `dot`. FTT consumes staged weights with ordinary `load_run`, so it wants
+// the natural layout and needs no permutation table.
+//
+// The stride argument is retained for descriptor shape only; it is not read
+// by this form.
+FTT_DEVICE_INLINE void sme_copy_block(void *destination, const void *source,
+                                      int source_row_stride_bytes,
+                                      int source_byte_offset = 0) {
+#if defined(FTT_DEVICE_PASS)
+    using descriptor_t = int __attribute__((__vector_size__(16)));
+    const unsigned long long address =
+        reinterpret_cast<unsigned long long>(source);
+    const descriptor_t base = {
+        static_cast<int>(address & 0xffffffffu),
+        static_cast<int>(address >> 32),
+        -1,
+        source_row_stride_bytes,
+    };
+    __ivcorex_sme_load_1x16b64(
+        static_cast<int>(reinterpret_cast<unsigned long long>(destination)),
+        base, source_byte_offset, 0);
+#else
+    (void)destination;
+    (void)source;
+    (void)source_row_stride_bytes;
+    (void)source_byte_offset;
+#endif
+}
+
+// Why the swizzled and `_imm` variants are not used here, both measured:
+//
+//   * `_rowxfb*` / `_colxfb*` permute which source element lands in which
+//     shared slot. They cannot reduce bank conflicts for this consumer,
+//     because a conflict needs two lanes of a warp at different addresses in
+//     the same bank, and each lane here reads its own contiguous 16-byte run
+//     -- 64 lanes covering 1024 contiguous bytes, which is already the
+//     conflict-free shape. A swizzle only changes *which* data sits in those
+//     runs. Measured on an identical consumer: flat 0.0894 ms against
+//     swizzled 0.0896 ms. The swizzle exists for an MMA dot operand, whose
+//     required per-lane mapping is not contiguous; there it saves a shuffle.
+//   * The `_imm` family takes two plain pointers plus a stride and three
+//     immediate offsets, so it builds no descriptor at all. It is correct
+//     (verified exact at several `gidx_imm`, which must be compile-time --
+//     `ImmArg` on arguments 4-6, and passing a runtime value fails LLVM
+//     verification) and it measures the same: 663 against 660 GB/s. So
+//     descriptor construction was never costing bandwidth.
+//
+// Padding the staged tiles was also measured in the real kernel and is
+// neutral: 9.714 ms against 9.715 at a pad of 8 elements. A standalone probe
+// did show +53% from padding, but that probe reported shared bandwidth below
+// what the kernel itself demonstrably sustains, so it was measuring its own
+// artifact. `FLAGMEGA_CPP_SME_PAD` keeps the knob available.
+
+// Two multiply-accumulates straight from packed bf16 pairs, fp32 products
+// and fp32 accumulator: `acc + a[0]*b[0] + a[1]*b[1]`.
+//
+// Verified bit-exact against unpacking to fp32 and doing two scalar FMAs,
+// over 256 assorted bf16 patterns. The precision contract requires the
+// products to form in fp32, which this instruction does.
+FTT_DEVICE_INLINE float bf16_pair_dot(unsigned int lhs, unsigned int rhs,
+                                      float accumulator) {
+#if defined(FTT_DEVICE_PASS)
+    using bf16x2 = __bf16 __attribute__((ext_vector_type(2)));
+    bf16x2 a, b;
+    __builtin_memcpy(&a, &lhs, sizeof(a));
+    __builtin_memcpy(&b, &rhs, sizeof(b));
+    return __ivcorex_bfdot2(a, b, accumulator);
+#else
+    (void)lhs;
+    (void)rhs;
+    return accumulator;
+#endif
+}
+
+// A reusable SME source descriptor.
+//
+// `sme_copy_block` rebuilds the descriptor on every call, and in a staging
+// loop that dominates the issuing lane's instruction stream: the `v4i32` has
+// to be moved into scalar registers because `sl_sme_load` takes scalar
+// operands, which showed up as 56 `ml_mov_v2s_b32` in a 281-instruction
+// window of the GLU loop -- more than the loads, the unpacking and the FMAs
+// combined.
+//
+// Only the base pointer varies across a staging loop; the stride and the
+// sentinel lane are loop-invariant, and the instruction already takes a byte
+// offset. So build the descriptor once and vary the offset.
+struct sme_source {
+    // Stored as plain words so the struct has one layout in both passes; the
+    // native vector type is reconstructed at the call.
+    int word[4];
+};
+
+FTT_DEVICE_INLINE sme_source sme_source_for(const void *base,
+                                            int source_row_stride_bytes) {
+    sme_source source{};
+#if defined(FTT_DEVICE_PASS)
+    const unsigned long long address =
+        reinterpret_cast<unsigned long long>(base);
+    source.word[0] = static_cast<int>(address & 0xffffffffu);
+    source.word[1] = static_cast<int>(address >> 32);
+    source.word[2] = -1;
+    source.word[3] = source_row_stride_bytes;
+#else
+    (void)base;
+    (void)source_row_stride_bytes;
+#endif
+    return source;
+}
+
+// Stage one contiguous 1 KB block from a prebuilt descriptor at a byte offset.
+FTT_DEVICE_INLINE void sme_copy_block_from(void *destination,
+                                           const sme_source &source,
+                                           long long source_byte_offset) {
+#if defined(FTT_DEVICE_PASS)
+    using descriptor_t = int __attribute__((__vector_size__(16)));
+    const descriptor_t value = {source.word[0], source.word[1],
+                                source.word[2], source.word[3]};
+    __ivcorex_sme_load_1x16b64(
+        static_cast<int>(reinterpret_cast<unsigned long long>(destination)),
+        value, static_cast<int>(source_byte_offset), 0);
+#else
+    (void)destination;
+    (void)source;
+    (void)source_byte_offset;
+#endif
+}
+
+// Keep the K-group induction value independent of the byte-address product.
+// The consumer's activation and the producer's shared slot use the same group
+// index; form the constant-stride byte offset only inside the issuing helper.
+template <long long GroupStride>
+FTT_DEVICE_INLINE void sme_copy_group_from(void *destination,
+                                         const sme_source &source,
+                                         long long group) {
+    sme_copy_block_from(destination, source, group * GroupStride * 2LL);
+}
+
+// Drain only this thread's G2S transactions, without a CTA rendezvous.
+//
+// Separate from `sme_wait` because a producer/consumer kernel wants the two
+// halves at different points: the producer drains its own tiles, and the
+// rendezvous that publishes them to consumers is the loop's existing barrier.
+// Folding a `cta_sync` in here would add a second block-wide barrier per
+// stage, which is exactly the cost the prefetch is trying to avoid.
+//
+// The wait is per-thread and covers only transactions this thread issued, so
+// every issuing thread must call it.
+FTT_DEVICE_INLINE void sme_drain() {
+#if defined(FTT_DEVICE_PASS)
+    __ivcorex_sl_waitcnt(12);  // bit2 = shared stores, bit3 = G2S
+#endif
+}
+
+// Complete older flat SME transactions while leaving at most Pending newer
+// ones in flight. ivcore11 uses a six-bit transaction count, not commit groups.
+// The count is an immediate in the device ISA; a template keeps the tail's
+// waits constant as well as the steady-state wait. Each issuing lane waits
+// for its own FIFO and may reuse only slots whose consumers have finished.
+template <unsigned int Pending> FTT_DEVICE_INLINE void sme_wait_pending() {
+    static_assert(Pending <= 63, "The G2S pending count has six bits.");
+#if defined(FTT_DEVICE_PASS)
+    __ivcorex_sl_waitcnt(8ULL | (static_cast<unsigned long long>(Pending) << 23));
+#endif
+}
+
+// Before reusing staged slots, finish each lane's shared reads. G2S waits
+// order copies but do not order the independent shared-read queue.
+FTT_DEVICE_INLINE void sme_read_drain() {
+#if defined(FTT_DEVICE_PASS)
+    __ivcorex_sl_waitcnt(4ULL);
+#endif
+}
+
 FTT_DEVICE_INLINE void sme_wait() {
 #if defined(FTT_DEVICE_PASS)
     __ivcorex_sl_waitcnt(12);  // bit2 = shared stores, bit3 = G2S

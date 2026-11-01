@@ -12,9 +12,21 @@
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == "packed_k_major_gemv_norm_stats" %}
+{% set dense_preserve_reduction = corex_preserve_k_reduction | default(false) and call.tile_n == 64 and call.block_k == 128 %}
+{% set dense_source_pointer = call.source ~ " + (" ~ call.source_offset ~ ")" %}
+{% set dense_weight_pointer = call.weight ~ " + (" ~ call.weight_offset ~ ")" %}
+{% if dense_preserve_reduction %}
+{# Load into the original K register streams before FP32 accumulation. #}
+{% set dense_source_pointer = "tle.gpu.set_layout(" ~ dense_source_pointer ~ ", tle.gpu.SlicedEncoding(0, dense_layout))" %}
+{% set dense_weight_pointer = "tle.gpu.set_layout(" ~ dense_weight_pointer ~ ", dense_layout)" %}
+{% endif %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m_capacity != 1 %}
+    for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
+{% endif %}
+{% filter indent(4 if call.local_m_capacity != 1 else 0, first=True) %}
     dense_stats_square_sum = tl.zeros(({{ call.tile_n }},), tl.float32)
     for dense_local_n_start in tl.range(
         0, {{ call.local_n_capacity }}, {{ call.tile_n }}
@@ -27,9 +39,35 @@ def {{ call.symbol }}({{ call.signature }}):
             (dense_local_n_offsets < {{ call.local_n_capacity }})
             & ({{ call.result_active }})
         )
-        dense_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+        {# 2D accumulator with the k-axis reduce deferred to loop exit, and
+           the accumulate body inlined rather than called.
+
+           This variant carries its own copy of the kernel body, so it never
+           picked up the two transformations its `packed_k_major_gemv` sibling
+           got through the shared `_function.py.jinja`:
+
+           - Trial 60: the per-iteration `tl.sum` + `accumulator +=` is a
+             reduce->add->reload serial chain; deferring the reduce measured
+             -25.7% on BI-V150.
+           - Trials 13-15: this backend does not carry the deferred-upcast
+             micro-optimization across a `noinline` call boundary, so the
+             accumulate must live in the function body.
+
+           Measured together at the down-projection shape (N=128 local,
+           K=6144, tile_n=64, block_k=128, 28 layers x 16 CTAs, 705 MB of
+           real weight traffic): 1.577 -> 1.345 ms, 447 -> 524 GB/s
+           (54.5% -> 64.0% of peak), output bit-exact. #}
+        dense_accumulator_tile = tl.zeros(
+            ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
+        )
+{% if dense_preserve_reduction %}
+        dense_layout: tl.constexpr = tle.gpu.BlockEncoding(
+            [1, 4], [8, 8], [4, 4], [1, 0]
+        )
+        dense_accumulator_tile = tle.gpu.set_layout(dense_accumulator_tile, dense_layout)
+{% endif %}
         for dense_local_k_start in tl.range(
-            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}{% if dense_preserve_reduction %}, loop_unroll_factor=8{% endif %}
         ):
             dense_local_k_offsets = (
                 dense_local_k_start + tl.arange(0, {{ call.block_k }})
@@ -39,11 +77,28 @@ def {{ call.symbol }}({{ call.signature }}):
                 (dense_local_k_offsets < {{ call.local_k_capacity }})
                 & ({{ call.source_active }})
             )
-            dense_accumulator += {{ call.accumulate_helper }}(
-                {{ call.source }}, {{ call.weight }},
-                {{ call.source_offset }}, {{ call.weight_offset }},
-                dense_k_mask, dense_n_mask,
+            dense_source_value = tl.load(
+                {{ dense_source_pointer }},
+                mask=dense_k_mask, other=0.0,
             )
+            dense_weight_value = tl.load(
+                {{ dense_weight_pointer }},
+                mask=dense_n_mask[:, None] & dense_k_mask[None, :],
+                other=0.0,
+            )
+            dense_accumulator_tile += (
+                dense_weight_value.to(tl.float32)
+                * dense_source_value[None, :].to(tl.float32)
+            )
+{% if dense_preserve_reduction %}
+        # The K128 streams are independent until loop exit. Partition them
+        # across warps for loading, then restore the original reduction tree.
+        dense_accumulator_tile = tle.gpu.set_layout(
+            dense_accumulator_tile,
+            tle.gpu.BlockEncoding([1, 4], [2, 32], [16, 1], [1, 0]),
+        )
+{% endif %}
+        dense_accumulator = tl.sum(dense_accumulator_tile, axis=1)
         dense_residual = tl.load(
             {{ call.residual }} + ({{ call.residual_offset }}),
             mask=dense_n_mask,
@@ -67,11 +122,24 @@ def {{ call.symbol }}({{ call.signature }}):
         dense_stats_square_sum += tl.where(
             dense_n_mask, dense_value_fp32 * dense_value_fp32, 0.0,
         )
+{% if dense_preserve_reduction %}
+    # The original 32-warp layout first adds adjacent N positions inside
+    # each warp, then reduces its 32 warp subtotals. A flat 16-warp reduction
+    # would instead combine register fragments before the lane fold.
+    dense_stats_pairs = tle.gpu.set_layout(
+        tl.reshape(dense_stats_square_sum, ({{ call.tile_n // 2 }}, 2)),
+        tle.gpu.BlockEncoding([1, 1], [32, 2], [16, 1], [0, 1]),
+    )
+    dense_stats_result = tl.sum(tl.sum(dense_stats_pairs, axis=1), axis=0)
+{% else %}
+    dense_stats_result = tl.sum(dense_stats_square_sum, axis=0)
+{% endif %}
     tl.store(
         {{ call.stats }} + ({{ call.stats_offset }}),
-        tl.sum(dense_stats_square_sum, axis=0),
+        dense_stats_result,
         mask={{ call.stats_writer_active }},
     )
+{% endfilter %}
 
 
 {% endif %}

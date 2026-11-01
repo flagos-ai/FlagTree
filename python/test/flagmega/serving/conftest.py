@@ -51,7 +51,7 @@ class TorchModel:
         self.state_config = PagedAttentionStateConfig(1, 1, 8, block_size=4, num_blocks=2)
         self.ir_module = SimpleNamespace(metadata={"vocab_size": 16})
         self.artifact = artifact
-        self.manifest = {"semantic_hash": "test"}
+        self.manifest = {"semantic_hash": "test", "codegen": {"source": "generated_kernels.py"}}
         self.resource_report = None
         self.prepares = 0
         self.closed = False

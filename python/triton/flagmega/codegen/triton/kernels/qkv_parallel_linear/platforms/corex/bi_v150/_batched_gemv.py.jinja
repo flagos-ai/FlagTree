@@ -1,0 +1,105 @@
+# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv (batched packed outputs)
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls | selectattr("corex_flat_sme_qkv", "defined") | list %}
+from triton.experimental.tle.language.gpu.iluvatar import sme
+{% endif %}
+{% for call in render_calls %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    # Q/K/V share a complete packed row extent. Keep all four K16 streams
+    # through one weight loop instead of traversing K independently per output.
+    qkv_layout: tl.constexpr = tle.gpu.BlockEncoding([1,4], [1,64], [4,4], [1,0])
+    qkv_payload = tl.arange(0, 4096)[None, :]
+    qkv_groups = tl.arange(0, 4)[:, None]
+    qkv_accumulator = tle.gpu.set_layout(tl.zeros((4, 4096), tl.float32), qkv_layout)
+{% if call.corex_flat_sme_qkv | default(false) %}
+    qkv_copy_layout: tl.constexpr = tle.gpu.BlockEncoding([1,1], [1,64], [16,1], [1,0])
+    qkv_warp = tle.gpu.set_layout(tl.arange(0,16)[:,None], qkv_copy_layout)
+    qkv_group = qkv_warp // 4
+    qkv_tile = qkv_warp % 4
+    qkv_arena = tle.gpu.alloc(
+        [32768], dtype=tl.bfloat16,
+        layout=tle.gpu.swizzled_shared_layout(1,1,1,[0],1,[1],[1],[0]),
+        nv_mma_shared_layout=False,
+    )
+    qkv_base = tle.gpu.local_ptr(qkv_arena, (0,))
+    qkv_indices = tle.gpu.set_layout(
+        tl.broadcast_to(qkv_groups*4096 + qkv_payload, (4,4096)), qkv_layout,
+    )
+    qkv_weight_base = {{ call.weight }} + shard_index*{{ call.weight_owner_stride }}
+    # The [4,4] warp basis owns four separated N16 fragments. Every shared
+    # read is from its own warp's transfers, so wait needs no block barrier.
+    for qkv_initial in tl.static_range(2):
+        qkv_off = (qkv_initial*4+qkv_group)*4096 + qkv_tile*256
+        for qkv_fragment in tl.static_range(4):
+            sme.copy(
+                qkv_weight_base+qkv_off+qkv_fragment*1024,
+                qkv_base+qkv_initial*16384+qkv_group*4096+qkv_tile*256+qkv_fragment*1024,
+                nbytes=512,
+            )
+    for qkv_step in range({{ call.local_k_capacity // 64 }}):
+        qkv_slot = (qkv_step%2)*16384
+        if qkv_step < {{ call.local_k_capacity // 64 - 2 }}:
+            sme.wait(4)
+        else:
+            sme.wait(0)
+        qkv_weight = tl.load(tle.gpu.set_layout(qkv_base+qkv_slot+qkv_indices, qkv_layout)).to(tl.float32)
+        qkv_local_k_offsets = qkv_step*64 + qkv_groups*16 + qkv_payload%16
+        qkv_weight = tl.where((qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}), qkv_weight, 0.)
+        qkv_source = tl.load(
+            tle.gpu.set_layout({{ call.source }} + ({{ call.source_offset }}), qkv_layout),
+            mask=(qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}), other=0,
+        ).to(tl.float32)
+        qkv_accumulator = tle.gpu.set_layout(qkv_accumulator + qkv_source*qkv_weight, qkv_layout)
+        sme.wait(4, drain_reads=True)
+        if qkv_step < {{ call.local_k_capacity // 64 - 2 }}:
+            qkv_off = ((qkv_step+2)*4+qkv_group)*4096 + qkv_tile*256
+            for qkv_fragment in tl.static_range(4):
+                sme.copy(
+                    qkv_weight_base+qkv_off+qkv_fragment*1024,
+                    qkv_base+qkv_slot+qkv_group*4096+qkv_tile*256+qkv_fragment*1024,
+                    nbytes=512,
+                )
+    sme.wait(0, drain_reads=True)
+{% else %}
+    for qkv_k_start in tl.range(0, {{ call.local_k_capacity }}, 64):
+        qkv_local_k_offsets = qkv_k_start + qkv_groups * 16 + qkv_payload % 16
+        qkv_source = tl.load(
+            tle.gpu.set_layout({{ call.source }} + ({{ call.source_offset }}), qkv_layout),
+            mask=(qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}), other=0,
+        ).to(tl.float32)
+        qkv_weight_offsets = (
+            shard_index * {{ call.weight_owner_stride }}
+            + (qkv_k_start // 16 + qkv_groups) * {{ call.weight_k_group_stride }}
+            + qkv_payload // {{ call.n_lane * call.k_lane }} * {{ call.weight_n_group_stride }} + qkv_payload % {{ call.n_lane * call.k_lane }}
+        )
+        qkv_weight = tl.load(
+            tle.gpu.set_layout({{ call.weight }} + qkv_weight_offsets, qkv_layout),
+            mask=(qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}), other=0,
+        ).to(tl.float32)
+        qkv_accumulator = tle.gpu.set_layout(qkv_accumulator + qkv_source * qkv_weight, qkv_layout)
+{% endif %}
+    qkv_rows = tl.reshape(tl.trans(tl.reshape(qkv_accumulator, (4, 256, 16)), (1, 0, 2)), (256, 64))
+    qkv_pair = tl.trans(tl.reshape(qkv_rows, (2, 128, 64)), (1, 2, 0))
+    qkv_q, qkv_kv = tl.split(qkv_pair)
+    qkv_q_layout: tl.constexpr = tle.gpu.BlockEncoding([1,1,4], [1,16,4], [4,4,1], [2,1,0])
+    qkv_kv_layout: tl.constexpr = tle.gpu.BlockEncoding([1,1,2], [1,8,8], [4,4,1], [2,1,0])
+    # Preserve the different original Q and K/V register/lane folds.
+    qkv_q = tle.gpu.set_layout(tl.trans(tl.reshape(qkv_q, (128, 4, 16)), (1, 0, 2)), qkv_q_layout)
+    qkv_kv = tle.gpu.set_layout(tl.trans(tl.reshape(qkv_kv, (128, 4, 16)), (1, 0, 2)), qkv_kv_layout)
+    qkv_q_result = tl.sum(tl.sum(qkv_q, 2), 0)
+    qkv_kv_result = tl.sum(tl.sum(qkv_kv, 2), 0)
+{% for output in call.outputs %}
+    qkv_local_n_offsets = tl.arange(0, 128) - {{ 64 if loop.index0 == 2 else 0 }}
+    tl.store(
+        tle.gpu.set_layout(
+            {{ output.result }} + ({{ output.result_offset }}),
+            tle.gpu.SlicedEncoding(0, tle.gpu.SlicedEncoding(2, {{ "qkv_q_layout" if loop.index0 == 0 else "qkv_kv_layout" }})),
+        ),
+        {{ "qkv_q_result" if loop.index0 == 0 else "qkv_kv_result" }}.to({{ call.output_type }}),
+        mask=(qkv_local_n_offsets >= 0) & (qkv_local_n_offsets < {{ output.local_n_capacity }}) & ({{ output.active }}),
+    )
+{% endfor %}
+
+{% endfor %}

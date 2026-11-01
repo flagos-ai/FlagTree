@@ -8,13 +8,13 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("distributed", [False, True])
 def test_manual_binary_literal_body_stays_in_registers(tmp_path, distributed):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     shape = (4, 37)
 
     @fm.fusion(fm.tensor_type("float32", shape))

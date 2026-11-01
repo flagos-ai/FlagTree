@@ -11,6 +11,7 @@ from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+from python.test.flagmega.devices import require_nvidia_sm90
 
 
 @pytest.mark.parametrize("shape,axis,k,split", [
@@ -25,8 +26,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16", "int32", "int64"])
 def test_top_k_local_kernel_stable_ties_and_exact_integer_values(tmp_path, shape, axis, k, split, largest, dtype):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
+    require_nvidia_sm90()
     value_type = fm.tensor_type(dtype, shape)
     metadata = {}
     if split:

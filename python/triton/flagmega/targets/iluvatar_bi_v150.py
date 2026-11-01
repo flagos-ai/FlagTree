@@ -40,6 +40,16 @@ def corex_triton_implementation_model():
          "producer_warps": 4, "producer_registers": 64,
          "consumer_warps": 16, "worker_width": 64, "compute_num_warps": 16,
          "descriptor_kind": "pointer",
+         # This variant stages only the weight: its template reads the
+         # activation with a plain `tl.load` inside the consumer rather than
+         # through a pipeline slot, so it declares one shared workspace, not
+         # two. Without this the renderer rejects it for missing an LHS stage.
+         "direct_lhs": True,
+         # The template walks `num_n_tiles`, so a block_n smaller than the
+         # owner-local N extent is tiled rather than a mismatch. block_n is
+         # tunable down to 16 against a 256-wide shard, so this is the normal
+         # case here, not a tail.
+         "n_tiling": True,
          # Two physical Shared slots let layer i+1 overlap layer i; the
          # source scheduler retains the lifetime drain before slot i is reused.
          "inter_stage_buffer_slots": 2},
@@ -63,7 +73,13 @@ def corex_triton_implementation_model():
         TIRTransferPipelineContract((TIRTransferPipelineChannel("weight", (1,), (0,), 16),),
                                      capacity=qkv_pipeline_stages))
     implementations = []
+    capability = IluvatarBiV150Capability()
     for implementation in model.implementations:
+        # A generic template can resolve even when its declared instructions
+        # are unavailable on this device. Keep registry admission consistent
+        # with normal capability-based implementation selection.
+        if not capability.supports(implementation.requires):
+            continue
         # Tensor-map descriptors and transfer pipelines use the CUDA TMA ABI;
         # COREX lowers these kernels through ordinary pointer loads instead.
         if implementation.facts.get("host_tensor_descriptor"):
@@ -112,6 +128,7 @@ class IluvatarBiV150Capability:
     supports_fp8_mma: bool = False
     supports_fp8: bool = True
     supports_async_copy: bool = True
+    supports_flat_sme_count_wait: bool = True
     supports_cooperative_grid: bool = True
     supports_tma: bool = True
     supports_warp_specialize: bool = True
@@ -213,8 +230,14 @@ class IluvatarBiV150Machine(NvidiaSm90Machine):
             verify_shared_workspaces(implementation_model)
         self._implementation_model = implementation_model
 
-    def triton_implementation_model(self):
-        return self._implementation_model or corex_triton_implementation_model()
+    def triton_implementation_model(self, supplied=None):
+        # A caller-supplied model takes precedence over the machine's own, then
+        # the Corex default; no extra invariants here, so it is returned as-is.
+        return (
+            supplied
+            or self._implementation_model
+            or corex_triton_implementation_model()
+        )
 
     def default_ntt_options(self) -> NttTargetOptions:
         return NttTargetOptions(

@@ -1,0 +1,11 @@
+{#- AMD: per-token-row online softmax. The generic loop merges every tile into
+    one running state with ~10 barrier-separated cross-warp reductions that
+    serialize behind the K/V loads; per-row state defers that to one merge
+    after the loop. The V load is issued next to K. #}
+{% set paged_attention_partial_variant = "decode_t16" %}
+{% set paged_attention_partial_issue_value_with_key = true %}
+{% set paged_attention_partial_per_row_softmax = true %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

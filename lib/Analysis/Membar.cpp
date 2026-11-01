@@ -562,6 +562,12 @@ void MembarOrFenceAnalysis::resolve(FunctionOpInterface funcOp,
     if (block->isEntryBlock() &&
         !isa<RegionBranchOpInterface>(block->getParentOp()))
       blockList.emplace_back(block, Block::iterator());
+#ifdef __TLE__
+    if (block->isEntryBlock() &&
+        !isa<RegionBranchOpInterface>(block->getParentOp()) &&
+        tracksEntrySync() && block->getParentOp() == funcOp.getOperation())
+      inputBlockInfoMap[{block, Block::iterator()}].entryUnsynced = true;
+#endif
   });
 
   // A fixed point algorithm
@@ -680,6 +686,57 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
 }
 
+#ifdef __TLE__
+void MembarAnalysis::addToEntryPrefix(const BlockInfo &blockInfo) {
+  auto funcOp = cast<FunctionOpInterface>(allocation->getOperation());
+  BlockInfo accesses = blockInfo;
+  accesses.entryUnsynced = false;
+  (*entryPrefixMap)[funcOp].join(accesses);
+}
+
+void MembarAnalysis::updateCall(Operation *op, FunctionOpInterface callee,
+                                BlockInfo *blockInfo,
+                                FuncBlockInfoMapT *funcBlockInfoMap,
+                                MembarFilterFn filter, OpBuilder *builder) {
+  // The callee's shared memory lives in this call's virtual buffer.
+  size_t callOffset = 0;
+  auto callBufferId = allocation->getBufferId(op);
+  if (callBufferId != Allocation::InvalidBufferId)
+    callOffset = allocation->getAllocatedInterval(callBufferId).start();
+
+  auto exitIt = funcBlockInfoMap->find(callee);
+  BlockInfo calleeExit;
+  if (exitIt != funcBlockInfoMap->end())
+    calleeExit = exitIt->second.translated(callOffset);
+  else
+    calleeExit.entryUnsynced = true;
+
+  // Without entry summaries, fall back to the callee's exit state.
+  BlockInfo calleeEntry = calleeExit;
+  if (entryPrefixMap) {
+    auto entryIt = entryPrefixMap->find(callee);
+    calleeEntry = entryIt != entryPrefixMap->end()
+                      ? entryIt->second.translated(callOffset)
+                      : BlockInfo();
+  }
+
+  // Accesses pending in the caller must be ordered against what the callee
+  // touches before its first barrier.
+  if (blockInfo->isIntersected(calleeEntry, filter)) {
+    builder->setInsertionPoint(op);
+    insertBarrier(op, builder);
+    blockInfo->sync();
+  }
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(calleeEntry);
+  // A callee that synchronizes on every path also synchronizes the caller.
+  if (!calleeExit.entryUnsynced)
+    blockInfo->sync();
+  calleeExit.entryUnsynced = false;
+  blockInfo->join(calleeExit);
+}
+#endif
+
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
@@ -699,14 +756,44 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     return;
   }
 
+#ifdef __TLE__
+  // Atomicity orders the addressed memory, not the shared scratch used to
+  // broadcast returned values. Exempt only atomic chains without return
+  // scratch; overlapping broadcasts still need their write-after-read barrier.
+  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
+    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(rhs)) {
+      // Participant publication proves that every payload writer performs its
+      // own release fence and arrive. A synchronous store needs no additional
+      // CTA rendezvous, even when the barrier parameter may alias its buffer.
+      if (arrive.getParticipantArrive() && arrive.getReleaseFence() &&
+          isa<triton::StoreOp, triton::gpu::LocalStoreOp>(lhs))
+        return true;
+    }
+    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
+        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs) &&
+        allocation->getBufferId(lhs) == Allocation::InvalidBufferId &&
+        allocation->getBufferId(rhs) == Allocation::InvalidBufferId)
+      return true;
+    return filter ? filter(lhs, rhs) : false;
+  };
+#endif
+
   BlockInfo curBlockInfo;
   auto scratchBufferId = Allocation::InvalidBufferId;
   if (isa<triton::CallOp>(op)) {
     // Inter-function dependencies
     auto callOpInterface = dyn_cast<CallOpInterface>(op);
+#ifdef __TLE__
+    if (auto callee =
+            dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
+      updateCall(op, callee, blockInfo, funcBlockInfoMap, effectiveFilter,
+                 builder);
+    return;
+#else
     if (auto callee =
             dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
       curBlockInfo = funcBlockInfoMap->lookup(callee);
+#endif
   } else {
     // Intra-function dependencies
     if (auto memoryEffectOpInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
@@ -772,28 +859,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     scratchBufferId = allocation->getBufferId(op);
   }
 
-#ifdef __TLE__
-  // Atomicity orders the addressed memory, not the shared scratch used to
-  // broadcast returned values. Exempt only atomic chains without return
-  // scratch; overlapping broadcasts still need their write-after-read barrier.
-  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
-    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(rhs)) {
-      // Participant publication proves that every payload writer performs its
-      // own release fence and arrive. A synchronous store needs no additional
-      // CTA rendezvous, even when the barrier parameter may alias its buffer.
-      if (arrive.getParticipantArrive() && arrive.getReleaseFence() &&
-          isa<triton::StoreOp, triton::gpu::LocalStoreOp>(lhs))
-        return true;
-    }
-    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs) &&
-        allocation->getBufferId(lhs) == Allocation::InvalidBufferId &&
-        allocation->getBufferId(rhs) == Allocation::InvalidBufferId)
-      return true;
-    return filter ? filter(lhs, rhs) : false;
-  };
-#endif
-
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
   // read/write operations, and ending with a shared memory read, i.e., shared
@@ -834,10 +899,22 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
+#ifdef __TLE__
+      blockInfo->sync();
+#endif
     }
+#ifdef __TLE__
+    // The write phase runs before the op's internal barrier.
+    if (entryPrefixMap && blockInfo->entryUnsynced)
+      addToEntryPrefix(curBlockInfo);
+#endif
     // Ops with a scratch buffer that don't use warp.sync internally sync
     // read/write on shared memory
+#ifdef __TLE__
+    if (!isWarpSync)
+#else
     if (insertCTABarrier || !isWarpSync)
+#endif
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
 #ifdef __TLE__
@@ -849,6 +926,10 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     insertBarrier(op, builder);
     blockInfo->sync();
   }
+#ifdef __TLE__
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(curBlockInfo);
+#endif
   // Update the region info, even if barrier is inserted, we have to maintain
   // the current op's read/write buffers.
   blockInfo->join(curBlockInfo);

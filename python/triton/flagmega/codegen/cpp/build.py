@@ -67,8 +67,13 @@ def iluvatar_bi_v150_toolchain() -> CppToolchain:
         name="iluvatar-bi-v150",
         compiler=root / "bin" / "clang++",
         # `-x ivcore` selects COREX's device-C++ driver mode; ivcore11 is the
-        # BI-V150's device architecture.
-        target_flags=("-x", "ivcore", "--cuda-gpu-arch=ivcore11"),
+        # BI-V150's device architecture. Extra load latency lets the vendor
+        # scheduler move packed BF16 loads ahead of dependent dot instructions,
+        # including its pass after register allocation. Measured together on
+        # the full decode package; neither flag changes arithmetic ordering.
+        target_flags=("-x", "ivcore", "--cuda-gpu-arch=ivcore11",
+                      "-mllvm", "-iluvatar-extra-load-latency=80",
+                      "-mllvm", "-iluvatar-extra-latency-post-ra=40"),
         link_flags=(f"-L{root / 'lib64'}", "-lcudart"),
         arch_define="FTT_ARCH_ILUVATAR",
     )

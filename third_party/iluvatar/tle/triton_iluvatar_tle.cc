@@ -359,6 +359,19 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              return self.create<iluvatar_tle::MemDescAliasOp>(type, src,
                  self.getBuilder().getI64IntegerAttr(offset));
            })
+      .def("create_iluvatar_sme_copy",
+           [](TritonOpBuilder &self, Value src, Value dst, Value byteOffset,
+              Value active, int nbytes) {
+             self.create<iluvatar_tle::SmeCopyOp>(src, dst, byteOffset, active,
+                 self.getBuilder().getI32IntegerAttr(nbytes));
+           })
+      .def("create_iluvatar_sme_wait",
+           [](TritonOpBuilder &self, int pending, bool drainReads) {
+             auto &builder = self.getBuilder();
+             self.create<iluvatar_tle::SmeWaitOp>(
+                 builder.getI32IntegerAttr(pending),
+                 builder.getBoolAttr(drainReads));
+           })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               mlir::Type &elementType, mlir::Attribute &encoding,

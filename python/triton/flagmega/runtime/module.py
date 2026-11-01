@@ -49,7 +49,7 @@ from triton.flagmega.ir.ops.nn._paged_attention_state import (
     create_paged_attention_state,
 )
 from triton.flagmega.runtime.prepared import ResourceContract, prepare_jit_kernel
-from triton.flagmega.runtime.nvidia_launch import compilation_options
+from triton.flagmega.runtime.nvidia_launch import compilation_knobs, compilation_options
 from triton.flagmega.runtime.kernel_programs import verified_kernel_programs
 from triton.flagmega.runtime.lifecycle import RuntimeModule
 from triton.flagmega.runtime.tensor_descriptor import TensorDescriptorCache
@@ -107,6 +107,31 @@ def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False
             # check outright -- a genuinely new, much larger spill (e.g. from
             # a future kernel change) will still raise.
             spill_tolerance_bytes=128,
+        )
+    if target == "nvidia-sm89":
+        # Ada (sm_89) exposes a 99 KB opt-in shared-memory limit
+        # (Sm89Capability.max_shared_memory_bytes = 101376), not Hopper's
+        # 227,328-byte ResourceContract default. Use the matching capacity so
+        # the resource check rejects a kernel whose smem would overflow Ada.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            shared_memory_capacity_bytes=101376,
+        )
+    if target.startswith("amd-"):
+        # RDNA register allocation differs from ptxas; a small spill does not
+        # affect correctness, so the no-spill residency gate is NVIDIA-only for
+        # this bring-up (occupancy tuning is a later performance pass). The
+        # RDNA assembler also reports only the aggregate n_spills count, not
+        # ptxas' per-function stack/spill breakdown.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            forbid_spills=False,
+            reports_ptxas_resource_fields=False,
+            # RDNA wave32 architecturally allows 256 VGPRs/lane; the 255 default
+            # is ptxas' NVIDIA limit, not RDNA's.
+            registers_per_thread_limit=256,
         )
     return ResourceContract(
         compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
@@ -678,50 +703,55 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             arguments = (*arguments, *context_arguments)
         arguments = (*arguments, *descriptors, *self._function_offset_values)
         specs = self._kernel_launch_specs()
-        prepared = []
-        for kernel, spec in zip(self.kernels, specs, strict=True):
-            grid = spec['grid']
-            if 'launch_recipe' in spec:
-                from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
-                properties = _torch().cuda.get_device_properties(self._device)
-                grid = TaskLaunchRecipe.from_data(spec['launch_recipe']).resolve(
-                    sm_count=int(properties.multi_processor_count))
-            contract = _resource_contract(
-                {**self.codegen, "num_warps": spec.get("num_warps", self.codegen["num_warps"])},
-                self.manifest.get("target"),
-                requires_grid_wide_sync=spec.get(
-                    "requires_grid_wide_sync", _requires_grid_wide_sync(self.ir_module)
-                ),
-                device=self._device,
-            )
-            options = compilation_options(contract, self.manifest.get('target', ''))
-            if 'maxnreg' in spec:
-                contract = replace(contract, registers_per_thread_limit=min(
-                    contract.registers_per_thread_limit, spec['maxnreg']))
-                options['maxnreg'] = spec['maxnreg']
-            from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
-            bindings = spec.get("argument_bindings")
-            instance = prepare_jit_kernel(
-                kernel,
-                arguments if bindings is None else project_arguments(bindings, arguments),
-                spec["dynamic_argument_indices"],
-                grid=grid,
-                contract=contract,
-                allocation_device=self._device,
-                **options,
-            )
-            prepared.append(instance if bindings is None else BoundProgram(
-                instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
-        if self.codegen.get("kernel_program_schema") in {
-            "flagmega.kernel-programs/v2-dag", "flagmega.kernel-programs/v3-dag-completion",
-            "flagmega.kernel-programs/v4-functions",
-            "flagmega.kernel-programs/v7-mesh-dag",
-        }:
-            from triton.flagmega.runtime.program_dag import ProgramDAG
-            self._program_dag = ProgramDAG(
-                specs, tuple(prepared), device=self._device, target=self.manifest.get("target")
-            )
-        self._prepared = tuple(prepared)
+        target = self.manifest.get("target", "")
+        with compilation_knobs(target):
+            prepared = []
+            for kernel, spec in zip(self.kernels, specs, strict=True):
+                grid = spec['grid']
+                if 'launch_recipe' in spec:
+                    from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
+                    properties = _torch().cuda.get_device_properties(self._device)
+                    grid = TaskLaunchRecipe.from_data(spec['launch_recipe']).resolve(
+                        sm_count=int(properties.multi_processor_count))
+                contract = _resource_contract(
+                    {**self.codegen, "num_warps": spec.get("num_warps", self.codegen["num_warps"])},
+                    self.manifest.get("target"),
+                    requires_grid_wide_sync=spec.get(
+                        "requires_grid_wide_sync", _requires_grid_wide_sync(self.ir_module)
+                    ),
+                    device=self._device,
+                )
+                options = compilation_options(
+                    contract, target,
+                    floating_point_contract=self.ir_module.metadata.get("floating_point_contract"),
+                )
+                if 'maxnreg' in spec:
+                    contract = replace(contract, registers_per_thread_limit=min(
+                        contract.registers_per_thread_limit, spec['maxnreg']))
+                    options['maxnreg'] = spec['maxnreg']
+                from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
+                bindings = spec.get("argument_bindings")
+                instance = prepare_jit_kernel(
+                    kernel,
+                    arguments if bindings is None else project_arguments(bindings, arguments),
+                    spec["dynamic_argument_indices"],
+                    grid=grid,
+                    contract=contract,
+                    allocation_device=self._device,
+                    **options,
+                )
+                prepared.append(instance if bindings is None else BoundProgram(
+                    instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
+            if self.codegen.get("kernel_program_schema") in {
+                "flagmega.kernel-programs/v2-dag", "flagmega.kernel-programs/v3-dag-completion",
+                "flagmega.kernel-programs/v4-functions",
+                "flagmega.kernel-programs/v7-mesh-dag",
+            }:
+                from triton.flagmega.runtime.program_dag import ProgramDAG
+                self._program_dag = ProgramDAG(
+                    specs, tuple(prepared), device=self._device, target=self.manifest.get("target")
+                )
+            self._prepared = tuple(prepared)
         self.prepare_count += 1
         self._mark_prepared()
 
@@ -837,7 +867,8 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             from triton.flagmega.runtime.source_rdata import load_source_rdata
             if int(index["segment_nbytes"]) != expected_nbytes:
                 raise ArtifactError("Source rdata segment size does not match the runtime readonly pool.")
-            return load_source_rdata(assets, index, self.ir_module, chip=chip, device=device)
+            pool = load_source_rdata(assets, index, self.ir_module, chip=chip, device=device)
+            return _triton_readonly_device_pool(pool, self.codegen, self.ir_module)
         segment_nbytes = int(index.get("segment_nbytes", index["nbytes"]))
         if segment_nbytes != expected_nbytes:
             raise ArtifactError(
@@ -849,7 +880,8 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             size=int(index["nbytes"]),
             dtype=torch.uint8,
         )
-        return host.narrow(0, chip * segment_nbytes, segment_nbytes).to(device=device)
+        pool = host.narrow(0, chip * segment_nbytes, segment_nbytes).to(device=device)
+        return _triton_readonly_device_pool(pool, self.codegen, self.ir_module)
 
     def _release_resources(self) -> None:
         # ``_device_window`` is assigned before world-size validation and
@@ -1805,6 +1837,15 @@ def _torch():
     return torch
 
 
+def _triton_readonly_device_pool(pool, codegen, module):
+    """Transform a freshly verified pool once, before preparation or capture."""
+    contract = codegen.get("triton_readonly_device_layout")
+    if contract is None:
+        return pool
+    from triton.flagmega.codegen.readonly_layout import apply_readonly_layout
+    return apply_readonly_layout(pool, contract, module)
+
+
 def _runtime_chip_index(chip_count: int) -> int:
     """Resolve the row-major chip index used by chip-local rdata segments."""
 
@@ -2038,8 +2079,30 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     target = str(target or "")
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
+    # ROCm/HIP GPUs report through the "cuda" device namespace. An RDNA artifact
+    # is built for a specific gfx arch (gfx1100 vs gfx1201 differ in ISA / WMMA),
+    # so a HIP-build check alone is not enough: verify the device's gcnArchName
+    # matches the target, otherwise a mismatched artifact fails later at JIT /
+    # launch with an error that is hard to trace back to the wrong GPU.
+    if target.startswith("amd-"):
+        if getattr(torch.version, "hip", None) is None:
+            raise RuntimeContractError(f"Artifact target {target!r} requires a ROCm/HIP torch build.")
+        expected_arch = target[len("amd-"):]
+        properties = torch.cuda.get_device_properties(torch.device(device))
+        # gcnArchName may carry feature suffixes, e.g. "gfx1100:sramecc+:xnack-".
+        actual_arch = str(getattr(properties, "gcnArchName", "") or "").split(":")[0]
+        if actual_arch != expected_arch:
+            raise RuntimeContractError(
+                f"Artifact target {target!r} requires a {expected_arch} GPU, "
+                f"got {actual_arch or 'unknown'!r}."
+            )
+        return
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
-    expected = {"nvidia-sm90": (9, 0), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
+    # Each target pins an exact compute capability. nvidia-sm89 is Ada (8, 9)
+    # specifically: the Sm89Capability resource model (99 KB opt-in smem, Ada
+    # register file) does not describe other 8.x parts (e.g. A100 sm_80), so a
+    # loose 8.x match would admit a device the artifact was not built for.
+    expected = {"nvidia-sm90": (9, 0), "nvidia-sm89": (8, 9), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
     if expected is None:
         raise RuntimeContractError(f"Unsupported executable FlagMega target {target!r}.")
     if capability != expected:

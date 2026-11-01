@@ -37,6 +37,26 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% set chunks = (call.local_n_capacity * lane) // chunk %}
 {% set groups = (call.local_k_capacity // lane) %}
 {% set coop = lane // chunk %}
+{# Each active warp stages and consumes its own 512-element tile. Two FIFO
+   batches overlap global-to-shared transfers with the current batch's BF16
+   dot chain. Count waits retain the newer batch; every lane completes its
+   shared reads before the issuer overwrites the consumed slots.
+   No dedicated producer warps or per-stage CTA barrier are needed. #}
+{# Ring depth comes from the renderer so the arena sizer and the template
+   cannot disagree. #}
+{% set sme_group = call.local_n_capacity * lane %}
+{% set sme_tiles = sme_group // 512 %}
+{# One instruction stages 512 elements = 64 runs = one run per lane, so a K
+   group of `sme_tiles` tiles is owned by `sme_tiles` warps: each stages and
+   consumes only its own tile, which is why no `cta_sync` is needed. #}
+{% set sme_batch = sme_slots // 2 %}
+{% set sme_stage = sme and sme_slots >= 2 and chunk == 8 and lane
+       and call.weight_group_stride
+       and sme_group % 512 == 0
+       and sme_tiles <= (block_threads // warp_size)
+       and call.weight_block_n and call.weight_block_k == lane
+       and (sme_tiles * (512 + sme_pad) * 2 * sme_slots * 2) <= 114688
+       and groups > sme_slots and groups % sme_batch == 0 %}
 {# Depth of the tiled K walk, independent of `k_streams`.
 
    `k_streams` is tuned for the scalar walk, where one stream is one 2-byte
@@ -119,6 +139,101 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% else %}
 {% set ntile = 1 %}
 {% endif %}
+{% if sme_stage %}
+{# Every active warp owns one contiguous N tile across the entire K walk.
+   The shared ring is [warp][slot][projection][payload]; only that warp reads
+   or replaces its slots. A flat SME transaction preserves the 512-element
+   payload order, so lane*chunk selects the same packed BF16 run as the
+   canonical vector path. Schedule barriers separate this arena's consumers. #}
+    auto *const dense_glu_sme_buf =
+        reinterpret_cast<ftt::bfloat16_t (*)[{{ sme_slots }}][2][512 + {{ sme_pad }}]>(
+            _ftt_sme_arena);
+    const ftt::dim_t dense_glu_warp = ftt_thread / {{ warp_size }}LL;
+    const ftt::dim_t dense_glu_lane = ftt_thread % {{ warp_size }}LL;
+    const bool dense_glu_active = dense_glu_warp < {{ sme_tiles }}LL;
+{# Group base and stride from the call's own address formula, not the layout
+   name: a differently interleaved layout fails the `weight_group_stride`
+   check above and never reaches here. #}
+    const ftt::dim_t dense_glu_group_stride =
+        {{ call.weight_group_stride }}LL;
+    ftt::dim_t dense_glu_shard_base = 0;
+    {
+        const ftt::dim_t dense_glu_local_n_offsets = 0LL;
+        const ftt::dim_t dense_glu_local_k_offsets = 0LL;
+        const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+        const ftt::dim_t dense_glu_global_k = {{ call.global_k | cppexpr }};
+        (void)dense_glu_global_k;
+        (void)dense_glu_global_n;
+        dense_glu_shard_base = {{ call.gate_weight_offset | cppexpr }};
+    }
+{% if call.cpp_shard_major_weight | default(false) %}
+{# The layout proof requires the full K axis on every owner. At group zero
+   the canonical origin is within one group, so only its N owner is moved. #}
+    dense_glu_shard_base *= {{ call.weight_layout_k_groups }}LL;
+{% endif %}
+{# This warp's tile offset inside a group, and this lane's run inside it. #}
+    const ftt::dim_t dense_glu_tile_off = dense_glu_warp * 512LL;
+{# Descriptors built once per kernel call. The base folds in the shard offset
+   and this warp's tile, so the loop varies only the K-group byte offset. #}
+    const auto dense_glu_gate_source = ftt::arch::sme_source_for(
+        &ftt_gate_weight[dense_glu_shard_base + dense_glu_tile_off], 64);
+    const auto dense_glu_up_source = ftt::arch::sme_source_for(
+        &ftt_up_weight[dense_glu_shard_base + dense_glu_tile_off], 64);
+    const ftt::dim_t dense_glu_run_off = dense_glu_lane * {{ chunk }}LL;
+    const ftt::dim_t dense_glu_elem =
+        dense_glu_tile_off + dense_glu_run_off;
+    const ftt::dim_t dense_glu_run_n = dense_glu_elem / {{ lane }}LL;
+    const ftt::dim_t dense_glu_k_in_lane = dense_glu_elem % {{ lane }}LL;
+    float dense_glu_gate_acc = 0.0f;
+    float dense_glu_up_acc = 0.0f;
+{# Walk the activation pointer by a constant K step and rotate the two
+   disjoint slot batches. Both transformations preserve the original address
+   and FP32 accumulator order. #}
+{# The base address at group 0: the call's own offset formula evaluated with
+   `local_k_offsets = k_in_lane`, which is what group 0 reduces to. #}
+    const ftt::bfloat16_t *dense_glu_act_ptr;
+    {
+        const ftt::dim_t dense_glu_local_k_offsets = dense_glu_k_in_lane;
+        dense_glu_act_ptr =
+            &ftt_source[{{ call.source_offset | cppexpr }}];
+    }
+    if (dense_glu_active) {
+{% with sme_issuer_lane="dense_glu_lane", sme_buffer="dense_glu_sme_buf", sme_warp="dense_glu_warp",
+        sme_goff="0LL", sme_groups=groups, sme_concurrency=1, sme_lane=lane,
+        sme_stride="dense_glu_group_stride", sme_act="dense_glu_act_ptr",
+        sme_run="dense_glu_run_off", sme_projections=2,
+        sme_sources=["dense_glu_gate_source", "dense_glu_up_source"],
+        sme_accumulators=["dense_glu_gate_acc", "dense_glu_up_acc"],
+        sme_group_copy=("ftt::arch::sme_copy_group_from<" + (call.weight_group_stride | string) + "LL>")
+            if call.cpp_shard_major_weight | default(false) else none %}
+{% include "kernels/_sme_batches.cpp.jinja" %}
+{% endwith %}
+        float dense_glu_gate_sum =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_gate_acc);
+        float dense_glu_up_sum =
+            ftt::arch::lane_group_reduce_sum<{{ coop }}>(dense_glu_up_acc);
+        if (dense_glu_k_in_lane == 0) {
+            const ftt::dim_t dense_glu_local_n_offsets = dense_glu_run_n;
+            const ftt::dim_t dense_glu_global_n = {{ call.global_n | cppexpr }};
+            (void)dense_glu_global_n;
+            if ({{ call.result_active | cppexpr }}) {
+                const float dense_glu_gate =
+                    ftt::to_float(ftt::store_as(ftt_result, dense_glu_gate_sum));
+                const float dense_glu_up =
+                    ftt::to_float(ftt::store_as(ftt_result, dense_glu_up_sum));
+                float dense_glu_activated =
+                    dense_glu_gate * ftt::sigmoid(dense_glu_gate);
+{% if call.round_activation | default(true) %}
+                dense_glu_activated = ftt::to_float(
+                    ftt::store_as(ftt_result, dense_glu_activated));
+{% endif %}
+                ftt_result[{{ call.result_offset | cppexpr }}] =
+                    ftt::store_as(ftt_result,
+                                  dense_glu_activated * dense_glu_up);
+            }
+        }
+    }
+{% else %}
     for (ftt::dim_t dense_glu_item = ftt_thread;
          dense_glu_item < {{ chunks * kslice }}LL;
          dense_glu_item += ftt_threads * {{ ntile }}LL) {
@@ -234,24 +349,22 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                 FTT_UNROLL
                 for (int dense_glu_stream = 0;
                      dense_glu_stream < {{ tdepth }}; ++dense_glu_stream) {
+{# Two elements per instruction; see `dot2_step` in ftt/primitive_ops.h. #}
                     FTT_UNROLL
-                    for (int dense_glu_element = 0;
-                         dense_glu_element < {{ chunk }}; ++dense_glu_element) {
-                        const float dense_glu_source_value =
-                            dense_glu_source_run[dense_glu_stream]
-                                .at(dense_glu_element);
-                        dense_glu_gate_step +=
+                    for (int dense_glu_pair = 0;
+                         dense_glu_pair < {{ chunk // 2 }}; ++dense_glu_pair) {
+                        dense_glu_gate_step = ftt::dot2_step(
                             dense_glu_weight_run[dense_glu_slot
                                                      * {{ tdepth * 2 }}
-                                                 + dense_glu_stream * 2]
-                                .at(dense_glu_element)
-                            * dense_glu_source_value;
-                        dense_glu_up_step +=
+                                                 + dense_glu_stream * 2],
+                            dense_glu_source_run[dense_glu_stream],
+                            dense_glu_pair, dense_glu_gate_step);
+                        dense_glu_up_step = ftt::dot2_step(
                             dense_glu_weight_run[dense_glu_slot
                                                      * {{ tdepth * 2 }}
-                                                 + dense_glu_stream * 2 + 1]
-                                .at(dense_glu_element)
-                            * dense_glu_source_value;
+                                                 + dense_glu_stream * 2 + 1],
+                            dense_glu_source_run[dense_glu_stream],
+                            dense_glu_pair, dense_glu_up_step);
                     }
                 }
                 dense_glu_gate_partial[dense_glu_slot] += dense_glu_gate_step;
@@ -288,6 +401,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% endif %}
             const ftt::dim_t dense_glu_local_n_offsets =
                 dense_glu_tile_n[dense_glu_slot];
+{% endif %}{# sme_stage #}
 {% elif lane > 1 %}
 {# Physical-order payload walk over both projections; see the note in
    dense_matmul/_function.cpp.jinja. Gate and up share the payload slot, so
@@ -419,6 +533,9 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
 {% endif %}
 {% endif %}
+{% if not (tiled and sme_stage) %}
+{# The SME producer/consumer form writes its result inside its own branch,
+   where the accumulators and the owning-thread predicate live. #}
         const float dense_glu_gate =
             ftt::to_float(ftt::store_as(ftt_result, dense_glu_gate_sum));
         const float dense_glu_up =
@@ -436,6 +553,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
 {% endif %}
     }
+{% endif %}
 }
 
 
