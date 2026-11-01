@@ -1177,11 +1177,21 @@ class CodeGenerator(ast.NodeVisitor):
             return
         num_stages = None
         loop_unroll_factor = None
+        loop_vectorize_factor = None
         disallow_acc_multi_buffer = False
         flatten = False
         warp_specialize = False
         disable_licm = False
-        if IteratorClass is language.range:
+        try:
+            from triton.experimental.tle import language as tle
+            tle_range = tle.range
+        except (ImportError, AttributeError):
+            tle_range = None
+        if tle_range is not None and IteratorClass is tle_range:
+            from triton.experimental.tle import _require_tle_for_backend
+
+            _require_tle_for_backend("mthreads", tle_range)
+        if IteratorClass in (language.range, tle_range):
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1191,6 +1201,7 @@ class CodeGenerator(ast.NodeVisitor):
             step = iterator.step
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
+            loop_vectorize_factor = getattr(iterator, 'loop_vectorize_factor', None)
             disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
@@ -1251,6 +1262,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.num_stages", self.builder.get_int32_attr(num_stages))
             if _unwrap_if_constexpr(loop_unroll_factor) is not None:
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
+            if _unwrap_if_constexpr(loop_vectorize_factor) is not None:
+                for_op.set_attr("tt.loop_vectorize_factor", self.builder.get_int32_attr(loop_vectorize_factor))
             if disallow_acc_multi_buffer:
                 for_op.set_attr("tt.disallow_acc_multi_buffer", self.builder.get_unit_attr())
             if flatten:

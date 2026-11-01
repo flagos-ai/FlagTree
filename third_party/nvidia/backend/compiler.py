@@ -289,6 +289,7 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_reorder_broadcast(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
+        passes.ttir.add_loop_vectorize(pm)
         passes.ttir.add_loop_unroll(pm)
         # flagtree: Plan logical roots after TTIR cleanup and before assigning register layouts.
         if hasattr(tle.passes, "add_plan_logical_domains"):

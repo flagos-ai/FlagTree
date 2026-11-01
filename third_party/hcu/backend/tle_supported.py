@@ -1,4 +1,6 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    "range",
+    "gpu.range",
     "cumsum",
     "gpu.alloc",
     "gpu.copy",
