@@ -90,7 +90,7 @@ def test_async_copy_api_is_exported():
     assert hasattr(tle.gpu, "async_wait_group")
 
 
-def test_two_group_async_copy_waits_conservatively_and_executes():
+def test_two_group_async_copy_preserves_explicit_waits_and_executes():
     block = 64
     inp = torch.arange(2 * block, device="cuda", dtype=torch.float32)
     out = torch.empty_like(inp)
@@ -101,11 +101,12 @@ def test_two_group_async_copy_waits_conservatively_and_executes():
     assert ttgir.count("ttg.async_copy_global_to_local") == 2
     assert ttgir.count("tle.required_async_copy") == 2
     assert ttgir.count("ttg.async_commit_group") == 2
-    # The ordinary pipeline derives waits from dependency tokens. The TLE
-    # transport API has none, so a requested partial wait may become a drain.
+    # Caller-owned transport waits retain their requested bounds even without
+    # SSA dependency tokens; automatic waits still protect inferred dependencies.
     wait_counts = re.findall(r"ttg\.async_wait[^\n]*num = (\d+)", ttgir)
-    assert wait_counts and set(wait_counts) == {"0"}
-    assert "tle.explicit_async_wait" not in ttgir
+    assert wait_counts == ["1", "0"]
+    assert ttgir.count("tle.explicit_async_wait_group") == 2
+    assert re.search(r"cp\.async\.wait_group\s+1", ptx)
     assert re.search(r"cp\.async\.wait_group\s+0", ptx)
     assert "cp.async" in ptx
 

@@ -54,7 +54,6 @@ struct DeviceIntraBarrierOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    auto indexValue = op.getIndexAttr().getInt();
     auto coopValue = op.getCoopKindAttr().getInt();
     auto orderValue = op.getOrderAttr().getInt();
     auto barrierType = op.getBarrierTypeAttr().getValue();
@@ -64,8 +63,13 @@ struct DeviceIntraBarrierOpConversion
     if (!llvm::is_contained(std::array<size_t, 4>{0, 1, 2, 3}, orderValue))
       return rewriter.notifyMatchFailure(op, "invalid coop_kind");
 
-    tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(), indexValue,
-                            coopValue, orderValue, barrierType);
+    if (auto index = adaptor.getDynamicIndex())
+      tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(), index, coopValue,
+                              orderValue, barrierType);
+    else
+      tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(),
+                              op.getIndexAttr().getInt(), coopValue, orderValue,
+                              barrierType);
     rewriter.eraseOp(op);
     return success();
   }

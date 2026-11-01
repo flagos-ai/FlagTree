@@ -51,6 +51,11 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
                                 size_t barrier_index, size_t coopKind,
                                 size_t order, llvm::StringRef barrierType);
 
+LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
+                                ConversionPatternRewriter &rewriter, Value comm,
+                                Value barrierIndex, size_t coopKind,
+                                size_t order, llvm::StringRef barrierType);
+
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter, Value comm,
                                Value peer, Value slotId, Value value,

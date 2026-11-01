@@ -961,10 +961,32 @@ def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
                                           barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                                           group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
                                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                                          barrier_count: int | None = None,
                                           _semantic: TLESemantic | None = None):
     if space and space in ("device", "node"):
         builder = _semantic.builder
         ptr = _parse_src_arg(builder, device_dptr, 1)
+        index = tl._unwrap_if_constexpr(index)
+        barrier_count = tl._unwrap_if_constexpr(barrier_count)
+        if isinstance(index, tl.tensor) or barrier_count is not None:
+            if space != "device" or ptr is None:
+                raise ValueError("Indexed barriers require an explicit device context and space='device'")
+            if (isinstance(barrier_count, bool) or not isinstance(barrier_count, int)
+                    or not 0 < barrier_count <= 0x7fffffff):
+                raise ValueError("Indexed barriers require a positive int32 barrier_count")
+            if isinstance(index, tl.tensor):
+                if index.shape != [] or index.dtype != tl.int32:
+                    raise TypeError("Barrier index must be a scalar int32 tensor")
+            else:
+                index = 0 if index is None else index
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < barrier_count:
+                    raise ValueError("Barrier index is outside barrier_count")
+                index = tl.full((), index, tl.int32, _semantic=_semantic)
+            builder.create_indexed_device_barrier(
+                ptr, index.handle, barrier_count,
+                _parse_device_barrier_args(group_kind), _parse_device_barrier_args(order),
+                _parse_device_barrier_args(barrier_kind))
+            return True
         builder.create_distributed_barrier(
             src=ptr,
             barrier_index=index or 0,
@@ -982,12 +1004,18 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
                         group_kind: str | GroupKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                         order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                        _semantic: TLESemantic | None = None, index: int | None = 0):
+                        _semantic: TLESemantic | None = None, index: int | None = 0,
+                        barrier_count: int | None = None):
     """
     M3 entrypoint: distributed synchronization primitive.
 
     - cluster mesh: cluster/submesh synchronization
     - block mesh: cooperative grid synchronization
+    - device space: index may be a CTA-uniform scalar int32 tensor when
+      barrier_count declares the runtime slot capacity. Create the context with
+      intra_barrier_count >= barrier_count. Each slot must have one cooperating
+      group per chip, with 0 <= index < barrier_count. Dynamic indices require
+      explicit context handles; implicit/lite contexts are not supported.
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
@@ -996,8 +1024,12 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
     if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
-                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
+                                             group_kind=group_kind, index=index, order=order,
+                                             barrier_count=barrier_count, _semantic=_semantic):
         return None
+
+    if tl._unwrap_if_constexpr(barrier_count) is not None:
+        raise ValueError("barrier_count is only supported for device-space barriers")
 
     if use_grid:
         if mesh is not None:

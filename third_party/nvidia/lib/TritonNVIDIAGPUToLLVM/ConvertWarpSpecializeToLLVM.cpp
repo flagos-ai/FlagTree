@@ -13,6 +13,9 @@
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Tools/FlagcxWarpGroupScope.h"
+#endif
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTWARPSPECIALIZETOLLVM
@@ -106,6 +109,7 @@ static void createAllBarrier(TritonLLVMIRRewriter &b, unsigned barIdx) {
 struct WarpGroupBarrierScope {
   unsigned barrierIdx;
   unsigned numThreads;
+  unsigned firstWarp;
 };
 
 struct ScopedHelperWorkItem {
@@ -116,7 +120,8 @@ struct ScopedHelperWorkItem {
 static std::string getScopedHelperName(LLVM::LLVMFuncOp callee,
                                        WarpGroupBarrierScope scope) {
   return (callee.getSymName() + "__tle_ws_barrier_" +
-          Twine(scope.barrierIdx) + "_" + Twine(scope.numThreads))
+          Twine(scope.barrierIdx) + "_" + Twine(scope.numThreads) + "_start_" +
+          Twine(scope.firstWarp))
       .str();
 }
 
@@ -131,6 +136,9 @@ collectBarrierDependentFunctions(ModuleOp module) {
         worklist.push_back(function);
     });
     function.walk([&](LLVM::CallOp call) {
+      if (tle::isFlagcxBlockBarrierCall(call) &&
+          dependent.insert(function).second)
+        worklist.push_back(function);
       if (auto name = call.getCallee())
         if (auto callee = module.lookupSymbol<LLVM::LLVMFuncOp>(*name))
           callers[callee].push_back(function);
@@ -159,6 +167,9 @@ static void scopeWarpGroupHelperBarriers(
   llvm::DenseSet<Operation *> visited;
 
   auto retargetCall = [&](LLVM::CallOp call, WarpGroupBarrierScope scope) {
+    if (tle::scopeFlagcxBlockBarrierCall(call, scope.firstWarp, scope.numThreads,
+                                        scope.barrierIdx))
+      return;
     std::optional<StringRef> calleeName = call.getCallee();
     if (!calleeName)
       return;
@@ -404,7 +415,7 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
 #ifdef __TLE__
     if (auto call = dyn_cast<LLVM::CallOp>(op))
       helperCalls.push_back(
-          {call, {kDefaultWarpGroupBarrierIdx, defaultWarpGroupSize}});
+          {call, {kDefaultWarpGroupBarrierIdx, defaultWarpGroupSize, 0}});
 #endif
     if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
       TritonLLVMIRRewriter b(bar.getLoc(), bar);
@@ -427,8 +438,9 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
       }
       unsigned warpGroupSize = threadsPerWarp * op.getPartitionNumWarps()[idx];
 #ifdef __TLE__
+      unsigned firstWarp = (*op.getWarpGroupStartIds())[idx];
       partition->walk([&](LLVM::CallOp call) {
-        helperCalls.push_back({call, {barIdx, warpGroupSize}});
+        helperCalls.push_back({call, {barIdx, warpGroupSize, firstWarp}});
       });
 #endif
       partition->walk([&](NVVM::Barrier0Op bar) {

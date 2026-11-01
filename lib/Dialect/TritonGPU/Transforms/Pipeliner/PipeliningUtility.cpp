@@ -42,6 +42,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Casting.h"
@@ -598,6 +599,13 @@ void mlir::triton::combineRedundantWaitOps(
     // or a branching op (forOp, ifOp, whileOp) in between the waits
     while (next &&
            !isa<ttg::AsyncCommitGroupOp, RegionBranchOpInterface>(next)) {
+#ifdef __TLE__
+      // Keep a user transport wait's group-count ownership across cleanup.
+      if (auto explicitWait = dyn_cast<ttg::AsyncWaitOp>(next);
+          explicitWait && explicitWait->hasAttr(
+                              triton::tle::kTleExplicitAsyncWaitGroupAttr))
+        break;
+#endif
       if (auto nextWait = dyn_cast<ttg::AsyncWaitOp>(next)) {
         waitGroup.push_back(nextWait);
         minWaitNumber = std::min(minWaitNumber, nextWait.getNum());

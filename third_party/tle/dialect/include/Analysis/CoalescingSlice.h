@@ -6,13 +6,36 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/DenseSet.h"
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "triton/Analysis/Utility.h"
 
 namespace mlir::triton::tle {
 
-/// The membership of mlir::getSlice(root) with default slice options, without
-/// topological ordering. Coalescing reduces the set with max(), so order is not
-/// observable. Expand each direct edge once instead of recomputing a transitive
-/// forward and backward slice for every member of the same fixed point.
+/// Reuse the same executable-block proof as AxisInfo's sparse dataflow solver.
+/// Unreachable blocks deliberately have bottom AxisInfo; they cannot participate
+/// in memory coalescing or contribute same-order dependencies.
+inline LogicalResult collectNonExecutableCoalescingBlocks(
+    FunctionOpInterface function, llvm::DenseSet<Block *> &blocks) {
+  auto solver = mlir::createDataFlowSolver();
+  if (failed(solver->initializeAndRun(function)))
+    return failure();
+  function.walk([&](Block *block) {
+    auto *state = solver->lookupState<dataflow::Executable>(
+        solver->getProgramPointBefore(block));
+    if (state && !state->isLive())
+      blocks.insert(block);
+  });
+  return success();
+}
+
+/// Coalescing's dependency closure, without topological ordering. This matches
+/// mlir::getSlice(root) on its supported single-region block-argument owners,
+/// and also handles carried arguments of multi-region operations such as
+/// scf.while. Coalescing reduces the set with max(), so order is not observable.
+/// Expand each direct edge once instead of recomputing a transitive forward
+/// and backward slice for every member of the same fixed point.
 ///
 /// The graph is directed: forward traversal includes nested operations, but
 /// backward traversal reaches a parent only through a block argument and stops
@@ -38,11 +61,10 @@ inline llvm::SetVector<Operation *> getCoalescingSlice(Operation *root) {
       if (!predecessor) {
         auto argument = cast<BlockArgument>(operand);
         predecessor = argument.getOwner()->getParentOp();
-        assert((!predecessor ||
-                (predecessor->getNumRegions() == 1 &&
-                 predecessor->getRegion(0).hasOneBlock())) &&
-               "default backward slice requires a single-region single-block "
-               "block-argument owner");
+        // A carried argument connects to its owning operation regardless of
+        // region count. Visiting that owner reaches its inputs, results and
+        // every region, including both the condition and update of scf.while.
+        // The isolation check below still stops at function boundaries.
       }
       if (predecessor &&
           !predecessor->hasTrait<OpTrait::IsIsolatedFromAbove>())

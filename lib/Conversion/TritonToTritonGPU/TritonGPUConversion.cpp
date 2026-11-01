@@ -130,7 +130,27 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
 }
 
 #ifdef __TLE__
+void TritonGPUTypeConverter::snapshotNumWarps(Operation *root) {
+  // Signature conversion temporarily detaches original blocks. Preserve the
+  // SSA values' scopes before the conversion rewriter starts moving regions.
+  root->walk([&](Operation *op) {
+    for (Value result : op->getResults())
+      originalNumWarps.try_emplace(result, lookupNumWarps(op));
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region) {
+        if (block.getNumArguments() == 0)
+          continue;
+        int regionNumWarps = lookupNumWarps(&region);
+        for (BlockArgument argument : block.getArguments())
+          originalNumWarps.try_emplace(argument, regionNumWarps);
+      }
+    }
+  });
+}
+
 int TritonGPUTypeConverter::getNumWarps(Value value) const {
+  if (auto it = originalNumWarps.find(value); it != originalNumWarps.end())
+    return it->second;
   if (auto blockArg = dyn_cast<BlockArgument>(value)) {
     if (Block *owner = blockArg.getOwner()) {
       if (Region *region = owner->getParent()) {
@@ -237,6 +257,17 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     return sourceEncoding && resultEncoding &&
            inferDstEncoding(op, sourceEncoding) == resultEncoding;
   });
+  // A hinted reshape also has an intrinsic view layout. In particular,
+  // removing size-one dimensions need not preserve a SliceEncodingAttr.
+  addDynamicallyLegalOp<triton::ReshapeOp>([&](triton::ReshapeOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    if (op.getAllowReorder() ||
+        !op->hasAttr(getTleExplicitEncodingAttrName(0)))
+      return true;
+    return inferDstEncoding(op, op.getSrc().getType().getEncoding()) ==
+           op.getType().getEncoding();
+  });
   // Hints can pre-encode an operation without satisfying its intrinsic layout
   // relation. Keep such uses illegal so their patterns materialize the edge.
   addDynamicallyLegalOp<triton::ExpandDimsOp>([&](triton::ExpandDimsOp op) {
@@ -277,6 +308,21 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(
     Operation *op, const TypeConverter &typeConverter) {
+#ifdef __TLE__
+  // Propagation may encode independent SSA producers differently. An
+  // elementwise operation still requires a common operand/result encoding,
+  // even when the type converter considers every individual type legal.
+  if (op->hasTrait<OpTrait::Elementwise>()) {
+    Attribute encoding;
+    for (Type type : llvm::concat<Type>(op->getOperandTypes(),
+                                        op->getResultTypes()))
+      if (auto tensor = dyn_cast<RankedTensorType>(type)) {
+        if (encoding && tensor.getEncoding() != encoding)
+          return false;
+        encoding = tensor.getEncoding();
+      }
+  }
+#endif
   bool hasLegalRegions = true;
   for (auto &region : op->getRegions()) {
     hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);

@@ -48,7 +48,8 @@ def Tle_GetLocalRankOp : Tle_Op<"get local rank"> {
 }
 
 
-def Tle_DeviceIntraBarrierOp : Tle_Op<"device intra barrier"> {
+def Tle_DeviceIntraBarrierOp : Tle_Op<"device intra barrier",
+                                     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Device-local synchronization barrier";
   let description = [{
     Performs a device-local synchronization barrier by lowering to one of the
@@ -65,16 +66,23 @@ def Tle_DeviceIntraBarrierOp : Tle_Op<"device intra barrier"> {
     specified memory ordering semantics (`order`). `multimem` indicates whether
     the barrier operates on multimem storage.
 
+    Alternatively, `dynamic_index` supplies a scalar i32 slot index. In that
+    case `index` must be absent and `barrier_count` declares the minimum runtime
+    slot capacity. The caller must guarantee 0 <= dynamic_index < barrier_count
+    and one cooperating group per chip and slot at each rendezvous.
+
     The runtime routines return void; this operation has no results.
   }];
 
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
+    Optional<I32>:$dynamic_index,
     OptionalAttr<StrAttr>:$barrier_type,
     OptionalAttr<I32Attr>:$coop_kind,
     OptionalAttr<I32Attr>:$index,
     OptionalAttr<I1Attr>:$multimem,
-    OptionalAttr<I32Attr>:$order
+    OptionalAttr<I32Attr>:$order,
+    OptionalAttr<I32Attr>:$barrier_count
   );
 
   let hasVerifier = 1;

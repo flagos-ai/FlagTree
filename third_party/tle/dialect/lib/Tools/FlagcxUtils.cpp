@@ -115,6 +115,16 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
                                 ConversionPatternRewriter &rewriter, Value comm,
                                 size_t barrier_index, size_t coopKind,
                                 size_t order, llvm::StringRef barrierType) {
+  auto index = rewriter.create<LLVM::ConstantOp>(
+      loc, rewriter.getI32Type(), barrier_index);
+  return getBarrierFuncCall(loc, rewriter, comm, index, coopKind, order,
+                            barrierType);
+}
+
+LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
+                                ConversionPatternRewriter &rewriter, Value comm,
+                                Value barrierIndex, size_t coopKind,
+                                size_t order, llvm::StringRef barrierType) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -140,13 +150,11 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
   auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
   auto falseVal =
       rewriter.create<LLVM::ConstantOp>(loc, i1Ty, rewriter.getBoolAttr(false));
-  auto barrierIndexVal =
-      rewriter.create<LLVM::ConstantOp>(loc, i32Ty, barrier_index);
   auto coopKindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, coopKind);
   auto orderVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, order);
   return rewriter.create<LLVM::CallOp>(
       loc, TypeRange{}, FlatSymbolRefAttr::get(func),
-      ValueRange{comm_dev_ptr, coopKindVal, barrierIndexVal, falseVal,
+      ValueRange{comm_dev_ptr, coopKindVal, barrierIndex, falseVal,
                  orderVal});
 }
 

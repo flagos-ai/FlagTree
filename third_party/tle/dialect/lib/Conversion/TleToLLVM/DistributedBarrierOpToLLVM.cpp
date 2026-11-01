@@ -532,8 +532,8 @@ struct DistributedBarrierOpConversion
     auto multimemAttr = rewriter.getBoolAttr(false);
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::DeviceIntraBarrierOp>(
-        op, comm, barrierTypeAttr, coopKindAttr, indexAttr, multimemAttr,
-        newOrderAttr);
+        op, comm, Value(), barrierTypeAttr, coopKindAttr, indexAttr, multimemAttr,
+        newOrderAttr, IntegerAttr());
 #endif
     return success();
   }
