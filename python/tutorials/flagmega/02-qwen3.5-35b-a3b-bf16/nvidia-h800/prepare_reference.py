@@ -75,11 +75,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--trial", type=Path, required=True)
-    parser.add_argument("--steps", type=int, default=32)
-    parser.add_argument("--contexts", type=int, nargs="+", default=(1, 32, 255, 256))
+    parser.add_argument("--steps", type=int, default=63)
+    parser.add_argument("--contexts", type=int, nargs="+", default=(32, 128, 1024, 2048))
     args = parser.parse_args()
-    if args.steps <= 0 or any(n <= 0 or n + args.steps > 512 for n in args.contexts):
-        raise ValueError("Context and generation lengths must be positive, with a combined length at most 512")
+    if args.steps <= 0 or any(n <= 0 or n + args.steps > 3072 for n in args.contexts):
+        raise ValueError("Context and generation lengths must be positive, with a combined length at most 3072")
     args.trial.mkdir(parents=True, exist_ok=False)
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     import torch
@@ -93,9 +93,9 @@ def main():
     started = perf_counter()
     engine = LLMEngine.from_engine_args(EngineArgs(
         model=str(args.checkpoint.resolve()), dtype="bfloat16", tensor_parallel_size=1,
-        max_model_len=512, max_num_seqs=1, max_num_batched_tokens=512,
+        max_model_len=3072, max_num_seqs=1, max_num_batched_tokens=3072,
         block_size=256, num_gpu_blocks_override=16, gpu_memory_utilization=.95,
-        enable_prefix_caching=False, enable_chunked_prefill=True, language_model_only=True,
+        enable_prefix_caching=False, enable_chunked_prefill=False, language_model_only=True,
         mamba_ssm_cache_dtype="float32", disable_log_stats=True, seed=0,
         compilation_config={"mode": 3, "custom_ops": ["none"], "cudagraph_capture_sizes": [1]},
     ))

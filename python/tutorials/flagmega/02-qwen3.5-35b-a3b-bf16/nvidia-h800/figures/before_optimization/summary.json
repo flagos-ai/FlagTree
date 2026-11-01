@@ -1,0 +1,420 @@
+{
+  "schema": "flagmega.native-prefill-decode-comparison/v1",
+  "labels": {
+    "native": "vLLM",
+    "baseline": "FlagMega Initial",
+    "agent": "FlagMega Agent",
+    "chat_cli": "FlagMega chat CLI"
+  },
+  "prefill": "native_vllm",
+  "prefill_timed": false,
+  "rounds": 3,
+  "requests_per_scenario_per_round": 5,
+  "acceptance": {
+    "independent_native_decode_prefix": 3,
+    "complete_native_sequence_required": false,
+    "initial_state_roundtrip_exact": true
+  },
+  "checkpoint_config_sha256": "5e4d7f74fec2f360eb9cfbfcd6ec0c4c76e684d3a11caaed259d9fd9bfbc7944",
+  "checkpoint_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+  "device": "NVIDIA H800",
+  "visible_devices": "0",
+  "torch": "2.11.0+cu130",
+  "thermal_monitor": {
+    "gpu_uuid": "GPU-73c1a37e-d3c0-dc24-b81d-6a5563ebe677",
+    "kind": "nvml-clock-event-counters/v1",
+    "max_start_temperature_c": 65,
+    "minimum_idle_seconds": 0.5
+  },
+  "identities": {
+    "agent": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
+      "vllm": "0.23.1rc1.dev1294+gae10e855a",
+      "source_sha256": "d704d29a0996afca4d2a0e413a46c6b56737f6957e3e603af0a943b9e99f223a",
+      "semantic_hash": "26cffdc02616b9f34634ac38b4910854ef5aaf968a6ba37aac3f9dc411a731be",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007",
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5"
+    },
+    "baseline": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
+      "vllm": "0.23.1rc1.dev1294+gae10e855a",
+      "source_sha256": "de6f8dab89a6d2757ad9d01a4eac11aaf23d0c894ee62f2cfb5170e0e2ccfde2",
+      "semantic_hash": "c7f3be1702ad7b932314a28721f5748ff0f4b79545058035a61f0aab849343a7",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007",
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5"
+    },
+    "chat_cli": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
+      "vllm": null,
+      "source_sha256": "d704d29a0996afca4d2a0e413a46c6b56737f6957e3e603af0a943b9e99f223a",
+      "semantic_hash": "26cffdc02616b9f34634ac38b4910854ef5aaf968a6ba37aac3f9dc411a731be",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007",
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5"
+    },
+    "native": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
+      "vllm": "0.23.1rc1.dev1294+gae10e855a",
+      "source_sha256": null,
+      "semantic_hash": null,
+      "backend_source_sha256": null,
+      "native_prefill_backend_sha256": null,
+      "compiler_lib_sha256": null
+    }
+  },
+  "backends": {
+    "agent": {
+      "backend": "flagmega",
+      "prefill": "native_vllm_snapshot",
+      "vllm": false,
+      "gpu": "NVIDIA H800",
+      "cuda_graph": true,
+      "capacity": 4096,
+      "num_layers": 40,
+      "vocab_size": 248320,
+      "prepare_ms": 47597.990830021445,
+      "artifact_source_sha256": "d704d29a0996afca4d2a0e413a46c6b56737f6957e3e603af0a943b9e99f223a",
+      "artifact_semantic_hash": "26cffdc02616b9f34634ac38b4910854ef5aaf968a6ba37aac3f9dc411a731be",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "numerical_contract": "nncase",
+      "torch": "2.11.0+cu130",
+      "prefill_timed": false,
+      "resources": {
+        "name": "flagmega_main",
+        "num_warps": 12,
+        "registers_per_thread": 126,
+        "shared_memory_bytes": 143340,
+        "stack_frame_bytes": 0,
+        "spill_store_bytes": 0,
+        "spill_load_bytes": 0,
+        "local_memory_bytes": 0,
+        "spill_bytes": 0,
+        "required_resident_blocks_per_sm": 1,
+        "resident_registers": 48384,
+        "resident_shared_memory_bytes": 143340,
+        "global_scratch_bytes": 351744,
+        "cooperative_grid": true,
+        "grid": [
+          128,
+          1,
+          1
+        ]
+      },
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5",
+      "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+      "native_state_sha256": {
+        "32": "ecea6115c7558280570e4cb4c4e4158a3d0fdead11fb19ab400d908c9142560f",
+        "128": "769a9843e9a5a56b10c7a57accefc4c75e5ee179ebf043ece5ee83b2b55b3483",
+        "1024": "c7b2d224db882595f5b2665b5ac45703e171eea5d0955a5ea63d21ba694e7822",
+        "2048": "786ea7dcddf638d7c0bb473033f6d1df12d284f690f2781219955d10b5d10e17"
+      },
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007"
+    },
+    "baseline": {
+      "backend": "flagmega",
+      "prefill": "native_vllm_snapshot",
+      "vllm": false,
+      "gpu": "NVIDIA H800",
+      "cuda_graph": true,
+      "capacity": 4096,
+      "num_layers": 40,
+      "vocab_size": 248320,
+      "prepare_ms": 31146.299248968717,
+      "artifact_source_sha256": "de6f8dab89a6d2757ad9d01a4eac11aaf23d0c894ee62f2cfb5170e0e2ccfde2",
+      "artifact_semantic_hash": "c7f3be1702ad7b932314a28721f5748ff0f4b79545058035a61f0aab849343a7",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "numerical_contract": "nncase",
+      "torch": "2.11.0+cu130",
+      "prefill_timed": false,
+      "resources": {
+        "name": "flagmega_main",
+        "num_warps": 12,
+        "registers_per_thread": 160,
+        "shared_memory_bytes": 149868,
+        "stack_frame_bytes": 0,
+        "spill_store_bytes": 0,
+        "spill_load_bytes": 0,
+        "local_memory_bytes": 0,
+        "spill_bytes": 0,
+        "required_resident_blocks_per_sm": 1,
+        "resident_registers": 61440,
+        "resident_shared_memory_bytes": 149868,
+        "global_scratch_bytes": 751104,
+        "cooperative_grid": true,
+        "grid": [
+          128,
+          1,
+          1
+        ]
+      },
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5",
+      "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+      "native_state_sha256": {
+        "32": "ecea6115c7558280570e4cb4c4e4158a3d0fdead11fb19ab400d908c9142560f",
+        "128": "769a9843e9a5a56b10c7a57accefc4c75e5ee179ebf043ece5ee83b2b55b3483",
+        "1024": "c7b2d224db882595f5b2665b5ac45703e171eea5d0955a5ea63d21ba694e7822",
+        "2048": "786ea7dcddf638d7c0bb473033f6d1df12d284f690f2781219955d10b5d10e17"
+      },
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007"
+    },
+    "chat_cli": {
+      "backend": "flagmega",
+      "prefill": "native_vllm_snapshot",
+      "vllm": false,
+      "gpu": "NVIDIA H800",
+      "cuda_graph": true,
+      "capacity": 4096,
+      "num_layers": 40,
+      "vocab_size": 248320,
+      "prepare_ms": 31104.203016031533,
+      "artifact_source_sha256": "d704d29a0996afca4d2a0e413a46c6b56737f6957e3e603af0a943b9e99f223a",
+      "artifact_semantic_hash": "26cffdc02616b9f34634ac38b4910854ef5aaf968a6ba37aac3f9dc411a731be",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "numerical_contract": "nncase",
+      "torch": "2.11.0+cu130",
+      "prefill_timed": false,
+      "resources": {
+        "name": "flagmega_main",
+        "num_warps": 12,
+        "registers_per_thread": 126,
+        "shared_memory_bytes": 143340,
+        "stack_frame_bytes": 0,
+        "spill_store_bytes": 0,
+        "spill_load_bytes": 0,
+        "local_memory_bytes": 0,
+        "spill_bytes": 0,
+        "required_resident_blocks_per_sm": 1,
+        "resident_registers": 48384,
+        "resident_shared_memory_bytes": 143340,
+        "global_scratch_bytes": 351744,
+        "cooperative_grid": true,
+        "grid": [
+          128,
+          1,
+          1
+        ]
+      },
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5",
+      "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+      "native_state_sha256": {
+        "32": "ecea6115c7558280570e4cb4c4e4158a3d0fdead11fb19ab400d908c9142560f",
+        "128": "769a9843e9a5a56b10c7a57accefc4c75e5ee179ebf043ece5ee83b2b55b3483",
+        "1024": "c7b2d224db882595f5b2665b5ac45703e171eea5d0955a5ea63d21ba694e7822",
+        "2048": "786ea7dcddf638d7c0bb473033f6d1df12d284f690f2781219955d10b5d10e17"
+      },
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007"
+    },
+    "native": null
+  },
+  "sources": [
+    {
+      "file": "raw/round00.agent.json",
+      "sha256": "4eeb02af04580f2aa27dc07ac09ab39ffbc94706896fe9315fbe0518132dbd66"
+    },
+    {
+      "file": "raw/round00.baseline.json",
+      "sha256": "b96c59c90b2555233359273d7bc8cf6a94591231088d341c20ba1fc88a5f51d5"
+    },
+    {
+      "file": "raw/round00.chat_cli.json",
+      "sha256": "08bb233f73be10034cc448739f0871c0249484a46733cfe9dbaa06cdfb7b8d30"
+    },
+    {
+      "file": "raw/round00.native.json",
+      "sha256": "652292ce2d66029d68f79af7ba19acf03aabeaf3e78406556754607b90c84904"
+    },
+    {
+      "file": "raw/round01.agent.json",
+      "sha256": "346099c751d9d09b7e56537d159368e0bee122e1533966c079f06bf0ba9e4eb2"
+    },
+    {
+      "file": "raw/round01.baseline.json",
+      "sha256": "3b77c8b8177b257f3e207ebf925befab6c37efcc3b8dc8f91786166c1743010e"
+    },
+    {
+      "file": "raw/round01.chat_cli.json",
+      "sha256": "2c807f125833a9dabb13d3bc8cf9726b4925ad5edb203244aca7b4c82bfad866"
+    },
+    {
+      "file": "raw/round01.native.json",
+      "sha256": "c0e900ff0ff10dd336ee3086dea10adfdd5f14e0d63cd05b4156fe646537267e"
+    },
+    {
+      "file": "raw/round02.agent.json",
+      "sha256": "ae3c029e6f8404cf8e7e1848a471e994a29f237e5132a7ec4f3bc858922f0865"
+    },
+    {
+      "file": "raw/round02.baseline.json",
+      "sha256": "6b817e5e569f978f8b743ed79af8687127b3af80975b9308dcd391983ba3ac0f"
+    },
+    {
+      "file": "raw/round02.chat_cli.json",
+      "sha256": "efa00172432cc71a2df59c7eb7ba70084f7dea5b604882a97a58edaa32997fa1"
+    },
+    {
+      "file": "raw/round02.native.json",
+      "sha256": "f8304386fed1a6409351d620864ef1b25fcdb98b6e046260fdb78cbee3cecdc0"
+    }
+  ],
+  "scenarios": [
+    {
+      "prompt_length": 32,
+      "decode_tokens": 64,
+      "variants": {
+        "native": {
+          "decode_median_ms": 4.423464008141309,
+          "decode_tokens_per_second": 226.57768630589044,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "baseline": {
+          "decode_median_ms": 5.29355596518144,
+          "decode_tokens_per_second": 187.91776076341273,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 29,
+          "first_native_difference": 29
+        },
+        "agent": {
+          "decode_median_ms": 3.7220389931462705,
+          "decode_tokens_per_second": 266.66549611069314,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.6306020338088274,
+          "decode_tokens_per_second": 275.39372782413693,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        }
+      }
+    },
+    {
+      "prompt_length": 128,
+      "decode_tokens": 64,
+      "variants": {
+        "native": {
+          "decode_median_ms": 4.426735977176577,
+          "decode_tokens_per_second": 226.26531361835896,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "baseline": {
+          "decode_median_ms": 5.325703008566052,
+          "decode_tokens_per_second": 186.6883767301756,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "agent": {
+          "decode_median_ms": 3.7250850000418723,
+          "decode_tokens_per_second": 266.3047695042012,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.632304957136512,
+          "decode_tokens_per_second": 275.2604144784592,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        }
+      }
+    },
+    {
+      "prompt_length": 1024,
+      "decode_tokens": 64,
+      "variants": {
+        "native": {
+          "decode_median_ms": 4.441040044184774,
+          "decode_tokens_per_second": 226.0890304468046,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "baseline": {
+          "decode_median_ms": 5.597228009719402,
+          "decode_tokens_per_second": 177.69045211907235,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "agent": {
+          "decode_median_ms": 3.882931952830404,
+          "decode_tokens_per_second": 255.31998914403619,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.7929050158709288,
+          "decode_tokens_per_second": 263.6182279198182,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        }
+      }
+    },
+    {
+      "prompt_length": 2048,
+      "decode_tokens": 64,
+      "variants": {
+        "native": {
+          "decode_median_ms": 4.454725014511496,
+          "decode_tokens_per_second": 225.35847770729538,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "baseline": {
+          "decode_median_ms": 5.906064005102962,
+          "decode_tokens_per_second": 168.47784404324912,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "agent": {
+          "decode_median_ms": 4.048028029501438,
+          "decode_tokens_per_second": 245.16321193774579,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.9589470252394676,
+          "decode_tokens_per_second": 252.6121044340757,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        }
+      }
+    }
+  ]
+}

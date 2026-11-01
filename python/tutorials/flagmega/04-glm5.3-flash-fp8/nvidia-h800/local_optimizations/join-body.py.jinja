@@ -1,0 +1,80 @@
+    # Same TP4 numerical contract; 16 disjoint owners use the module-owned channel.
+    if block_index < 16:
+        context = device_dptr
+        chip = _flagmega_device_rank.to(tl.int32)
+        tile = block_index
+        BLOCK: tl.constexpr = 256
+        hidden = tile * BLOCK + tl.arange(0, BLOCK)
+        window = _flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8))
+        PAYLOAD_BYTES: tl.constexpr = {{ definition.owner_matched_join.payload }}
+        READY_BYTES: tl.constexpr = {{ definition.owner_matched_join.ready }}
+        CONSUMED_BYTES: tl.constexpr = {{ definition.owner_matched_join.consumed }}
+{% if definition.function_pool_abi.schema == "flagmega.function-pool-abi/v2" %}
+        _flagmega_join_record_ptr = _flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets
+{% elif definition.function_pool_abi.schema == "flagmega.function-pool-abi/v1" %}
+        _flagmega_join_record_ptr = _flagmega_call_offsets
+{% else %}
+{{ require_codegen(false, "Join requires a supported typed function-pool ABI") }}
+{% endif %}
+        residual = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 0, volatile=True), 256).to(tl.pointer_type(tl.float32))
+        post = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 1, volatile=True), 256).to(tl.pointer_type(tl.float32))
+        comb = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 2, volatile=True), 256).to(tl.pointer_type(tl.float32))
+        coeff = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 3, volatile=True), 256).to(tl.pointer_type(tl.float32))
+        routed = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 5, volatile=True), 256).to(tl.pointer_type(tl.float32))
+        shared = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 6, volatile=True), 256).to(tl.pointer_type(tl.bfloat16))
+        output = tl.multiple_of(window + tl.load(_flagmega_join_record_ptr + 7, volatile=True), 256).to(tl.pointer_type(tl.float32))
+        ready = (window + READY_BYTES).to(tl.pointer_type(tl.uint64)) + tile
+        consumed = (window + CONSUMED_BYTES).to(tl.pointer_type(tl.uint64)) + tile
+        epoch = tl.atomic_add(ready, 0, sem='relaxed', scope='sys') + 1
+        p0 = tl.multiple_of(tle.remote(context, space='device', dtype=tl.uint8, shard_id=0, offset=0), 4096)
+        p1 = tl.multiple_of(tle.remote(context, space='device', dtype=tl.uint8, shard_id=1, offset=0), 4096)
+        p2 = tl.multiple_of(tle.remote(context, space='device', dtype=tl.uint8, shard_id=2, offset=0), 4096)
+        p3 = tl.multiple_of(tle.remote(context, space='device', dtype=tl.uint8, shard_id=3, offset=0), 4096)
+        peer = tl.arange(0, 4)
+        bases = tl.where(peer == 0, p0, tl.where(peer == 1, p1, tl.where(peer == 2, p2, p3)))
+        pointers = (bases + CONSUMED_BYTES + tile * 8).to(tl.pointer_type(tl.uint64))
+        observed = tl.atomic_add(pointers, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        while tl.min(observed, 0) < epoch - 1:
+            observed = tl.atomic_add(pointers, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        tl.debug_barrier()
+        weighted = tl.full((BLOCK,), 0, tl.float32)
+        for route in tl.range(0, 8, loop_unroll_factor=1):
+            value = tl.load(routed + chip * 32768 + route * 4096 + hidden)
+            scale = tl.load(coeff + route)
+            term = libdevice.mul_rn(value, scale).to(tl.bfloat16).to(tl.float32)
+            weighted = libdevice.add_rn(weighted, term)
+        weighted = weighted.to(tl.bfloat16).to(tl.float32)
+        local = libdevice.add_rn(weighted, tl.load(shared + hidden).to(tl.float32))
+        local = local.to(tl.bfloat16).to(tl.float32)
+        local = libdevice.add_rn(tl.full((BLOCK,), 0, tl.float32), local).to(tl.bfloat16)
+        payload = (window + PAYLOAD_BYTES).to(tl.pointer_type(tl.bfloat16))
+        tl.store(payload + hidden, local)
+        tl.debug_barrier()
+        tl.atomic_xchg(ready, epoch, sem='release', scope='sys')
+        pointers = (bases + READY_BYTES + tile * 8).to(tl.pointer_type(tl.uint64))
+        observed = tl.atomic_add(pointers, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        while tl.min(observed, 0) < epoch:
+            observed = tl.atomic_add(pointers, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        tl.debug_barrier()
+        v0 = tl.load((p0 + PAYLOAD_BYTES).to(tl.pointer_type(tl.bfloat16)) + hidden).to(tl.float32)
+        v1 = tl.load((p1 + PAYLOAD_BYTES).to(tl.pointer_type(tl.bfloat16)) + hidden).to(tl.float32)
+        v2 = tl.load((p2 + PAYLOAD_BYTES).to(tl.pointer_type(tl.bfloat16)) + hidden).to(tl.float32)
+        v3 = tl.load((p3 + PAYLOAD_BYTES).to(tl.pointer_type(tl.bfloat16)) + hidden).to(tl.float32)
+        reduced = libdevice.add_rn(tl.full((BLOCK,), 0, tl.float32), v0)
+        reduced = libdevice.add_rn(reduced, v1)
+        reduced = libdevice.add_rn(reduced, v2)
+        reduced = libdevice.add_rn(reduced, v3)
+        reduced = reduced.to(tl.bfloat16).to(tl.float32)
+        tl.debug_barrier()
+        tl.atomic_xchg(consumed, epoch, sem='release', scope='sys')
+        r0 = tl.load(residual + hidden).to(tl.bfloat16).to(tl.float32)
+        r1 = tl.load(residual + 4096 + hidden).to(tl.bfloat16).to(tl.float32)
+        r2 = tl.load(residual + 8192 + hidden).to(tl.bfloat16).to(tl.float32)
+        r3 = tl.load(residual + 12288 + hidden).to(tl.bfloat16).to(tl.float32)
+        for sink in tl.static_range(4):
+            result = libdevice.mul_rn(tl.load(comb + sink), r0)
+            result = tl.fma(tl.load(post + sink), reduced, result)
+            result = tl.fma(tl.load(comb + 4 + sink), r1, result)
+            result = tl.fma(tl.load(comb + 8 + sink), r2, result)
+            result = tl.fma(tl.load(comb + 12 + sink), r3, result)
+            tl.store(output + sink * 4096 + hidden, result)

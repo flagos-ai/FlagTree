@@ -1,0 +1,14 @@
+        _oproj_ready = (_oproj_window + {{ call.owner_matched_oproj.ready }}).to(tl.pointer_type(tl.uint64)) + _fm_task
+        _oproj_consumed = (_oproj_window + {{ call.owner_matched_oproj.consumed }}).to(tl.pointer_type(tl.uint64)) + _fm_task
+        _oproj_epoch = tl.atomic_add(_oproj_ready, 0, sem='relaxed', scope='sys') + 1
+        _oproj_p0 = tl.multiple_of(tle.remote(device_dptr, space='device', dtype=tl.uint8, shard_id=0, offset=0), 4096)
+        _oproj_p1 = tl.multiple_of(tle.remote(device_dptr, space='device', dtype=tl.uint8, shard_id=1, offset=0), 4096)
+        _oproj_p2 = tl.multiple_of(tle.remote(device_dptr, space='device', dtype=tl.uint8, shard_id=2, offset=0), 4096)
+        _oproj_p3 = tl.multiple_of(tle.remote(device_dptr, space='device', dtype=tl.uint8, shard_id=3, offset=0), 4096)
+        _oproj_peer = tl.arange(0, 4)
+        _oproj_bases = tl.where(_oproj_peer == 0, _oproj_p0, tl.where(_oproj_peer == 1, _oproj_p1, tl.where(_oproj_peer == 2, _oproj_p2, _oproj_p3)))
+        _oproj_ptrs = (_oproj_bases + {{ call.owner_matched_oproj.consumed }} + _fm_task * 8).to(tl.pointer_type(tl.uint64))
+        _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        while tl.min(_oproj_observed, 0) < _oproj_epoch - 1:
+            _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        tl.debug_barrier()

@@ -1,0 +1,51 @@
+{# Small contexts need one 32-token iteration. Longer contexts amortize loop
+   overhead over 64 tokens, with the QK head reduction confined to each warp.
+   Both choices fit the existing persistent consumer's register budget. #}
+{% set paged_attention_partial_variant = "decode_t64" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+
+_flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [1, 1], [1, 32], [8, 1], [1, 0],
+    )
+)
+{% set paged_attention_partial_warp_rows = true %}
+{% set paged_attention_partial_symbol = "_flagmega_paged_attention_warp_rows" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+
+{% macro partial_call(symbol, tile) %}
+        {{ symbol }}(
+            query, kv_cache, slot_mapping, block_table, layer_id,
+            partial_max, partial_sum, partial_accumulator, context_shard,
+            head, query_token, num_layers, num_query_heads, num_kv_heads,
+            head_dim, block_size, scale, {{ tile }}, context_shards,
+            query_dim_stride, query_lanes, accumulator_dim_stride, num_blocks,
+            online_bf16, softmax_block_size, reverse_softmax,
+        )
+{% endmacro %}
+
+@triton.jit
+def _flagmega_paged_attention_decode_dispatch(
+    query, kv_cache, slot_mapping, block_table, layer_id,
+    partial_max, partial_sum, partial_accumulator, context_shard,
+    head, query_token, num_layers: tl.constexpr, num_query_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr, head_dim: tl.constexpr, block_size: tl.constexpr,
+    scale: tl.constexpr, token_tile: tl.constexpr, context_shards: tl.constexpr,
+    query_dim_stride: tl.constexpr, query_lanes: tl.constexpr,
+    accumulator_dim_stride: tl.constexpr, num_blocks: tl.constexpr,
+    online_bf16: tl.constexpr = False, softmax_block_size: tl.constexpr = 64,
+    reverse_softmax: tl.constexpr = False,
+):
+    if online_bf16:
+{{ partial_call("_flagmega_paged_attention_partial", "token_tile") }}
+    else:
+        context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
+        if context_length <= context_shards * 32:
+{{ partial_call("_flagmega_paged_attention_partial", "32") | indent(4, true) }}
+        else:
+{{ partial_call("_flagmega_paged_attention_warp_rows", "token_tile") | indent(4, true) }}
+
+{% if render_calls is defined %}
+{% set paged_attention_partial_helper = "_flagmega_paged_attention_decode_dispatch" %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

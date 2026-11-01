@@ -1,0 +1,32 @@
+    _kv_sum_layout: tl.constexpr = tle.gpu.BlockEncoding([8],[32],[{{ num_warps }}],[0])
+    _kv_offsets=tle.gpu.set_layout(tl.arange(0,512),_kv_sum_layout)
+    _kv_mask=_kv_offsets<512
+    _kv_total=tle.gpu.set_layout(tl.zeros((512,),tl.float32),_kv_sum_layout)
+    for _kv_split in tl.static_range(2):
+        _kv_partial=tl.load({{ call.partial_pointer }}+_kv_split*512+_kv_offsets,_kv_mask,other=0.)
+        _kv_total=libdevice.add_rn(_kv_total,_kv_partial)
+    _kv_total=libdevice.add_rn(tle.gpu.set_layout(tl.zeros((512,),tl.float32),_kv_sum_layout),_kv_total.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
+    _kv_square_sum=tle.gpu.set_layout(tl.zeros((512,),tl.float32),_kv_sum_layout)
+    _kv_square_sum+=tl.where(_kv_mask,_kv_total*_kv_total,0.)
+    _kv_square=tl.sum(_kv_square_sum,axis=0)
+    tl.store({{ call.kv_norm_fused.stats_output }}+({{ call.kv_norm_fused.stats_offset }}),_kv_square)
+    for norm_apply_start in tl.range(0,{{ call.kv_norm_fused.local_capacity }},{{ call.kv_norm_fused.tile }}):
+        norm_apply_local_offsets=norm_apply_start+tl.arange(0,{{ call.kv_norm_fused.tile }})
+        norm_apply_mask=(norm_apply_local_offsets<{{ call.kv_norm_fused.local_capacity }})&({{ call.kv_norm_fused.active }})
+        norm_apply_inner_count={{ call.kv_norm_fused.normalization_size }}+0.
+        norm_apply_mean=0.
+        norm_apply_square_sum=_kv_square
+        norm_apply_variance=norm_apply_square_sum/norm_apply_inner_count
+        norm_apply_variance=tl.maximum(norm_apply_variance,0.)
+        norm_apply_inverse_std=tl.rsqrt(norm_apply_variance+{{ call.kv_norm_fused.epsilon }})
+        _kv_owned=((norm_apply_local_offsets//8%4+shard_coord2*4)*8+norm_apply_local_offsets%8)
+        _kv_owned_sum=tl.zeros(({{ call.kv_norm_fused.tile }},),tl.float32)
+        for _kv_split in tl.static_range(2):
+            _kv_owned_partial=tl.load({{ call.partial_pointer }}+_kv_split*512+_kv_owned,norm_apply_mask,other=0.)
+            _kv_owned_sum=libdevice.add_rn(_kv_owned_sum,_kv_owned_partial)
+        norm_apply_value=libdevice.add_rn(tl.zeros(({{ call.kv_norm_fused.tile }},),tl.float32),_kv_owned_sum.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
+        norm_apply_scale=tl.load({{ call.kv_norm_fused.scale }}+({{ call.kv_norm_fused.scale_offset }}),mask=norm_apply_mask,other=0.).to(tl.float32)
+        norm_apply_bias=tl.load({{ call.kv_norm_fused.bias }}+({{ call.kv_norm_fused.bias_offset }}),mask=norm_apply_mask,other=0.).to(tl.float32)
+        norm_apply_normalized=(norm_apply_value-norm_apply_mean)*norm_apply_inverse_std
+        norm_apply_output=norm_apply_normalized*norm_apply_scale+norm_apply_bias
+        tl.store({{ call.kv_norm_fused.result }}+({{ call.kv_norm_fused.result_offset }}),norm_apply_output.to({{ call.kv_norm_fused.input_type }}).to({{ call.kv_norm_fused.output_type }}),mask=norm_apply_mask&({{ call.kv_norm_fused.writer_active }}))

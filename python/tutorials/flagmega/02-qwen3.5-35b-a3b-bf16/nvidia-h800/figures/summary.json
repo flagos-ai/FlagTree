@@ -1,182 +1,418 @@
 {
-  "schema": "flagmega.decode-comparison/v2",
-  "reference_sha256": "f9f5dd015dd96fe864f45988d1dabfccaaaac2d774ba7b003982a1c44414c30e",
-  "validated_tokens": 3,
+  "schema": "flagmega.native-prefill-decode-comparison/v1",
   "labels": {
     "native": "vLLM",
     "baseline": "FlagMega Initial",
-    "agent": "FlagMega Agent"
+    "agent": "FlagMega Agent",
+    "chat_cli": "FlagMega chat CLI"
   },
-  "serving_latency": false,
-  "device": [
-    "NVIDIA H800",
-    "6"
-  ],
-  "sources": [
-    {
-      "variant": "native",
-      "file": "report.json",
-      "sha256": "079a446fd70dcf56b530e1f9993a9f9421f48ab9cbd0129d8251bd8a6f15a736"
-    },
-    {
-      "variant": "baseline",
-      "file": "report.json",
-      "sha256": "528274c976f47f21ffa3908120fb81118926506722228d730a8e8655af372382"
-    },
-    {
-      "variant": "baseline",
-      "file": "gpu-timing.json",
-      "sha256": "68f4b6efb9cb31cb6cb483637eab18b6220dc5e733f95d7d18f54db20c2bab14"
-    },
-    {
-      "variant": "agent",
-      "file": "report.json",
-      "sha256": "77aab394b90e50ac3f493bfe5b7d47e53cac7f47c9b1b2e6b4f666b1f869026c"
-    },
-    {
-      "variant": "agent",
-      "file": "gpu-timing.json",
-      "sha256": "a1945035bec5c44a4f2e97230cea4118bfc691b8532e519bfaa9ff4cf411c225"
-    }
-  ],
+  "prefill": "native_vllm",
+  "prefill_timed": false,
+  "rounds": 3,
+  "requests_per_scenario_per_round": 5,
+  "acceptance": {
+    "independent_native_decode_prefix": 3,
+    "complete_native_sequence_required": false,
+    "initial_state_roundtrip_exact": true
+  },
+  "checkpoint_config_sha256": "5e4d7f74fec2f360eb9cfbfcd6ec0c4c76e684d3a11caaed259d9fd9bfbc7944",
+  "checkpoint_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+  "device": "NVIDIA H800",
+  "visible_devices": "0",
+  "torch": "2.11.0+cu130",
+  "thermal_monitor": {
+    "gpu_uuid": "GPU-73c1a37e-d3c0-dc24-b81d-6a5563ebe677",
+    "kind": "nvml-clock-event-counters/v1",
+    "max_start_temperature_c": 65,
+    "minimum_idle_seconds": 0.5
+  },
   "identities": {
-    "native": {
-      "source_sha256": {
-        "benchmark_vllm.py": "b4a6073bf48e23fdf670d1011650c38af5cda25ab20bc6ed84d8b8b960bb3fd9",
-        "native_prepared_graph.py": "db4a51de12672f35bf5b95fd6013f3caac3318576542bbccec2d49cc2c650552",
-        "prepare_reference.py": "4329f19ff220a3dbf7ffe12d9d1d5de82582b9f4b6c5335ad23c8d7491d645e0"
-      },
-      "semantic_hash": null,
-      "benchmark_sha256": null,
-      "runner_sha256": null,
-      "torch": "2.11.0+cu130",
+    "agent": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
       "vllm": "0.23.1rc1.dev1294+gae10e855a",
-      "engine_config_sha256": "42ced739d964058f72a76df7a8cdc072be979952fe4250cfc5e330a39e656e5a",
-      "toolchain": null
+      "source_sha256": "b5b17f4c8e5f60be2b9935b59a623182e3547663a946f988c1625a46047c861f",
+      "semantic_hash": "369309c974ad1a7716a66f0e3f472210f007adbb0ab5b52aa11df5c0be3fa8cf",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007",
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5"
     },
     "baseline": {
-      "source_sha256": "2a74c770d9c2239c22bab185af1627d83e3681ae4ac13dfa2eefd16dfd81be78",
-      "semantic_hash": "58443ae8112c22538ca6a160ac2aad5f864cc5e13b9d43509b3407164355bf69",
-      "benchmark_sha256": "9af644e1067a8a68657f6a46da14b735f45021602f017306369460dba8b2aa95",
-      "runner_sha256": "e258bc4bf4d575bbce07f7154883c777c667a87529cb0d1942cfde03151e06fa",
-      "torch": "2.10.0+cu128",
-      "vllm": null,
-      "engine_config_sha256": null,
-      "toolchain": {
-        "triton": "3.6.0",
-        "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Jun_09_02:43:40_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.73\nBuild cuda_13.3.r13.3/compiler.38244171_0\n",
-        "ptxas_sha256": "afd8d1e1fa6e310f7faee44f6621e4c1315fb7fd6da7d4d87414358e12a651dc"
-      }
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
+      "vllm": "0.23.1rc1.dev1294+gae10e855a",
+      "source_sha256": "de6f8dab89a6d2757ad9d01a4eac11aaf23d0c894ee62f2cfb5170e0e2ccfde2",
+      "semantic_hash": "c7f3be1702ad7b932314a28721f5748ff0f4b79545058035a61f0aab849343a7",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007",
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5"
     },
-    "agent": {
-      "source_sha256": "80be8b7d7d8a0e6ca3a85e82f86b22ab74cafaeb95c9eed70b343926a147d043",
-      "semantic_hash": "33e6a82954d33ca2d924725a7bb4e2cef16d6ca0aeb2f252dc8c5c1db4170445",
-      "benchmark_sha256": "9af644e1067a8a68657f6a46da14b735f45021602f017306369460dba8b2aa95",
-      "runner_sha256": "e258bc4bf4d575bbce07f7154883c777c667a87529cb0d1942cfde03151e06fa",
-      "torch": "2.10.0+cu128",
+    "chat_cli": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
       "vllm": null,
-      "engine_config_sha256": null,
-      "toolchain": {
-        "triton": "3.6.0",
-        "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Jun_09_02:43:40_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.73\nBuild cuda_13.3.r13.3/compiler.38244171_0\n",
-        "ptxas_sha256": "afd8d1e1fa6e310f7faee44f6621e4c1315fb7fd6da7d4d87414358e12a651dc"
-      }
+      "source_sha256": "b5b17f4c8e5f60be2b9935b59a623182e3547663a946f988c1625a46047c861f",
+      "semantic_hash": "369309c974ad1a7716a66f0e3f472210f007adbb0ab5b52aa11df5c0be3fa8cf",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007",
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5"
+    },
+    "native": {
+      "benchmark_sha256": "35612cae391b8af792b34d90cc116925c717137cb204977ccc71551aa123c4ad",
+      "triton": "3.6.0",
+      "vllm": "0.23.1rc1.dev1294+gae10e855a",
+      "source_sha256": null,
+      "semantic_hash": null,
+      "backend_source_sha256": null,
+      "native_prefill_backend_sha256": null,
+      "compiler_lib_sha256": null
     }
   },
+  "backends": {
+    "agent": {
+      "backend": "flagmega",
+      "prefill": "native_vllm_snapshot",
+      "vllm": false,
+      "gpu": "NVIDIA H800",
+      "cuda_graph": true,
+      "capacity": 4096,
+      "num_layers": 40,
+      "vocab_size": 248320,
+      "prepare_ms": 27877.150596003048,
+      "artifact_source_sha256": "b5b17f4c8e5f60be2b9935b59a623182e3547663a946f988c1625a46047c861f",
+      "artifact_semantic_hash": "369309c974ad1a7716a66f0e3f472210f007adbb0ab5b52aa11df5c0be3fa8cf",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "numerical_contract": "nncase",
+      "torch": "2.11.0+cu130",
+      "prefill_timed": false,
+      "resources": {
+        "name": "flagmega_main",
+        "num_warps": 12,
+        "registers_per_thread": 161,
+        "shared_memory_bytes": 143340,
+        "stack_frame_bytes": 0,
+        "spill_store_bytes": 0,
+        "spill_load_bytes": 0,
+        "local_memory_bytes": 0,
+        "spill_bytes": 0,
+        "required_resident_blocks_per_sm": 1,
+        "resident_registers": 61824,
+        "resident_shared_memory_bytes": 143340,
+        "global_scratch_bytes": 351744,
+        "cooperative_grid": true,
+        "grid": [
+          128,
+          1,
+          1
+        ]
+      },
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5",
+      "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+      "native_state_sha256": {
+        "32": "ecea6115c7558280570e4cb4c4e4158a3d0fdead11fb19ab400d908c9142560f",
+        "128": "769a9843e9a5a56b10c7a57accefc4c75e5ee179ebf043ece5ee83b2b55b3483",
+        "1024": "c7b2d224db882595f5b2665b5ac45703e171eea5d0955a5ea63d21ba694e7822",
+        "2048": "786ea7dcddf638d7c0bb473033f6d1df12d284f690f2781219955d10b5d10e17"
+      },
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007"
+    },
+    "baseline": {
+      "backend": "flagmega",
+      "prefill": "native_vllm_snapshot",
+      "vllm": false,
+      "gpu": "NVIDIA H800",
+      "cuda_graph": true,
+      "capacity": 4096,
+      "num_layers": 40,
+      "vocab_size": 248320,
+      "prepare_ms": 29710.0760450121,
+      "artifact_source_sha256": "de6f8dab89a6d2757ad9d01a4eac11aaf23d0c894ee62f2cfb5170e0e2ccfde2",
+      "artifact_semantic_hash": "c7f3be1702ad7b932314a28721f5748ff0f4b79545058035a61f0aab849343a7",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "numerical_contract": "nncase",
+      "torch": "2.11.0+cu130",
+      "prefill_timed": false,
+      "resources": {
+        "name": "flagmega_main",
+        "num_warps": 12,
+        "registers_per_thread": 160,
+        "shared_memory_bytes": 149868,
+        "stack_frame_bytes": 0,
+        "spill_store_bytes": 0,
+        "spill_load_bytes": 0,
+        "local_memory_bytes": 0,
+        "spill_bytes": 0,
+        "required_resident_blocks_per_sm": 1,
+        "resident_registers": 61440,
+        "resident_shared_memory_bytes": 149868,
+        "global_scratch_bytes": 751104,
+        "cooperative_grid": true,
+        "grid": [
+          128,
+          1,
+          1
+        ]
+      },
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5",
+      "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+      "native_state_sha256": {
+        "32": "ecea6115c7558280570e4cb4c4e4158a3d0fdead11fb19ab400d908c9142560f",
+        "128": "769a9843e9a5a56b10c7a57accefc4c75e5ee179ebf043ece5ee83b2b55b3483",
+        "1024": "c7b2d224db882595f5b2665b5ac45703e171eea5d0955a5ea63d21ba694e7822",
+        "2048": "786ea7dcddf638d7c0bb473033f6d1df12d284f690f2781219955d10b5d10e17"
+      },
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007"
+    },
+    "chat_cli": {
+      "backend": "flagmega",
+      "prefill": "native_vllm_snapshot",
+      "vllm": false,
+      "gpu": "NVIDIA H800",
+      "cuda_graph": true,
+      "capacity": 4096,
+      "num_layers": 40,
+      "vocab_size": 248320,
+      "prepare_ms": 60104.75987900281,
+      "artifact_source_sha256": "b5b17f4c8e5f60be2b9935b59a623182e3547663a946f988c1625a46047c861f",
+      "artifact_semantic_hash": "369309c974ad1a7716a66f0e3f472210f007adbb0ab5b52aa11df5c0be3fa8cf",
+      "backend_source_sha256": "c81f40f46b1220e9c356468de0d5441db286179f759b07c338ebc02e51005d23",
+      "numerical_contract": "nncase",
+      "torch": "2.11.0+cu130",
+      "prefill_timed": false,
+      "resources": {
+        "name": "flagmega_main",
+        "num_warps": 12,
+        "registers_per_thread": 161,
+        "shared_memory_bytes": 143340,
+        "stack_frame_bytes": 0,
+        "spill_store_bytes": 0,
+        "spill_load_bytes": 0,
+        "local_memory_bytes": 0,
+        "spill_bytes": 0,
+        "required_resident_blocks_per_sm": 1,
+        "resident_registers": 61824,
+        "resident_shared_memory_bytes": 143340,
+        "global_scratch_bytes": 351744,
+        "cooperative_grid": true,
+        "grid": [
+          128,
+          1,
+          1
+        ]
+      },
+      "compiler_lib_sha256": "1308f4b8bb21b7e04efc61b3f992a11387441dffd3a7fe387bfbf7cb37fb9da5",
+      "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+      "native_state_sha256": {
+        "32": "ecea6115c7558280570e4cb4c4e4158a3d0fdead11fb19ab400d908c9142560f",
+        "128": "769a9843e9a5a56b10c7a57accefc4c75e5ee179ebf043ece5ee83b2b55b3483",
+        "1024": "c7b2d224db882595f5b2665b5ac45703e171eea5d0955a5ea63d21ba694e7822",
+        "2048": "786ea7dcddf638d7c0bb473033f6d1df12d284f690f2781219955d10b5d10e17"
+      },
+      "native_prefill_backend_sha256": "d0c35b18ed13bf00bdf33803b4be961c3c04bb36106f31026662d85282d4e007"
+    },
+    "native": null
+  },
+  "sources": [
+    {
+      "file": "raw/round00.agent.json",
+      "sha256": "a2f400c341a04b3ef0792bf5f22a4f0e6d90ae31dd6e0113e37ddea2f08bd955"
+    },
+    {
+      "file": "raw/round00.baseline.json",
+      "sha256": "2f6f86d5112d471c7a79ba8756ab45356f9dd4a42d12e4a9be3f403a00ae069b"
+    },
+    {
+      "file": "raw/round00.chat_cli.json",
+      "sha256": "e03ae96609145f16c9e90a3522cebd50da0975b8bbedc6b5da92b1337b953d12"
+    },
+    {
+      "file": "raw/round00.native.json",
+      "sha256": "a99b34106876e6029e75423403bacc8feb8c9960ee3da3b9009eb85daad2809f"
+    },
+    {
+      "file": "raw/round01.agent.json",
+      "sha256": "1a35d69f2aed701b87a5f6beb03bea534e8da838d0b9bd6ed7661ee27424ddba"
+    },
+    {
+      "file": "raw/round01.baseline.json",
+      "sha256": "1c333a0123893535ea5c247219f772ed9a26e32110ae56222bd27ac69c86de72"
+    },
+    {
+      "file": "raw/round01.chat_cli.json",
+      "sha256": "e159f30c3be4421197dbb50ccdf6534825b4f21cb12889ea0eab11403adc8f97"
+    },
+    {
+      "file": "raw/round01.native.json",
+      "sha256": "fdff0d7a51590025f850e3c75032a823d6a8e453e7d821e2d82a12cdc22116e5"
+    },
+    {
+      "file": "raw/round02.agent.json",
+      "sha256": "3d3d7c6ba6fac2302a424dce68e53b8d8c972944cf1c27b865e2874540083b3d"
+    },
+    {
+      "file": "raw/round02.baseline.json",
+      "sha256": "942f98855919a8935f173a078aa2e93abbc8d0655c894d4a812626122aa91481"
+    },
+    {
+      "file": "raw/round02.chat_cli.json",
+      "sha256": "eaabf9611884c175e9b87399839fb289c31c08d50fd67a1a07986a8fb4d5c11e"
+    },
+    {
+      "file": "raw/round02.native.json",
+      "sha256": "19c458f5fe346725fd6a8662a2f05304e4ead005af201857e44918ee182d4ce5"
+    }
+  ],
   "scenarios": [
     {
-      "prefix_length": 1,
-      "decode_tokens": 32,
+      "prompt_length": 32,
+      "decode_tokens": 64,
       "variants": {
         "native": {
-          "median_ms": 4.279808044433594,
-          "p95_ms": 4.29040002822876,
-          "tokens_per_second": 233.64017532761378,
-          "samples": 160
+          "decode_median_ms": 4.422842990607023,
+          "decode_tokens_per_second": 226.57792749922007,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "baseline": {
-          "median_ms": 5.219343900680542,
-          "p95_ms": 5.228096008300781,
-          "tokens_per_second": 191.5821626387836,
-          "samples": 160
+          "decode_median_ms": 5.280157958623022,
+          "decode_tokens_per_second": 188.29741322613918,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 29,
+          "first_native_difference": 29
         },
         "agent": {
-          "median_ms": 3.4025280475616455,
-          "p95_ms": 3.4125759601593018,
-          "tokens_per_second": 293.8881376537848,
-          "samples": 160
+          "decode_median_ms": 3.7309099570848048,
+          "decode_tokens_per_second": 265.9542380468895,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.6470290506258607,
+          "decode_tokens_per_second": 274.16488182734247,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         }
       }
     },
     {
-      "prefix_length": 32,
-      "decode_tokens": 32,
+      "prompt_length": 128,
+      "decode_tokens": 64,
       "variants": {
         "native": {
-          "median_ms": 4.280191898345947,
-          "p95_ms": 4.2927680015563965,
-          "tokens_per_second": 233.59164583774887,
-          "samples": 160
+          "decode_median_ms": 4.429677035659552,
+          "decode_tokens_per_second": 226.40020194698695,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "baseline": {
-          "median_ms": 5.220223903656006,
-          "p95_ms": 5.230720043182373,
-          "tokens_per_second": 191.55272361579853,
-          "samples": 160
+          "decode_median_ms": 5.311314947903156,
+          "decode_tokens_per_second": 187.18283595845443,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "agent": {
-          "median_ms": 3.403999924659729,
-          "p95_ms": 3.4143359661102295,
-          "tokens_per_second": 293.7776604902209,
-          "samples": 160
+          "decode_median_ms": 3.735707956366241,
+          "decode_tokens_per_second": 265.524868147637,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.6478780093602836,
+          "decode_tokens_per_second": 274.0084794652406,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         }
       }
     },
     {
-      "prefix_length": 255,
-      "decode_tokens": 32,
+      "prompt_length": 1024,
+      "decode_tokens": 64,
       "variants": {
         "native": {
-          "median_ms": 4.290256023406982,
-          "p95_ms": 4.304255962371826,
-          "tokens_per_second": 233.02712055954973,
-          "samples": 160
+          "decode_median_ms": 4.433247027918696,
+          "decode_tokens_per_second": 226.40774106834255,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "baseline": {
-          "median_ms": 5.295328140258789,
-          "p95_ms": 5.30406379699707,
-          "tokens_per_second": 188.85467443648193,
-          "samples": 160
+          "decode_median_ms": 5.580959026701748,
+          "decode_tokens_per_second": 178.2354179373479,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "agent": {
-          "median_ms": 3.4417600631713867,
-          "p95_ms": 3.4499518871307373,
-          "tokens_per_second": 290.5547617136429,
-          "samples": 160
+          "decode_median_ms": 3.8282760069705546,
+          "decode_tokens_per_second": 258.96109169071434,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.74692800687626,
+          "decode_tokens_per_second": 266.83718267698873,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         }
       }
     },
     {
-      "prefix_length": 256,
-      "decode_tokens": 32,
+      "prompt_length": 2048,
+      "decode_tokens": 64,
       "variants": {
         "native": {
-          "median_ms": 4.289776086807251,
-          "p95_ms": 4.301087856292725,
-          "tokens_per_second": 233.08617245872904,
-          "samples": 160
+          "decode_median_ms": 4.4422579812817276,
+          "decode_tokens_per_second": 225.3538151416224,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "baseline": {
-          "median_ms": 5.294543981552124,
-          "p95_ms": 5.302303791046143,
-          "tokens_per_second": 188.87080315343422,
-          "samples": 160
+          "decode_median_ms": 5.889444029890001,
+          "decode_tokens_per_second": 168.92105079290158,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         },
         "agent": {
-          "median_ms": 3.4426400661468506,
-          "p95_ms": 3.452255964279175,
-          "tokens_per_second": 290.4463875850689,
-          "samples": 160
+          "decode_median_ms": 3.917185007594526,
+          "decode_tokens_per_second": 253.28712515557018,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
+        },
+        "chat_cli": {
+          "decode_median_ms": 3.834796021692455,
+          "decode_tokens_per_second": 260.7481224078177,
+          "requests": 15,
+          "timed_intervals": 945,
+          "native_token_agreement": 64,
+          "first_native_difference": null
         }
       }
     }

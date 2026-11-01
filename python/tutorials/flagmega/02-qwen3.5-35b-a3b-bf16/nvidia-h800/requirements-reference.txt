@@ -4,3 +4,5 @@ torch==2.11.0
 transformers==5.16.1
 flashinfer-python==0.6.14
 nvidia-cuda-nvcc==13.3.73
+# The same Torch environment also runs the FlagMega adapter and chat CLI.
+ortools==9.10.4067

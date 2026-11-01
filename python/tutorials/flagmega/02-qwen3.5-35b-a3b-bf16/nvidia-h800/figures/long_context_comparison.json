@@ -1,0 +1,98 @@
+{
+  "schema": "flagmega.long-context-before-after/v1",
+  "prefill": "native_vllm",
+  "before": "before_optimization/summary.json",
+  "after": "summary.json",
+  "attention_diagnostic": "attention_diagnostic.json",
+  "checkpoint_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "torch": "2.11.0+cu130",
+  "native_reference_sha256": "cf6cbeab84659be2e813b20c70355ee8bb3337cbce2ac379f17407f6eab5d45a",
+  "source_before": "d704d29a0996afca4d2a0e413a46c6b56737f6957e3e603af0a943b9e99f223a",
+  "source_after": "b5b17f4c8e5f60be2b9935b59a623182e3547663a946f988c1625a46047c861f",
+  "scenarios": [
+    {
+      "prompt_length": 32,
+      "variants": {
+        "agent": {
+          "before_ms": 3.7220389931462705,
+          "after_ms": 3.7309099570848048,
+          "latency_reduction_percent": -0.23833613658721386,
+          "speedup": 0.9976223055392455,
+          "before_tokens_per_second": 266.66549611069314,
+          "after_tokens_per_second": 265.9542380468895
+        },
+        "chat_cli": {
+          "before_ms": 3.6306020338088274,
+          "after_ms": 3.6470290506258607,
+          "latency_reduction_percent": -0.452459858284171,
+          "speedup": 0.9954957811991615,
+          "before_tokens_per_second": 275.39372782413693,
+          "after_tokens_per_second": 274.16488182734247
+        }
+      }
+    },
+    {
+      "prompt_length": 128,
+      "variants": {
+        "agent": {
+          "before_ms": 3.7250850000418723,
+          "after_ms": 3.735707956366241,
+          "latency_reduction_percent": -0.2851735282349166,
+          "speedup": 0.9971563739862841,
+          "before_tokens_per_second": 266.3047695042012,
+          "after_tokens_per_second": 265.524868147637
+        },
+        "chat_cli": {
+          "before_ms": 3.632304957136512,
+          "after_ms": 3.6478780093602836,
+          "latency_reduction_percent": -0.42873746581146843,
+          "speedup": 0.9957309284510578,
+          "before_tokens_per_second": 275.2604144784592,
+          "after_tokens_per_second": 274.0084794652406
+        }
+      }
+    },
+    {
+      "prompt_length": 1024,
+      "variants": {
+        "agent": {
+          "before_ms": 3.882931952830404,
+          "after_ms": 3.8282760069705546,
+          "latency_reduction_percent": 1.4075947383010101,
+          "speedup": 1.0142769083943612,
+          "before_tokens_per_second": 255.31998914403619,
+          "after_tokens_per_second": 258.96109169071434
+        },
+        "chat_cli": {
+          "before_ms": 3.7929050158709288,
+          "after_ms": 3.74692800687626,
+          "latency_reduction_percent": 1.2121845604433523,
+          "speedup": 1.0122705877749167,
+          "before_tokens_per_second": 263.6182279198182,
+          "after_tokens_per_second": 266.83718267698873
+        }
+      }
+    },
+    {
+      "prompt_length": 2048,
+      "variants": {
+        "agent": {
+          "before_ms": 4.048028029501438,
+          "after_ms": 3.917185007594526,
+          "latency_reduction_percent": 3.2322657094602025,
+          "speedup": 1.0334023084570265,
+          "before_tokens_per_second": 245.16321193774579,
+          "after_tokens_per_second": 253.28712515557018
+        },
+        "chat_cli": {
+          "before_ms": 3.9589470252394676,
+          "after_ms": 3.834796021692455,
+          "latency_reduction_percent": 3.1359602125391683,
+          "speedup": 1.0323748650109998,
+          "before_tokens_per_second": 252.6121044340757,
+          "after_tokens_per_second": 260.7481224078177
+        }
+      }
+    }
+  ]
+}

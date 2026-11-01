@@ -1,0 +1,2471 @@
+{
+  "sources": {
+    "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/DSA-adaptive-CTA-Native-Flag-NFFN-FNNF-independent-CPU-audit-20261101-r2249.json": "6c0ad9be9d78814e531386e7e6c508b64b31e8499d1cf12163a698473e520d8f",
+    "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/current-full-model-goal-completion-independent-CPU-audit-20261101-r2263.json": "49baa43a68b1d8ec097d79090084a254be70d91fcdcd2377f723ec00c87918d9",
+    "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/render_results.py": "570a7f25f0835ae0c3ecd599b54448300bee337fd1bd048b01d3b0fe0632fbfa",
+    "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/render_current_full_model_eight_leg_results_CPU_20261101_r2264.py": "ec72857a364000db34aaf8dd9ac151000f7d72bebf26c0492098a9f298015d10"
+  },
+  "source_sha256": "6881d6c8cfe1e2b7b175500a18500065662eb38427be3275ef02bf9708e02736",
+  "semantic_hash": "7a073b51c9d72f7383aa0a5763697ee53917de427451b6f57841a4468c43a6c1",
+  "scope": "Full45/E288/top8/H4096/cache4096/TP4/batch1/independent8 tokens; prompt32/128/1024/2048; original GPU1-4 at1980MHz",
+  "measured_date": "2026-11-01",
+  "all_formal_requests": {
+    "32": {
+      "native_vllm": [
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.8403277171975265,
+          "wall_request_ms": 233.73588197864592
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.752617428511647,
+          "wall_request_ms": 184.66459601768292
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.762885999965614,
+          "wall_request_ms": 188.8564949913416
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.745894713925996,
+          "wall_request_ms": 179.33962101233192
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.784266430518723,
+          "wall_request_ms": 179.65078400447965
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.733968284346962,
+          "wall_request_ms": 175.77474997960962
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.741608572026182,
+          "wall_request_ms": 178.4291609947104
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.697646142648799,
+          "wall_request_ms": 178.1449920090381
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.7563572873560975,
+          "wall_request_ms": 180.53163099102676
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.733792854772348,
+          "wall_request_ms": 179.8057029955089
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.962542567634955,
+          "wall_request_ms": 242.23526098649018
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.9332205707074275,
+          "wall_request_ms": 244.67287401785143
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.91972957325301,
+          "wall_request_ms": 242.39010800374672
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.722049712802151,
+          "wall_request_ms": 213.9343630115036
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.7811212835035155,
+          "wall_request_ms": 177.6288170076441
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.81458500080875,
+          "wall_request_ms": 179.89725497318432
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.8580328536752075,
+          "wall_request_ms": 180.71873800363392
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.761900856093105,
+          "wall_request_ms": 174.8782090144232
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.784137284349916,
+          "wall_request_ms": 177.28411901043728
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.765180999147041,
+          "wall_request_ms": 178.69737397995777
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.716729856894484,
+          "wall_request_ms": 172.77663698769175
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.83181857207923,
+          "wall_request_ms": 176.34941398864612
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.818931998818049,
+          "wall_request_ms": 181.31696499767713
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.705286143447405,
+          "wall_request_ms": 174.09496800974011
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.764210427978209,
+          "wall_request_ms": 178.52005502209067
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.742294428737035,
+          "wall_request_ms": 175.8795130008366
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.723980573172282,
+          "wall_request_ms": 173.5183950222563
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.71631857403554,
+          "wall_request_ms": 172.59103700052947
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.76072557273853,
+          "wall_request_ms": 177.04458799562417
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.7540781414468904,
+          "wall_request_ms": 174.4305079919286
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.844883855332488,
+          "wall_request_ms": 181.69281000155024
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.739149431398671,
+          "wall_request_ms": 179.57191198365763
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.749568714959813,
+          "wall_request_ms": 182.78353899950162
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.724610143075032,
+          "wall_request_ms": 170.7919439941179
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.753802428387904,
+          "wall_request_ms": 177.1843699971214
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.722980715234631,
+          "wall_request_ms": 170.99652101751417
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.782420715483438,
+          "wall_request_ms": 178.94103500293568
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.7401102860458195,
+          "wall_request_ms": 177.85844902391545
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.740447287614058,
+          "wall_request_ms": 180.3998379909899
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.744928142455008,
+          "wall_request_ms": 177.15203599072993
+        }
+      ],
+      "scheduled": [
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.403767857201664,
+          "wall_request_ms": 252.44083398138173
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.398572856726657,
+          "wall_request_ms": 251.5355749928858
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.400604998426778,
+          "wall_request_ms": 251.8123909831047
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.401333425726209,
+          "wall_request_ms": 250.9470459772274
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.399883003073877,
+          "wall_request_ms": 251.32696898072027
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.397982140437567,
+          "wall_request_ms": 252.0627659978345
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.399565430391314,
+          "wall_request_ms": 250.84382298518904
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.388423145316275,
+          "wall_request_ms": 250.9046069753822
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.395329284714535,
+          "wall_request_ms": 250.92649200814776
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.410988284707336,
+          "wall_request_ms": 250.82925701281056
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.401853714903284,
+          "wall_request_ms": 252.5282190181315
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.404232000932097,
+          "wall_request_ms": 250.87601301493123
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.3980914294786215,
+          "wall_request_ms": 250.9833450021688
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.400284141169062,
+          "wall_request_ms": 251.1229999945499
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.403806141211784,
+          "wall_request_ms": 250.88987100753002
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.397490140183696,
+          "wall_request_ms": 250.82024600123987
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.400500000121871,
+          "wall_request_ms": 251.40437399386428
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.398096572541233,
+          "wall_request_ms": 250.89859100989997
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.40864742620449,
+          "wall_request_ms": 251.1720239999704
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.40658800174216,
+          "wall_request_ms": 250.93851899146102
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.407216715160757,
+          "wall_request_ms": 252.87564902100712
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.394383426855451,
+          "wall_request_ms": 250.92362001305446
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.3982167173110485,
+          "wall_request_ms": 251.34479001280852
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.395074002544528,
+          "wall_request_ms": 251.47259200457484
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.399670283177069,
+          "wall_request_ms": 250.8880120003596
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.394808284572458,
+          "wall_request_ms": 251.008079998428
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.401817430742085,
+          "wall_request_ms": 251.44183001248166
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.391102714197976,
+          "wall_request_ms": 250.96443397342227
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.4036631457773705,
+          "wall_request_ms": 250.91793699539267
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.398090714355931,
+          "wall_request_ms": 250.93715501134284
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.402714427427521,
+          "wall_request_ms": 252.60054299724288
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.391855713445693,
+          "wall_request_ms": 251.33526499848813
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.401271713132571,
+          "wall_request_ms": 251.38071601395495
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.3947675724713395,
+          "wall_request_ms": 251.33647298207507
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.399411284032145,
+          "wall_request_ms": 251.37223699130118
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.3983135748588085,
+          "wall_request_ms": 251.38458400033414
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.405006287552949,
+          "wall_request_ms": 251.3379310257733
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.404447286123676,
+          "wall_request_ms": 251.25899401609786
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.399170570408127,
+          "wall_request_ms": 251.213245006511
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.397040145072554,
+          "wall_request_ms": 251.35484201018699
+        }
+      ]
+    },
+    "128": {
+      "native_vllm": [
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.728527427185327,
+          "wall_request_ms": 173.2356200227514
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.709766570046278,
+          "wall_request_ms": 174.14621100760996
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.760269573922934,
+          "wall_request_ms": 177.97576100565493
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.737480858906305,
+          "wall_request_ms": 175.81306799547747
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.6939312839947105,
+          "wall_request_ms": 172.77100202045403
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.754741143335456,
+          "wall_request_ms": 173.62373499781825
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.715181998775473,
+          "wall_request_ms": 173.1773030187469
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.778384858210172,
+          "wall_request_ms": 181.32803498883732
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.708498141961172,
+          "wall_request_ms": 172.3582400009036
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.734041143707665,
+          "wall_request_ms": 174.43376997835003
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.780663288996688,
+          "wall_request_ms": 177.52760101575404
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.805992714362219,
+          "wall_request_ms": 177.96328099211678
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.83256085695965,
+          "wall_request_ms": 179.60227199364454
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.828511142105397,
+          "wall_request_ms": 178.7551259913016
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.8097965725298435,
+          "wall_request_ms": 183.24165800004266
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.835528146309246,
+          "wall_request_ms": 174.51214799075387
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.789675714182002,
+          "wall_request_ms": 174.66143300407566
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 9,
+          "decode_tpot_ms": 7.037084142211825,
+          "wall_request_ms": 181.892588007031
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.814861857232505,
+          "wall_request_ms": 181.28619799972512
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.872523713224966,
+          "wall_request_ms": 184.06071301433258
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.777524287047397,
+          "wall_request_ms": 173.3399890072178
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.75869985882725,
+          "wall_request_ms": 181.34424899471924
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.7325821437407285,
+          "wall_request_ms": 176.51092101004906
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.709853000107354,
+          "wall_request_ms": 170.74170301202685
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.704429717501625,
+          "wall_request_ms": 168.14783800509758
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.796406141282724,
+          "wall_request_ms": 176.65921300067566
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.783226716964107,
+          "wall_request_ms": 177.58243199205026
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.7890252851481945,
+          "wall_request_ms": 177.2148939780891
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.77450599947146,
+          "wall_request_ms": 174.1932229779195
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.789507427518921,
+          "wall_request_ms": 174.98320000595413
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.866968286755894,
+          "wall_request_ms": 240.17419398296624
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.883585571943383,
+          "wall_request_ms": 240.61999999685213
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.831971142673865,
+          "wall_request_ms": 240.4451530019287
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.864430998185916,
+          "wall_request_ms": 239.68714399961755
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.900287856946567,
+          "wall_request_ms": 240.75202000676654
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.856766429596713,
+          "wall_request_ms": 238.9270030253101
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.856006857041003,
+          "wall_request_ms": 240.59826199663803
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.847701858662601,
+          "wall_request_ms": 239.69328199746087
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.931590145021411,
+          "wall_request_ms": 240.59273998136632
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.958358426345512,
+          "wall_request_ms": 241.17697100155056
+        }
+      ],
+      "scheduled": [
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.4907477145815005,
+          "wall_request_ms": 873.3589570038021
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.494432858224692,
+          "wall_request_ms": 872.1858449862339
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.493633430052016,
+          "wall_request_ms": 872.1980980189983
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.507093714649922,
+          "wall_request_ms": 872.7963909914251
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.496670855475323,
+          "wall_request_ms": 872.2453379887156
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.505947140145248,
+          "wall_request_ms": 872.8865949960891
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.500827140241329,
+          "wall_request_ms": 873.1183809868526
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.495074714101585,
+          "wall_request_ms": 872.5627779786009
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.494452856713906,
+          "wall_request_ms": 872.5147100049071
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.492629002812984,
+          "wall_request_ms": 873.0264530167915
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.503041713066133,
+          "wall_request_ms": 873.0853390006814
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.499628282784085,
+          "wall_request_ms": 872.5957149872556
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.500436142752213,
+          "wall_request_ms": 871.956691989908
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.496681711204084,
+          "wall_request_ms": 871.8643289757892
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.49241214185687,
+          "wall_request_ms": 872.06293901545
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.503604003228247,
+          "wall_request_ms": 872.0264059957117
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.5094078599940985,
+          "wall_request_ms": 872.4606170144398
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.500953143196447,
+          "wall_request_ms": 872.5027409964241
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.500359998816358,
+          "wall_request_ms": 872.5319330114871
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.49236942990683,
+          "wall_request_ms": 872.4574759835377
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.500576286011243,
+          "wall_request_ms": 873.1453420186881
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.499184283062017,
+          "wall_request_ms": 872.682519024238
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.501227717048356,
+          "wall_request_ms": 872.5289989961311
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.4855387151640445,
+          "wall_request_ms": 872.3461710033007
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.4905340009967665,
+          "wall_request_ms": 872.7251560194418
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.491869999860812,
+          "wall_request_ms": 871.9868790067267
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.494148713370253,
+          "wall_request_ms": 872.4905159906484
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.508578571291374,
+          "wall_request_ms": 872.1993009967264
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.49772843046646,
+          "wall_request_ms": 872.3133069870528
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.492947140941396,
+          "wall_request_ms": 872.2285839903634
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.497034000598693,
+          "wall_request_ms": 873.0420200154185
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.490998714330739,
+          "wall_request_ms": 872.2510870138649
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.499666288228972,
+          "wall_request_ms": 872.6783349993639
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.4982909991938085,
+          "wall_request_ms": 872.5432349892799
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.490171999238165,
+          "wall_request_ms": 872.1182309964206
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.481324143741014,
+          "wall_request_ms": 872.1458500076551
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.4949007147723545,
+          "wall_request_ms": 871.9476370024495
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.489614573573427,
+          "wall_request_ms": 872.4890320154373
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.498624716186896,
+          "wall_request_ms": 872.3079220217187
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.489821713850168,
+          "wall_request_ms": 872.3333960224409
+        }
+      ]
+    },
+    "1024": {
+      "native_vllm": [
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.8035308546054045,
+          "wall_request_ms": 290.5036809970625
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.806960857440052,
+          "wall_request_ms": 292.3819099960383
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.813669427564101,
+          "wall_request_ms": 288.87387600843795
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.820609568551715,
+          "wall_request_ms": 302.50229898956604
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.811194716387296,
+          "wall_request_ms": 292.0676649955567
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.8268814273843805,
+          "wall_request_ms": 295.97110298345797
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.801643712346309,
+          "wall_request_ms": 290.0037590006832
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.799758141694058,
+          "wall_request_ms": 284.47150500142016
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.807008857971856,
+          "wall_request_ms": 281.26968699507415
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.8009371420235505,
+          "wall_request_ms": 288.0019239964895
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.857469569825168,
+          "wall_request_ms": 283.42261601937935
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.881746571577553,
+          "wall_request_ms": 300.16859297757037
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.864113857903119,
+          "wall_request_ms": 288.12116201152094
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.8323752867789675,
+          "wall_request_ms": 284.9116139987018
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.874216999027079,
+          "wall_request_ms": 289.5235730102286
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.873366859508678,
+          "wall_request_ms": 292.1968860027846
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.88255499699153,
+          "wall_request_ms": 290.5779930006247
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.947152428827914,
+          "wall_request_ms": 291.6065939934924
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.850978143380156,
+          "wall_request_ms": 299.22755699953996
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.8508037158088495,
+          "wall_request_ms": 290.90492500108667
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.792585856081652,
+          "wall_request_ms": 281.107628979953
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.8317807163111866,
+          "wall_request_ms": 278.5130999982357
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.851122714579105,
+          "wall_request_ms": 284.6766739967279
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.871236430015415,
+          "wall_request_ms": 291.2651030055713
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.8247845712383945,
+          "wall_request_ms": 283.10494497418404
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.866911571705714,
+          "wall_request_ms": 283.59226998873055
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.873158713070942,
+          "wall_request_ms": 286.91872899071313
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.836599146481603,
+          "wall_request_ms": 299.3393930082675
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.878563859832606,
+          "wall_request_ms": 283.6898739915341
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.828495858436717,
+          "wall_request_ms": 275.74417801224627
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.8036152848175595,
+          "wall_request_ms": 296.7787670204416
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.811504426877946,
+          "wall_request_ms": 282.43621400906704
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.807682570070028,
+          "wall_request_ms": 281.30164500907995
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.813052713239033,
+          "wall_request_ms": 297.64357398380525
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.789934713326927,
+          "wall_request_ms": 290.5689239851199
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.818736429392759,
+          "wall_request_ms": 286.60019699600525
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.835457428158926,
+          "wall_request_ms": 287.32950598350726
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.772272999764287,
+          "wall_request_ms": 293.64801198244095
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.818091571663639,
+          "wall_request_ms": 284.61730299750343
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.828561998970274,
+          "wall_request_ms": 290.0884370028507
+        }
+      ],
+      "scheduled": [
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.6553164298446585,
+          "wall_request_ms": 6778.992702020332
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.646671714926405,
+          "wall_request_ms": 6778.5777779936325
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.650556144969804,
+          "wall_request_ms": 6777.499863994308
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.654275572925274,
+          "wall_request_ms": 6777.854643005412
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.664702003555639,
+          "wall_request_ms": 6779.146193002816
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.6628805735880245,
+          "wall_request_ms": 6778.212801000336
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.652775000215375,
+          "wall_request_ms": 6778.648891980993
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.649546283629856,
+          "wall_request_ms": 6777.554872009205
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.651131145190448,
+          "wall_request_ms": 6778.099702001782
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.64232243018757,
+          "wall_request_ms": 6778.450447018258
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.644803427791755,
+          "wall_request_ms": 6763.277365011163
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.64124171349353,
+          "wall_request_ms": 6760.577667999314
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.644626285248835,
+          "wall_request_ms": 6760.518610011786
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.636799288181854,
+          "wall_request_ms": 6760.701730003348
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.636783426594255,
+          "wall_request_ms": 6760.545712983003
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.63824485465219,
+          "wall_request_ms": 6764.799948985456
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.650926711569939,
+          "wall_request_ms": 6764.336939988425
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.642517284490168,
+          "wall_request_ms": 6760.895257990342
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.634824572496915,
+          "wall_request_ms": 6760.487229999853
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.64103399945556,
+          "wall_request_ms": 6761.421232979046
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.6716057148629,
+          "wall_request_ms": 6776.089310995303
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.6492774266017864,
+          "wall_request_ms": 6774.7803409874905
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.657069000149412,
+          "wall_request_ms": 6775.5153920152225
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.650622859264591,
+          "wall_request_ms": 6776.127485005418
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.650982283255352,
+          "wall_request_ms": 6776.573752984405
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.661026426757287,
+          "wall_request_ms": 6776.50474497932
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.666333427087271,
+          "wall_request_ms": 6776.6622609924525
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.655585997837728,
+          "wall_request_ms": 6777.746431005653
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.671745284360701,
+          "wall_request_ms": 6777.10268998635
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.6517797157367955,
+          "wall_request_ms": 6777.577946020756
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.657832568245275,
+          "wall_request_ms": 6778.001285012579
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.644609284454158,
+          "wall_request_ms": 6775.393035000889
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.648724428876968,
+          "wall_request_ms": 6771.533093997277
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.64701299891541,
+          "wall_request_ms": 6773.729560984066
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.654250427215759,
+          "wall_request_ms": 6773.948254995048
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.653855571390262,
+          "wall_request_ms": 6774.317013012478
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.656231001086001,
+          "wall_request_ms": 6776.376494002761
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.656749144895002,
+          "wall_request_ms": 6774.260867998237
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.646003141733153,
+          "wall_request_ms": 6776.430546975462
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.649832573852369,
+          "wall_request_ms": 6775.524386001052
+        }
+      ]
+    },
+    "2048": {
+      "native_vllm": [
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.865650432051292,
+          "wall_request_ms": 525.5048949911725
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.866346857610291,
+          "wall_request_ms": 528.9613849890884
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.88529313941087,
+          "wall_request_ms": 538.449296989711
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.898068573458919,
+          "wall_request_ms": 536.7533039825503
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.840945001126134,
+          "wall_request_ms": 549.5913790073246
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.881100000880126,
+          "wall_request_ms": 537.7624650136568
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.856392856986661,
+          "wall_request_ms": 527.3433279944584
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.868720857060647,
+          "wall_request_ms": 529.3893139751162
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.855263141915202,
+          "wall_request_ms": 518.7654159963131
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.8554571438913365,
+          "wall_request_ms": 522.3094219982158
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.949777714908123,
+          "wall_request_ms": 573.2569610117935
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.883108427116115,
+          "wall_request_ms": 545.5904619884677
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.938845717481205,
+          "wall_request_ms": 538.7757970020175
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.960257284975212,
+          "wall_request_ms": 532.1286890248302
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.941073287245152,
+          "wall_request_ms": 541.1954960145522
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.913448717179043,
+          "wall_request_ms": 528.0795099970419
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.8896751410128285,
+          "wall_request_ms": 536.411668988876
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.980761141416484,
+          "wall_request_ms": 556.9029150065035
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.936363572354561,
+          "wall_request_ms": 547.4688690155745
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_N1",
+          "request": 11,
+          "decode_tpot_ms": 7.02608742618135,
+          "wall_request_ms": 554.1994569939561
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 2,
+          "decode_tpot_ms": 6.920354428335226,
+          "wall_request_ms": 524.8985849902965
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 3,
+          "decode_tpot_ms": 6.886781854388703,
+          "wall_request_ms": 509.73279200843535
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 4,
+          "decode_tpot_ms": 6.868117143832413,
+          "wall_request_ms": 516.0875500005204
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 5,
+          "decode_tpot_ms": 6.903886142286605,
+          "wall_request_ms": 505.37858001189306
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 6,
+          "decode_tpot_ms": 6.906436427795727,
+          "wall_request_ms": 526.9653860013932
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 7,
+          "decode_tpot_ms": 6.97191000134418,
+          "wall_request_ms": 531.1584189767018
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 8,
+          "decode_tpot_ms": 6.928568572870323,
+          "wall_request_ms": 532.6556420186535
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 9,
+          "decode_tpot_ms": 6.860150859990556,
+          "wall_request_ms": 510.91834300314076
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 10,
+          "decode_tpot_ms": 6.876226714146989,
+          "wall_request_ms": 513.0538119992707
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N0",
+          "request": 11,
+          "decode_tpot_ms": 6.958961428608745,
+          "wall_request_ms": 523.3559960033745
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 2,
+          "decode_tpot_ms": 6.886120715145288,
+          "wall_request_ms": 559.4611880078446
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 3,
+          "decode_tpot_ms": 6.912518142988639,
+          "wall_request_ms": 554.5611880079377
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 4,
+          "decode_tpot_ms": 6.93063171430757,
+          "wall_request_ms": 519.0587689867243
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 5,
+          "decode_tpot_ms": 6.858820715154122,
+          "wall_request_ms": 521.9532479823101
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 6,
+          "decode_tpot_ms": 6.8852477124892175,
+          "wall_request_ms": 535.3573769971263
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 7,
+          "decode_tpot_ms": 6.858499142773716,
+          "wall_request_ms": 532.8406199987512
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 8,
+          "decode_tpot_ms": 6.863461283501238,
+          "wall_request_ms": 514.1322980052792
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 9,
+          "decode_tpot_ms": 6.910489427225132,
+          "wall_request_ms": 548.1597059988417
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 10,
+          "decode_tpot_ms": 6.895796000857705,
+          "wall_request_ms": 526.548528985586
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_N1",
+          "request": 11,
+          "decode_tpot_ms": 6.909344715365608,
+          "wall_request_ms": 545.9770610032137
+        }
+      ],
+      "scheduled": [
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.8368567153811455,
+          "wall_request_ms": 13676.432964013657
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.838711714538347,
+          "wall_request_ms": 13676.977696013637
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.837259146517941,
+          "wall_request_ms": 13681.643415999133
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.853352857953204,
+          "wall_request_ms": 13687.800921004964
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.847233715234324,
+          "wall_request_ms": 13683.588056999724
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.84328014280514,
+          "wall_request_ms": 13683.591020002495
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.838623430147501,
+          "wall_request_ms": 13687.066276994301
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.844634714070708,
+          "wall_request_ms": 13686.424151994288
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.844791858124414,
+          "wall_request_ms": 13685.89477299247
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.851053285312706,
+          "wall_request_ms": 13685.720134992152
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.827774428529665,
+          "wall_request_ms": 13659.254515980138
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.8286998596574575,
+          "wall_request_ms": 13656.439700018382
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.830506143160164,
+          "wall_request_ms": 13657.818863983266
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.833599714030113,
+          "wall_request_ms": 13660.281207994558
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.843674429027097,
+          "wall_request_ms": 13657.743321993621
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.835640428887148,
+          "wall_request_ms": 13661.146730009932
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.837702144236703,
+          "wall_request_ms": 13660.873705986887
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.832318002125248,
+          "wall_request_ms": 13659.57984898705
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.828444714691224,
+          "wall_request_ms": 13656.880989990896
+        },
+        {
+          "order": "NFFN",
+          "leg": "A_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.83693157043308,
+          "wall_request_ms": 13660.463481995976
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 2,
+          "decode_tpot_ms": 6.848008571458714,
+          "wall_request_ms": 13682.074297015788
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 3,
+          "decode_tpot_ms": 6.84401485653195,
+          "wall_request_ms": 13684.708248998504
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 4,
+          "decode_tpot_ms": 6.843236287490332,
+          "wall_request_ms": 13683.2222060184
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 5,
+          "decode_tpot_ms": 6.850465288152918,
+          "wall_request_ms": 13675.109133997466
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 6,
+          "decode_tpot_ms": 6.850526859385094,
+          "wall_request_ms": 13670.344756013947
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 7,
+          "decode_tpot_ms": 6.843317000727568,
+          "wall_request_ms": 13681.503216997953
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 8,
+          "decode_tpot_ms": 6.844042426174773,
+          "wall_request_ms": 13684.099101024913
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 9,
+          "decode_tpot_ms": 6.849221856100485,
+          "wall_request_ms": 13683.046065998496
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 10,
+          "decode_tpot_ms": 6.842647001446624,
+          "wall_request_ms": 13683.917654008837
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F0",
+          "request": 11,
+          "decode_tpot_ms": 6.844931568983676,
+          "wall_request_ms": 13682.45070197736
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 2,
+          "decode_tpot_ms": 6.8378274279114395,
+          "wall_request_ms": 13677.661988011096
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 3,
+          "decode_tpot_ms": 6.933943572221324,
+          "wall_request_ms": 13675.204644008772
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 4,
+          "decode_tpot_ms": 6.869250571721101,
+          "wall_request_ms": 13670.183683978394
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 5,
+          "decode_tpot_ms": 6.847166140297694,
+          "wall_request_ms": 13670.224566012621
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 6,
+          "decode_tpot_ms": 6.834329430213464,
+          "wall_request_ms": 13675.691900018137
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 7,
+          "decode_tpot_ms": 6.839897429537294,
+          "wall_request_ms": 13674.22799198539
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 8,
+          "decode_tpot_ms": 6.858652282971889,
+          "wall_request_ms": 13676.336388976779
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 9,
+          "decode_tpot_ms": 6.842177427772965,
+          "wall_request_ms": 13678.711543005193
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 10,
+          "decode_tpot_ms": 6.845795857121369,
+          "wall_request_ms": 13676.270437979838
+        },
+        {
+          "order": "FNNF",
+          "leg": "B_F1",
+          "request": 11,
+          "decode_tpot_ms": 6.839239998953417,
+          "wall_request_ms": 13677.534310991177
+        }
+      ]
+    }
+  },
+  "no_formal_samples_removed": true,
+  "raw_requests": 384,
+  "warmups": 64,
+  "formal_requests": 320,
+  "scenarios": [
+    {
+      "prompt_length": 32,
+      "decode_tokens": 8,
+      "variants": {
+        "native_vllm": {
+          "decode_median_ms": 6.753940284917397,
+          "decode_tokens_per_second": 148.0617177871377,
+          "request_tokens_per_second": 44.79065869529217,
+          "request_e2e_median_ms": 178.60871450102422,
+          "runs": 40,
+          "decode_samples": 40
+        },
+        "scheduled": {
+          "decode_median_ms": 6.399617856784191,
+          "decode_tokens_per_second": 156.259330235948,
+          "request_tokens_per_second": 31.84255544894971,
+          "request_e2e_median_ms": 251.23611951130442,
+          "runs": 40,
+          "decode_samples": 40
+        }
+      }
+    },
+    {
+      "prompt_length": 128,
+      "decode_tokens": 8,
+      "variants": {
+        "native_vllm": {
+          "decode_median_ms": 6.789591570850462,
+          "decode_tokens_per_second": 147.28426440949033,
+          "request_tokens_per_second": 45.0012973694029,
+          "request_e2e_median_ms": 177.77285649208352,
+          "runs": 40,
+          "decode_samples": 40
+        },
+        "scheduled": {
+          "decode_median_ms": 6.496676283339704,
+          "decode_tokens_per_second": 153.9248619428879,
+          "request_tokens_per_second": 9.169319019112177,
+          "request_e2e_median_ms": 872.4748245149385,
+          "runs": 40,
+          "decode_samples": 40
+        }
+      }
+    },
+    {
+      "prompt_length": 1024,
+      "decode_tokens": 8,
+      "variants": {
+        "native_vllm": {
+          "decode_median_ms": 6.827688642910548,
+          "decode_tokens_per_second": 146.4624510984264,
+          "request_tokens_per_second": 27.66267419569483,
+          "request_e2e_median_ms": 289.19872450933326,
+          "runs": 40,
+          "decode_samples": 40
+        },
+        "scheduled": {
+          "decode_median_ms": 6.650774785417266,
+          "decode_tokens_per_second": 150.358421805901,
+          "request_tokens_per_second": 1.1806186575209285,
+          "request_e2e_median_ms": 6776.1083980003605,
+          "runs": 40,
+          "decode_samples": 40
+        }
+      }
+    },
+    {
+      "prompt_length": 2048,
+      "decode_tokens": 8,
+      "variants": {
+        "native_vllm": {
+          "decode_median_ms": 6.892735570935267,
+          "decode_tokens_per_second": 145.08030764445505,
+          "request_tokens_per_second": 15.047688627719845,
+          "request_e2e_median_ms": 531.643554000766,
+          "runs": 40,
+          "decode_samples": 40
+        },
+        "scheduled": {
+          "decode_median_ms": 6.843258215147737,
+          "decode_tokens_per_second": 146.1292221586408,
+          "request_tokens_per_second": 0.5849361969959723,
+          "request_e2e_median_ms": 13676.705330013647,
+          "runs": 40,
+          "decode_samples": 40
+        }
+      }
+    }
+  ],
+  "performance_acceptance": true,
+  "numerical_acceptance": true,
+  "hardware_acceptance": true,
+  "original_per_order_and_all_four_leg_gates": [
+    {
+      "context": 32,
+      "leg_medians_ms": {
+        "A_N0": 6.749256071218822,
+        "A_F0": 6.399724216732595,
+        "A_F1": 6.401176857512578,
+        "A_N1": 6.7993611425793326,
+        "B_F0": 6.398153715833489,
+        "B_N0": 6.748186285091963,
+        "B_N1": 6.742687715034533,
+        "B_F1": 6.399290927220136
+      },
+      "each_original_order_gate": {
+        "A": true,
+        "B": true
+      },
+      "all_four_Flag_legs_below_all_four_Native_legs": true,
+      "pooled_median_faster": true,
+      "Flag_median_ms": 6.399617856784191,
+      "Native_median_ms": 6.753940284917397,
+      "reduction_percent": 5.2461587338055615,
+      "minimum_all_leg_margin_ms": 0.3415108575219552
+    },
+    {
+      "context": 128,
+      "leg_medians_ms": {
+        "A_N0": 6.731284285446495,
+        "A_F0": 6.494763785407745,
+        "A_F1": 6.500398070784286,
+        "A_N1": 6.821686499668951,
+        "B_F0": 6.495938571918357,
+        "B_N0": 6.776015143259428,
+        "B_N1": 6.865699642470904,
+        "B_F1": 6.492949714551546
+      },
+      "each_original_order_gate": {
+        "A": true,
+        "B": true
+      },
+      "all_four_Flag_legs_below_all_four_Native_legs": true,
+      "pooled_median_faster": true,
+      "Flag_median_ms": 6.496676283339704,
+      "Native_median_ms": 6.789591570850462,
+      "reduction_percent": 4.314181264869044,
+      "minimum_all_leg_margin_ms": 0.2308862146622097
+    },
+    {
+      "context": 1024,
+      "leg_medians_ms": {
+        "A_N0": 6.806984857705954,
+        "A_F0": 6.651953072702911,
+        "A_F1": 6.641137856474545,
+        "A_N1": 6.868740358705899,
+        "B_F0": 6.65632749899357,
+        "B_N0": 6.843860930530354,
+        "B_N1": 6.812278570058489,
+        "B_F1": 6.651844072621316
+      },
+      "each_original_order_gate": {
+        "A": true,
+        "B": true
+      },
+      "all_four_Flag_legs_below_all_four_Native_legs": true,
+      "pooled_median_faster": true,
+      "Flag_median_ms": 6.650774785417266,
+      "Native_median_ms": 6.827688642910548,
+      "reduction_percent": 2.5911236839567753,
+      "minimum_all_leg_margin_ms": 0.15065735871238406
+    },
+    {
+      "context": 2048,
+      "leg_medians_ms": {
+        "A_N0": 6.865998644830792,
+        "A_F0": 6.843957428437924,
+        "A_F1": 6.8329588580776806,
+        "A_N1": 6.939959502363179,
+        "B_F0": 6.844486997579224,
+        "B_N0": 6.905161285041165,
+        "B_N1": 6.890958358001496,
+        "B_F1": 6.843986642447167
+      },
+      "each_original_order_gate": {
+        "A": true,
+        "B": true
+      },
+      "all_four_Flag_legs_below_all_four_Native_legs": true,
+      "pooled_median_faster": true,
+      "Flag_median_ms": 6.843258215147737,
+      "Native_median_ms": 6.892735570935267,
+      "reduction_percent": 0.7178188583958245,
+      "minimum_all_leg_margin_ms": 0.02151164725156729
+    }
+  ],
+  "final_artifact": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/DSA-adaptive-CTA-normal-artifact-CPU-20261101-r2241h/artifact",
+  "metric": "Decode TPOT excludes prefill and first output token; FlagMega slowest rank full decode wall time, Native official first-to-last token time. Complete-request throughput includes prefill and does not participate in decode acceptance."
+}

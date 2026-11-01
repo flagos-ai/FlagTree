@@ -1,0 +1,23 @@
+{
+  "kind": "private-full-original-shared-merge-reproduction",
+  "public_promoted": false,
+  "final_acceptance_pending": true,
+  "performance_goal_achieved": false,
+  "expected_semantic_hash": "4a5961d26f917983eb8759460a55a83bb7339518d49eb8827dc1375075e2d045",
+  "expected_source_sha256": "7a2f8f759182f0578bee96aa88869833ecb68a82bea862fd5a2125b8f9cd58b5",
+  "fixed_full_contract": "Full45/E288/top8/H4096/cache4096/TP4/prompt11/output8",
+  "original_input": {
+    "source_sha256": "697a57c7c3c780da5a3dad9a0bb3b8937a628bd75b524f2e8c76f6999207455e",
+    "stage": "selected_tir_variants",
+    "description": "Original preallocation input before physical microkernel candidates. Local implementation catalog plus normal selection and bufferization regenerate all dependent plans.",
+    "compressed_sha256": "79bc3cb1487bf984cfab511f83170cefbfe995e86c8476f52479ff119de3e32c",
+    "original_preallocation_input": true
+  },
+  "measured_date": "2026-10-21",
+  "numerical_contract": "vllm-0.31-tp4, independent official8 and immutable full-state byte digests",
+  "artifact_requires": "Build produces final IR, manifest, readonly data, executable source; runtime SDK is built separately",
+  "performance_acceptance": false,
+  "numerical_acceptance": false,
+  "candidate_measured_native_pending": true,
+  "source_identity_pending_normal_render": false
+}

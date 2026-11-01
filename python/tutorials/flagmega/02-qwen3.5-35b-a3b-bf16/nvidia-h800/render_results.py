@@ -1,4 +1,7 @@
-"""Validate independent decode trials and derive two SVGs from raw GPU events."""
+"""Validate full requests and render 01-aligned performance figures.
+
+The prepared-state reader remains available for auditing historical results.
+"""
 
 import argparse
 from collections import defaultdict
@@ -7,11 +10,235 @@ from html import escape
 import json
 import math
 from pathlib import Path
+import shutil
 import statistics
 
 
 LABELS = {"native": "vLLM", "baseline": "FlagMega Initial", "agent": "FlagMega Agent"}
 COLORS = {"native": "#556579", "baseline": "#c47725", "agent": "#198269"}
+REQUEST_LABELS = {**LABELS, "chat_cli": "FlagMega chat CLI"}
+REQUEST_COLORS = {**COLORS, "chat_cli": "#8252b3"}
+REQUEST_CHARTS = (
+    ("decode_latency.svg", "decode_median_ms", "Decode step latency (lower is better)", "ms/token"),
+    ("decode_throughput.svg", "decode_tokens_per_second", "Decode throughput (higher is better)", "tokens/s"),
+    ("request_throughput.svg", "request_tokens_per_second", "Request throughput incl. prefill (higher is better)", "tokens/s"),
+)
+
+
+def aggregate_requests(paths):
+    groups, reports, identities, seen = defaultdict(list), [], {}, set()
+    contract = None
+    for path in sorted(paths):
+        report = read_json(path)
+        require(report.get("schema") == "flagmega.request-comparison-trial/v1",
+                "Expected full requests, not prepared-state GPU events")
+        label, round_id = report["label"], report["round"]
+        require(label in REQUEST_LABELS and type(round_id) is int and round_id >= 0, "Invalid label or round")
+        require((label, round_id) not in seen, "Duplicate variant round")
+        seen.add((label, round_id))
+        require(report.get("performance_valid") is True and report.get("prefix_caching") is False
+                and report.get("warmups_per_scenario", 0) >= 2, "Invalid or unwarmed performance run")
+        require(report["batch"] == report["concurrency"] == 1, "Expected batch/concurrency one")
+        require(report.get("vllm_imported") is (label != "chat_cli"), "Runtime identity differs")
+        current = tuple(report[k] for k in ("checkpoint_revision", "checkpoint_config_sha256", "device", "visible_devices"))
+        require(contract is None or current == contract, "Different checkpoint or GPU")
+        contract = current
+        backend = report.get("backend", {})
+        identity = (backend.get("artifact_source_sha256"),
+                    backend.get("artifact_semantic_hashes", backend.get("artifact_semantic_hash")),
+                    report["torch"], report["triton"], report.get("vllm"), backend.get("backend_source_sha256"))
+        require(label not in identities or identity == identities[label], "Different artifact or environment for one variant")
+        identities[label] = identity
+        if label != "native":
+            require(report.get("eager_reference_kind") == "ir_torch",
+                    "Full requests require an independent IR/PyTorch eager reference")
+            require(report.get("prefill_mode") == "compiled_batched",
+                    "Full requests require compiled batched prefill")
+        require([s["prompt_length"] for s in report["scenarios"]] == [32, 128, 1024, 2048],
+                "Scenario lengths must match tutorial 01")
+        for scenario in report["scenarios"]:
+            require(scenario["decode_tokens"] == 64 and len(scenario["runs"]) == 5, "Expected 64 tokens and five requests")
+            for run in scenario["runs"]:
+                if label != "native":
+                    require(scenario.get("independent_eager_token_ids") == run["token_ids"],
+                            "Measured sequence differs from independent eager execution")
+            groups[scenario["prompt_length"], label].extend(scenario["runs"])
+        reports.append({"file": path.name, "sha256": sha256(path), "label": label, "round": round_id})
+    require(seen == {(label, round_id) for label in REQUEST_LABELS for round_id in range(3)},
+            "Three complete rounds of every variant are required")
+    require(identities["agent"][:2] == identities["chat_cli"][:2], "Chat CLI must use the same Agent artifact")
+    rows = []
+    for length in (32, 128, 1024, 2048):
+        native = groups[length, "native"][0]
+        row = {"prompt_length": length, "decode_tokens": 64, "variants": {}}
+        for label in REQUEST_LABELS:
+            runs = groups[length, label]
+            for run in runs:
+                require(len(run["prompt_tokens"]) == length and run["prompt_tokens"] == native["prompt_tokens"], "Different prompts")
+                require(len(run["token_ids"]) == 64, "Expected a complete 64-token output sequence")
+                require(run["token_ids"] == runs[0]["token_ids"], "Repeated independent request differs")
+                require(run.get("cached_tokens", 0) == 0, "Reused request prefix")
+                require(len(run["decode_step_ms"]) == 63, "Decode samples must exclude exactly the first output token")
+                duration = run["total_ms"] if label == "chat_cli" else run["e2e_ms"]
+                require(all(type(v) in (int, float) and math.isfinite(v) and v > 0
+                            for v in [*run["decode_step_ms"], run["ttft_ms"], duration]), "Invalid request timing")
+            samples = sorted(v for run in runs for v in run["decode_step_ms"])
+            row["variants"][label] = {
+                "decode_median_ms": statistics.median(samples), "decode_p95_ms": samples[int(.95 * len(samples))],
+                "decode_tokens_per_second": statistics.median(63000 / sum(run["decode_step_ms"]) for run in runs),
+                "request_tokens_per_second": statistics.median(64000 / (run["total_ms"] if label == "chat_cli" else run["e2e_ms"]) for run in runs),
+                "ttft_median_ms": statistics.median(run["ttft_ms"] for run in runs),
+                "runs": len(runs), "decode_samples": len(samples),
+                "native_token_agreement": sum(a == b for run in runs for a, b in zip(run["token_ids"], native["token_ids"])) / (64 * len(runs)),
+                "native_sequence_match": runs[0]["token_ids"] == native["token_ids"],
+                "first_native_difference": next((i for i, (a, b) in
+                    enumerate(zip(runs[0]["token_ids"], native["token_ids"], strict=True)) if a != b), None),
+                "independent_eager_agreement": True,
+            }
+        rows.append(row)
+    return {"schema": "flagmega.request-comparison/v1", "labels": REQUEST_LABELS,
+            "batch": 1, "concurrency": 1, "prompt_lengths": [32, 128, 1024, 2048], "output_tokens": 64,
+            "rounds": 3, "requests_per_scenario_per_round": 5, "prefix_caching": False,
+            "acceptance": {"native_sequence_match_required": False,
+                           "native_comparison_tokens": 64, "complete_independent_eager_sequence": True},
+            "checkpoint_revision": contract[0], "checkpoint_config_sha256": contract[1],
+            "device": contract[2], "visible_devices": contract[3], "sources": reports,
+            "identities": {label: dict(zip(("source_sha256", "semantic_hash", "torch", "triton", "vllm", "backend_source_sha256"), identity))
+                           for label, identity in identities.items()}, "scenarios": rows}
+
+
+def aggregate_native_prefill_decode(paths):
+    groups, identities, provenance, backends = defaultdict(list), {}, [], {}
+    rounds = defaultdict(set)
+    common_identity = None
+    for path in paths:
+        report = read_json(path)
+        require(report.get("schema") == "flagmega.native-prefill-decode-trial/v1", "Different decode timing scope")
+        label = report["label"]
+        require(label in REQUEST_LABELS and report.get("performance_valid") is True, "Unaccepted performance trial")
+        require(report.get("prefill") == "native_vllm" and report.get("prefill_timed") is False, "Prefill must be excluded")
+        require(report.get("batch") == report.get("concurrency") == 1 and report.get("prefix_caching") is False,
+                "Expected batch/concurrency one without prefix caching")
+        require(report.get("decode_intervals") == 63 and report.get("warmups_per_scenario") == 2, "Different sampling plan")
+        require(report.get("cuda_graph") is True, "Uncaptured performance trial")
+        require(report.get("vllm_imported") == (label != "chat_cli"), "Standalone CLI must not import vLLM")
+        conditioning = report.get("thermal_monitor", {})
+        require(conditioning.get("kind") == "nvml-clock-event-counters/v1"
+                and conditioning.get("gpu_uuid") and conditioning.get("max_start_temperature_c") == 65
+                and conditioning.get("minimum_idle_seconds", 0) >= .5, "Missing thermal monitoring")
+        identity = tuple(report.get(k) for k in ("checkpoint_config_sha256", "checkpoint_revision",
+            "native_reference_sha256", "device", "visible_devices", "torch")) + (json.dumps(conditioning, sort_keys=True),)
+        require(common_identity is None or common_identity == identity, "Different checkpoint, prefix, GPU or Torch")
+        common_identity = identity
+        backend = report.get("backend")
+        if label != "native":
+            require(backend and backend.get("num_layers") == 40 and backend.get("prefill") == "native_vllm_snapshot",
+                    "Missing complete native-prefilled decoder")
+            require(backend["resources"]["spill_bytes"] == 0, "Spilling artifact")
+        per_label = (report["benchmark_sha256"], report["triton"], report["vllm"],
+            backend.get("artifact_source_sha256") if backend else None,
+            backend.get("artifact_semantic_hash") if backend else None,
+            backend.get("backend_source_sha256") if backend else None,
+            backend.get("native_prefill_backend_sha256") if backend else None,
+            backend.get("compiler_lib_sha256") if backend else None)
+        require(label not in identities or identities[label] == per_label, "Variant changed across rounds")
+        identities[label] = per_label
+        backends[label] = backend
+        require(report["round"] in (0, 1, 2) and report["round"] not in rounds[label], "Duplicate or invalid round")
+        rounds[label].add(report["round"])
+        require({s["prompt_length"] for s in report["scenarios"]} == {32, 128, 1024, 2048}, "Different prompt lengths")
+        for scenario in report["scenarios"]:
+            n = scenario["prompt_length"]
+            require(scenario["decode_tokens"] == 64 and len(scenario["runs"]) == 5, "Expected five 64-token outputs")
+            require(scenario.get("initial_state_roundtrip_exact") is True, "Prefill state conversion changed values")
+            native = scenario["native_token_ids"]
+            require(len(native) == 64, "Incomplete native comparison")
+            for run in scenario["runs"]:
+                before, after = run.get("thermal_before", {}), run.get("thermal_after", {})
+                require(before.get("thermal_active") is False and after.get("thermal_active") is False
+                        and before.get("temperature_c", 100) <= 65
+                        and type(before.get("thermal_slowdown_us")) is int
+                        and before["thermal_slowdown_us"] == after.get("thermal_slowdown_us"),
+                        "Thermal throttling invalidated the request")
+                require(len(run["prompt_tokens"]) == n and len(run["token_ids"]) == 64, "Wrong input/output counts")
+                require(run["token_ids"][:4] == native[:4], "Independent three-token decode check failed")
+                require(len(run["decode_step_ms"]) == 63 and all(math.isfinite(x) and x > 0 for x in run["decode_step_ms"]),
+                        "Invalid host decode intervals")
+                groups[n, label].append((run, native))
+        provenance.append({"file": path.name, "sha256": sha256(path)})
+    require(set(rounds) == set(REQUEST_LABELS) and all(v == {0, 1, 2} for v in rounds.values()), "Missing variant or round")
+    require(identities["agent"][3:] == identities["chat_cli"][3:], "CLI must execute the same Agent artifact")
+    rows = []
+    for n in (32, 128, 1024, 2048):
+        variants = {}
+        for label in REQUEST_LABELS:
+            samples = groups[n, label]
+            first, native = samples[0]
+            require(all(r["token_ids"] == first["token_ids"] and r["prompt_tokens"] == first["prompt_tokens"]
+                        and ref == native for r, ref in samples), "Request sequence changed across rounds")
+            intervals = [x for r, _ in samples for x in r["decode_step_ms"]]
+            variants[label] = {"decode_median_ms": statistics.median(intervals),
+                "decode_tokens_per_second": statistics.median(63000 / sum(r["decode_step_ms"]) for r, _ in samples),
+                "requests": len(samples), "timed_intervals": len(intervals),
+                "native_token_agreement": sum(a == b for a, b in zip(first["token_ids"], native)),
+                "first_native_difference": next((i for i, (a, b) in enumerate(zip(first["token_ids"], native)) if a != b), None)}
+        rows.append({"prompt_length": n, "decode_tokens": 64, "variants": variants})
+    return {"schema": "flagmega.native-prefill-decode-comparison/v1", "labels": REQUEST_LABELS,
+        "prefill": "native_vllm", "prefill_timed": False, "rounds": 3, "requests_per_scenario_per_round": 5,
+        "acceptance": {"independent_native_decode_prefix": 3, "complete_native_sequence_required": False,
+                       "initial_state_roundtrip_exact": True},
+        "checkpoint_config_sha256": common_identity[0], "checkpoint_revision": common_identity[1],
+        "native_reference_sha256": common_identity[2], "device": common_identity[3],
+        "visible_devices": common_identity[4], "torch": common_identity[5],
+        "thermal_monitor": json.loads(common_identity[6]),
+        "identities": {label: dict(zip(("benchmark_sha256", "triton", "vllm", "source_sha256",
+            "semantic_hash", "backend_source_sha256", "native_prefill_backend_sha256", "compiler_lib_sha256"), value))
+            for label, value in identities.items()}, "backends": backends,
+        "sources": provenance, "scenarios": rows}
+
+
+def request_chart(rows, metric, title, unit, *, native_prefill=False):
+    width, height, left, top, plot_width, plot_height = 1200, 690, 85, 145, 1085, 395
+    maximum = max(row["variants"][label][metric] for row in rows for label in REQUEST_LABELS) * 1.18
+    boundary = ("Decode intervals exclude prefill and the first output token."
+                if metric == "decode_median_ms" else
+                "Median per-request decode tokens / decode time; excludes prefill and the first output token."
+                if metric == "decode_tokens_per_second" else
+                "Output tokens / complete request time, including prefill; not inverse decode latency.")
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img">',
+             f'<title>{escape(title)}</title>', '<desc>Qwen3.5-35B-A3B BF16, full 40-layer model, one H800.</desc>',
+             '<rect width="100%" height="100%" fill="white"/>', '<g font-family="sans-serif" fill="#243343">',
+             f'<text x="{left}" y="37" font-size="24">{escape(title)}</text>',
+             f'<text x="{left}" y="64" font-size="14">Qwen3.5-35B-A3B BF16 / H800 / batch 1 / 64 output tokens / host-visible timing</text>',
+             f'<text x="{left}" y="89" font-size="14">{escape(boundary)}</text>',
+             f'<text x="{left}" y="113" font-size="14">' +
+             ('Native vLLM prefill; state preparation excluded. CLI terminal I/O excluded.' if native_prefill else
+              'Compiled batched prefill in every series. CLI terminal I/O excluded.') + '</text>']
+    for tick in range(6):
+        y = top + plot_height * (1 - tick / 5)
+        parts += [f'<path d="M {left} {y:.1f} H {left + plot_width}" stroke="#dfe5eb"/>',
+                  f'<text x="{left - 12}" y="{y + 5:.1f}" text-anchor="end" font-size="13">{maximum * tick / 5:.1f}</text>']
+    group_width = plot_width / len(rows)
+    bar_width = group_width * .82 / (len(REQUEST_LABELS) + (len(REQUEST_LABELS) - 1) * .15)
+    for index, row in enumerate(rows):
+        for offset, label in enumerate(REQUEST_LABELS):
+            value = row["variants"][label][metric]
+            h = plot_height * value / maximum
+            x, y = left + group_width * (index + .09) + offset * bar_width * 1.15, top + plot_height - h
+            number = f"{value:.3f}" if metric == "decode_median_ms" else f"{value:.2f}"
+            parts += [f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" height="{h:.1f}" fill="{REQUEST_COLORS[label]}"/>',
+                      f'<text x="{x + bar_width / 2:.1f}" y="{y - 8:.1f}" text-anchor="middle" font-size="12">{number}</text>']
+        parts.append(f'<text x="{left + group_width * (index + .5):.1f}" y="{top + plot_height + 28}" text-anchor="middle" font-size="14">Prompt {row["prompt_length"]}</text>')
+    parts.append(f'<text x="16" y="{top - 16}" font-size="13">{unit}</text>')
+    for index, (label, name) in enumerate(REQUEST_LABELS.items()):
+        x, y = left + (index % 2) * 460, height - 90 + (index // 2) * 25
+        parts += [f'<rect x="{x}" y="{y - 12}" width="14" height="14" fill="{REQUEST_COLORS[label]}"/>',
+                  f'<text x="{x + 22}" y="{y}" font-size="13">{escape(name)}</text>']
+    footer = ('3 rounds × 5 continuations. Native state exact; first 3 decode tokens checked; later differences reported.'
+              if native_prefill else
+              '3 rounds × 5 requests. Artifact outputs checked against independent eager; native token differences are reported.')
+    parts.append(f'<text x="{left}" y="660" font-size="13">{footer}</text>')
+    return "\n".join(parts + ['</g>', '</svg>', ''])
 
 
 def read_json(path):
@@ -242,12 +469,40 @@ def chart(rows, metric, *, labels=None, validated_tokens=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--results", type=Path, help="Three full-request rounds of vLLM/Initial/Agent/chat CLI")
+    parser.add_argument("--native-prefill-results", type=Path, help="Three decode rounds after native vLLM prefill")
+    parser.add_argument("--reference", type=Path, help="Historical prepared-state reference")
     for variant in LABELS:
-        parser.add_argument(f"--{variant}", type=Path, nargs="+", required=True,
+        parser.add_argument(f"--{variant}", type=Path, nargs="+",
                             help=f"Immutable {LABELS[variant]} trial directories")
     parser.add_argument("--output", type=Path, required=True, help="New output directory")
     args = parser.parse_args()
+    if args.native_prefill_results:
+        paths = sorted(p for p in args.native_prefill_results.iterdir() if p.name.startswith("round") and p.suffix == ".json")
+        report = aggregate_native_prefill_decode(paths)
+        args.output.mkdir(parents=True, exist_ok=False)
+        raw_output = args.output / "raw"
+        raw_output.mkdir()
+        for path in paths:
+            shutil.copy2(path, raw_output / path.name)
+        for source in report["sources"]:
+            source["file"] = "raw/" + source["file"]
+        (args.output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+        for filename, metric, title, unit in REQUEST_CHARTS[:2]:
+            (args.output / filename).write_text(request_chart(report["scenarios"], metric, title, unit, native_prefill=True))
+        print(json.dumps(report["scenarios"]))
+        return
+    if args.results:
+        report = aggregate_requests(sorted(args.results.glob("round*.json")))
+        args.output.mkdir(parents=True, exist_ok=False)
+        (args.output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+        for filename, metric, title, unit in REQUEST_CHARTS:
+            (args.output / filename).write_text(request_chart(report["scenarios"], metric, title, unit))
+        for row in report["scenarios"]:
+            print(json.dumps(row))
+        return
+    if not args.reference or any(not getattr(args, variant) for variant in LABELS):
+        parser.error("Use --results, or supply the historical reference and all three prepared-state variants")
     report = aggregate(args.reference, {variant: getattr(args, variant) for variant in LABELS if getattr(args, variant)})
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -1,0 +1,7199 @@
+{
+  "schema": "flagmega.glm53-full-state-byte-digests/v1",
+  "checkpoint_revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+  "profile": "vllm-0.31-tp4",
+  "scope": {
+    "layers": 45,
+    "experts": 288,
+    "top_k": 8,
+    "hidden": 4096,
+    "cache_capacity": 4096,
+    "tp": 4,
+    "prompt": [
+      11
+    ],
+    "output": 8
+  },
+  "official_tokens": [
+    3847,
+    284,
+    1373,
+    8282,
+    4218,
+    3755,
+    947,
+    906
+  ],
+  "reference_source": "Unchanged full-state replica baseline norm-input-rounding-production-v2, each original CPU tensor byte hashed before any candidate writes.",
+  "steps": [
+    {
+      "step": 0,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7483871914c7b167bca77beaf92dde0692af8e62f3da6ced9d5200eedba272a7"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "774f5d0730acfd01cc84ec2673951cfebb1383e9f5d357827a77c9d70677a27f"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "594acbb593524fac2205914b56dabe14619733c7b440f2ab4a2d44b6e61fcd7f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4664a4d13295b7a2bf1e984d1415a694ff3207b2669314796663d6511c05cc0d"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6975ada31c4a600df620d6569390855bf8c2683126b84dbd950e729aa6bd49fb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "88bf79487ef9c5e508dae774a5384982106c173496f724eb744e73b4b4c2ab47"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "95261dc6186a39e0c7fd789e46df28d46b4b0d0ed66fed8e6c12460001fd9a4b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7feca97b4043f41f2c0bdadea0082219d3a73c78d5d0ccafbc9a1c4350150f5c"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "528f65b16738e79e504634e11d37e0183f9685cea5f476cd35c37edc0e8fac3d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "15b7a2a9a59fd519e556533af2825bb869edf673f17c1abd8645ae10e31d5798"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e385bb01032fbaa95cc1a527a60c89723247227572d633e08e6c43c96d1af6d2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0c2e7f3d0e1c8b2070e2e7cd8055f162151446a420765a25c205f4cd10127a06"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4acedba3a518b4a3e0b1853f32300e02a817e4bcbc1839d8b21eece219c6b7b8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2ca84b2dbdf3bde211a992e17cb780a748c38b84a0b5a22d366c105c267507f5"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bb1595c4a494973e95374f7d8ffeb84b76be96323891d44b723dd2ac46d40b4d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "076878298a58aaf95924ff0e77853dff73c59a56fd7cd22f221295fa780aeb3b"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c153ace2399b65120e1c6ab710865a6c6ddb0d768a3ed6969a9ef4880d2439df"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4e60d44c6461577eefe9a2f4726bd66311b3c52c9796c2ff76d9bf6417758193"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0c4dd64ba8b6a182bd9dbe92f0f047cb762ab9b50db20394ad07176c48402a51"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8431deaa948772b710f93fe1895a8ca61ad4e24ca95aceb2c328e7c16ce71361"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a4b1e562c57152fe185b0271b34fc9b666e9ba9cde5f8520b945ba158992e181"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "67fa094469a821481b44460eff8f63ab1f9f130b5e0573ae4a976d2c7e0d1195"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6822e04bd6cb8eb2e7cfeb2ae02a216f841158b2614f3e98f6f2ba2aa99c2add"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8c9d69ab2e48db4254f69e70da4a351aed5377e92ea51228f7e9178f353c68dc"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "529ac0d1fe3f17c111147606676c1e738c0282b13138330d0865e6706f6f08f7"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8818ce2f72fbe0e214ae0893515bfc853d23e899877c6aff817b135603ff4e18"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "54af135df7c924d9d5758006772493a0bc2ed18606aa0273cf6c0d1dd4989d28"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b8b05d9b8f125feda0ff0e8cfce98ed7d0ff9833027ec6bf681356b3cc27935f"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e1f9c123316aa3655d1779604161ac3b143e3064fc5a58e4e5ef122eaba0e9d1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1a206fccffc7e3c4bc29bf78845e36e04a165249a6564bcb60090679139b4b86"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "2fe16f67c1aad320df8a1d077e4cad5eaa794c9ca4e6074cc756824cdb78ed16"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9140b6dd14efec470babbbf30b818af9303192b3553755c7f88cdfa0e65d6476"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9bfceb44898511e3059da7e24c9aaf25a8870664ff0438cfb0873968b33b38d5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "26620b741b500f021753f1e4b6651a63dd3e087d1f6b5f1282fccdd8ae46018b"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3dc079da9013c48d42b3021386badd42e0d8b890d3f5e4cf0e552a148f9f38ad"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0628739e13fc7c838f5c8d2ba265afdbc893dc4b59597ec62ccef9a0bb1f1848"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "de6b70dea1c88ed066d1365360f4b6ec369e510eed3cd6aa2f910d0c6bc683f8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c9f1c87fef6e6c0f9d1fb42a6026dd6470c039cd0e9daf7df6dc9f169cbb8e1c"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6444e802bf7039f9f607d15f56cb7d33b0bcc36a56c900d8501c44a30b7567d0"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "eb083e826de29e94f725064fa9da99e0df62f5104a1cd79e07e3af7b742466e1"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b7b6809be0a9badc4b08b9181dbd7bd799cdd5df985c54b1d82d20177e89b40c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6b5be1e1cbd70fad1782c816b3ab00bd84854588683388163382c12c05239aea"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1423eb30aefb5b3f645c462f64ea3e34580ffa0709e41890cf90a5c3eab934cc"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "53bd985ade4c11a4e5d169f99e42b511cfc3676a5fa961930a5e73bc6c8834cd"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9e2ed5c34c6dab8eb3abe2bf7539b6430b8b30f7543f326033900a69763660c0"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "701ec5f76c96704139db2c356629281c7a1a367d1311b198b536363a3cbb0398"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "874ad613fd520cd2aac8eb7ea608980c18de54ff55c36088cef098af39e751f5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5cef5b5228c0f6bf4ee6eb6bdc031d6c2de67c4cd9eb8dd4f18fcfc1f41eedaa"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "969d95835960db3220abe9dec2ac4f3b5acbccfa65846c8ebb5be13405a30b1b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d3cde2c3afb5f96947725b7759f64d50b2796284147abffac457b0399f0c5362"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1d54c8138b9b4cae99774136bdbfb3739b98356a09fd3a240f7c7433bcb701e1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1ce351209a848f5fdb5c59935faf29be37ece2b3d769fc56ac131bbe7020f683"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "2377977109ece5e435e3f319e39d5e0316478077df7ad017440a15fae124ad5a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "42e0b31b7d5a594d3bf3cbfaeb2e41a828c4f310cdc1efad73ef377a7688edfd"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bb97d49e6d4c055aa6d34f47fc8bf00ad5804dc0543300a2d637e44e04b1a942"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ad82bc83f4d2242ca15519599a6e9f0d8f863cee33f9f8ab29b02b526aacde79"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b02b47112df341d955a41c73350d1ac2473496fa7bf043ef4c0c1b04f7d13e99"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "20638cf8fb0fb1d7f0d08f671421302adddaa1df2ee9bcf81786a75b2ceec789"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0511cd14e2c28b2dbc64dd98d10ff5456e90562c1191c3c5f00a6195b140d356"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "61837ae4dc2ebda1d2136170d429f742433bbfa0b006baff94f85b93ef1416a6"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e0bbb7247569310a18d5afd52345e0cf88f35731547bde669f7450821596f5a1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d22536871472017f2864ce80b6d51f3b0e76cf8e7e5d8a8640426d6817880d4b"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7755b373b59cc7712d7e4d22b9e18f28f1a3a9016c9e47c22d33a381b6992600"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "592122bc39697ba78d61ba66aadf9a5fe1350faaaeb7c55acdf8a5b2f5772d6c"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6d1793011206650b593e4c2ead52579863f43ddcd6bd16e6dfba9a0178b91ffd"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c07443334108a4bdc01ec7ed1743ee68a43e3739d7df355849eca343b386e223"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9bca35977d4b9f625148ce4958abe34d0e2ffc78e6348efebc70c62846f86b8a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1c547c48ad2cab4397629c6b89c56568ce2223fd16496f85b3c18de61d4eb716"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "c855b68d746512b02285f38925633f59f6cd0c8268f03d37a2c32ca307eba182"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            1,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 22528,
+          "sha256": "58c393d99d379950621e7e1b74511c26fbff20dd71c60016cfa0e0f97cdc8a70"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            1,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 5654,
+          "sha256": "c1e81b71405ad998bddfcb72371a9c517d3071be4da15424f8acd2fb8da467f4"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450"
+        }
+      }
+    },
+    {
+      "step": 1,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "2356f487802f930a98d7719b996cb5132b005e51a58f1c552838756e67771a9a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "e3300ab4441d75d12454355ea05f5f5065434dfbe4bec816d67442b46102be2d"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9057b74abd8d6c37489eda024b56e1fbe032e1f075e6bb1870a753859d705c7d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1151f8fd0dc385d4bc7aab3dd9d8af383bf3e47c4e76d39ec5692c3f5414e6c9"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "2236428d518193701537f03bf6761b1fc47f61814ab19d638df1821d07dae588"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a33a1536ae12aaa7e7a58fa80300cb06100949cf9f4067961b1aa4c7229263f8"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9ead385b758f9e44895bb85d18a033b622cc04c3f3bd6d3ac4019974aeb8a0cf"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6063a46911c10299871c6dae918f6a08b70643f606a3e81309bad6622b6f6148"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d778d4b4e5bbbd027049d0a2c12a81d1314b5b9a6238b5f2f2095a7d4663ba16"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c44a6dd5a1e08da67f16827926549bb761159dcd39ae20f0c10d5b98d427ccb1"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "99b7f0dc49691ae82328ff5e80c7758cd38a638ab1671124d0344f583c9da2ea"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "17e0c69e8bcbbf7fe875fbafdcc5af1139570c272bf1e4f0f82a10a37dd2d2ef"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b526cd1418d98d428a3a715cd1f7a6814c689b8cb0eab216934496a549c3d0e2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "93eb65becf7c6636f71177be7393083c0124db1451c03f1737a661f7d144df06"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4b8d961ed801ab49db0b29642d229a75c247be75161dbd29290c9704b7732a8e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c865655fcb655a79c9802f54d761820e59ba578a3aa284f5b5aee36bf7315bbe"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9df7ded64acccedb00408e0aa3579ee9ab6037bd4c8ad3fb3b7f7d88999ad685"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ff655960e2c1722b872527aa6862c151f049fc3fd73f3534d161a7e673978249"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a8d703505d81215e5109714bd0edb8f470bb55193ee3f18acdb63b103ddad961"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6f3ed530a79719e6ad72b1aa24df000683f835a9fd54c41375d6eea9fcaf974e"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a9661f9cfe0251c688c734eab05f09c49a44da347465b1a872a0513622fff13a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8e8ed02933f4f545131177e08422ca0c522bd7a0a818ca96c35c298455dfad28"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cbfefb31bbb24e8da08dea9237e1823aacf47cf7678c43d31388af65f7539968"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6d52c93f49abaabe52932994d90b2b3885e07b99cedf41fd4a5d8971d7b665c5"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "50abf2283db52376d1702b8f9ad2c75b62fbf7bfd2d655bf94f771bd50daa534"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "774a80a4abd3d81586be260b0883087951a3e728088796f9b44d67f8d5e11e86"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d5a2b71a541177cc67e1036c5f45ae4c8770e0fff97a22326a1531aa4c1611f6"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b71230ab8e50cd490c9e0f8b4836b544a9ff877182c73e4bc6da19071cba9667"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b303e3f5f680f015cf2bd09b630978f58fca358926fb730dd9210678dc8342ac"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5b7d85772131c0e674335b603c002a691b17773f82362d9548506bf6b43f9db3"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "02ba6c12e13dcb522c92760d4f0a2278eede133f1d6c5f70b1002496059c4684"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "54cafe497864299bbedb9b49595eea5fec7986ac5bb302661b191976b792405c"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "317320e78b0018d871fea0eef216a89c999eb3f2c47de9733a140cb03df2c4fb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a0a4dab4d26cd4b014f57d1a3f3183e558053508626d8df7ca00c1ec5752d2cb"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "dc5ccdccff95df916b0d83cc06c5e7a90cbc1bb15872bb0907bc17250c12376e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "709ee11542dde3ded411df236cf528b1a3bdd8fd9b07cebad5e4a2892e474c27"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "202c00cd2d2b699758f5dbd71bec649b9d3fd71d84ca7cee4269f573cc54b824"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "15ad25eeb639fba15622add9b273db1d1f51e2785843292eb03fc478d691133b"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "591185c4b5d753a77e077fbedaa340ac546dde01ea3b5fa3ac12c86e4ebeef42"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "42f2a997da11945799db065aef681381476dd060633b52bd740053fc6ed2f46c"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bfe07c6b636f3d2dba21f63eea6e067c29fac66b78425ed1d2694b0ccd66a517"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "448762ce1d1d16562153bd10af6ec022101a09bf1662c900d049d661b0d96cf4"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b308dbc3a372817b9a6628f41762707e23c70a0c3cb9855f416d811c10162b13"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ac0f6874864f931b188cb20c34696d0b0efc3d157e91ef4ddf464fca22f80e83"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d404bfbbb56c15379f0d4ddd7822faecf4567903438872ed99a271c6b1a4170a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c91d00e88aeb9043d6f67356aecdf4b6a34f63af175761f14640fe049d9b4d40"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "361695ca8adccb9d8e2bb7b82393e3c429e438cc4b670b5fea5ca649043af98f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0a7acbc782af877653d2d0d40be19e9ce304967fceea717630a8251569094a90"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0980a3094f69640bc8645be20e0bd75f96db932edd64969cb385a113fd94db68"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6d33b6c4e355e502b3d777e5716e3c66f31d9ae0789fc7e64a3b51ecc6cabf03"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d3cca759606e9b54c296375f67241bc0724c86e3da50d4f481c8dee1e885707e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b69754d5a9ecd1bf0105edb33325345b1edaeb7a791b3545501bd4771b385ab2"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d0d848f6694820a9d5555214de771e283275457f9337b434bbd2d2c8715154dd"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "00de1c98e96fc9e8618f50ff00eb84fb8b51d7c93fd4e293d8a69b8237c8ed45"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "823fd127d853f0ab5e9cdee973abd7ea452876ae7ba42bf3cb1bfa633dc3065f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3559f010152ddbd856485f1b7dcecb36c67cafb1ebcfd0817055d0085bf0ad7f"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ebcb3e7ea65ee3e9deab0c7b5415352e5dd5899d1b0c8743b49cc48d147365fb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7483864536e6656bad15069efc1f0348d4437bf4babd6484eae1511e65641a3f"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c65fe74ce80e4493cb824e059eacbdb98e0ed4d8cb3a5a1134cf6b09b2f0255b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "47b76d5cb61fe057b4144cdceb411ddeadab0026553e2aa2024a3389c498aedc"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "33b40abdcb0ce9475f6697e88f8319fa11398bee56a908dd71c6a244e5b07dca"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "89328047ea0e9a157b0c20a9e37d6e9ae0730403cc8618b7b0638cbac6812cdc"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "dd1d99b43e9f9349e16df72cc8f098e027863701bb5088746b10bf39e34c4418"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b99bc0e85882c0a910f827dbf065027fecd46b23c0b80cc3e4445c41976c7918"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0d3f72c6fc080382c3ab126a401e1969c297648606020cd96823b9e651c99506"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d8459f4bb15f29fe93df19b6d5bd23614667deffd33824b575f8071ff1681929"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "54e85dd90286e5d8dbd1cdcda4b5cf2f745705fb488028ef91b7e4b5ea772f44"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2a387f24fcc17b247248d035dbd037d52c6c6c8ffea207f52396c9928ec1c916"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "5a63f480e9c0a5eb2b413f40d2f2a45417fd7ff2e35e6efc03a69517db23f31c"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            2,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 45056,
+          "sha256": "f35b588e25bd5d5bb1ebb88caa3fe896c77445ee65c3ecf58ebc5afdc095b9da"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            2,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 11308,
+          "sha256": "a4ca628fff024b37cef72c3b3dab3e52d52193677e6f2c39a21d0f7548399723"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece"
+        }
+      }
+    },
+    {
+      "step": 2,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "651f9a2f69d9acd5f931ee9c911af120e4a131fefebba1b17cf7f07dfa903ef7"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bdcf161976d32a81b419795348f3a0c2d5a809a27fb737ff9d7dd5e5bed91e69"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d4530a99a726014bc176ab0673628f9cb2479b63e9b6bb79ce3f76d8d104992e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "841b928167ded65600a7f333f2838fa19502991253b871b868f4c5449c3db811"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "147e90f54fff45a4b9034a644f55d8c814ab75102da759d74f5d91401b520d65"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "933977542a64852c137f9f2bdf547762fe6e97d9b64a9d83825d46127a64e460"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "fd3231cc6fa9e89ae9b7dc40280c245a12de6029397b4252f6c65c3a65edfe5c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c2e2e900f114b4fdce06473a8d1bc55e39ffab363fe29b905852ee21d6f87d8f"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "acb72eddcb7e65d2c4467c7e287c466626b3e50a2fa0170a48add38d4bc53564"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a00460cea9986f4950954a5d2db3f6ad477f3f6ddb0ee01a8233b776852fe53a"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7ae4a76479adc075515c8d4742084d4d4c68774e04a37518d40e62499825c6ef"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "de636dd6d66a8cb0a0be0ed4ba067fffe103958605f46ec88ee4e0d0f45bdf90"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "51fddf0589857f73f9391d37d1c0f6b3a931cd3caf4e85d67c57d967b5485553"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ae81918b6ca280f35ac4fa84471be8de7fd86e7c174568483218dbc47b81e003"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "77a9b3593ba7433d6705dae6ae8356e08cff7910c56c052907a1dd2cdf65be15"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a7d7da887fdf315c19428d5e2dec27f55cff0e73720b31aceb07e8202a26cdbe"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "386120b6cf882c573ad66298d1347353699706dab4ad88a428e4d21d9ce2cb44"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c3098087dc72a73bcc571e57b2f871351a5c7ac1cd3369c74a7ef6e36bacda8f"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "81f463ed8301f9c542f9a6cc7e0349eb4a39af66b131e6d7c78222ee4a574033"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "46ec71686953c153b5afdc42a569cab8ba44251ba683c7ff9f21dd7a26b10d64"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "408c91691192664863442e9035502b0262c9c174bf8d00d3c9601258738370d6"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d4044a384087da4dbaf1ec75b560d791fbe46513a7c7f584e95744b6e3134d5a"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3a911a3ca1fb24063dc1eced4f1b3aeda12bf69e59d81f4ecfd7df5262d481db"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a4520d11da66324c87e37745aa9942fe22eb0aa23c58a3f002be543f6a0b59ef"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1f1cfb120334b699597006ecc4d1c235b4211cc9288c8e005d93808771dac1bc"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "63b7b2c68ab658ff0f1b17a530f64a29d91b8b206d5241e7cb9e7e193a42f885"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bcfff4c309f19946652ba3cadb28682e202c822429684e706ad29821ff5bbb93"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b0640ae9f3beeffde6c2b20dafb0fee21cf377924201991381cba6ee17126d64"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ff7efcbb2ad38995d90d812ddc526684c50728b72e968f45f1ce47061caa2047"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "45a5eb190115ff8d788f0f30d813530e98cbe6bc596bbd8a68cc59208863c3ab"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4936c5cd0acbdf5c80855774197af0050cd9aa690c144eddf88f8ec174d4e1bd"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b4c262a808e434f6f075f02b67a6209414e84090803a64e858ebd67dc445ba0c"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4cf4778e3cd7ad3f9447d15e2d557bee9d3ba00329800cacdd34b96ba8c14bdd"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "e47af861ba19b81a77ebfa1cc7715c2475d3983956624dcab03b64c0cd66e1f9"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3535b45567ceebb8a56036271d933e6802ccb8e9c15f3b54826102093cd3b73c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bf75b536a38454f2ca6319db8016f310288a0084973c85ee0431d0ebf8381421"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d1644e8a782b8d518b835614c7d3d5dc8fee504ed7afe232ba2a8d7e56224556"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4060cbcf4599194eea1338f59a760226921fe37f5d136a3cc433e955716f264b"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7b8ddbb7e665083a4e49c74ea03dac1c10b1ed85c7d40be1dc6bcfe8ab3e2227"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4f1bec9b2d9ae18754dc43f20eee8b7d399dfb886dbd97d2d246b59fd11af262"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "11337fe0028d159b5d2ce6c1b11510fe9f0991daf05787f407fa060ad072ade0"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2ad63f6db3cfececc2764f09da7d3756c86d00d3664b173cfed664a65d8499ab"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "764c2c29bae2d58a710f5b9cf57b21bdef65af528165b3f96239789351428f2d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "83f5bed19001447744c91a055a580776875094cc98f3cf3d2f1c8f076b4410d1"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b4a217227e8e1b2650124108fa4c50af5a9741815d4d1f1665eb134da729930d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0a72454fad6eb6d81ac64d0f88ca8db6e6335a2b5bfcc1d6aac725e0ae149660"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5f969d81977066797514debfe0a7e0aa89784748dcfb50cb28551b78451ce5f6"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a2238320b62e4327c5d16b31d7f551d2be103dac608bf4c0be8272f404179c63"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ea507bf6e144fee07153cf2e232669787083854bd70dad31770cf246fb2fd5e4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "968672196bae2ee7f2dce6e819bcd9323e2495750c7fbc3f0ff85a207fd75b3d"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1dd246093c418240bfe99c4d932a9b409fe27d79673f8730e1874d8ee1d409e6"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "dab3b5779bd10c6a1ec0d9941843b9886853499c4c8fb430061e8da9bc2a785d"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9640916ed90c45d7495e0e9c305c00f94c8830a0188bcb743f7fe76b24c7c04a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9145a3e519f4819ac2427d2db48c7091a5cfd3f52e055fd5cc233fe8689c6c2d"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "136fafddfae4b615da929ace7c405a00b8b072def2d770b1abb491c93065efee"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "cff90fd036cf498b699370c347a38b9c70168f6761ee84edd9eb036376e33fe7"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "24882d55687d49b2768444c856fdb92d2e6cef72151c8736b26ac587fb2992dc"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "129cebe5e58b9a56710193bdfd1dfef191d55c3ed8a0e3fc5328d076f466255d"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9897a9752c883facb0fb339d5122662d32462ee935132da84adecd6acb61ea7b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d71876e501d5b7962a5f1ece0614b652d2c297e7f231739936bdd00ce9054da1"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7c7e6869c4623f67f9e88514239450a27e80a896565d5a93186640ad60094c37"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b0fbc19aa55d9e8e581be539f9e61d6ea1449ec3b25a9048fc5154477a7ee9ea"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a8e87e5ddaab4e039ace99bc19f3bcfddec3c18c605bbda7ef25857b9d37e2cd"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "061dc2f3891a23a4844fe8c947fa56c7dac92fc9289daf3a4ec11952603fe5a8"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "428aeb207c8b13dd240b1b9596b16306de5a6d994f69346b052b1ca8657f7942"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "00192cb5b205ae35ddad3ab46916cfc21163b59f11588bd8bfa4dc5242ad430f"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "45ad0edd9ba84d850bc8619ce3664b881c60bd2e981940ab4d8b717be2f11aa3"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "13236e4dd56099610ab4bf0d7beb7ad97a2ebd89054e6f1d911017c1f4ed03d6"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "a208c8c30e48228a47bd61297fbde9b9cc768ecb7b2956f672092fe66414e1d4"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "d86e8112f3c4c4442126f8e9f44f16867da487f29052bf91b810457db34209a4"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            3,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 67584,
+          "sha256": "6806e7d417bab2da6296a265862531c6e2fa42a576e0af97ccdb36b24ae354b7"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            3,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 16962,
+          "sha256": "e3f431993a7856de70d99c205abf00f7286c7bd967cbd4e618591f0ae494c461"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178"
+        }
+      }
+    },
+    {
+      "step": 3,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "186e54068ab1957919e3fa0c513b58c66bc8230369ebbd14510ae5eebaafd120"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2899e660f49d0a75f9ad469be30eafd86043d85f3800fc1d4fb270eabe6066ad"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "47b1d60e12ffbe2632450abdb14aba210068b5a334c23b2ed2820340351d752b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "349907c4bc2ac319e7eded362e079072ab03be39c711c7941f2b49edef0476c3"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "905cc978110aa85325e09bc7b26dc445dbccbe820a64069f3ad3990e56c40288"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "454d667b498525fe94f587da2bbfe50bcbd578f11b91064d858affa30d60fb62"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cdc7fe9dd14f8cb608b53b26fc4a26f7aceb9d3ec48ac92e3941c263278356a2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "e16fa4e8e483f5e8a07af0c1e03d7b70aba3d0a47a55202f37e6117df3c69a7f"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5962494684a6b5a28b2378bd85b5fc14dc6c8ec7f73a5c66c09015703bf217a3"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3d65253d2e00d95b5f8e6b0bf70dbf722a984d593b5c3cf5e779577bee6b1ad8"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f17d3746bcf5f116ac038868157ea730d68de03fe9d8bd2ffa7f1f125b7dc14c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b6fc9f21128ec4d9c07a922c4042e582db13a348f5914c0f8307084970169278"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f4b5b0ecdd674ca234540f916347fde5572a4492d9080752a3529b163b89dd3b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "49e4abb68d129c4c361c6bde8f81f58a3b1d74e6396f0bbaf2378ff4a9fc3547"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6614d122e38e6ef0f1d6ade5f82187c4cd31bedbd2407ca9f21143b8e839e35c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c19a71a04874e0707fa88a46a84f0fa31583174481fe5cec394f5d22ea3d1b54"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7f238f1ea80398a9bb8fd0fd78637906839b4db25c613b9108fbcd70825709f0"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5b244f1ac75996be91831ed6284d61aba3f84be982f31f0955dab24abecf0b97"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b0643424a0ae01039ba7911a386f32e7610944723627e9d75e236d40ec5cf15c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5730d1e36e280475c77166b0467d47c9bce4a48ae059e3da14c2f92f9d2249b5"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "54c3c317d72a5cf79095f59b2bcc71c34d1f3a3aa56a8cdb33dbcf269a71f0b2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7875ce0e19176d5025d2e55aecda4e67f43c8b5fcc2bdc6261a03478b879ddc8"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f628c317bd11c6c0c3bb3b5e8aeef9395f1533eeecac7e70608f42ceec689f1f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "81185e6ca4c9d05ac0fda7c2f0526ea391416b913909d1c2c80b383be8030e99"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "aafd1c91405b2938bc1f1ca011b89114cb258b4a7b0315c376e95611cfa8a916"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8b3eedcc2610543cd84d784fcf82b57383d406607a915c83288cd394cdd4a609"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "8ae67fcc0c98b78d2f54e86d1e6d3b3124a16022c54cc8e51efec9e61b5ce866"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f933f3896efbd01bbf3ab7b0703146d169afb573ec1e6d2dd92a4f350ab8fcad"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b88ca1d7e3157760075b1ced3f695d31d173a6b58cb2307de5a0549d7ef93e7f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8eba2ddc23070a46f7b8428e8b1ee1dd5d31c99e4a542ff499d244802a556857"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5d178ad929eab0c6743535b28ccee80d25900c7c5d86027d9071fcebb148d953"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ced283251ab99c64bbc6f2aead7a5b822e356059c6317d1ad7338a904e6eb2c3"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7b6f289bcceb0a2011d915408776d3fa66adf179f166968bbf1228f2e4b537b8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f6ebd076550e2126a3f93c7fdf005aeccc313b48883942224c54ce0bfd37e3b6"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a24cd37a109d27e1c2aa4cd59d86a6417528351065d8dfe19e616a18889784ad"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6203ba284ec1eb879d599f59f1f3a098f54d2011592be6dff3db72236ee879ea"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "2e72dd76d2433a0cbf70b931631590bbe84a9f2ab60eef0a09e94d8dd237d322"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3ab8dc00f9c526e8e658366e7c83c125cfaac80011c8347dd241b22483189fc5"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "75bea770e67444b2edb53431aba97bc035038d69f310632e1b53a971bcf41ffb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "070db404d4b9f593915ac98f198327817961f33a82da7c5c0de8591d01a24ecf"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d4f2c905f8fa08c4990846008b5d16afcdd130eed03f31d95fe3d113a5b062fa"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "24dea07ba32d134c73379ef30453fef802ee5145903cdb74ec7077db2c1fa57e"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e7de483ff18150c04d21702c38a488c0f326e7b7167251e0ed1a6e601df94a07"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "36efaee48078ee0f00c55ab9be89edfe654f55b607edb17ce079cd1538e9ba7c"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3e71d702d24c6f64aa6dfcea7df03f72819c85470714384ab318251769c79e8e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c914078d4addd6d7a36a43705052bfce6d9d9cceb0829d9249de61f8535c24f6"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5d654974a2a686dd49aa14fdf74723e89671e225c7f1762f7582b5b23ed23cfc"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5f7ea5d6268265f89b292fe3a8e6544c8a45494347b5d4706b47dc979c622328"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "2b3540588e72969e3930053d4b939319e5aafc783d9a2d056321b50a995f7909"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b9b97674589fdcab1572ef60151bc86e947e063ebfba849222921db92c5938be"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7dc2a512097044c7a90ca4980d3fe2082600f8537618a626a37bdb33069d833b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f33edfb8dbccadd502f38a8fc87f3aff16c599a170ecf6e50e72b4b60611c16b"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "91124e9a2ee7393b8de49c2fb39ae05bbeb6c10dbef09bc699b38fc5d28b1678"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "91711b5052afdced9a20a292cd32d12ac6c9765a548bdfc2941f07562d7b71d8"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a013a355d9a997fc75ff59af7e606c11d6c935f7068f77dc0bb9221b802a4156"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3f1d8b9cd9dfffe086d347552ae86fa2794d96930cc913c4d1bce4cbe568f76f"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b237f21b90c5e25c2d7bcd1d04c52509239cad4b941eccaa76106b9a1f88e43c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ab9fe2175b9ef16827ae171a3dfd4eff306be3c5b3b202006c958587b7437bd4"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "22af898f673443304b92f25b61cdab24f7e5fdbfb413a643f5e3da742ebf2010"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9a3633ff50bd3231b5608f331113136389300e52d8759bbb2bdbe67f591ee4c7"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "56cfe548722f493d9a2dced6860efdff49b1755dcd58773729215c1d0360490d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "26349faaf3356e137421c45c84bb46a80a5fa2842fd51371a21170ab2949b65c"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f08284ad24e2dc891a642ea6a983e6f63c9946baccc2a026cea04b8b9a785eeb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "cffc1e9054cda12d8f136812376ed9acc4fd5f04cd54a9e9f5715b553deb59ac"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bae66123d3257433693f723283d7f15ae67bbb20a9eebfb7711cd750a219b6e1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "120f5e9f7086432b92ee0fccf092b3adffbb5095d3b6a2864046b3a7cefaaef1"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f8516bb2f6a2c7194c20366ef5431bdd9ca202976659086b1f489936335c6f50"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9efcfd1a3877e727ddd7a18383d68942b4bb6ab16e94831aa8937f855b2fa1fa"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "7a4158cadbf8d79cf8e93881f65988947a82b1730886f77b77022047ce8936b9"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "35be322d094f9d154a8aba4733b8497f180353bd7ae7b0a15f90b586b549f28b"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            4,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 90112,
+          "sha256": "8c7faaf81087c194ccd19f49c4c4e9160c202bacb530874227370b9101ba207f"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            4,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 22616,
+          "sha256": "91b3cebafec808bad64a0a9d104120ea142cc5d62b7af77abc7d3c35ad88e4af"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02"
+        }
+      }
+    },
+    {
+      "step": 4,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c3aca573a8a97be6b3c0b311f5eb622ab6b927e4ed1585fe0f152e6ddcb921f4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4ad2bee8223d5e3b48c27ddece5bf07a32416220d00f3dc55ea3aeb8393fcd02"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "72d73d3916fb587987ecf9dedb7b61a2acb0370a23b160c9a24f87ec79b3bfa6"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1505a7d455f9d6aaf8dc599877beea08fc773b9f5cb44f4d5051e2b8f52b1d98"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "41fb56de12521478ed28f86321e37847bec3f37e304388259a434d14070aa178"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8955dca4f0bdf5e92512e46a0eae5312b13accf50b05d8078b3db0aab5ffd9d1"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c28bc1a120422dd14b492d74ad9902ca71d7ad8c5f1097ec7facd2319e575792"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3c06134919025704fa23eb813f83775a6072d6a01166a8e20f6957cfa780ccf7"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d8fa2ea369aed34fafe2826517b36e29df63faf00ddf72be7da427abf4eb1623"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c58d0742020e5d8baa16719c39a0e8e867f6c32e9f938796c548fb123b3286d4"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3571dda051689d4d5d48cc5e8c75b47fbb846ffdba8ed01436d786d4444d6831"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2df52d55bad3d061b46af19a8fff830e9201d0ed74bdfaa140675b5c6434b7e6"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bc48c7826d4d3bc2ab23beb5e356213446b37838ab5381f65dfc6c47c1783b7d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ef133aaad8dd335de3261909aecb65eea60f7661c82a1ad44f3465b9c79cc42e"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d17e1a9ee76fcb07aaad68b37a1caadf9ab3cfcf163c83122cad50d6a7e8008b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6de21791ef8619bf82f427df274d56b2e537048c684e1a87ff92fb9c55498830"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "34f83603fa40d5be961271950500dcac3c5bc19007479c1d740999b8d641359c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "eb3f5b1ccf98b1e409212944a2d1c7794c2532d727aba115c9461f91f28caf8b"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9c100e5e1eb081018bfd2354a9ed2082ce107dd36c64198b64598e2f8da27687"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b5d76afd2fb08cdd928d62c8e356328a4c4570c95ef397f16c05f016e772f2a4"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a47d847cc6beb15b2f0aa10c6666cd9328b981c5d308fbf1d732f9d75976e483"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "aca4d14e60d4520afb35f5db25083ada1fbcf2bed097dd676df6290e4e54581c"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "29763eb799dcfcb6f647df4045785adcae48565c34118db65d64d59d51ca61a4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4706196008727e75c18cefa440c9d2ceb2f6942511365cd89d052b4dd1484b3b"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "82c682c512de0887705fd4b7323943c499b89ec7c13bd99cbdda4f3e1985f86e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f7d5b3d495cf9636482ad86eb69bd52672a89bcdac7a04df3ce0267d8fa82346"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7a83379286e5e768c9ac765f7629be8ae0b23f7ae36a7018f1aca8efe60fd982"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f7d288a142a0aaf5231bd42c0ce94a2180c972e062164e292ee5aa0a98fbb524"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b7b126383336e32ea9d2815f2cde9b406445b55d616a89cd6ffd523e7b7535b9"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1881be2077ea72da36d78c1b68db62c28f955dc50ae5d7614bfbf9913d3232c8"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d2a027fd99694c2724d6bbdfb45828b18c0da2414ed410e458165b610652eb36"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "34ec177636d35f4ea028306f681b9d265568fead306f6611f5c8c4aece6a0565"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "82aad43a04a3be220f4dc584bbf774efc62050693039e7b2e41e861398d7957f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "407095f33dacc396590ebcb14117b789798dd0b3c568a9d7f0337365b83d6940"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bf70f43747752ed8550d2f7b935bef4b3454d684797e343eebb59a20b856dad4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4b320ae00e9299499453225cbaf5a3add80b55c27213444639fdca3e1063058b"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d3661356031d1ae64f5e92bc2cbe74e051861e3ca5d2f5965409bb194bfb9657"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "32097b9624019f689696a89868059b8ff27163440906132c546f7fba4e536b92"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c0bd72125719f9a42986c48f88f6ee3e48553f07decb3cb96c030d2b906a959e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f1776eee1bd2ed76cdbb422fdcf5220ddb7b477f90d4b1f4d04ba836a2c469a1"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b0eb0cf407cf30cb05dacf2e68e29bed108d38eb7f71c02507a53925690979da"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "623ad14f848ac9136102eb6090953dfc2776d3e11ba43bf5b0debad408c8dc4b"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "342cfbedbce172f8ccb2658639c0348c7906d10ceb046ffa6d302f67db877af7"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "517bef3a76b2bcfa2cad6bbd97d6c45e2173f2851f180259828556c79f699486"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "47b3d270d83436e6287e0299263cba2d7db26759e81611f40f9dfadfe8da9c12"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bf5e182ac3cb8d6b0c863c9cf63a26b4a3c212a0ff50fb873937b4e5b6d94113"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0d8b4a38a883760f6dcb3a1b0e03817b78fdf29035afb39262d6dda14e05bb71"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "17487f57f59645b8ae8d026fc1123fbe9fdd43175943147937bd7252ef73fac6"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "168dff2be9174ea2626f89feffd33e34ddb65ec1e0e8f6dd2bedc1a53e15065d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7f3f92217a88bb9185810994699be5e3fee2d0687cbd4f764d71a12a7bedf327"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6d3d950609e04bae1581bdf92dc1d1df7f63bcf425b5d92836c67d9303a38d94"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "134482a754e00fc1069c16ba61ff14b803e9f74416c6ace5901fcdae30d135d0"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "48d65ad3b57134b7bb0183bd80f7eefce4a124f0aa225cea562795f95aede542"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7facda449c0ec920e1d50ae7f1c2ef04ec0569966fabc007345ee54fe9534a2a"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1b74871943b779514d262402a359cf2991c46633ee80582e74115d7f4dc8986e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bedb1120e9a5251be5d8670db1e1018c44d0508e3cd10761aa6b39cc524bb3aa"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "799546cc3742bf6d2443fc71a5b7ed14ee026f60a758a3268baa92094baff603"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3a3c3e4b71db6bf43c0d8170565267ffd36093848d9786b295d3f952ed04ee01"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7727e9909b5960e764c0dab638fc14b090a5e8bb6848814726d57f2c3a267813"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f02bfabb5da84ea0fe7336ef99d971945117edcb5d1655d071b9d08904f395e7"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "118b139772054d3b9d40097d5882e26d702f450f4882501c85f4b9b1452ce8a5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7a2d104005937e326556b9ea5389ec42912d759ec0fbe65cbd7bb2409eb70ba3"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cef6af6155d6def03c7dd9c9dcf64d331862b21c67d942590cea97a8eebeb391"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1e4af43c24ae9cafef0027122aa25ca926ab74a4d7c4ad1dadfbe26b12183282"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d44c307d13b0b52fb752d305c22ce1c4dea69da06364ede724e03578f0bf5056"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "aa87d0fd0349e8de6f4287442419167219095b44c742a1de626005eab95d05a7"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ea24fb10b33436c166dcb743372c9dc6babce34d1339fa2781760abffe75ebc8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "09782dc8a78d9a1f68156e88ebecab9e91f87860ff9fa461cdff518eb139ba12"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "941e666256768a44f201a94d541399ad4cbf29dd239bba6e6a1e704e39a6f1d7"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "2594b6a92ebfb1c3312deb7d01c015fb95e9fbe9bd7bc6b527af07813ec7b910"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "f0a0278e4372459cca6159cd5e71cfee638302a7b9ca9b05c34181ac0a65ac5d"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            5,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 112640,
+          "sha256": "05fb9b97a6d33e95b6d585e099a1ca736df2835515b0c7a056888ce5dfb58582"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            5,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 28270,
+          "sha256": "c4f26f33b33e124bbacca256b3fc544db5113040b6240f23d9b387dbabe0877b"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "2594b6a92ebfb1c3312deb7d01c015fb95e9fbe9bd7bc6b527af07813ec7b910"
+        }
+      }
+    },
+    {
+      "step": 5,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "897b33d2a2556a2d37fc919572e9769b412a0e9e37ac6482b49746e009123181"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f964478887f53746db2ad225989649a800b171cfa4b443a6253b10f40a8201f5"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6c8e801677cec56ee00d96bf5298975b4f2abc3573ce496f4f1c3c03518e0958"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b57317396a90e3806ce34373ac7e7a1921dcac9be5ffe4b0420a2b67fd6fbc77"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c0d9c0e41771fafa6b3723a72984bacbe12d36318ee52eedcff93876fb19e5d9"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2c8077e0fa577bde15849e7c01c0f60a96c12b3d02157c902a1740c6a0339f80"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9564c453337d3c4fbbc902c11db6747ef84490885033aec54ce5405d593c86fc"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9302d235ca54334e421b8fd707a5d17ab2a76c157ce073d7539e8aeeb978ab98"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9eea5de4f080747444c8e6507f084142ebbaf3757f803c5d54571fb650b6ddb8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c19b719e27c0e7d51affd9dd5fb79a41d31c369eb64b9310d8db2ab85797ddd8"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "97e24e2d3486c47fbcfdfe19f04a07ff3d62f1b95b8985d8a4bb929e526a4d67"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2e2d34eb15917bd8aab370c0afdcf7935b4a0e9029db3fb40ec5786868e15e2a"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0e9aaf01f8a4b543edf51bfed52c55d366774649838069abffa84bb53fd795d5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "103bd80e98b9232461cf8c086fe62e06b329c416fc51bc9d45b677d2b640bc3d"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "7354fd937b1837b212f87db591922b4becaf12f20d799519f73c7ae1905a6137"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4c07fa9696ef8d22223e353be0286a6602c0b039e7c802737849fba421570517"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f71567335184ceda89e42de78bf12e8935913c9d004a164a2e7a34a42e685694"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "352d868f91c16de14dff0031db00b0478b1d18353bb3c6accb7133fda0e71b0d"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c2836115e1fa5b8cc7b59683be9ef26f9a06b379382332849a86c4af1f938bc1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "1021cc6a6eaaa963295a9be6a72c6e65d7c276a514bbcaf95b35582664994976"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f2af252dff0b1ea7e4e589f4d2307bf82af11100e351169e3894495874916dce"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "431886c9281ac2bac778bdb7bda07d8296e70905361d20b28623cd5e5893440e"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f939a1492784687ade2aa461cde3e9eb599bda4c140e860eecd54d7f99b1f1e2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b80778596ffe74929ccf41fbfdc1f90fd68d04f0ac9b7a52478376610c91815f"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "74ee5a8baaea7dcb99b8c8b020a2072214784bbf3b4decc8f3080515442d4606"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "3c62b32c7786efd08d0842b1b40140d7a291ffd6788c0be58d32b48bbade36ae"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4186cf573217d0eabb3c745284980cf06c24b0d33b4a59c904aac88c4b3e0097"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b75fc2f5d672e0ef7a08d135ee83aadcc02273e08651f9340a4a4b65f2472f63"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "581d807aeeb601f94991e28263be012e15867c6297e1c3006b9ca2f365a288b4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7529c2f4a9e1fdc19026d37bd03882f9defe909a33d1b40f9f1a9a64d381d97f"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "8ee221ac0ab7b0f3ed80e62dc193e9e83e42740f9e795a969764fbf60f1971ef"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6839795fddd77d52940992c78b683da019106acec56d8084e65d2694c82c062c"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ea72e1ebdfd8e1006808970c6ad2d1d93567624bf680c1eb8f4f6fa3d969dc5b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d7facc02ee671869726bb5a9b4053d92801a24e880171aebca22afbb6df145c4"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4e63078deed9eb9c94e6a1103b02f5e9168cbcb15f656553f6d8844030d43ac8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "96f16af59a090713219e43b8d30a2ac99b9160a5d4d2d00b9f4d66e04d23ea21"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0f244551bc4146b9834789139243df760d79c599a89e0314ddc67c8365f76ab2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "4accb984ab8626dccb78e24a08c3beb672090c6e3646bf1dd57a42bd8d49608c"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "03e30ed1e9fb813c1b2f0719f3328b1953fbf1978fab6e66c99fed5f2eda43b5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0fa17ae7d0ca9289b833922b3fcbd83e5dbfc262ee1e4d3a5342a5b229529ea4"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3581b4ceb9695962a66ab738ec495f5a88161c8238fbf95296b59350873eaa7b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "71d1c500eb0154ada1d2fb2d94a19b566efeb8e177c4f27d12d0413754e5d375"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "833529481cb0226ececfe1709e9ca004a4fd7bf5ff1dd6d4ee1810dcff6d16e0"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7fab02fb7f0ba3e2aa6a4b51808fe3d39714fefa91fb1948362cca27381e0531"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "dda3bc8a153e1268ccbe9458a796a15214bc8b26aa4266cfe62a176a4623fcbf"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "96cf3bc7d255701ef64416d5cc6b55938b6b46c8e93ddc714b02b17d4bf55684"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "884bd5be87d53288be2c714171083732fac6fbf6f8bc3652d5504427969d1ec5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "fee4a1797fca684315e96e5fa26203be7635bf2a3837096ea6658974c6c76fc2"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4980b7dda148cfecae34e913599e2fc107af50066567b6016a01859e8425f8d2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f387ff1e188ee36365f6e5dbaeca1e95d78029e2821f8729dd2796681ce81088"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "120f75481f86a9abcaf66fd96d4fa3654b039ca9a92a78fa61d5d355d268c2e6"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9823b734909ebdee825c6072ab05d763c5622e7527c4132e8abcca683ea962b7"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "87138ba642d4542724d5089382343485c3967466839a6d3b916574b5ea183043"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "be3757ca3c4a10d6707ae2a82ff0946e5f6f30672c42ba73478414df217b4b8a"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b0cd14f942407e2189784d1539bde06440f4f0902f70b616c8d657fbfb22a3de"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "74d774ab76864ed822b38f11b179c4bc588e49323763c58016467de9680325a2"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f433cf76de05c27afaebea28b536fe5d60083258b9f37fa3cf1ea000cb24b0fc"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "132c986e3ca7769f0452205d2335b4a1577fb37cde9bc8e6881d44043288639c"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "bd35e9217910b47c352791381be12ff8069e89cfb7878c1d6ace7c8d8b333e8c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "55df46aa264fc223a4430780fed610223a22eac0ba5ed69529fc901944a70216"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e07db8fe7d2d0f257eb4391c5cc40179e84ec2ef9182a37911b637666d35c518"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "6496879d5ce0beb9108acf0951575913b4f08ef631e60c8d975fdf72450994e4"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "504d6f8a8c748a6a90f5eaac86d3fc4cf80a2a677f1c286aba78ca9b4ec358c3"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "fb78e0eb247ec6f8764e2650cd1e063150ba54f7ef125df34e7ac6cb4ffeeaeb"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ca5cabf5c956f31568dc5a080ee9e8513707be1324f6af7ae32ac8d292e79b22"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "628611afedcd166250dcaa7498f5d2f3b0508b61777ce6a18c308a6a1c50ec58"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3df2c3077e32de72f1da7e9243169beabbb61d386500e8a126a56e8ef523165b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d9009b0d03f814152ed712ca1479e4e67342d7924de165543aef80c0d203fece"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "b72e24a6e2eaeae369417644846d46fe08547d11052fbf983db5794f0a466bef"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "7aa8ca4a02506da9133d8f889678b76f716ce45d02e22fdb7b70a15e56a0eff8"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "f13ee6ed54ea2aae9fc49a9faeb5da6e8ddef0e12ed5d30d35a624ae813e0485"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            6,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 135168,
+          "sha256": "c2ccb75d5a839030d0007219f956867c85a408203f2b82a9e45b6185e1622f07"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            6,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 33924,
+          "sha256": "3cb4230ec0a8bcf3199c44ad48a0162b9d6a71e1b8212c4e51504fffe5eae670"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "7aa8ca4a02506da9133d8f889678b76f716ce45d02e22fdb7b70a15e56a0eff8"
+        }
+      }
+    },
+    {
+      "step": 6,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b9ac43ce60e269ea3a5e252a214cb5321815f3756dbbeb33fd3ec17deafb3f92"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d8b12b49166dcc31a1b2df7140b8e59fa39b5bb9c46579c1b14c07213d4be3df"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5063ef1721b93f37ac7508b16c7fe8b1183640baffc72a8de629b548a0f24452"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "16310fc8b20e5017a9b84298d475a70c57e5d3b987f947dd3ee46201b30583b7"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c65ef2517111231b3b639c8bb59b118d4f500468deb778034d81d6497436da63"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8d64787f70863ac86a634f8cea5238cfe8e4ece3115f8232189af8b229247836"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "640132c2de087ffc1e9530478d61317d405721342099ef0133a5e1fbed3d2fa3"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "49141a532f2d5f71fb7cf7f68453cdd65c147f9bbbbf5fdcc4af3e257248c537"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a603f4dd57ff676b83ad68b8dca6df09f29a2c75b8e345f32194d8d528e429d5"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ba92da34841675814b51eef9713510d3052f5bda0f2b68d0bd9bbd104ed99ed0"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b9564816c1f7c7f09066630eded924011f28a7c606bd3785d1bf619118af56a9"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "aa8faf8a35cb61bf6475fb9ba7f7bc39ee497b9552d6ddddeb39bcffff425f28"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "376c5b6d54682a960946bcb97ccec94415553230f21ea95fcd4381a18bd25d14"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "55e02ae27e1ad6b2f7bcf3602258b36e2e43ce2f458993f5cc6e330b6576e695"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5219cbe2714d272f32de642530450219831f7de8c2eafb6850f7037121c0e3a1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bec5c0a1a61044452b3d8f9f8bacca5c844c173f17ef35fe5d5cb691d4b616c5"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "89cd5451b0706da65520b0cb36faab9c834a4e63718bb5326cbd313f422b4e18"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d0cbbd8a8314af4dbb5f0db7307d794038828b1c16019a733cb98df756c214a9"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cfd07b0e5607f398341f8eb3bcce4c93d2f63c1f69e0535462da9805dee8ae44"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "03cf25900d77e20811ea0589ddec19866e3f0136b4f5528737a36b04b9b8e472"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3f7f7973cb3996c04e5b1e2450f653bc555a0ffed90b23bc6921f3c4b014f343"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8e65692b2152ba2ca24214b3901829df316923fcd6501215aa7ceb6f056987cd"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e694550bdbbeda0f0720d8e0a42620b3554b125ab08884254c8a7e50f0d49a2c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "64be9a51f18b05b641056f1154c4364af7a495c123b4d5eb76aeb033a09480fa"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d9f5ab4c452e29df6918d51eb57459d8d301eb618bc746ec9f533549431a14ee"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "543c44ea1073fbb2dfa0221ab84afde7260d6807a8c0b6d384b34a17f51b879f"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cded0d336174cd9319a631b80e8f9807b034b952eb7f54691dd5a9779fa8a0cd"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9197f03bb5b9bddf29ed7c32de18a049a14052a07d5a0211fe8766c992de8c41"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "769b765b0027bec3a4b9f8467ab4028bd3b47cccedd9e21f24e1fba73e475436"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "396303476a1dd2c49954c6c642a5a710018d84ee2e0aaadbf877602cc8afe0f9"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "06c8abb37ec584d0d2899c8ff5f46fee0701ba942597a4ea62e1da8a9cb13381"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5cb5b5131b9dd2114ef5454bc9526ca021865793aa3f8b2cac1e6949de5e1355"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cf1403652dbb55003a8955928f6c2e50f4cbeee9890d459b9c6bb782926bd6d2"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "2781a51f8b7ddf72f30a334008e85cc85131ad770949a87720341f80f1f1144f"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b65ab8def192f94bb6005b7005e01f3a300ee286fc1d6ea6b6d219bc7200dc73"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "8e50773afb46dcc9c2f3e928a218a5a77d001f7021eea1aef04b8b1887ceb29f"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "83644c2574cfbdc61725294acc62676d31dcc154630d6a3dc745bee858bed60a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "05558a5193784fe7c8b03bc48cec5809f708538a15bfe690a70475b401f27e7e"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1f2063a353b1c994da3e1486214505ad419e0c0939d16384347e4c586604c587"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bdfcfc5e7aa34db0f3ecb44d396d92cebbfdaa03de62bff67353b8b1c02c17a1"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ba568e47879077e71c9275ac335b4f39a2e90b67048be21073a1ffa314df3e79"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "fc5ec2df735f71feca48fe73e2232390952bed5cacae9179c8f0621af9dff670"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4be440704369cb130f5f965358fbf1e3730cfc37dcb7077936682cfbc54dcf8f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "090f95e8b358338a7592ee58b4de304ffcfd0bbcb338c551926142a2c78d50f6"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "552f52401c305f2aaa123425ea6e531d923fccddabfeedb365fcca6d6d227af1"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "bc123d39efa5d3efe71f1dc8f970ccbd649cada1856f218247367eba2253268a"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3d0dafa2a4bd0a4dcc0305de2ebf6e29dd474199e30d93d76d4725d39c9bf96d"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f7ddc448c34a2ff84edbdde330d9501eaa2824a883111ea13d1fecd0e5b2a8e6"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9d004bc5bc971a2eedf6cb7bb7d89a4b64454be6c8e6e91327fded94c73a4713"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "9037986d231721b783ec5399ad7792a85eb7436b0a5fab49add91bcb4c984581"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f6e6a6a1b839a1c252b6787b381480a9b29d8d8e28a6ff1caf80874286d248d4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "860c2589c3cdfc4c97c76e225113426d2ace49a895912cefe529c3cf2f0f32c0"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "76826be6790fb5b6a400df77e077950356445f803e249f6e389024b7abf380c8"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "d476a9f2c1fd2394b2e74bb1e1a056a4dcacea353278a4775c9b00ed826f1517"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d7e752645967c273ca1bda8b107c44345fda5a1756befb38e3b599d6b9c628ba"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7ce0f6f71feac4d8e1e31e51b96d4b556953f08d2734dbcf63169779d6069e22"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b488e2b7a67dcff3b41d31f42ee97d5bff10fb09f4ccd269faf17c240ade2846"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f990ab02f419eb3690bd0cfcabbdd45d6094d6d19b071a704d862a8fa8ee8f32"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "da3665de4be399ee2ff63377e051eb0e43564c00580fd49cd8d45eccc25721de"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f9202856ac42ad8a94a3e2fbc6effc7463cfc83b87152c2365c002c8113b3c50"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "159fc45702d3f00e08f8f950f8f1faa646c563b48f8850f8472a7373b1288a6b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "73c96eaa711962a74272a7007914185791a6423bc5f622f7d3aeda29685a6277"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "17e522701f8b46a37c41f191612cd833f02d117a78fae184f7ba476509c633d4"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5c8ba6f03826dada07034194bb7a973ac5a88e37d5461bd94d3ec90051d3f66a"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "15e6ddde6ee74ffd2191dcfa4d4c2d36915944aa2bf074182abe6f68692e2b4f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "92c794d27ac2c42c0af758c81dd1fbd2071b206388ba7b28f63801638beff7be"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "36b38ad379eab049ad26eebf0ea1235eb4c2aa0d42258fb21ba3770dc2dd7ecf"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "170fb629bb7f18b30ac0385475d33c5903e4edb0a83eb616a857cf133b18f68b"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "92de5ddb983c3c7cf966846d60f4e21f8eb8acf8993fb5328fb6c79d51516683"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "e8613f5a5bc9f9feeda32a8e7c80b69dd4878e47b6a91723fb15eb84236b6a2b"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "23d7f42b1cdc1f0d492ebd756ed0fe8003995dda554d99418d47a81813650207"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            7,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 157696,
+          "sha256": "97254ceaeaf16571a842e4f1c198924c067de40100707eb0e3432340178c3f7f"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            7,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 39578,
+          "sha256": "d3712e5a9568dc85251776be4c39a1af1f435f1cbb3dc7248291bc73aca99ec8"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "e8613f5a5bc9f9feeda32a8e7c80b69dd4878e47b6a91723fb15eb84236b6a2b"
+        }
+      }
+    },
+    {
+      "step": 7,
+      "tensor_states": {
+        "0": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "dc195cb67c1aad7f84a31bdd083f9fa52c575f7727d117b3d3016aa189103a3a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "e5213b30a0d339de950f66de07e8499ed95b6062d000b885d3a7d9b38f6031f7"
+          }
+        ],
+        "1": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ab517c9b1ac09a052e871c9e893865b60c2ec70b212308e47abe3a48b8bc73ba"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "488ba764647d2a5a9601300f13df7b0e15526420848caaec96c79b5f9dcdc9f3"
+          }
+        ],
+        "2": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "937ed514ee81b748dabacd04ba2043588378e8daea550d0eef098c2715c47a79"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a99a6fff713c5ffd4569aa3b57ba6251539f144f99d29d959c98c35d278048a5"
+          }
+        ],
+        "4": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f7230931ff2ac8aa5ba29b5a4ec90af5d7abf49a6be3bdf9d5a8f88c75b4af45"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b7b2260bbf775cbb6ba6bb717d3a1c1c5ca729638ce8544f92666187d0245cb4"
+          }
+        ],
+        "5": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9a7b07bb917bd2704c1d2c3f57e3547cc63f76c85e458cf653e458f9f0703232"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "08bca95fb22bac8f4fcb048b4037087b99b1d3e0629b5998c191f5992a7352bd"
+          }
+        ],
+        "6": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c21d7218a7a1f81353e4c66d6db014725e9d10797fb1504a391a783045902b15"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f5200445729b2d0e8834df8d78abd8c266057816850b3b1ca54a7fa691215b56"
+          }
+        ],
+        "8": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "a92e39aca7527df732e6866f23738fa20323e6daf4625252b6171bef4eec6e67"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "93940a543a5cdda39991c6c85129526ec79259a952c9d6ffa69a65c9e53040ae"
+          }
+        ],
+        "9": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "974e994b4a333cb75cfeb9a6f75d6478fd16c936b8fde1bdbda258b6ca737d7b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7f2afb3c1a48f8f0ec963b0c10013129b9b33f09db06656d24421e1b7a1612d7"
+          }
+        ],
+        "10": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "d0319fb14b43716b1318f9a0129148b1cd15e0f0cd0f88c8100d5d312f666bd9"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c2662257059283d72fb266b1d4a8efa66da1208a2ac7e993673af309132d4a89"
+          }
+        ],
+        "12": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "674c7278b2549e4b44aded1c6383c44bcdecb8c33d0849c887521919545ef9ec"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "ef612e22885b9c344108c0993e580735117b06c813cc815fded13471b107e140"
+          }
+        ],
+        "13": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6fbe720e31cb3788ada22510a57ac1de85b2f01b4b0ab7c8edccdb91475edc3f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0606e24f3ab0683bfb9520c6ea51f5a6f97e38cd6c03bf7256b0bf0d854a2cdb"
+          }
+        ],
+        "14": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "cfc5ed635c6868fb38f4a4b3b681452e8ecd537a6e550e00d3291eefde10840f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "452a0eff89bb161c92d9eba3b414a919f59cdf5651785e5f895d08a51f73439e"
+          }
+        ],
+        "16": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ea47af3362f467a0a09b0e43767aad9380935cdac953ece46e37f30e2e67899c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7e017588ba8a59f045952f18c5b20c5838a6b41e9b7cbdad7d7582bbe0e36c44"
+          }
+        ],
+        "17": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c1efe6794824423114c5e759ad0f9663bf4fabc934a8b411cef9b7be9d41539f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "04ab609bb5ee098f9fa160d74e0891b11b4db95012cbd28acd7844bb78e5c73d"
+          }
+        ],
+        "18": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "b81cce7bf57f2fbc5e244566b67e881b7bf676a34f95d241448a9f47848e50fa"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7ec3de3f3e0fb747e1f183d3b1570946e916d150401bf96508e731b28ea1e3d9"
+          }
+        ],
+        "20": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "ef4cd4513209326081c65b533456ac99192a6375cde8592b66e1d300aabb3750"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "f8d1f656886643208d61e03090ebd314e53853cb78f193f32bf19c2525a74498"
+          }
+        ],
+        "21": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "e26fa6cb286f86a436af3ff412d597ea33b8e32fdf8e6c79c8c293b5228b8043"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a525108b27b490c0d23417844736e53ea66b60008eccc8489f730947d39e2843"
+          }
+        ],
+        "22": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "3d1cc856282a9121d89b4a933581573d1c4ae7e5215a6be9a0c334448fc49355"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a68245de6f2f4ec9e02bd5eb29e697ac3c6a2f4e33c70a4debbe4a31f9e18325"
+          }
+        ],
+        "24": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "0be82a69201288b9e17cb4fbb361e23d78723f6fd2331876a1501335612e97ac"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c8866e8bb8ea085e053f28ac9a7153c1ea2f98b095827bf7275ba963b3b393cc"
+          }
+        ],
+        "25": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "c8e20124392979e257a352424d4ff291e948db9ab574605855f3e6b3a2caf5fb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "c50fb4c135a9d9ffab7908698dbe0f94cd16c6c24584efc1f7147e5df92a1f02"
+          }
+        ],
+        "26": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "9281a33c50436cdb026163d6db2b92f872489ec3008712abe1a0e69f664016df"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "a7cca80bbf93f6b83f271ebb26db9864447152544888a18df5eac7f194caddb8"
+          }
+        ],
+        "28": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "097fdadcec6ca58f16570591a411440680159e059c549e1a8bf4905f67152141"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b42c5e043fb9ab095f2b453915f16939918047cc299e6d5d5f5c7b5c253cc855"
+          }
+        ],
+        "29": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "860341142bfc8e2bc6bd957b637229a3b84d2b69763c5c7b4bd9d84c04d211be"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "07641407ef40f4442b5c91e5cafabf2a4ca95372f6bb7b4c4c7160b70b87a0b4"
+          }
+        ],
+        "30": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "6a31e03ab60fe38ab25ebafd5f6c9bcc7000314f23be9cfaf4375960a9d7e5fb"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0b022f45bbf7b668447a1d9630344a58eb068358af1012ef95d409331c3e51bf"
+          }
+        ],
+        "32": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "af4444e58ae4128635ef20836641cc9ad3bd89b3330f8d485ad4e8b8e40dca0f"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "60664f435e97804d743111aa774ee63f32a95dd351c0633d7f363660238069c4"
+          }
+        ],
+        "33": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "5438222a9fdb2076fd67ca941a7115ecf76f7de15198d3404142c78dec6f5e49"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "722f6b6726145d70befc315519a968966b4dd53e9e707684a2a5dc67d180fba7"
+          }
+        ],
+        "34": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "00a4e7f138639fc1974d8f645e5942fe96e6a83a65bd51afa2248250d44157be"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "506eff0d4004622782f05a02c50b71f6c541c7a7b9b4dddd8b7b4d2f0056219e"
+          }
+        ],
+        "36": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "de1b4613b8c4b3d39cca15f14e67079051367282b457e5c8a8ae183a8f57cb1b"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "b7a2ef469f74db35694f87855c4f2fb258c897b07dd21a2f4fea5d05746e9824"
+          }
+        ],
+        "37": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "28095595c614912caadeddbe0a391f344a8f169e3d6d8146af509303d7b87a7c"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "5ca3c6f29a48be70ce1f17480d4243db98e284df566e5c262fe6a9eaa4569e54"
+          }
+        ],
+        "38": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "f3b2c5cbdffd121a9d11cca744b449ac290382fdf0f21b8c05419063516af52e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "be324f6d8f15bd5fa04c2adfa0b8034fbed84dd67fdc3a3d8e8d7fc13bce8d3c"
+          }
+        ],
+        "40": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "4029b733acd4d0f46d1316d27933828cd944dee777d1e95fa18e70d066c3e920"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "0bc5c348eb813b250b26f62854bd6667040ef9640120208e9cfe27d7cfba7403"
+          }
+        ],
+        "41": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "21d45ec143248b763193ed9c87a21a2f443df31e20ba5479df40f9c96ea4c87a"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "7355c44700f003fa671884e00298a13132431dcc5c569748463525b4234e0ab1"
+          }
+        ],
+        "42": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "91411d61587d2795641eaccd227c854226734418a2ee5ec447d1827dee35bd0e"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "00d09184b9c341a34f6b1118896df5bd1fb65c66bc00f4021754bdec3b92810a"
+          }
+        ],
+        "44": [
+          {
+            "shape": [
+              3,
+              64,
+              128,
+              3
+            ],
+            "dtype": "torch.bfloat16",
+            "nbytes": 147456,
+            "sha256": "1c3a52b8fde8819ad149d82a3c4f6d1c630dbc9d65edf8b8b882438d1b34c0aa"
+          },
+          {
+            "shape": [
+              1,
+              64,
+              128,
+              128
+            ],
+            "dtype": "torch.float32",
+            "nbytes": 4194304,
+            "sha256": "30e6ade73da08b0b8cc30c717a5d1182c93a735385e0f05a455f869df82b5d7f"
+          }
+        ]
+      },
+      "other": {
+        "logits": {
+          "shape": [
+            1,
+            154880
+          ],
+          "dtype": "torch.float32",
+          "nbytes": 619520,
+          "sha256": "18f21de7f0138a37d4327a10fe483702cc58139c499573979452a033321abec0"
+        },
+        "paged.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "dc765660b06ee03dd16fd7ca5b957e8c805161ac2c4af28c5a100ab2ab432ca1"
+        },
+        "paged.block_table": {
+          "shape": [
+            1,
+            16
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 64,
+          "sha256": "5d85718ec594b982c252d0279e5966ffca33a5eaf2a455038d3ab331fde70cea"
+        },
+        "paged.slot_mapping": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int64",
+          "nbytes": 8,
+          "sha256": "aae89fc0f03e2959ae4d701a80cc3915918c950b159f6abb6c92c1433b1a8534"
+        },
+        "paged.query_start_loc": {
+          "shape": [
+            2
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 8,
+          "sha256": "01acecb507abfe1a354aa8064f4af5d3f1acd019e37db3c11c97523b71c76e9d"
+        },
+        "paged.active_kv": {
+          "shape": [
+            8,
+            11,
+            2,
+            1,
+            64,
+            8
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 180224,
+          "sha256": "126132acd8c0140cae747e7afdbe36b98b187c80b289858c0e528b822dee8b35"
+        },
+        "dsa.packed": {
+          "shape": [
+            11,
+            8,
+            257
+          ],
+          "dtype": "torch.bfloat16",
+          "nbytes": 45232,
+          "sha256": "88a2b7e0e19b8222b8045570b8d081f0e0ae9b2cc0723cce0f1d9e3db64d2edd"
+        },
+        "dsa.seq_lens": {
+          "shape": [
+            1
+          ],
+          "dtype": "torch.int32",
+          "nbytes": 4,
+          "sha256": "dc765660b06ee03dd16fd7ca5b957e8c805161ac2c4af28c5a100ab2ab432ca1"
+        }
+      }
+    }
+  ],
+  "performance_claim": false
+}

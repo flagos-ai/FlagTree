@@ -1,0 +1,150 @@
+{
+  "schema": "flagmega.attention-layout-diagnostic/v1",
+  "performance_valid": false,
+  "scope": "isolated CUDA-event kernel timing; excluded from request figures",
+  "torch": "2.11.0+cu130",
+  "thermal_monitor": {
+    "kind": "nvml-clock-event-counters/v1",
+    "gpu_uuid": "GPU-344fa712-6ca8-3673-b04b-33b9c3cbffac",
+    "max_start_temperature_c": 65,
+    "minimum_idle_seconds": 0.5
+  },
+  "records": [
+    {
+      "label": "original",
+      "context_length": 128,
+      "median_us": 11.584000289440155,
+      "samples_us": [
+        8.140800148248672,
+        11.353600025177002,
+        11.91679984331131,
+        11.584000289440155,
+        11.763200163841248
+      ],
+      "registers": 48,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 4.470348358154297e-08,
+      "source_sha256": "53dbf77f69534829938fb5ad563ce69988045b3efb3d8b4219d5dac48dc7052a"
+    },
+    {
+      "label": "original",
+      "context_length": 1024,
+      "median_us": 24.588799476623535,
+      "samples_us": [
+        25.12960135936737,
+        24.665600061416626,
+        24.3584007024765,
+        24.588799476623535,
+        24.198399484157562
+      ],
+      "registers": 48,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 1.862645149230957e-08,
+      "source_sha256": "53dbf77f69534829938fb5ad563ce69988045b3efb3d8b4219d5dac48dc7052a"
+    },
+    {
+      "label": "original",
+      "context_length": 2048,
+      "median_us": 41.55519902706146,
+      "samples_us": [
+        43.23520064353943,
+        41.46240055561066,
+        42.12479889392853,
+        41.55519902706146,
+        41.200000047683716
+      ],
+      "registers": 48,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 1.5832483768463135e-08,
+      "source_sha256": "53dbf77f69534829938fb5ad563ce69988045b3efb3d8b4219d5dac48dc7052a"
+    },
+    {
+      "label": "original",
+      "context_length": 3072,
+      "median_us": 58.35520029067993,
+      "samples_us": [
+        60.84799766540527,
+        58.12479853630066,
+        58.425599336624146,
+        58.35520029067993,
+        55.79519867897034
+      ],
+      "registers": 48,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 1.0244548320770264e-08,
+      "source_sha256": "53dbf77f69534829938fb5ad563ce69988045b3efb3d8b4219d5dac48dc7052a"
+    },
+    {
+      "label": "agent",
+      "context_length": 128,
+      "median_us": 11.660800129175186,
+      "samples_us": [
+        6.950400024652481,
+        13.283200562000275,
+        11.727999895811081,
+        11.055999994277954,
+        11.660800129175186
+      ],
+      "registers": 124,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 4.470348358154297e-08,
+      "source_sha256": "04f30223a4b5b019dff81d9dc33785c81b27b74186a6e680667124038ffdf92b"
+    },
+    {
+      "label": "agent",
+      "context_length": 1024,
+      "median_us": 14.956800639629364,
+      "samples_us": [
+        15.376000106334686,
+        15.07200002670288,
+        14.697599411010742,
+        14.793600142002106,
+        14.956800639629364
+      ],
+      "registers": 124,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 1.862645149230957e-08,
+      "source_sha256": "04f30223a4b5b019dff81d9dc33785c81b27b74186a6e680667124038ffdf92b"
+    },
+    {
+      "label": "agent",
+      "context_length": 2048,
+      "median_us": 21.743999421596527,
+      "samples_us": [
+        22.547200322151184,
+        21.663999557495117,
+        21.795199811458588,
+        21.731199324131012,
+        21.743999421596527
+      ],
+      "registers": 124,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 1.5832483768463135e-08,
+      "source_sha256": "04f30223a4b5b019dff81d9dc33785c81b27b74186a6e680667124038ffdf92b"
+    },
+    {
+      "label": "agent",
+      "context_length": 3072,
+      "median_us": 28.53119969367981,
+      "samples_us": [
+        28.53119969367981,
+        28.508800268173218,
+        28.857600688934326,
+        28.460800647735596,
+        28.755199909210205
+      ],
+      "registers": 124,
+      "spills": 0,
+      "shared_bytes": 8192,
+      "max_abs": 1.210719347000122e-08,
+      "source_sha256": "04f30223a4b5b019dff81d9dc33785c81b27b74186a6e680667124038ffdf92b"
+    }
+  ]
+}

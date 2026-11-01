@@ -1,0 +1,82 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "partitioned_linear" and call.variant == "wgmma_local" and call.parameters.get("parallel_accumulation_splits", false) %}
+import triton.experimental.tle.language as tle
+@triton.jit(noinline=True)
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_arena = tle.gpu.alloc([{{ call.local_shared_bytes }}], tl.uint8, nv_mma_shared_layout=False,
+                              alignment_bytes={{ call.local_shared_alignment }})
+    _fm_weight = tle.gpu.alloc([2, 64, {{ call.block_k }}], tl.bfloat16,
+        alias=_fm_arena, alias_offset_bytes={{ call.local_weight_offset }}, nv_mma_shared_layout=True)
+    _fm_activation = tle.gpu.alloc([2, 8, {{ call.block_k }}], tl.bfloat16,
+        alias=_fm_arena, alias_offset_bytes={{ call.local_activation_offset }}, nv_mma_shared_layout=True)
+    _fm_weight_full = tle.gpu.alloc_barriers(2, expect_bytes=64 * {{ call.block_k }} * 2)
+    _fm_activation_full = tle.gpu.alloc_barriers(2, expect_bytes=8 * {{ call.block_k }} * 2)
+    tle.gpu.tensor_map_fenceproxy_acquire(value_descriptor)
+    tle.gpu.tensor_map_fenceproxy_acquire(weight_descriptor)
+    _fm_sequence_base = tl.full((),0,tl.int32)
+    for _fm_task in tl.range(block_index, {{ call.parallel_tasks }}, tl.num_programs(0)):
+        _fm_tile = _fm_task % {{ call.tasks }}
+        _fm_split = (_fm_task // {{ call.tasks }}) % {{ call.accumulation_splits }}
+        _fm_part = _fm_task // {{ call.tasks * call.accumulation_splits }}
+        _fm_row = _fm_tile * 64
+        _fm_row_offset = tl.cast({{ call.weight_row_origin }} + _fm_row, tl.int32)
+        _fm_offset = _fm_part * {{ call.part_k }} + _fm_split * {{ call.accumulation_k }}
+        _fm_weight_k = tl.cast({{ call.weight_k_origin }} + _fm_offset, tl.int32)
+        _fm_value_k = tl.cast({{ call.source_k_origin }} + _fm_offset, tl.int32)
+        for _fm_initial in tl.static_range({{ [2, call.accumulation_k // call.block_k] | min }}):
+            _fm_slot = (_fm_sequence_base + _fm_initial) % 2
+            _fm_w = _fm_weight.slot(_fm_slot)
+            _fm_x = _fm_activation.slot(_fm_slot)
+            _fm_wd = tle.gpu.reinterpret_tensor_map(weight_descriptor,_fm_w)
+            _fm_xd = tle.gpu.reinterpret_tensor_map(value_descriptor,_fm_x)
+            tle.gpu.copy(_fm_wd,_fm_w,[64,{{ call.block_k }}],
+                [_fm_row_offset,_fm_weight_k + _fm_initial * {{ call.block_k }}],barrier=_fm_weight_full[_fm_slot])
+            tle.gpu.copy(_fm_xd,_fm_x,[8,{{ call.block_k }}],
+                [0,_fm_value_k + _fm_initial * {{ call.block_k }}],barrier=_fm_activation_full[_fm_slot])
+        _fm_accumulator = tl.zeros((64,8),tl.float32)
+        for _fm_step in tl.range(0,{{ call.accumulation_k // call.block_k }}):
+            _fm_sequence = _fm_sequence_base + _fm_step
+            _fm_slot = _fm_sequence % 2
+            _fm_phase = (_fm_sequence // 2) % 2
+            tle.gpu.barrier_wait(_fm_weight_full[_fm_slot],phaseIdx=_fm_phase)
+            tle.gpu.barrier_wait(_fm_activation_full[_fm_slot],phaseIdx=_fm_phase)
+            _fm_accumulator = tle.gpu.wgmma(_fm_weight.slot(_fm_slot),_fm_activation.slot(_fm_slot),
+                                          _fm_accumulator,trans_b=True)
+            _fm_accumulator = tle.gpu.wgmma_wait(0,_fm_accumulator)
+            if _fm_step + 2 < {{ call.accumulation_k // call.block_k }}:
+                _fm_w = _fm_weight.slot(_fm_slot)
+                _fm_x = _fm_activation.slot(_fm_slot)
+                _fm_wd = tle.gpu.reinterpret_tensor_map(weight_descriptor,_fm_w)
+                _fm_xd = tle.gpu.reinterpret_tensor_map(value_descriptor,_fm_x)
+                tle.gpu.copy(_fm_wd,_fm_w,[64,{{ call.block_k }}],
+                    [_fm_row_offset,_fm_weight_k + (_fm_step + 2) * {{ call.block_k }}],barrier=_fm_weight_full[_fm_slot])
+                tle.gpu.copy(_fm_xd,_fm_x,[8,{{ call.block_k }}],
+                    [0,_fm_value_k + (_fm_step + 2) * {{ call.block_k }}],barrier=_fm_activation_full[_fm_slot])
+        _fm_sequence_base += {{ call.accumulation_k // call.block_k }}
+        _fm_value = tl.reshape(tl.gather(_fm_accumulator,tl.full((64,1),0,tl.int32),1),(64,))
+        _fm_n = _fm_row + tl.arange(0,64)
+        _fm_destination = (_fm_part * {{ call.accumulation_splits }} + _fm_split) * {{ call.rows }} + _fm_n
+        tl.store({{ call.partial_pointer }} + _fm_destination,_fm_value,_fm_n < {{ call.rows }})
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__merge({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_task in tl.range(block_index,{{ call.tasks }},tl.num_programs(0)):
+        _fm_n = _fm_task * 64 + tl.arange(0,64)
+        _fm_total = tl.zeros((64,),tl.float32)
+        for _fm_part in tl.range(0,{{ call.parts }}):
+            _fm_sum = tl.zeros((64,),tl.float32)
+            for _fm_split in tl.static_range({{ call.accumulation_splits }}):
+                _fm_offset = (_fm_part * {{ call.accumulation_splits }} + _fm_split) * {{ call.rows }} + _fm_n
+                _fm_partial = tl.load({{ call.partial_pointer }} + _fm_offset,_fm_n < {{ call.rows }},other=0.)
+                _fm_sum = libdevice.add_rn(_fm_sum,_fm_partial)
+            _fm_total = libdevice.add_rn(_fm_total,_fm_sum.to(tl.bfloat16).to(tl.float32))
+        tl.store({{ call.result }} + _fm_n,_fm_total.to(tl.bfloat16),_fm_n < {{ call.rows }})
+
+
+{{ entry.phase_schedule(call, ("partials", "merge")) }}
+{% endif %}
+{% endfor %}

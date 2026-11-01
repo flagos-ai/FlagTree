@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/flagos-ai/FlagCX.git",
+  "base_commit": "42d5dd596bd7bb1346d6a608c4249bb5f7b1710c",
+  "patch_order": [
+    "capacity.patch",
+    "local-inbox-poll.patch"
+  ],
+  "host_test": "test/unittest/device_api/test_barrier_capacity_host.py",
+  "measured_host_so_sha256": "4c15308d07ffc29f72ca3743160d53d9cf2020acef7e4c375a832d1f7448802e",
+  "measured_device_bc_sha256": "2e8cec3f05fabc235ed8c7fff9e85c4a84e58fe17a4dc47d3f33e10dd7261fe8",
+  "fresh_build_pending": true
+}

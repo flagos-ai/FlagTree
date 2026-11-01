@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 from time import perf_counter
 
-from agent_optimizations.decode import QKV_PIPELINE, create_target, install
+from agent_optimizations.decode import QKV_PIPELINE, ORDERED_QKV_PIPELINE, create_target, install
 from agent_optimizations.shared_route import fuse_shared_route
 from agent_optimizations.residual_stats import fuse_residual_stats
 from optimize import input_module
@@ -27,6 +27,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--input", type=Path, help="Imported, distribution_candidates, or frozen_constants Python IR")
+    parser.add_argument("--numerical-profile", choices=("nncase", "vllm-ae10e855a-inductor-level3"),
+                        default="nncase", help="Source arithmetic contract, retained through the Agent policy")
     parser.add_argument("--trial", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--rdata-cache-dir", type=Path)
@@ -38,7 +40,7 @@ def main():
     args.trial.mkdir(parents=True, exist_ok=False)
     install()
     checkpoint = DirectoryCheckpoint(args.checkpoint)
-    module = input_module(checkpoint, args.input, "nncase")
+    module = input_module(checkpoint, args.input, args.numerical_profile)
     fm.verify_module(module)
     if module.stage not in {"imported", "distribution_candidates", "frozen_constants"}:
         raise ValueError("Resume before implementation selection, not from an allocated artifact")
@@ -79,10 +81,10 @@ def main():
     result = compiler.compile(prepared).module
     fm.emit_module(result, args.trial / "final.py")
     implementations = Counter(value.dispatch.microkernel.implementation for value in result.kernel_definitions)
-    if args.qkv_kernel == "mma" and not implementations[QKV_PIPELINE]:
+    if args.qkv_kernel == "mma" and not (implementations[QKV_PIPELINE] or implementations[ORDERED_QKV_PIPELINE]):
         raise ValueError("The requested QKV P/C implementation was not selected")
     report = {"input_hash": original_hash, "distributed_hash": prepared.semantic_hash,
-              "semantic_hash": result.semantic_hash, "numerical_contract": "nncase", "stage": result.stage,
+              "semantic_hash": result.semantic_hash, "numerical_contract": module.metadata.get("numerical_contract", "nncase"), "stage": result.stage,
               "qkv_kernel": args.qkv_kernel, "bufferize_opt_level": args.bufferize_opt_level,
               "implementations": dict(implementations), "sources": sources,
               "note": "Compilation is not numerical or performance acceptance."}
