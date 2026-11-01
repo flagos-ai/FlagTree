@@ -34,6 +34,9 @@
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
+#endif
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LogicalResult.h"
@@ -757,6 +760,30 @@ LogicalResult MemDescReshapeOp::verify() {
   return OpTrait::impl::verifyEquivalentType(expectedTy, dstType);
 }
 
+#ifdef __TLE__
+static bool canHoldNVMMASwizzleCore(ArrayRef<int64_t> shape,
+                                   NVMMASharedEncodingAttr encoding) {
+  if (encoding.getSwizzlingByteWidth() == 0)
+    return true;
+  if (shape.size() < 2)
+    return false;
+
+  auto shapePerCTA = getShapePerCTA(encoding, shape);
+  auto tmaShape = triton::nvidia_gpu::getTMABlockShape(
+      encoding, shapePerCTA, /*packedSize=*/true);
+  int64_t rows = product<int64_t>(ArrayRef<int64_t>(tmaShape).drop_back());
+  int64_t columns = tmaShape.back();
+  if (encoding.getTransposed())
+    std::swap(rows, columns);
+  auto core = getCoreMatrixLinearLayout(encoding, /*disableSwizzle=*/false);
+  auto *ctx = encoding.getContext();
+  int packingFactor = encoding.getFp4Padded() ? 2 : 1;
+  return rows >= core.getOutDimSize(StringAttr::get(ctx, "dim0")) &&
+         columns * packingFactor >=
+             core.getOutDimSize(StringAttr::get(ctx, "dim1"));
+}
+#endif
+
 static LogicalResult inferMemDescReshapeOpEncoding(ArrayRef<int64_t> srcShape,
                                                    Attribute srcEnc,
                                                    ArrayRef<int64_t> dstShape,
@@ -778,12 +805,21 @@ static LogicalResult inferMemDescReshapeOpEncoding(ArrayRef<int64_t> srcShape,
             ctx, mmaEncoding.getSwizzlingByteWidth(),
             mmaEncoding.getTransposed(), mmaEncoding.getElementBitWidth(),
             mmaEncoding.getFp4Padded(), CTALayout);
+#ifdef __TLE__
+        // An unchanged innermost dimension is insufficient for rank-changing
+        // views: the collapsed row extent must still contain a swizzle core.
+        // Only form a candidate linear layout after proving its geometry legal.
+        if (canHoldNVMMASwizzleCore(dstShape, candidateEncoding)) {
+#endif
         auto srcLL = toLinearLayout(srcShape, srcEnc);
         auto dstLL = toLinearLayout(dstShape, candidateEncoding);
         if (reshapeLayout(ctx, srcLL, dstShape) == dstLL) {
           dstEnc = candidateEncoding;
           return success();
         }
+#ifdef __TLE__
+        }
+#endif
       }
     }
   } else if (auto padded = dyn_cast<PaddedSharedEncodingAttr>(srcEnc)) {

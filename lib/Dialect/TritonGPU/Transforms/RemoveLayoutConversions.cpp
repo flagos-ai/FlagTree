@@ -690,6 +690,15 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     }
     if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
       auto parent = yieldOp->getParentOp();
+#ifdef __TLE__
+      // A while yield feeds the before arguments, whose signature is independent
+      // of the condition-forwarded values that define the while results.
+      if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+        setEncoding({whileOp.getBeforeArguments()[use.getOperandNumber()]}, info,
+                    changed, user);
+        continue;
+      }
+#endif // __TLE__
       SmallVector<Value> valuesToPropagate;
       if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent))
         valuesToPropagate.push_back(parent->getResult(use.getOperandNumber()));
@@ -2659,6 +2668,14 @@ collectUseTargets(OpOperand &use, Attribute enc,
   }
   if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
     auto parent = yieldOp->getParentOp();
+#ifdef __TLE__
+    // Keep the cost model on the same region edge as forward propagation.
+    if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+      targets.push_back(
+          {whileOp.getBeforeArguments()[use.getOperandNumber()], enc});
+      return;
+    }
+#endif // __TLE__
     if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent))
       targets.push_back({parent->getResult(use.getOperandNumber()), enc});
     if (auto forOp = dyn_cast<scf::ForOp>(parent))

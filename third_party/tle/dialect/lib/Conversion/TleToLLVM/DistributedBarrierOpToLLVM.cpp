@@ -540,6 +540,7 @@ struct DistributedBarrierOpConversion
     rewriter.replaceOpWithNewOp<tle::FlagCxBarrierOp>(
         op, comm, barrierTypeAttr, teamKindAttr, coopKindAttr, indexAttr,
         contextIdAttr, orderAttr, memoryScopeAttr);
+#endif
     return success();
 #else
     return rewriter.notifyMatchFailure(

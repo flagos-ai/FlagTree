@@ -38,6 +38,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/GatherLayout.h"
+#endif
 
 namespace mlir {
 namespace triton {
@@ -255,6 +258,12 @@ struct OptimizeGatherLayoutPattern : public mlir::OpRewritePattern<GatherOp> {
                                 PatternRewriter &rewriter) const override {
     if (op.getEfficientLayout())
       return failure();
+#ifdef __TLE__
+    if (tle::hasUniformWarpLocalGather(op)) {
+      rewriter.modifyOpInPlace(op, [&] { op.setEfficientLayout(true); });
+      return success();
+    }
+#endif
     return setOptimizedGatherLayout(op, rewriter);
   }
 };

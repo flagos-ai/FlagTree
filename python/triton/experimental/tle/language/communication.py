@@ -123,16 +123,55 @@ if enabled:
     """
 
 
+def _flagcx_allocator_build_identity():
+    """Bind the cached native wrapper to its SDK, source and Torch/CUDA ABI."""
+    import hashlib
+    import json
+    import sys
+    from pathlib import Path
+
+    library_dir = Path(FLAGCX_LIB_PATH).resolve()
+    include_dir = Path(FLAGCX_INCLUDE_PATH).resolve()
+
+    def digest(path):
+        result = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                result.update(chunk)
+        return result.hexdigest()
+
+    identity = {
+        "source": flagcx_allocator_source,
+        "host_library": digest(library_dir / "libflagcx.so"),
+        "header": digest(include_dir / "flagcx.h"),
+        "library_dir": str(library_dir),
+        "include_dir": str(include_dir),
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "torch_cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
+        "python_cache_tag": sys.implementation.cache_tag,
+        "cuda_home": os.environ.get("CUDA_HOME"),
+        "cxx": os.environ.get("CXX"),
+        "with_cuda": True,
+    }
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    return key, library_dir, include_dir
+
+
 def compile_flagcx_allocator():
     global _allocator, _allocator_wrapper, _flagcx_allocator_failed_to_compile
 
     try:
-        out_dir = tempfile.gettempdir()
-        lib_name = "flagcx_allocator"
+        identity, library_dir, include_dir = _flagcx_allocator_build_identity()
+        out_dir = os.path.join(tempfile.gettempdir(), "tle_flagcx_allocator", identity)
+        # A unique module name also prevents Torch's in-process extension
+        # versioner from renaming a different SDK build behind our loader.
+        lib_name = f"flagcx_allocator_{identity}"
         lib_path = os.path.join(out_dir, f"{lib_name}.so")
 
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         if local_rank == 0 and not os.path.isfile(lib_path):
+            os.makedirs(out_dir, exist_ok=True)
             print(
                 f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
                 flush=True,
@@ -143,14 +182,14 @@ def compile_flagcx_allocator():
                 cpp_sources=flagcx_allocator_source,
                 with_cuda=True,
                 extra_ldflags=[
-                    f"-L{FLAGCX_LIB_PATH}",
+                    f"-L{library_dir}",
                     "-lflagcx",
-                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                    f"-Wl,-rpath,{library_dir}",
                 ],
                 verbose=True,
                 is_python_module=False,
                 build_directory=out_dir,
-                extra_include_paths=[FLAGCX_INCLUDE_PATH],
+                extra_include_paths=[str(include_dir)],
             )
         else:
             print(
@@ -298,8 +337,16 @@ def init_communicator():
     _init_communicator_ = True
 
 
-def create_dist_tensor(buf_tensor):
+def create_dist_tensor(buf_tensor, *, intra_barrier_count=1):
+    """Register a symmetric window and allocate runtime-owned barrier slots.
+
+    Slot indices used by kernels must be below intra_barrier_count. The runtime
+    initializes and retains their state until cleanup_communicator().
+    """
     global comm, rank, dev_mem, dev_comm, win
+    if (isinstance(intra_barrier_count, bool) or not isinstance(intra_barrier_count, int)
+            or not 0 < intra_barrier_count <= 0x7fffffff):
+        raise ValueError("intra_barrier_count must be a positive int32")
     if not getattr(buf_tensor, "is_cuda", False):
         raise TypeError("FlagCX symmetric windows require a CUDA tensor")
     if not buf_tensor.is_contiguous():
@@ -312,6 +359,17 @@ def create_dist_tensor(buf_tensor):
         raise ValueError(
             "FlagCX symmetric windows require a 4096-byte-aligned base address; "
             f"got {buf_ptr:#x}. Use tle.allocate_dist_tensor(...)."
+        )
+    if dev_comm is not None or dev_mem is not None or win is not None:
+        raise RuntimeError(
+            "An active FlagCX window already owns its communication resources; "
+            "call cleanup_communicator() before creating another window."
+        )
+    can_query_capacity = flagcx.supports_intra_barrier_count_query
+    if intra_barrier_count > 1 and not can_query_capacity:
+        raise RuntimeError(
+            "Multiple intra-barrier slots require an SDK capacity query; "
+            "install a FlagCX SDK that reports provisioned barrier capacity."
         )
 
     # Publish completed local CUDA writes before the host rendezvous. A host
@@ -326,11 +384,11 @@ def create_dist_tensor(buf_tensor):
     win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
     print(f"[Rank {rank}] Window registered (symmetric)")
 
-    # Create DevComm with 1 intra barrier
+    # Runtime-owned slots are disjoint from the caller's reusable payload pool.
     reqs = flagcxDevCommRequirements()
     reqs.intraMulticast = False
     reqs.barrierCount = 8
-    reqs.intraBarrierCount = 8
+    reqs.intraBarrierCount = intra_barrier_count
     reqs.interBarrierCount = 8
     reqs.intraLLA2ABlockCount = 0
     reqs.intraLLA2ASlotCount = 0
@@ -341,6 +399,23 @@ def create_dist_tensor(buf_tensor):
 
     dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
     print(f"[Rank {rank}] DevComm created")
+    actual_barrier_count = intra_barrier_count
+    if can_query_capacity:
+        try:
+            actual_barrier_count = flagcx.flagcxDevCommGetIntraBarrierCount(dev_comm)
+            if (isinstance(actual_barrier_count, bool)
+                    or not isinstance(actual_barrier_count, int)
+                    or not intra_barrier_count <= actual_barrier_count <= 0x7fffffff):
+                raise RuntimeError(
+                    f"FlagCX provisioned {actual_barrier_count!r} intra-barrier slots; "
+                    f"{intra_barrier_count} were required"
+                )
+        except BaseException:
+            flagcx.flagcxDevCommDestroy(comm, dev_comm)
+            dev_comm = None
+            flagcx.flagcxCommWindowDeregister(comm, win)
+            win = None
+            raise
 
     # Create DevMem (with window)
     dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr, buf_size, win)
@@ -357,4 +432,5 @@ def create_dist_tensor(buf_tensor):
 
     from triton.runtime import DistributedRtContext
     ctx = DistributedRtContext(dev_comm_dptr.value, dev_mem_dptr.value)
+    ctx.intra_barrier_count = actual_barrier_count
     return ctx

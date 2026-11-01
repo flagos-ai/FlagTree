@@ -149,7 +149,9 @@ def reinterpret_tensor_map(descriptor, destination, _semantic=None):
             "reinterpret_tensor_map requires a Triton build with __TLE__ "
             "tensor-map support"
         )
-    block_type = tl.block_type(destination.dtype, destination.shape)
+    # Scope cloning restores buffered shapes as Python tuples; block_type
+    # accepts lists or Triton tuples, so normalize at this TLE boundary.
+    block_type = tl.block_type(destination.dtype, list(destination.shape))
     handle = builder.create_tle_gpu_reinterpret_tensor_map(
         descriptor.handle,
         block_type.to_ir(builder),
@@ -1682,8 +1684,9 @@ def async_commit_group(_semantic=None) -> None:
 def async_wait_group(max_pending: int = 0, _semantic=None) -> None:
     """Wait until at most ``max_pending`` committed asynchronous-copy groups remain.
 
-    The compiler may conservatively wait for more groups, including draining
-    all groups. This API does not preserve an exact partial-wait schedule.
+    The explicit group bound belongs to the caller's transport schedule and
+    is preserved during automatic pipeline token inference. Required data
+    dependencies may still introduce additional waits.
     """
     max_pending = tl._unwrap_if_constexpr(max_pending)
     if isinstance(max_pending, builtins.bool) or not isinstance(max_pending, builtins.int):

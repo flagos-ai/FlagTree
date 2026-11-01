@@ -34,10 +34,10 @@ module attributes {"ttg.num-warps" = 8 : i32, "ttg.total-num-warps" = 12 : i32} 
     llvm.return %result : i32
   }
 
-  // CHECK-DAG: llvm.func internal @collective__tle_ws_barrier_0_256(
-  // CHECK-DAG: llvm.func internal @collective__tle_ws_barrier_2_128(
-  // CHECK-DAG: llvm.func internal @collective_wrapper__tle_ws_barrier_0_256(
-  // CHECK-DAG: llvm.func internal @collective_wrapper__tle_ws_barrier_2_128(
+  // CHECK-DAG: llvm.func internal @collective__tle_ws_barrier_0_256_start_0(
+  // CHECK-DAG: llvm.func internal @collective__tle_ws_barrier_2_128_start_8(
+  // CHECK-DAG: llvm.func internal @collective_wrapper__tle_ws_barrier_0_256_start_0(
+  // CHECK-DAG: llvm.func internal @collective_wrapper__tle_ws_barrier_2_128_start_8(
   // Both direct barriers and calls are handled during the same entry walk.
   // Sibling collective bodies above keep their original barrier until DCE;
   // only the entry and its scoped clones must be free of whole-CTA barriers.
@@ -45,8 +45,8 @@ module attributes {"ttg.num-warps" = 8 : i32, "ttg.total-num-warps" = 12 : i32} 
   // DIRECT-NOT: nvvm.barrier0
   // CHECK-LABEL: llvm.func @entry(
   // CHECK-DAG: llvm.call @plain_wrapper(
-  // CHECK-DAG: llvm.call @collective_wrapper__tle_ws_barrier_0_256(
-  // CHECK-DAG: llvm.call @collective_wrapper__tle_ws_barrier_2_128(
+  // CHECK-DAG: llvm.call @collective_wrapper__tle_ws_barrier_0_256_start_0(
+  // CHECK-DAG: llvm.call @collective_wrapper__tle_ws_barrier_2_128_start_8(
   llvm.func @entry(%value: i32, %output: !llvm.ptr<1>) attributes {allocation.offset = 0 : i32} {
     ttg.warp_specialize(%value, %output) attributes {allocation.offset = 0 : i32, warpGroupStartIds = array<i32: 8>}
     default {

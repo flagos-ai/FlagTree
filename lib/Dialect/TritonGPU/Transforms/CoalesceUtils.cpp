@@ -39,10 +39,18 @@
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::triton::gpu {
+#ifdef __TLE__
+BlockedEncodingAttr buildCoalescedEncoding(
+    MLIRContext *context, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    Operation *op, int numWarps, int threadsPerWarp,
+    triton::gpu::CTAEncodingAttr CTALayout, SmallVector<int64_t> shapePerCTA,
+    const llvm::DenseSet<Block *> &nonExecutableBlocks) {
+#else
 BlockedEncodingAttr buildCoalescedEncoding(
     MLIRContext *context, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     Operation *op, int numWarps, int threadsPerWarp,
     triton::gpu::CTAEncodingAttr CTALayout, SmallVector<int64_t> shapePerCTA) {
+#endif
   Value ptr = getMemAccessPtr(op);
   auto refTensorType = cast<RankedTensorType>(ptr.getType());
 
@@ -71,6 +79,10 @@ BlockedEncodingAttr buildCoalescedEncoding(
     for (Operation *use : triton::tle::getCoalescingSlice(op)) {
 #else
     for (Operation *use : mlir::getSlice(op)) {
+#endif
+#ifdef __TLE__
+      if (nonExecutableBlocks.contains(use->getBlock()))
+        continue;
 #endif
       Value val = getMemAccessPtr(use);
       if (!val || !matchesShape(val) || memAccessesSameOrder.contains(use))
@@ -122,4 +134,23 @@ BlockedEncodingAttr buildCoalescedEncoding(
                                   sizePerThread, order, numWarps,
                                   threadsPerWarp, CTALayout);
 }
+#ifdef __TLE__
+// Preserve the existing helper ABI for other consumers while applying the same
+// reachability contract. Coalesce itself supplies a cached per-function proof.
+BlockedEncodingAttr buildCoalescedEncoding(
+    MLIRContext *context, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    Operation *op, int numWarps, int threadsPerWarp,
+    triton::gpu::CTAEncodingAttr CTALayout, SmallVector<int64_t> shapePerCTA) {
+  llvm::DenseSet<Block *> nonExecutableBlocks;
+  auto function = op->getParentOfType<FunctionOpInterface>();
+  if (!function || failed(tle::collectNonExecutableCoalescingBlocks(
+                       function, nonExecutableBlocks))) {
+    op->emitError("failed to prove executable blocks for TLE coalescing");
+    return {};
+  }
+  return buildCoalescedEncoding(context, axisInfoAnalysis, op, numWarps,
+                                threadsPerWarp, CTALayout, shapePerCTA,
+                                nonExecutableBlocks);
+}
+#endif
 } // namespace mlir::triton::gpu

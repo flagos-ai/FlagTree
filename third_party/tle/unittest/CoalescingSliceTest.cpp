@@ -127,5 +127,49 @@ TEST(CoalescingSlice, RepeatedOperandsAndManyOverlappingRoots) {
   expectSameMembership(source);
 }
 
+TEST(CoalescingSlice, WhileCarriedArgumentsConnectBothRegions) {
+  MLIRContext context;
+  context.loadDialect<arith::ArithDialect, func::FuncDialect, scf::SCFDialect>();
+  auto module = parseSourceString<ModuleOp>(R"mlir(
+    module {
+      func.func @loop(%initial: i32, %limit: i32) -> i32 {
+        %one = arith.constant 1 : i32
+        %unrelated = arith.constant 99 : i32
+        %result = scf.while (%v = %initial) : (i32) -> i32 {
+          %condition = arith.cmpi slt, %v, %limit : i32
+          scf.condition(%condition) %v : i32
+        } do {
+        ^bb0(%v: i32):
+          %next = arith.addi %v, %one : i32
+          scf.yield %next : i32
+        }
+        return %result : i32
+      }
+      func.func @independent(%value: i32) -> i32 {
+        %one = arith.constant 1 : i32
+        %sum = arith.addi %value, %one : i32
+        return %sum : i32
+      }
+    }
+  )mlir", &context);
+  ASSERT_TRUE(module);
+  auto function = module->lookupSymbol<func::FuncOp>("loop");
+  auto loop = *function.getOps<scf::WhileOp>().begin();
+  llvm::SetVector<Operation *> expected;
+  loop.walk([&](Operation *op) { expected.insert(op); });
+  expected.insert(&function.getBody().front().front());
+  expected.insert(function.getBody().front().getTerminator());
+  // Neither mlir::getSlice's single-region precondition nor a reference call
+  // to that API defines membership here. Check the actual loop dependency
+  // group explicitly, from both the condition and the carried-value update.
+  for (Operation *root : {&loop.getBefore().front().front(),
+                          &loop.getAfter().front().front()}) {
+    auto actual = getCoalescingSlice(root);
+    ASSERT_EQ(actual.size(), expected.size());
+    for (Operation *op : expected)
+      EXPECT_TRUE(actual.contains(op)) << op->getName().getStringRef().str();
+  }
+}
+
 } // namespace
 } // namespace mlir::triton::tle

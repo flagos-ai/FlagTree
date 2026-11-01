@@ -74,12 +74,15 @@ def test_window_publication_synchronizes_cuda_then_uses_host_barriers(communicat
     monkeypatch.setattr(comm.torch.cuda, "synchronize", lambda *_: events.append("cuda_sync"))
     monkeypatch.setattr(comm, "dist", SimpleNamespace(is_initialized=lambda: True, barrier=barrier))
     monkeypatch.setattr(comm, "flagcx", SimpleNamespace(
+        supports_intra_barrier_count_query=False,
         flagcxCommWindowRegister=register,
         flagcxDevCommCreate=lambda *_: object(), flagcxDevMemCreate=lambda *_: object(),
         flagcxDevCommGetDevicePtr=lambda *_: SimpleNamespace(value=11),
         flagcxDevMemGetDevicePtr=lambda *_: SimpleNamespace(value=22)))
-    monkeypatch.setattr(triton.runtime, "DistributedRtContext", lambda *_: "context")
+    context = SimpleNamespace()
+    monkeypatch.setattr(triton.runtime, "DistributedRtContext", lambda *_: context)
     window = SimpleNamespace(is_cuda=True, is_contiguous=lambda: True, data_ptr=lambda: 4096,
                              numel=lambda: 4096, element_size=lambda: 1, device="cuda:0")
-    assert comm.create_dist_tensor(window) == "context"
+    assert comm.create_dist_tensor(window) is context
+    assert context.intra_barrier_count == 1
     assert events == ["cuda_sync", "host_barrier", "register", "host_barrier"]

@@ -42,6 +42,11 @@ inline constexpr llvm::StringLiteral
 inline constexpr llvm::StringLiteral
     kTleRequiredAsyncCopyAttr("tle.required_async_copy");
 
+// A user-submitted transport wait has an explicit group count and no SSA
+// dependency token. Automatic pipeline token inference does not own that count.
+inline constexpr llvm::StringLiteral
+    kTleExplicitAsyncWaitGroupAttr("tle.explicit_async_wait_group");
+
 // Marks a TLE pipe commit whose payload readiness is produced by prior
 // cp.async copies. NVWS token lowering uses this to attach copy completion to
 // the pipe full barrier instead of forcing a producer-side cp.async wait.

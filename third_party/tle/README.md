@@ -46,6 +46,46 @@ def kernel(a_ptr, b_ptr, c_ptr, n, BLOCK_SIZE: tl.constexpr):
         tl.store(c_ptr + offset, result)
 ```
 
+## Independent device barrier slots
+
+FlagCX device barriers can synchronize corresponding CTA groups independently.
+Create the context with enough runtime-owned slots and pass a CTA-uniform scalar
+`int32` index together with its declared capacity:
+
+```python
+import torch
+
+@triton.jit
+def rendezvous(mem: tl.int64, comm: tl.int64, CAPACITY: tl.constexpr):
+    tle.distributed_barrier(
+        device_dptr=(mem, comm), space="device",
+        index=1 + tl.program_id(0), barrier_count=CAPACITY,
+    )
+
+# Each participating process creates the same capacity. Slot 0 is reserved here
+# for other synchronization; the 16 CTAs use distinct slots 1 through 16.
+# `device` is this process's selected CUDA device.
+tiles = 16
+window = tle.allocate_dist_tensor((4096,), dtype=torch.uint8, device=device)
+context = tle.create_dist_tensor(window, intra_barrier_count=tiles + 1)
+mem, comm = context.get_packed_data()
+rendezvous[(tiles,)](mem, comm, tiles + 1, num_warps=4,
+                     launch_cooperative_grid=True)
+```
+
+Require `0 <= index < barrier_count <= context.intra_barrier_count`. Each slot
+must have exactly one cooperating group per chip; all participants enter that
+slot's rendezvous in the same order. The default group is one complete CTA.
+Different slots do not synchronize other CTAs on the same chip. Ensure the
+cooperative launch fits device residency so every required CTA can make progress.
+Dynamic indices require explicit context handles; implicit/lite contexts are not
+supported. Existing static-index calls retain their default behavior.
+
+The runtime initializes slot state and retains it until
+`tle.cleanup_communicator()`. Close the active context before creating a different
+window or capacity. This state is separate from caller-owned payload scratch;
+do not reset it between CUDA Graph replays.
+
 ## Testing
 
 ```bash
