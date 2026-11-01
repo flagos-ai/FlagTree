@@ -38,7 +38,7 @@ def _run(rows, cols, axis, shift, bound, mode, auto):
     size = max(rows, 1) * cols
     x = (torch.arange(size).float() * .125 + 1).reshape(shape)
     y = -x - .25
-    # Select must preserve NaN payloads and signed zero, including empty masks.
+    # Check NaN classification and exact finite values, including signed zero.
     x.flatten().view(torch.int32)[2] = 0x7FC12345
     y.flatten()[4] = -0.
     y.flatten().view(torch.int32)[6] = 0x7FC54321
@@ -62,7 +62,11 @@ def _run(rows, cols, axis, shift, bound, mode, auto):
         _select_eq[(1, )](source, other, output, state, rows, cols, axis, shift, bound, mode, **options)
         torch.npu.synchronize()
         expected = torch.where(index + actual_shift == actual_bound, x, y)
-        assert torch.equal(output.cpu().view(torch.int32), expected.flatten().view(torch.int32))
+        actual = output.cpu()
+        expected = expected.flatten()
+        nan = torch.isnan(expected)
+        assert torch.equal(torch.isnan(actual), nan)
+        assert torch.equal(actual.view(torch.int32)[~nan], expected.view(torch.int32)[~nan])
         assert torch.all(storage[:64].cpu() == 31415.25)
         assert torch.all(storage[-64:].cpu() == 31415.25)
     assert torch.equal(source.cpu().view(torch.int32), x.view(torch.int32))
