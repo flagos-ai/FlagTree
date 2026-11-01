@@ -1,0 +1,45 @@
+_fm_token = _fm_block * {{ call.block_size }} + _fm_row
+_fm_token_valid = (_fm_token < {{ call.tokens }}) & (_fm_row < {{ call.block_size }})
+_fm_qmask = _fm_head_valid & _fm_token_valid[:, None] & (_fm_key_col[None, :] < {{ call.key_dim }})
+_fm_k = tl.load({{ call.key }} + ({{ call.key_offset }}), _fm_qmask, other=0.0)
+_fm_vmask = _fm_head_valid & _fm_token_valid[None, :] & (_fm_value_row[:, None] < {{ call.value_dim }})
+_fm_v = tl.load({{ call.value }} + ({{ call.value_offset }}), _fm_vmask, other=0.0)
+_fm_log = tl.load({{ call.log_prefix }} + ({{ call.prefix_offset }}), _fm_head_valid & (_fm_row < {{ call.block_size }}), other=0.0)
+_fm_gamma = tl.exp2(_fm_log)
+_fm_rounded_state = _fm_state.to(tl.bfloat16)
+# Keep the BF16 state in its WGMMA operand arena between both uses.
+# Its register view ends here, before the coefficient/output fragments.
+tl.store(_fm_sptr, _fm_rounded_state)
+tl.store(_fm_kptr, _fm_k)
+tl.debug_barrier()
+_fm_recall_mma = tle.gpu.wgmma(_fm_sbuf, _fm_kbuf, trans_b=True)
+_fm_recall_mma = tle.gpu.wgmma_wait(0, _fm_recall_mma)
+_fm_recalled = (_fm_recall_mma * _fm_gamma[None, :]).to(tl.bfloat16)
+_fm_residual = (_fm_v - _fm_recalled).to(tl.bfloat16)
+_fm_causal = _fm_row[:, None] >= _fm_row[None, :]
+_fm_ratio = tl.exp2(tl.where(_fm_causal, _fm_log[:, None] - _fm_log[None, :], 0.0))
+_fm_cmask = _fm_head_valid & (_fm_row[:, None] < {{ call.block_size }}) & (_fm_row[None, :] < {{ call.block_size }}) & _fm_causal
+_fm_raw = tl.load({{ call.coefficients }} + ({{ call.coefficients_offset }}), _fm_cmask, other=0.0)
+_fm_coefficient = (_fm_raw.to(tl.float32) * _fm_ratio).to(tl.bfloat16)
+_fm_new = tl.dot(_fm_residual, tl.trans(_fm_coefficient)).to(tl.bfloat16)
+_fm_q = tl.load({{ call.query }} + ({{ call.query_offset }}), _fm_qmask, other=0.0)
+_fm_score = tl.dot(_fm_q, tl.trans(_fm_k)) * _fm_ratio * {{ call.scale }}
+_fm_score = tl.where(_fm_row[:, None] >= _fm_row[None, :], _fm_score, 0.0).to(tl.bfloat16)
+tl.store(_fm_qptr, _fm_q)
+tl.debug_barrier()
+_fm_carry_mma = tle.gpu.wgmma(_fm_sbuf, _fm_qbuf, trans_b=True)
+_fm_carry_mma = tle.gpu.wgmma_wait(0, _fm_carry_mma)
+_fm_carried = _fm_carry_mma * (_fm_gamma * {{ call.scale }})[None, :]
+_fm_output = tl.dot(_fm_new, tl.trans(_fm_score), _fm_carried).to(tl.bfloat16)
+{% for pointer in call.result_pointers %}
+tl.store({{ pointer }} + ({{ call.result_offset }}), _fm_output, _fm_vmask)
+{% endfor %}
+# The prefix is immutable for the call. Reload its small
+# vector after the output MMA so it need not stay live
+# beside the state and output fragments.
+_fm_log = tl.load({{ call.log_prefix }} + ({{ call.prefix_offset }}), _fm_head_valid & (_fm_row < {{ call.block_size }}), other=0.0)
+_fm_count = tl.minimum({{ call.block_size }}, {{ call.tokens }} - _fm_block * {{ call.block_size }})
+_fm_end_log = tl.sum(tl.where(_fm_row == _fm_count - 1, _fm_log, 0.0), 0)
+_fm_decay = tl.exp2(tl.where(_fm_token_valid, _fm_end_log - _fm_log, 0.0))
+_fm_decayed = tl.where(_fm_token_valid[None, :], _fm_new.to(tl.float32) * _fm_decay[None, :], 0.0).to(tl.bfloat16)
+_fm_state = tl.dot(_fm_decayed, _fm_k, _fm_state * tl.exp2(_fm_end_log))

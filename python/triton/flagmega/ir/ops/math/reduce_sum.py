@@ -17,6 +17,14 @@ from triton.flagmega.ir.types import DType, VectorType
 
 @op_definition("math.reduce_sum", namespace="math", functional_name="reduce_sum", display_name="Math.ReduceSum")
 class ReduceSum(OpDefinition):
+    """Sum tensor axes in FP32, retaining vector components independently.
+
+    Vector lanes are components of each tensor element, not additional tensor
+    axes. A negative axis refers to the logical tensor rank. Packed inputs
+    retain their complete lane shape; output_lanes may prepend complete final
+    tensor-axis groups to that shape. It cannot split or reorder input lanes.
+    Scalar inputs retain the existing optional final-axis packing behavior.
+    """
     const_evaluable = True
     value = input_parameter(is_tensor())
     axes = attribute_parameter(default=(-1, ))
@@ -45,8 +53,10 @@ class ReduceSum(OpDefinition):
     def infer_type(cls, inputs, attrs):
         source = cls.value.type_of(inputs)
         value = tensor_of(source)
-        if value.dtype not in {DType.BFLOAT16, DType.FLOAT32}:
-            raise IRSchemaError("ReduceSum requires scalar BF16/FP32 elements.")
+        packed = isinstance(value.dtype, VectorType)
+        scalar_dtype = value.dtype.elem_type if packed else value.dtype
+        if scalar_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
+            raise IRSchemaError("ReduceSum requires BF16/FP32 scalar or vector elements.")
         axes = tuple(normalize_axis(axis, value.rank) for axis in attrs["axes"])
         if len(set(axes)) != len(axes):
             raise IRSchemaError("ReduceSum axes must be distinct.")
@@ -54,12 +64,16 @@ class ReduceSum(OpDefinition):
                       for axis, dim in enumerate(value.shape)
                       if attrs["keep_dims"] or axis not in axes)
         lanes = tuple(attrs.get("output_lanes", ()))
-        if lanes:
-            final_dim = try_div_exactly(shape[-1], prod(lanes)) if shape else None
+        input_lanes = value.dtype.lanes if packed else ()
+        if packed and lanes and (len(lanes) < len(input_lanes) or lanes[-len(input_lanes):] != input_lanes):
+            raise IRSchemaError("ReduceSum packed output must retain its complete input lane shape.")
+        groups = prod(lanes[:len(lanes) - len(input_lanes)]) if lanes else 1
+        if lanes and (not packed or groups != 1):
+            final_dim = try_div_exactly(shape[-1], groups) if shape else None
             if final_dim is None:
                 raise IRSchemaError("ReduceSum final output dimension must be divisible by output_lanes.")
             shape = (*shape[:-1], final_dim)
-        output = tensor_type(VectorType(value.dtype, lanes) if lanes else value.dtype, shape)
+        output = tensor_type(VectorType(scalar_dtype, lanes) if lanes else value.dtype, shape)
         if not isinstance(source, DistributedType):
             return output
         if source.partial is not None:
@@ -70,8 +84,8 @@ class ReduceSum(OpDefinition):
         policies = tuple(SBP.broadcast() if axis in axes else policy
                          for axis, policy in enumerate(source.axis_policies)
                          if attrs["keep_dims"] or axis not in axes)
-        if lanes and isinstance(policies[-1], SBPSplit):
-            final_policy = scale_split_units(policies[-1], 1, prod(lanes))
+        if lanes and groups != 1 and isinstance(policies[-1], SBPSplit):
+            final_policy = scale_split_units(policies[-1], 1, groups)
             if final_policy is None:
                 raise IRSchemaError("ReduceSum output split must align with output_lanes.")
             policies = (*policies[:-1], final_policy)
@@ -80,10 +94,23 @@ class ReduceSum(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         value = cls.value.read(arguments)
-        output = (value.float().sum(dim=tuple(node.attrs["axes"]), keepdim=node.attrs["keep_dims"]).to(value.dtype)
+        source = tensor_of(context.types[cls.value.read(node.inputs)])
+        packed = isinstance(source.dtype, VectorType)
+        axes = tuple(normalize_axis(axis, source.rank) for axis in node.attrs["axes"])
+        output = (value.float().sum(dim=axes, keepdim=node.attrs["keep_dims"]).to(value.dtype)
                   if node.attrs["axes"] else value)
         lanes = tuple(node.attrs.get("output_lanes", ()))
-        return output.reshape(*output.shape[:-1], output.shape[-1] // prod(lanes), *lanes) if lanes else output
+        if not lanes:
+            return output
+        if not packed:
+            return output.reshape(*output.shape[:-1], output.shape[-1] // prod(lanes), *lanes)
+        groups = prod(lanes[:len(lanes) - len(source.dtype.lanes)])
+        if lanes == source.dtype.lanes:
+            return output
+        rank = output.ndim - len(source.dtype.lanes)
+        if rank == 0:
+            return output.reshape(*lanes)
+        return output.reshape(*output.shape[:rank - 1], output.shape[rank - 1] // groups, *lanes)
 
     @classmethod
     def cost(cls, node):

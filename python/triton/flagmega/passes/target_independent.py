@@ -13,6 +13,7 @@ from triton.flagmega.rules.neutral import (
     decompose_sparse_experts_rule,
     fuse_wide_glu_rule,
     fuse_norm_apply_cast_rule,
+    fuse_norm_apply_input_cast_rule,
 )
 from triton.flagmega.rules.neutral.form_qkv_rope_with_cache import form_qkv_rope_with_cache_rule
 from triton.flagmega.rules.neutral.form_paged_attention_kv_cache_pair import form_paged_attention_kv_cache_pair_rule
@@ -33,7 +34,11 @@ def decompose_complex_ops(module: IRModule) -> IRModule:
     # Form larger semantic regions before canonicalizing their remaining
     # output conversions; local precision changes must not hide those regions.
     current = decompose_gated_delta_net(current)
-    return DataflowPass("FoldOutputConversions", (fold_cast_rule(), fold_matmul_cast_rule())).run(current)
+    # Infer a private MatMul's wider result before a consumer records that
+    # widening as its own conversion boundary.
+    return DataflowPass("FoldOutputConversions", (
+        fold_cast_rule(), fold_matmul_cast_rule(), fuse_norm_apply_input_cast_rule(),
+    )).run(current)
 
 
 __all__ = ["decompose_complex_ops"]

@@ -21,7 +21,7 @@ def rotary_embedding_producer_rule():
             if old.rank != 2 or new.rank != 2 or old.shape[0] != new.shape[0]:
                 break
             reference = source
-        inputs = (reference, inputs[1])
+        inputs = (reference, *inputs[1:])
         projections = {
             value.id for value in module.nodes if value.op == "builtin.get_item" and value.inputs == (node.id,)
         }

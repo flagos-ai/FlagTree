@@ -12,7 +12,7 @@ _AUX_PIPELINE = (
 
 
 def _proposed(output_extent=128):
-    builder = fm.IRBuilder(dialect="high_level", stage="imported")
+    builder = fm.IRBuilder(dialect="high_level", stage="vector_contracts_lowered")
     value_type = fm.tensor_type("bfloat16", (1, 128))
     output_type = fm.tensor_type("bfloat16", (1, output_extent))
     weight_type = fm.tensor_type("bfloat16", (output_extent, 128))
@@ -24,21 +24,11 @@ def _proposed(output_extent=128):
         output_type,
         id="projection",
         attrs={"transpose_a": False, "transpose_b": True},
+        metadata={"selected_vectorization": "vectorization.matmul.n",
+                  "selected_vector_axes": (1,), "selected_vector_lanes": (8,)},
     )
     builder.function("main", (value, weight), (projection,))
-    compiler = Compiler()
-    proposed_vector = compiler.compile(
-        builder.build(entry="main"), stop_after="propose-vectorization"
-    ).module
-    vectorized = compiler.run_stage(
-        proposed_vector,
-        "apply-vectorization",
-        plan=override_plan(
-            proposed_vector,
-            (("vectorization.projection", "vectorization.matmul.n"),),
-        ),
-    ).module
-    return Compiler().compile(vectorized, stop_after="propose-tir").module
+    return Compiler().compile(builder.build(entry="main"), stop_after="propose-tir").module
 
 
 def test_auxiliary_candidate_is_non_default_and_not_model_extent_specific():

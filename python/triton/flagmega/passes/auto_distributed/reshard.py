@@ -9,6 +9,7 @@ from math import prod
 from typing import Callable
 
 from triton.flagmega.ir import DistributedType, IRType, SBP, TensorType
+from triton.flagmega.ir.distributed_type import chip_shared_backing_type
 from triton.flagmega.passes.auto_distributed.reshard_decomposition import (
     get_partial_reduce_scatter_intermediates,
 )
@@ -25,7 +26,10 @@ def can_box(source_type: IRType, target_type: IRType) -> bool:
     if source_tensor != target_tensor:
         return False
     if isinstance(source_type, DistributedType) and isinstance(target_type, DistributedType):
-        return source_type.placement == target_type.placement
+        if source_type.placement == target_type.placement:
+            return True
+        from triton.flagmega.ir.distributed_type import chip_view_error
+        return chip_view_error(source_type, target_type) is None
     return True
 
 
@@ -66,8 +70,16 @@ class DistributedReshardPlanner:
             or not isinstance(source_type, DistributedType)
             or not isinstance(target_type, DistributedType)
             or source_type.tensor != target_type.tensor
-            or source_type.placement != target_type.placement
         ):
+            return tuple(plans)
+        if source_type.placement != target_type.placement:
+            # Retarget a complete chip component without changing its device
+            # S/P/E semantics, then realize the remaining redistribution on
+            # the destination mesh. Every edge still needs policy approval.
+            intermediate = chip_shared_backing_type(source_type, target_type.placement)
+            if intermediate is not None and predicate(source_type, intermediate):
+                for tail in cls.plan(intermediate, target_type, predicate, max_hops - 1):
+                    add(intermediate, *tail.step_types)
             return tuple(plans)
         for intermediate in get_partial_reduce_scatter_intermediates(source_type, target_type):
             add(intermediate, target_type)

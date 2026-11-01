@@ -28,12 +28,15 @@ from triton.flagmega.ir.bufferization import (
     PhysicalBuffer,
 )
 from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
+from triton.flagmega.ir.bufferization.loop_carry import LoopCarryBinding
 from triton.flagmega.ir.bufferization.leaves import buffer_leaves
 from triton.flagmega.ir.dim_expr import DimVar, dim
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
     SBPSplit,
     block_owner_count,
+    chip_shared_backing_type,
+    is_component_shard_subview,
     is_fully_replicated,
     is_fully_sharded_across_placement,
     is_local_shard_subview,
@@ -60,6 +63,7 @@ from triton.flagmega.passes.tir.bufferize.alignment import (
 from triton.flagmega.passes.tir.bufferize.allocation import BufferLifetime
 from triton.flagmega.passes.tir.bufferize.allocation_session import AllocationSession
 from triton.flagmega.passes.tir.bufferize.call_input_ownership import non_consumable_parameters
+from triton.flagmega.passes.tir.bufferize.call_storage import canonical_call_storage_values
 from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
 from triton.flagmega.passes.tir.bufferize.readonly_groups import ReadonlyGroupResolver
 from triton.flagmega.passes.tir.shared_workspace import (
@@ -128,10 +132,11 @@ class BufferPlanner:
     """Build a MemSpan-based buffer plan without mutating semantic TIR nodes."""
 
     def __init__(self, module: IRModule, options: BufferizationOptions, *, reuse_preferences=None,
-                 allocation_session=None) -> None:
+                 allocation_session=None, completion_ends=None) -> None:
         self.module = module
         self.options = options
         self.reuse_preferences = reuse_preferences or {}
+        self.completion_ends = completion_ends or {}
         spaces = options.memory_space_map
         try:
             self.workspace_space = spaces[options.workspace]
@@ -161,6 +166,8 @@ class BufferPlanner:
         self.shared_space = spaces.get("shared")
         self.alias_analysis = AliasAnalysis()
         self.non_consumable_parameters = non_consumable_parameters(module)
+        from triton.flagmega.ir.program_order import program_ancestors
+        self.concurrent_programs = program_ancestors(module.metadata.get("kernel_program_partition")) is not None
         self.non_consumable_physical_buffers: set[str] = set()
         self.required_alignments = transfer_source_alignment_requirements(module)
         self.descriptors: dict[str, BufferDescriptor] = {}
@@ -176,7 +183,9 @@ class BufferPlanner:
         # selected-kernel capabilities and propagate it through graph-call
         # boundaries so both the formal parameter and its rdata source keep
         # the same physical representation.
-        self.canonical_global_values = _canonical_global_values(module)
+        self.canonical_global_values = canonical_call_storage_values(
+            module, _canonical_global_values(module)
+        )
         # A module-scoped readonly pool is loaded once per process.  When the
         # launch mesh has device/node axes, rdata descriptors use one segment
         # per chip and retain only block-owner components in each segment.
@@ -484,11 +493,19 @@ class BufferPlanner:
             self.module, nodes, function
         )
         local_index = {node.id: index for index, node in enumerate(nodes)}
-        last_use = dict(local_index)
+        from .program_lifetimes import program_use_ends
+        use_ends = program_use_ends(self.module, function, nodes)
+        function_end = len(nodes)
+        concurrent_entry = function.name == self.module.entry and self.concurrent_programs
+        last_use = {node.id: use_ends.get(node.id, index) for index, node in enumerate(nodes)}
         for index, node in enumerate(nodes):
             for input_id in node.inputs:
                 if input_id in local_index:
-                    last_use[input_id] = max(last_use[input_id], index)
+                    last_use[input_id] = max(last_use[input_id], use_ends.get(node.id, index))
+        if concurrent_entry:
+            # Returned aliases remain observable after all programs finish.
+            for output_id in function.outputs:
+                last_use[output_id] = function_end
         # A view op aliases its source's storage rather than copying it, so the
         # source is still being read wherever the view is read.  Propagate each
         # view's last use back to its source until it settles; without this a
@@ -510,7 +527,6 @@ class BufferPlanner:
                         changed = True
             if not changed:
                 break
-        function_end = len(nodes)
         for output_id in function.outputs:
             last_use[output_id] = function_end
         get_items = {
@@ -709,6 +725,7 @@ class BufferPlanner:
                     get_item_users,
                     output_leaf_ids,
                     function_argument_leaves,
+                    call_end=use_ends.get(node.id, index),
                 )
                 call_records.append(call)
                 for memory_space, values in call_lifetimes.items():
@@ -789,7 +806,7 @@ class BufferPlanner:
                 ))
             self.bindings[node.id] = tuple(ids)
             kernel_record = self._plan_kernel_workspaces(
-                function, node, index, function_end
+                function, node, index, function_end, call_end=use_ends.get(node.id, index)
             )
             if kernel_record is not None:
                 kernel_records.append(kernel_record)
@@ -813,7 +830,7 @@ class BufferPlanner:
                         and self._is_function_pool_storage(descriptor.storage)
                     ):
                         physical_use_end[descriptor.mem_span.buffer.id] = max(
-                            physical_use_end.get(descriptor.mem_span.buffer.id, 0), use_index
+                            physical_use_end.get(descriptor.mem_span.buffer.id, 0), use_ends.get(node.id, use_index)
                         )
         for output_id in function.outputs:
             for buffer_id in self.bindings[output_id]:
@@ -840,8 +857,13 @@ class BufferPlanner:
                 max(
                     max(int(value.live_end) for value in values),
                     physical_use_end.get(physical_id, 0),
+                    self.completion_ends.get(physical_id, 0),
                 ),
             ))
+
+        if self.completion_ends:
+            from .completion_lifetimes import verify_completion_capacity
+            verify_completion_capacity(lifetimes_by_space, self.function_pool_spaces)
 
         allocation_results = {
             name: self.allocator.allocate(
@@ -969,7 +991,10 @@ class BufferPlanner:
         idempotent broadcast replica).  A compact-per-owner descriptor cannot
         represent that contract: its MemSpan exposes only one dense local
         component.  Promote the entire physical alias group to canonical
-        logical spans, matching nncase ``EnsureChipLocalShardedBacking``.
+        logical spans, matching nncase ``EnsureChipLocalShardedBacking``, only
+        for complete non-partial values. An unresolved device partial instead
+        retains its exact compact component and requires a real chip-shared
+        parent backing for a different local mesh.
 
         A fully broadcast value in a block-scoped pool is different: every
         block already owns a complete logical replica. Preserve that physical
@@ -982,11 +1007,12 @@ class BufferPlanner:
             # complete logical allocation.  Only the distributed view needs
             # the canonical-global annotation.
             return DistributedBufferStorageKind.CANONICAL_GLOBAL, None
-        if (
-            source.distributed_storage_kind
-            is DistributedBufferStorageKind.CANONICAL_GLOBAL
-        ):
-            return DistributedBufferStorageKind.CANONICAL_GLOBAL, None
+        if source.distributed_storage_kind.exposes_logical_coordinates:
+            # A previous narrowing/reshape can already expose the complete
+            # image inside each block's private replica. Changing its semantic
+            # owners does not turn those independent images into shared
+            # storage or authorize electing just one block to populate them.
+            return source.distributed_storage_kind, None
         view = self.module.node_map[view_node_id]
         target_type = view.type
         source_space = self.options.memory_space_map.get(
@@ -997,10 +1023,6 @@ class BufferPlanner:
             and source_space.sharing_scope is MemorySharingScope.BLOCK
             and source_space.allocation_scope is MemoryAllocationScope.FUNCTION
             and source_space.kind != "shared"
-            and all(
-                level == "b"
-                for level in source.distributed_type.placement.hierarchy_levels
-            )
             and is_fully_replicated(source.distributed_type)
             and isinstance(target_type, DistributedType)
             and is_local_shard_subview(source.distributed_type, target_type)
@@ -1012,15 +1034,30 @@ class BufferPlanner:
             DistributedBufferStorageKind.COMPACT_PER_CHIP,
         }:
             storage_type = source.storage_distributed_type
+            if (source.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP
+                    and storage_type is not None and source_space is not None
+                    and source_space.sharing_scope is MemorySharingScope.CHIP
+                    and source_space.kind != 'shared'):
+                chip_backing = chip_shared_backing_type(storage_type, target_type.placement)
+                if chip_backing is not None and is_component_shard_subview(chip_backing, target_type):
+                    # The same complete chip component and MemSpan are read
+                    # under the consumer mesh. Only block-B storage coordinates
+                    # change; device ownership/reduction and physical strides
+                    # remain explicit in the parent backing ABI.
+                    return source.distributed_storage_kind, chip_backing
             if (
                 storage_type is not None
-                and is_local_shard_subview(storage_type, target_type)
+                and is_component_shard_subview(storage_type, target_type)
             ):
                 # Preserve the dense component of the coarser source shard.
                 # The target ABI maps its local coordinates relative to this
                 # explicit parent origin instead of pretending that the
                 # smaller target shard begins at byte zero.
                 return source.distributed_storage_kind, storage_type
+        if source.distributed_type.partial is not None:
+            raise IRVerificationError(
+                'Partial view requires the same owner compact backing or a complete chip-shared component.',
+                node_id=view_node_id, stage=self.module.stage)
         self._promote_alias_group_to_canonical(source_id, view_node_id)
         return DistributedBufferStorageKind.CANONICAL_GLOBAL, None
 
@@ -1109,6 +1146,8 @@ class BufferPlanner:
         node,
         index: int,
         function_end: int,
+        *,
+        call_end: int | None = None,
     ) -> KernelCallBufferBinding | None:
         from triton.flagmega.ir.tir import kernel_dispatch_for_call
 
@@ -1132,7 +1171,7 @@ class BufferPlanner:
                 (
                     function_end
                     if requirement.lifetime.value == "function"
-                    else index
+                    else index if call_end is None else call_end
                 ),
                 set(),
                 prefix=f"{node.id}.workspace.{requirement.name}",
@@ -1175,6 +1214,8 @@ class BufferPlanner:
         get_item_users,
         output_leaf_ids,
         function_argument_leaves,
+        *,
+        call_end=None,
     ) -> tuple[CallBufferBinding, list[BufferLifetime]]:
         callee_name = str(node.attrs["callee"])
         callee = self.module.function_map[callee_name]
@@ -1196,6 +1237,7 @@ class BufferPlanner:
                 node_id=node.id,
             )
         arguments = []
+        carries = []
         actual_node_for_formal: dict[str, str] = {}
         if induction is not None:
             # The induction value is produced by the loop, so its formal is
@@ -1203,7 +1245,7 @@ class BufferPlanner:
             for formal in self.bindings.get(induction, ()):
                 arguments.append((formal, formal))
                 actual_node_for_formal[formal] = induction
-        for formal_id, actual_id in zip(formals, actuals):
+        for argument_index, (formal_id, actual_id) in enumerate(zip(formals, actuals)):
             if formal_id not in self.bindings or actual_id not in self.bindings:
                 # Readonly parameter-bank storage is addressed by row access
                 # inside the callee, so neither side owns a planned buffer and
@@ -1223,6 +1265,24 @@ class BufferPlanner:
                 self._reconcile_call_argument_storage_abi(formal, actual)
                 self._verify_call_argument_physical_abi(
                     node.id, formal, actual)
+            if is_loop and argument_index < int(node.attrs['iter_count']) and not isinstance(logical_type(self.module.node_map[actual_id].type), RefType):
+                current_leaves = []
+                for leaf_index, (formal, initial) in enumerate(zip(formal_leaves, actual_leaves)):
+                    kind = _leaf_types(actual_id, self.module.node_map[actual_id].type)[leaf_index][1]
+                    descriptor = self.descriptors[formal]
+                    slots = []
+                    for role in ('current','staging'):
+                        slot, = self._plan_value(function, node.id, kind, index, last_use[node.id], set(),
+                            prefix=f'{node.id}.carry{argument_index}.{leaf_index}.{role}',
+                            role='loop_carry', memory_space=self.workspace_space,
+                            distributed_storage_kind=descriptor.distributed_storage_kind,
+                            distributed_backing_type=descriptor.distributed_backing_type,
+                            owner_stride_bytes=descriptor.owner_stride_bytes)
+                        self._verify_call_argument_physical_abi(node.id, formal, slot)
+                        slots.append(slot)
+                    current_leaves.append(slots[0])
+                    carries.append((formal, initial, *slots))
+                actual_leaves = tuple(current_leaves)
             arguments.extend(zip(formal_leaves, actual_leaves))
             actual_node_for_formal.update((formal, actual_id) for formal in formal_leaves)
         formal_to_actual = dict(arguments)
@@ -1252,6 +1312,14 @@ class BufferPlanner:
                 not identity_passthrough
                 and descriptor.storage != "state"
                 and last_use.get(actual_node) != index
+                # Concurrent entry lifetimes deliberately extend to the
+                # final join for allocation. A callee's chosen destructive
+                # alias instead carries the all-call-sites ownership proof,
+                # including every unordered DAG reader. Do not confuse that
+                # conservative allocation interval with observable reads.
+                and not (function.name == self.module.entry and self.concurrent_programs
+                         and self.descriptors[parameter].mem_span.buffer.id
+                         not in self.non_consumable_physical_buffers)
             ):
                 raise IRVerificationError(
                     f"Call {node.id!r} cannot overwrite still-live argument {actual_node!r}.",
@@ -1263,7 +1331,7 @@ class BufferPlanner:
         actual_results = []
         ids = []
         formal_results = [value for _, values in callee_plan.outputs for value in values]
-        result_leaves = _leaf_types(node.id, node.type)
+        result_leaves = _leaf_types(node.id + '.yield' if is_loop else node.id, node.type)
         result_top_fields = _top_level_leaf_indices(node.type)
         if len(formal_results) != len(result_leaves):
             raise IRVerificationError(
@@ -1275,6 +1343,25 @@ class BufferPlanner:
             zip(result_leaves, formal_results)
         ):
             alias = alias_results.get(formal_result)
+            # A constant returned by the callee is already materialized in
+            # the module's immutable pool. No kernel writes a caller-owned
+            # result for it. Preserve that allocation as the call binding,
+            # just as an identity result preserves its actual parameter.
+            if alias is None and self.descriptors[formal_result].storage == self.rdata_space.name:
+                alias = formal_result
+            # Distinct output leaves may expose the same produced storage,
+            # including a tuple leaf and its sharded/reshaped view.  The
+            # callee writes one span, so instantiate that span only once per
+            # invocation.  Result/parameter aliases alone do not describe
+            # this relation: neither output has to alias a parameter.
+            result_view = None
+            if alias is None:
+                result_span = self.descriptors[formal_result].mem_span
+                result_view = next((
+                    actual for formal, actual in actual_results
+                    if result_span.must_alias(self.descriptors[formal].mem_span)
+                ), None)
+                alias = result_view
             field_index = result_top_fields[ordinal]
             live_end = (
                 self._field_live_end(node.id, field_index, index, last_use, get_item_users)
@@ -1291,13 +1378,13 @@ class BufferPlanner:
                     value_type,
                     index,
                     live_end,
-                    output_leaf_ids,
+                    set() if is_loop else output_leaf_ids,
                     prefix=buffer_id,
                     field=field,
                     alias=alias,
-                    reinterpret=formal_result in view_results,
+                    reinterpret=formal_result in view_results or result_view is not None,
                     alias_kind=(
-                        AliasKind.VIEW if formal_result in view_results
+                        AliasKind.VIEW if formal_result in view_results or result_view is not None
                         else AliasKind.RESULT if alias is not None else None
                     ),
                     role=(
@@ -1306,7 +1393,7 @@ class BufferPlanner:
                         else "call_result_alias" if alias is not None
                         else None
                     ),
-                    memory_space=self._temporary_memory_space(node),
+                    memory_space=(None if result_view is not None else self._temporary_memory_space(node)),
                     distributed_storage_kind=(
                         self.descriptors[formal_result].distributed_storage_kind
                     ),
@@ -1321,6 +1408,29 @@ class BufferPlanner:
                 node.id, formal_result, planned[0]
             )
             actual_results.append((formal_result, planned[0]))
+        loop_carries = []
+        if is_loop:
+            carried_by_current = {current: (formal, initial, current, staging) for formal, initial, current, staging in carries}
+            argument_carries = iter(carries)
+            public_ids = []
+            field_indices = _top_level_leaf_indices(node.type)
+            carry_position = 0
+            for ordinal, ((buffer_id, value_type, field), (_, yielded)) in enumerate(zip(_leaf_types(node.id, node.type), actual_results)):
+                field_index = field_indices[ordinal]
+                field_type = node.type.fields[field_index] if field_index is not None else node.type
+                if isinstance(logical_type(field_type), RefType):
+                    public_ids.append(yielded)
+                    continue
+                formal, initial, current, staging = carries[carry_position]
+                carry_position += 1
+                public, = self._plan_value(function, node.id, value_type, index,
+                    self._field_live_end(node.id, field_index, index, last_use, get_item_users),
+                    output_leaf_ids, prefix=buffer_id, field=field,
+                    role='loop_result', distributed_storage_kind=self.descriptors[yielded].distributed_storage_kind,
+                    distributed_backing_type=self.descriptors[yielded].distributed_backing_type)
+                public_ids.append(public)
+                loop_carries.append(LoopCarryBinding(formal, initial, current, staging, yielded, public))
+            ids = public_ids
         self.bindings[node.id] = tuple(ids)
         lifetimes: dict[str, list[BufferLifetime]] = {
             name: [] for name in self.function_pool_spaces
@@ -1351,12 +1461,23 @@ class BufferPlanner:
             allocation = (
                 f"callframe:{function.name}:{node.id}:{pool.memory_space}"
             )
+            pool_live_end = frame_live_end
+            if function.name == self.module.entry and self.concurrent_programs:
+                # Public result allocations and forwarded input/state pointers
+                # do not live in this private callee frame. Retain a frame
+                # beyond program completion only for results actually backed
+                # by that pool; otherwise unrelated long-lived results would
+                # keep every repeated layer's scratch alive to function end.
+                holds_result = any(self.descriptors[result].mem_span.buffer.memory_space == pool.memory_space
+                                   for result in formal_results)
+                pool_live_end = max(index if call_end is None else call_end,
+                                    frame_live_end if holds_result else index)
             lifetimes[pool.memory_space].append(BufferLifetime(
                 allocation,
                 pool.scope_bytes,
                 pool.alignment,
                 index,
-                frame_live_end,
+                pool_live_end,
                 "call_memory_pool",
             ))
             memory_pools.append(CallMemoryPoolBinding(
@@ -1372,6 +1493,7 @@ class BufferPlanner:
             tuple(arguments),
             tuple(actual_results),
             memory_pools=tuple(memory_pools),
+            loop_carries=tuple(loop_carries),
         ), lifetimes
 
     def _verify_call_argument_physical_abi(
@@ -1509,6 +1631,13 @@ class BufferPlanner:
                 if is_output and self._is_function_pool_storage(source.storage):
                     self._promote_workspace_alias_group_to_result(function, source, buffer_id)
                     source = self.descriptors[str(alias)]
+                    if role == "sharded_view":
+                        # Publication may replace a private replica by a
+                        # canonical caller allocation. Resolve this view
+                        # against the promoted source, not its former pool.
+                        distributed_storage_kind, distributed_backing_type = self._ensure_sharded_view_backing(
+                            source.id, source_node
+                        )
                 target_tensor = _tensor_type(tensor_type)
                 if reinterpret and source.distributed_backing_type is not None:
                     # A coarser shard backing names axes of the source type.
@@ -1529,6 +1658,12 @@ class BufferPlanner:
                 if (target_backing_type is None and not reinterpret and isinstance(tensor_type, DistributedType)
                         and tensor_type == source.distributed_type and not target_kind.exposes_logical_coordinates):
                     target_backing_type = source.distributed_backing_type
+                # Equal semantic and storage types have identical owner origins
+                # and component extents. Retaining an identity parent would
+                # mislabel direct local storage as a refined shard ABI, even
+                # though no parent-coordinate adjustment is required.
+                if target_backing_type == tensor_type:
+                    target_backing_type = None
                 target_component_shape = _component_shape(
                     tensor_type,
                     shape,
@@ -1990,6 +2125,11 @@ class BufferPlanner:
                 ))
                 return
             result.update(value[0] for value in _leaf_types(value_id, node.type))
+            if node.op == "tir.buffer_view" and node.type == self.module.node_map[node.inputs[0]].type:
+                # A complete, type-preserving view has the same external
+                # storage contract as its producer. Constrain that allocation
+                # before temporary placement can choose a different ABI.
+                add_value(node.inputs[0])
 
         for output_id in function.outputs:
             add_value(output_id)
@@ -2024,7 +2164,7 @@ class BufferPlanner:
         storage_kind = (
             DistributedBufferStorageKind.CANONICAL_GLOBAL
             if distributed_storage_kind is None
-            and source_node in self.canonical_global_values
+            and (source_node in self.canonical_global_values or buffer_id in self.canonical_global_values)
             and isinstance(value_type, DistributedType)
             else (
                 _distributed_storage_kind(
@@ -2073,10 +2213,11 @@ class BufferPlanner:
             stride = nbytes if owner_stride_bytes is None else owner_stride_bytes
             if stride % required_alignment:
                 raise IRVerificationError(f"Buffer {buffer_id!r} owner stride violates its alignment contract.")
+            storage_type = distributed_backing_type or distributed
             owner_count = (
-                placement_owner_count(distributed)
+                placement_owner_count(storage_type)
                 if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
-                else block_owner_count(distributed)
+                else block_owner_count(storage_type)
             )
             physical_nbytes = max(physical_nbytes, stride * (owner_count - 1) + nbytes)
         physical_id = str(physical_id)
@@ -2466,30 +2607,62 @@ def plan_buffers(
     baseline = BufferPlanner(module, resolved_options, allocation_session=session).run()
     if resolved_options.optimization_level == "fast":
         return baseline
-    preferences = collect_reuse_preferences(module, baseline)
-    if not preferences:
-        return baseline
-    # Separating one reuse pair can expose another; within the byte budget the
-    # fixed point collects every round's newly exposed pairs. Each round must
-    # stay a strict improvement over the previous best, or it is discarded.
+    from .completion_lifetimes import CompletionCapacityUnavailable, completion_lifetime_ends
+
     best = baseline
-    seen = frozenset()
-    for _ in range(max(1, resolved_options.barrier_fixpoint_rounds)):
-        if preferences == seen or not preferences:
-            break
-        seen = frozenset(preferences)
-        candidate = BufferPlanner(
-            module, resolved_options, reuse_preferences=preferences, allocation_session=session,
-        ).run()
-        # Both alternatives are ordinary verified SAT placements. Select only
-        # a Pareto improvement in synchronization and pool size; solver
-        # failures remain errors, and all surviving hazards are materialized
-        # normally.
-        if not dominates_memory_schedule(module, candidate, best,
+    completion_ends = {}
+    seen = []
+    for include_chip_local in (False, True):
+        proposed_ends = completion_lifetime_ends(module, baseline, include_chip_local=include_chip_local)
+        if not proposed_ends or proposed_ends in seen:
+            continue
+        seen.append(proposed_ends)
+        try:
+            proposal = BufferPlanner(module, resolved_options, allocation_session=session,
+                                     completion_ends=proposed_ends).run()
+        except CompletionCapacityUnavailable as error:
+            import logging
+            logging.getLogger(__name__).debug("Completion-lifetime proposal not generated: %s", error)
+        else:
+            if dominates_memory_schedule(module, proposal, best, pool_baseline=baseline,
                                          bytes_budget=resolved_options.barrier_bytes_budget):
+                best = proposal
+                completion_ends = proposed_ends
+    preferences = collect_reuse_preferences(module, best)
+    if not preferences:
+        return best
+    # Always include the zero-spend placement. A positive local SAT budget can
+    # expose new hazards or compound through callee frames; rejecting that
+    # proposal must not discard an already feasible synchronization improvement.
+    budget = resolved_options.barrier_bytes_budget
+    local_budgets = tuple(dict.fromkeys((0, budget, budget // 2, budget // 4)))
+    for _ in range(resolved_options.barrier_fixpoint_rounds):
+        changed = False
+        for local_budget in local_budgets:
+            candidate = BufferPlanner(
+                module, replace(resolved_options, barrier_bytes_budget=local_budget),
+                reuse_preferences=preferences, allocation_session=session,
+                completion_ends=completion_ends,
+            ).run()
+            # The original pool sizes define an absolute cap across all rounds.
+            # Compare actual entry rendezvous, including composed callee costs;
+            # allocation preferences alone are not a synchronization proof.
+            if dominates_memory_schedule(
+                module, candidate, best, bytes_budget=budget, pool_baseline=baseline,
+            ):
+                best = candidate
+            # Even a rejected layout is a counterexample: relocation can expose
+            # a different real reuse hazard. Retain its pairs for the next solve
+            # while retaining only verified, globally feasible improvements.
+            collected = collect_reuse_preferences(module, candidate)
+            updated = {
+                key: tuple(sorted(set(preferences.get(key, ())) | set(collected.get(key, ()))))
+                for key in sorted(preferences.keys() | collected.keys())
+            }
+            changed |= updated != preferences
+            preferences = updated
+        if not changed:
             break
-        best = candidate
-        preferences = collect_reuse_preferences(module, best) | preferences
     return best
 
 
@@ -2762,6 +2935,19 @@ def _distributed_storage_kind(
             and role != "function_argument"
         ):
             return DistributedBufferStorageKind.COMPACT_LOCAL
+        if (
+            function_pool
+            and function_pool_sharing_scope is MemorySharingScope.CHIP
+            and role != "function_argument"
+            and rdata_chip_sharding
+            and all(value_type.placement.hierarchy_levels[axis] in {"c", "d"}
+                    for axis in value_type.partial.axes)
+        ):
+            # Each device owns a separate pool image. Chip partials therefore
+            # need distinct components only for block split axes, not for
+            # broadcast block replicas. In particular a cooperative producer
+            # assembles one complete chip partial, not one fragment per copy.
+            return DistributedBufferStorageKind.COMPACT_PER_CHIP
         return DistributedBufferStorageKind.COMPACT_PER_OWNER
     chip_split = any(
         isinstance(policy, SBPSplit)
@@ -2825,7 +3011,12 @@ def _canonical_global_values(module: IRModule) -> frozenset[str]:
     bindings until reaching the rdata-producing value.
     """
 
-    required: set[str] = set()
+    # Explicit readonly ABI constraints must reach descriptor creation and
+    # alias/call planning, as well as the initial physical allocation.
+    required: set[str] = {
+        node.id for node in module.nodes
+        if str(node.metadata.get("canonical_global", "")) == "true"
+    }
     function_map = module.function_map
     primitive_map = module.kernel_callable_map
     from triton.flagmega.ir.tir import kernel_dispatch_of
@@ -2952,10 +3143,11 @@ def _physical_nbytes(
         distributed_backing_type=distributed_backing_type,
     )
     if isinstance(value_type, DistributedType):
+        storage_type = distributed_backing_type or value_type
         if kind is DistributedBufferStorageKind.COMPACT_PER_OWNER:
-            return component * placement_owner_count(value_type)
+            return component * placement_owner_count(storage_type)
         if kind is DistributedBufferStorageKind.COMPACT_PER_CHIP:
-            return component * block_owner_count(value_type)
+            return component * block_owner_count(storage_type)
     return component
 
 

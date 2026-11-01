@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
-
 from triton.flagmega.codegen.triton.reduction_domain import local_reduction_domain
 from triton.flagmega.errors import CodegenError
 
@@ -45,3 +44,22 @@ def test_reduction_domain_rejects_invalid_tile(tile):
 def test_reduction_domain_does_not_flatten_vector_lanes_into_a_scalar_axis():
     with pytest.raises(CodegenError, match="vector element"):
         local_reduction_domain(abi((3, 7), lanes=8), (1, ), 256)
+
+
+@pytest.mark.parametrize("axes", [(0, 2), (2, 0), (), (1,)])
+def test_reduction_domain_vector_rows_preserve_scalar_coordinate_map(axes):
+    import numpy as np
+
+    source = abi((2, 7, 3))
+    scalar = local_reduction_domain(source, axes, 256)
+    tiled = local_reduction_domain(source, axes, 256,
+                                   row_index="rows[:, None]", reduction_index="offsets[None, :]")
+    rows, offsets = np.arange(scalar["rows"]), np.arange(scalar["capacity"])
+    values = {"rows": rows, "offsets": offsets}
+    coordinates = tuple(np.broadcast_to(eval(expr, {"__builtins__": {}}, values),
+                                        (len(rows), len(offsets))) for expr in tiled["coordinates"])
+    for row in rows:
+        for offset in offsets:
+            expected = tuple(eval(expr, {"__builtins__": {}}, {"_fm_row": int(row), "_fm_offsets": int(offset)})
+                             for expr in scalar["coordinates"])
+            assert tuple(int(value[row, offset]) for value in coordinates) == expected

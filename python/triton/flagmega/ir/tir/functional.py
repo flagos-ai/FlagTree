@@ -15,6 +15,7 @@ from triton.flagmega.ir.tir.buffer_store import BufferStore
 from triton.flagmega.ir.tir.evaluate import Evaluate
 from triton.flagmega.ir.tir.execution_function import ExecutionFunction
 from triton.flagmega.ir.tir.for_loop import For, LoopMode, LoopPartition
+from triton.flagmega.ir.tir.loop_carry import LoopCarry
 from triton.flagmega.ir.tir.if_then_else import IfThenElse
 from triton.flagmega.ir.tir.immediate import Immediate
 from triton.flagmega.ir.tir.inplace_alias_candidate import InplaceAliasCandidate
@@ -77,6 +78,7 @@ class T:
     execution_function = ExecutionFunction
     sequential = Sequential
     for_loop = For
+    loop_carry = LoopCarry
     let = Let
     if_then_else = IfThenElse
     block = Block

@@ -4,6 +4,7 @@ import triton.experimental.tle.language as tle
 {{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
 {{ call.symbol }}__rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
 {{ call.symbol }}__row_layout = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__mma_layout))
+{{ call.symbol }}__column_layout = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__mma_layout))
 @triton.jit(noinline=True)
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -50,7 +51,11 @@ def {{ call.symbol }}({{ call.signature }}):
                     _fm_dsa_score = tle.gpu.set_layout(tl.zeros((16, 64), tl.float32), {{ call.symbol }}__mma_layout)
                     for _fm_dsa_k_start in tl.range(0, {{ call.head_dim }}, 16):
                         _fm_dsa_reduction = _fm_dsa_k_start + _fm_dsa_k
+{% if call.head_sharded %}
+                        _fm_dsa_q = tl.load({{ call.query }} + ({{ call.mma_query_offset }}), _fm_dsa_head[:, None] < ({{ call.head_active }}), other=0.)
+{% else %}
                         _fm_dsa_q = tl.load({{ call.query }} + _fm_dsa_head[:, None] * {{ call.query_head_stride }} + _fm_dsa_reduction[None, :], _fm_dsa_head[:, None] < {{ call.num_query_heads }}, other=0.)
+{% endif %}
                         _fm_dsa_key = tl.load({{ call.kv_cache }} + _fm_dsa_base[None, :] + _fm_dsa_reduction[:, None], _fm_dsa_valid[None, :], other=0.)
                         _fm_dsa_score = tl.dot(tle.gpu.set_layout(_fm_dsa_q, {{ call.symbol }}__lhs_layout), tle.gpu.set_layout(_fm_dsa_key, {{ call.symbol }}__rhs_layout), _fm_dsa_score)
                     _fm_dsa_score = tl.where(_fm_dsa_valid[None, :], _fm_dsa_score, -float("inf"))
@@ -64,12 +69,16 @@ def {{ call.symbol }}({{ call.signature }}):
                     # full 64xD operand keeps its values and pointer vectors
                     # live together with O across the device call chain.
                     for _fm_dsa_pv_start in tl.range(0, 64, 16, num_stages=1):
-                        _fm_dsa_pv_token = _fm_dsa_pv_start + _fm_dsa_k
-                        _fm_dsa_pv_base = tl.gather(_fm_dsa_base, _fm_dsa_pv_token, 0)
-                        _fm_dsa_pv_valid = tl.gather(_fm_dsa_valid, _fm_dsa_pv_token, 0)
+                        _fm_dsa_pv_token = tle.gpu.set_layout(_fm_dsa_pv_start + _fm_dsa_k, {{ call.symbol }}__column_layout)
+                        _fm_dsa_pv_base = tle.gpu.set_layout(tl.gather(_fm_dsa_base, _fm_dsa_pv_token, 0), {{ call.symbol }}__row_layout)
+                        _fm_dsa_pv_valid = tle.gpu.set_layout(tl.gather(_fm_dsa_valid, _fm_dsa_pv_token, 0), {{ call.symbol }}__row_layout)
                         _fm_dsa_pv_p = tl.gather(_fm_dsa_rounded_p, tl.broadcast_to(_fm_dsa_pv_token[None, :], (16, 16)), 1)
                         _fm_dsa_v = tl.load({{ call.kv_cache }} + _fm_dsa_pv_base[:, None] + {{ call.cache_strides[2] }} + _fm_dsa_dim[None, :], _fm_dsa_pv_valid[:, None] & (_fm_dsa_dim[None, :] < {{ call.head_dim }}), other=0.)
                         _fm_dsa_acc = tl.dot(tle.gpu.set_layout(_fm_dsa_pv_p, {{ call.symbol }}__lhs_layout), tle.gpu.set_layout(_fm_dsa_v, {{ call.symbol }}__rhs_layout), _fm_dsa_acc)
                     _fm_dsa_max = _fm_dsa_updated_max
             _fm_dsa_inverse = tl.inline_asm_elementwise("rcp.approx.ftz.f32 $0, $1;", constraints="=f,f", args=[tl.maximum(_fm_dsa_sum, 1e-20)], dtype=tl.float32, is_pure=True, pack=1)
+{% if call.head_sharded %}
+            tl.store({{ call.result }} + ({{ call.mma_result_offset }}), _fm_dsa_acc * _fm_dsa_inverse[:, None], (_fm_dsa_head[:, None] < ({{ call.head_active }})) & (_fm_dsa_dim[None, :] < {{ call.head_dim }}))
+{% else %}
             tl.store({{ call.result }} + _fm_dsa_head[:, None] * {{ call.result_head_stride }} + _fm_dsa_dim[None, :], _fm_dsa_acc * _fm_dsa_inverse[:, None], (_fm_dsa_head[:, None] < {{ call.num_query_heads }}) & (_fm_dsa_dim[None, :] < {{ call.head_dim }}))
+{% endif %}

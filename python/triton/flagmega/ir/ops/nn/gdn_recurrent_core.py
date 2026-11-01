@@ -49,6 +49,8 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
     round_normalized_qk = attribute_parameter(default=False)
     round_beta = attribute_parameter(default=True)
     round_core = attribute_parameter(default=False)
+    gate_math_mode = attribute_parameter(default="accurate")
+    norm_math_mode = attribute_parameter(default="fast")
     b_weight_encoding = attribute_parameter(default=None)
     a_weight_encoding = attribute_parameter(default=None)
     value_head_order = attribute_parameter(default="grouped")
@@ -81,6 +83,14 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
         for name in ("round_normalized_qk", "round_beta", "round_core"):
             if not isinstance(values[name], bool):
                 raise IRSchemaError(f"GatedDeltaNetRecurrentCore {name} must be boolean.")
+        if attrs["gate_math_mode"] not in ("accurate", "fast"):
+            raise IRSchemaError("GatedDeltaNetRecurrentCore gate_math_mode must be accurate or fast.")
+        if attrs["gate_math_mode"] != "accurate":
+            values["gate_math_mode"] = attrs["gate_math_mode"]
+        if attrs["norm_math_mode"] not in ("fast", "accurate"):
+            raise IRSchemaError("GatedDeltaNetRecurrentCore norm_math_mode must be fast or accurate.")
+        if attrs["norm_math_mode"] != "fast":
+            values["norm_math_mode"] = attrs["norm_math_mode"]
         for name in ("b_weight_encoding", "a_weight_encoding"):
             value = attrs.get(name)
             if value is not None and not isinstance(value, str):
@@ -227,8 +237,12 @@ def gated_delta_net_recurrent_core(
         beta = torch.sigmoid(b_projection[token].float())
         if attrs.get("round_beta", True):
             beta = beta.to(b_projection.dtype).float()
-        decay_log = -torch.exp(a_log.float()) * torch.nn.functional.softplus(a_projection[token].float() +
-                                                                             dt_bias.float())
+        gate_input = a_projection[token].float() + dt_bias.float()
+        if attrs.get("gate_math_mode", "accurate") == "fast":
+            softplus = torch.where(gate_input > 20., gate_input, torch.log(1. + torch.exp(gate_input)))
+        else:
+            softplus = torch.nn.functional.softplus(gate_input)
+        decay_log = -torch.exp(a_log.float()) * softplus
         decayed_state = recurrent_state * torch.exp(decay_log).reshape(num_value_heads, 1, 1)
         recalled = (decayed_state * key.unsqueeze(-1)).sum(dim=1)
         delta = (value.float() - recalled) * beta.unsqueeze(-1)

@@ -4,9 +4,9 @@
 
 from triton.flagmega.codegen.triton.physical_access import emit_local_scalar_offset
 from triton.flagmega.codegen.triton.sparse_experts.common import last_axis_offset, stage_context
+from triton.flagmega.codegen.triton.sparse_experts.pipeline import pipeline_context
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp
-from triton.flagmega.codegen.triton.sparse_experts.pipeline import pipeline_context
 
 
 def sparse_experts_gate_up_call(raw):
@@ -14,7 +14,7 @@ def sparse_experts_gate_up_call(raw):
     definition = DispatchedExpertsGateUp if fused else SparseExpertsGateUp
     context, operands, result = stage_context(raw, definition, "gate_weight")
     name = "q" if fused else "dispatched"
-    return {
+    call = {
         **context,
         **pipeline_context(raw, context, operands, ("gate", "up")),
         "input_pointer": context["pointers"][name],
@@ -27,3 +27,10 @@ def sparse_experts_gate_up_call(raw):
         "result_offset":
         last_axis_offset(result["abi"], ("_fm_token", "_fm_route"), "_fm_n"),
     }
+    if raw.get("variant") == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.cooperative_gate_up import cooperative_gate_up_context
+        return cooperative_gate_up_context(raw, call, operands, result)
+    if raw.get("variant") == "complete_k_wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.complete_k_gate_up import complete_k_gate_up_context
+        return complete_k_gate_up_context(raw, call, operands, result)
+    return call

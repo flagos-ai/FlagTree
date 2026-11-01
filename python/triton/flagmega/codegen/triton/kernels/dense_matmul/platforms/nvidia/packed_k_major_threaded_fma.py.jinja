@@ -1,25 +1,64 @@
 # flagmega-kernel: dense_matmul/packed_k_major_threaded_fma platform=nvidia
 {% if render_calls is defined %}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls | selectattr("threaded_register8", "defined") | selectattr("threaded_register8") | list %}
+@triton.jit
+def _flagmega_threaded_fma_register8(value, ROWS: tl.constexpr):
+    even, odd = tl.split(tl.reshape(value, (ROWS, 128, 4, 2)))
+    v04, v26 = tl.split(tl.reshape(even, (ROWS, 128, 2, 2)))
+    v15, v37 = tl.split(tl.reshape(odd, (ROWS, 128, 2, 2)))
+    v0, v4 = tl.split(v04)
+    v2, v6 = tl.split(v26)
+    v1, v5 = tl.split(v15)
+    v3, v7 = tl.split(v37)
+    return v0, v1, v2, v3, v4, v5, v6, v7
+
+
+{% endif %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == "packed_k_major_threaded_fma" %}
 import triton.experimental.tle.language as tle
 {{ call.symbol }}__dot_layout = tl.constexpr(tle.gpu.BlockEncoding(
     [1, 1], [1, 32], [{{ num_warps // call.dot_warps }}, {{ call.dot_warps }}], [1, 0],
 ))
+{% if call.threaded_register8 %}
+{{ call.symbol }}__bulk_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 8], [1, 32], [{{ num_warps // call.dot_warps }}, {{ call.dot_warps }}], [1, 0],
+))
+{% endif %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
+{% if call.threaded_subtasks > 1 %}
+{% do require_codegen(call.get("replica_n_group") and call.replica_n_group.count % call.threaded_subtasks == 0, "Subvector FMA tasks require a verified, divisible replica group.") %}
+        for dense_local_n_group_start in tl.range(({{ call.replica_n_group.index }} // {{ call.threaded_subtasks }}) * {{ call.tile_n }}, {{ call.local_n_capacity }}, {{ call.replica_n_group.count // call.threaded_subtasks * call.tile_n }}):
+            dense_local_n_start = dense_local_n_group_start + ({{ call.replica_n_group.index }} % {{ call.threaded_subtasks }}) * {{ call.threaded_work_n }}
+{% else %}
         for dense_local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
-            dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+{% endif %}
+            dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.threaded_work_n }})
             dense_global_n = {{ call.global_n }}
             dense_n_mask = ((dense_local_n_offsets < {{ call.local_n_capacity }})
                             & ({{ call.result_active }}))
             dense_accumulator = tle.gpu.set_layout(
-                tl.zeros(({{ call.tile_n }}, {{ call.dot_lanes }}), tl.float32), {{ call.symbol }}__dot_layout,
+                tl.zeros(({{ call.threaded_work_n }}, {{ call.dot_lanes }}), tl.float32), {{ call.symbol }}__dot_layout,
             )
             for dense_local_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
+{% if call.threaded_register8 %}
+                dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
+                dense_global_k = {{ call.global_k }}
+                dense_bulk_offset = tle.gpu.set_layout(({{ call.weight_offset }}), {{ call.symbol }}__bulk_layout)
+                dense_bulk_mask = tle.gpu.set_layout(tl.broadcast_to(dense_n_mask[:, None], ({{ call.threaded_work_n }}, {{ call.block_k }})), {{ call.symbol }}__bulk_layout)
+                dense_bulk_weight = tl.load({{ call.weight }} + dense_bulk_offset, dense_bulk_mask, other=0.).to(tl.float32)
+                dense_register_weights = _flagmega_threaded_fma_register8(dense_bulk_weight, {{ call.threaded_work_n }})
+                dense_bulk_source_offset = tle.gpu.set_layout(({{ call.source_offset }}), tle.gpu.SlicedEncoding(0, {{ call.symbol }}__bulk_layout))
+                dense_bulk_source = tl.load({{ call.source }} + dense_bulk_source_offset).to(tl.float32)
+                dense_register_sources = _flagmega_threaded_fma_register8(tl.reshape(dense_bulk_source, (1, {{ call.block_k }})), 1)
+                for dense_vector_index in tl.static_range(8):
+                    dense_weight_value = tle.gpu.set_layout(dense_register_weights[dense_vector_index], {{ call.symbol }}__dot_layout)
+                    dense_accumulator = tl.fma(dense_weight_value, dense_register_sources[dense_vector_index], dense_accumulator)
+{% else %}
                 for dense_vector_index in tl.range({{ call.values_per_lane }}, loop_unroll_factor=2):
                     dense_local_k_offsets = (dense_local_k_start
                         + tl.arange(0, {{ call.dot_lanes }}) * {{ call.values_per_lane }} + dense_vector_index)
@@ -29,16 +68,29 @@ def {{ call.symbol }}({{ call.signature }}):
                                                  mask=dense_n_mask[:, None], other=0.).to(tl.float32)
                     dense_weight_value = tle.gpu.set_layout(dense_weight_value, {{ call.symbol }}__dot_layout)
                     dense_accumulator = tl.fma(dense_weight_value, dense_source_value[None, :], dense_accumulator)
+{% endif %}
+{% if call.threaded_register8 %}
+            # The original five XOR additions are the numerical contract,
+            # independent of the chosen load/register encoding.
+            dense_tree = tl.reshape(dense_accumulator, ({{ call.threaded_work_n }}, {{ call.dot_warps }}, 32))
+            dense_lanes = tl.arange(0, 32)
+            for dense_step in tl.static_range(5):
+                dense_peer = dense_lanes ^ (16 >> dense_step)
+                dense_partner = tl.gather(dense_tree, tl.broadcast_to(dense_peer[None, None, :], ({{ call.threaded_work_n }}, {{ call.dot_warps }}, 32)), 2)
+                dense_tree = tl.inline_asm_elementwise("add.rn.f32 $0, $1, $2;", constraints="=f,f,f", args=[dense_tree, dense_partner], dtype=tl.float32, is_pure=True, pack=1)
+            dense_warp_partials = tl.reshape(tl.gather(dense_tree, tl.full(({{ call.threaded_work_n }}, {{ call.dot_warps }}, 1), 0, tl.int32), 2), ({{ call.threaded_work_n }}, {{ call.dot_warps }}))
+{% else %}
             dense_warp_partials = tl.sum(tl.reshape(
-                dense_accumulator, ({{ call.tile_n }}, {{ call.dot_warps }}, 32),
+                dense_accumulator, ({{ call.threaded_work_n }}, {{ call.dot_warps }}, 32),
             ), 2)
+{% endif %}
             dense_result = tl.reshape(tl.gather(
-                dense_warp_partials, tl.full(({{ call.tile_n }}, 1), 0, tl.int32), 1,
-            ), ({{ call.tile_n }},))
+                dense_warp_partials, tl.full(({{ call.threaded_work_n }}, 1), 0, tl.int32), 1,
+            ), ({{ call.threaded_work_n }},))
 {% for warp in range(1, call.dot_warps) %}
             dense_partial = tl.reshape(tl.gather(
-                dense_warp_partials, tl.full(({{ call.tile_n }}, 1), {{ warp }}, tl.int32), 1,
-            ), ({{ call.tile_n }},))
+                dense_warp_partials, tl.full(({{ call.threaded_work_n }}, 1), {{ warp }}, tl.int32), 1,
+            ), ({{ call.threaded_work_n }},))
             dense_result = libdevice.add_rn(dense_result, dense_partial)
 {% endfor %}
             tl.store({{ call.result }} + ({{ call.result_offset }}), dense_result, mask=dense_n_mask)

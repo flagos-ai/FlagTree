@@ -23,6 +23,10 @@ def lower_sparse_experts(module):
             continue
         local = make_node(SparseExpertsWeightedSum.op_name, node.id + ".weighted_sum",
                           tuple(source[key] for key in node.inputs), node.attrs, node.metadata)
+        if local.type != node.type and not (isinstance(local.type, DistributedType) and local.type.partial is not None):
+            local = make_node(SparseExpertsWeightedSum.op_name, local.id,
+                              tuple(source[key] for key in node.inputs),
+                              {**node.attrs, "cast_output": True}, node.metadata)
         prefix = [local]
         if isinstance(local.type, DistributedType) and local.type.partial is not None:
             local = make_node("distributed.boxing", node.id + ".owner_sum", (local,),

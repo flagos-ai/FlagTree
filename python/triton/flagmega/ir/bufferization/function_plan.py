@@ -9,6 +9,7 @@ from functools import cached_property
 from typing import Any, Mapping
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.bufferization.loop_carry import LoopCarryBinding
 from triton.flagmega.ir.bufferization.memory_pool import (
     CallMemoryPoolBinding,
     FunctionMemoryPool,
@@ -37,6 +38,7 @@ class CallBufferBinding:
     arguments: tuple[tuple[str, str], ...]
     results: tuple[tuple[str, str], ...]
     memory_pools: tuple[CallMemoryPoolBinding, ...]
+    loop_carries: tuple[LoopCarryBinding, ...]
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class CallBufferBinding:
         workspace_bytes: int = 0,
         *,
         memory_pools: tuple[CallMemoryPoolBinding, ...] | None = None,
+        loop_carries: tuple[LoopCarryBinding, ...] = (),
     ) -> None:
         if memory_pools is not None and (
             workspace_allocation is not None or workspace_offset or workspace_bytes
@@ -84,6 +87,7 @@ class CallBufferBinding:
         object.__setattr__(self, "arguments", tuple(arguments))
         object.__setattr__(self, "results", tuple(results))
         object.__setattr__(self, "memory_pools", pools)
+        object.__setattr__(self, "loop_carries", tuple(loop_carries))
 
     @cached_property
     def memory_pool_map(self) -> Mapping[str, CallMemoryPoolBinding]:
@@ -122,6 +126,7 @@ class CallBufferBinding:
                 {"formal": formal, "actual": actual} for formal, actual in self.results
             ],
             "memory_pools": [value.to_data() for value in self.memory_pools],
+            **({"loop_carries": [value.to_data() for value in self.loop_carries]} if self.loop_carries else {}),
         }
 
     @classmethod
@@ -135,6 +140,7 @@ class CallBufferBinding:
             call=str(data["call"]),
             caller=str(data["caller"]),
             callee=str(data["callee"]),
+            loop_carries=tuple(LoopCarryBinding.from_data(value) for value in data.get("loop_carries", ())),
             arguments=tuple(
                 (str(value["formal"]), str(value["actual"]))
                 for value in data.get("arguments", ())

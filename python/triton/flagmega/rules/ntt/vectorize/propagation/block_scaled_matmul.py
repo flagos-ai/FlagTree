@@ -34,10 +34,11 @@ def block_scaled_matmul_producer_rule():
     return RewriteRule(
         "VectorizeBlockScaledMatMulPropagation",
         lambda node, _: node.op in {"math.block_scaled_matmul", "math.packed_block_scaled_matmul",
-                                    "nn.partitioned_sparse_experts_down", "nn.mla_projection"},
+                                    "nn.partitioned_sparse_experts_down", "nn.mla_projection", "nn.partitioned_linear",
+                                    "nn.partitioned_block_scaled_linear"},
         rewrite,
         root_ops=("math.block_scaled_matmul", "math.packed_block_scaled_matmul", "nn.partitioned_sparse_experts_down",
-                  "nn.mla_projection"),
+                  "nn.mla_projection", "nn.partitioned_linear", "nn.partitioned_block_scaled_linear"),
     )
 
 

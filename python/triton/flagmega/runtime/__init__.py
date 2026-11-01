@@ -3,6 +3,7 @@
 """Generated artifact runtime namespace."""
 
 from triton.flagmega.runtime.prepared import PreparedKernel, ResourceContract, prepare_jit_kernel
+from triton.flagmega.runtime.shared_readonly import SharedReadonlyPool
 from triton.flagmega.runtime.loader import load
 from triton.flagmega.runtime.lifecycle import RuntimeModule, RuntimeState
 from triton.flagmega.ir.ops.nn._kda_state import KdaState, KdaStateConfig, create_kda_state
@@ -41,6 +42,7 @@ __all__ = [
     "GeneratedTirPagedAttentionModelModule",
     "GeneratedTirSingleTensorModule",
     "PreparedKernel",
+    "SharedReadonlyPool",
     "GatedDeltaNetState",
     "KdaState",
     "KdaStateConfig",

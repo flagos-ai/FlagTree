@@ -4,20 +4,28 @@
 
 The source contract is vLLM ae10e855a, BF16, TP1, Inductor level 3,
 custom_ops=['none'] and text-only fused QK norm/RoPE. GDN decode uses the
-native recurrent path; prefill exposes the FlashInfer CP block stages for
-chunks up to 512 tokens. A profile declares source semantics; full-model numerical acceptance remains a separate
+native recurrent path; prefill exposes the FlashInfer CP block stages and
+512-token chunk transfers. A profile declares source semantics; full-model numerical acceptance remains a separate
 device test, not a consequence of this metadata.
 """
 
 from dataclasses import replace
+from math import prod
 
 from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.numerics import VLLM_AE10_INDUCTOR_LEVEL3
 from triton.flagmega.importer.numerics.gdn_prefill import emit_gdn_prefill
+from triton.flagmega.importer.numerics.rotary_cache import native_rope_inverse_frequencies
+from triton.flagmega.importer.numerics.partitioned_projection import (
+    ordered_projection_parts, qwen35_native_projection_parts,
+)
 from triton.flagmega.ir import DType, TupleType, tensor_type, verify_module
+from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
+from triton.flagmega.ir.ops.nn._paged_attention_state import paged_attention_state_config_from_type
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.rules.neutral._utility import make_node
+from triton.flagmega.passes.rewriter import DataflowPass
 
 
 def apply_qwen35_moe_vllm_profile(module):
@@ -26,8 +34,6 @@ def apply_qwen35_moe_vllm_profile(module):
     phase = module.metadata.get("execution_phase", "decode")
     if phase not in ("decode", "prefill"):
         raise ImporterError("The pinned numerical contract requires an explicit decode or prefill phase.")
-    if phase == "prefill" and module.metadata["tokens_per_call"] > 512:
-        raise ImporterError("The pinned CP prefill contract requires chunks of at most 512 tokens.")
     if module.metadata.get("numerical_contract") == VLLM_AE10_INDUCTOR_LEVEL3:
         return verify_module(module)
     if module.metadata.get("numerical_contract", "nncase") != "nncase":
@@ -41,6 +47,10 @@ def apply_qwen35_moe_vllm_profile(module):
     # storage dtype carries the source's table rounding across the call ABI.
     rotary_parameters = {name for node in module.nodes if node.op == "nn.rope"
                          for name in node.inputs[1:] if original[name].op == "builtin.var"}
+    qk_stats = {original[name + suffix].inputs[1] for name in decoder_names if name.endswith("_attention")
+                for suffix in ("_q_norm", "_k_norm")}
+    qk_norms = {name + suffix for name in decoder_names if name.endswith("_attention")
+                for suffix in ("_q_norm", "_k_norm")}
     shared_gate_ids, shared_expert_ids = set(), set()
     for name in decoder_names:
         for suffix, op in (("_input_norm", "nn.norm_apply"), ("_attention_residual", "math.add"),
@@ -60,13 +70,16 @@ def apply_qwen35_moe_vllm_profile(module):
     nodes, mapped = [], {}
 
     def emit(op, name, inputs=(), attrs=None, metadata=None):
+        if op == "math.matmul" and inputs and all(value.type.dtype == DType.BFLOAT16 for value in inputs):
+            attrs = {**(attrs or {}), "reduction_order": "mma_k16"}
         value = make_node(op, name, inputs, attrs or {},
                           {**(metadata or {}), "numerical_contract": VLLM_AE10_INDUCTOR_LEVEL3})
         nodes.append(value)
         return value
 
     def cast(value, dtype, name):
-        return value if value.type.dtype == dtype else emit("tensors.cast", name, (value, ), {"dtype": dtype.value})
+        return value if value.type.dtype == dtype else emit("tensors.cast", name, (value, ),
+            {"dtype": dtype.value, "rounding_contract": "preserve"})
 
     def wide(value, name):
         return cast(value, DType.FLOAT32, name)
@@ -99,17 +112,81 @@ def apply_qwen35_moe_vllm_profile(module):
             result = emit(
                 source.op, source.id, tuple(operands), {
                     **source.attrs, "qk_norm_mode": "add", "qk_norm_epsilon": 1e-6, "round_normalized_qk": False,
-                    "round_beta": True, "round_core": True
+                    "round_beta": True, "round_core": True, "gate_math_mode": "fast", "norm_math_mode": "accurate"
                 }, source.metadata)
         elif source.op == "nn.rotary_embedding":
+            frequencies = native_rope_inverse_frequencies(source.attrs["head_dim"], source.attrs["theta"])
+            cache = emit("nn.rotary_cache_table", source.id + ".cache", attrs={
+                "positions": paged_attention_state_config_from_type(inputs[1].type).max_sequence_length,
+                "inverse_frequencies": frequencies,
+                "attention_scaling": source.attrs.get("attention_scaling", 1.), "output_dtype": "bfloat16"})
+            result = emit(source.op, source.id, (*inputs, cache),
+                          {**source.attrs, "output_dtype": "bfloat16", "math_mode": "accurate",
+                           "inverse_frequencies": frequencies}, source.metadata)
+        elif source.id in qk_stats:
+            value_type = tensor_of(module.node_map[source.inputs[0]].type)
+            suffix = value_type.shape[int(source.attrs["axis"]) % value_type.rank:]
+            capacity = prod(d.fixed_value for d in suffix) * prod(getattr(value_type.dtype, "lanes", ()))
+            tree_group = min(32, 1 << (max((capacity + 1) // 2, 1) - 1).bit_length())
             result = emit(source.op, source.id, inputs,
-                          {**source.attrs, "output_dtype": "bfloat16"}, source.metadata)
+                          {**source.attrs, "reduction_group_size": 2, "reduction_order": "tree",
+                           "reduction_tree_group_size": tree_group}, source.metadata)
+        elif source.op == "nn.norm_stats":
+            input_rms = not source.inputs[0].endswith("_attention_residual")
+            value_type = tensor_of(module.node_map[source.inputs[0]].type)
+            suffix = value_type.shape[int(source.attrs["axis"]) % value_type.rank:]
+            capacity = prod(d.fixed_value for d in suffix) * prod(getattr(value_type.dtype, "lanes", ()))
+            tree_count = (min(capacity, 1024) if input_rms else capacity) // 8
+            tree_group = min(32, 1 << (max(tree_count, 1) - 1).bit_length())
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "reduction_group_size": 8, "reduction_tree_group_size": tree_group,
+                           **({"reduction_order": "tile_fma", "reduction_block_size": 1024,
+                               "reduction_block_traversal": "reverse"}
+                              if input_rms else {"reduction_order": "group_fma", "reduction_group_seed_index": 1})},
+                          source.metadata)
+        elif source.op == "nn.norm_apply" and source.id not in qk_norms:
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "math_mode": "accurate"}, source.metadata)
+        elif source.op == "nn.qkv_parallel_linear":
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "reduction_order": "mma_k16"}, source.metadata)
+        elif source.op == "nn.paged_attention":
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "probability_rounding": "online_bf16",
+                           "softmax_block_size": 80, "softmax_traversal": "reverse"}, source.metadata)
+        elif source.id in {name + "_router_softmax" for name in decoder_names}:
+            # The following routing op owns scoring and normalization,
+            # including their native FP32 rounding order.
+            result = inputs[0]
+            mapped[source.id] = result
+            continue
+        elif source.id in {name + "_router_top_k" for name in decoder_names}:
+            bias = emit("builtin.none", source.id + ".bias")
+            result = emit("nn.staged_routing", source.id, (inputs[0], bias), {
+                "k": source.attrs["k"], "axis": source.attrs["axis"],
+                "index_dtype": source.attrs["index_dtype"], "scoring": "softmax",
+                "normalize": True, "scaling": 1., "arithmetic": "exp_grouped_reciprocal",
+            }, source.metadata)
+        elif source.id in {name + "_router_weights" for name in decoder_names}:
+            result = emit("tensors.reshape", source.id, (inputs[0],),
+                          {"shape": tuple(dim.fixed_value for dim in source.type.shape)}, source.metadata)
+        elif (source.op == "math.matmul" and source.attrs.get("transpose_b") is True
+              and not source.attrs.get("transpose_a") and qwen35_native_projection_parts(*inputs) == 2):
+            result = ordered_projection_parts(*inputs, emit, name=source.id, parts=2)
+            if source.type.dtype == DType.FLOAT32:
+                result = wide(result, source.id + ".wide")
         elif source.op == "math.matmul" and source.attrs.get("output_data_type") == "float32":
             # Only the explicit compatibility profile restores the source's
             # BF16 projection store before FP32 router/logits consumers.
             projected = emit(source.op, source.id + ".projection_bf16", inputs,
                              {**source.attrs, "output_data_type": "bfloat16"}, source.metadata)
             result = wide(projected, source.id)
+        elif source.op == "math.matmul" and source.type.dtype == DType.BFLOAT16:
+            # Native linear projections publish BF16 before their consumers.
+            # Declare that boundary so a private FP32 cast cannot request the
+            # relaxed FoldMatMulCast rewrite's unrounded FP32 projection.
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "output_data_type": "bfloat16"}, source.metadata)
         elif source.op == "nn.dense_matmul_glu":
             gate = emit("math.matmul", source.id + ".gate", inputs[:2], {"transpose_b": True})
             up = emit("math.matmul", source.id + ".up", (inputs[0], inputs[2]), {"transpose_b": True})
@@ -121,12 +198,15 @@ def apply_qwen35_moe_vllm_profile(module):
             result = emit(
                 source.op, source.id, inputs, {
                     **source.attrs, "round_projections": True, "round_activation": not shared, "round_down_projection": shared,
-                    "round_weighted_output": True, "intermediate_dtype": "bfloat16", "output_dtype": "bfloat16"
+                    "round_weighted_output": True, "intermediate_dtype": "bfloat16", "output_dtype": "bfloat16",
+                    "reduction_order": "mma_k16",
                 }, source.metadata)
         elif source.id in {name + "_attention_residual" for name in decoder_names}:
             residual = wide(cast(inputs[0], DType.BFLOAT16, source.id + ".residual_bf16"), source.id + ".residual_wide")
             result = emit("math.add", source.id, (residual, wide(inputs[1], source.id + ".projection_wide")))
         elif source.id in {name + suffix for name in decoder_names for suffix in ("_moe_output", "_output")}:
+            # The pinned Inductor kernel elides the source's intermediate
+            # BF16 casts across shared+routed and consecutive residual adds.
             result = emit(
                 "math.add", source.id,
                 tuple(wide(value, source.id + f".operand_{index}_wide") for index, value in enumerate(inputs)))
@@ -148,7 +228,7 @@ def apply_qwen35_moe_vllm_profile(module):
         if not nodes or nodes[-1] is not result:
             nodes.append(result)
         mapped[source.id] = result
-    return verify_module(
+    result = verify_module(
         replace(
             module, nodes=tuple(nodes), metadata={
                 **module.metadata, "numerical_contract": VLLM_AE10_INDUCTOR_LEVEL3, "numerical_profile_reference": {
@@ -156,3 +236,6 @@ def apply_qwen35_moe_vllm_profile(module):
                     "custom_ops": ("none", ), "tensor_parallel_size": 1
                 }
             }))
+    # Staged routing owns the old TopK normalization recipe. Remove its
+    # unused sum/broadcast nodes so they cannot escape their callee scope.
+    return DataflowPass("PruneProfileRecipes", ()).run(result)

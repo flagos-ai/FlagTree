@@ -12,7 +12,7 @@ import torch
 
 @pytest.fixture
 def runner():
-    path = Path(__file__).parents[3] / 'tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/run_tp4.py'
+    path = Path(__file__).parents[3] / 'tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/local_optimizations/run_tp4.py'
     spec = importlib.util.spec_from_file_location('glm_official_prefix_runner', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

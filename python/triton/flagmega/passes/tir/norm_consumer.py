@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from triton.flagmega.ir import IRModule, Node, TensorType, logical_type
+from triton.flagmega.ir import IRModule, Node, TensorType, VectorType, logical_type
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,14 @@ def _rms_contract(norm: Node, module: IRModule) -> dict[str, object] | None:
         or bool(norm.attrs["use_mean"])
         or _constant_splat_value(module.node_map[norm.inputs[3]], module) != 0.0
     ):
+        return None
+    input_dtype = norm.attrs.get("input_dtype")
+    source_dtype = logical_type(module.node_map[norm.inputs[0]].type).dtype
+    if isinstance(source_dtype, VectorType):
+        source_dtype = source_dtype.elem_type
+    if input_dtype is not None and input_dtype != source_dtype.value:
+        # This staged-consumer contract normalizes the physical input dtype;
+        # it cannot claim a distinct converted numerator with external stats.
         return None
     return {
         "weight": norm.inputs[2],

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from triton.flagmega import ir as fm
 
 
@@ -25,7 +26,7 @@ class Definition:
 def test_native_q_a_uses_fused_projection_partitions_and_q_b_keeps_running_accumulator(monkeypatch):
     tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
     monkeypatch.syspath_prepend(str(tutorial))
-    spec = importlib.util.spec_from_file_location("glm_native_mla_schedule", tutorial / "native_tp4.py")
+    spec = importlib.util.spec_from_file_location("glm_native_mla_schedule", tutorial / "local_optimizations/native_tp4.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     prefix = "decode_mla_attention_sparse_self_attn_"
@@ -69,7 +70,7 @@ def test_native_q_a_uses_fused_projection_partitions_and_q_b_keeps_running_accum
 def test_native_scaled_promotion_preserves_dequantized_and_expert_schedules(monkeypatch):
     tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
     monkeypatch.syspath_prepend(str(tutorial))
-    spec = importlib.util.spec_from_file_location("glm_native_scaled_promotion", tutorial / "native_tp4.py")
+    spec = importlib.util.spec_from_file_location("glm_native_scaled_promotion", tutorial / "local_optimizations/native_tp4.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     kinds = (
@@ -101,7 +102,7 @@ def test_native_scaled_promotion_preserves_dequantized_and_expert_schedules(monk
 def test_native_attention_uses_continuous_bf16_mma(monkeypatch):
     tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
     monkeypatch.syspath_prepend(str(tutorial))
-    spec = importlib.util.spec_from_file_location("glm_native_attention_schedule", tutorial / "native_tp4.py")
+    spec = importlib.util.spec_from_file_location("glm_native_attention_schedule", tutorial / "local_optimizations/native_tp4.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     definitions = tuple(
@@ -123,7 +124,7 @@ def test_native_attention_uses_continuous_bf16_mma(monkeypatch):
 def test_native_qkv_statistics_keep_contiguous_lanes_and_one_global_tree(monkeypatch):
     tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
     monkeypatch.syspath_prepend(str(tutorial))
-    spec = importlib.util.spec_from_file_location("glm_native_qkv_norm", tutorial / "native_tp4.py")
+    spec = importlib.util.spec_from_file_location("glm_native_qkv_norm", tutorial / "local_optimizations/native_tp4.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     definitions = tuple(
@@ -141,7 +142,11 @@ def test_native_qkv_statistics_keep_contiguous_lanes_and_one_global_tree(monkeyp
 
     nodes = (
         SimpleNamespace(id="bf16", op="builtin.var", type=fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 64))),
-        SimpleNamespace(id="fp32", op="builtin.var", type=fm.tensor_type("float32", (1, 4096))),
+        SimpleNamespace(id="fp32", op="builtin.var", type=fm.DistributedType(
+            fm.tensor_type("float32", (1, 4096)),
+            (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 2), 64)),
+            fm.Placement((4, 8, 16), "cyx", "cbb"),
+        )),
         call("bstat", "bf16_stats", "bf16"),
         call("fstat", "fp32_stats", "fp32"),
         call("bfinal", "bf16_finalize", "bstat"),
@@ -163,12 +168,67 @@ def test_native_qkv_statistics_keep_contiguous_lanes_and_one_global_tree(monkeyp
     assert selected[0].parameters["decode_schedule"] == "bf16_mma"
 
 
+@pytest.mark.parametrize("packed,split_outer,distributed", (
+    (False, False, False), (False, False, True), (True, False, True), (True, True, True),
+))
+def test_native_complete_fp32_statistics_select_the_official_reduction(monkeypatch, packed, split_outer,
+                                                                     distributed):
+    tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
+    monkeypatch.syspath_prepend(str(tutorial))
+    spec = importlib.util.spec_from_file_location("glm_native_complete_rms", tutorial / "local_optimizations/native_tp4.py")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    mesh = fm.Placement((4, 8, 16), "cyx", "cbb")
+    dtype = fm.vector_type("float32", 4) if packed else fm.DType.FLOAT32
+    logical = fm.tensor_type(dtype, (8 if split_outer else 1, 1024 if packed else 4096))
+    source_type = fm.DistributedType(logical, (
+        fm.SBP.split_contiguous((1,), 1) if split_outer else fm.SBP.broadcast(), fm.SBP.broadcast(),
+    ), mesh) if distributed else logical
+    definition = Definition("statistics", Dispatch(
+        fm.TIRMicroKernelSelection("statistics", "norm_stats", "local", {"block_size": 128}),
+        {"axis": -1, "use_mean": False},
+    ))
+    source = SimpleNamespace(id="source", op="builtin.var", type=source_type)
+    call = SimpleNamespace(id="stats", op="tir.call", attrs={"callee": definition.name}, inputs=(source.id,))
+    module = SimpleNamespace(nodes=(source, call), node_map={source.id: source}, kernel_definitions=(definition,))
+    selected, = profile.rewrite_qkv_norm_schedules(module)
+    assert selected.dispatch.microkernel.parameters.get("reduction_algorithm", "tree") == "fma_1024"
+    assert "reduction_algorithm" not in definition.dispatch.microkernel.parameters
+
+
+@pytest.mark.parametrize("kind", ("split_reduction", "partial", "exclusive", "mean"))
+def test_native_ordered_fp32_statistics_require_complete_rms_input(monkeypatch, kind):
+    tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
+    monkeypatch.syspath_prepend(str(tutorial))
+    spec = importlib.util.spec_from_file_location("glm_native_incomplete_rms", tutorial / "local_optimizations/native_tp4.py")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    mesh = fm.Placement((4, 8, 16), "cyx", "cbb")
+    source_type = fm.DistributedType(
+        fm.tensor_type("float32", (1, 4096)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 2), 64)
+         if kind == "split_reduction" else fm.SBP.broadcast()), mesh,
+        partial=fm.SBP.partial((0,)) if kind == "partial" else None,
+        exclusive=fm.SBP.exclusive((1, 2)) if kind == "exclusive" else None,
+    )
+    definition = Definition("statistics", Dispatch(
+        fm.TIRMicroKernelSelection("statistics", "norm_stats", "local", {"block_size": 128}),
+        {"axis": -1, "use_mean": kind == "mean"},
+    ))
+    source = SimpleNamespace(id="source", op="builtin.var", type=source_type)
+    call = SimpleNamespace(id="stats", op="tir.call", attrs={"callee": definition.name}, inputs=(source.id,))
+    selected, = profile.rewrite_qkv_norm_schedules(SimpleNamespace(
+        nodes=(source, call), node_map={source.id: source}, kernel_definitions=(definition,),
+    ))
+    assert selected is definition
+
+
 def test_native_kda_profile_keeps_raw_gate_parameters_and_selects_warp_k(monkeypatch):
     from python.test.flagmega.importer.glm5_moe.test_kda_fused_gate import _imported
 
     tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
     monkeypatch.syspath_prepend(str(tutorial))
-    spec = importlib.util.spec_from_file_location("glm_native_gate_inputs", tutorial / "native_profile.py")
+    spec = importlib.util.spec_from_file_location("glm_native_gate_inputs", tutorial / "local_optimizations/native_profile.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     _, _, original, _ = _imported()
@@ -177,7 +237,7 @@ def test_native_kda_profile_keeps_raw_gate_parameters_and_selects_warp_k(monkeyp
     assert not any(n.op == "math.exp" for n in transformed.nodes)
     assert all(n.attrs["decay_input"] == "log_rate" for n in transformed.nodes if n.op == "nn.kda_gated_recurrent_core")
     assert all("decay_input" not in n.attrs for n in original.nodes if n.op == "nn.kda_gated_recurrent_core")
-    spec = importlib.util.spec_from_file_location("glm_native_gate_schedule", tutorial / "native_tp4.py")
+    spec = importlib.util.spec_from_file_location("glm_native_gate_schedule", tutorial / "local_optimizations/native_tp4.py")
     schedule = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(schedule)
     selected = [
@@ -189,7 +249,7 @@ def test_native_kda_profile_keeps_raw_gate_parameters_and_selects_warp_k(monkeyp
 def test_native_gated_norm_uses_sqrt_div_without_changing_plain_norm(monkeypatch):
     tutorial = Path(__file__).parents[3] / "tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800"
     monkeypatch.syspath_prepend(str(tutorial))
-    spec = importlib.util.spec_from_file_location("glm_native_gated_norm_schedule", tutorial / "native_tp4.py")
+    spec = importlib.util.spec_from_file_location("glm_native_gated_norm_schedule", tutorial / "local_optimizations/native_tp4.py")
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     definitions = tuple(

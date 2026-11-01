@@ -40,7 +40,7 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
     attrs = raw["semantic_attrs"]
     if definition.prepare(inputs, attrs).result_type != _tensor_type(result["abi"]):
         raise CodegenError("Sparse expert result ABI disagrees with its typed sharding and rounding contract.")
-    if raw.get("variant") == "wgmma":
+    if raw.get("variant") in {"wgmma", "cooperative_wgmma", "complete_k_wgmma"}:
         from triton.flagmega.codegen.triton.sparse_experts.mma import supports_block_fp8_wgmma
         if (not supports_block_fp8_wgmma(raw["semantic_op"], {
                 parameter.name: value.type
@@ -147,9 +147,9 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
     }
     # A per-lane group index reads one scale per (N, K) weight element, so its
     # predicate is the weight tile's, not the scalar slot's.
-    group_mask = f"_fm_n_mask[:, None] & _fm_k_mask[None, :]" if groups_per_tile > 1 else context["slot_active"]
+    group_mask = "_fm_n_mask[:, None] & _fm_k_mask[None, :]" if groups_per_tile > 1 else context["slot_active"]
     context["block_scale_loads"] = {
-        name: expression.replace("{slot_active}", "_fm_n_mask" if raw.get("variant") == "wgmma"
+        name: expression.replace("{slot_active}", "_fm_n_mask" if raw.get("variant") in {"wgmma", "cooperative_wgmma", "complete_k_wgmma"}
                                  else context["slot_active"]).replace("{group_mask}", group_mask)
         for name, expression in context["block_scale_loads"].items()
     }
@@ -161,4 +161,7 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
         for name, binding in operands.items()
         if name.endswith("_scale")
     }
+    if raw.get("variant") == "ordered_mma" and any(
+            not context["unit_scales"][name] for name in context["unit_scales"] if name.endswith("input_scale")):
+        raise CodegenError("Ordered BF16 expert MMA requires constant unit input scales.")
     return context, operands, result

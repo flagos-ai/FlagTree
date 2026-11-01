@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.constant_recipe import ConstantRecipe
 from triton.flagmega.ir.dim_expr import Dimension, dim, simplify_dim
+from triton.flagmega.ir.execution_mesh import normalize_execution_mesh_metadata
 from triton.flagmega.ir.distributed_type import (
     SBP,
     Placement,
@@ -545,7 +546,7 @@ class Node:
             raise IRSchemaError("IR nodes require non-empty id and op fields.")
         object.__setattr__(self, "inputs", tuple(str(value) for value in self.inputs))
         object.__setattr__(self, "attrs", canonical_attributes(self.attrs))
-        object.__setattr__(self, "metadata", canonical_attributes(self.metadata))
+        object.__setattr__(self, "metadata", canonical_attributes(normalize_execution_mesh_metadata(self.metadata)))
 
     def to_data(self) -> dict[str, object]:
         return {
@@ -628,7 +629,7 @@ class IRModule:
         object.__setattr__(self, "prim_functions", tuple(self.prim_functions))
         object.__setattr__(self, "execution_functions", tuple(self.execution_functions))
         object.__setattr__(self, "kernel_definitions", tuple(self.kernel_definitions))
-        object.__setattr__(self, "metadata", _freeze_mapping(self.metadata))
+        object.__setattr__(self, "metadata", _freeze_mapping(normalize_execution_mesh_metadata(self.metadata)))
         object.__setattr__(self, "constant_recipes", tuple(self.constant_recipes))
         object.__setattr__(self, "selection_points", tuple(self.selection_points))
         object.__setattr__(self, "selections", tuple(self.selections))

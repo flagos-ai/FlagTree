@@ -190,6 +190,26 @@ def _structured_for(module, node, values, body=None):
         ValueRef(value, module.node_map[value].type)
         for value in region.outputs
     )
+    from triton.flagmega.ir.tir.loop_carry import LoopCarry
+    from triton.flagmega.ir import BarrierScope
+    from math import prod
+    plan = verify_buffer_plan(module)
+    record = plan.call_map[node.id]
+    carries = tuple(LoopCarry(**value.to_data()) for value in record.loop_carries)
+    scope = BarrierScope.BLOCK
+    if carries:
+        from triton.flagmega.passes.tir.bufferize.call_accesses import CallAccessResolver
+        from triton.flagmega.passes.tir.bufferize.synchronization import _node_accesses, _requires_device
+        resolver = CallAccessResolver(module, plan, _node_accesses)
+        accesses = resolver.accesses(record.caller, node, dict(plan.function_map[record.caller].values))
+        if any(_requires_device(access) for access in accesses):
+            scope = BarrierScope.DEVICE
+        elif any(plan.memory_space_map[plan.buffer_map[buffer].mem_span.buffer.memory_space].sharing_scope.value != 'block'
+                 and (plan.buffer_map[buffer].distributed_type is not None
+                      and prod(size for size,level in zip(plan.buffer_map[buffer].distributed_type.placement.hierarchy,
+                          plan.buffer_map[buffer].distributed_type.placement.hierarchy_levels) if level=='b')>1)
+                 for carry in carries for buffer in (carry.initial,carry.current,carry.staging,carry.yielded,carry.result)):
+            scope = BarrierScope.CHIP
     return For(
         loop_var=DimVar(f"{node.id}_iv", lower, max(lower, upper - step)),
         domain=Range(dim(lower), dim(upper), dim(step)),
@@ -198,6 +218,9 @@ def _structured_for(module, node, values, body=None):
         iter_args=iter_args,
         yield_values=yields,
         body_function=str(node.attrs["callee"]),
+        carry_bindings=carries,
+        carry_scope=scope,
+        call_id=node.id,
     )
 
 

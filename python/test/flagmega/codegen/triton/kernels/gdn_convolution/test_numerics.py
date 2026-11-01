@@ -3,6 +3,8 @@
 """Device checks for independent rounding and accumulator ordering contracts."""
 
 import pytest
+import json
+from pathlib import Path
 
 from python.test.flagmega.codegen.triton.kernels.gdn_convolution.helpers import execute_convolution
 
@@ -49,3 +51,20 @@ def test_explicit_order_is_observable_under_cancellation(tmp_path, order, accumu
     actual, _ = execute_convolution(tmp_path, torch, inputs, weight, history, accumulation_order=order)
     expected = torch.nn.functional.silu(torch.full((1, 64), accumulator)).bfloat16()
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("fixture_name", ["native_convolution_fast_exp2.json", "native_convolution_full_division.json"])
+def test_native_fast_silu_midpoints_survive_batched_convolution(tmp_path, fixture_name):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("SM90 CUDA required")
+    fixture = Path(__file__).resolve().parents[4] / "data" / fixture_name
+    cases = json.loads(fixture.read_text())["cases"]
+    repeats = 64 // len(cases)
+    inputs = torch.tensor([case["input"] for case in cases], dtype=torch.bfloat16).T.repeat(1, repeats)
+    weight = torch.tensor([case["weight"] for case in cases], dtype=torch.bfloat16).repeat(repeats, 1)
+    expected = torch.tensor([case["expected"] for case in cases], dtype=torch.bfloat16).repeat(repeats)
+    actual, _ = execute_convolution(
+        tmp_path, torch, inputs, weight, torch.zeros((64, 3), dtype=torch.bfloat16), tokens_per_call=4,
+        round_products=True, round_before_activation=False, accumulation_order="chronological")
+    torch.testing.assert_close(actual[-1], expected, rtol=0, atol=0)

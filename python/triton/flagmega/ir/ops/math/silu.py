@@ -8,6 +8,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import IRType, Node
 from triton.flagmega.ir.ops.core import (
     OpCost,
+    attribute_parameter,
     input_parameter,
     op_definition,
     tensor_elements,
@@ -21,16 +22,29 @@ from triton.flagmega.ir.type_pattern import is_tensor
 class Silu(SameTypePointwiseOp):
     const_evaluable = True
     value = input_parameter(is_tensor())
+    math_mode = attribute_parameter(default="fast")
+
+    @classmethod
+    def normalize_attrs(cls, attributes):
+        attrs = super().normalize_attrs(attributes)
+        mode = attrs["math_mode"]
+        if mode not in {"fast", "accurate"}:
+            raise IRSchemaError("Silu math_mode must be 'fast' or 'accurate'.")
+        return {"math_mode": mode} if mode != "fast" else {}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        if attrs:
-            raise IRSchemaError("F.math.silu does not accept attributes.")
+        if set(attrs) - {"math_mode"}:
+            raise IRSchemaError("F.math.silu only accepts math_mode.")
         return cls.value.type_of(inputs)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        return context.torch.nn.functional.silu(cls.value.read(arguments))
+        value = cls.value.read(arguments)
+        if value.is_cuda and node.attrs.get("math_mode") == "accurate":
+            from triton.flagmega.evaluator.cuda_activation_math import accurate_silu
+            return accurate_silu(value)
+        return context.torch.nn.functional.silu(value)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

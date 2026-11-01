@@ -228,8 +228,12 @@ class TritonTirLoweringPolicy:
             if semantic_op in _VECTORIZABLE_SEMANTIC_OPS:
                 require_vector_schedule(parameters, node.id)
             if placement_data is not None:
+                from triton.flagmega.ir.execution_mesh import effective_execution_mesh, placement_for_execution_mesh
+                from triton.flagmega.ir.distributed_type import placement_from_data
+                node_placement = placement_for_execution_mesh(
+                    placement_from_data(placement_data), effective_execution_mesh(module, node))
                 parameters["distribution"] = {
-                    "placement": placement_data,
+                    "placement": node_placement.to_data(),
                     "input_types": tuple(
                         module.node_map[input_id].type for input_id in node.inputs
                     ),
@@ -258,7 +262,13 @@ class TritonTirLoweringPolicy:
                 attrs=dispatch_attrs,
                 metadata={**dict(node.metadata), "lowered_from": semantic_op},
             ))
-        cooperative_grid = requires_distributed_grid(module)
+        # Logical broadcast does not imply one CTA: an implementation can
+        # partition a complete chip tensor internally and publish chip writes.
+        # Keep that selected execution requirement separate from SBP ownership.
+        cooperative_grid = requires_distributed_grid(module) or any(
+            "cooperative_grid" in node.attrs.get("facts", node.attrs.get("semantic_facts", {})).get("requires", ())
+            for node in nodes if node.op == "tir.kernel"
+        )
         launch_parameters = target.plan_launch(
             module, tuple(node for node in nodes if node.op == "tir.kernel")
         )

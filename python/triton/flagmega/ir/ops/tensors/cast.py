@@ -17,6 +17,7 @@ class Cast(OpDefinition):
     const_evaluable = True
     value = input_parameter(is_tensor())
     dtype = attribute_parameter()
+    rounding_contract = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -24,7 +25,7 @@ class Cast(OpDefinition):
         dtype = attrs["dtype"]
         if isinstance(dtype, dict):
             dtype = data_type_from_data(dtype)
-        return {"dtype": data_type_to_data(data_type(dtype))}
+        return {"dtype": data_type_to_data(data_type(dtype)), **rounding_attrs(attrs)}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -53,11 +54,24 @@ class Cast(OpDefinition):
     def python_attrs(cls, node: Node):
         # Public Python constructor accepts DataType, while stored attrs use its
         # deterministic serialization form.
-        return {"dtype": data_type_from_data(node.attrs["dtype"])}
+        return {"dtype": data_type_from_data(node.attrs["dtype"]), **rounding_attrs(node.attrs)}
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         return OpCost(flops=0, bytes_read=None, bytes_written=tensor_nbytes(node.type), notes=("cast",))
+
+
+def rounding_attrs(attrs):
+    """Explicit stores survive relaxed round-trip elimination and repacking.
+
+    Omit the historical default from serialization to preserve old IR hashes.
+    ``preserve`` constrains arithmetic rewrites, without requiring a separate
+    kernel or memory store for the conversion.
+    """
+    contract = attrs.get("rounding_contract", "relaxed")
+    if contract not in {"relaxed", "preserve"}:
+        raise IRSchemaError("Cast rounding_contract must be 'relaxed' or 'preserve'.")
+    return {"rounding_contract": contract} if contract == "preserve" else {}
 
 
 __all__ = ["Cast"]

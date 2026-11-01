@@ -101,8 +101,10 @@ def test_argument_types_come_from_the_buffer_plan(tmp_path):
     assert types["lhs"] == {"type": "ftt::bfloat16_t", "pointer": True}
     assert types["rhs"] == {"type": "ftt::bfloat16_t", "pointer": True}
     assert types["output"] == {"type": "ftt::bfloat16_t", "pointer": True}
-    # A byte pool is retyped per use by the renderer's own pointer casts.
-    assert types["block_local_data"] == {"type": "unsigned char", "pointer": True}
+    # Arithmetic stores this ragged result directly. Use unary staging to
+    # retain a real byte-pool check instead of assuming that add needs a pool.
+    pooled = describe_cpp_package(_compiled('math.silu'))
+    assert pooled['argument_types']['block_local_data'] == {"type": "unsigned char", "pointer": True}
 
 
 def test_renders_the_launch_abi_and_kernel_bodies(tmp_path):
@@ -119,6 +121,42 @@ def test_renders_the_launch_abi_and_kernel_bodies(tmp_path):
     # The kernel itself, and the FTT library it was written against.
     assert "#include <ftt/ftt.h>" in source
     assert "// flagmega-kernel: elementwise/add" in source
+
+
+def test_renders_masked_operand_padding_with_scalar_rounding(tmp_path):
+    from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+    from triton.flagmega.ir.ops.math.vectorized_binary import VectorizedBinary
+    source = fm.tensor_type('bfloat16', (3, 10))
+    packing = {'lanes': (2, 4), 'axes': (0, 1), 'padding': {'pad_end': (1, 2), 'pad_value': 0.5}}
+    module = primitive_module(VectorizedBinary, (source, source), binary_op='add', lhs_pack=packing, rhs_pack=packing)
+    selected = Compiler(CompileOptions(target=TARGET)).compile(module).module
+    descriptor = describe_cpp_package(selected)
+    call = next(c for c in descriptor['render_calls'] if c['family'] == 'elementwise')
+    assert call['lhs_other'] == 0.5 and call['lhs_read_active'] != 'True'
+    render_cpp_source_package(selected, tmp_path)
+    text = (tmp_path / 'generated_kernels.cpp').read_text('utf-8')
+    assert ': ftt::to_float(ftt::store_as(' in text
+    assert ', 0.5));' in text
+
+
+def test_cpp_cannot_silently_fuse_explicit_mesh_programs():
+    from python.test.flagmega.compiler.test_execution_mesh_programs import compile_graph
+    with pytest.raises(CodegenError, match='separate kernel programs'):
+        describe_cpp_package(compile_graph())
+
+
+def test_renders_the_exact_arithmetic_result_without_a_trim_kernel(tmp_path):
+    from python.test.flagmega.ir.ops.math.test_vectorized_binary_result_lanes import result_module
+    module = Compiler(CompileOptions(target=TARGET)).compile(result_module((3, 10), (2, 4), (0, 1))).module
+    descriptor = describe_cpp_package(module)
+    calls = [c for c in descriptor['render_calls'] if c['family'] == 'elementwise']
+    assert len(calls) == 1
+    assert calls[0]['logical_shape'] == (3, 10)
+    assert calls[0]['padded_shape'] == (4, 12)
+    assert calls[0]['active'] != 'True'
+    render_cpp_source_package(module, tmp_path)
+    source = (tmp_path / 'generated_kernels.cpp').read_text('utf-8')
+    assert source.count('// flagmega-kernel: elementwise/add') == 1
 
 
 def test_refuses_a_kernel_without_a_cpp_template(monkeypatch):

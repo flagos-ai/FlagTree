@@ -102,5 +102,5 @@ def test_local_pointer_selects_the_current_block_pool_before_value_offset():
     assert abi["pool_scope_count"] == 8
     assert abi["pool_scope_stride_bytes"] == 256
     assert emit_storage_pointer(abi, "workspace") == (
-        "(workspace.to(tl.pointer_type(tl.float32)) + (shard_index) * 64)"
+        "(workspace.to(tl.pointer_type(tl.float32)) + (block_index) * 64)"
     )

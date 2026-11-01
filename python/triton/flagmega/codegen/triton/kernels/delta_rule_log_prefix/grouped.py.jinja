@@ -15,7 +15,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if call.fast_log2 %}
         _fm_prefix = libdevice.fast_log2f(_fm_alpha + {{ call.epsilon }})
 {% else %}
-        _fm_prefix = tl.log2(_fm_alpha + {{ call.epsilon }})
+        _fm_prefix = libdevice.log2(_fm_alpha + {{ call.epsilon }})
 {% endif %}
         _fm_prefix = tl.where(_fm_token < {{ call.tokens }}, _fm_prefix, 0.0)
         for _fm_level in tl.static_range({{ call.scan_levels }}):

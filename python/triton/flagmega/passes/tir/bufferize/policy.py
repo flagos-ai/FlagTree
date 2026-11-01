@@ -25,16 +25,37 @@ from triton.flagmega.passes.tir.plan_function_memory import plan_function_memory
 
 
 class NttBufferizationPolicy:
-    def __init__(self, options: BufferizationOptions) -> None:
+    def __init__(self, options: BufferizationOptions, *, synchronization_protocol_provider=None) -> None:
         self.options = options
+        self.synchronization_protocol_provider = synchronization_protocol_provider
+
+    def with_options(self, options):
+        return type(self)(options, synchronization_protocol_provider=self.synchronization_protocol_provider)
 
     def with_optimization_level(self, level: str) -> NttBufferizationPolicy:
-        return type(self)(replace(self.options, optimization_level=level))
+        return self.with_options(replace(self.options, optimization_level=level))
+
+    def _with_protocol(self, module):
+        from triton.flagmega.ir.bufferization.synchronization_protocol import PROTOCOL_METADATA
+        if self.synchronization_protocol_provider is None:
+            return module
+        protocol = self.synchronization_protocol_provider(module)
+        data = None if protocol is None else protocol.to_data()
+        current = module.metadata.get(PROTOCOL_METADATA)
+        if current == data:
+            return module
+        metadata = dict(module.metadata)
+        if data is None:
+            metadata.pop(PROTOCOL_METADATA, None)
+        else:
+            metadata[PROTOCOL_METADATA] = data
+        return replace(module, metadata=metadata)
 
     def plan_function_memory(self, module: IRModule) -> IRModule:
-        return plan_function_memory(module, self.options)
+        return plan_function_memory(self._with_protocol(module), self.options)
 
     def bufferize(self, module: IRModule) -> IRModule:
+        module = self._with_protocol(module)
         session = AllocationSession(self.options)
         plan = make_buffer_plan(
             module,

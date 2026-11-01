@@ -36,7 +36,7 @@ def test_parameter_info_and_functional_surface_are_static_and_named():
     definition = fm.get_definition("ntt.packed_matmul")
     assert [parameter.name for parameter in definition.parameters] == [
         "lhs", "rhs", "scale", "addend", "fused_reduce",
-        "output_data_type", "rhs_layout",
+        "output_data_type", "rhs_layout", "reduction_order",
     ]
     assert fm.F.ntt.packed_matmul.__flagmega_op_definition__ is definition
 
@@ -81,3 +81,68 @@ def test_k_major_rejects_mismatched_logical_reduction_extent():
 
     with pytest.raises(IRSchemaError, match="packed RHS K"):
         Invalid().build()
+
+
+def _distributed_packed_operands(*, lhs_owner=None, rhs_owner=None, lhs_split=None, rhs_split=None,
+                                 scale_type=None, addend_type=None):
+    placement = fm.Placement((8, 16), "yx", "bb")
+    lhs_type = fm.DistributedType(
+        fm.tensor_type("bfloat16", (16, 6144)),
+        (lhs_split or fm.SBP.broadcast(), fm.SBP.broadcast()), placement, exclusive=lhs_owner)
+    rhs_type = fm.DistributedType(
+        fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (384, 256)),
+        (fm.SBP.broadcast(), rhs_split or fm.SBP.broadcast()), placement, exclusive=rhs_owner)
+    return tuple(fm.Node(f"arg{i}", "builtin.var", (), value) for i, value in enumerate(
+        (lhs_type, rhs_type, scale_type or fm.NoneType(), addend_type or fm.NoneType())))
+
+
+@pytest.mark.parametrize("fused_reduce", [False, True])
+@pytest.mark.parametrize("sides", ["lhs", "rhs", "both"])
+def test_owner_local_arithmetic_retains_the_exact_exclusive_owner(sides, fused_reduce):
+    owner = fm.SBP.exclusive((0, 1), (2, 7))
+    operands = _distributed_packed_operands(
+        lhs_owner=owner if sides in {"lhs", "both"} else None,
+        rhs_owner=owner if sides in {"rhs", "both"} else None)
+    result = fm.get_definition("ntt.packed_matmul").prepare(
+        operands, {"output_data_type": "bfloat16", "fused_reduce": fused_reduce}).result_type
+    assert result.exclusive == owner
+    assert result.partial is None
+    assert result.axis_policies == (fm.SBP.broadcast(), fm.SBP.broadcast())
+    assert result.tensor.dtype == fm.vector_type("bfloat16", (8,))
+    assert fm.type_from_data(result.to_data()) == result
+
+
+@pytest.mark.parametrize("other", ["different_owner", "n_split", "m_split"])
+def test_exclusive_arithmetic_requires_coincident_complete_operands(other):
+    owner = fm.SBP.exclusive((0,), (2,))
+    if other == "different_owner":
+        operands = _distributed_packed_operands(lhs_owner=owner, rhs_owner=fm.SBP.exclusive((0,), (3,)))
+    elif other == "n_split":
+        operands = _distributed_packed_operands(lhs_owner=owner, rhs_split=fm.SBP.split_contiguous((1,)))
+    else:
+        operands = _distributed_packed_operands(rhs_owner=owner, lhs_split=fm.SBP.split_contiguous((1,)))
+    with pytest.raises(IRSchemaError, match="exclusive|Exclusive"):
+        fm.get_definition("ntt.packed_matmul").prepare(operands, {})
+
+
+@pytest.mark.parametrize("scale_policy", ["partial", "exclusive", "other_placement"])
+def test_scalar_scale_cannot_publish_unavailable_values(scale_policy):
+    placement = fm.Placement((8, 16), "yx", "bb")
+    scale = fm.DistributedType(
+        fm.tensor_type("bfloat16", ()), (),
+        fm.Placement((4, 32), "yx", "bb") if scale_policy == "other_placement" else placement,
+        partial=fm.SBP.partial((0,)) if scale_policy == "partial" else None,
+        exclusive=fm.SBP.exclusive((0,), (2,)) if scale_policy == "exclusive" else None)
+    with pytest.raises(IRSchemaError, match="scale|placement"):
+        fm.get_definition("ntt.packed_matmul").prepare(_distributed_packed_operands(scale_type=scale), {})
+
+
+def test_exclusive_scale_and_addend_are_available_to_the_result_owner():
+    owner = fm.SBP.exclusive((0,), (2,))
+    placement = fm.Placement((8, 16), "yx", "bb")
+    scale = fm.DistributedType(fm.tensor_type("bfloat16", ()), (), placement, exclusive=owner)
+    addend = fm.DistributedType(fm.tensor_type(fm.vector_type("bfloat16", (8,)), (16, 256)),
+                               (fm.SBP.broadcast(), fm.SBP.broadcast()), placement, exclusive=owner)
+    operands = _distributed_packed_operands(lhs_owner=owner, scale_type=scale, addend_type=addend)
+    assert fm.get_definition("ntt.packed_matmul").prepare(
+        operands, {"output_data_type": "bfloat16"}).result_type == addend

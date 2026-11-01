@@ -210,6 +210,8 @@ def _select_microkernels(module: IRModule, target: Target) -> IRModule:
 
 def _finalize_tir_package(module: IRModule, target: Target) -> IRModule:
     kernels = selected_kernel_nodes(module)
+    from triton.flagmega.codegen.triton.execution_programs import plan_execution_programs
+    module = plan_execution_programs(module, target, kernels)
     launch_contract = {
         **dict(module.metadata.get("launch_contract", {})),
         **target.plan_launch(module, kernels),

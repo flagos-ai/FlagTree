@@ -1,0 +1,34 @@
+{# Keep the FP32 fragment across every TMA slot; rounding a slot result or
+   adding independent slot sums would change the complete-K MMA reduction. #}
+{{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding(
+    [2, 0], [1, {{ num_warps }}], [16, 8],
+))
+{{ call.symbol }}__mma_lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__mma_rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__mma_load_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 2], [4, 8], [{{ [num_warps, call.tile_n // 4] | min }}, {{ num_warps // ([num_warps, call.tile_n // 4] | min) }}], [1, 0],
+))
+
+@triton.jit
+def {{ call.symbol }}__ordered_mma_stage(weight_stage, dense_local_k_start, dense_source,
+                                        dense_source_owner_active, dense_source_active_extent, dense_accumulator,
+                                        dense_source_shared: tl.constexpr = False):
+    for dense_mma_k in tl.range(0, {{ call.block_k }}, {{ call.mma_block_k }}):
+        dense_stage_k = dense_mma_k + tl.arange(0, {{ call.mma_block_k }})
+        dense_stage_n = tl.arange(0, {{ call.tile_n }})
+        dense_payload = dense_stage_n[:, None] % 8 * 16 + dense_stage_k[None, :] % 16
+        dense_pointer = tle.gpu.local_ptr(weight_stage, (
+            dense_stage_k[None, :] // 16, dense_stage_n[:, None] // 8,
+            dense_payload // 64, dense_payload % 64),
+            [{{ call.tile_n }}, {{ call.mma_block_k }}])
+        dense_weight = tle.gpu.set_layout(tl.load(dense_pointer), {{ call.symbol }}__mma_load_layout)
+        dense_local_k_offsets = dense_local_k_start + dense_stage_k
+        dense_mask = ((dense_local_k_offsets // {{ call.source_lane_count }}) < dense_source_active_extent) & dense_source_owner_active
+        if dense_source_shared:
+            dense_input = tl.load(tle.gpu.local_ptr(dense_source, (tl.zeros(({{ call.mma_block_k }},), tl.int32), dense_local_k_offsets), [{{ call.mma_block_k }}]))
+        else:
+            dense_input = tl.load(dense_source + ({{ call.source_local_offset }}), mask=dense_mask, other=0)
+        dense_a = tle.gpu.set_layout(tl.broadcast_to(dense_input[None, :], (16, {{ call.mma_block_k }})), {{ call.symbol }}__mma_lhs_layout)
+        dense_b = tle.gpu.set_layout(tl.trans(dense_weight), {{ call.symbol }}__mma_rhs_layout)
+        dense_accumulator = tl.dot(dense_a, dense_b, dense_accumulator)
+    return dense_accumulator

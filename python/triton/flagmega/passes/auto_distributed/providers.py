@@ -624,6 +624,11 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
                     fallback,
                     "matmul-K-sbp-partial",
                 ))
+        if node.attrs.get("reduction_order", "relaxed") == "mma_k16":
+            # Independent M/N work preserves an ordered K accumulator;
+            # independently completed K sums change its rounding order.
+            values = [candidate for candidate in values
+                      if candidate.input_types[0].axis_policies[value_k_axis] == SBP.broadcast()]
         return tuple(values)
 
 
@@ -779,7 +784,8 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
                 **_PACKED_QKV_OBJECTIVE,
             ))
 
-        if all(isinstance(value, NoneType) for value in tails[:3]):
+        if (node.attrs.get("reduction_order", "relaxed") == "relaxed"
+                and all(isinstance(value, NoneType) for value in tails[:3])):
             reduction_splits: list[
                 tuple[tuple[int, ...], SBPSplit, tuple[SBPSplit, ...]]
             ] = []

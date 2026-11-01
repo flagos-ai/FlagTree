@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.memory_effect import expand_memory_effect
 
@@ -17,6 +17,7 @@ from triton.flagmega.ir.bufferization.synchronization import (
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
     ContiguousSplit,
+    SBP,
     SBPSplit,
     exclusive_transition_axes,
 )
@@ -35,9 +36,10 @@ from triton.flagmega.ir.tir.execution_kind import (
     kernel_execution_kind_for_call,
 )
 from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
-from triton.flagmega.passes.tir.bufferize.graph import function_nodes
+from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
 from triton.flagmega.passes.tir.bufferize.barrier_coverage import BarrierCoverage
 from triton.flagmega.passes.tir.bufferize.call_accesses import CallAccessResolver, physical_identity
+from triton.flagmega.passes.tir.plan_function_memory import _consumer_preserves_exclusive_blocks
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,12 @@ class _PendingAccess:
     access: _Access
     coverage: BarrierCoverage = field(default_factory=BarrierCoverage)
     needs_device_coverage: bool = False
+
+
+@dataclass(frozen=True)
+class _FunctionExit:
+    accesses: tuple[_PendingAccess, ...]
+    completion: BarrierCoverage
 
 
 def plan_memory_synchronization(
@@ -107,6 +115,7 @@ def _plan_memory_synchronization(
     plan: BufferPlan,
     *,
     reuse_preferences=None,
+    semantic_dependencies_only=False,
 ) -> MemorySynchronizationPlan:
     """Insert the weakest sufficient barrier before every unresolved hazard.
 
@@ -117,23 +126,35 @@ def _plan_memory_synchronization(
     barrier.  The next region starts with the current kernel's accesses.
     """
 
-    events = []
+    events_by_function = {}
+    exits = {}
+    entries = {}
+    entry_functions = {call.callee for call in plan.call_map.values()}
     call_accesses = CallAccessResolver(module, plan, _node_accesses)
     # Program order is fixed for this module, so index it once instead of
     # rescanning every node to rank each conflicting producer.
     node_ordinals = {node.id: index for index, node in enumerate(module.nodes)}
     repeated = _repeated_graph_functions(module)
-    for function in module.functions:
+    for function in callee_first_functions(module):
+        events = []
+        events_by_function[function.name] = events
         abi = plan.function_map[function.name]
         bindings = dict(abi.values)
         calls = tuple(
             (node, call_accesses.accesses(function.name, node, bindings))
             for node in function_nodes(module, function)
-            if node.op in {"tir.kernel", "tir.call"}
+            if node.op in {"tir.kernel", "tir.call", "control.for"}
         )
         device_ranges = _device_visible_ranges(calls)
 
         history: list[_PendingAccess] = []
+        # Local pruning cannot decide what the caller will later access from a
+        # peer. Keep completed local effects with their actual coverage until
+        # the caller has substituted and reclassified their concrete ranges.
+        exit_accesses: list[_PendingAccess] = []
+        completion = BarrierCoverage()
+        incoming_completion = BarrierCoverage()
+        entry_accesses = []
         if function.name in repeated and calls:
             # A repeated function's own trailing accesses precede its leading
             # ones on the next execution.  Walking it once from an empty
@@ -148,12 +169,32 @@ def _plan_memory_synchronization(
                     _pending_access(access, device_ranges) for access in accesses
                 )
         for node, current in calls:
+            call = plan.call_map.get(node.id)
+            if call is not None and node.op == "tir.call":
+                callee_entries = entries[call.callee]
+                # The full may-access tuple has already been instantiated
+                # by CallAccessResolver.accesses. Entry coverage follows that
+                # same validated order; do not repeat all frame/shape proofs
+                # for every invocation and every placement-cost query.
+                extras = call_accesses._loop_copy_accesses(function.name, node, call)
+                coverages = tuple(coverage for _, coverage in callee_entries) + tuple(
+                    BarrierCoverage() for _ in extras)
+                if len(coverages) != len(current):
+                    raise IRVerificationError("Callee entry coverage must preserve every instantiated may-access.")
+                incoming = tuple(zip(current, coverages, strict=True))
+            else:
+                # A possibly empty loop cannot promise an internal fence.
+                incoming = [(access, BarrierCoverage()) for access in current]
             conflicts = [
                 (previous.access, access)
                 for previous in history
-                for access in current
+                for access, coverage in incoming
                 if _conflicts(previous.access, access)
+                and (not semantic_dependencies_only or (
+                    plan.buffer_map[previous.access.buffer].mem_span.buffer.id
+                    == plan.buffer_map[access.buffer].mem_span.buffer.id))
                 and not previous.coverage.covers(_hazard_requirement(previous.access, access))
+                and not coverage.covers(_hazard_requirement(previous.access, access))
             ]
             if conflicts:
                 after = max(
@@ -195,27 +236,89 @@ def _plan_memory_synchronization(
                     if (requirement := _hazard_requirement(previous, access))[0] == "grid"
                 ), None)
                 requirement = (scope, axis_group_axes, placement)
-                for pending in history:
+                for pending in (*history, *exit_accesses):
                     pending.coverage.apply(requirement, pending.access.distributed_type)
+                _record_universal_completion(completion, requirement)
+                _record_universal_completion(incoming_completion, requirement)
                 # Coverage must also suffice for future owner relations. A
                 # local writer can feed a later peer read after an intervening
                 # chip barrier; that barrier has not published its bytes to
                 # the peer. Keep accesses to device-visible ranges until a
                 # device rendezvous, including accesses that are local here.
-                history = [pending for pending in history if not (
-                    (
-                        pending.coverage.device_synchronized
-                        if pending.needs_device_coverage
-                        else pending.coverage.full_chip_synchronized
+                history = _prune_covered(history)
+            # These are barriers between function entry and each access,
+            # not barriers after a previous access in this same function.
+            # Keep the two directions separate, especially after a newer
+            # local write that must still be published to a later peer.
+            if function.name in entry_functions:
+                entry_accesses.extend((access, BarrierCoverage(
+                    block_synchronized=(incoming_completion.full_chip_synchronized or coverage.full_chip_synchronized),
+                    full_chip_synchronized=(incoming_completion.full_chip_synchronized or coverage.full_chip_synchronized),
+                    device_synchronized=(incoming_completion.device_synchronized or coverage.device_synchronized),
+                )) for access, coverage in incoming)
+            if call is None:
+                pending = tuple(_pending_access(access, device_ranges) for access in current)
+            else:
+                callee_exit = exits[call.callee]
+                requirement = _universal_requirement(callee_exit.completion)
+                if requirement is not None:
+                    for previous in (*history, *exit_accesses):
+                        previous.coverage.apply(requirement, previous.access.distributed_type)
+                    _record_universal_completion(completion, requirement)
+                    if node.op == "tir.call":
+                        _record_universal_completion(incoming_completion, requirement)
+                    history = _prune_covered(history)
+                translated = call_accesses.instantiate(
+                    function.name, node, tuple(value.access for value in callee_exit.accesses))
+                pending = []
+                for access, previous in zip(translated, callee_exit.accesses, strict=True):
+                    value = _pending_access(access, device_ranges)
+                    # Full-chip/device rendezvous cover the whole launched
+                    # grid. Block and axis-group coverage needs an additional
+                    # formal/actual owner proof, so do not export it yet.
+                    value.coverage = BarrierCoverage(
+                        block_synchronized=previous.coverage.full_chip_synchronized,
+                        full_chip_synchronized=previous.coverage.full_chip_synchronized,
+                        device_synchronized=previous.coverage.device_synchronized,
                     )
-                    or (
-                        not pending.needs_device_coverage
-                        and _resolved_scope(pending.access) is MemoryAccessScope.BLOCK
-                        and pending.coverage.block_synchronized
-                    )
-                )]
-            history.extend(_pending_access(access, device_ranges) for access in current)
-    return MemorySynchronizationPlan(tuple(events))
+                    pending.append(value)
+                pending.extend(_pending_access(access, device_ranges) for access in
+                               call_accesses._loop_copy_accesses(function.name, node, call))
+            history.extend(pending)
+            exit_accesses.extend(pending)
+        if function.name in entry_functions:
+            # Validate the coverage/effect ordering once per callee, before
+            # any caller reuses it. Keep the complete effects in the resolver.
+            if tuple(access for access, _ in entry_accesses) != call_accesses._summary(function.name):
+                raise IRVerificationError("Callee entry coverage differs from its complete may-access summary.")
+            entries[function.name] = tuple(entry_accesses)
+        exits[function.name] = _FunctionExit(tuple(
+            value for value in exit_accesses if not value.coverage.device_synchronized), completion)
+    return MemorySynchronizationPlan(tuple(
+        event for function in module.functions for event in events_by_function[function.name]))
+
+
+def _universal_requirement(coverage):
+    if coverage.device_synchronized:
+        return "device", (), None
+    if coverage.full_chip_synchronized:
+        return "grid", (), None
+    return None
+
+
+def _record_universal_completion(coverage, requirement):
+    scope, axes, _ = requirement
+    if scope == "device" or (scope == "grid" and not axes):
+        coverage.apply(requirement, None)
+
+
+def _prune_covered(history):
+    return [pending for pending in history if not (
+        (pending.coverage.device_synchronized if pending.needs_device_coverage
+         else pending.coverage.full_chip_synchronized)
+        or (not pending.needs_device_coverage
+            and _resolved_scope(pending.access) is MemoryAccessScope.BLOCK
+            and pending.coverage.block_synchronized))]
 
 
 def _pending_access(access, device_ranges):
@@ -305,6 +408,7 @@ def _node_accesses(module, plan, function_name, node, bindings):
         *,
         reference_access=False,
         publishes=False,
+        input_access=False,
     ):
         descriptor = plan.buffer_map[buffer_id]
         if descriptor.storage in {"scalar", "rdata"} or descriptor.nbytes == 0:
@@ -353,6 +457,21 @@ def _node_accesses(module, plan, function_name, node, bindings):
             effect.access_partition if previous is None or effect.access_partition == previous.effect.access_partition else {},
             effect.owner_access if previous is None or effect.owner_access == previous.effect.owner_access else MemoryOwnerAccess.PARTIAL_GROUP,
         )
+        owner_type = descriptor.distributed_type
+        if (input_access and mode & MemoryAccessMode.READ
+                and descriptor.distributed_storage_kind is DistributedBufferStorageKind.CANONICAL_GLOBAL
+                and owner_type is not None and owner_type.exclusive is not None
+                and not _consumer_preserves_exclusive_blocks(owner_type, node.type)):
+            # The input's E annotation identifies its writer. Canonical
+            # readers executing for non-E outputs also include other blocks.
+            exclusive = owner_type.exclusive
+            owners = exclusive.owner_coordinates or (0,) * len(exclusive.axes)
+            retained = tuple((axis, owner) for axis, owner in zip(exclusive.axes, owners)
+                             if not owner_type.placement.is_physical_block_axis(axis))
+            owner_type = replace(owner_type, exclusive=(
+                SBP.exclusive(tuple(axis for axis, _ in retained), tuple(owner for _, owner in retained))
+                if retained else None))
+            merged_effect = replace(merged_effect, scope=MemoryAccessScope.CHIP)
         result[key] = _Access(
             node.id,
             buffer_id,
@@ -361,7 +480,7 @@ def _node_accesses(module, plan, function_name, node, bindings):
             access_start,
             access_bytes,
             _mode_name(merged_mode),
-            descriptor.distributed_type,
+            owner_type,
             descriptor.distributed_storage_kind,
             merged_effect,
             access_partition,
@@ -394,6 +513,7 @@ def _node_accesses(module, plan, function_name, node, bindings):
                     leaf_effect,
                     reference_access=is_reference,
                     publishes=publishes_across_chip,
+                    input_access=True,
                 )
     output_buffers = tuple(bindings.get(node.id, ()))
     output_effects = _expanded_output_effects(

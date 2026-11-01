@@ -44,3 +44,25 @@ def packed_qkv_n_tiled_implementations(partial_mma):
                 transfer_pipeline=replace(result[-1].transfer_pipeline, consumer_shared_workspace_indices=()),
             ))
     return tuple(result)
+
+
+def packed_qkv_ordered_implementations(partial_mma):
+    """Keep the fused transfer pipeline and one accumulator across all K."""
+    variants = packed_qkv_n_tiled_implementations(partial_mma)
+    base = next(value for value in variants if value.id == (
+        "tir.qkv_parallel_linear.packed_partial_mma_n_tiled_table_direct_pipeline"))
+    contract = {key: value for key, value in base.contract.items() if key not in {
+        "required_output_partial_reduce_op", "requires_partial_axes_match_input_reduction_ownership"}}
+    contract.update(reduction_order="mma_k16", required_output_dtype="bfloat16")
+    facts = {key: value for key, value in base.facts.items() if key != "produces_sum_partials"}
+    pipelined = replace(
+        base, id="tir.qkv_parallel_linear.packed_ordered_mma_table_pipeline",
+        contract=contract, facts={**facts, "ordered_mma_accumulation": True})
+    from triton.flagmega.codegen.triton.implementation import TritonImplementation
+    tiled = TritonImplementation(
+        "tir.qkv_parallel_linear.packed_ordered_mma", "qkv_parallel_linear", "packed_ordered_mma",
+        {"block_k": 128, "tile_n": 16},
+        {"input_kind": "fused_rhs", "rhs_layout": "k_major", "reduction_order": "mma_k16",
+         "required_input_dtype": "bfloat16", "required_weight_dtype": "bfloat16"},
+        requires=("mma_v3",), facts={"ordered_mma_accumulation": True})
+    return pipelined, tiled

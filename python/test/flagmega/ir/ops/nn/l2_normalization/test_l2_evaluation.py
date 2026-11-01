@@ -3,6 +3,8 @@
 
 import pytest
 import torch
+import json
+from pathlib import Path
 
 from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from python.test.flagmega.ir.ops.primitive_helpers import evaluate
@@ -28,3 +30,14 @@ def test_l2_epsilon_keeps_zero_and_tiny_inputs_finite():
                       division_mode="reciprocal_multiply")
     torch.testing.assert_close(result, value * (1. / (value.square().sum(-1, keepdim=True) + 1e-6).sqrt()),
                                rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA instruction reference required")
+def test_l2_native_contiguous_group_eager_reference():
+    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" /
+                          "native_l2_contiguous_groups.json").read_text())
+    value = torch.tensor([fixture["input"]], dtype=torch.bfloat16, device="cuda")
+    expected = torch.tensor([fixture["output"]], dtype=torch.bfloat16, device="cuda")
+    actual = evaluate(L2Normalization, (value,), epsilon=1e-6, epsilon_mode="add",
+                      division_mode="reciprocal_multiply", reduction_group_size=8)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

@@ -4,15 +4,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from math import prod
-from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPPartial
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType
-from triton.flagmega.ir.types import DType, VectorType
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpCostFactors,
@@ -32,6 +31,7 @@ from triton.flagmega.ir.ops.nn._norm import (
     unpack_default_vector,
 )
 from triton.flagmega.ir.type_pattern import is_tensor
+from triton.flagmega.ir.types import DType, VectorType
 
 
 @op_definition(
@@ -41,6 +41,14 @@ from triton.flagmega.ir.type_pattern import is_tensor
     display_name="NN.NormApply",
 )
 class NormApply(OpDefinition):
+    """Normalize from external statistics, optionally converting the numerator.
+
+    ``input_dtype`` defines the value dtype seen by normalization, without
+    changing or recomputing ``stats``. Conversion happens before subtraction
+    and scaling. Intermediate and final input-dtype rounding use this dtype;
+    ``output_dtype`` can then convert that rounded result. Defaults preserve
+    the physical value dtype and existing checkpoint semantics.
+    """
     value = input_parameter(is_tensor(), name="input")
     stats = input_parameter(is_tensor())
     scale = input_parameter(is_tensor())
@@ -50,6 +58,8 @@ class NormApply(OpDefinition):
     use_mean = attribute_parameter()
     round_before_scale = attribute_parameter(default=False)
     output_dtype = attribute_parameter(default=None)
+    input_dtype = attribute_parameter(default=None)
+    math_mode = attribute_parameter(default="fast")
     inplace_input_parameters = (value,)
 
     @classmethod
@@ -63,15 +73,21 @@ class NormApply(OpDefinition):
             raise IRSchemaError("NormApply epsilon must be positive.")
         if not isinstance(attrs["round_before_scale"], bool):
             raise IRSchemaError("NormApply round_before_scale must be boolean.")
-        output_dtype = attrs["output_dtype"]
-        if output_dtype is not None:
+        if attrs["math_mode"] not in ("fast", "accurate"):
+            raise IRSchemaError("NormApply math_mode must be fast or accurate.")
+        optional_dtypes = {}
+        for name in ("input_dtype", "output_dtype"):
+            if attrs[name] is None:
+                continue
             try:
-                output_dtype = DType(output_dtype)
+                dtype = DType(attrs[name])
             except (ValueError, TypeError) as error:
-                raise IRSchemaError("NormApply output_dtype must be bfloat16 or float32.") from error
-            if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
-                raise IRSchemaError("NormApply output_dtype must be bfloat16 or float32.")
-        return {**({"output_dtype": output_dtype.value} if output_dtype is not None else {}),
+                raise IRSchemaError(f"NormApply {name} must be bfloat16 or float32.") from error
+            if dtype not in {DType.BFLOAT16, DType.FLOAT32}:
+                raise IRSchemaError(f"NormApply {name} must be bfloat16 or float32.")
+            optional_dtypes[name] = dtype.value
+        return {**optional_dtypes,
+                **({"math_mode": attrs["math_mode"]} if attrs["math_mode"] != "fast" else {}),
                 "axis": axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]),
                 "round_before_scale": attrs["round_before_scale"]}
 
@@ -95,8 +111,9 @@ class NormApply(OpDefinition):
         _require_suffix_parameter(value, scale, axis, "scale")
         _require_suffix_parameter(value, bias, axis, "bias")
         output = value
-        if attrs.get("output_dtype") is not None:
-            dtype = DType(attrs["output_dtype"])
+        dtype_override = attrs.get("output_dtype") or attrs.get("input_dtype")
+        if dtype_override is not None:
+            dtype = DType(dtype_override)
             if isinstance(value.dtype, VectorType):
                 dtype = VectorType(dtype, value.dtype.lanes)
             output = replace(value, dtype=dtype)
@@ -150,6 +167,8 @@ class NormApply(OpDefinition):
         scale_type = tensor_of(context.types[cls.scale.read(node.inputs)])
         bias_type = tensor_of(context.types[cls.bias.read(node.inputs)])
         value = unpack_default_vector(cls.value.read(arguments), input_type)
+        if node.attrs.get("input_dtype") is not None:
+            value = value.to(dtype=context.torch_dtype(node.attrs["input_dtype"]))
         scale = unpack_default_vector(cls.scale.read(arguments), scale_type)
         bias = unpack_default_vector(cls.bias.read(arguments), bias_type)
         output = norm_apply_value(

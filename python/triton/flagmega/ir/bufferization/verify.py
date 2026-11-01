@@ -540,9 +540,19 @@ def _verify_function_abis(module: IRModule, plan: BufferPlan) -> None:
                     raise IRVerificationError(
                         f"Call {call.call!r} {memory_space!r} frame offset is inconsistent."
                     )
+            bound_spans = {}
             for formal, actual in (*call.arguments, *call.results):
                 if formal not in buffers or actual not in buffers:
                     raise IRVerificationError(f"Call {call.call!r} binding references a missing buffer.")
+                formal_span = buffers[formal].mem_span
+                actual_span = buffers[actual].mem_span
+                aliases = bound_spans.setdefault(formal_span.buffer.id, [])
+                for previous_formal, previous_actual in aliases:
+                    if formal_span.must_alias(previous_formal) and not actual_span.must_alias(previous_actual):
+                        raise IRVerificationError(
+                            f"Call {call.call!r} binds aliased callee spans to different caller spans."
+                        )
+                aliases.append((formal_span, actual_span))
         for call in abi.kernel_calls:
             node = module.node_map[call.call]
             dispatch = kernel_dispatch_for_call(module, node)

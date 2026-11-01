@@ -48,3 +48,34 @@ def test_strict_contract_still_folds_lossless_widening_round_trip():
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
     module = replace(module, metadata={**module.metadata, "floating_point_contract": "strict"})
     assert decompose_complex_ops(module).functions[0].outputs == ("x",)
+
+
+@pytest.mark.parametrize("source,intermediate", [("float32", "bfloat16"), ("float32", "float8_e4m3fn")])
+def test_explicit_cast_store_preserves_rounding_in_relaxed_module(source, intermediate, tmp_path):
+    class Graph(fm.Module):
+        def forward(self):
+            x = self.input("x", fm.tensor_type(source, (16,)), id="x")
+            rounded = fm.F.tensors.cast(x, intermediate, rounding_contract="preserve")
+            result = fm.F.tensors.cast(rounded, source)
+            self.function("main", (x,), (result,))
+
+    module = Graph(dialect="high_level", stage="imported", entry="main").build()
+    restored = fm.load_module(fm.emit_module(module, tmp_path / "cast.py"))
+    assert restored.semantic_hash == module.semantic_hash
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    values = {"x": torch.linspace(.991, 1.009, 16)}
+    expected = values["x"].to(getattr(torch, intermediate)).float()
+    actual = evaluator.run(decompose_complex_ops(restored), values)[0]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_explicit_lossless_cast_round_trip_still_folds():
+    class Graph(fm.Module):
+        def forward(self):
+            x = self.input("x", fm.tensor_type("bfloat16", (16,)), id="x")
+            wide = fm.F.tensors.cast(x, "float32", rounding_contract="preserve")
+            result = fm.F.tensors.cast(wide, "bfloat16")
+            self.function("main", (x,), (result,))
+
+    module = Graph(dialect="high_level", stage="imported", entry="main").build()
+    assert decompose_complex_ops(module).functions[0].outputs == ("x",)

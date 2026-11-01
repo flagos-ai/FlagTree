@@ -30,7 +30,7 @@ from triton.flagmega.ir.ops.core import (
     tensor_nbytes,
 )
 from triton.flagmega.ir.type_pattern import is_tensor
-from triton.flagmega.ir.types import DType
+from triton.flagmega.ir.types import DType, VectorType
 
 
 @op_definition("nn.mhc_post", namespace="nn", functional_name="mhc_post",
@@ -39,7 +39,8 @@ class MhcPost(OpDefinition):
     """Mix residual streams and add the sublayer result's per-stream share.
 
     Inputs
-        ``value``    ``(tokens, hidden)`` sublayer result.
+        ``value``    ``(tokens, hidden)`` sublayer result, optionally packed
+                     along hidden into complete scalar lane groups.
         ``residual`` ``(tokens, hc_mult, hidden)`` incoming streams.
         ``post``     ``(tokens, hc_mult)`` FP32 per-stream share of ``value``.
         ``comb``     ``(tokens, hc_mult, hc_mult)`` FP32 doubly-stochastic mix.
@@ -49,6 +50,9 @@ class MhcPost(OpDefinition):
     ``value_fma_first`` accumulation starts with the rounded first residual
     product, adds the value branch by FP32 FMA, then incorporates the remaining
     residual streams in ascending source order by FP32 FMA.
+    ``residual_input_dtype`` optionally rounds the loaded residual before
+    its FP32 use. It preserves an input conversion boundary without storing
+    another activation; it does not change the default output storage dtype.
     """
 
     const_evaluable = True
@@ -57,20 +61,22 @@ class MhcPost(OpDefinition):
     post = input_parameter(is_tensor())
     comb = input_parameter(is_tensor())
     output_dtype = attribute_parameter(default=None)
+    residual_input_dtype = attribute_parameter(default=None)
     accumulation_mode = attribute_parameter(default="residual_then_value")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
-        dtype = attrs["output_dtype"]
-        if dtype is not None:
-            try:
-                dtype = DType(dtype)
-            except (ValueError, TypeError) as error:
-                raise IRSchemaError("MhcPost output_dtype must be float16, bfloat16 or float32.") from error
-            if dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}:
-                raise IRSchemaError("MhcPost output_dtype must be float16, bfloat16 or float32.")
-            attrs["output_dtype"] = dtype.value
+        for name in ("output_dtype", "residual_input_dtype"):
+            dtype = attrs[name]
+            if dtype is not None:
+                try:
+                    dtype = DType(dtype)
+                except (ValueError, TypeError) as error:
+                    raise IRSchemaError(f"MhcPost {name} must be float16, bfloat16 or float32.") from error
+                if dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}:
+                    raise IRSchemaError(f"MhcPost {name} must be float16, bfloat16 or float32.")
+                attrs[name] = dtype.value
         if not isinstance(attrs["accumulation_mode"], str) or attrs["accumulation_mode"] not in {
                 "residual_then_value", "value_fma_first"}:
             raise IRSchemaError("MhcPost accumulation_mode must be residual_then_value or value_fma_first.")
@@ -79,7 +85,7 @@ class MhcPost(OpDefinition):
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
         return {key: value for key, value in attrs.items()
-                if (key != "output_dtype" or value is not None)
+                if (key not in {"output_dtype", "residual_input_dtype"} or value is not None)
                 and (key != "accumulation_mode" or value != "residual_then_value")}
 
     @classmethod
@@ -90,7 +96,8 @@ class MhcPost(OpDefinition):
             raise IRSchemaError("MhcPost residual must be (tokens, hc_mult, hidden) with fixed trailing extents.")
         tokens, hc, hidden = residual.shape[0], residual.shape[1].fixed_value, residual.shape[2].fixed_value
         value = tensor_of(cls.value.type_of(inputs))
-        if value.rank != 2 or value.shape[1].fixed_value != hidden:
+        value_lanes = value.dtype.lane_count if isinstance(value.dtype, VectorType) else 1
+        if value.rank != 2 or not value.shape[1].is_fixed or value.shape[1].fixed_value * value_lanes != hidden:
             raise IRSchemaError("MhcPost value must be (tokens, hidden) matching the residual streams.")
         post = tensor_of(cls.post.type_of(inputs))
         if post.dtype != DType.FLOAT32 or post.rank != 2 or post.shape[1].fixed_value != hc:
@@ -118,6 +125,11 @@ class MhcPost(OpDefinition):
     def evaluate(cls, node, arguments, context):
         value = cls.value.read(arguments).float()
         residual = cls.residual.read(arguments)
+        if isinstance(tensor_of(context.types[cls.value.read(node.inputs)]).dtype, VectorType):
+            value = value.reshape(value.shape[0], residual.shape[-1])
+        residual_dtype = residual.dtype
+        if node.attrs.get("residual_input_dtype") is not None:
+            residual = residual.to(getattr(context.torch, node.attrs["residual_input_dtype"]))
         post = cls.post.read(arguments).float()
         comb = cls.comb.read(arguments).float()
         # out[t, j, h] = sum_i comb[t, i, j] * residual[t, i, h] + post[t, j] * value[t, h]
@@ -134,7 +146,7 @@ class MhcPost(OpDefinition):
             mixed = context.torch.einsum("tij,tih->tjh", comb, residual.float())
             output = mixed + post.unsqueeze(-1) * value.unsqueeze(-2)
         dtype = (getattr(context.torch, node.attrs["output_dtype"])
-                 if node.attrs.get("output_dtype") is not None else residual.dtype)
+                 if node.attrs.get("output_dtype") is not None else residual_dtype)
         return output.to(dtype)
 
     @classmethod

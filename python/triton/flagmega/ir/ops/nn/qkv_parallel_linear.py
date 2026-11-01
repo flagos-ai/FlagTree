@@ -17,6 +17,7 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_none, is_tensor
+from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order, validate_reduction_order
 
 
 _OPTIONAL_TENSOR = is_tensor() | is_none()
@@ -47,6 +48,7 @@ class QKVParallelLinear(OpDefinition):
     num_heads = attribute_parameter()
     num_kv_heads = attribute_parameter()
     output_data_type = attribute_parameter()
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -56,10 +58,12 @@ class QKVParallelLinear(OpDefinition):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise IRSchemaError(f"QKVParallelLinear {name} must be positive.")
         output_type = DType(attrs["output_data_type"])
+        normalize_reduction_order(attrs)
         return {
             "num_heads": int(attrs["num_heads"]),
             "num_kv_heads": int(attrs["num_kv_heads"]),
             "output_data_type": output_type,
+            "reduction_order": attrs.get("reduction_order", "relaxed"),
         }
 
     @classmethod
@@ -68,11 +72,14 @@ class QKVParallelLinear(OpDefinition):
             "num_heads": attrs["num_heads"],
             "num_kv_heads": attrs["num_kv_heads"],
             "output_data_type": DType(attrs["output_data_type"]).value,
+            **({"reduction_order": attrs["reduction_order"]}
+               if attrs["reduction_order"] != "relaxed" else {}),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value = tensor_of(cls.input.type_of(inputs))
+        validate_reduction_order(attrs, cls.input.type_of(inputs), 1)
         weights = tuple(tensor_of(parameter.type_of(inputs)) for parameter in (
             cls.q_weight, cls.k_weight, cls.v_weight,
         ))

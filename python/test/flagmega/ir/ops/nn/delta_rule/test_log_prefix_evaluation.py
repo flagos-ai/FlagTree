@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
+import json
+from pathlib import Path
 
 from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
 from python.test.flagmega.ir.ops.primitive_helpers import evaluate
@@ -34,3 +36,16 @@ def test_zero_epsilon_log_domain_propagates_instead_of_silent_clamping():
     actual = evaluate(DeltaRuleLogPrefix, (torch.tensor([[0., -1.]]), ), epsilon=0.)
     assert torch.isneginf(actual[0, 0]).all()
     assert torch.isnan(actual[0, 1]).all()
+
+
+def test_cuda_fast_log2_matches_declared_approximate_prefix():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" /
+                          "native_log_prefix_fast_math.json").read_text())
+    alpha = torch.tensor(fixture["alpha"], device="cuda")
+    expected = torch.tensor(fixture["prefix"], device="cuda")
+    actual = evaluate(DeltaRuleLogPrefix, (alpha,), block_size=4, scan_group_size=4,
+                      log2_mode="fast")
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

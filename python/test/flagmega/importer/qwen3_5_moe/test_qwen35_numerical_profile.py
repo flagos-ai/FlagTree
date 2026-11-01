@@ -14,6 +14,80 @@ from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentC
 from python.test.flagmega.importer.qwen3_5_moe.helpers import checkpoint
 
 
+def test_prefill_norm_parameter_rounding_survives_decomposition():
+    import torch
+    from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
+    from triton.flagmega.passes.target_independent import decompose_complex_ops
+
+    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3,
+                          mode="prefill", num_tokens=32)
+    rounded = next(n for n in module.nodes if n.id.endswith("recurrent.norm_weight_bf16"))
+
+    class Parameter(fm.Module):
+        def forward(self):
+            value = self.input("weight", fm.tensor_type("float32", (16,)))
+            first = fm.F.tensors.cast(value, "bfloat16", name="rounded")
+            result = fm.F.tensors.cast(first, "float32")
+            self.function("main", (value,), (result,))
+
+    # Exercise the profile's cast contract without the full-model weights.
+    graph = Parameter(dialect="high_level", stage="imported", entry="main").build()
+    graph = fm.verify_module(replace(graph, nodes=tuple(
+        replace(n, attrs=rounded.attrs) if n.id == "rounded" else n for n in graph.nodes)))
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    values = {"weight": torch.linspace(.991, 1.009, 16)}
+    expected = values["weight"].bfloat16().float()
+    torch.testing.assert_close(evaluator.run(graph, values)[0], expected, rtol=0, atol=0)
+    actual = evaluator.run(decompose_complex_ops(graph), values)[0]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('mode', ('decode', 'prefill'))
+def test_native_expert_projections_keep_ordered_mma_contract(mode):
+    options = {'mode': mode, 'num_tokens': 32} if mode == 'prefill' else {}
+    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3, **options)
+    experts = tuple(n for n in module.nodes if n.op == 'nn.sparse_experts')
+    assert experts
+    assert all(n.attrs['reduction_order'] == 'mma_k16' for n in experts)
+
+
+@pytest.mark.parametrize("mode", ("decode", "prefill"))
+def test_native_qkv_retains_full_k_mma_contract(mode):
+    options = {"mode": mode, "num_tokens": 32} if mode == "prefill" else {}
+    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3, **options)
+    projections = tuple(n for n in module.nodes if n.op == "nn.qkv_parallel_linear")
+    assert projections
+    assert all(n.attrs["reduction_order"] == "mma_k16" for n in projections)
+
+
+@pytest.mark.parametrize("mode", ("decode", "prefill"))
+def test_native_attention_keeps_fa3_probability_store_and_block_order(mode):
+    options = {"mode": mode, "num_tokens": 32} if mode == "prefill" else {}
+    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3, **options)
+    attention = tuple(n for n in module.nodes if n.op == "nn.paged_attention")
+    assert attention
+    assert all(n.attrs["probability_rounding"] == "online_bf16" for n in attention)
+    assert all(n.attrs["softmax_block_size"] == 80 and n.attrs["softmax_traversal"] == "reverse"
+               for n in attention)
+
+
+@pytest.mark.parametrize("mode", ("decode", "prefill"))
+def test_native_router_owns_scoring_and_ordered_normalization(mode):
+    options = {"mode": mode, "num_tokens": 32} if mode == "prefill" else {}
+    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3, **options)
+    for suffix in ("linear", "attention"):
+        prefix = mode + "_" + suffix
+        routing = module.node_map[prefix + "_router_top_k"]
+        assert routing.op == "nn.staged_routing"
+        assert routing.attrs["arithmetic"] == "exp_grouped_reciprocal"
+        assert routing.attrs["normalize"]
+        assert module.node_map[routing.inputs[0]].id == prefix + "_router_logits"
+        assert prefix + "_router_softmax" not in module.node_map
+        weights = module.node_map[prefix + "_router_weights"]
+        assert weights.op == "tensors.reshape"
+        assert module.node_map[weights.inputs[0]].inputs == (routing.id,)
+
+
 def test_profile_preserves_reuse_and_materializes_only_declared_rounding_boundaries():
     original = import_model(checkpoint())
     module = apply_numerical_profile(original, VLLM_AE10_INDUCTOR_LEVEL3)
@@ -51,6 +125,8 @@ def test_profile_preserves_reuse_and_materializes_only_declared_rounding_boundar
             assert all(module.node_map[value].op != "tensors.cast" for value in node.inputs)
     rotary, = (node for node in module.nodes if node.op == "nn.rotary_embedding")
     assert rotary.attrs["output_dtype"] == "bfloat16"
+    assert rotary.attrs["math_mode"] == "accurate"
+    assert len(rotary.attrs["inverse_frequencies"]) == rotary.attrs["head_dim"] // 2
 
 
 def test_profile_is_idempotent_and_python_round_trip_keeps_contract(tmp_path):
@@ -118,9 +194,38 @@ def test_native_prefill_uses_explicit_block_stages_instead_of_decode_recurrence(
     assert namespace["MODULE"].semantic_hash == module.semantic_hash
 
 
-def test_cp_prefill_contract_does_not_claim_unimplemented_cross_chunk_transfer():
-    with pytest.raises(ImporterError, match="chunks of at most 512"):
-        import_model(checkpoint(), mode="prefill", num_tokens=513, numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3)
+@pytest.mark.parametrize("tokens", [513, 1024, 2048])
+def test_cp_prefill_contract_exposes_cross_chunk_transfer(tokens):
+    from dataclasses import replace
+    from triton.flagmega.importer import MemoryCheckpoint
+    from python.test.flagmega.importer.qwen3_5_moe.helpers import configuration
+    config = configuration()
+    config["text_config"].update(linear_key_head_dim=128, linear_value_head_dim=128)
+    source = checkpoint()
+    shapes = {"in_proj_qkv.weight": (512, 16), "in_proj_z.weight": (256, 16),
+              "conv1d.weight": (512, 1, 4), "norm.weight": (128,), "out_proj.weight": (16, 256)}
+    infos = {}
+    for key in source.keys:
+        info = source.tensor_info(key)
+        if ".linear_attn." in key:
+            suffix = key.split(".linear_attn.")[1]
+            if suffix in shapes:
+                info = replace(info, shape=shapes[suffix])
+        infos[key] = info
+    module = import_model(MemoryCheckpoint(config, infos, {}), mode="prefill", num_tokens=tokens,
+                          numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3)
+    prefix = "prefill_linear_recurrent."
+    assert module.node_map[prefix + "chunk_transfer"].attrs["matrix_kind"] == "transfer"
+    assert module.node_map[prefix + "chunk_local_state"].attrs["matrix_kind"] == "state"
+    fixed = module.node_map[prefix + "chunk_fixed_state"]
+    assert fixed.op == "nn.delta_rule_chunk_fixup" and fixed.effect.kind == "read"
+    update = module.node_map[prefix + "block_update"]
+    assert update.op == "nn.delta_rule_chunked_block_update"
+    assert update.inputs[-1] == fixed.id and update.attrs["chunk_size"] == 512
+    assert fixed.type.shape[0].fixed_value == (tokens + 511) // 512
+    namespace = {}
+    exec(fm.module_source(module), namespace)
+    assert namespace["MODULE"].semantic_hash == module.semantic_hash
 
 
 def test_wide_residual_and_moe_additions_follow_independent_arithmetic():
@@ -141,8 +246,8 @@ def test_wide_residual_and_moe_additions_follow_independent_arithmetic():
     for name in ("decode_linear", "decode_attention"):
         residual = trace[name + "_hidden"].bfloat16().float() + trace[name + "_attention_output"].float()
         torch.testing.assert_close(trace[name + "_attention_residual"], residual, rtol=0, atol=0)
-        # The shared and routed outputs are individual BF16 stores before
-        # their FP32 sum and the next residual/input-normalization segment.
+        # The pinned generated Inductor kernel removes intermediate BF16
+        # casts across both additions; its shared/routed input loads are BF16.
         moe = module.node_map[name + "_moe_output"]
         expected_moe = trace[moe.inputs[0]].float() + trace[moe.inputs[1]].float()
         torch.testing.assert_close(trace[name + "_output"], residual + expected_moe, rtol=0, atol=0)

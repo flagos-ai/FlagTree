@@ -1,0 +1,43 @@
+# flagmega-kernel: qkv_parallel_linear/packed_ordered_mma platform=generic
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "qkv_parallel_linear" and call.variant == "packed_ordered_mma" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for qkv_m_start in tl.range(0, {{ call.rows }}, 16):
+        qkv_m = qkv_m_start + tl.arange(0, 16)
+{% for output in call.outputs %}
+        for qkv_n_start in tl.range(0, {{ output.local_n_capacity }}, {{ call.tile_n }}):
+            qkv_n = qkv_n_start + tl.arange(0, {{ call.tile_n }})
+            qkv_accumulator = tl.full((16, {{ call.tile_n }}), 0., tl.float32)
+            for qkv_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
+                qkv_k = qkv_k_start + tl.arange(0, {{ call.block_k }})
+                qkv_local_m = qkv_m[:, None]
+                qkv_local_k_offsets = qkv_k[None, :]
+                qkv_x = tl.load({{ call.source }} + ({{ call.source_offset }}),
+                                (qkv_local_m < {{ call.rows }})
+                                & (qkv_local_k_offsets < {{ call.local_k_capacity }})
+                                & ({{ call.source_active }}), 0)
+                qkv_weight_offset = (shard_index * {{ call.weight_owner_stride }}
+                    + (qkv_k[:, None] // {{ call.k_lane }}) * {{ call.weight_k_group_stride }}
+                    + ({{ output.weight_group_start }} + qkv_n[None, :] // {{ call.n_lane }}) * {{ call.weight_n_group_stride }}
+                    + (qkv_n[None, :] % {{ call.n_lane }}) * {{ call.k_lane }}
+                    + qkv_k[:, None] % {{ call.k_lane }})
+                qkv_w = tl.load({{ call.weight }} + qkv_weight_offset,
+                                (qkv_k[:, None] < {{ call.local_k_capacity }})
+                                & (qkv_n[None, :] < {{ output.local_n_capacity }}), 0)
+                qkv_accumulator = tl.dot(qkv_x, qkv_w, qkv_accumulator)
+            qkv_local_m = qkv_m[:, None]
+            qkv_local_n_offsets = qkv_n[None, :]
+            tl.store({{ output.result }} + ({{ output.result_offset }}),
+                     qkv_accumulator.to({{ call.output_type }}),
+                     (qkv_local_m < {{ call.rows }})
+                     & (qkv_local_n_offsets < {{ output.local_n_capacity }})
+                     & ({{ output.active }}))
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+{% endif %}

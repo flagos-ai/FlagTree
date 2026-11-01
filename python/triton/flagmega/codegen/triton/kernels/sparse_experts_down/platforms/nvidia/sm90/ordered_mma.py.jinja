@@ -1,0 +1,49 @@
+# flagmega-kernel: sparse_experts_down/ordered_mma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "sparse_experts_down" and call.variant == "ordered_mma" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__mma = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [1, {{ num_warps }}], [16, 8]))
+{{ call.symbol }}__lhs = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma, 2))
+{{ call.symbol }}__rhs = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma, 2))
+{{ call.symbol }}__load = tl.constexpr(tle.gpu.BlockEncoding([1, 2], [4, 8], [{{ [num_warps, call.block_n // 4] | min }}, {{ num_warps // ([num_warps, call.block_n // 4] | min) }}], [1, 0]))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+        for _fm_n_start in tl.range(0, {{ call.scalar_n }}, {{ call.block_n }}):
+            _fm_n = _fm_n_start + tl.arange(0, {{ call.block_n }})
+            _fm_n_mask = (_fm_n < {{ call.scalar_n }}) & ({{ call.n_active }}) & ({{ call.token_active }})
+            _fm_output = tl.zeros(({{ call.block_n }},), tl.float32)
+            for _fm_route in tl.range(0, {{ call.routes }}):
+                _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }}), {{ call.slot_active }}, other=0).to(tl.int64)
+                _fm_scale = {{ call.scale_loads.down_proj_scale }}
+{% if call.combine_routes %}
+                _fm_probability = tl.load({{ call.pointers.router_expert_weights }} + ({{ call.probability_offset }}), {{ call.slot_active }}, other=0.).to(tl.float32)
+{% endif %}
+                _fm_acc = tle.gpu.set_layout(tl.zeros((16, {{ call.block_n }}), tl.float32), {{ call.symbol }}__mma)
+                for _fm_k_start in tl.range(0, {{ call.scalar_k }}, {{ call.block_k }}):
+                    _fm_k = _fm_k_start + tl.arange(0, {{ call.block_k }})
+                    _fm_k_mask = (_fm_k < {{ call.scalar_k }}) & ({{ call.k_active }}) & ({{ call.slot_active }})
+                    _fm_activation = tl.load({{ call.pointers.activations }} + ({{ call.activation_offset }}), _fm_k_mask, other=0.)
+                    _fm_x = tle.gpu.set_layout(tl.broadcast_to(_fm_activation[None, :], (16, {{ call.block_k }})), {{ call.symbol }}__lhs)
+                    _fm_weight = tle.gpu.set_layout(tl.load({{ call.pointers.down_weight }} + ({{ call.weight_offset }}), _fm_n_mask[:, None] & _fm_k_mask[None, :], other=0.), {{ call.symbol }}__load)
+                    _fm_acc = tl.dot(_fm_x, tle.gpu.set_layout(tl.trans(_fm_weight), {{ call.symbol }}__rhs), _fm_acc)
+                _fm_projection = tl.sum(tl.where(tl.arange(0, 16)[:, None] == 0, _fm_acc, 0.), 0) * _fm_scale
+{% if call.attrs.round_projection %}
+                _fm_projection = _fm_projection.to({{ call.activation_dtype }}).to(tl.float32)
+{% endif %}
+{% if call.combine_routes %}
+                _fm_weighted = _fm_projection * _fm_probability
+{% if call.attrs.round_weighted_output %}
+                _fm_weighted = _fm_weighted.to({{ call.weighted_dtype }}).to(tl.float32)
+{% endif %}
+                _fm_output += _fm_weighted
+{% else %}
+                tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_projection, _fm_n_mask & ({{ call.route_active }}) & ({{ call.writer_active }}))
+{% endif %}
+{% if call.combine_routes %}
+            tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_output, _fm_n_mask & ({{ call.writer_active }}))
+{% endif %}
+{% endif %}
+{% endfor %}

@@ -48,6 +48,7 @@ def _rewrite(result, module: IRModule):
         "round_before_scale":
         bool(norm.attrs.get("round_before_scale", False)),
         **({"output_dtype": norm.attrs["output_dtype"]} if "output_dtype" in norm.attrs else {}),
+        **({"input_dtype": norm.attrs["input_dtype"]} if "input_dtype" in norm.attrs else {}),
         "has_bias":
         not _is_zero_splat(module.node_map[norm.inputs[3]], module),
     }

@@ -29,7 +29,7 @@ def _apply_transform(flat, BEGIN: tl.constexpr, END: tl.constexpr,
 
 
 @triton.jit
-def gather_source_bytes(Output, Sources, Prefix, Offsets, Parameters,
+def gather_source_bytes(Output, Sources, Prefix, Offsets, Parameters, Start, Count,
                         SHAPE: tl.constexpr, GLOBAL_SHAPE: tl.constexpr,
                         LOCAL_STRIDES: tl.constexpr, GLOBAL_STRIDES: tl.constexpr,
                         STAGE_COUNTS: tl.constexpr, STAGE_BEGIN: tl.constexpr,
@@ -39,7 +39,8 @@ def gather_source_bytes(Output, Sources, Prefix, Offsets, Parameters,
                         PARAMS: tl.constexpr, CONCAT: tl.constexpr, AXIS: tl.constexpr,
                         OPERANDS: tl.constexpr, UNIFORM: tl.constexpr, SEARCH_STEPS: tl.constexpr,
                         TRAILING: tl.constexpr, COMPONENT_NBYTES: tl.constexpr, BLOCK: tl.constexpr):
-    local = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    relative = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    local = Start + relative
     owner = tl.program_id(1)
     flat = tl.full((BLOCK,), 0, tl.int64)
     valid = tl.full((BLOCK,), True, tl.int1)
@@ -73,8 +74,8 @@ def gather_source_bytes(Output, Sources, Prefix, Offsets, Parameters,
         begin = tl.load(Prefix + child)
         extent = tl.load(Prefix + child + 1) - begin
     address = ((flat // (CONCAT[AXIS] * TRAILING)) * extent + axis_coord - begin) * TRAILING + flat % TRAILING
-    pointer = (tl.load(Sources + child) + address.to(tl.uint64)).to(tl.pointer_type(tl.uint8))
-    mask = local < COMPONENT_NBYTES
+    pointer = (tl.load(Sources + owner * OPERANDS + child) + address.to(tl.uint64)).to(tl.pointer_type(tl.uint8))
+    mask = (relative < Count) & (local < COMPONENT_NBYTES)
     value = tl.load(pointer, mask=mask & valid, other=0)
     offset = tl.load(Offsets + owner)
     tl.store(Output + offset + local, value, mask=mask)

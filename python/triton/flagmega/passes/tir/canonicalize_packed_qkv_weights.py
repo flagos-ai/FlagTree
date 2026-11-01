@@ -828,6 +828,15 @@ def _fused_weight_type(source_types, owner):
             ),
             first.layout,
         )
+    if any(not value.shape[1].is_fixed for value in logical_types):
+        raise IRVerificationError(
+            f"Packed-QKV {owner} weights require fixed projection capacities."
+        )
+    return TensorType(
+        first.dtype,
+        (first.shape[0], sum(value.shape[1].fixed_value for value in logical_types)),
+        first.layout,
+    )
 
 
 def fused_weight_n_shares(source_types):
@@ -858,15 +867,6 @@ def fused_weight_n_shares(source_types):
             if 0 <= int(axis) < len(hierarchy):
                 shares *= hierarchy[int(axis)]
     return shares if shares > 1 else None
-    if any(not value.shape[1].is_fixed for value in logical_types):
-        raise IRVerificationError(
-            f"Packed-QKV {owner} weights require fixed projection capacities."
-        )
-    return TensorType(
-        first.dtype,
-        (first.shape[0], sum(value.shape[1].fixed_value for value in logical_types)),
-        first.layout,
-    )
 
 
 def _projection_n_capacity(value_type, owner):

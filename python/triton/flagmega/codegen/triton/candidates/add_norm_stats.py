@@ -51,14 +51,10 @@ class AddNormStatsCandidateProvider:
         value = value_type.tensor
         if any(not dimension.is_fixed for dimension in value.shape[:-1]):
             return None
-        if prod(
+        rows = prod(
             (dimension.fixed_value for dimension in value.shape[:-1]),
             start=1,
-        ) != 1:
-            # The current sum_rms implementation materializes one decode row.
-            # A multi-row variant needs row-indexed statistics workspaces and
-            # is a different reviewed implementation, not an implicit mode.
-            return None
+        )
         placement = value_type.placement
         if isinstance(source_type, DistributedType) and source_type.partial is not None:
             if source_type.partial.reduce_op is not ReduceOp.SUM:
@@ -115,8 +111,9 @@ class AddNormStatsCandidateProvider:
         implementations = tuple(
             implementation
             for implementation in implementations
-            if context.cooperative_grid
-            or "cooperative_grid" not in implementation.requires
+            if (context.cooperative_grid or "cooperative_grid" not in implementation.requires)
+            and (family != "add_norm_stats"
+                 or (implementation.contract.get("outer_rows") == "multiple") == (rows != 1))
         )
         candidates = tuple(
             context.configure_implementation(

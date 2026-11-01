@@ -27,6 +27,12 @@ class _ThreadingPlan:
     output_field_index: int
     axis: int
     use_mean: bool
+    reduction_group_size: int
+    reduction_order: str
+    reduction_block_size: int | None
+    reduction_block_traversal: str
+    reduction_tree_group_size: int | None
+    reduction_group_seed_index: int
     stats_type: object
     input_stats_ids: frozenset[str]
     stats_parameter_id: str
@@ -35,6 +41,18 @@ class _ThreadingPlan:
     @property
     def stats_output_index(self) -> int:
         return len(self.function.outputs)
+
+    @property
+    def stats_attrs(self):
+        return NormStats.normalize_attrs({
+            "axis": self.axis, "use_mean": self.use_mean,
+            "reduction_group_size": self.reduction_group_size,
+            "reduction_order": self.reduction_order,
+            "reduction_block_size": self.reduction_block_size,
+            "reduction_block_traversal": self.reduction_block_traversal,
+            "reduction_tree_group_size": self.reduction_tree_group_size,
+            "reduction_group_seed_index": self.reduction_group_seed_index,
+        })
 
 
 def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
@@ -119,26 +137,26 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
                     (node.inputs[0], plan.stats_parameter_id),
                     node.type,
                     node.effect,
-                    node.attrs,
+                    {"axis": plan.axis, "use_mean": plan.use_mean},
                     _threading_metadata(node),
                 ))
         elif node.id in plans_by_call:
             plan = plans_by_call[node.id]
             input_id = node.inputs[plan.input_parameter_index]
-            source = _threaded_value_source(input_id, node_map, plans_by_call)
+            source = _threaded_value_source(input_id, node_map, plans_by_call, expected_plan=plan)
             helper_id = _fresh_id(f"{node.id}.norm_stats", created_ids)
             created_ids.add(helper_id)
             if source is None:
                 input_node = node_map[input_id]
                 helper_type = NormStats.infer_type(
-                    (input_node,), {"axis": plan.axis, "use_mean": plan.use_mean})
+                    (input_node,), plan.stats_attrs)
                 helper = Node(
                     helper_id,
                     "nn.norm_stats",
                     (input_id,),
                     helper_type,
                     PURE,
-                    {"axis": plan.axis, "use_mean": plan.use_mean},
+                    plan.stats_attrs,
                     {"introduced_by": "ThreadNormStatsAcrossFunctionBoundaries", "role": "seed"},
                 )
             else:
@@ -172,7 +190,7 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
         if plan is not None:
             output_node = node_map[node.id]
             stats_type = NormStats.infer_type(
-                (output_node,), {"axis": plan.axis, "use_mean": plan.use_mean})
+                (output_node,), plan.stats_attrs)
             if stats_type != plan.stats_type:
                 raise IRVerificationError(
                     f"Threaded output statistics of @{plan.function.name} have type {stats_type!r}, "
@@ -186,7 +204,7 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
                 (node.id,),
                 stats_type,
                 PURE,
-                {"axis": plan.axis, "use_mean": plan.use_mean},
+                plan.stats_attrs,
                 {"introduced_by": "ThreadNormStatsAcrossFunctionBoundaries", "role": "output"},
             ))
 
@@ -222,17 +240,21 @@ def _create_plan(
     occupied: set[str],
 ) -> _ThreadingPlan | None:
     parameter_indices = {node_id: index for index, node_id in enumerate(function.parameters)}
-    groups: dict[tuple[int, int, bool], list[Node]] = {}
+    groups: dict[tuple[int, int, bool, int, str, int | None], list[Node]] = {}
     for node in function_nodes(module, function):
         if node.op != "nn.norm_stats" or node.inputs[0] not in parameter_indices:
             continue
         input_type = tensor_of(module.node_map[node.inputs[0]].type)
         axis = normalize_axis(int(node.attrs["axis"]), input_type.rank)
-        key = (parameter_indices[node.inputs[0]], axis, bool(node.attrs["use_mean"]))
+        key = (parameter_indices[node.inputs[0]], axis, bool(node.attrs["use_mean"]),
+               node.attrs.get("reduction_group_size", 1), node.attrs.get("reduction_order", "unspecified"),
+               node.attrs.get("reduction_block_size"), node.attrs.get("reduction_block_traversal", "forward"),
+               node.attrs.get("reduction_tree_group_size"), node.attrs.get("reduction_group_seed_index", 0))
         groups.setdefault(key, []).append(node)
     if len(groups) != 1:
         return None
-    (input_index, axis, use_mean), stats_nodes = next(iter(groups.items()))
+    (input_index, axis, use_mean, reduction_group_size, reduction_order, reduction_block_size,
+     reduction_block_traversal, reduction_tree_group_size, reduction_group_seed_index), stats_nodes = next(iter(groups.items()))
     stats_type = stats_nodes[0].type
     if any(node.type != stats_type for node in stats_nodes):
         return None
@@ -245,7 +267,12 @@ def _create_plan(
     if output_index is None:
         return None
     output_node = module.node_map[function.outputs[output_index]]
-    if NormStats.infer_type((output_node,), {"axis": axis, "use_mean": use_mean}) != stats_type:
+    stats_attrs = {"axis": axis, "use_mean": use_mean, "reduction_group_size": reduction_group_size,
+                   "reduction_order": reduction_order, "reduction_block_size": reduction_block_size,
+                   "reduction_block_traversal": reduction_block_traversal,
+                   "reduction_tree_group_size": reduction_tree_group_size,
+                   "reduction_group_seed_index": reduction_group_seed_index}
+    if NormStats.infer_type((output_node,), stats_attrs) != stats_type:
         return None
     parameter_id = _fresh_id(f"{function.parameters[input_index]}.norm_stats", occupied)
     output_id = _fresh_id(f"{function.name}.output_norm_stats", occupied | {parameter_id})
@@ -255,6 +282,12 @@ def _create_plan(
         output_index,
         axis,
         use_mean,
+        reduction_group_size,
+        reduction_order,
+        reduction_block_size,
+        reduction_block_traversal,
+        reduction_tree_group_size,
+        reduction_group_seed_index,
         stats_type,
         frozenset(node.id for node in stats_nodes),
         parameter_id,
@@ -332,6 +365,7 @@ def _threaded_value_source(
     value_id: str,
     node_map: dict[str, Node],
     plans_by_call: dict[str, _ThreadingPlan],
+    *, expected_plan: _ThreadingPlan | None = None,
 ) -> tuple[Node, _ThreadingPlan] | None:
     projection = node_map[value_id]
     if projection.op != "builtin.get_item":
@@ -339,6 +373,8 @@ def _threaded_value_source(
     producer = node_map[projection.inputs[0]]
     plan = plans_by_call.get(producer.id)
     if plan is None or int(projection.attrs["index"]) != plan.output_field_index:
+        return None
+    if expected_plan is not None and plan.stats_attrs != expected_plan.stats_attrs:
         return None
     return producer, plan
 
@@ -356,7 +392,8 @@ def _threaded_stats_source(
     _, plan = source
     input_type = tensor_of(node_map[node.inputs[0]].type)
     axis = normalize_axis(int(node.attrs["axis"]), input_type.rank)
-    return source if axis == plan.axis and bool(node.attrs["use_mean"]) == plan.use_mean else None
+    attrs = NormStats.normalize_attrs({**node.attrs, "axis": axis})
+    return source if attrs == plan.stats_attrs else None
 
 
 def _append_tuple_field(value_type, field_type):

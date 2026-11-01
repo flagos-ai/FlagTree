@@ -89,13 +89,16 @@ class PreparedKernel:
         *,
         grid: Sequence[int],
         contract: ResourceContract,
+        allocation_device=None,
     ) -> None:
         self.compiled_kernel = compiled_kernel
         self._arguments = tuple(arguments)
         self._dynamic_indices = tuple(int(value) for value in dynamic_argument_indices)
+        self._pointer_alignments = _compiled_pointer_alignments(compiled_kernel, self._arguments)
         self.grid = _normalize_grid(grid)
         self.contract = contract
-        self._global_scratch = _prepare_global_scratch(compiled_kernel, self._arguments, self.grid)
+        self._global_scratch = _prepare_global_scratch(compiled_kernel, self._arguments, self.grid,
+                                                     allocation_device=allocation_device)
         self._scratch_stream = None
         if len(set(self._dynamic_indices)) != len(self._dynamic_indices):
             raise RuntimeContractError("Prepared dynamic argument indices must be unique.")
@@ -138,6 +141,13 @@ class PreparedKernel:
                 f"got {len(dynamic_arguments)}.")
         arguments = list(self._arguments)
         for index, value in zip(self._dynamic_indices, dynamic_arguments):
+            alignment = self._pointer_alignments.get(index, 1)
+            if alignment > 1 and (
+                not callable(getattr(value, "data_ptr", None)) or value.data_ptr() % alignment
+            ):
+                raise RuntimeContractError(
+                    f"Prepared argument {index} must retain its compiled {alignment}-byte pointer alignment; "
+                    "prepare another specialization for a differently aligned buffer.")
             arguments[index] = value
         compiled = self.compiled_kernel
         if stream is None:
@@ -185,6 +195,30 @@ class PreparedKernel:
                 _allocation._allocator.reset(token)
 
 
+def _compiled_pointer_alignments(compiled, arguments):
+    """Retain actual JIT pointer facts, without inferring them from dtype lanes.
+
+    A direct prepared launch bypasses Triton's specialization lookup. Rebinding
+    a pointer therefore has to preserve the divisibility attached to that
+    argument in the compiled AST source. An unspecialized pointer has no such
+    requirement. Integer divisibility is a separate scalar specialization.
+    """
+    attributes = getattr(getattr(compiled, "src", None), "attrs", {})
+    result = {}
+    for path, facts in attributes.items():
+        if not isinstance(path, tuple) or len(path) != 1:
+            continue
+        index = path[0]
+        if not isinstance(index, int) or not 0 <= index < len(arguments):
+            continue
+        if not callable(getattr(arguments[index], "data_ptr", None)):
+            continue
+        for name, value in facts:
+            if name == "tt.divisibility":
+                result[index] = max(result.get(index, 1), int(value))
+    return result
+
+
 class _PreparedGlobalScratch:
     def __init__(self, storage, buffer, nbytes: int, alignment: int) -> None:
         self.storage = storage
@@ -227,7 +261,7 @@ class _ScratchBufferView:
         return self._nbytes
 
 
-def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequence[int]):
+def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequence[int], *, allocation_device=None):
     metadata = compiled.metadata
     per_program = int(getattr(metadata, "global_scratch_size", 0) or 0)
     if per_program <= 0:
@@ -243,12 +277,18 @@ def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequenc
         ),
         None,
     )
-    if device is None:
-        raise RuntimeContractError("Compiler global scratch requires at least one CUDA tensor argument.")
     try:
         import torch
     except ImportError as error:
         raise RuntimeContractError("Compiler global scratch allocation requires PyTorch.") from error
+    if allocation_device is not None:
+        # Execution ownership is independent of argument storage: an entry
+        # may take only runtime handles or addresses of peer allocations.
+        device = torch.device(allocation_device)
+        if device.type != 'cuda':
+            raise RuntimeContractError('Compiler global scratch requires a CUDA allocation device.')
+    if device is None:
+        raise RuntimeContractError('Compiler global scratch requires an explicit allocation device or a CUDA tensor argument.')
     # TLE's grid barrier is a reusable sense-reversing counter.  Its atomic
     # protocol preserves the phase bit between barriers, but requires the
     # arrival-count low bits to start at zero.  An uninitialized CUDA
@@ -276,6 +316,7 @@ def prepare_jit_kernel(
     *,
     grid: Sequence[int],
     contract: ResourceContract,
+    allocation_device=None,
     **launch_options: object,
 ) -> PreparedKernel:
     """Compile one JIT specialization, validate resources, and bind statics."""
@@ -302,10 +343,23 @@ def prepare_jit_kernel(
         dynamic_argument_indices,
         grid=normalized_grid,
         contract=contract,
+        allocation_device=allocation_device,
     )
 
 
 def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int] = (1,)) -> None:
+    # Shared usage is available before driver loading. A failed load may cache
+    # an error launcher without initializing the driver register counters.
+    shared = int(compiled.metadata.shared)
+    if shared > contract.shared_memory_capacity_bytes:
+        raise RuntimeContractError(
+            f"Compiled kernel uses {shared} shared-memory bytes; limit is {contract.shared_memory_capacity_bytes}.")
+    resident_shared = shared * contract.resident_blocks_per_sm
+    if resident_shared > contract.shared_memory_capacity_bytes:
+        raise RuntimeContractError(
+            f"Compiled kernel needs {resident_shared} shared-memory bytes for "
+            f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
+            f"{contract.shared_memory_capacity_bytes}.")
     # Materialize the module/function and resource counters without launching.
     _ = compiled.run
     if contract.requires_grid_wide_sync and not contract.cooperative_launch_admission:
@@ -345,16 +399,6 @@ def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int
             f"Compiled kernel needs at least {resident_registers} registers for "
             f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
             f"{contract.register_file_capacity_per_sm}.")
-    shared = int(compiled.metadata.shared)
-    if shared > contract.shared_memory_capacity_bytes:
-        raise RuntimeContractError(
-            f"Compiled kernel uses {shared} shared-memory bytes; limit is {contract.shared_memory_capacity_bytes}.")
-    resident_shared = shared * contract.resident_blocks_per_sm
-    if resident_shared > contract.shared_memory_capacity_bytes:
-        raise RuntimeContractError(
-            f"Compiled kernel needs {resident_shared} shared-memory bytes for "
-            f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
-            f"{contract.shared_memory_capacity_bytes}.")
     resources = _spill_resource_report(compiled, contract)
     if contract.forbid_spills and resources["spill_bytes"] > contract.spill_tolerance_bytes:
         raise RuntimeContractError(

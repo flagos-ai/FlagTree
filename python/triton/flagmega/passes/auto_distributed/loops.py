@@ -52,14 +52,18 @@ def add_binding_candidates(module, buckets):
     return [by_id[bucket.node_id] for bucket in buckets]
 
 
-def loop_edges(module, buckets):
-    """Yield edges use slots after the ordinary inputs; they are not DAG backedges."""
+def loop_edges(module):
+    """Yield targets the shared iter parameter, separately from DAG inputs."""
+    seen = set()
     for node in module.nodes:
         if node.op != "control.for":
             continue
         region = module.function_map[str(node.attrs["callee"])]
+        if region.name in seen:
+            continue
+        seen.add(region.name)
         for index, output in enumerate(region.outputs):
-            yield node, output, len(node.inputs) + index
+            yield region.parameters[1 + index], output, index
 
 
 def binding_relations(module, buckets):
@@ -84,14 +88,13 @@ def add_solver_constraints(model, candidate_model, graph, domains, variables, si
             condition = variables[loop, choice] <= sum(variables[parameter, source] for source in supports)
             model.Add(condition)
             candidate_model.Add(condition)
-    for node, output, slot in loop_edges(graph.module, buckets):
-        field = slot - len(node.inputs)
-        for choice in domains[node.id]:
-            target = buckets[node.id].candidates[choice].return_type.fields[field]
+    for parameter, output, yield_index in loop_edges(graph.module):
+        for choice in domains[parameter]:
+            target = buckets[parameter].candidates[choice].return_type
             supports = [source for source in domains[output]
                         if buckets[output].candidates[source].return_type == target
-                        or (output, source, node.id, choice, slot) in site_map]
-            condition = variables[node.id, choice] <= sum(variables[output, source] for source in supports)
+                        or (output, source, parameter, choice, yield_index) in site_map]
+            condition = variables[parameter, choice] <= sum(variables[output, source] for source in supports)
             model.Add(condition)
             candidate_model.Add(condition)
 

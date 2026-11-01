@@ -1,0 +1,42 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+import triton.experimental.tle.language as tle
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_state_base = {{ call.state }}
+    _fm_sbuf = tle.gpu.alloc(({{ call.value_tile }}, {{ call.key_tile }}), tl.bfloat16)
+    _fm_kbuf = tle.gpu.alloc((64, {{ call.key_tile }}), tl.bfloat16)
+    _fm_qbuf = tle.gpu.alloc((64, {{ call.key_tile }}), tl.bfloat16)
+    _fm_sptr = tle.gpu.local_ptr(_fm_sbuf)
+    _fm_kptr = tle.gpu.local_ptr(_fm_kbuf)
+    _fm_qptr = tle.gpu.local_ptr(_fm_qbuf)
+    _fm_row = tl.arange(0, 64)
+    _fm_key_col = tl.arange(0, {{ call.key_tile }})
+    _fm_value_lane = tl.arange(0, {{ call.value_tile }})
+    if {{ call.writer_active }}:
+        for _fm_work in range({{ call.heads }} * {{ (call.value_dim + call.value_tile - 1) // call.value_tile }}):
+            _fm_head = _fm_work // {{ (call.value_dim + call.value_tile - 1) // call.value_tile }}
+            _fm_value_row = _fm_work % {{ (call.value_dim + call.value_tile - 1) // call.value_tile }} * {{ call.value_tile }} + _fm_value_lane
+            _fm_head_valid = _fm_head < {{ call.active_heads }}
+            _fm_state_mask = _fm_head_valid & (_fm_value_row[:, None] < {{ call.value_dim }}) & (_fm_key_col[None, :] < {{ call.key_dim }})
+            _fm_state = tl.load(_fm_state_base + ({{ call.state_offset }}), _fm_state_mask, other=0.)
+{% set chunks = call.chunks | default(1) %}
+{% set chunk_blocks = call.chunk_blocks | default(call.blocks) %}
+            for _fm_chunk in range({{ chunks }}):
+{% if chunks > 1 %}
+                if _fm_chunk > 0:
+                    _fm_state = tl.load({{ call.fixed_state }} + ({{ call.fixed_state_offset }}), _fm_state_mask, other=0.)
+{% endif %}
+                for _fm_local_block in range({{ chunk_blocks }}):
+                    _fm_block = _fm_chunk * {{ chunk_blocks }} + _fm_local_block
+{% if call.blocks % chunk_blocks != 0 %}
+                    if _fm_block < {{ call.blocks }}:
+{% filter indent(24, true) %}
+{% include "kernels/delta_rule_block_update/_resident_body.py.jinja" %}
+{% endfilter %}
+{% else %}
+{% filter indent(20, true) %}
+{% include "kernels/delta_rule_block_update/_resident_body.py.jinja" %}
+{% endfilter %}
+{% endif %}
+            tl.store(_fm_state_base + ({{ call.state_offset }}), _fm_state, _fm_state_mask)

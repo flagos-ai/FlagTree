@@ -78,11 +78,11 @@ class StagedRoutingCandidateProvider:
     op_names = frozenset({"nn.staged_routing"})
 
     def propose(self, node, context):
-        if node.attrs.get("arithmetic", "standard") == "tanh_scaled_reciprocal":
+        if node.attrs.get("arithmetic", "standard") in {"tanh_scaled_reciprocal", "exp_grouped_reciprocal"}:
             capability = getattr(getattr(context.target, "machine", None), "capability", None)
             if (getattr(context.target, "codegen_platform", None) != "nvidia"
                     or getattr(capability, "warp_size", None) != 32):
-                raise CodegenError("StagedRouting tanh_scaled_reciprocal requires the CUDA 32-lane numerical contract.")
+                raise CodegenError("StagedRouting arithmetic requires the CUDA 32-lane numerical contract.")
         source = context.module.node_map[node.inputs[0]]
         value_type = tensor_of(source.type)
         extent = value_type.shape[-1].fixed_value

@@ -283,6 +283,24 @@ def _propagate_one_iteration(
         output for function in module.functions for output in function.outputs
     }
     nodes: list[Node] = []
+
+    def append_projection_source_packs(node, raw, output):
+        for source_pack in source_packs.get(node.id, ()):
+            if (source_pack.type == output.packed_type
+                    and source_pack.op == output.source_op
+                    and source_pack.attrs == output.pack_attrs):
+                # A forwarded packed call result already implements this
+                # caller-demand transform. Resolve the outer function's
+                # output to it instead of leaving a never-emitted helper.
+                removed_substitutions[source_pack.id] = raw.id
+                removed_owners[source_pack.id] = raw.id
+            else:
+                nodes.append(replace(source_pack, inputs=(node.id,)))
+
+    def projection_needs_source_view(node, output):
+        return any(pack.type != output.packed_type or pack.op != output.source_op or pack.attrs != output.pack_attrs
+                   for pack in source_packs.get(node.id, ()))
+
     for node in module.nodes:
         node = packed_input_views.get(node.id, node)
         if node.id in removed_substitutions:
@@ -391,7 +409,7 @@ def _propagate_one_iteration(
             nodes.append(raw)
             if _needs_logical_projection(
                 node, users, removed_substitutions, layouts, function_output_roots
-            ):
+            ) or projection_needs_source_view(node, output):
                 nodes.append(Node(
                     node.id,
                     output.restore_op,
@@ -408,6 +426,7 @@ def _propagate_one_iteration(
             else:
                 removed_substitutions[node.id] = raw.id
                 removed_owners[node.id] = raw.id
+            append_projection_source_packs(node, raw, output)
             continue
         if node.id in raw_projection_ids:
             output = projection_layouts[node.id]
@@ -427,7 +446,7 @@ def _propagate_one_iteration(
             nodes.append(raw)
             if _needs_logical_projection(
                 node, users, removed_substitutions, layouts, function_output_roots
-            ):
+            ) or projection_needs_source_view(node, output):
                 nodes.append(Node(
                     node.id,
                     output.restore_op,
@@ -444,6 +463,7 @@ def _propagate_one_iteration(
             else:
                 removed_substitutions[node.id] = raw.id
                 removed_owners[node.id] = raw.id
+            append_projection_source_packs(node, raw, output)
             continue
         rewritten = replace(
             node,

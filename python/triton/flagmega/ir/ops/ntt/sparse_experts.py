@@ -41,6 +41,7 @@ class DispatchedExpertsGateUp(OpDefinition):
     # wraps, so it has to carry the same attributes that stage declares.
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attrs):
@@ -88,6 +89,7 @@ class SparseExpertsDownCombine(OpDefinition):
     # weight-tile geometry, so the fusion has to declare and forward it.
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def python_call(cls, node):
@@ -96,14 +98,15 @@ class SparseExpertsDownCombine(OpDefinition):
     @classmethod
     def normalize_attrs(cls, attrs):
         attrs = super().normalize_attrs(attrs)
-        normalized = SparseExpertsWeightedSum.normalize_attrs({k: attrs[k] for k in ("output_dtype", "round_weighted_output")})
+        normalized = SparseExpertsWeightedSum.normalize_attrs({k: attrs[k] for k in ("output_dtype", "round_weighted_output", "cast_output")})
         if type(attrs["cast_output"]) is not bool:
             raise IRSchemaError("SparseExpertsDownCombine cast_output must be boolean")
         return {**attrs, **normalized, **SparseExpertsDown.normalize_attrs(cls.down_attrs(attrs))}
 
     @classmethod
     def down_attrs(cls, attrs):
-        return {name: attrs[name] for name in ("round_projection", "weight_block_n", "weight_block_k")}
+        return {name: attrs.get(name, "relaxed") if name == "reduction_order" else attrs[name]
+                for name in ("round_projection", "weight_block_n", "weight_block_k", "reduction_order")}
 
     @classmethod
     def combine_inputs(cls, inputs, attrs):

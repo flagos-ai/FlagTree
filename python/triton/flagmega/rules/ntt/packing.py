@@ -434,6 +434,7 @@ class NttPackingPolicy:
                 "fused_reduce": False,
                 "output_data_type": output_dtype,
                 "rhs_layout": "k_major",
+                **({"reduction_order": node.attrs["reduction_order"]} if "reduction_order" in node.attrs else {}),
             },
         )
         if prepared.result_type != node.type:
@@ -561,6 +562,7 @@ class NttPackingPolicy:
                 "num_kv_heads": node.attrs["num_kv_heads"],
                 "output_data_type": node.attrs["output_data_type"],
                 "rhs_layout": "k_major",
+                "reduction_order": node.attrs.get("reduction_order", "relaxed"),
             },
         )
         packed_projection = Node(
@@ -690,7 +692,8 @@ class NttPackingPolicy:
         prepared = definition.prepare(
             (module.node_map[node.inputs[0]], physical),
             {"packed_layout": packed_layout, "logical_n": None,
-             **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {})},
+             **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
+             **({"reduction_order": node.attrs["reduction_order"]} if "reduction_order" in node.attrs else {})},
         )
         replacement = replace(
             node,
@@ -791,6 +794,7 @@ class NttPackingPolicy:
             "gate_clamp_max": node.attrs.get("gate_clamp_max"),
             "up_clamp": node.attrs.get("up_clamp"),
             "packed_layout": packed_layout,
+            "reduction_order": node.attrs.get("reduction_order", "relaxed"),
         })
         replacement = replace(
             node,

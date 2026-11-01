@@ -45,6 +45,9 @@ from triton.flagmega.ir.tir import (
 from triton.flagmega.targets.nvidia.gdn import gdn_large_key_implementations, gdn_state_pipeline_implementations
 from triton.flagmega.targets.nvidia.mhc import mhc_contiguous_tf32_implementations
 from triton.flagmega.targets.nvidia.mla import mla_projection_implementations
+from triton.flagmega.targets.nvidia.kda_input_projection import kda_input_projection_implementations
+from triton.flagmega.targets.nvidia.partitioned_linear import partitioned_linear_implementations
+from triton.flagmega.targets.nvidia.partitioned_block_scaled_linear import partitioned_block_scaled_linear_implementations
 from triton.flagmega.targets.nvidia.shared_layout import align_shared_workspaces
 from triton.flagmega.targets.nvidia.sparse_experts import sparse_experts_wgmma_implementations
 
@@ -111,6 +114,9 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
         *portable_mhc_implementations(),
         *mhc_contiguous_tf32_implementations(),
         *mla_projection_implementations(),
+        *kda_input_projection_implementations(),
+        *partitioned_linear_implementations(),
+        *partitioned_block_scaled_linear_implementations(),
         *portable_staged_routing_implementations(),
         *portable_sparse_experts_implementations(),
         *sparse_experts_wgmma_implementations(),
@@ -1996,10 +2002,28 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             facts={"portable_triton": True},
         ),
     )
+    # Typed pointwise lanes use the existing portable elementwise templates.
+    # Keep their semantic contract separate from scalar tensors and tensor-axis
+    # packing. Scalar-only semantic operations retain their existing schema;
+    # typed exponential/sigmoid use the explicit VectorizedUnary operation.
+    identities = {implementation.id for implementation in implementations}
+    implementations += tuple(
+        replace(implementation,
+                id=implementation.id.removesuffix(".scalar") + ".typed",
+                parameters={**{key: value for key, value in implementation.parameters.items()
+                               if key != "elements_per_program"}, "vector_groups": 32},
+                contract={**implementation.contract, "vectorization_kind": "typed_elements"})
+        for implementation in implementations
+        if implementation.family == "elementwise" and implementation.contract.get("vectorization_kind") == "scalar"
+        and implementation.contract.get("semantic_op") != "math.div"
+        and implementation.id.removesuffix(".scalar") + ".typed" not in identities
+    )
     from .nvidia.sparse_experts import sparse_experts_pipeline_implementations
     implementations += sparse_experts_pipeline_implementations()
-    from .nvidia.packed_qkv import packed_qkv_n_tiled_implementations
+    from .nvidia.packed_qkv import packed_qkv_n_tiled_implementations, packed_qkv_ordered_implementations
     implementations += packed_qkv_n_tiled_implementations(next(
+        value for value in implementations if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
+    implementations += packed_qkv_ordered_implementations(next(
         value for value in implementations if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
     # A separate, explicit transport choice. The synchronous candidate keeps
     # its masked-row contract and remains the preference until measured.
@@ -2020,6 +2044,9 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
         "delta_rule_coefficients": ("tir.delta_rule_coefficients.blockwise",),
         "delta_rule_log_prefix": ("tir.delta_rule_log_prefix.grouped",),
         "delta_rule_block_update": ("tir.delta_rule_block_update.blockwise",),
+        "delta_rule_chunk_transfer": ("tir.delta_rule_chunk_transfer.blockwise",),
+        "delta_rule_chunk_fixup": ("tir.delta_rule_chunk_fixup.ordered",),
+        "delta_rule_chunked_block_update": ("tir.delta_rule_chunked_block_update.blockwise",),
         **attention_preferences,
         **portable_local_reduction_preferences(),
         **portable_normalization_preferences(),
@@ -2052,6 +2079,8 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "tir.add_norm_stats.local_partial_rms",
             "tir.add_norm_stats.rms",
             "tir.add_norm_stats.persistent_rms",
+            "tir.add_norm_stats.local_rows_rms_distributed",
+            "tir.add_norm_stats.local_rows_rms_broadcast",
         ),
         "dense_matmul": (
             "tir.dense_matmul."
@@ -2104,6 +2133,8 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "tir.dense_matmul_glu.gemv_tn64",
         ),
         "qkv_parallel_linear": (
+            "tir.qkv_parallel_linear.packed_ordered_mma_table_pipeline",
+            "tir.qkv_parallel_linear.packed_ordered_mma",
             "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline",
             "tir.qkv_parallel_linear."
             "packed_partial_mma_descriptor_table_smem_pipeline",

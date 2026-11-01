@@ -1,0 +1,170 @@
+# flagmega-kernel: partitioned_block_scaled_linear/local platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% include "kernels/_activation_quantization.py.jinja" %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "partitioned_block_scaled_linear" and call.variant == "local" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.k_blocks_per_mma > 1 %}
+    # Row group g uses weights from K block g; activation column g uses
+    # that block's original K128 quantization. Only matching pairs publish.
+    _fm_source_layout: tl.constexpr = tle.gpu.BlockEncoding([1, 4], [1, 32], [{{ num_warps }}, 1], [1, 0])
+    _fm_activation_layout: tl.constexpr = tle.gpu.BlockEncoding([4, 1], [32, 1], [1, {{ num_warps }}], [1, 0])
+{% if call.k_group_row_order == "n_major" %}
+    # Distribute output rows across warps and keep adjacent groups in a warp.
+    # The MMA has only 16 columns: assigning warps to columns would replicate
+    # the whole product and its live diagonal/scale values in every warp.
+    _fm_product_layout: tl.constexpr = tle.gpu.BlockEncoding([{{ [call.k_blocks_per_mma, 4] | min }}, 1], [8, 4], [{{ num_warps }}, 1], [0, 1])
+    _fm_row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, _fm_product_layout)
+{% endif %}
+{% if call.task_launch_recipe is defined %}
+    for _fm_task in tl.range(tl.program_id(0), {{ call.tasks }}, tl.num_programs(0)):
+{% else %}
+    for _fm_task in tl.range(block_index, {{ call.tasks }}, tl.num_programs(0)):
+{% endif %}
+        _fm_tile = _fm_task % {{ call.row_tiles }}
+        _fm_token = (_fm_task // {{ call.row_tiles }}) % {{ call.tokens }}
+        _fm_part = _fm_task // {{ call.row_tiles * call.tokens }}
+        _fm_row = tl.arange(0, {{ call.tile_n }})
+{% if call.k_group_row_order == "n_major" %}
+        _fm_group = _fm_row % {{ call.k_blocks_per_mma }}
+{% else %}
+        _fm_group = _fm_row // {{ call.task_tile_n }}
+{% endif %}
+        _fm_total = tl.full(({{ call.task_tile_n }},), 0., tl.float32)
+{% if call.activation_quantization == "dynamic_fp8" %}
+        _fm_compensation = tl.full(({{ call.task_tile_n }},), 0., tl.float32)
+{% endif %}
+        for _fm_batch in tl.range(0, {{ (call.part_k // 128 + call.k_blocks_per_mma - 1) // call.k_blocks_per_mma }}):
+{% if call.k_group_row_order == "n_major" %}
+            # Quantize distinct K128 groups in the MMA B operand's orientation.
+            # Replicate FP8 codes afterward; keep the source and amax domains
+            # free of the MMA's additional, mathematically identical columns.
+            _fm_source_k = tl.arange(0, 128)[:, None] + (_fm_batch * {{ call.k_blocks_per_mma }} + tl.arange(0, {{ call.k_blocks_per_mma }}))[None, :] * 128
+            _fm_source_ptr = tle.gpu.set_layout({{ call.source }} + ({{ call.source_offset }}), _fm_activation_layout)
+            _fm_source = tl.load(_fm_source_ptr, _fm_source_k < {{ call.part_k }}, other=0.).to(tl.float32)
+            _fm_source = tle.gpu.set_layout(_fm_source, _fm_activation_layout)
+            _fm_q, _fm_a_scale = _flagmega_quantize_block_fp8(_fm_source, "{{ call.activation_quantization }}", 0)
+            _fm_repeated_q = tl.broadcast_to(_fm_q[:, None, :], (128, {{ call.mma_columns // call.k_blocks_per_mma }}, {{ call.k_blocks_per_mma }}))
+            _fm_a = tl.reshape(_fm_repeated_q, (128, {{ call.mma_columns }}))
+            _fm_a = tle.gpu.set_layout(_fm_a, _fm_activation_layout)
+{% else %}
+            _fm_source_k = (_fm_batch * {{ call.k_blocks_per_mma }} + tl.arange(0, {{ call.k_blocks_per_mma }})[:, None]) * 128 + tl.arange(0, 128)[None, :]
+            _fm_source_ptr = tle.gpu.set_layout({{ call.source }} + ({{ call.source_offset }}), _fm_source_layout)
+            _fm_source = tl.load(_fm_source_ptr, _fm_source_k < {{ call.part_k }}, other=0.).to(tl.float32)
+            _fm_q, _fm_a_scale = _flagmega_quantize_block_fp8(_fm_source, "{{ call.activation_quantization }}", 1)
+            _fm_columns = tl.broadcast_to((tl.arange(0, {{ call.mma_columns }}) % {{ call.k_blocks_per_mma }})[None, :], (128, {{ call.mma_columns }}))
+            _fm_a = tl.gather(tl.trans(_fm_q), _fm_columns, 1)
+            _fm_a = tle.gpu.set_layout(_fm_a, _fm_activation_layout)
+{% endif %}
+{% if call.k_group_row_order == "n_major" %}
+            _fm_n = _fm_tile * {{ call.task_tile_n }} + _fm_row // {{ call.k_blocks_per_mma }}
+{% else %}
+            _fm_n = _fm_tile * {{ call.task_tile_n }} + _fm_row % {{ call.task_tile_n }}
+{% endif %}
+            _fm_block = _fm_batch * {{ call.k_blocks_per_mma }} + _fm_group
+            _fm_weight_k = _fm_block[:, None] * 128 + tl.arange(0, 128)[None, :]
+            _fm_valid = (_fm_group < {{ call.k_blocks_per_mma }}) & (_fm_block < {{ call.part_k // 128 }}) & (_fm_n < {{ call.rows }}){{ ' & (_fm_row // ' ~ call.k_blocks_per_mma ~ ' < ' ~ call.task_tile_n ~ ')' if call.k_group_row_order == "n_major" else '' }}
+{% if call.k_group_row_order == "n_major" %}
+            _fm_w_ptr = tle.gpu.set_layout({{ call.weight }} + ({{ call.weight_offset }}), _fm_source_layout)
+            _fm_w = tl.load(_fm_w_ptr, _fm_valid[:, None], other=0.)
+{% else %}
+            _fm_w = tl.load({{ call.weight }} + ({{ call.weight_offset }}), _fm_valid[:, None], other=0.)
+{% endif %}
+            _fm_product = tl.dot(_fm_w, _fm_a, out_dtype=tl.float32)
+{% if call.k_group_row_order == "n_major" %}
+            _fm_diagonal = tle.gpu.set_layout((_fm_group % {{ call.k_blocks_per_mma }})[:, None], _fm_product_layout)
+            _fm_raw = tl.reshape(tl.gather(_fm_product, _fm_diagonal, 1), ({{ call.tile_n }},))
+            _fm_a_scale = tle.gpu.set_layout(_fm_a_scale, _fm_row_layout)
+{% else %}
+            _fm_raw = tl.reshape(tl.gather(_fm_product, (_fm_group % {{ call.k_blocks_per_mma }})[:, None], 1), ({{ call.tile_n }},))
+{% endif %}
+            _fm_b_scale = tl.load({{ call.scale }} + ({{ call.scale_offset }}), _fm_valid, other=0.)
+            _fm_row_a_scale = tl.gather(_fm_a_scale, _fm_group % {{ call.k_blocks_per_mma }}, 0)
+{% if call.activation_quantization == "dynamic_fp8_sm90" %}
+            _fm_factor = libdevice.mul_rn(_fm_row_a_scale, _fm_b_scale)
+{% else %}
+            _fm_partial = libdevice.mul_rn(libdevice.mul_rn(_fm_raw, _fm_row_a_scale), _fm_b_scale)
+{% endif %}
+            for _fm_column in tl.static_range(0, {{ call.k_blocks_per_mma }}):
+                if _fm_batch * {{ call.k_blocks_per_mma }} + _fm_column < {{ call.part_k // 128 }}:
+{% if call.k_group_row_order == "n_major" %}
+                    _fm_indices = tl.arange(0, {{ call.task_tile_n }}) * {{ call.k_blocks_per_mma }} + _fm_column
+{% else %}
+                    _fm_indices = _fm_column * {{ call.task_tile_n }} + tl.arange(0, {{ call.task_tile_n }})
+{% endif %}
+{% if call.activation_quantization == "dynamic_fp8_sm90" %}
+                    _fm_group_raw = tl.gather(_fm_raw, _fm_indices, 0)
+                    _fm_group_factor = tl.gather(_fm_factor, _fm_indices, 0)
+                    _fm_total = tl.fma(_fm_group_raw, _fm_group_factor, _fm_total)
+{% else %}
+                    _fm_group_partial = tl.gather(_fm_partial, _fm_indices, 0)
+                    _fm_corrected = _fm_group_partial - _fm_compensation
+                    _fm_updated = _fm_total + _fm_corrected
+                    _fm_compensation = (_fm_updated - _fm_total) - _fm_corrected
+                    _fm_total = _fm_updated
+{% endif %}
+        _fm_n = _fm_tile * {{ call.task_tile_n }} + tl.arange(0, {{ call.task_tile_n }})
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_total.to(tl.bfloat16), _fm_n < {{ call.rows }})
+{% else %}
+{% if call.activation_layout == "warp" %}
+    # K128 fits in each warp. Use the enclosing program's actual warp count,
+    # which can exceed the selected callee's minimum after fixed-mesh fusion.
+    _fm_activation_layout: tl.constexpr = tle.gpu.BlockEncoding([4, 1], [32, 1], [1, {{ num_warps }}], [1, 0])
+    _fm_source_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, _fm_activation_layout)
+{% endif %}
+{% if call.task_launch_recipe is defined %}
+    # Chip data has one logical owner; independent execution CTAs have distinct tasks.
+    for _fm_task in tl.range(tl.program_id(0), {{ call.tasks }}, tl.num_programs(0)):
+{% else %}
+    for _fm_task in tl.range(block_index, {{ call.tasks }}, tl.num_programs(0)):
+{% endif %}
+        _fm_tile = _fm_task % {{ call.row_tiles }}
+        _fm_token = (_fm_task // {{ call.row_tiles }}) % {{ call.tokens }}
+        _fm_part = _fm_task // {{ call.row_tiles * call.tokens }}
+        _fm_n = _fm_tile * {{ call.task_tile_n }} + tl.arange(0, {{ call.tile_n }})
+        _fm_total = tl.full(({{ call.tile_n }}{% if call.accumulator_layout == "mma" %}, {{ call.mma_columns }}{% endif %},), 0., tl.float32)
+{% if call.activation_quantization == "dynamic_fp8" %}
+        _fm_compensation = tl.full(({{ call.tile_n }}{% if call.accumulator_layout == "mma" %}, {{ call.mma_columns }}{% endif %},), 0., tl.float32)
+{% endif %}
+        for _fm_block in tl.range(0, {{ call.part_k // 128 }}):
+            _fm_k = _fm_block * 128 + tl.arange(0, 128)
+            _fm_source_ptr = {{ call.source }} + ({{ call.source_offset }})
+{% if call.activation_layout == "warp" %}
+            _fm_source_ptr = tle.gpu.set_layout(_fm_source_ptr, _fm_source_layout)
+{% endif %}
+            _fm_source = tl.load(_fm_source_ptr).to(tl.float32)
+            _fm_q, _fm_a_scale = _flagmega_quantize_block_fp8(_fm_source, "{{ call.activation_quantization }}")
+            _fm_w = tl.load({{ call.weight }} + ({{ call.weight_offset }}), {% if call.task_tile_n < call.tile_n %}(_fm_n[:, None] < {{ call.rows }}) & (tl.arange(0, {{ call.tile_n }})[:, None] < {{ call.task_tile_n }}){% else %}_fm_n[:, None] < {{ call.rows }}{% endif %}, other=0.)
+            _fm_a = tl.broadcast_to(_fm_q[:, None], (128, {{ call.mma_columns }}))
+{% if call.activation_layout == "warp" %}
+            _fm_a = tle.gpu.set_layout(_fm_a, _fm_activation_layout)
+{% endif %}
+            _fm_product = tl.dot(_fm_w, _fm_a, out_dtype=tl.float32)
+{% if call.accumulator_layout == "mma" %}
+            _fm_raw = _fm_product
+{% else %}
+            _fm_raw = tl.reshape(tl.gather(_fm_product, tl.full(({{ call.tile_n }}, 1), 0, tl.int32), 1), ({{ call.tile_n }},))
+{% endif %}
+            _fm_b_scale = tl.load({{ call.scale }} + ({{ call.scale_offset }}), {% if call.task_tile_n < call.tile_n %}(_fm_n < {{ call.rows }}) & (tl.arange(0, {{ call.tile_n }}) < {{ call.task_tile_n }}){% else %}_fm_n < {{ call.rows }}{% endif %}, other=0.)
+{% if call.accumulator_layout == "mma" %}
+            _fm_b_scale = _fm_b_scale[:, None]
+{% endif %}
+{% if call.activation_quantization == "dynamic_fp8_sm90" %}
+            _fm_factor = libdevice.mul_rn(_fm_a_scale, _fm_b_scale)
+            _fm_total = tl.fma(_fm_raw, _fm_factor, _fm_total)
+{% else %}
+            _fm_partial = libdevice.mul_rn(libdevice.mul_rn(_fm_raw, _fm_a_scale), _fm_b_scale)
+            _fm_corrected = _fm_partial - _fm_compensation
+            _fm_updated = _fm_total + _fm_corrected
+            _fm_compensation = (_fm_updated - _fm_total) - _fm_corrected
+            _fm_total = _fm_updated
+{% endif %}
+{% if call.accumulator_layout == "mma" %}
+        _fm_total = tl.reshape(tl.gather(_fm_total, tl.full(({{ call.tile_n }}, 1), 0, tl.int32), 1), ({{ call.tile_n }},))
+{% endif %}
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_total.to(tl.bfloat16), {% if call.task_tile_n < call.tile_n %}(_fm_n < {{ call.rows }}) & (tl.arange(0, {{ call.tile_n }}) < {{ call.task_tile_n }}){% else %}_fm_n < {{ call.rows }}{% endif %})
+{% endif %}
+{% endif %}
+{% endfor %}

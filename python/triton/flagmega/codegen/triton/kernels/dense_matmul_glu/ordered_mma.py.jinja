@@ -1,0 +1,49 @@
+# flagmega-kernel: dense_matmul_glu/ordered_mma platform=nvidia architecture=sm90
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul_glu" and call.variant == "ordered_mma" %}
+{{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [1, {{ num_warps }}], [16, 8]))
+{{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
+{% set nw = [num_warps, call.tile_n // 4] | min %}
+{{ call.symbol }}__load_layout = tl.constexpr(tle.gpu.BlockEncoding([1, 2], [4, 8], [{{ nw }}, {{ num_warps // nw }}], [1, 0]))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for dense_glu_local_m in tl.range(0, {{ call.local_m_capacity }}):
+        for dense_glu_local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
+            dense_glu_local_n_offsets = dense_glu_local_n_start + tl.arange(0, {{ call.tile_n }})
+            dense_glu_global_n = {{ call.global_n }}
+            dense_glu_n_mask = (dense_glu_local_n_offsets < {{ call.local_n_capacity }}) & ({{ call.result_active }})
+            dense_glu_gate = tle.gpu.set_layout(tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout)
+            dense_glu_up = tle.gpu.set_layout(tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout)
+            for dense_glu_local_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
+                dense_glu_local_k_offsets = dense_glu_local_k_start + tl.arange(0, {{ call.block_k }})
+                dense_glu_global_k = {{ call.global_k }}
+                dense_glu_k_mask = (dense_glu_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }})
+                x = tl.load({{ call.source }} + ({{ call.source_offset }}), dense_glu_k_mask, other=0.)
+                x = tle.gpu.set_layout(tl.broadcast_to(x[None, :], (16, {{ call.block_k }})), {{ call.symbol }}__lhs_layout)
+                g = tl.load({{ call.gate_weight }} + ({{ call.gate_weight_offset }}), dense_glu_n_mask[:, None] & dense_glu_k_mask[None, :], other=0.)
+                g = tle.gpu.set_layout(g, {{ call.symbol }}__load_layout)
+                dense_glu_gate = tl.dot(x, tle.gpu.set_layout(tl.trans(g), {{ call.symbol }}__rhs_layout), dense_glu_gate)
+                u = tl.load({{ call.up_weight }} + ({{ call.up_weight_offset }}), dense_glu_n_mask[:, None] & dense_glu_k_mask[None, :], other=0.)
+                u = tle.gpu.set_layout(u, {{ call.symbol }}__load_layout)
+                dense_glu_up = tl.dot(x, tle.gpu.set_layout(tl.trans(u), {{ call.symbol }}__rhs_layout), dense_glu_up)
+            g = tl.sum(tl.where(tl.arange(0, 16)[:, None] == 0, dense_glu_gate, 0.), 0).to({{ call.output_type }}).to(tl.float32)
+            u = tl.sum(tl.where(tl.arange(0, 16)[:, None] == 0, dense_glu_up, 0.), 0).to({{ call.output_type }}).to(tl.float32)
+{% if call.gate_clamp_max is not none %}
+            g = tl.minimum(g, {{ call.gate_clamp_max }})
+{% endif %}
+{% if call.up_clamp is not none %}
+            u = tl.clamp(u, -{{ call.up_clamp }}, {{ call.up_clamp }})
+{% endif %}
+            activated = g * tl.sigmoid(g)
+{% if call.round_activation %}
+            activated = activated.to({{ call.output_type }}).to(tl.float32)
+{% endif %}
+            tl.store({{ call.result }} + ({{ call.result_offset }}), (activated * u).to({{ call.output_type }}),
+                     dense_glu_n_mask & ({{ call.result_writer_active }}))
+{% endif %}
+{% endfor %}
+{% endif %}

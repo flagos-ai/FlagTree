@@ -20,12 +20,30 @@ from triton.flagmega.ir import Node, TensorType, VectorType, logical_type
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 
 SCALAR_VECTORIZATION = {"kind": "scalar", "axes": (), "lanes": (), "lane_count": 1}
+ELEMENTWISE_OP_NAMES = frozenset({
+    "math.add", "math.mul", "math.div", "math.exp", "math.sigmoid", "math.silu",
+    "math.vectorized_binary", "math.vectorized_unary", "ntt.vectorized_cast", "tensors.cast",
+})
+_TYPED_LANE_OP_NAMES = ELEMENTWISE_OP_NAMES - {"ntt.vectorized_cast", "math.div", "math.exp", "math.sigmoid"}
 
 
 def vectorization_contract(node: Node) -> dict[str, object]:
     """Return the normalized, semantic vector-layout contract for ``node``."""
 
     from triton.flagmega.ir.op_fusion import has_ops
+    if node.op == 'math.vectorized_binary' and node.attrs.get('result_unpack') is not None:
+        output = node.attrs['result_unpack']
+        value_type = logical_type(node.type)
+        if not isinstance(value_type, TensorType):
+            raise IRVerificationError('Arithmetic result lane access requires tensor storage.', node_id=node.id)
+        if isinstance(value_type.dtype, VectorType):
+            lanes = tuple(value_type.dtype.lanes)
+            return {'kind': 'typed_elements', 'axes': (), 'lanes': lanes, 'lane_count': prod(lanes),
+                    'source_candidate': 'arithmetic-result-lanes'}
+        lanes = tuple(output['lanes'])
+        axes = normalize_axes(tuple(output.get('axes', (output.get('axis', -1),) * len(lanes))), value_type.rank)
+        return {'kind': 'axes', 'axes': axes, 'lanes': lanes, 'lane_count': prod(lanes),
+                'source_candidate': 'arithmetic-result-lanes'}
     if has_ops(node.attrs):
         from triton.flagmega.codegen.triton.fusion import vector_axes
         value_type = logical_type(node.type)
@@ -38,15 +56,18 @@ def vectorization_contract(node: Node) -> dict[str, object]:
             lanes = tuple(value_type.dtype.lanes)
             if len(set(axes)) == 1:
                 axes = (axes[0],) * len(lanes)
-            return {"kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
+            kind = ("output_axis" if node.op == "ntt.packed_matmul"
+                    and all(axis == value_type.rank - 1 for axis in axes) else "axes")
+            return {"kind": kind, "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
                     "source_candidate": "fused-typed-ir"}
     candidate = node.metadata.get("selected_vectorization")
     value_type = logical_type(node.type)
-    if (node.op == "tensors.cast" and candidate is None
+    if (node.op in _TYPED_LANE_OP_NAMES and candidate is None
             and isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType)):
-        # Plain numeric casts preserve the shape of each vector element.
-        # The lanes are physical typed IR, independent of any tensor packing
-        # axes or agent choice (including a rank-zero outer tensor).
+        # Pointwise arithmetic and plain casts traverse the existing physical
+        # lanes. They do not need a packing axis or an AutoVectorize decision,
+        # including when the outer tensor has rank zero. VectorizedCast keeps
+        # its explicit lane-remapping contract in the separate branch below.
         lanes = tuple(value_type.dtype.lanes)
         return {"kind": "typed_elements", "axes": (), "lanes": lanes,
                 "lane_count": prod(lanes), "source_candidate": "typed-ir"}
@@ -150,6 +171,20 @@ def vectorization_contract(node: Node) -> dict[str, object]:
     }
 
 
+def elementwise_work_size(tensor: TensorType, contract: Mapping[str, object]) -> int:
+    """Count the selected scalar traversal, including aligned outer tails."""
+    if any(not dim.is_fixed for dim in tensor.shape):
+        raise IRVerificationError('Elementwise task coverage requires statically bounded dimensions.')
+    shape = [dim.fixed_value for dim in tensor.shape]
+    if isinstance(tensor.dtype, VectorType):
+        return prod(shape) * tensor.dtype.lane_count
+    if contract.get('kind') == 'axes':
+        from triton.flagmega.ir.ops.tensors.pack import axis_lane_products
+        for axis, lanes in axis_lane_products(tuple(contract['lanes']), tuple(contract['axes'])).items():
+            shape[axis] = ((shape[axis] + lanes - 1) // lanes) * lanes
+    return prod(shape)
+
+
 def configured_vector_schedule(
     contract: Mapping[str, object],
     *,
@@ -204,8 +239,10 @@ def require_vector_schedule(parameters: Mapping[str, object], node_id: str) -> M
 
 
 __all__ = [
+    "ELEMENTWISE_OP_NAMES",
     "SCALAR_VECTORIZATION",
     "configured_vector_schedule",
+    "elementwise_work_size",
     "consumed_vector_contracts",
     "require_vector_schedule",
     "vectorization_contract",

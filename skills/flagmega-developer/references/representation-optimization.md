@@ -5,8 +5,11 @@ obscure compute or interrupt fusion. Diagnose the representation contract before
 choosing a rewrite; a cleaner dump alone is not a performance result.
 
 For final IR review, apply [IR acceptance and repair](ir-acceptance.md).
-Compute-body Pack must be eliminated through correct producer/layout support;
-a zero-copy lowering alone does not satisfy the structural acceptance gate.
+Compute-body Pack, Slice, Cast (including vectorized Cast), Concat and Unpack
+must all be eliminated through complete producer/consumer contracts, including
+reachable callees. A zero-copy lowering or required rounding alone does not
+satisfy the structural gate. Proven offline weight recipes retain their
+existing allowance; device kernels preserve the required semantics internally.
 
 ## Identify the boundary and its owner
 
@@ -20,7 +23,8 @@ all users of an unwanted node. Classify it before editing:
 | Activation Pack/Unpack | Propagate the demanded layout to the producer and compatible consumers; verify coordinates and function ABI. |
 | Pure activation indexing | Compose the selection with consumer loads when its semantics and ABI permit; prove source coordinates, masks and memory access. |
 | Storage view | Prove identical byte order, offsets, owner mapping and lifetime; a view must not allocate/copy at bufferization. |
-| Numeric Cast | Decide whether rounding is required by the acceptance contract or may be removed. |
+| Numeric Cast | Preserve required rounding inside a supported producer/consumer implementation; remove the rounding itself only when the numerical policy permits it. |
+| Concat of intermediate parts | Preserve axis, part order, extents and per-part rounding in a consumer input contract or proven disjoint producer writes; avoid a separate assembled activation. |
 | Reshard/publication/reduction | Preserve distributed ownership and synchronization; this is not just a local representation change. |
 
 Moving weight recipes to a separate section inside a function is a display
@@ -74,6 +78,9 @@ buffer plan: a logical slice, reshape, or a test asserting direct graph use
 does not prove absence of a runtime copy. For a private pure indexing chain,
 compose its coordinate map with the consumer's reads, preserving the source
 rounding and full physical stride/owner contract.
+At accepted checkpoints the standalone compute Slice must disappear as well;
+an alias-only lowering does not exempt it. Shared/exported selections require
+equivalent support for all users or a compatible producer result ABI.
 
 Use [Consumer indexing fusion](consumer-indexing-fusion.md) to choose an input
 fusion, a first-class storage view, or a semantic operation for coordinated
@@ -127,7 +134,10 @@ when the op and kernel family implement that boundary. Supply full inference,
 evaluation, effect, alias and codegen support; attributes or pretty-printing
 alone do not implement a fusion. Private-use and exported-value checks remain
 necessary. Never move rounding across a partial reduction or publication edge
-without proving the resulting distributed semantics.
+without proving the resulting distributed semantics. Required conversion is
+not an exception to the no-Cast gate: implement it in the owning operation,
+including its evaluator and selected kernel, rather than retaining a standalone
+numeric or vectorized Cast.
 
 ## Attribute the performance effect
 
@@ -157,6 +167,7 @@ stateful acceptance and end-to-end timing under the agreed workload scenarios.
 Retain fail-before/pass-after evidence and compare fresh immutable artifacts on
 the same device and measurement boundary. Inspect generated source, buffer
 plans and resource reports to verify that the intended materialization or
-rounding actually disappeared. Report retained semantic conversions and their
-reasons; preserve required Cast rounding. Any remaining compute-body Pack is
-a failed IR acceptance item, even when runtime materialization is absent.
+rounding actually disappeared. Report where required conversions execute after
+fusion and why their numerical boundaries are preserved. Any remaining
+compute-body Pack, Slice, Cast, Concat or Unpack is a failed IR acceptance item,
+even when runtime materialization is absent.

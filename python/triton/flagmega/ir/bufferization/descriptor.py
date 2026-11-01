@@ -15,7 +15,7 @@ from triton.flagmega.ir.dim_expr import DimensionLike
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import (
     block_owner_count,
-    is_local_shard_subview,
+    is_component_shard_subview,
     local_shape,
     placement_owner_count,
 )
@@ -110,16 +110,10 @@ class BufferDescriptor:
         if (
             self.distributed_storage_kind
             is DistributedBufferStorageKind.REPLICATED_LOCAL
-            and (
-                self.distributed_type.partial is not None
-                or any(
-                    level != "b"
-                    for level in self.distributed_type.placement.hierarchy_levels
-                )
-            )
+            and self.distributed_type.partial is not None
         ):
             raise ValueError(
-                "Replicated-local storage requires a non-partial block placement."
+                "Replicated-local storage requires a non-partial distributed tensor."
             )
         if self.distributed_storage_kind is DistributedBufferStorageKind.EXCLUSIVE_LOCAL:
             if self.distributed_type.exclusive is None or any(
@@ -140,7 +134,7 @@ class BufferDescriptor:
             if (
                 backing.tensor != self.distributed_type.tensor
                 or backing.placement != self.distributed_type.placement
-                or not is_local_shard_subview(backing, self.distributed_type)
+                or not is_component_shard_subview(backing, self.distributed_type)
             ):
                 raise ValueError(
                     "A parent-shard backing must contain every target local shard."
@@ -165,9 +159,9 @@ class BufferDescriptor:
             }
             and self.mem_span.buffer.nbytes
             < self.mem_span.byte_offset + self.component_stride_bytes * (
-                (placement_owner_count(self.distributed_type)
+                (placement_owner_count(self.storage_distributed_type)
                  if self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
-                 else block_owner_count(self.distributed_type)) - 1
+                 else block_owner_count(self.storage_distributed_type)) - 1
             )
             + component_bytes
         ):
@@ -253,9 +247,9 @@ class BufferDescriptor:
             return self.mem_span
         assert self.distributed_type is not None
         owner_count = (
-            placement_owner_count(self.distributed_type)
+            placement_owner_count(self.storage_distributed_type)
             if self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
-            else block_owner_count(self.distributed_type)
+            else block_owner_count(self.storage_distributed_type)
         )
         return MemSpan(
             self.mem_span.buffer,

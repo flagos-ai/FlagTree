@@ -49,6 +49,7 @@ def {{ call.symbol }}({{ call.signature }}):
             beta, decay = _flagmega_gdn_head_gates(
                 beta_projection, a_projection, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
                 {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }},
+                GATE_MATH_MODE="{{ call.gate_math_mode | default('accurate') }}",
             )
             cached_heads = tl.where({% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %}, value_heads, -1)
         _flagmega_gdn_recurrent_local_core_tile(
@@ -75,6 +76,7 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ call.z }}, {{ call.result }}, {{ call.norm_weight }},
             {{ call.core_scratch }}, {{ call.z_offset }}, {{ call.result_offset }}, global_values,
             recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }},
+            ACCURATE_SILU={{ call.accurate_norm_silu | default(false) }},
         )
 
 

@@ -13,7 +13,8 @@ from triton.flagmega.codegen.triton.templates import KernelTemplateSpec, TritonT
     (48, 43, (24, 8, 16), 16, 32),
     (16, 13, (8, 8, 8), 32, 64),
 ])
-def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capacities, tile_n, block_k):
+@pytest.mark.parametrize("rows", [1, 3])
+def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capacities, tile_n, block_k, rows):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("requires a GPU")
@@ -24,11 +25,12 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capac
     for i, capacity in enumerate(capacities):
         outputs.append({"result": f"Y{i}", "local_n_capacity": capacity,
                         "active": f"qkv_local_n_offsets < {capacity - i}",
-                        "result_offset": "qkv_local_n_offsets", "weight_group_start": start})
+                        "result_offset": f"qkv_local_m * {capacity} + qkv_local_n_offsets", "weight_group_start": start})
         start += capacity // 8
     call = {"family": "qkv_parallel_linear", "variant": "packed_fused_gemv",
             "symbol": "run", "signature": "X, W, Y0, Y1, Y2",
-            "source": "X", "weight": "W", "source_offset": "qkv_local_k_offsets",
+            "source": "X", "weight": "W", "source_offset": f"qkv_local_m * {k} + qkv_local_k_offsets",
+            "rows": rows,
             "source_active": f"qkv_local_k_offsets < {active_k}", "local_k_capacity": k,
             "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8,
             "weight_owner_stride": k * total_n, "weight_k_group_stride": total_n * 16,
@@ -42,15 +44,15 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, k, active_k, capac
     spec = importlib.util.spec_from_file_location("packed_qkv_physical", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    x = torch.randint(-3, 4, (k,), device="cuda").bfloat16()
+    x = torch.randint(-3, 4, (rows, k), device="cuda").bfloat16()
     dense = torch.randint(-3, 4, (total_n, k), device="cuda").bfloat16()
     packed = dense.reshape(total_n // 8, 8, k // 16, 16).permute(2, 0, 1, 3).contiguous()
-    results = [torch.full((capacity,), 777., device="cuda", dtype=torch.bfloat16) for capacity in capacities]
+    results = [torch.full((rows, capacity), 777., device="cuda", dtype=torch.bfloat16) for capacity in capacities]
     module.run[(1,)](x, packed, *results)
-    expected = (dense[:, :active_k].float() * x[:active_k].float()).sum(-1).bfloat16()
+    expected = (x[:, :active_k].float() @ dense[:, :active_k].float().T).bfloat16()
     start = 0
     for i, (result, capacity) in enumerate(zip(results, capacities)):
         active = capacity - i
-        torch.testing.assert_close(result[:active], expected[start:start + active], rtol=0, atol=0)
-        torch.testing.assert_close(result[active:], torch.full_like(result[active:], 777.), rtol=0, atol=0)
+        torch.testing.assert_close(result[:, :active], expected[:, start:start + active], rtol=0, atol=0)
+        torch.testing.assert_close(result[:, active:], torch.full_like(result[:, active:], 777.), rtol=0, atol=0)
         start += capacity

@@ -156,7 +156,23 @@ def _bank_by_value(module: IRModule, banks, region_names) -> dict[str, str]:
 
 def _absorbed(field: BankField, program: BankFieldProgram) -> BankField:
     if field.program is not None:
-        raise IRVerificationError(f"Bank field {field.name!r} already owns a transform program.")
+        # A numerical weight program can precede AutoPacking. Compose the
+        # new physical layout with that program, preserving all checkpoint
+        # sources and the rounding operations it already owns.
+        previous = field.program
+        names = {program.source: previous.output}
+        occupied = {*previous.sources, *(node.id for node in previous.nodes)}
+        appended = []
+        for node in program.nodes:
+            identity = node.id
+            while identity in occupied:
+                identity += ".layout"
+            occupied.add(identity)
+            names[node.id] = identity
+            appended.append(replace(node, id=identity, inputs=tuple(names[value] for value in node.inputs)))
+        combined = BankFieldProgram(previous.sources, (*previous.nodes, *appended), names[program.output])
+        return BankField(field.name, program.node_map[program.output].type, field.transform,
+                         combined, None, field.stored_types)
     return BankField(field.name, program.node_map[program.output].type, field.transform,
                      program, field.stored_type)
 

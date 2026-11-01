@@ -15,6 +15,9 @@ from triton.flagmega.rules.ntt.vectorize.propagation.embedding import embedding_
 from triton.flagmega.rules.ntt.vectorize.propagation.block_scaled_matmul import block_scaled_matmul_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.mhc_pre import mhc_pre_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.kda import kda_recurrent_producer_rule
+from triton.flagmega.rules.ntt.vectorize.propagation.kda_input_projection import (
+    kda_input_projection_input_rule, kda_input_projection_producer_rule,
+)
 from triton.flagmega.rules.ntt.vectorize.propagation.reduce_sum import reduce_sum_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.rotary_embedding import rotary_embedding_producer_rule
 
@@ -63,7 +66,8 @@ def _propagation_round(module, rules, dumper):
         current = DataflowPass(
             "PackResultProducers",
             (embedding_producer_rule(), rotary_embedding_producer_rule(), mhc_pre_producer_rule(),
-             block_scaled_matmul_producer_rule(), kda_recurrent_producer_rule(), reduce_sum_producer_rule()),
+             block_scaled_matmul_producer_rule(), kda_recurrent_producer_rule(), reduce_sum_producer_rule(),
+             kda_input_projection_input_rule(), kda_input_projection_producer_rule()),
         ).run(current)
         return DataflowPass(
             "FoldProducerPackingLargeModel",
@@ -88,7 +92,8 @@ def _propagation_round(module, rules, dumper):
         # must not become a duplicated helper in an egraph alternative.
         DataflowPass("PackResultProducers", (embedding_producer_rule(), rotary_embedding_producer_rule(),
                                            mhc_pre_producer_rule(), block_scaled_matmul_producer_rule(),
-                                           kda_recurrent_producer_rule(), reduce_sum_producer_rule()))
+                                           kda_recurrent_producer_rule(), reduce_sum_producer_rule(),
+                                           kda_input_projection_input_rule(), kda_input_projection_producer_rule()))
     ).add(
         EGraphRulesPass("FoldProducerPacking", rules, cost=_representation_cost,
                         cost_model="representation-boundary-preference/v3", max_iterations=128)

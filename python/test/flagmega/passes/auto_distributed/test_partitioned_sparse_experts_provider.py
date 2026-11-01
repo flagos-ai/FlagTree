@@ -73,3 +73,21 @@ def test_cost_counts_selected_experts_without_scanning_the_bank():
     assert factors[0].simt_fma_operations == 4 * 2 * 2 * 64 * 128
     assert factors[0].chip_aggregate_memory_load_bytes == 4 * 2 * 2 * 64 * 128
     assert factors[0].block_local_memory_store_bytes == 4 * 2 * 2 * 64 * 4
+
+
+@pytest.mark.parametrize("level", ("c", "d"))
+def test_cost_separates_per_block_arithmetic_and_per_chip_selected_traffic(level):
+    definition = PartitionedSparseExpertsDown
+    context = context_for(())
+    context = replace(context, placement=fm.Placement((4, 8), "cy", level + "b"))
+    candidate = next(c for c in candidates_for(context)
+                     if isinstance(c.return_type.axis_policies[0], fm.SBPSplit)
+                     and c.return_type.axis_policies[0].hierarchy_axes == (0,)
+                     and isinstance(c.return_type.axis_policies[3], fm.SBPSplit)
+                     and c.return_type.axis_policies[3].hierarchy_axes == (1,))
+    inputs = tuple(fm.Node(p.name, "builtin.var", (), kind) for p, kind in
+                   zip(definition.input_parameters, candidate.input_types, strict=True))
+    factors = definition.cost_factors(inputs, context.source_call.attrs, candidate.return_type)
+    # Four P shards run on separate chips, and eight H shards share each chip.
+    assert factors.chip_aggregate_memory_load_bytes == 2 * 2 * 64 * 128
+    assert factors.simt_fma_operations == 2 * 2 * 8 * 128

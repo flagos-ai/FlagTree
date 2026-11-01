@@ -58,6 +58,9 @@ from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.mla_projection import MlaProjection
+from triton.flagmega.ir.ops.nn.kda_input_projection import KdaInputProjection
+from triton.flagmega.ir.ops.nn.partitioned_linear import PartitionedLinear
+from triton.flagmega.ir.ops.nn.partitioned_block_scaled_linear import PartitionedBlockScaledLinear
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_qwen3_paged_attention import PackedQwen3PagedAttention
@@ -174,7 +177,12 @@ def _call_pattern(
         attributes=constraints,
     )
     if variadic is not None and len(operands) == len(fixed):
-        arguments = is_vargs_repeat(lambda: wildcard(type_pattern=variadic.type_pattern))
+        # An unspecified variadic tail must retain the fixed prefix's
+        # patterns and types (for example reference tensor + state ref).
+        prefix = tuple(fields)
+        arguments = VArgsPattern(lambda nodes: (*prefix, *(
+            wildcard(type_pattern=variadic.type_pattern)
+            for _ in nodes[len(prefix):])))
     else:
         arguments = VArgsPattern(fields)
     return CallPattern(target, arguments, call_name)
@@ -528,12 +536,16 @@ class _math:
         rhs: PatternInput = None,
         *,
         binary_op: str | None = None,
+        lhs_pack: Mapping[str, object] | None = None,
+        rhs_pack: Mapping[str, object] | None = None,
+        result_unpack: Mapping[str, object] | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
-            VectorizedBinary, (lhs, rhs), attributes={"binary_op": binary_op},
+            VectorizedBinary, (lhs, rhs), attributes={"binary_op": binary_op, 'lhs_pack': lhs_pack,
+                                                   'rhs_pack': rhs_pack, 'result_unpack': result_unpack},
             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
@@ -633,6 +645,45 @@ class _math:
 
 class _nn:
     @staticmethod
+    @_op_pattern_function(PartitionedBlockScaledLinear)
+    def is_partitioned_block_scaled_linear(value: PatternInput = None, weight: PatternInput = None,
+                                          weight_scale: PatternInput = None, *, partitions: int | None = None,
+                                          weight_block_n: int | None = None, weight_block_k: int | None = None,
+                                          activation_quantization: str | None = None,
+                                          output_lanes: tuple[int, ...] | None = None,
+                                          target_name: str | None = None, call_name: str | None = None,
+                                          condition: Condition = None) -> CallPattern:
+        return _call_pattern(PartitionedBlockScaledLinear, (value, weight, weight_scale),
+            attributes={"partitions": partitions, "weight_block_n": weight_block_n, "weight_block_k": weight_block_k,
+                        "activation_quantization": activation_quantization, "output_lanes": output_lanes},
+            target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(PartitionedLinear)
+    def is_partitioned_linear(value: PatternInput = None, weight: PatternInput = None, *,
+                              partitions: int | None = None, accumulation_splits: int | None = None,
+                              output_lanes: tuple[int, ...] | None = None,
+                              target_name: str | None = None, call_name: str | None = None,
+                              condition: Condition = None) -> CallPattern:
+        return _call_pattern(PartitionedLinear, (value, weight),
+                             attributes={"partitions": partitions, "accumulation_splits": accumulation_splits,
+                                         "output_lanes": output_lanes},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(KdaInputProjection)
+    def is_kda_input_projection(value: PatternInput = None, query_weight: PatternInput = None,
+                                key_weight: PatternInput = None, value_weight: PatternInput = None,
+                                beta_weight: PatternInput = None, forget_weight: PatternInput = None,
+                                output_weight: PatternInput = None, *,
+                                output_lanes: tuple[tuple[int, ...], ...] | None = None,
+                                target_name: str | None = None, call_name: str | None = None,
+                                condition: Condition = None) -> CallPattern:
+        return _call_pattern(KdaInputProjection, (value, query_weight, key_weight, value_weight,
+                             beta_weight, forget_weight, output_weight), attributes={"output_lanes": output_lanes},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
     @_op_pattern_function(MlaProjection)
     def is_mla_projection(value: PatternInput = None, weight: PatternInput = None, scale: PatternInput = None,
                           *, direction: str | None = None, qk_head_dim: int | None = None,
@@ -650,10 +701,13 @@ class _nn:
     @_op_pattern_function(L2Normalization)
     def is_l2_normalization(value: PatternInput = None, *, axes: tuple[int, ...] | None = None,
                             epsilon: float | None = None, epsilon_mode: str | None = None,
-                            division_mode: str | None = None, target_name: str | None = None,
+                            division_mode: str | None = None, reduction_group_size: int | None = None,
+                            math_mode: str | None = None,
+                            target_name: str | None = None,
                             call_name: str | None = None, condition: Condition = None) -> CallPattern:
         return _call_pattern(L2Normalization, (value,), attributes={"axes": axes, "epsilon": epsilon,
-                             "epsilon_mode": epsilon_mode, "division_mode": division_mode},
+                             "epsilon_mode": epsilon_mode, "division_mode": division_mode,
+                             "reduction_group_size": reduction_group_size, "math_mode": math_mode},
                              target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
@@ -837,9 +891,10 @@ class _nn:
     @staticmethod
     @_op_pattern_function(SparseExpertsWeightedSum)
     def is_sparse_experts_weighted_sum(projections=None, router_expert_weights=None, *, output_dtype=None,
-                                       round_weighted_output=None, target_name=None, call_name=None, condition=None):
+                                       round_weighted_output=None, cast_output=None, target_name=None, call_name=None, condition=None):
         return _call_pattern(SparseExpertsWeightedSum, (projections, router_expert_weights),
-                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output},
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output,
+                                         "cast_output": cast_output},
                              target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
@@ -862,6 +917,7 @@ class _nn:
         num_heads: int | None = None,
         num_kv_heads: int | None = None,
         output_data_type: str | None = None,
+        reduction_order: str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -887,6 +943,7 @@ class _nn:
                 "num_heads": num_heads,
                 "num_kv_heads": num_kv_heads,
                 "output_data_type": output_data_type,
+                "reduction_order": reduction_order,
             },
             target_name=target_name,
             call_name=call_name,
@@ -900,6 +957,12 @@ class _nn:
         *,
         axis: int | None = None,
         use_mean: bool | None = None,
+        reduction_group_size: int | None = None,
+        reduction_order: str | None = None,
+        reduction_block_size: int | None = None,
+        reduction_block_traversal: str | None = None,
+        reduction_tree_group_size: int | None = None,
+        reduction_group_seed_index: int | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -907,7 +970,11 @@ class _nn:
         return _call_pattern(
             NormStats,
             (input,),
-            attributes={"axis": axis, "use_mean": use_mean},
+            attributes={"axis": axis, "use_mean": use_mean, "reduction_group_size": reduction_group_size,
+                        "reduction_order": reduction_order, "reduction_block_size": reduction_block_size,
+                        "reduction_block_traversal": reduction_block_traversal,
+                        "reduction_tree_group_size": reduction_tree_group_size,
+                        "reduction_group_seed_index": reduction_group_seed_index},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -947,6 +1014,8 @@ class _nn:
         use_mean: bool | None = None,
         round_before_scale: bool | None = None,
         output_dtype: DType | str | None = None,
+        input_dtype: DType | str | None = None,
+        math_mode: str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -955,7 +1024,8 @@ class _nn:
             NormApply,
             (input, stats, scale, bias),
             attributes={"axis": axis, "epsilon": epsilon, "use_mean": use_mean,
-                        "round_before_scale": round_before_scale, "output_dtype": output_dtype},
+                        "round_before_scale": round_before_scale, "output_dtype": output_dtype,
+                        "input_dtype": input_dtype, "math_mode": math_mode},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1272,23 +1342,27 @@ class _nn:
     def is_rotary_embedding(
         reference: PatternInput = None,
         state: PatternInput = None,
-        *,
+        *cache: PatternInput,
         head_dim: int | None = None,
         theta: float | None = None,
         attention_scaling: float | None = None,
         output_dtype: DType | str | None = None,
+        math_mode: str | None = None,
+        inverse_frequencies: tuple[float, ...] | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
             RotaryEmbedding,
-            (reference, state),
+            (reference, state, *cache),
             attributes={
                 "head_dim": head_dim,
                 "theta": theta,
                 "attention_scaling": attention_scaling,
                 "output_dtype": None if output_dtype is None else DType(output_dtype).value,
+                "math_mode": math_mode,
+                "inverse_frequencies": inverse_frequencies,
             },
             target_name=target_name,
             call_name=call_name,
@@ -1411,9 +1485,13 @@ class _nn:
     def is_update_paged_attention_kv_cache_pair(
         slots: PatternInput = None, state: PatternInput = None,
         layer_id: PatternInput = None, advance_sequence: PatternInput = None, *,
-        layout: tuple[str, ...] | None = None, target_name: str | None = None,
-        call_name: str | None = None, condition: Condition = None,
+        layout: tuple[str, ...] | None = None, shared_kv: bool | None = None,
+        target_name: str | None = None, call_name: str | None = None, condition: Condition = None,
     ) -> CallPattern:
+        if shared_kv is not None:
+            requested, original_condition = shared_kv, condition
+            condition = lambda node: (node.attrs.get("shared_kv", False) is requested
+                                      and (original_condition is None or original_condition(node)))
         return _call_pattern(UpdatePagedAttentionKVCachePair,
                              (slots, state, layer_id, advance_sequence),
                              attributes={"layout": layout}, target_name=target_name,
@@ -1429,6 +1507,9 @@ class _nn:
         scale: float | None = None,
         layout: tuple[str, str, str] | None = None,
         hidden_size: int | None = None,
+        probability_rounding: str | None = None,
+        softmax_block_size: int | None = None,
+        softmax_traversal: str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1440,6 +1521,9 @@ class _nn:
                 "scale": scale,
                 "layout": layout,
                 "hidden_size": hidden_size,
+                "probability_rounding": probability_rounding,
+                "softmax_block_size": softmax_block_size,
+                "softmax_traversal": softmax_traversal,
             },
             target_name=target_name,
             call_name=call_name,
@@ -1622,6 +1706,7 @@ class _ntt:
         use_mean: bool | None = None,
         round_before_scale: bool | None = None,
         output_dtype: DType | str | None = None,
+        input_dtype: DType | str | None = None,
         has_bias: bool | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
@@ -1636,6 +1721,7 @@ class _ntt:
                 "use_mean": use_mean,
                 "round_before_scale": round_before_scale,
                 "output_dtype": output_dtype,
+                "input_dtype": input_dtype,
                 "has_bias": has_bias,
             },
             target_name=target_name,
@@ -1657,6 +1743,7 @@ class _ntt:
         use_mean: bool | None = None,
         round_before_scale: bool | None = None,
         output_dtype: DType | str | None = None,
+        input_dtype: DType | str | None = None,
         has_bias: bool | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
@@ -1672,6 +1759,7 @@ class _ntt:
                 "use_mean": use_mean,
                 "round_before_scale": round_before_scale,
                 "output_dtype": output_dtype,
+                "input_dtype": input_dtype,
                 "has_bias": has_bias,
             },
             target_name=target_name,
@@ -1740,6 +1828,9 @@ class _ntt:
         hidden_size: int | None = None,
         split_hierarchy_axis: int | None = None,
         split_count: int | None = None,
+        probability_rounding: str | None = None,
+        softmax_block_size: int | None = None,
+        softmax_traversal: str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1753,6 +1844,9 @@ class _ntt:
                 "hidden_size": hidden_size,
                 "split_hierarchy_axis": split_hierarchy_axis,
                 "split_count": split_count,
+                "probability_rounding": probability_rounding,
+                "softmax_block_size": softmax_block_size,
+                "softmax_traversal": softmax_traversal,
             },
             target_name=target_name,
             call_name=call_name,
@@ -1849,6 +1943,7 @@ class _ntt:
         num_kv_heads: int | None = None,
         output_data_type: str | None = None,
         rhs_layout: str | None = None,
+        reduction_order: str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1875,6 +1970,7 @@ class _ntt:
                 "num_kv_heads": num_kv_heads,
                 "output_data_type": output_data_type,
                 "rhs_layout": rhs_layout,
+                "reduction_order": reduction_order,
             },
             target_name=target_name,
             call_name=call_name,

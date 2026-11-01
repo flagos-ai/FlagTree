@@ -525,6 +525,11 @@ def _reject_unsupported_constructs(
     backend" an honest statement about what the source does.
     """
 
+    if descriptor.get('programs'):
+        raise CodegenError(
+            'The C++ backend does not implement separate kernel programs and their per-program execution meshes.',
+            stage=module.stage,
+        )
     if descriptor.get("pipeline_schedule") is not None:
         raise CodegenError(
             "The C++ backend does not implement warp-specialized "

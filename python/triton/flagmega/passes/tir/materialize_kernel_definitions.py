@@ -7,9 +7,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.memory_effect import (
+    MemoryAccessMode,
+    MemoryEffect,
+    implementation_memory_effect,
+)
 from triton.flagmega.ir.model import (
     IRModule,
     Node,
@@ -18,23 +23,16 @@ from triton.flagmega.ir.model import (
     TupleType,
     logical_type,
 )
-from triton.flagmega.ir.memory_effect import (
-    MemoryAccessDomainKind,
-    MemoryAccessMode,
-    MemoryAccessScope,
-    MemoryEffect,
-)
 from triton.flagmega.ir.ops.core import ParameterInfo, get_definition
 from triton.flagmega.ir.tir import (
-    KernelDispatch,
     InplaceAliasCandidate,
-    PrimFunction,
     KernelDefinition,
+    KernelDispatch,
+    PrimFunction,
     PrimParameter,
     PrimParameterRole,
     Return,
     ReturnBinding,
-    Sequential,
     ValueRef,
     WorkspaceRequirement,
     kernel_dispatch_of,
@@ -99,11 +97,12 @@ def materialize_kernel_definitions(module: IRModule) -> IRModule:
 def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, str]:
     definition = get_definition(str(node.attrs["semantic_op"]))
     parameter_infos = tuple(_parameter_info(definition.input_parameters, index) for index in range(len(node.inputs)))
-    parameter_effects = tuple(
-        _implementation_memory_effect(_physical_memory_effect(value), node, module)
-        for value in parameter_infos
-    )
     parameter_names = _unique_parameter_names(parameter_infos)
+    parameter_effects = tuple(
+        _implementation_memory_effect(_physical_memory_effect(value), node, module,
+                                      parameter_name=name, input_names=parameter_names)
+        for value, name in zip(parameter_infos, parameter_names, strict=True)
+    )
     roles = tuple(
         _parameter_role(effect, module.node_map[input_id].type)
         for effect, input_id in zip(
@@ -142,7 +141,7 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
             stage=module.stage, node_id=node.id,
         )
     result_effects = tuple(
-        _implementation_memory_effect(effect, node, module, is_result=True)
+        _implementation_memory_effect(effect, node, module, is_result=True, input_names=parameter_names)
         for effect in result_effects
     )
     reads += tuple(
@@ -342,33 +341,15 @@ def _physical_memory_effect(parameter: ParameterInfo) -> MemoryEffect:
 
 def _implementation_memory_effect(
     effect: MemoryEffect, node: Node, module: IRModule, *, is_result: bool = False,
+    parameter_name: str | None = None, input_names: tuple[str, ...] | None = None,
 ) -> MemoryEffect:
     """Expose implementation participation before storage and hazard planning."""
 
     facts = node.attrs.get("facts", node.attrs.get("semantic_facts", {}))
-    if effect.physical_mode != MemoryAccessMode.NONE:
-        declared = MemoryAccessScope(facts.get(
-            "result_memory_scope" if is_result else "source_memory_scope", "inferred",
-        ))
-        if declared is not MemoryAccessScope.INFERRED:
-            effect = replace(effect, scope=declared)
-    scope = facts.get("participant_scope", "all_programs")
-    if scope not in {"all_programs", "single_program"}:
-        raise IRVerificationError(
-            f"Unknown implementation participant_scope {scope!r}.",
-            stage=module.stage, node_id=node.id,
-        )
-    if scope == "all_programs" or effect.physical_mode == MemoryAccessMode.NONE:
-        return effect
-    if (
-        effect.access_domain.kind is MemoryAccessDomainKind.FIXED_BLOCK
-        and effect.access_domain.block_index != 0
-    ):
-        raise IRVerificationError(
-            "Single-program implementation conflicts with the op access domain.",
-            stage=module.stage, node_id=node.id,
-        )
-    return effect.in_fixed_block(0)
+    return implementation_memory_effect(
+        effect, facts, is_result=is_result, stage=module.stage, node_id=node.id,
+        parameter_name=parameter_name, input_names=input_names,
+    )
 
 
 def _result_memory_effect(value_type) -> MemoryEffect:

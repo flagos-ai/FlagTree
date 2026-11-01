@@ -26,8 +26,22 @@ def {{ call.symbol }}({{ call.signature }}):
         _fm_probabilities = tl.sigmoid(_fm_values)
 {% endif %}
 {% else %}
+{% if call.arithmetic == "exp_grouped_reciprocal" %}
+        _fm_numerator = libdevice.exp(_fm_values - tl.max(_fm_values, 0))
+        _fm_groups = tl.reshape(_fm_numerator, ({{ call.score_groups }}, 8))
+        _fm_columns = tl.arange(0, 8)
+        _fm_lanes = tl.arange(0, {{ call.score_groups }})
+        _fm_sums = tl.full(({{ call.score_groups }},), 0., tl.float32)
+        for _fm_column in tl.static_range(8):
+            _fm_sums = libdevice.add_rn(_fm_sums, tl.sum(tl.where(_fm_columns[None, :] == _fm_column, _fm_groups, 0.), 1))
+        for _fm_step in tl.static_range({{ call.score_group_steps }}):
+            _fm_sums = libdevice.add_rn(_fm_sums, tl.gather(_fm_sums, _fm_lanes ^ ({{ call.score_groups // 2 }} >> _fm_step), 0))
+        _fm_sum = tl.sum(tl.where(_fm_lanes == 0, _fm_sums, 0.), 0)
+        _fm_probabilities = _fm_numerator * tl.div_rn(1., _fm_sum)
+{% else %}
         _fm_numerator = tl.exp(_fm_values - tl.max(_fm_values, 0))
         _fm_probabilities = _fm_numerator / tl.sum(_fm_numerator, 0)
+{% endif %}
 {% endif %}
 {% if call.has_bias %}
         _fm_bias = tl.load({{ call.bias }} + ({{ call.bias_offset }}), mask=_fm_mask, other=0.0).to(tl.float32)
@@ -39,6 +53,9 @@ def {{ call.symbol }}({{ call.signature }}):
         _fm_selected_offsets = tl.arange(0, {{ call.selected_tile }})
         _fm_selected_values = tl.full(({{ call.selected_tile }},), 0, tl.float32)
         _fm_selected_indices = tl.full(({{ call.selected_tile }},), 0, tl.int64)
+{% if call.arithmetic == "exp_grouped_reciprocal" %}
+        _fm_selected_sum = tl.full((), 0., tl.float32)
+{% endif %}
         for _fm_selection in tl.range(0, {{ call.k }}):
             # Stable total order (NaNs first, descending score, lower id).
             # A single value/index reduction carries the original winner bits.
@@ -49,8 +66,14 @@ def {{ call.symbol }}({{ call.signature }}):
             _fm_selected_values = tl.where(_fm_selected_offsets == _fm_selection, _fm_score, _fm_selected_values)
             _fm_selected_indices = tl.where(_fm_selected_offsets == _fm_selection, _fm_winner_index.to(tl.int64), _fm_selected_indices)
             _fm_available = _fm_available & (_fm_offsets != _fm_winner_index)
+{% if call.arithmetic == "exp_grouped_reciprocal" %}
+            _fm_selected_sum = libdevice.add_rn(_fm_selected_sum, _fm_score)
+{% endif %}
 {% if call.normalize %}
-{% if call.arithmetic == "tanh_scaled_reciprocal" %}
+{% if call.arithmetic == "exp_grouped_reciprocal" %}
+        _fm_denominator = tl.where(_fm_selected_sum > 0., _fm_selected_sum, 1.)
+        _fm_weights = _fm_selected_values * tl.div_rn({{ call.scaling }}, _fm_denominator)
+{% elif call.arithmetic == "tanh_scaled_reciprocal" %}
         _fm_denominator = tl.sum(_fm_selected_values, 0) + 1e-20
         _fm_weights = _fm_selected_values * tl.div_rn({{ call.scaling }}, _fm_denominator)
 {% else %}
@@ -60,7 +83,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {% else %}
         _fm_weights = _fm_selected_values
 {% endif %}
-{% if not call.normalize or call.arithmetic != "tanh_scaled_reciprocal" %}
+{% if not call.normalize or call.arithmetic == "standard" %}
         _fm_weights = _fm_weights * {{ call.scaling }}
 {% endif %}
         _fm_write_mask = (_fm_selected_offsets < {{ call.k }}) & ({{ call.outer_active }})

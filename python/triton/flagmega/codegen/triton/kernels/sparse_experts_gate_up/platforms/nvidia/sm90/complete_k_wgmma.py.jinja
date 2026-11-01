@@ -1,0 +1,97 @@
+# flagmega-kernel: sparse_experts_gate_up/complete_k_wgmma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% include "kernels/_ue8m0_quantization.py.jinja" %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "sparse_experts_gate_up" and call.variant == "complete_k_wgmma" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__quantize({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_task in tl.range(tl.program_id(0), {{ call.quantization_tasks }}, tl.num_programs(0)):
+        _fm_k_block = _fm_task % {{ call.k_blocks }}
+        _fm_chip_route = (_fm_task // {{ call.k_blocks }}) % {{ call.chip_routes }}
+        _fm_token = _fm_task // {{ call.k_blocks * call.chip_routes }}
+        _fm_route_owner = _fm_chip_route // {{ call.local_routes }}
+        _fm_local_route = _fm_chip_route % {{ call.local_routes }}
+        _fm_k = _fm_k_block * 128 + tl.arange(0, 128)
+        _fm_active_slot = {{ call.peer_slot_active }}
+        _fm_source = tl.load({{ call.peer_input }} + ({{ call.peer_input_offset }}), _fm_active_slot, other=0.).to(tl.float32)
+        _fm_q, _fm_a_scale = _flagmega_quantize_ue8m0(_fm_source, 0)
+        tl.store({{ call.quantized_pointer }} + (_fm_token * {{ call.chip_routes }} + _fm_chip_route) * {{ call.scalar_k }} + _fm_k, _fm_q.to(tl.float8e4nv))
+        tl.store({{ call.quantization_scale_pointer }} + (_fm_token * {{ call.chip_routes }} + _fm_chip_route) * {{ call.k_blocks }} + _fm_k_block, tl.sum(_fm_a_scale, 0))
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__project({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_m = tl.arange(0, {{ call.matrix_rows }})
+    _fm_kk_raw = tl.arange(0, 128)
+    for _fm_task in tl.range(tl.program_id(0), {{ call.complete_tasks }}, tl.num_programs(0)):
+        _fm_n_raw = _fm_m % {{ call.task_n }}
+        _fm_tile = _fm_task % {{ call.task_tiles }}
+        _fm_chip_route = (_fm_task // {{ call.task_tiles }}) % {{ call.chip_routes }}
+        _fm_token = _fm_task // {{ call.task_tiles * call.chip_routes }}
+        _fm_route_owner = _fm_chip_route // {{ call.local_routes }}
+        _fm_local_route = _fm_chip_route % {{ call.local_routes }}
+        _fm_route = _fm_local_route
+        _fm_chip_n = _fm_tile * {{ call.task_n }} + _fm_n_raw
+        _fm_row_owner = tl.minimum(_fm_chip_n // {{ call.local_rows }}, {{ call.row_owners - 1 }})
+        _fm_local_n = _fm_chip_n % {{ call.local_rows }}
+        _fm_active_slot = {{ call.peer_slot_active }}
+        _fm_n_valid = (_fm_n_raw < {{ call.task_n }}) & (_fm_chip_n < {{ call.chip_rows }}) & (_fm_local_n < ({{ call.peer_n_active }})) & _fm_active_slot
+        _fm_expert = tl.load({{ call.peer_expert_ids }} + ({{ call.peer_expert_offset }}), _fm_active_slot, other=0).to(tl.int64)
+        _fm_gate_input_scale = {{ call.scale_loads.gate_input_scale }}
+        _fm_up_input_scale = {{ call.scale_loads.up_input_scale }}
+        # Keep the dot's matrix layout across K. Extracting column zero on
+        # each block forces an MMA-to-vector shared-memory round trip.
+        _fm_total = tl.zeros(({{ call.matrix_rows }}, 16), tl.float32)
+        for _fm_k_block in tl.range(0, {{ call.k_blocks }}, num_stages={{ call.num_stages }}):
+            _fm_k_start = _fm_k_block * 128
+            _fm_k = _fm_k_start + _fm_kk_raw
+            _fm_av = tl.load({{ call.quantization_scale_pointer }} + (_fm_token * {{ call.chip_routes }} + _fm_chip_route) * {{ call.k_blocks }} + _fm_k_block)
+            # Only column zero represents a real token. A direct matrix load
+            # keeps FP8 input in the asynchronous global-to-shared pipeline;
+            # broadcasting a register vector here requires shared stores.
+            _fm_column = tl.arange(0, 16)
+            _fm_a = tl.load({{ call.quantized_pointer }} + (_fm_token * {{ call.chip_routes }} + _fm_chip_route) * {{ call.scalar_k }}
+                            + _fm_k[:, None] + _fm_column[None, :] * {{ call.scalar_k }},
+                            _fm_column[None, :] == 0, other=0.)
+            _fm_weight_pointer = tl.where(_fm_m[:, None] < {{ call.task_n }},
+                {{ call.gate_peer_pointer }} + ({{ call.gate_peer_offset }}),
+                {{ call.up_peer_pointer }} + ({{ call.up_peer_offset }}))
+            _fm_scale_pointer = tl.where(_fm_m < {{ call.task_n }},
+                {{ call.gate_peer_scale }} + ({{ call.gate_peer_scale_offset }}),
+                {{ call.up_peer_scale }} + ({{ call.up_peer_scale_offset }}))
+            _fm_weight = tl.load(_fm_weight_pointer, _fm_n_valid[:, None], other=0.)
+            _fm_b_scale = tl.load(_fm_scale_pointer, _fm_n_valid, other=1.)
+            _fm_product = tl.dot(_fm_weight, _fm_a, out_dtype=tl.float32)
+            _fm_total = tl.fma(libdevice.mul_rn(_fm_product, _fm_b_scale[:, None]), _fm_av, _fm_total)
+        _fm_total_vector = tl.reshape(tl.gather(_fm_total, tl.full(({{ call.matrix_rows }}, 1), 0, tl.int32), 1), ({{ call.matrix_rows }},))
+        _fm_n_raw = tl.arange(0, {{ call.task_n }})
+        _fm_ga = tl.gather(_fm_total_vector, _fm_n_raw, 0)
+        _fm_ua = tl.gather(_fm_total_vector, _fm_n_raw + {{ call.task_n }}, 0)
+        _fm_chip_n = _fm_tile * {{ call.task_n }} + _fm_n_raw
+        _fm_row_owner = tl.minimum(_fm_chip_n // {{ call.local_rows }}, {{ call.row_owners - 1 }})
+        _fm_local_n = _fm_chip_n % {{ call.local_rows }}
+        _fm_n_valid = (_fm_n_raw < {{ call.task_n }}) & (_fm_chip_n < {{ call.chip_rows }}) & (_fm_local_n < ({{ call.peer_n_active }})) & _fm_active_slot
+        _fm_gate_result = _fm_ga * _fm_gate_input_scale
+        _fm_up_result = _fm_ua * _fm_up_input_scale
+{% if call.attrs.round_projections %}
+        _fm_gate_result = _fm_gate_result.to({{ call.output_dtype }}).to(tl.float32)
+        _fm_up_result = _fm_up_result.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+{% if call.attrs.gate_clamp_max is not none %}
+        _fm_gate_result = tl.minimum(_fm_gate_result, {{ call.attrs.gate_clamp_max }})
+{% endif %}
+{% if call.attrs.up_clamp is not none %}
+        _fm_up_result = tl.clamp(_fm_up_result, -{{ call.attrs.up_clamp }}, {{ call.attrs.up_clamp }})
+{% endif %}
+        _fm_activation = _fm_gate_result * tl.sigmoid(_fm_gate_result)
+{% if call.attrs.round_activation %}
+        _fm_activation = _fm_activation.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+        tl.store({{ call.result_peer_pointer }} + ({{ call.result_peer_offset }}), _fm_activation * _fm_up_result, _fm_n_valid)
+
+
+{{ entry.phase_schedule(call, ("quantize", "project")) }}
+{% endif %}
+{% endfor %}

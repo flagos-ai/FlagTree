@@ -12,6 +12,7 @@ from triton.flagmega.rules.neutral.decompose_sparse_experts import decompose_spa
 from triton.flagmega.rules.neutral.fuse_norm_stats_apply import fuse_norm_stats_apply_rule
 from triton.flagmega.rules.neutral.fuse_wide_glu import fuse_wide_glu_rule
 from triton.flagmega.rules.neutral.fuse_norm_apply_cast import fuse_norm_apply_cast_rule
+from triton.flagmega.rules.neutral.fuse_norm_apply_input_cast import fuse_norm_apply_input_cast_rule
 from triton.flagmega.rules.neutral.fold_bind_norm_stats import fold_bind_norm_stats_rule
 from triton.flagmega.rules.neutral.fold_bitcast_bitcast import fold_bitcast_bitcast_rule
 from triton.flagmega.rules.neutral.fold_get_item_tuple import fold_get_item_tuple_rule
@@ -32,6 +33,7 @@ __all__ = [
     "fuse_norm_stats_apply_rule",
     "fuse_wide_glu_rule",
     "fuse_norm_apply_cast_rule",
+    "fuse_norm_apply_input_cast_rule",
     "fold_bind_norm_stats_rule",
     "fold_bitcast_bitcast_rule",
     "fold_get_item_tuple_rule",

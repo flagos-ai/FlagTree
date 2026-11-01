@@ -2,6 +2,9 @@
 {% if distributed_entry %}
 {% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
 {% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}
+{% if tasks_per_owner | default(1) > 1 %}
+    _flagmega_task_index = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_task').to(tl.int64)
+{% endif %}
 {% if "device" in (mesh_axis_sources | default(())) %}
     _flagmega_device_rank = tle.shard_id(FLAGMEGA_GRID_MESH, "device", device_dptr=device_dptr).to(tl.int64)
 {% endif %}
@@ -14,7 +17,13 @@
 {% elif (mesh_axis_sources | default(effective_mesh_levels))[axis] == "node" %}
     shard_coord{{ axis }} = ((_flagmega_node_rank // {{ mesh_coordinate_strides[axis] }}) % {{ mesh_hierarchy[axis] }})
 {% elif effective_mesh_levels[axis] == "b" %}
+{% if dynamic_execution | default(false) %}
+    {# B data has one chip-local logical owner; physical CTA ids belong only
+       to the selected dynamic task mapping, never to this data coordinate. #}
+    shard_coord{{ axis }} = tl.full((), 0, tl.int64)
+{% else %}
     shard_coord{{ axis }} = tle.shard_id(FLAGMEGA_GRID_MESH, '{{ mesh_axis_names[axis] }}').to(tl.int64)
+{% endif %}
 {% else %}
     shard_coord{{ axis }} = tl.full((), 0, tl.int64)
 {% endif %}
@@ -43,6 +52,9 @@
 {% set block_linear.expression = "(" ~ block_linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
 {% endfor %}
     block_index = {{ block_linear.expression }}
+{% if tasks_per_owner | default(1) > 1 %}
+    block_index = block_index * {{ tasks_per_owner }} + _flagmega_task_index
+{% endif %}
 {% else %}
 {% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
 {% for axis in range(effective_mesh_rank) %}

@@ -41,8 +41,16 @@ def {{ call.symbol }}({{ call.signature }}):
 {% endif %}
 {% for leaf in call.leaves %}
 {% if leaf.source_is_scalar | default(false) %}
+{% for line in leaf.fusion_post_lines | default(()) %}
+    {{ line }}
+{% endfor %}
+{% if leaf.fusion_post_value is defined %}
+    tl.store({{ leaf.result }} + ({{ leaf.result_offset }}), {{ leaf.fusion_post_value }},
+             mask=({{ leaf.writer_active }}))
+{% else %}
     tl.store({{ leaf.result }} + ({{ leaf.result_offset }}), {{ leaf.source }},
              mask=({{ leaf.writer_active }}))
+{% endif %}
 {% else %}
 {% if leaf.remote_source is defined %}
     boxing_source_byte_offset = (
@@ -97,6 +105,12 @@ def {{ call.symbol }}({{ call.signature }}):
             mask=boxing_mask,
             other=0.0,
         )
+{% endif %}
+{% for line in leaf.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if leaf.fusion_post_value is defined %}
+        boxing_value = {{ leaf.fusion_post_value }}
 {% endif %}
         tl.store(
             {{ leaf.result }} + ({{ leaf.result_offset }}),

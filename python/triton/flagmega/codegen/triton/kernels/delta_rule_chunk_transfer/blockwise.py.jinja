@@ -1,0 +1,55 @@
+# flagmega-kernel: delta_rule_chunk_transfer/blockwise
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "delta_rule_chunk_transfer" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_row = tl.arange(0, 64)
+    _fm_dim = tl.arange(0, 128)
+    if {{ call.writer_active }}:
+        for _fm_work in range({{ call.chunks }} * {{ call.heads }}):
+            _fm_chunk = _fm_work // {{ call.heads }}
+            _fm_head = _fm_work % {{ call.heads }}
+            _fm_head_valid = _fm_head < {{ call.active_heads }}
+{% if call.matrix_kind == "transfer" %}
+            _fm_acc = tl.where(_fm_dim[:, None] == _fm_dim[None, :], 1., 0.)
+{% else %}
+            _fm_acc = tl.zeros((128, 128), tl.float32)
+{% endif %}
+            for _fm_local in range({{ call.chunk_blocks }}):
+                _fm_block = _fm_chunk * {{ call.chunk_blocks }} + _fm_local
+                if _fm_block * 64 < {{ call.tokens }}:
+                    _fm_token = _fm_block * 64 + _fm_row
+                    _fm_valid = _fm_token < {{ call.tokens }}
+                    _fm_k = tl.load({{ call.key }} + ({{ call.key_offset }}), _fm_head_valid & _fm_valid[:, None], other=0.)
+                    _fm_c = tl.load({{ call.coefficients }} + ({{ call.coefficients_offset }}),
+                                    _fm_head_valid & (_fm_row[:, None] >= _fm_row[None, :]) & _fm_valid[:, None] & _fm_valid[None, :], other=0.)
+                    _fm_x = tl.dot(-tl.trans(_fm_c), _fm_k).to(tl.bfloat16)
+                    _fm_p = tl.load({{ call.log_prefix }} + ({{ call.prefix_offset }}), _fm_head_valid, other=0.)
+                    _fm_count = tl.minimum(64, {{ call.tokens }} - _fm_block * 64)
+                    _fm_end = tl.sum(tl.where(_fm_row == _fm_count - 1, _fm_p, 0.), 0)
+                    _fm_gamma = tl.exp2(_fm_end)
+{% if call.matrix_kind == "transfer" %}
+                    if _fm_local == 0:
+                        _fm_z = tl.trans(_fm_k)
+                    else:
+                        _fm_z = tl.dot(_fm_acc.to(tl.bfloat16), tl.trans(_fm_k)).to(tl.bfloat16)
+                    _fm_acc = tl.dot(_fm_z, _fm_x, _fm_acc) * _fm_gamma
+{% else %}
+                    _fm_v = tl.load({{ call.value }} + ({{ call.value_offset }}), _fm_head_valid & _fm_valid[None, :], other=0.)
+                    _fm_decay = tl.exp2(tl.where(_fm_valid, _fm_end - _fm_p, 0.))
+                    _fm_negative = tl.where(_fm_valid[None, :], -_fm_v.to(tl.float32) * _fm_decay[None, :], 0.)
+                    if _fm_local == 0:
+                        _fm_y = _fm_negative
+                    else:
+                        _fm_y = tl.fma(_fm_gamma, tl.dot(_fm_acc.to(tl.bfloat16), tl.trans(_fm_k)), _fm_negative)
+                    _fm_acc = tl.dot(_fm_y.to(tl.bfloat16), _fm_x, _fm_acc * _fm_gamma)
+{% endif %}
+{% for pointer in call.result_pointers %}
+            tl.store({{ pointer }} + ({{ call.result_offset }}), _fm_acc, _fm_head_valid)
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}

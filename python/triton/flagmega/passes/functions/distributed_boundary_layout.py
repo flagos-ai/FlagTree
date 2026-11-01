@@ -315,6 +315,21 @@ def _propagate_one_iteration(
             )
 
     nodes: list[Node] = []
+
+    def append_projection_source_helpers(original, raw, output):
+        for helper in source_helpers.get(original.id, ()):
+            if helper.type == output.abi_type:
+                # A nested call's selected ABI is already the outer result's
+                # requested distribution. Retain that actual producer rather
+                # than referencing an adapter omitted by the projection path.
+                removed_substitutions[helper.id] = raw.id
+                removed_owners[helper.id] = raw.id
+            else:
+                nodes.append(helper)
+
+    def projection_needs_source_view(original, output):
+        return any(helper.type != output.abi_type for helper in source_helpers.get(original.id, ()))
+
     for original in module.nodes:
         if original.id in removed_substitutions:
             continue
@@ -480,9 +495,11 @@ def _propagate_one_iteration(
                     },
                 ))
                 removed_owners[original.id] = raw_call.id
+                nodes.extend(source_helpers.get(original.id, ()))
                 continue
             if original.id not in raw_projection_ids:
                 nodes.append(rewritten_call)
+                nodes.extend(source_helpers.get(original.id, ()))
                 continue
             output = projection_layouts[original.id]
             raw = replace(
@@ -502,7 +519,7 @@ def _propagate_one_iteration(
                 removed_substitutions,
                 layouts,
                 function_output_roots,
-            ):
+            ) or projection_needs_source_view(original, output):
                 nodes.append(_make_compatibility_view(
                     original,
                     raw.id,
@@ -512,6 +529,7 @@ def _propagate_one_iteration(
             else:
                 removed_substitutions[original.id] = raw.id
                 removed_owners[original.id] = raw.id
+            append_projection_source_helpers(original, raw, output)
             continue
 
         if original.id in raw_projection_ids:
@@ -541,7 +559,7 @@ def _propagate_one_iteration(
                 removed_substitutions,
                 layouts,
                 function_output_roots,
-            ):
+            ) or projection_needs_source_view(original, output):
                 nodes.append(_make_compatibility_view(
                     original,
                     raw.id,
@@ -551,6 +569,7 @@ def _propagate_one_iteration(
             else:
                 removed_substitutions[original.id] = raw.id
                 removed_owners[original.id] = raw.id
+            append_projection_source_helpers(original, raw, output)
             continue
 
         # A non-selected distributed use of a promoted parameter reshards

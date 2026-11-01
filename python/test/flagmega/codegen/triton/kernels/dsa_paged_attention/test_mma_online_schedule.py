@@ -18,7 +18,7 @@ from triton.flagmega.runtime.prepared import ResourceContract, _spill_resource_r
 from triton.flagmega.targets import NvidiaSm90Target
 
 
-def _graph(config, width, *, probability="online_bf16", heads=None, index_traversal="slots"):
+def _graph(config, width, *, probability="online_bf16", heads=None, index_traversal="slots", placement=None):
     heads = config.num_kv_heads if heads is None else heads
 
     class Graph(fm.Module):
@@ -29,9 +29,15 @@ def _graph(config, width, *, probability="online_bf16", heads=None, index_traver
             topk = self.input("topk", fm.tensor_type("int32", (1, width)), id="topk")
             state = self.input("state", config.ref_type, id="state")
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
+            q, indices = query, topk
+            if placement is not None:
+                q = fm.F.distributed.sharded_view(query, fm.DistributedType(
+                    query.type, (fm.SBP.broadcast(),) * 3, placement))
+                indices = fm.F.distributed.sharded_view(topk, fm.DistributedType(
+                    topk.type, (fm.SBP.broadcast(),) * 2, placement))
             result = fm.F.nn.dsa_paged_attention(
-                query,
-                topk,
+                q,
+                indices,
                 state,
                 layer,
                 scale=1.0,
@@ -42,10 +48,15 @@ def _graph(config, width, *, probability="online_bf16", heads=None, index_traver
             )
             self.function("main", (query, topk, state), (result,))
 
-    return Graph(dialect="high_level", stage="imported", entry="main").build()
+    return Graph(
+        dialect="distributed" if placement is not None else "high_level",
+        stage="frozen_constants" if placement is not None else "imported",
+        entry="main",
+        metadata={} if placement is None else {"auto_distribution": {"placement": placement.to_data()}},
+    ).build()
 
 
-def _compile(module, path, schedule):
+def _compile(module, path, schedule, *, placement=None):
     compiler = Compiler()
     base = compiler.target.triton_implementation_model
     catalog = replace(
@@ -58,6 +69,8 @@ def _compile(module, path, schedule):
         ),
     )
     compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)
+    if placement is not None:
+        compiler.target = compiler.target.with_placement(placement)
     compiled = compiler.compile(module).module
     restored = fm.load_module(fm.emit_module(compiled, path / "selected.py"))
     assert restored.semantic_hash == compiled.semantic_hash
@@ -141,6 +154,89 @@ def test_mma_online_empty_tiles_and_partial_head_group(tmp_path, slots):
         runtime.run_into(*args)
         expected = torch.tensor(7 / 3 if slots else 0, dtype=torch.bfloat16).item()
         torch.testing.assert_close(output, torch.full_like(output, expected), rtol=0, atol=0)
+        assert runtime.resource_report["spill_bytes"] == 0
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("traversal", ["slots", "compact"])
+def test_mma_token_column_to_value_row_layout_at_small_head_dim(tmp_path, traversal):
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("requires SM90")
+    config = PagedAttentionStateConfig(1, 1, 16, num_blocks=2)
+    module, artifact = _compile(_graph(config, 130, heads=17, index_traversal=traversal), tmp_path, "bf16_mma")
+    state = create_paged_attention_state(config, device="cuda")
+    state.seq_lens.fill_(3)
+    state.slot_mapping.fill_(2)
+    for token, value in enumerate((1, 2, 4)):
+        state.kv_caches[0, 0, 1, token].fill_(value)
+    query = torch.zeros((1, 17, 2, 8), dtype=torch.bfloat16, device="cuda")
+    topk = torch.full((1, 130), -1, dtype=torch.int32, device="cuda")
+    topk[0, [0, 64, 129]] = torch.tensor([0, 1, 2], dtype=torch.int32, device="cuda")
+    storage = torch.full((query.numel() + 32,), 123, dtype=torch.bfloat16, device="cuda")
+    output = storage[16:-16].reshape_as(query)
+    runtime = load(artifact, device="cuda:0")
+    try:
+        args = _arguments(runtime, module, state, query, topk, output)
+        runtime.prepare(*args)
+        for _ in range(3):
+            output.fill_(-17)
+            runtime.run_into(*args)
+            torch.testing.assert_close(output, torch.full_like(output, 7 / 3), rtol=0, atol=0)
+            assert bool((storage[:16] == 123).all()) and bool((storage[-16:] == 123).all())
+        assert runtime.resource_report["spill_bytes"] == 0
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("traversal", ["slots", "compact"])
+def test_mma_private_scalar_query_preserves_token_gather_layout(tmp_path, traversal):
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("requires SM90")
+    mesh = fm.Placement((2, 2), "yx", "bb")
+    config = PagedAttentionStateConfig(1, 1, 16, num_blocks=2)
+    b = fm.SBP.broadcast()
+
+    class Graph(fm.Module):
+        def forward(self):
+            query = self.input("query", fm.tensor_type(fm.vector_type("bfloat16", (2, 4)), (1, 4)), id="query")
+            topk = self.input("topk", fm.tensor_type("int32", (1, 3)), id="topk")
+            state = self.input("state", config.ref_type, id="state")
+            value = fm.F.distributed.force_boxing(query, fm.DistributedType(query.type, (b, b), mesh))
+            computed = fm.F.math.vectorized_unary(value, unary_op="sigmoid", name="query.compute", metadata={
+                "vectorized_from": "math.sigmoid", "vectorization_root": "query", "vectorization_semantic_id": "query",
+                "vectorization_internal": True, "vectorization_candidate": "vectorization.last_axis",
+                "vector_axes": (1, 1), "vector_lanes": (2, 4),
+            })
+            scalar = fm.F.tensors.unpack(computed, axes=(1, 1))
+            heads = fm.F.tensors.reshape(scalar, (1, 2, 16))
+            indices = fm.F.distributed.force_boxing(topk, fm.DistributedType(topk.type, (b, b), mesh))
+            layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
+            result = fm.F.nn.dsa_paged_attention(heads, indices, state, layer, scale=.25,
+                layout=("seq", "head", "dim"), hidden_size=32, probability_rounding="online_bf16",
+                index_traversal=traversal)
+            result = fm.F.distributed.force_boxing(result, fm.logical_type(result.type))
+            self.function("main", (query, topk, state), (result,))
+
+    source = Graph(dialect="ntt", stage="distributed", entry="main",
+                   metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
+    module, artifact = _compile(source, tmp_path, "bf16_mma", placement=mesh)
+    state = create_paged_attention_state(config, device="cuda")
+    state.seq_lens.fill_(3)
+    state.slot_mapping.fill_(2)
+    for token, value in enumerate((1, 2, 4)):
+        state.kv_caches[0, 0, 1, token].fill_(value)
+    query = torch.zeros((1, 4, 2, 4), dtype=torch.bfloat16, device="cuda")
+    topk = torch.tensor([[0, 1, 2]], dtype=torch.int32, device="cuda")
+    output = torch.empty((1, 2, 2, 8), dtype=torch.bfloat16, device="cuda")
+    runtime = load(artifact, device="cuda:0")
+    try:
+        args = _arguments(runtime, module, state, query, topk, output)
+        runtime.prepare(*args)
+        for _ in range(3):
+            output.fill_(-17)
+            runtime.run_into(*args)
+            torch.testing.assert_close(output, torch.full_like(output, 7 / 3), rtol=0, atol=0)
         assert runtime.resource_report["spill_bytes"] == 0
     finally:
         runtime.close()
@@ -293,12 +389,16 @@ def test_mma_full_head_domain_stays_within_register_contract(tmp_path):
 
 
 @triton.jit
-def _attention_with_live_caller(saved, query, topk, s0, s1, s2, s3, s4, result, pool, FN: tl.constexpr):
+def _attention_with_live_caller(saved, query, topk, s0, s1, s2, s3, s4, result, pool,
+                              FN: tl.constexpr, HAS_POOL: tl.constexpr):
     offsets = tl.arange(0, 32768)
     # The callee writes this same buffer. Its previous values must survive the
     # call, as live caller state does in a complete model's shared function.
     previous = tl.load(result + offsets)
-    FN(query, topk, s0, s1, s2, s3, s4, result, pool)
+    if HAS_POOL:
+        FN(query, topk, s0, s1, s2, s3, s4, result, pool)
+    else:
+        FN(query, topk, s0, s1, s2, s3, s4, result)
     tl.store(saved + offsets, previous.to(tl.float32) + 1.0)
 
 
@@ -307,7 +407,15 @@ def test_mma_register_budget_includes_live_caller(tmp_path, index_traversal):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     config = PagedAttentionStateConfig(1, 1, 512, num_blocks=2)
-    module, artifact = _compile(_graph(config, 2175, heads=64, index_traversal=index_traversal), tmp_path, "bf16_mma")
+    # This direct caller launches one CTA and requires a complete broadcast
+    # callee. Head shards require the artifact's full runtime launch grid.
+    # Keep all 64 heads here; normal-runtime tests cover automatic sharding.
+    module, artifact = _compile(
+        _graph(config, 2175, heads=64, index_traversal=index_traversal,
+               placement=fm.Placement((8, 16), "yx", "bb")),
+        tmp_path,
+        "bf16_mma",
+    )
     state = create_paged_attention_state(config, device="cuda")
     state.seq_lens.fill_(2)
     state.slot_mapping.fill_(1)
@@ -322,15 +430,15 @@ def test_mma_register_budget_includes_live_caller(tmp_path, index_traversal):
     runtime = load(artifact, device="cuda:0")
     try:
         args = _arguments(runtime, module, state, query, topk, output)
+        pools = runtime.codegen["runtime_binding"]["pools"]
+        assert len(pools) <= 1 and all(p["name"] == "block_local_data" for p in pools)
         assert runtime.codegen["signature_arguments"] == [
             *(spec["name"] for spec in runtime.external_arguments),
-            "block_local_data",
+            *(p["name"] for p in pools),
         ]
-        pools = runtime.codegen["runtime_binding"]["pools"]
-        assert len(pools) == 1 and pools[0]["name"] == "block_local_data"
-        pool = torch.empty(pools[0]["nbytes"], dtype=torch.uint8, device="cuda")
+        pool = torch.empty(pools[0]["nbytes"] if pools else 0, dtype=torch.uint8, device="cuda")
         compiled = _attention_with_live_caller[(1,)](
-            saved, *args, pool, runtime.kernel, num_warps=8, ptx_options="--minnctapersm=1"
+            saved, *args, pool, runtime.kernel, bool(pools), num_warps=8, ptx_options="--minnctapersm=1"
         )
         torch.testing.assert_close(output, torch.full_like(output, 1.5), rtol=0, atol=0)
         torch.testing.assert_close(saved, expected_saved, rtol=0, atol=0)

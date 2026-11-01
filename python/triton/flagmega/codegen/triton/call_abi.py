@@ -150,6 +150,13 @@ def describe_function_call_abi(
 
     return {
         "schema": FUNCTION_CALL_ABI_SCHEMA,
+        **({"loop_buffers": {
+            buffer_id: {"actual": buffer_id, "abi": describe_local_buffer_abi(
+                plan.buffer_map[buffer_id], plan, pool_scope_count=pool_scope_counts.get(
+                    plan.buffer_map[buffer_id].mem_span.buffer.memory_space, 1))}
+            for call in function_plan.calls for carry in call.loop_carries
+            for buffer_id in (carry.initial,carry.current,carry.staging,carry.yielded,carry.result)
+        }} if any(call.loop_carries for call in function_plan.calls) else {}),
         "function": function_name,
         "calling_convention": str(
             (execution.attrs if execution is not None else function.attrs).get(
@@ -742,7 +749,7 @@ def _with_memory_space_abi(abi, buffer, plan, pool_scope_count):
             abi["pool_scope_stride_bytes"] = plan.function_memory_space_bytes(
                 buffer.function, space.name
             )
-            abi["pool_scope_index"] = "shard_index"
+            abi["pool_scope_index"] = "block_index"
     elif space.allocation_scope.value == "module" and space.kind != "shared":
         abi["pooled"] = True
     return abi

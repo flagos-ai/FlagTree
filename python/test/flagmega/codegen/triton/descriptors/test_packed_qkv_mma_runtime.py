@@ -3,6 +3,7 @@
 """SM90 numerical coverage for the packed BF16 QKV MMA pipeline."""
 
 import pytest
+from dataclasses import replace
 
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
@@ -78,3 +79,20 @@ def test_packed_qkv_mma_pipeline_matches_torch_on_sm90(
     assert runtime.resource_report["shared_memory_bytes"] >= 66048
     for actual, reference in zip(outputs, expected, strict=True):
         torch.testing.assert_close(actual, reference, rtol=4e-2, atol=4e-2)
+    runtime.close()
+
+
+@pytest.mark.parametrize("warps", (8, 16))
+def test_packed_qkv_mma_uses_the_execution_warp_count(tmp_path, warps):
+    from triton.flagmega.targets import NvidiaSm90Target
+    from .conftest import _packed_qkv_mma_pipeline_module
+    target = NvidiaSm90Target()
+    model = target.triton_implementation_model
+    identity = "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"
+    model = replace(model, implementations=tuple(
+        replace(value, parameters={**value.parameters, "compute_num_warps": warps})
+        if value.id == identity else value for value in model.implementations))
+    module = _packed_qkv_mma_pipeline_module(target=NvidiaSm90Target(triton_implementation_model=model))
+    from triton.flagmega.codegen.triton.tir_package import describe_tir_package
+    assert describe_tir_package(module)["num_warps"] == warps
+    test_packed_qkv_mma_pipeline_matches_torch_on_sm90(tmp_path, module)

@@ -74,7 +74,10 @@ def _validate_arity(
     outputs: tuple[str, ...],
 ) -> None:
     expected_arguments, expected_outputs = _ARITY_BY_OP[operation]
-    if len(arguments) != expected_arguments or len(outputs) != expected_outputs:
+    argument_count_matches = len(arguments) == expected_arguments
+    if operation == "nn.rotary_embedding":
+        argument_count_matches = len(arguments) in (2, 3)
+    if not argument_count_matches or len(outputs) != expected_outputs:
         raise CodegenError(
             f"Semantic op {operation!r} requires {expected_arguments} arguments and "
             f"{expected_outputs} outputs, got {len(arguments)} and {len(outputs)}."
@@ -103,6 +106,10 @@ def _validate_semantic_contract(
         _attention_layout(attrs, operation)
         return
     if operation == "nn.update_paged_attention_kv_cache_pair":
+        try:
+            get_definition(operation).normalize_attrs(attrs)
+        except IRSchemaError as error:
+            raise CodegenError(str(error)) from error
         _attention_layout(attrs, operation)
         return
     if operation in {"nn.dsa_indexer", "nn.dsa_paged_attention", "nn.mla_projection"}:

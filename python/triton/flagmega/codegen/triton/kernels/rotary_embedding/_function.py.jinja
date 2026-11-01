@@ -1,35 +1,61 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "rotary_embedding" and call.variant == "decode" %}
+{% if call.bounded_accurate and not call.cache_table %}
+{% include "kernels/rotary_embedding/platforms/nvidia/sm90/bounded_sincos.py.jinja" %}
+{% endif %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
-    rotary_position = tl.load({{ call.sequence_lengths }}).to(tl.float32)
+    rotary_base_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
+{% if not call.cache_table %}
+    rotary_position = rotary_base_position.to(tl.float32)
+{% endif %}
     for rotary_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
         rotary_offsets = rotary_start + tl.arange(0, {{ call.tile }})
         rotary_mask = (
             (rotary_offsets < {{ call.local_capacity }}) & ({{ call.active }})
         )
         rotary_dimension = {{ call.dimension_coordinate }}
+{% if call.cache_table %}
+        rotary_cosine = tl.load({{ call.cache_table }} + ({{ call.cache_offsets[0] }}), mask=rotary_mask, other=0.)
+        rotary_sine = tl.load({{ call.cache_table }} + ({{ call.cache_offsets[1] }}), mask=rotary_mask, other=0.)
+        tl.store({{ call.cosine }} + ({{ call.cosine_offset }}), rotary_cosine, mask=rotary_mask)
+        tl.store({{ call.sine }} + ({{ call.sine_offset }}), rotary_sine, mask=rotary_mask)
+{% else %}
         rotary_frequency_dimension = (
             rotary_dimension % ({{ call.head_dim }} // 2)
         )
+{% if call.inverse_frequencies %}
+        rotary_inverse_frequency = tl.full(({{ call.tile }},), {{ call.inverse_frequencies[0] }}, tl.float32)
+{% for value in call.inverse_frequencies[1:] %}
+        rotary_inverse_frequency = tl.where(rotary_frequency_dimension == {{ loop.index }}, {{ value }}, rotary_inverse_frequency)
+{% endfor %}
+{% elif call.math_mode == "accurate" %}
+        rotary_inverse_frequency = tl.div_rn(1.0, libdevice.pow(
+            {{ call.theta }}, 2.0 * rotary_frequency_dimension.to(tl.float32) / {{ call.head_dim }}))
+{% else %}
         rotary_inverse_frequency = tl.exp(
             (-2.0 * rotary_frequency_dimension.to(tl.float32)
              / {{ call.head_dim }}) * tl.log({{ call.theta }})
         )
+{% endif %}
         rotary_token_position = rotary_position + ({{ call.token_coordinate }}).to(tl.float32)
         rotary_angle = rotary_token_position * rotary_inverse_frequency
+{% if call.bounded_accurate %}
+        rotary_cosine, rotary_sine = {{ call.symbol }}__bounded_sincos(tl.where(rotary_mask, rotary_angle, 0.))
+{% endif %}
         tl.store(
             {{ call.cosine }} + ({{ call.cosine_offset }}),
-            libdevice.fast_cosf(rotary_angle) * {{ call.attention_scaling }},
+            {% if call.bounded_accurate %}rotary_cosine{% else %}{{ "libdevice.cos" if call.math_mode == "accurate" else "libdevice.fast_cosf" }}(rotary_angle){% endif %} * {{ call.attention_scaling }},
             mask=rotary_mask,
         )
         tl.store(
             {{ call.sine }} + ({{ call.sine_offset }}),
-            libdevice.fast_sinf(rotary_angle) * {{ call.attention_scaling }},
+            {% if call.bounded_accurate %}rotary_sine{% else %}{{ "libdevice.sin" if call.math_mode == "accurate" else "libdevice.fast_sinf" }}(rotary_angle){% endif %} * {{ call.attention_scaling }},
             mask=rotary_mask,
         )
+{% endif %}
 
 
 {% endif %}

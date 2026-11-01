@@ -6,6 +6,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import DType, VectorType, get_definition
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
+from triton.flagmega.ir.ops.tensors.cast import rounding_attrs
 from triton.flagmega.pattern_match import OpPattern, is_call, wildcard
 from triton.flagmega.rules import RewriteResult, RewriteRule
 from triton.flagmega.rules.neutral._utility import make_node
@@ -70,9 +71,11 @@ def _rule(view_op, cast_op):
                 if isinstance(result_type.dtype, VectorType):
                     replacement = make_node("ntt.vectorized_cast", view.id, (source_view,), {
                         "new_type": result_type.dtype, "vectorize_axes": (result_type.rank - 1,),
+                        **rounding_attrs(cast.attrs),
                     }, metadata)
                 else:
-                    replacement = make_node("tensors.cast", view.id, (source_view,), {"dtype": result_type.dtype}, metadata)
+                    replacement = make_node("tensors.cast", view.id, (source_view,),
+                                            {"dtype": result_type.dtype, **rounding_attrs(cast.attrs)}, metadata)
         except IRSchemaError:
             return view
         if replacement.type != view.type:

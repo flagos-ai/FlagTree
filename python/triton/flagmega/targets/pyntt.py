@@ -123,7 +123,8 @@ class PyNttTarget(NttTarget):
             selection_policy=selection_policy or machine.selection_policy(options),
             bufferization_policy=(
                 bufferization_policy
-                or NttBufferizationPolicy(bufferization_options)
+                or NttBufferizationPolicy(bufferization_options, synchronization_protocol_provider=
+                    getattr(machine, "memory_synchronization_protocol", lambda module: None))
             ),
             packing_policy=packing_policy,
             tir_selection_policy=(

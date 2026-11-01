@@ -7,12 +7,12 @@ from math import prod
 
 from triton.flagmega.ir import (
     Candidate,
+    DistributedType,
     DType,
     IRModule,
     Node,
     TupleType,
     local_tensor_type,
-    DistributedType,
     tensor_type,
 )
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -58,6 +58,68 @@ def _requirements(node, candidate, module, mesh_hierarchy):
             "lifetime": lifetime,
         })
 
+    if family == "mhc_pre" and variant in {"cooperative_stream_fma", "cooperative_contiguous_tf32"}:
+        streams = tensor_of(module.node_map[node.inputs[0]].type)
+        hc = streams.shape[1].fixed_value
+        splits = int(node.attrs.get("projection_splits", 1))
+        # Coefficient and square partials are indexed by logical split. The
+        # last hc entries publish pre coefficients for the collapse phase.
+        workspace("projection_partials", DType.FLOAT32,
+                  (streams.shape[0], (hc * (hc + 2) + 1) * splits + hc))
+
+    if family == "sparse_experts_gate_up" and variant == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.cooperative_geometry import cooperative_gate_geometry
+        from triton.flagmega.ir.ops.core import get_definition
+
+        geometry = cooperative_gate_geometry({
+            parameter.name: module.node_map[node.inputs[index]].type
+            for index, parameter in enumerate(get_definition(node.op).input_parameters)
+        }, node.type)
+        if geometry is None:
+            raise ValueError("Cooperative FP8 expert workspace requires a proven chip owner domain.")
+        workspace("projection_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "sparse_experts_gate_up" and variant == "complete_k_wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.cooperative_geometry import cooperative_gate_geometry
+        from triton.flagmega.ir.ops.core import get_definition
+
+        geometry = cooperative_gate_geometry({
+            parameter.name: module.node_map[node.inputs[index]].type
+            for index, parameter in enumerate(get_definition(node.op).input_parameters)
+        }, node.type)
+        if geometry is None:
+            raise ValueError("Complete-K experts require a proven chip owner domain.")
+        workspace("quantized_activations", DType.FLOAT8_E4M3FN,
+                  (geometry.tokens, geometry.chip_routes, geometry.reduction))
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "matmul_glu" and variant == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.matmul_glu_geometry import cooperative_glu_geometry
+        from triton.flagmega.ir.ops.core import get_definition
+
+        geometry = cooperative_glu_geometry({
+            parameter.name: module.node_map[node.inputs[index]].type
+            for index, parameter in enumerate(get_definition(node.op).input_parameters)
+        }, node.type, node.attrs)
+        if geometry is None:
+            raise ValueError("Cooperative FP8 GLU requires matching complete chip owner domains.")
+        workspace("gate_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("up_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "block_fp8" and variant == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.block_fp8_geometry import cooperative_block_geometry
+
+        geometry = cooperative_block_geometry(dict(zip(
+            ("value", "weight", "weight_scale"),
+            (module.node_map[value].type for value in node.inputs), strict=True,
+        )), node.type, node.attrs)
+        if geometry is None:
+            raise ValueError("Cooperative FP8 projection requires a proven complete chip owner domain.")
+        workspace("projection_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
     if family == "gdn_recurrent":
         # Each owner computes its dense local value slice, while RMS
         # normalization is over a complete value head. nncase materializes
@@ -84,7 +146,8 @@ def _requirements(node, candidate, module, mesh_hierarchy):
             return ()
         value = tensor_of(node.type.fields[0])
         workspace("collective", value.dtype, value.shape)
-        workspace("norm_stats_partials", DType.FLOAT32, (mesh_size,), 128)
+        rows = prod(dimension.fixed_value for dimension in value.shape[:-1])
+        workspace("norm_stats_partials", DType.FLOAT32, (mesh_size * rows,), 128)
 
     if family == "gather_reduce_add_norm_apply":
         components = 2 if bool(node.attrs.get("use_mean", False)) else 1

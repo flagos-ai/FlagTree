@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
-from triton.flagmega.ir.model import TensorType
+from triton.flagmega.ir.model import DistributedType, TensorType
 from triton.flagmega.ir.types import DType, VectorType
 
 
@@ -24,6 +24,10 @@ class KdaStateConfig:
     layer_ids: tuple[object, ...]
     convolution_type: TensorType
     recurrent_type: TensorType
+    # Physical tensors alone cannot distinguish two equal-sized head shards.
+    # Keep their logical ownership and, after device loading, their chip.
+    logical_types: tuple[TensorType | DistributedType, TensorType | DistributedType] | None = None
+    chip_index: int | None = None
 
     def __post_init__(self) -> None:
         if not self.layer_ids or len(set(self.layer_ids)) != len(self.layer_ids):
@@ -33,6 +37,25 @@ class KdaStateConfig:
                 raise IRSchemaError(f"KDA {name} state must be an ordinary tensor type.")
             if any(not dimension.is_fixed or dimension.fixed_value <= 0 for dimension in value.shape):
                 raise IRSchemaError(f"KDA {name} state must have a fixed positive shape.")
+        if self.logical_types is not None:
+            if not isinstance(self.logical_types, tuple) or len(self.logical_types) != 2:
+                raise IRSchemaError("KDA state logical_types must contain convolution and recurrent tensor types.")
+            for logical, physical in zip(self.logical_types, (self.convolution_type, self.recurrent_type), strict=True):
+                tensor = logical.tensor if isinstance(logical, DistributedType) else logical
+                if not isinstance(tensor, TensorType) or tensor.dtype != physical.dtype:
+                    raise IRSchemaError("KDA logical and physical state dtypes must match.")
+                if isinstance(logical, DistributedType) and (logical.partial is not None or logical.exclusive is not None):
+                    raise IRSchemaError("KDA persistent state must be materialized and non-exclusive.")
+        if self.chip_index is not None:
+            if self.logical_types is None or type(self.chip_index) is not int or self.chip_index < 0:
+                raise IRSchemaError("KDA state chip_index requires explicit ownership and a non-negative integer.")
+            placements = {value.placement for value in self.logical_types if isinstance(value, DistributedType)}
+            if len(placements) != 1:
+                raise IRSchemaError("KDA chip ownership requires one shared placement.")
+            placement, = placements
+            chips = placement.physical_level_size("c") * placement.physical_level_size("d")
+            if self.chip_index >= chips:
+                raise IRSchemaError("KDA state chip_index is outside its placement.")
 
     @property
     def convolution_shape(self) -> tuple[int, ...]:
@@ -56,7 +79,7 @@ class KdaState:
     recurrent: Any
     config: KdaStateConfig
 
-    def clone(self) -> "KdaState":
+    def clone(self) -> KdaState:
         return KdaState(self.convolution.clone(), self.recurrent.clone(), self.config)
 
     def _index(self, layer_id: object) -> int:

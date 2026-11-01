@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
-from math import prod
+from math import isfinite, prod
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -25,6 +25,7 @@ from triton.flagmega.ir.ops.core import (
     attribute_parameter,
     input_parameter,
     op_definition,
+    variadic_input_parameter,
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
 from triton.flagmega.ir.type_pattern import has_rank, is_ref, is_tensor
@@ -50,11 +51,14 @@ class RotaryEmbedding(OpDefinition):
         is_tensor() & has_rank(2), memory_effect=MemoryEffect.NONE
     )
     state = input_parameter(is_ref(), memory_effect=MemoryEffect.CHIP_READ)
+    cache = variadic_input_parameter(is_tensor() & has_rank(3), memory_effect=MemoryEffect.CHIP_READ)
     head_dim = attribute_parameter()
     theta = attribute_parameter()
     attention_scaling = attribute_parameter(default=1.0)
     output_lanes = attribute_parameter(default=())
     output_dtype = attribute_parameter(default=DType.FLOAT32)
+    math_mode = attribute_parameter(default="fast")
+    inverse_frequencies = attribute_parameter(default=())
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -79,13 +83,28 @@ class RotaryEmbedding(OpDefinition):
             raise IRSchemaError("RotaryEmbedding output_dtype must be BF16/FP32.") from error
         if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
             raise IRSchemaError("RotaryEmbedding output_dtype must be BF16/FP32.")
-        return {
+        math_mode = attrs["math_mode"]
+        if math_mode not in {"fast", "accurate"}:
+            raise IRSchemaError("RotaryEmbedding math_mode must be fast or accurate.")
+        try:
+            frequencies = tuple(float(value) for value in attrs["inverse_frequencies"])
+        except (TypeError, ValueError) as error:
+            raise IRSchemaError("RotaryEmbedding inverse_frequencies must be a sequence of numbers.") from error
+        if frequencies and (len(frequencies) != head_dim // 2 or
+                            any(not isfinite(value) or value <= 0 for value in frequencies)):
+            raise IRSchemaError("RotaryEmbedding inverse_frequencies must contain head_dim/2 positive finite values.")
+        result = {
             "head_dim": head_dim,
             "theta": theta,
             "attention_scaling": scaling,
             "output_lanes": lanes,
             "output_dtype": output_dtype.value,
         }
+        if math_mode != "fast":
+            result["math_mode"] = math_mode
+        if frequencies:
+            result["inverse_frequencies"] = frequencies
+        return result
 
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
@@ -97,6 +116,17 @@ class RotaryEmbedding(OpDefinition):
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         reference = tensor_of(cls.reference.type_of(inputs))
+        caches = cls.cache.read(inputs)
+        if len(caches) > 1:
+            raise IRSchemaError("RotaryEmbedding accepts at most one precomputed cache.")
+        if caches:
+            cache = tensor_of(caches[0].type)
+            cache_lanes = prod(cache.dtype.lanes) if isinstance(cache.dtype, VectorType) else 1
+            cache_dtype = cache.dtype.elem_type if isinstance(cache.dtype, VectorType) else cache.dtype
+            if (cache.rank != 3 or not cache.shape[0].is_fixed or cache.shape[1].fixed_value != 2
+                    or cache.shape[2].fixed_value * cache_lanes != int(attrs["head_dim"])
+                    or cache_dtype != DType(attrs.get("output_dtype", "float32"))):
+                raise IRSchemaError("RotaryEmbedding cache must have [positions, 2, head_dim] and the output dtype.")
         lanes = tuple(attrs.get("output_lanes", ()))
         dtype = DType(attrs.get("output_dtype", DType.FLOAT32))
         result = tensor_type(
@@ -118,6 +148,18 @@ class RotaryEmbedding(OpDefinition):
                 "RotaryEmbedding state must evaluate to PagedAttentionState.")
         state.validate()
         sequence = int(reference.shape[0])
+        if state.sequence_length + sequence > state.config.max_sequence_length:
+            raise EvaluationError("RotaryEmbedding query positions exceed the configured paged cache capacity.")
+        caches = cls.cache.read(arguments)
+        if caches:
+            cache = caches[0]
+            if state.sequence_length + sequence > cache.shape[0]:
+                raise EvaluationError("RotaryEmbedding query positions exceed its precomputed cache.")
+            selected = cache[state.sequence_length:state.sequence_length + sequence].to(reference.device)
+            head_dim = int(node.attrs["head_dim"])
+            lanes = tuple(node.attrs.get("output_lanes", ()))
+            shape = (sequence, 1, head_dim // prod(lanes), *lanes)
+            return selected[:, 0].reshape(shape), selected[:, 1].reshape(shape)
         head_dim = int(node.attrs["head_dim"])
         positions = context.torch.arange(
             state.sequence_length,
@@ -132,7 +174,13 @@ class RotaryEmbedding(OpDefinition):
             dtype=context.torch.float32,
             device=reference.device,
         )
-        inverse_frequency = float(node.attrs["theta"]) ** (-indices / head_dim)
+        if node.attrs.get("inverse_frequencies"):
+            inverse_frequency = context.torch.tensor(node.attrs["inverse_frequencies"],
+                                                     dtype=context.torch.float32, device=reference.device)
+        elif node.attrs.get("math_mode", "fast") == "accurate":
+            inverse_frequency = 1.0 / (float(node.attrs["theta"]) ** (indices / head_dim))
+        else:
+            inverse_frequency = float(node.attrs["theta"]) ** (-indices / head_dim)
         angles = context.torch.outer(positions, inverse_frequency)
         frequency = context.torch.cat((angles, angles), dim=-1).unsqueeze(1)
         scale = float(node.attrs["attention_scaling"])

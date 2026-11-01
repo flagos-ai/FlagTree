@@ -14,11 +14,12 @@ def reduce_sum_producer_rule():
         if lanes is None:
             return None
         metadata = {**dict(node.metadata), "rewritten_by": "VectorizeReduceSumPropagation"}
+        current_lanes = tuple(getattr(tensor_of(node.type).dtype, "lanes", ()))
         packed = make_node(
             node.op,
             f"{node.id}.packed",
             tuple(module.node_map[name] for name in node.inputs),
-            {**dict(node.attrs), "output_lanes": (*lanes, *node.attrs.get("output_lanes", ()))},
+            {**dict(node.attrs), "output_lanes": (*lanes, *current_lanes)},
             metadata,
         )
         restored = make_node(

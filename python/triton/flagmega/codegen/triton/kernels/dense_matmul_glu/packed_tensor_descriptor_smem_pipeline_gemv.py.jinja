@@ -257,7 +257,7 @@
     tle.gpu.BlockEncoding(
         [{{ call.consumer_size_per_thread | join(", ") }}],
         [{{ call.consumer_threads_per_warp | join(", ") }}],
-        [{{ call.consumer_warps_per_cta | join(", ") }}],
+        [{{ call.consumer_warps_per_cta[0] }}, {{ call.consumer_warps_per_cta[1] * (num_warps | default(call.consumer_warps)) // call.consumer_warps }}],
         [0, 1],
     )
 )
@@ -272,7 +272,7 @@
     tle.gpu.BlockEncoding(
         [1, {{ call.input_copy_size_per_thread }}],
         [1, {{ call.worker_width }}],
-        [1, {{ call.consumer_warps }}],
+        [1, {{ num_warps | default(call.consumer_warps) }}],
         [0, 1],
     )
 )

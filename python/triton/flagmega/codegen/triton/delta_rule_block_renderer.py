@@ -23,7 +23,8 @@ def delta_rule_block_update_call(raw):
     bindings = tuple(_buffer(raw, "inputs", name) for name in names)
     query, key, value, coefficients, prefix = bindings
     types = tuple(_tensor_type(binding["abi"]) for binding in bindings)
-    attrs = DeltaRuleBlockUpdate.normalize_attrs(raw["semantic_attrs"])
+    chunk_size = raw["semantic_attrs"].get("chunk_size")
+    attrs = DeltaRuleBlockUpdate.normalize_attrs({k: v for k, v in raw["semantic_attrs"].items() if k != "chunk_size"})
     validate_block_tensors(types, attrs)
     result = _buffer(raw, "outputs", "result_0")
     if _tensor_type(result["abi"]) != types[2]:
@@ -64,7 +65,7 @@ def delta_rule_block_update_call(raw):
                                             lane_coordinate=" + ".join(lane_terms) if lane_terms else None)
     qcoordinates = ("_fm_token[:, None]", "_fm_head // " + str(vshape[1] // qshape[1]), "_fm_key_col[None, :]")
     vcoordinates = ("_fm_token[None, :]", "_fm_head", "_fm_value_row[:, None]")
-    return {
+    rendered = {
         **{name: _pointer(binding)
            for name, binding in zip(names, bindings)},
         "state":
@@ -109,6 +110,42 @@ def delta_rule_block_update_call(raw):
         "writer_active":
         _distributed_unique_writer_active(value["abi"]),
     }
+    if chunk_size is not None:
+        fixed = _buffer(raw, "inputs", "fixed_state")
+        rendered.update({
+            "fixed_state": _pointer(fixed), "chunk_blocks": chunk_size // cshape[2],
+            "chunks": (cshape[0] + chunk_size // cshape[2] - 1) // (chunk_size // cshape[2]),
+            "fixed_state_offset": emit_local_scalar_offset(fixed["abi"], (
+                "_fm_chunk - 1", "_fm_head",
+                "_fm_value_row[:, None]", "_fm_key_col[None, :]")),
+        })
+    return rendered
+
+
+def state_matrix_access(raw, attrs, heads_type, *, head, row, column):
+    """Resolve an explicitly ordered/packed reference state matrix."""
+    from triton.flagmega.codegen.triton.kernel_call_renderers import _buffers, _pointer
+    from triton.flagmega.ir.distributed_inference import tensor_of
+    from triton.flagmega.ir import tensor_type
+    fields = tuple(binding for binding in _buffers(raw, "inputs", "state")
+                   if binding["formal"] == "state." + attrs["state_field"])
+    if len(fields) != 1:
+        raise CodegenError("Delta-rule state requires exactly one named field binding.")
+    state = fields[0]
+    logical = tensor_of(heads_type)
+    tensor = tensor_type("bfloat16", (1, logical.shape[1], 128))
+    spec = state_field_layout(_tensor_type(state["abi"]), attrs, tensor, tensor)
+    coordinate = {"layer": "0", "head": head, "value": row, "key": column}
+    values = [coordinate[axis] for axis in spec.axes]
+    remaining = [prod(lane for position, lane in zip(spec.vector_axes, spec.lanes) if position == axis)
+                 for axis in range(len(spec.axes))]
+    lanes = []
+    for i, (axis, lane) in enumerate(zip(spec.vector_axes, spec.lanes)):
+        remaining[axis] //= lane
+        lanes.append(f"((({values[axis]}) // {remaining[axis]}) % {lane}) * {prod(spec.lanes[i + 1:])}")
+    packed = [f"({value}) // {prod(lane for position, lane in zip(spec.vector_axes, spec.lanes) if position == axis)}"
+              for axis, value in enumerate(values)]
+    return _pointer(state), emit_local_scalar_offset(state["abi"], packed, lane_coordinate=" + ".join(lanes) if lanes else None)
 
 
 def _replicated_result_pointers(binding):

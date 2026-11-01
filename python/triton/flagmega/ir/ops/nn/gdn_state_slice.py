@@ -25,6 +25,7 @@ class GatedDeltaNetStateSlice(OpDefinition):
     state = input_parameter(is_ref(), parameter_kind=ParameterKind.ATTRIBUTE, memory_effect=MemoryEffect.NONE)
     layer_id = input_parameter(is_tensor() & has_rank(0) & has_dtype(DType.INT32),
                                parameter_kind=ParameterKind.ATTRIBUTE)
+    reference_view_input_parameters = (state,)
 
     @classmethod
     def infer_type(cls, inputs, attrs):

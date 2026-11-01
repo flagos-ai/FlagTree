@@ -7,7 +7,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
 
 
-def execute_coefficients(tmp_path, key, beta, *, block_size=64, split_axes=(), local_inputs=False):
+def execute_coefficients(tmp_path, key, beta, *, block_size=64, split_axes=(), local_inputs=False, num_warps=None):
     placement = fm.Placement((2, 2), "yx", "bb")
     b = fm.SBP.broadcast()
     head = fm.SBP.split_contiguous(split_axes) if split_axes else b
@@ -32,7 +32,17 @@ def execute_coefficients(tmp_path, key, beta, *, block_size=64, split_axes=(), l
                    metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
     namespace = {}
     exec(fm.module_source(module), namespace)
-    compiled = Compiler().compile(namespace["MODULE"]).module
+    compiler = Compiler()
+    source = namespace["MODULE"]
+    if num_warps is not None:
+        from dataclasses import replace
+        from triton.flagmega.passes.functions import function_nodes
+        source = compiler.compile(source, stop_after="select-microkernels").module
+        calls = tuple(n.id for n in function_nodes(source, source.function_map[source.entry])
+                      if n.op in {"tir.call", "builtin.call", "tir.kernel"})
+        source = fm.verify_module(replace(source, metadata={**source.metadata,
+            "kernel_program_partition": ({"symbol": "coefficients_program", "calls": calls, "num_warps": num_warps},)}))
+    compiled = compiler.compile(source).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     args = key.cuda(), beta.cuda()

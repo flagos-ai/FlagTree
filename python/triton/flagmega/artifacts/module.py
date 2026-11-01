@@ -26,6 +26,9 @@ from triton.flagmega.artifacts.manifest import (
 )
 from triton.flagmega.artifacts.rdata import RDATA_COMPOSITE_DIGEST_KINDS, pack_rdata, verify_rdata
 from triton.flagmega.artifacts.source_layout import SOURCE_LAYOUT_DIGEST
+from triton.flagmega.artifacts.program_sources import (
+    PROGRAM_SOURCE_KIND, program_source_records, program_source_section_name,
+)
 from triton.flagmega.codegen.triton import render_triton_package
 from triton.flagmega.codegen.triton.diagnostics import dump_schedules
 from triton.flagmega.errors import ArtifactError, IRSchemaError
@@ -154,6 +157,10 @@ def write_artifact(
             name="codegen.source",
             kind=_CODEGEN_SECTION_KINDS[codegen_backend],
         ))
+        for record in program_source_records(codegen):
+            sections.append(record_section(
+                destination, resolve_artifact_path(destination, record["source"]),
+                name=program_source_section_name(record), kind=PROGRAM_SOURCE_KIND))
         # A C++ package is only loadable through its built library, so the
         # library is a verified section too: a hand-edited or stale .so is
         # rejected at load time exactly as a stale generated source is.
@@ -276,8 +283,27 @@ def refresh_artifact_codegen(
         os.replace(source, destination)
         replacement_sections["codegen.source"] = record_section(
             artifact, destination, name="codegen.source", kind=_CODEGEN_SECTION_KINDS["triton"]).to_data()
-        codegen = {**codegen, "source": relative}
-        sections = [replacement_sections.get(value["name"], value) for value in manifest["sections"]]
+        program_records = []
+        for record in program_source_records(codegen):
+            staged_source = resolve_artifact_path(staging, record["source"])
+            program_relative = f"codegen/programs/{record['source_sha256']}/{record['symbol']}.py"
+            program_destination = resolve_artifact_path(artifact, program_relative)
+            program_destination.parent.mkdir(parents=True, exist_ok=True)
+            if not program_destination.exists():
+                os.replace(staged_source, program_destination)
+            section = record_section(
+                artifact, program_destination, name=program_source_section_name(record),
+                kind=PROGRAM_SOURCE_KIND)
+            if section.sha256 != record["source_sha256"]:
+                raise ArtifactError("Existing program source differs from the rendered source identity.")
+            replacement_sections[program_source_section_name(record)] = section.to_data()
+            program_records.append({**record, "source": program_relative})
+        codegen = {**codegen, "source": relative,
+                   **({"program_sources": program_records} if program_records else {})}
+        sections = [replacement_sections.get(value["name"], value) for value in manifest["sections"]
+                    if not value["name"].startswith("codegen.program.")]
+        sections.extend(value for name, value in replacement_sections.items()
+                        if name.startswith("codegen.program."))
         if manifest_path.read_bytes() != before:
             raise ArtifactError("Artifact manifest changed during codegen refresh; refusing to overwrite it.")
         write_json_atomic(manifest_path, {**manifest, "codegen": codegen, "sections": sections})
@@ -399,6 +425,19 @@ def load_artifact(
             raise ArtifactError("Artifact codegen descriptor does not match its source section.")
         if not str(codegen.get("kind", "")) or not str(codegen.get("symbol", "")):
             raise ArtifactError("Artifact codegen descriptor requires non-empty kind and symbol.")
+        records = program_source_records(codegen)
+        expected_programs = {program_source_section_name(record): record for record in records}
+        actual_programs = {name: section for name, section in by_name.items()
+                           if name.startswith("codegen.program.") or section.kind == PROGRAM_SOURCE_KIND}
+        if set(actual_programs) != set(expected_programs):
+            raise ArtifactError("Artifact program source sections do not match its declared source files.")
+        if codegen_backend != "triton" and records:
+            raise ArtifactError("Program source layout requires the Triton codegen backend.")
+        for name, record in expected_programs.items():
+            section = actual_programs[name]
+            if (section.kind != PROGRAM_SOURCE_KIND or section.path != record["source"]
+                    or section.sha256 != record["source_sha256"]):
+                raise ArtifactError("Artifact program source descriptor does not match its source section.")
         if codegen_backend == "cpp":
             library = by_name["codegen.library"]
             if (
@@ -476,4 +515,9 @@ def _load_legacy_v1(
 
         if hashlib.sha256(source.read_bytes()).hexdigest() != codegen.get("source_sha256"):
             raise ArtifactError("Legacy artifact generated source does not match its hash.")
+        for record in program_source_records(codegen):
+            program_source = resolve_artifact_path(artifact, record["source"])
+            if (not program_source.is_file()
+                    or hashlib.sha256(program_source.read_bytes()).hexdigest() != record["source_sha256"]):
+                raise ArtifactError("Legacy artifact program source does not match its hash.")
     return manifest, module

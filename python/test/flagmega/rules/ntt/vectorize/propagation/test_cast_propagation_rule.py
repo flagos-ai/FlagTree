@@ -42,6 +42,31 @@ def test_vectorize_cast_preserves_outer_extent_and_merges_input_packets(material
     _assert_equivalent(module, rewritten, {"value": torch.randn(32, dtype=torch.bfloat16)})
 
 
+@pytest.mark.parametrize("direction", ["pack", "unpack"])
+def test_vectorization_keeps_explicit_store_contract(direction, materialize_rewrite):
+    class Graph(fm.Module):
+        def forward(self):
+            if direction == "pack":
+                value = self.input("value", fm.tensor_type("float32", (32,)), id="value")
+                rounded = fm.F.tensors.cast(value, "bfloat16", rounding_contract="preserve")
+                root = fm.F.tensors.pack(rounded, (8,), axes=(0,), name="root")
+            else:
+                value = self.input("value", fm.tensor_type(fm.vector_type("float32", (8,)), (4,)), id="value")
+                scalar = fm.F.tensors.unpack(value, axes=(0,))
+                root = fm.F.tensors.cast(scalar, "bfloat16", rounding_contract="preserve", name="root")
+            self.function("main", (value,), (root,))
+
+    module = Graph(dialect="high_level", stage="imported", entry="main").build()
+    rule = _rule("VectorizeCastPropagation" if direction == "pack" else "CastDevectorizePropagation")
+    result = rule.apply(module.node_map["root"], module)
+    assert result is not None
+    rewritten = materialize_rewrite(module, result)
+    cast = next(n for n in rewritten.nodes if n.op == "ntt.vectorized_cast")
+    assert cast.attrs["rounding_contract"] == "preserve"
+    values = torch.linspace(.991, 1.009, 32)
+    _assert_equivalent(module, rewritten, {"value": values if direction == "pack" else values.reshape(4, 8)})
+
+
 @pytest.mark.parametrize("lane", [8, 16])
 def test_cast_devectorize_splits_packets_without_changing_outer_extent(materialize_rewrite, lane):
     class Graph(fm.Module):

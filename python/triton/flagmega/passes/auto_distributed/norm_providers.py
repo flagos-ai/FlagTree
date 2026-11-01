@@ -314,16 +314,15 @@ class AddNormStatsCandidateProvider(DistributedCandidateProviderBase):
             if candidate not in addend_types:
                 addend_types.append(candidate)
         input_types = list(context.available_input_types[0])
-        if any(not isinstance(value, DistributedType) and tensor_of(value) == expected_tensors[0]
-               for value in input_types):
-            # A logical function parameter may occur in either operand. Its
-            # materialized view can use the same requested layout as the
-            # addend; the normal edge realization still proves the reshard.
-            for value in addend_types:
-                if (isinstance(value, DistributedType) and value.placement == context.placement
-                        and value.partial is None and tensor_of(value) == expected_tensors[0]
-                        and value not in input_types):
-                    input_types.append(value)
+        # The projection may require both a partial reduction and a change
+        # of row/column owners. Expose the materialized operand explicitly so
+        # the edge realization inserts and costs Boxing before the local
+        # add/statistics fusion. Its private residual is owner-local.
+        for value in addend_types:
+            if (isinstance(value, DistributedType) and value.placement == context.placement
+                    and value.partial is None and tensor_of(value) == expected_tensors[0]
+                    and value not in input_types):
+                input_types.append(value)
         for addend_type in addend_types:
             if tensor_of(addend_type) != expected_tensors[0]:
                 continue
@@ -342,6 +341,13 @@ class AddNormStatsCandidateProvider(DistributedCandidateProviderBase):
             for input_type in input_types:
                 relation = (input_type, addend_type)
                 if relation in seen or not can_materialize_sum_partial(input_type, addend_type):
+                    continue
+                if (isinstance(input_type, DistributedType) and input_type.partial is not None
+                        and replace(input_type, partial=None) != addend_type):
+                    # The collective fusion reads its residual in the
+                    # projection's owner domain. Staged split units and row
+                    # ownership must match, not just hierarchy-axis numbers.
+                    # Other legal materializations use the explicit edge above.
                     continue
                 seen.add(relation)
                 output_type = TupleType((addend_type, stats_type))

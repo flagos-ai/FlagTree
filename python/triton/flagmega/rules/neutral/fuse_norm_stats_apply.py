@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir import DistributedType, IRModule, Node, TensorType, get_definition
+from triton.flagmega.ir import DistributedType, IRModule, Node, TensorType, VectorType, get_definition
 from triton.flagmega.ir.distributed_inference import all_broadcast, tensor_of
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.pattern_match import F, wildcard
@@ -35,9 +35,17 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
         assert all(isinstance(item, Node) for item in (source, value, stats, scale, bias))
         if bool(source.attrs["use_mean"]):
             return source
+        if source.attrs.get("math_mode", "fast") != "fast":
+            return source
         if not bool(source.attrs.get("round_before_scale", False)):
             return source
         value_tensor = tensor_of(value.type)
+        input_dtype = source.attrs.get("input_dtype")
+        scalar_dtype = value_tensor.dtype.elem_type if isinstance(value_tensor.dtype, VectorType) else value_tensor.dtype
+        if input_dtype is not None and input_dtype != scalar_dtype.value:
+            # RMSNorm derives statistics from the same value it normalizes.
+            # A converted numerator with original external stats is different.
+            return source
         axis = int(source.attrs["axis"])
         normalized_axis = axis + value_tensor.rank if axis < 0 else axis
         if normalized_axis != value_tensor.rank - 1:
@@ -46,6 +54,8 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
         if (
             stats_source.op != "nn.norm_stats"
             or bool(stats_source.attrs["use_mean"])
+            or stats_source.attrs.get("reduction_group_size", 1) != 1
+            or stats_source.attrs.get("reduction_order", "unspecified") != "unspecified"
             or _normalized_axis(stats_source, module) != normalized_axis
         ):
             return source

@@ -25,7 +25,8 @@ def fold_cast_rule():
         floating = {DType.FLOAT32, DType.BFLOAT16, DType.FLOAT8_E4M3FN}
         if (root.type == original.type and tensor_of(root.type).dtype in floating
                 and tensor_of(source.type).dtype in floating):
-            if module.metadata.get("floating_point_contract") == "strict":
+            if (module.metadata.get("floating_point_contract") == "strict"
+                    or source.attrs.get("rounding_contract") == "preserve"):
                 # Only a lossless first conversion makes the round trip an
                 # identity. A private F32 -> BF16 -> F32 still rounds.
                 pair = (tensor_of(original.type).dtype, tensor_of(source.type).dtype)

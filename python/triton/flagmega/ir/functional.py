@@ -42,6 +42,7 @@ from triton.flagmega.ir.ops.math.vectorized_matmul import VectorizedMatMul
 from triton.flagmega.ir.ops.math.vectorized_unary import VectorizedUnary
 from triton.flagmega.ir.ops.nn.bind_norm_stats import BindNormStats
 from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
+from triton.flagmega.ir.ops.nn.delta_rule_chunk_transfer import DeltaRuleChunkTransfer, DeltaRuleChunkFixup, DeltaRuleChunkedBlockUpdate
 from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
 from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
 from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
@@ -57,6 +58,9 @@ from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.kda import KdaConvolution, KdaRecurrentCore
 from triton.flagmega.ir.ops.nn.kda_gated_recurrent_core import KdaGatedRecurrentCore
 from triton.flagmega.ir.ops.nn.kda_gated_step import KdaGatedStep
+from triton.flagmega.ir.ops.nn.kda_input_projection import KdaInputProjection
+from triton.flagmega.ir.ops.nn.partitioned_linear import PartitionedLinear
+from triton.flagmega.ir.ops.nn.partitioned_block_scaled_linear import PartitionedBlockScaledLinear
 from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.layer_norm import LayerNorm
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
@@ -75,6 +79,7 @@ from triton.flagmega.ir.ops.nn.requantize_block_scaled_fp8 import RequantizeBloc
 from triton.flagmega.ir.ops.nn.rms_norm import RMSNorm
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
+from triton.flagmega.ir.ops.nn.rotary_cache_table import RotaryCacheTable
 from triton.flagmega.ir.ops.nn.softmax import Softmax
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
@@ -192,10 +197,10 @@ class _math:
 
     @staticmethod
     @_op_function(Silu)
-    def silu(value: Node, *, name: str | None = None, metadata: Metadata = None) -> Node:
+    def silu(value: Node, *, math_mode: str = "fast", name: str | None = None, metadata: Metadata = None) -> Node:
         """Apply the SiLU activation."""
 
-        return Silu.construct(value, name=name, metadata=metadata)
+        return Silu.construct(value, math_mode=math_mode, name=name, metadata=metadata)
 
     @staticmethod
     def silu_mul(
@@ -220,6 +225,7 @@ class _math:
         transpose_a: bool = False,
         transpose_b: bool = False,
         output_data_type: DType | str | None = None,
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -231,6 +237,7 @@ class _math:
             transpose_a=transpose_a,
             transpose_b=transpose_b,
             output_data_type=output_data_type,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -244,6 +251,7 @@ class _math:
         packed_layout: str = "k_major_n8_k16",
         logical_n: int | None = None,
         output_data_type: DType | str | None = None,
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -255,6 +263,7 @@ class _math:
             packed_layout=packed_layout,
             logical_n=logical_n,
             output_data_type=output_data_type,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -266,12 +275,16 @@ class _math:
         rhs: Node,
         *,
         binary_op: str,
+        lhs_pack: Mapping[str, object] | None = None,
+        rhs_pack: Mapping[str, object] | None = None,
+        result_unpack: Mapping[str, object] | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
         """Binary arithmetic over typed-vector elements."""
 
-        return VectorizedBinary.construct(lhs, rhs, binary_op=binary_op, name=name, metadata=metadata)
+        return VectorizedBinary.construct(lhs, rhs, binary_op=binary_op, lhs_pack=lhs_pack, rhs_pack=rhs_pack,
+                                          result_unpack=result_unpack, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(VectorizedUnary)
@@ -279,12 +292,13 @@ class _math:
         value: Node,
         *,
         unary_op: str,
+        math_mode: str = "fast",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
         """Unary arithmetic over typed-vector elements."""
 
-        return VectorizedUnary.construct(value, unary_op=unary_op, name=name, metadata=metadata)
+        return VectorizedUnary.construct(value, unary_op=unary_op, math_mode=math_mode, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(VectorizedMatMul)
@@ -299,6 +313,7 @@ class _math:
         transpose_a: bool = False,
         transpose_b: bool = False,
         output_data_type: DType | str | None = None,
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -314,6 +329,7 @@ class _math:
             transpose_a=transpose_a,
             transpose_b=transpose_b,
             output_data_type=output_data_type,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -397,9 +413,12 @@ class _nn:
     @_op_function(L2Normalization)
     def l2_normalization(value: Node, *, axes: tuple[int, ...] = (-1,), epsilon: float = 1e-10,
                          epsilon_mode: str = "clamp", division_mode: str = "divide",
+                         reduction_group_size: int = 1,
+                         math_mode: str = "fast",
                          name: str | None = None, metadata: Metadata = None) -> Node:
         return L2Normalization.construct(value, axes=axes, epsilon=epsilon, epsilon_mode=epsilon_mode,
-                                         division_mode=division_mode, name=name, metadata=metadata)
+                                         division_mode=division_mode, reduction_group_size=reduction_group_size,
+                                         math_mode=math_mode, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(DeltaRuleGates)
@@ -419,6 +438,37 @@ class _nn:
         return DeltaRuleBlockUpdate.construct(query, key, value, coefficients, log_prefix, state, scale=scale,
                                                state_field=state_field, state_layout=state_layout,
                                                state_vector_axes=state_vector_axes, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleChunkTransfer)
+    def delta_rule_chunk_transfer(key: Node, value: Node, coefficients: Node, log_prefix: Node, *,
+                                  matrix_kind: str, chunk_size: int = 512, name: str | None = None,
+                                  metadata: Metadata = None) -> Node:
+        return DeltaRuleChunkTransfer.construct(key, value, coefficients, log_prefix, matrix_kind=matrix_kind,
+                                                chunk_size=chunk_size, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleChunkFixup)
+    def delta_rule_chunk_fixup(transfer: Node, local_state: Node, state: Node, *, state_field: str = "matrix",
+                               state_layout: tuple[str, ...] = ("head", "value", "key"),
+                               state_vector_axes: tuple[str, ...] = (), name: str | None = None,
+                               metadata: Metadata = None) -> Node:
+        return DeltaRuleChunkFixup.construct(transfer, local_state, state, state_field=state_field,
+                                             state_layout=state_layout, state_vector_axes=state_vector_axes,
+                                             name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleChunkedBlockUpdate)
+    def delta_rule_chunked_block_update(query: Node, key: Node, value: Node, coefficients: Node, log_prefix: Node,
+                                        state: Node, fixed_state: Node, *, chunk_size: int = 512,
+                                        scale: float | None = None, state_field: str = "matrix",
+                                        state_layout: tuple[str, ...] = ("head", "value", "key"),
+                                        state_vector_axes: tuple[str, ...] = (), name: str | None = None,
+                                        metadata: Metadata = None) -> Node:
+        return DeltaRuleChunkedBlockUpdate.construct(query, key, value, coefficients, log_prefix, state, fixed_state,
+                                                     chunk_size=chunk_size, scale=scale, state_field=state_field,
+                                                     state_layout=state_layout, state_vector_axes=state_vector_axes,
+                                                     name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(DeltaRuleLogPrefix)
@@ -490,10 +540,44 @@ class _nn:
     @_op_function(MhcPost)
     def mhc_post(value: Node, residual: Node, post: Node, comb: Node, *,
                  output_dtype: DType | str | None = None, accumulation_mode: str = "residual_then_value",
+                 residual_input_dtype: DType | str | None = None,
                  name: str | None = None, metadata: Metadata = None) -> Node:
         """Mix residual streams and add the sublayer result's per-stream share."""
         return MhcPost.construct(value, residual, post, comb, output_dtype=output_dtype,
-                                 accumulation_mode=accumulation_mode, name=name, metadata=metadata)
+                                 accumulation_mode=accumulation_mode, residual_input_dtype=residual_input_dtype,
+                                 name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(KdaInputProjection)
+    def kda_input_projection(value: Node, query_weight: Node, key_weight: Node, value_weight: Node,
+                             beta_weight: Node, forget_weight: Node, output_weight: Node, *,
+                             output_lanes: tuple[tuple[int, ...], ...] = ((),) * 6,
+                             name: str | None = None, metadata: Metadata = None) -> Node:
+        """Project one KDA input into Q/K/V, raw beta, forget_a and output_a."""
+        return KdaInputProjection.construct(value, query_weight, key_weight, value_weight,
+                                           beta_weight, forget_weight, output_weight,
+                                           output_lanes=output_lanes, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(PartitionedLinear)
+    def partitioned_linear(value: Node, weight: Node, *, partitions: int,
+                           accumulation_splits: int = 1, output_lanes: tuple[int, ...] = (), name: str | None = None,
+                           metadata: Metadata = None) -> Node:
+        """Project contiguous K partitions, rounding each partial independently."""
+        return PartitionedLinear.construct(value, weight, partitions=partitions,
+                                           accumulation_splits=accumulation_splits, output_lanes=output_lanes, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(PartitionedBlockScaledLinear)
+    def partitioned_block_scaled_linear(value: Node, weight: Node, weight_scale: Node, *, partitions: int,
+                                       weight_block_n: int = 128, weight_block_k: int = 128,
+                                       activation_quantization: str = "dynamic_fp8",
+                                       output_lanes: tuple[int, ...] = (), name: str | None = None,
+                                       metadata: Metadata = None) -> Node:
+        """Produce a BF16 [P,T,N] matrix of independently rounded K partitions."""
+        return PartitionedBlockScaledLinear.construct(value, weight, weight_scale, partitions=partitions,
+            weight_block_n=weight_block_n, weight_block_k=weight_block_k,
+            activation_quantization=activation_quantization, output_lanes=output_lanes, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(KdaConvolution)
@@ -588,6 +672,7 @@ class _nn:
         weight_block_n: int = 128,
         weight_block_k: int = 128,
         activation_quantization: str = "dynamic_fp8",
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -625,6 +710,7 @@ class _nn:
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
             activation_quantization=activation_quantization,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -649,6 +735,7 @@ class _nn:
         weight_block_n: int = 128,
         weight_block_k: int = 128,
         activation_quantization: str = "dynamic_fp8",
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -670,6 +757,7 @@ class _nn:
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
             activation_quantization=activation_quantization,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -687,6 +775,7 @@ class _nn:
         weight_block_n: int = 128,
         weight_block_k: int = 128,
         activation_quantization: str = "dynamic_fp8",
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -701,6 +790,7 @@ class _nn:
             weight_block_n=weight_block_n,
             weight_block_k=weight_block_k,
             activation_quantization=activation_quantization,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -733,9 +823,10 @@ class _nn:
     @staticmethod
     @_op_function(SparseExpertsWeightedSum)
     def sparse_experts_weighted_sum(projections: Node, router_expert_weights: Node, *, output_dtype=None,
-                                    round_weighted_output=False, name=None, metadata: Metadata = None) -> Node:
+                                    round_weighted_output=False, cast_output=False, name=None, metadata: Metadata = None) -> Node:
         return SparseExpertsWeightedSum.construct(projections, router_expert_weights, output_dtype=output_dtype,
-                                                  round_weighted_output=round_weighted_output, name=name, metadata=metadata)
+                                                  round_weighted_output=round_weighted_output, cast_output=cast_output,
+                                                  name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(NormStats)
@@ -744,13 +835,25 @@ class _nn:
         *,
         axis: int,
         use_mean: bool,
+        reduction_group_size: int = 1,
+        reduction_order: str = "unspecified",
+        reduction_block_size: int | None = None,
+        reduction_block_traversal: str = "forward",
+        reduction_tree_group_size: int | None = None,
+        reduction_group_seed_index: int = 0,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
         """Compute additive sum/sum-of-squares normalization statistics."""
 
         return NormStats.construct(
-            input, axis=axis, use_mean=use_mean, name=name, metadata=metadata)
+            input, axis=axis, use_mean=use_mean, reduction_group_size=reduction_group_size,
+            reduction_order=reduction_order,
+            reduction_block_size=reduction_block_size,
+            reduction_block_traversal=reduction_block_traversal,
+            reduction_tree_group_size=reduction_tree_group_size,
+            reduction_group_seed_index=reduction_group_seed_index,
+            name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(BindNormStats)
@@ -781,6 +884,8 @@ class _nn:
         use_mean: bool,
         round_before_scale: bool = False,
         output_dtype: DType | str | None = None,
+        input_dtype: DType | str | None = None,
+        math_mode: str = "fast",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -796,6 +901,8 @@ class _nn:
             use_mean=use_mean,
             round_before_scale=round_before_scale,
             output_dtype=output_dtype,
+            input_dtype=input_dtype,
+            math_mode=math_mode,
             name=name,
             metadata=metadata,
         )
@@ -887,6 +994,7 @@ class _nn:
         round_activation: bool = True,
         gate_clamp_max: float | None = None,
         up_clamp: float | None = None,
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -899,7 +1007,7 @@ class _nn:
         return DenseMatMulGlu.construct(
             value, gate_weight, up_weight,
             activation=activation, round_activation=round_activation,
-            gate_clamp_max=gate_clamp_max, up_clamp=up_clamp,
+            gate_clamp_max=gate_clamp_max, up_clamp=up_clamp, reduction_order=reduction_order,
             name=name, metadata=metadata)
 
     @staticmethod
@@ -936,6 +1044,7 @@ class _nn:
         gate_clamp_max: float | None = None,
         up_clamp: float | None = None,
         packed_layout: str = "k_major_n8_k16",
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -950,6 +1059,7 @@ class _nn:
             gate_clamp_max=gate_clamp_max,
             up_clamp=up_clamp,
             packed_layout=packed_layout,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -1180,6 +1290,7 @@ class _nn:
         num_heads: int,
         num_kv_heads: int,
         output_data_type: str,
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1202,6 +1313,7 @@ class _nn:
             num_heads=num_heads,
             num_kv_heads=num_kv_heads,
             output_data_type=output_data_type,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -1211,12 +1323,14 @@ class _nn:
     def rotary_embedding(
         reference: Node,
         state: Node,
-        *,
+        *cache: Node,
         head_dim: int,
         theta: float,
         attention_scaling: float = 1.0,
         output_lanes: tuple[int, ...] = (),
         output_dtype: DType | str = DType.FLOAT32,
+        math_mode: str = "fast",
+        inverse_frequencies: tuple[float, ...] = (),
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1225,14 +1339,25 @@ class _nn:
         return RotaryEmbedding.construct(
             reference,
             state,
+            *cache,
             head_dim=head_dim,
             theta=theta,
             attention_scaling=attention_scaling,
             output_lanes=output_lanes,
             output_dtype=output_dtype,
+            math_mode=math_mode,
+            inverse_frequencies=inverse_frequencies,
             name=name,
             metadata=metadata,
         )
+
+    @staticmethod
+    @_op_function(RotaryCacheTable)
+    def rotary_cache_table(*, positions: int, inverse_frequencies: tuple[float, ...],
+                           attention_scaling: float = 1.0, output_dtype: str = "bfloat16",
+                           name: str | None = None, metadata: Metadata = None) -> Node:
+        return RotaryCacheTable.construct(positions=positions, inverse_frequencies=inverse_frequencies,
+            attention_scaling=attention_scaling, output_dtype=output_dtype, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(RoPE)
@@ -1345,11 +1470,12 @@ class _nn:
     @_op_function(UpdatePagedAttentionKVCachePair)
     def update_paged_attention_kv_cache_pair(
         slots: Node, state: Node, layer_id: Node, advance_sequence: Node, *,
-        layout: tuple[str, str, str], name: str | None = None, metadata: Metadata = None,
+        layout: tuple[str, str, str], shared_kv: bool = False,
+        name: str | None = None, metadata: Metadata = None,
     ) -> Node:
-        """Publish head-major [K | V] from one source, advancing at most once."""
+        """Publish [K | V], or share one D-wide latent, advancing at most once."""
         return UpdatePagedAttentionKVCachePair.construct(
-            slots, state, layer_id, advance_sequence, layout=layout, name=name, metadata=metadata)
+            slots, state, layer_id, advance_sequence, layout=layout, shared_kv=shared_kv, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(DsaPagedAttention)
@@ -1402,6 +1528,9 @@ class _nn:
         scale: float,
         layout: tuple[str, str, str],
         hidden_size: int,
+        probability_rounding: str = "normalized",
+        softmax_block_size: int = 64,
+        softmax_traversal: str = "forward",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1414,6 +1543,9 @@ class _nn:
             scale=scale,
             layout=layout,
             hidden_size=hidden_size,
+            probability_rounding=probability_rounding,
+            softmax_block_size=softmax_block_size,
+            softmax_traversal=softmax_traversal,
             name=name,
             metadata=metadata,
         )
@@ -1557,6 +1689,8 @@ class _nn:
         round_normalized_qk: bool = False,
         round_beta: bool = True,
         round_core: bool = False,
+        gate_math_mode: str = "accurate",
+        norm_math_mode: str = "fast",
         b_weight_encoding: str | None = None,
         a_weight_encoding: str | None = None,
         value_head_order: str = "grouped",
@@ -1585,6 +1719,8 @@ class _nn:
             round_normalized_qk=round_normalized_qk,
             round_beta=round_beta,
             round_core=round_core,
+            gate_math_mode=gate_math_mode,
+            norm_math_mode=norm_math_mode,
             b_weight_encoding=b_weight_encoding,
             a_weight_encoding=a_weight_encoding,
             value_head_order=value_head_order,
@@ -1645,12 +1781,13 @@ class _tensors:
         value: Node,
         dtype,
         *,
+        rounding_contract: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
         """Convert tensor elements to another scalar or vector data type."""
 
-        return Cast.construct(value, dtype=dtype, name=name, metadata=metadata)
+        return Cast.construct(value, dtype=dtype, rounding_contract=rounding_contract, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(Concat)
@@ -1787,13 +1924,13 @@ class _ntt:
                                   *, output_dtype=None, round_projections=False, round_activation=False,
                                   gate_clamp_max: float | None = None, up_clamp: float | None = None,
                                   weight_block_n: int = 128, weight_block_k: int = 128,
-                                  name=None, metadata: Metadata = None) -> Node:
+                                  reduction_order: str = "relaxed", name=None, metadata: Metadata = None) -> Node:
         return DispatchedExpertsGateUp.construct(q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
                                                 up_input_scale, up_weight, up_proj_scale, output_dtype=output_dtype,
                                                 round_projections=round_projections, round_activation=round_activation,
                                                 gate_clamp_max=gate_clamp_max, up_clamp=up_clamp,
                                                 weight_block_n=weight_block_n, weight_block_k=weight_block_k,
-                                                name=name, metadata=metadata)
+                                                reduction_order=reduction_order, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(SparseExpertsDownCombine)
@@ -1801,12 +1938,12 @@ class _ntt:
                                    down_proj_scale: Node, router_expert_weights: Node, *, round_projection=False,
                                    output_dtype=None, round_weighted_output=False, cast_output=False,
                                    weight_block_n: int = 128, weight_block_k: int = 128,
-                                   name=None, metadata: Metadata = None) -> Node:
+                                   reduction_order: str = "relaxed", name=None, metadata: Metadata = None) -> Node:
         return SparseExpertsDownCombine.construct(activations, router_expert_ids, down_input_scale, down_weight,
                                                  down_proj_scale, router_expert_weights, round_projection=round_projection,
                                                  output_dtype=output_dtype, round_weighted_output=round_weighted_output,
                                                  cast_output=cast_output, weight_block_n=weight_block_n,
-                                                 weight_block_k=weight_block_k, name=name, metadata=metadata)
+                                                 weight_block_k=weight_block_k, reduction_order=reduction_order, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(GatherReduceAddNormApply)
@@ -1821,6 +1958,7 @@ class _ntt:
         use_mean: bool,
         round_before_scale: bool = False,
         output_dtype: DType | str | None = None,
+        input_dtype: DType | str | None = None,
         has_bias: bool = True,
         name: str | None = None,
         metadata: Metadata = None,
@@ -1838,6 +1976,7 @@ class _ntt:
             has_bias=has_bias,
             round_before_scale=round_before_scale,
             output_dtype=output_dtype,
+            input_dtype=input_dtype,
             name=name,
             metadata=metadata,
         )
@@ -1918,6 +2057,7 @@ class _ntt:
         use_mean: bool,
         round_before_scale: bool = False,
         output_dtype: DType | str | None = None,
+        input_dtype: DType | str | None = None,
         has_bias: bool = True,
         name: str | None = None,
         metadata: Metadata = None,
@@ -1936,6 +2076,7 @@ class _ntt:
             has_bias=has_bias,
             round_before_scale=round_before_scale,
             output_dtype=output_dtype,
+            input_dtype=input_dtype,
             name=name,
             metadata=metadata,
         )
@@ -1968,6 +2109,7 @@ class _ntt:
         fused_reduce: bool = False,
         output_data_type: DType | str = DType.FLOAT32,
         rhs_layout: str = "k_major",
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1980,6 +2122,7 @@ class _ntt:
             addend,
             fused_reduce=fused_reduce,
             output_data_type=output_data_type,
+            reduction_order=reduction_order,
             rhs_layout=rhs_layout,
             name=name,
             metadata=metadata,
@@ -1997,6 +2140,9 @@ class _ntt:
         hidden_size: int,
         split_hierarchy_axis: int,
         split_count: int,
+        probability_rounding: str = "normalized",
+        softmax_block_size: int = 64,
+        softmax_traversal: str = "forward",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -2011,6 +2157,9 @@ class _ntt:
             hidden_size=hidden_size,
             split_hierarchy_axis=split_hierarchy_axis,
             split_count=split_count,
+            probability_rounding=probability_rounding,
+            softmax_block_size=softmax_block_size,
+            softmax_traversal=softmax_traversal,
             name=name,
             metadata=metadata,
         )
@@ -2100,6 +2249,7 @@ class _ntt:
         num_kv_heads: int,
         output_data_type: str,
         rhs_layout: str = "k_major",
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -2123,6 +2273,7 @@ class _ntt:
             num_kv_heads=num_kv_heads,
             output_data_type=output_data_type,
             rhs_layout=rhs_layout,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -2141,6 +2292,7 @@ class _ntt:
         use_mean: bool,
         addend_cast_dtypes: tuple[DType | str, ...] = (),
         output_data_type: DType | str | None = None,
+        reduction_order: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -2157,6 +2309,7 @@ class _ntt:
             use_mean=use_mean,
             addend_cast_dtypes=addend_cast_dtypes,
             output_data_type=output_data_type,
+            reduction_order=reduction_order,
             name=name,
             metadata=metadata,
         )
@@ -2190,6 +2343,7 @@ class _ntt:
         new_type,
         vectorize_axes: int | tuple[int, ...] | list[int],
         *,
+        rounding_contract: str = "relaxed",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -2199,6 +2353,7 @@ class _ntt:
             value,
             new_type=new_type,
             vectorize_axes=vectorize_axes,
+            rounding_contract=rounding_contract,
             name=name,
             metadata=metadata,
         )

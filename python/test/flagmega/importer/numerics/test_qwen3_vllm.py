@@ -69,11 +69,13 @@ def test_preserves_function_reuse_and_round_trips(model, tmp_path):
     assert decode.attrs == model.function_map["decode_layer"].attrs
     assert result.node_map[decode.parameters[0]].type.dtype == fm.DType.FLOAT32
     assert result.node_map[decode.outputs[0]].type.dtype == fm.DType.FLOAT32
-    # The layers are one structured recurrence over a parameter bank, so the
-    # reused decode_layer keeps exactly one call site, not one call per layer.
-    loop = next(node for node in result.nodes if node.op == "control.for")
-    assert static_trip_count(loop, result) == 2
-    assert len([node for node in result.nodes if node.op == "builtin.call"]) == 1
+    # Numerical specialization preserves the importer's call/loop structure.
+    for operation in ("control.for", "builtin.call"):
+        before = [(node.id, node.attrs) for node in model.nodes if node.op == operation]
+        after = [(node.id, node.attrs) for node in result.nodes if node.op == operation]
+        assert after == before
+    for loop in (node for node in result.nodes if node.op == "control.for"):
+        assert static_trip_count(loop, result) == static_trip_count(model.node_map[loop.id], model)
     assert fm.load_module(fm.emit_module(result, tmp_path / "numeric.py")).semantic_hash == result.semantic_hash
     assert model.node_map[decode.parameters[0]].type.dtype == fm.DType.BFLOAT16
 

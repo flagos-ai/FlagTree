@@ -34,13 +34,17 @@ necessarily a separate GPU launch; distinguish those counts.
 | Consumer needs a producer-owned output representation | Extend producer output support and demand propagation; follow [Representation optimization](representation-optimization.md). |
 | Private pure indexing only changes what an existing consumer reads | Extend its input access contract or supported input fusion. Keep the selection inside consumer addressing. |
 | Several writes share a source, destination state and update epoch | Consider one semantic operation owning the coordinated update, including metadata and completion phases. |
-| Selection is shared/exported or needs an independently reusable value | Consider a first-class strided view with a complete alias/storage ABI, or retain necessary materialization. |
+| Selection is shared/exported or needs an independently reusable value | Extend all users' access contracts or the producer result ABI; consider a first-class strided view only with a complete alias/storage proof. Do not duplicate the producer or exempt a standalone compute Slice. |
 
 Do not create a new operation merely to hide Slice. Reuse an existing contract
 when it expresses the behavior; define a new one when coordination or source
 interpretation is a real semantic unit. PreOps attributes are useful only if
-the selected family actually implements indexing fusion. A blanket ban on all
-Slice/Gather is not this method's acceptance rule.
+the selected family actually implements indexing fusion. Under
+[IR acceptance](ir-acceptance.md), standalone compute Slice must be eliminated,
+along with Pack, Cast, Concat and Unpack. Necessary selection semantics remain
+in the owning contract; Gather is not automatically interchangeable with Slice
+or forbidden merely by name. Proven offline weight transforms have a separate
+constant-provenance allowance.
 
 ## Prove the read mapping and legal region
 
@@ -146,7 +150,9 @@ directly. Native vector retention, distribution candidate inference, semantic
 TIR selection, the portable implementation catalog and source-coordinate
 renderer preserve the operation through the ordinary compiler pipeline.
 All chip replicas require a complete, non-partial source; legal block splits
-remain available. Shared K/V selections survive for their other consumers.
+remain available. Shared K/V producers remain single; their other consumers
+also need equivalent selection contracts before the whole graph can pass the
+no-Slice gate.
 The selected write kernel uses one old epoch for both fields and one internal
 grid barrier before an optional sequence advance. Verify those contracts in
 the actual emitted implementation when extending it.
@@ -155,9 +161,9 @@ Regression coverage includes scalar and multi-component vector inputs, all
 six axis layouts, differing input/cache lane counts, complete cache comparison,
 cross-page chunks, block-cyclic tails, reusable calls, and chip replicas.
 Structural negative cases preserve intermediate-state observers and required
-partial Boxing. The full GLM checkpoint must retain zero compute Pack and zero
-MLA Slice at packing, distribution and pre-TIR boundaries; focused kernel tests
-alone do not certify complete model execution.
+partial Boxing. The full GLM checkpoint must have zero compute Pack, Slice,
+Cast, Concat and Unpack at the accepted packing, distribution and pre-TIR
+boundaries; focused kernel tests alone do not certify complete model execution.
 
 For `B = T * H * 2D * sizeof(BF16)`, eliminating the two Slice copies removes
 `B` bytes of logical temporary results and `2B` bytes of copy traffic. At
@@ -171,8 +177,10 @@ Retain a minimal materialization reproducer and a structural fail-before test,
 then inspect complete IR/TIR, generated source and buffers after the change.
 For the targeted private chain, check that copy calls and temporary results
 are gone, the shared producer remains single, and complete packed addressing
-survives lowering. Apply [IR acceptance](ir-acceptance.md), including zero
-compute Pack; do not impose zero Slice on unrelated necessary transforms.
+survives lowering. Apply [IR acceptance](ir-acceptance.md) to the complete
+affected graph: compute Pack, Slice, Cast, Concat and Unpack must all be zero,
+including in reachable callees. Necessary indexing/conversion semantics must
+be implemented by the owning operations, not deleted to meet the count.
 
 For state writes, compare independently initialized reference/candidate storage
 with nonzero data and untouched-region sentinels. Cover repeated updates,

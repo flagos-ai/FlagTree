@@ -9,7 +9,8 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
-def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, tokens=2, placement=None, **changes):
+def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, tokens=2, placement=None,
+          private_input=False, consume_output=False, **changes):
     qk, value_dim, latent, heads = 16, 8, 32, 2
     width = qk if direction == "absorb_query" else latent
     attrs = {
@@ -25,14 +26,25 @@ def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, toke
 
     class Graph(fm.Module):
         def forward(self):
-            kind = fm.vector_type("bfloat16", input_lanes) if input_lanes else "bfloat16"
+            input_dtype = "float32" if private_input else "bfloat16"
+            kind = fm.vector_type(input_dtype, input_lanes) if input_lanes else input_dtype
             factor = 1
             for lane in input_lanes:
                 factor *= lane
             x = self.input("x", fm.tensor_type(kind, (tokens, heads, width // factor)), id="x")
             w = self.input("w", fm.tensor_type("float8_e4m3fn" if fp8 else "bfloat16", (48, latent)), id="w")
             scale = self.input("scale", fm.tensor_type("float32", (6, 2)), id="scale") if fp8 else fm.F.builtin.none()
-            result = fm.F.nn.mla_projection(x, w, scale, **attrs)
+            value = x
+            if private_input:
+                if placement is not None:
+                    full = fm.DistributedType(x.type, (fm.SBP.broadcast(),) * x.type.rank, placement)
+                    value = fm.F.distributed.sharded_view(x, full)
+                dtype = fm.vector_type("bfloat16", input_lanes) if input_lanes else "bfloat16"
+                value = fm.F.tensors.cast(value, dtype, name="private_value")
+            result = fm.F.nn.mla_projection(value, w, scale, **attrs)
+            if consume_output:
+                dtype = fm.vector_type("float32", lanes) if lanes else "float32"
+                result = fm.F.tensors.cast(result, dtype)
             parameters = [x, w, *((scale,) if fp8 else ())]
             outputs = [result]
             if placement is not None:

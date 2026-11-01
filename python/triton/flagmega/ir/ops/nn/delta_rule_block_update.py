@@ -22,6 +22,7 @@ from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.type_pattern import has_rank, is_ref, is_tensor
 from triton.flagmega.ir.types import DType, VectorType
+from triton.flagmega.ir.ops.nn.delta_rule_coefficients import _rounded_mma
 
 
 @op_definition("nn.delta_rule_block_update", namespace="nn", functional_name="delta_rule_block_update",
@@ -204,6 +205,9 @@ def state_field_layout(field_type, attrs, value_type, key_type):
 
 
 def delta_rule_block_update(query, key, value, coefficients, log_prefix, initial, *, scale=None, torch):
+    def mma(left, right):
+        return _rounded_mma(left, right, dtype=torch.bfloat16, torch=torch)
+
     tokens, heads, value_dim = value.shape
     key_dim = key.shape[2]
     block_size = coefficients.shape[-1]
@@ -222,21 +226,24 @@ def delta_rule_block_update(query, key, value, coefficients, log_prefix, initial
         v[:, :, :valid] = value[start:start + valid].permute(1, 2, 0).float()
         logs = log_prefix[block]
         gamma = torch.exp2(logs)
-        ratio = torch.exp2(logs[:, :, None] - logs[:, None, :])
+        causal = torch.ones((block_size, block_size), device=logs.device, dtype=torch.bool).tril()
+        difference = torch.where(causal, logs[:, :, None] - logs[:, None, :], 0.)
+        ratio = torch.where(causal, torch.exp2(difference), 0.)
         coefficient = (coefficients[block].float() * ratio).bfloat16().float()
-        score = torch.tril((q @ k.transpose(-1, -2)) * ratio * scale).bfloat16().float()
+        score = torch.tril(mma(q, k.transpose(-1, -2)) * ratio * scale).bfloat16().float()
         rounded = state.bfloat16().float()
-        carried = (rounded @ q.transpose(-1, -2)) * (gamma * scale)[:, None, :]
-        recalled = ((rounded @ k.transpose(-1, -2)) * gamma[:, None, :]).bfloat16().float()
+        carried = mma(rounded, q.transpose(-1, -2)) * (gamma * scale)[:, None, :]
+        recalled = (mma(rounded, k.transpose(-1, -2)) * gamma[:, None, :]).bfloat16().float()
         residual = (v - recalled).bfloat16().float()
-        new_value = (residual @ coefficient.transpose(-1, -2)).bfloat16().float()
-        block_output = (new_value @ score.transpose(-1, -2) + carried).bfloat16()
+        new_value = mma(residual, coefficient.transpose(-1, -2)).bfloat16().float()
+        block_output = (mma(new_value, score.transpose(-1, -2)) + carried).bfloat16()
         output[start:start + valid] = block_output[:, :, :valid].permute(2, 0, 1)
         end_log = logs[:, valid - 1]
-        decay = torch.exp2(end_log[:, None] - logs)
+        valid_tokens = torch.arange(block_size, device=logs.device) < valid
+        decay = torch.exp2(torch.where(valid_tokens, end_log[:, None] - logs, 0.))
         decayed = (new_value * decay[:, None, :]).bfloat16().float()
         decayed[:, :, valid:] = 0
-        state = decayed @ k + state * torch.exp2(end_log)[:, None, None]
+        state = mma(decayed, k) + state * torch.exp2(end_log)[:, None, None]
     return output, state
 
 

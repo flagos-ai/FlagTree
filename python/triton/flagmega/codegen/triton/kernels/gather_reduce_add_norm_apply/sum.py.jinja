@@ -138,6 +138,9 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
                 mask=gather_mask,
                 other=0.0,
             ).to(tl.float32)
+{% if call.input_conversion_type is not none %}
+            norm_value = norm_value.to({{ call.input_conversion_type }}).to(tl.float32)
+{% endif %}
             norm_scale = tl.load(
                 {{ call.scale }} + ({{ call.scale_offset }}),
                 mask=gather_mask,
@@ -154,12 +157,12 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
 {% endif %}
             norm_normalized = (norm_value - norm_mean) * norm_inverse_std
 {% if call.round_before_scale %}
-            norm_normalized = norm_normalized.to({{ call.output_type }}).to(tl.float32)
+            norm_normalized = norm_normalized.to({{ call.norm_input_type }}).to(tl.float32)
 {% endif %}
             norm_output = norm_normalized * norm_scale + norm_bias
             tl.store(
                 {{ call.norm_result }} + ({{ call.norm_offset }}),
-                norm_output.to({{ call.output_type }}).to({{ call.norm_output_type }}),
+                norm_output.to({{ call.norm_input_type }}).to({{ call.norm_output_type }}),
                 mask=gather_mask,
             )
 

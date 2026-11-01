@@ -1,0 +1,108 @@
+# flagmega-kernel: sparse_experts_gate_up/cooperative_wgmma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% include "kernels/_ue8m0_quantization.py.jinja" %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "sparse_experts_gate_up" and call.variant == "cooperative_wgmma" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__merge_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 1], [1, 32], [1, {{ num_warps }}], [1, 0]))
+@triton.jit(noinline=True)
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_cta = tl.program_id(0)
+    _fm_ctas = tl.num_programs(0)
+    _fm_n_raw = tl.arange(0, 64)
+    _fm_kk_raw = tl.arange(0, 128)
+    for _fm_task in tl.range(_fm_cta, {{ call.raw_tasks }}, _fm_ctas):
+        _fm_k_block = _fm_task % {{ call.k_blocks }}
+        _fm_tile = (_fm_task // {{ call.k_blocks }}) % {{ call.row_tiles }}
+        _fm_chip_route = (_fm_task // {{ call.k_blocks * call.row_tiles }}) % {{ call.chip_routes }}
+        _fm_token = _fm_task // {{ call.k_blocks * call.row_tiles * call.chip_routes }}
+        _fm_route_owner = _fm_chip_route // {{ call.local_routes }}
+        _fm_local_route = _fm_chip_route % {{ call.local_routes }}
+        _fm_chip_n = _fm_tile * 64 + _fm_n_raw
+        _fm_row_owner = tl.minimum(_fm_chip_n // {{ call.local_rows }}, {{ call.row_owners - 1 }})
+        _fm_local_n = _fm_chip_n % {{ call.local_rows }}
+        _fm_k_start = _fm_k_block * 128
+        _fm_k = _fm_k_start + _fm_kk_raw
+        _fm_active_slot = {{ call.peer_slot_active }}
+        _fm_n_valid = (_fm_chip_n < {{ call.chip_rows }}) & (_fm_local_n < ({{ call.peer_n_active }})) & _fm_active_slot
+        _fm_expert = tl.load({{ call.peer_expert_ids }} + ({{ call.peer_expert_offset }}), _fm_active_slot, other=0).to(tl.int64)
+        _fm_source = tl.load({{ call.peer_input }} + ({{ call.peer_input_offset }}), _fm_active_slot, other=0.).to(tl.float32)
+        _fm_q, _fm_a_scale = _flagmega_quantize_ue8m0(_fm_source, 0)
+        _fm_a = tl.broadcast_to(_fm_q.to(tl.float8e4nv)[:, None], (128, 16))
+        _fm_g = tl.load({{ call.gate_peer_pointer }} + ({{ call.gate_peer_offset }}), _fm_n_valid[:, None], other=0.)
+        _fm_u = tl.load({{ call.up_peer_pointer }} + ({{ call.up_peer_offset }}), _fm_n_valid[:, None], other=0.)
+        _fm_g_scale = tl.load({{ call.gate_peer_scale }} + ({{ call.gate_peer_scale_offset }}), _fm_n_valid, other=1.)
+        _fm_u_scale = tl.load({{ call.up_peer_scale }} + ({{ call.up_peer_scale_offset }}), _fm_n_valid, other=1.)
+        _fm_gp = tl.dot(_fm_g, _fm_a, out_dtype=tl.float32)
+        _fm_up = tl.dot(_fm_u, _fm_a, out_dtype=tl.float32)
+        _fm_gr = tl.reshape(tl.gather(_fm_gp, tl.full((64, 1), 0, tl.int32), 1), (64,))
+        _fm_ur = tl.reshape(tl.gather(_fm_up, tl.full((64, 1), 0, tl.int32), 1), (64,))
+        _fm_slot = (_fm_token * {{ call.chip_routes }} + _fm_chip_route) * {{ 2 * call.row_tiles * call.k_blocks * 64 }}
+        _fm_partial_offset = (_fm_tile * {{ call.k_blocks }} + _fm_k_block) * 64 + _fm_n_raw
+        # Persist the separately rounded B multiplication. The merge applies
+        # A with one original-order FMA per real K128 block, including tails.
+        tl.store({{ call.partial_pointer }} + _fm_slot + _fm_partial_offset,
+                 libdevice.mul_rn(_fm_gr, _fm_g_scale))
+        tl.store({{ call.partial_pointer }} + _fm_slot + {{ call.row_tiles * call.k_blocks * 64 }} + _fm_partial_offset,
+                 libdevice.mul_rn(_fm_ur, _fm_u_scale))
+        if _fm_tile == 0:
+            tl.store({{ call.activation_scale_pointer }} + (_fm_token * {{ call.chip_routes }} + _fm_chip_route) * {{ call.k_blocks }} + _fm_k_block,
+                     tl.sum(_fm_a_scale, 0))
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__merge({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_merge_k = tl.arange(0, {{ call.k_block_lanes }})
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+        for _fm_route in tl.range(0, {{ call.routes }}):
+            _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }}), mask={{ call.slot_active }}, other=0).to(tl.int64)
+            _fm_gate_input_scale = {{ call.scale_loads.gate_input_scale }}
+            _fm_up_input_scale = {{ call.scale_loads.up_input_scale }}
+            _fm_merge_route = ({{ call.route_owner_index }}) * {{ call.local_routes }} + _fm_route
+            _fm_slot = (_fm_token * {{ call.chip_routes }} + _fm_merge_route) * {{ 2 * call.row_tiles * call.k_blocks * 64 }}
+            for _fm_n_start in tl.range(0, {{ call.scalar_n }}, 32):
+                _fm_n = _fm_n_start + tl.arange(0, 32)
+                _fm_n_mask = (_fm_n < {{ call.scalar_n }}) & ({{ call.n_active }}) & ({{ call.slot_active }})
+                _fm_merge_n = ({{ call.row_owner_index }}) * {{ call.local_rows }} + _fm_n
+                _fm_offsets = ((_fm_merge_n[None, :] // 64) * {{ call.k_blocks }} + _fm_merge_k[:, None]) * 64 + _fm_merge_n[None, :] % 64
+                _fm_read_mask = (_fm_merge_k[:, None] < {{ call.k_blocks }}) & _fm_n_mask[None, :]
+                _fm_g = tle.gpu.set_layout(tl.load({{ call.partial_pointer }} + _fm_slot + _fm_offsets, _fm_read_mask, other=0.), {{ call.symbol }}__merge_layout)
+                _fm_u = tle.gpu.set_layout(tl.load({{ call.partial_pointer }} + _fm_slot + {{ call.row_tiles * call.k_blocks * 64 }} + _fm_offsets, _fm_read_mask, other=0.), {{ call.symbol }}__merge_layout)
+                _fm_as = tl.load({{ call.activation_scale_pointer }} + (_fm_token * {{ call.chip_routes }} + _fm_merge_route) * {{ call.k_blocks }} + _fm_merge_k,
+                                 (_fm_merge_k < {{ call.k_blocks }}) & ({{ call.slot_active }}), other=0.)
+                _fm_as = tle.gpu.set_layout(tl.broadcast_to(_fm_as[:, None], ({{ call.k_block_lanes }}, 32)), {{ call.symbol }}__merge_layout)
+                _fm_ga = tl.full((32,), 0., tl.float32)
+                _fm_ua = tl.full((32,), 0., tl.float32)
+                for _fm_block in tl.static_range({{ call.k_blocks }}):
+                    _fm_index = tl.full((1, 32), _fm_block, tl.int32)
+                    _fm_gv = tl.reshape(tl.gather(_fm_g, _fm_index, 0), (32,))
+                    _fm_uv = tl.reshape(tl.gather(_fm_u, _fm_index, 0), (32,))
+                    _fm_av = tl.reshape(tl.gather(_fm_as, _fm_index, 0), (32,))
+                    _fm_ga = tl.fma(_fm_gv, _fm_av, _fm_ga)
+                    _fm_ua = tl.fma(_fm_uv, _fm_av, _fm_ua)
+                _fm_gate_result = _fm_ga * _fm_gate_input_scale
+                _fm_up_result = _fm_ua * _fm_up_input_scale
+{% if call.attrs.round_projections %}
+                _fm_gate_result = _fm_gate_result.to({{ call.output_dtype }}).to(tl.float32)
+                _fm_up_result = _fm_up_result.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+{% if call.attrs.gate_clamp_max is not none %}
+                _fm_gate_result = tl.minimum(_fm_gate_result, {{ call.attrs.gate_clamp_max }})
+{% endif %}
+{% if call.attrs.up_clamp is not none %}
+                _fm_up_result = tl.clamp(_fm_up_result, -{{ call.attrs.up_clamp }}, {{ call.attrs.up_clamp }})
+{% endif %}
+                _fm_activation = _fm_gate_result * tl.sigmoid(_fm_gate_result)
+{% if call.attrs.round_activation %}
+                _fm_activation = _fm_activation.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+                tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_activation * _fm_up_result,
+                         _fm_n_mask & ({{ call.writer_active }}))
+
+
+{{ entry.phase_schedule(call, ("partials", "merge")) }}
+{% endif %}
+{% endfor %}

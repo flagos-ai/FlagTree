@@ -116,6 +116,8 @@ def verify_module(
         )
     if _VERIFIED_MODULES.get(id(module)) is module:
         return module
+    from triton.flagmega.ir.bufferization.synchronization_protocol import module_synchronization_protocol
+    module_synchronization_protocol(module)
     if not module.nodes:
         raise IRVerificationError("An IR module must contain at least one node.", stage=module.stage)
 
@@ -215,6 +217,8 @@ def verify_module(
         prim_names.add(kernel.name)
         verify_prim_function(kernel)
     verify_execution_functions(module)
+    from triton.flagmega.ir.program_execution import verify_program_execution
+    verify_program_execution(module)
 
     external_signatures = module.metadata.get("function_signatures", {})
     for node in module.nodes:

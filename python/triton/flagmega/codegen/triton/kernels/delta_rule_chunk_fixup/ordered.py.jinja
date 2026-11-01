@@ -1,0 +1,30 @@
+# flagmega-kernel: delta_rule_chunk_fixup/ordered
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "delta_rule_chunk_fixup" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_dim = tl.arange(0, 128)
+    _fm_lane = tl.arange(0, 16)
+    if {{ call.writer_active }}:
+        for _fm_work in range({{ call.heads }} * 8):
+            _fm_head = _fm_work // 8
+            _fm_state_row = (_fm_work % 8) * 16 + _fm_lane
+            _fm_head_valid = _fm_head < {{ call.active_heads }}
+            _fm_state = tl.load({{ call.state }} + ({{ call.state_offset }}), _fm_head_valid, other=0.)
+            for _fm_chunk in range({{ call.chunks }}):
+                _fm_m = tl.load({{ call.transfer }} + ({{ call.transfer_offset }}), _fm_head_valid, other=0.)
+                _fm_n = tl.load({{ call.local_state }} + ({{ call.local_offset }}), _fm_head_valid, other=0.)
+                # Native fixup consumes truncated TF32 operands and retains
+                # the local state as its initial FP32 MMA accumulator.
+                _fm_s = (_fm_state.to(tl.int32, bitcast=True) & -8192).to(tl.float32, bitcast=True)
+                _fm_m = (_fm_m.to(tl.int32, bitcast=True) & -8192).to(tl.float32, bitcast=True)
+                _fm_state = tl.dot(_fm_s, _fm_m, _fm_n, input_precision="tf32")
+{% for pointer in call.result_pointers %}
+                tl.store({{ pointer }} + ({{ call.result_offset }}), _fm_state, _fm_head_valid)
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}

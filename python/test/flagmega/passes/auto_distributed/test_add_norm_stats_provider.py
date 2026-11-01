@@ -28,6 +28,31 @@ class _Module(fm.Module):
         self.function("main", (partial, residual), (combine,))
 
 
+def test_prefill_owner_changes_require_an_explicit_materialized_input():
+    """The 32-row residual cannot be read using its cyclic projection owners."""
+    class Prefill(fm.Module):
+        def forward(self):
+            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (32, 256))
+            projection = self.input("projection", value_type)
+            residual = self.input("residual", value_type)
+            result = fm.F.ntt.add_norm_stats(projection, residual, axis=-1, use_mean=False)
+            self.function("main", (projection, residual), (result,))
+
+    module = Prefill(dialect="ntt", stage="stats_threaded", entry="main").build()
+    node = next(n for n in module.nodes if n.op == "ntt.add_norm_stats")
+    tensor = module.node_map[node.inputs[0]].type
+    placement = fm.Placement((8, 16), "yx", "bb")
+    partial = fm.DistributedType(tensor,
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((1,), 1)), placement,
+        partial=fm.SBP.partial((0,)))
+    residual = fm.DistributedType(tensor,
+        (fm.SBP.split_block_cyclic((0,), 4), fm.SBP.split_contiguous((1,), 16)), placement)
+    context = DistributedCandidateContext(module, node, placement, ((partial,), (residual,)))
+    relations = {c.input_types for c in AddNormStatsCandidateProvider().get_candidates(context)}
+    assert (partial, residual) not in relations
+    assert (residual, residual) in relations
+
+
 @pytest.mark.parametrize('dtype', ['bfloat16', fm.VectorType(fm.DType.FLOAT32, (4, ))])
 def test_materialized_function_parameter_in_first_operand_has_legal_views(dtype):
 
@@ -93,7 +118,8 @@ def test_provider_exposes_partial_to_materialized_tuple_relations_on_generic_mes
 
     relations = {candidate.input_types for candidate in candidates}
     assert (partial, broadcast) in relations
-    assert (partial, split_rows) in relations
+    assert (partial, split_rows) not in relations
+    assert (split_rows, split_rows) in relations
     assert {broadcast, split_rows}.issubset({
         candidate.return_type.fields[0] for candidate in candidates
     })
@@ -104,7 +130,7 @@ def test_provider_exposes_partial_to_materialized_tuple_relations_on_generic_mes
     )
     assert all(candidate.objective_kind == "analytic" for candidate in candidates)
     assert all(
-        candidate.objective_model == "flagmega.target-op-cost.unit/v1"
+        candidate.objective_model == "flagmega.target-op-cost.unit/v2"
         for candidate in candidates
     )
 
@@ -134,7 +160,7 @@ def test_provider_rejects_partial_input_when_addend_split_uses_nonpartial_axis()
     candidates = AddNormStatsCandidateProvider().get_candidates(context)
 
     assert all(
-        candidate.input_types[1] != incompatible
+        candidate.input_types != (partial, incompatible)
         for candidate in candidates
     )
 
@@ -262,16 +288,16 @@ def test_provider_uses_hierarchical_target_cost_for_materialized_value_layouts()
     )
 
     candidates = AddNormStatsCandidateProvider().get_candidates(context)
-    by_value_layout = {
-        candidate.return_type.fields[0]: candidate for candidate in candidates
-    }
+    by_inputs = {candidate.input_types: candidate for candidate in candidates}
 
-    # Broadcast consumers read all 128 partials for the full local output.
-    # Reduce-scatter reads the same fan-in only for its output shard.
-    # Both materializations serialize one 2200-cycle grid barrier.
-    assert by_value_layout[broadcast].operation_cost == 38497
-    assert by_value_layout[split].operation_cost == 2782
+    # The owner-preserving collective reads all 128 partials. A changed
+    # owner layout exposes Boxing on its edge and costs only the local fusion
+    # here; communication must not be claimed by an unrealizable fused call.
+    assert by_inputs[(partial, broadcast)].operation_cost == 38497
+    assert by_inputs[(broadcast, broadcast)].operation_cost == 1400
+    assert (partial, split) not in by_inputs
+    assert by_inputs[(split, split)].operation_cost < 1400
     assert all(
         candidate.objective_model == "test.h800-target-op-cost/v1"
-        for candidate in by_value_layout.values()
+        for candidate in by_inputs.values()
     )

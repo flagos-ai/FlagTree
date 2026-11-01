@@ -14,6 +14,22 @@ from triton.flagmega.ir import IRModule
 PackageMatcher = Callable[[IRModule], bool]
 DescriptorBuilder = Callable[[IRModule], dict[str, object]]
 SourceRenderer = Callable[[dict[str, object], str], str]
+DescriptorPreparer = Callable[[dict[str, object], str], dict[str, object]]
+
+
+@dataclass(frozen=True)
+class PreparedSourceRenderer:
+    """Keep namespace preparation attached to its source renderer."""
+
+    render: SourceRenderer
+    prepare: DescriptorPreparer
+
+    def __post_init__(self) -> None:
+        if not callable(self.render) or not callable(self.prepare):
+            raise CodegenError("Prepared source renderer callbacks must be callable.")
+
+    def __call__(self, descriptor: dict[str, object], renderer_version: str) -> str:
+        return self.render(descriptor, renderer_version)
 
 
 @dataclass(frozen=True)
@@ -23,12 +39,17 @@ class PackageRendererSpec:
     matches: PackageMatcher
     describe: DescriptorBuilder
     render: SourceRenderer
+    prepare: DescriptorPreparer | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.kind or "/" not in self.kind:
             raise CodegenError("Package renderer requires a name and versioned kind.")
         if not all(callable(value) for value in (self.matches, self.describe, self.render)):
             raise CodegenError(f"Package renderer {self.name!r} callbacks must be callable.")
+        if self.prepare is None and isinstance(self.render, PreparedSourceRenderer):
+            object.__setattr__(self, "prepare", self.render.prepare)
+        if self.prepare is not None and not callable(self.prepare):
+            raise CodegenError(f"Package renderer {self.name!r} preparation must be callable.")
 
 
 class PackageRendererRegistry:
@@ -68,5 +89,6 @@ __all__ = [
     "PackageMatcher",
     "PackageRendererRegistry",
     "PackageRendererSpec",
+    "PreparedSourceRenderer",
     "SourceRenderer",
 ]

@@ -3,12 +3,14 @@
 """Explicit owner-local broadcasting, preserving outer/vector units."""
 
 from math import prod
+from triton.flagmega.codegen.triton.fusion import decode_fusion_attrs, emit_body, raw_semantics, triton_type
 from triton.flagmega.codegen.triton.physical_access import emit_local_scalar_offset, emit_scalar_immediate
 from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import Node
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.tensors.broadcast_to import BroadcastTo
+from triton.flagmega.ir.op_fusion import has_ops
 
 
 def broadcast_to_call(raw):
@@ -22,7 +24,8 @@ def broadcast_to_call(raw):
     source = _buffer(raw, "inputs", "value")
     result = _buffer(raw, "outputs", "result")
     input_type, output_type = _tensor_type(source["abi"]), _tensor_type(result["abi"])
-    if BroadcastTo.infer_type((Node("source", "builtin.var", (), input_type), ), raw["semantic_attrs"]) != output_type:
+    attrs = decode_fusion_attrs(raw["semantic_attrs"])
+    if BroadcastTo.infer_call_type((Node("source", "builtin.var", (), input_type), ), attrs) != output_type:
         raise CodegenError("BroadcastTo ABI does not match the operation's owner mapping.")
     input_tensor, output_tensor = tensor_of(input_type), tensor_of(output_type)
     domain = _scalar_local_domain(result["abi"], "_fm_offsets")
@@ -44,7 +47,15 @@ def broadcast_to_call(raw):
     if scalar:
         source_value = (emit_scalar_immediate(source["abi"], source["runtime_argument"])
                         if source["runtime_value_kind"] == "immediate" else source["runtime_argument"])
+    program = {}
+    if has_ops(attrs):
+        _, base, _ = raw_semantics(raw)
+        pre, value = emit_body(attrs.get("pre_ops", {}).get("value"), "_fm_value", "_fm_broadcast_pre")
+        post, value = emit_body(next(iter(attrs.get("post_ops", ())), None),
+                               f"({value}).to({triton_type(base.type)})", "_fm_broadcast_post")
+        program = {"fusion_lines": (*pre, *post), "fusion_result": value}
     return {
+        **program,
         "writer_active":
         _canonical_writer_active(result["abi"]),
         "source":

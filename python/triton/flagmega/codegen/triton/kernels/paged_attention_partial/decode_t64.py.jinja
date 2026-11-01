@@ -1,0 +1,5 @@
+{% set paged_attention_partial_variant = "decode_t64" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

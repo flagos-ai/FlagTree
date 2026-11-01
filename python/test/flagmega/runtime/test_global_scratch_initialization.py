@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 import torch
+import pytest
 
 import triton.flagmega.runtime.prepared as prepared_runtime
+from triton.flagmega.errors import RuntimeContractError
 
 
 class _Device:
@@ -111,3 +113,28 @@ def test_prepared_scratch_allocation_skips_launcher_clear(monkeypatch):
         scratch(scratch.nbytes + 1, 16, None)
     with pytest.raises(RuntimeContractError):
         scratch(scratch.nbytes, 32, None)
+
+
+@pytest.mark.parametrize('arguments', [(), (_Argument(),)])
+def test_scalar_or_peer_pointer_entries_allocate_scratch_on_the_launch_device(monkeypatch, arguments):
+    allocated, synchronized = [], []
+    launch_device = torch.device('cuda:2')
+
+    def allocate(size, *, dtype, device):
+        assert dtype is torch.uint8
+        allocated.append((size, device))
+        return _Storage(size, zeroed=True)
+
+    monkeypatch.setattr(torch, 'zeros', allocate)
+    monkeypatch.setattr(torch.cuda, 'synchronize', synchronized.append)
+    scratch = prepared_runtime._prepare_global_scratch(_Compiled(), arguments, (4, 1, 1),
+                                                      allocation_device=launch_device)
+    assert scratch.nbytes == 32
+    assert allocated == [(47, launch_device)]
+    assert synchronized == [launch_device]
+
+
+def test_compiler_scratch_requires_cuda_allocation_device_for_scalar_entries():
+    with pytest.raises(RuntimeContractError, match='CUDA'):
+        prepared_runtime._prepare_global_scratch(_Compiled(), (), (4, 1, 1),
+                                                allocation_device=torch.device('cpu'))

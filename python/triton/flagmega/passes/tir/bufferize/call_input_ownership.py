@@ -10,6 +10,7 @@ of SAT placement and optional arithmetic in-place decisions.
 
 from triton.flagmega.ir import RefType, TupleType, logical_type
 from triton.flagmega.passes.functions.graph import callee_first_functions, function_nodes
+from triton.flagmega.ir.program_order import program_ancestors
 
 
 def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
@@ -17,6 +18,10 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
 
     summaries = {}
     uses = {}
+    programs = module.metadata.get("kernel_program_partition")
+    ancestors = program_ancestors(programs)
+    program_by_call = ({call: program["symbol"] for program in programs for call in program["calls"]}
+                       if ancestors is not None else {})
     protected = {function.name: set() for function in module.functions}
     for function in callee_first_functions(module):
         nodes = function_nodes(module, function)
@@ -24,6 +29,7 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
         calls = []
         readonly = set()
         last_use = {}
+        readers = {}
         for index, node in enumerate(nodes):
             if node.op in {"tir.buffer_view", "tir.buffer_subspan", "distributed.sharded_view"}:
                 origin = origins[node.inputs[0]]
@@ -40,7 +46,7 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
                 for formal, actual in zip(callee.parameters, node.inputs, strict=True):
                     _bind_origins(parameters[formal], origins[actual], substitutions)
                 origin = _substitute(returned, substitutions, node.id)
-                calls.append((index, callee, node.inputs))
+                calls.append((index, node.id, callee, node.inputs))
             else:
                 origin = _new_origins(node.id, node.type)
             origins[node.id] = origin
@@ -52,13 +58,16 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
             for read_origin in read_origins:
                 for root in _roots(read_origin):
                     last_use[root] = index
+                    if node.op not in {"builtin.tuple", "builtin.get_item", "tir.buffer_view",
+                                       "tir.buffer_subspan", "distributed.sharded_view"}:
+                        readers.setdefault(root, []).append((index, node.id))
         for value in function.outputs:
             for root in _roots(origins[value]):
                 last_use[root] = len(nodes)
         parameters = {value: origins[value] for value in function.parameters}
         returned = tuple(origins[value] for value in function.outputs)
         summaries[function.name] = (parameters, returned)
-        uses[function.name] = (origins, calls, readonly, last_use, parameters)
+        uses[function.name] = (origins, calls, readonly, last_use, parameters, readers, len(nodes))
         if function.name == module.entry:
             protected[function.name].update(
                 value for value in function.parameters
@@ -71,16 +80,29 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
     changed = True
     while changed:
         changed = False
-        for name, (origins, calls, readonly, last_use, parameters) in uses.items():
+        for name, (origins, calls, readonly, last_use, parameters, readers, end) in uses.items():
             unavailable = set(readonly)
             for parameter in protected[name]:
                 unavailable.update(_roots(parameters[parameter]))
-            for index, callee, arguments in calls:
+            for index, call_id, callee, arguments in calls:
                 for formal, actual in zip(callee.parameters, arguments, strict=True):
                     if isinstance(logical_type(module.node_map[formal].type), RefType):
                         continue
                     roots = _roots(origins[actual])
-                    if (roots & unavailable or any(last_use.get(root, index) > index for root in roots)) and formal not in protected[callee.name]:
+                    if name == module.entry and ancestors is not None:
+                        # The call list stores SSA positions, not a linear
+                        # execution proof. Unordered readers may still run
+                        # after the syntactically last consumer has started.
+                        current = program_by_call.get(call_id)
+                        borrowed = any(last_use.get(root) == end or any(
+                            program_by_call.get(reader) is None
+                            or (program_by_call[reader] == current and position > index)
+                            or (program_by_call[reader] != current
+                                and program_by_call[reader] not in ancestors.get(current, ()))
+                            for position, reader in readers.get(root, ())) for root in roots)
+                    else:
+                        borrowed = any(last_use.get(root, index) > index for root in roots)
+                    if (roots & unavailable or borrowed) and formal not in protected[callee.name]:
                         protected[callee.name].add(formal)
                         changed = True
     return {name: frozenset(values) for name, values in protected.items()}

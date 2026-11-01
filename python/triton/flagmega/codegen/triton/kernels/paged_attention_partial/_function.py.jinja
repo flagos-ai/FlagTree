@@ -7,7 +7,7 @@ def {{ call.symbol }}({{ call.signature }}):
     for attention_state_start in tl.range(0, {{ call.local_capacity }}):
         attention_state_offsets = attention_state_start
         if {{ call.active }}:
-            _flagmega_paged_attention_partial(
+            {{ paged_attention_partial_helper | default("_flagmega_paged_attention_partial") }}(
                 {{ call.query }}, {{ call.kv_cache }},
                 {{ call.slot_mapping }}, {{ call.block_table }},
                 {{ call.layer_id }}, {{ call.partial_max }},
@@ -20,6 +20,9 @@ def {{ call.symbol }}({{ call.signature }}):
                 {{ call.token_tile }}, {{ call.context_shards }},
                 {{ call.query_dim_stride }}, {{ call.query_lanes }},
                 {{ call.accumulator_dim_stride }}, {{ call.num_blocks }},
+                {{ call.probability_rounding | default("normalized") == "online_bf16" }},
+                {{ call.softmax_block_size | default(64) }},
+                {{ call.softmax_traversal | default("forward") == "reverse" }},
             )
 
 

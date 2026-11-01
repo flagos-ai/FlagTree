@@ -4,6 +4,7 @@
 
 from itertools import combinations, product
 from math import prod
+from dataclasses import replace
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import (
@@ -110,9 +111,11 @@ def align_rhs_reduction_policy(
     if k_policy is None:
         return None
     policies = (k_policy, rhs.axis_policies[1])
+    if rhs.exclusive is not None and any(policy != SBP.broadcast() for policy in policies):
+        return None
     if not is_distributable(rhs.tensor, policies, rhs.placement):
         return None
-    return DistributedType(rhs.tensor, policies, rhs.placement)
+    return replace(rhs, axis_policies=policies)
 
 
 def _operand_layouts(

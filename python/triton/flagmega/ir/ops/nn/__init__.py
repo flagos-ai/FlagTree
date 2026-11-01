@@ -3,6 +3,7 @@
 
 from triton.flagmega.ir.ops.nn.bind_norm_stats import BindNormStats
 from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
+from triton.flagmega.ir.ops.nn.delta_rule_chunk_transfer import DeltaRuleChunkTransfer, DeltaRuleChunkFixup, DeltaRuleChunkedBlockUpdate
 from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
 from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
 from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
@@ -20,6 +21,9 @@ from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.kda import KdaConvolution, KdaRecurrentCore
 from triton.flagmega.ir.ops.nn.kda_gated_recurrent_core import KdaGatedRecurrentCore
 from triton.flagmega.ir.ops.nn.kda_gated_step import KdaGatedStep
+from triton.flagmega.ir.ops.nn.kda_input_projection import KdaInputProjection
+from triton.flagmega.ir.ops.nn.partitioned_linear import PartitionedLinear
+from triton.flagmega.ir.ops.nn.partitioned_block_scaled_linear import PartitionedBlockScaledLinear
 from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
 from triton.flagmega.ir.ops.nn.layer_norm import LayerNorm
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
@@ -40,6 +44,7 @@ from triton.flagmega.ir.ops.nn.requantize_block_scaled_fp8 import RequantizeBloc
 from triton.flagmega.ir.ops.nn.rms_norm import RMSNorm
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
+from triton.flagmega.ir.ops.nn.rotary_cache_table import RotaryCacheTable
 from triton.flagmega.ir.ops.nn.softmax import Softmax
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
@@ -61,7 +66,7 @@ __all__ = [
     "DeltaRuleCoefficients",
     "Softmax", "KdaConvolution", "KdaRecurrentCore", "KdaGatedRecurrentCore", "KdaGatedStep", "StagedRouting",
     "MhcPre", "MhcPost",
-    "MlaProjection",
+    "MlaProjection", "KdaInputProjection", "PartitionedLinear", "PartitionedBlockScaledLinear",
     "RequantizeBlockScaledFP8",
     "Embedding",
     "DenseMatMulGlu",

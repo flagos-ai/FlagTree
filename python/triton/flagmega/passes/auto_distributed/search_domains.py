@@ -95,13 +95,12 @@ def propagate_domains(graph, fixed_selections, site_map):
         neighbors[consumer].append((producer, forward))
     for producer, consumer, pairs in binding_relations(graph.module, buckets):
         add_relation(producer, consumer, pairs)
-    for node, output, slot in loop_edges(graph.module, buckets):
-        field = slot - len(node.inputs)
+    for parameter, output, yield_index in loop_edges(graph.module):
         pairs = tuple((p, c) for p, source in enumerate(buckets[output].candidates)
-                      for c, target in enumerate(buckets[node.id].candidates)
-                      if source.return_type == target.return_type.fields[field]
-                      or (output, p, node.id, c, slot) in site_map)
-        add_relation(output, node.id, pairs)
+                      for c, target in enumerate(buckets[parameter].candidates)
+                      if source.return_type == target.return_type
+                      or (output, p, parameter, c, yield_index) in site_map)
+        add_relation(output, parameter, pairs)
 
     pending = deque(buckets)
     queued = set(buckets)

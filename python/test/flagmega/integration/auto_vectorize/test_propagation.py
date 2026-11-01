@@ -22,7 +22,7 @@ def test_pack_unpack_boundaries_are_eliminated_between_vectorized_ops():
 
     module = Graph().build()
     vectorized = Compiler().compile(module, stop_after="apply-vectorization").module
-    assert sum(node.op == "tensors.pack" for node in vectorized.nodes) == 2
+    assert sum(node.op == "tensors.pack" for node in vectorized.nodes) == 0
     assert sum(node.op == "tensors.unpack" for node in vectorized.nodes) == 1
     assert {node.op for node in vectorized.nodes}.issuperset({"math.vectorized_binary", "math.vectorized_unary"})
 
@@ -50,11 +50,10 @@ def test_pack_unpack_boundaries_are_eliminated_between_vectorized_ops():
     ]
     calls = [call for call, _ in compute_pairs]
     kernels = [kernel for _, kernel in compute_pairs]
-    assert [node.semantic_op for node in kernels] == [
-        "math.vectorized_binary", "math.vectorized_unary"
-    ]
-    # AutoDistribution sees the typed-vector producer/consumer relation and
-    # selects one common layout.  Explicit contract lowering therefore keeps
-    # a direct data edge; it must not synthesize a pack/unpack or boxing bridge.
-    assert calls[1].inputs == (calls[0].id,)
-    assert calls[1].type == calls[0].type
+    assert [node.semantic_op for node in kernels] == ["math.vectorized_binary"]
+    # With lane loads owned by the arithmetic, the ordinary PostOps fusion
+    # can retain SiLU in the same kernel. Its typed BF16 boundary still rounds
+    # the add before evaluating SiLU; no bridge or duplicate add is required.
+    post = kernels[0].semantic_attrs['post_ops'][0]
+    assert post.nodes[-1].op == 'math.vectorized_unary'
+    assert post.input_type.tensor.dtype == fm.vector_type('bfloat16', (8,))

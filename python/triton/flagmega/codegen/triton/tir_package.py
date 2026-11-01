@@ -44,6 +44,7 @@ from triton.flagmega.ir import IRModule, execution_calls_of, verify_buffer_plan,
 from triton.flagmega.ir.ops.math._block_scaled import block_scaled_precision_supports_target
 
 from .descriptor_resources import DescriptorResources
+from .kernel_programs import describe_kernel_programs
 
 TIR_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.triton-package-descriptor/v1"
 
@@ -287,7 +288,7 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         for index, spec in enumerate(descriptor_specs)
         if str(spec["source"]) in external_names
     ]
-    return {
+    descriptor = {
         "schema": TIR_PACKAGE_DESCRIPTOR_SCHEMA,
         "symbol": str(launch["entry"]),
         "grid": [int(value) for value in plan_launch["grid"]],
@@ -336,6 +337,15 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
         **mesh,
         **_shared_template_context(wrappers),
     }
+    descriptor.update(describe_kernel_programs(module, package_plan, descriptor))
+    if "persistent_window_resources" in module.metadata:
+        from triton.flagmega.ir.persistent_window import plan_window_resources
+
+        descriptor["persistent_window_resources"] = plan_window_resources(
+            module.metadata["persistent_window_resources"], root_binding["pools"],
+            descriptor.get("kernels"), device_window_storage,
+        )
+    return descriptor
 
 
 def _host_tensor_descriptor_specs(
@@ -432,6 +442,42 @@ def _trip_scoped_stage_calls(source_schedule):
     return found, dynamic
 
 
+def prepare_tir_package(
+    descriptor: dict[str, object], renderer_version: str
+) -> dict[str, object]:
+    """Render each namespace once for both the complete and split sources."""
+    if not descriptor.get("programs"):
+        return descriptor
+    context = {
+        **descriptor,
+        "renderer_version": renderer_version,
+        "entry_template": "entrypoints/call_graph.py.jinja",
+    }
+    registry = TritonTemplateRegistry()
+    mesh_contexts = any("mesh_context" in program for program in descriptor["programs"])
+    programs = []
+    for program in descriptor["programs"]:
+        if program.get("entry_alias") or program.get("rendered_source"):
+            programs.append(program)
+            continue
+        if mesh_contexts:
+            local = {**context, **program, **program.get("mesh_context", {}), "programs": ()}
+        else:
+            # Match the explicit namespace bindings in programs.py.jinja.
+            inherited = ("symbol", "num_warps", "entry_events", "render_calls", "device_functions",
+                         "signature", "signature_arguments", "typed_signature_arguments",
+                         "scalar_arguments", "device_context_abi")
+            local = {**context, "programs": (),
+                     **{name: program[name] if name in program else context[name] for name in inherited},
+                     "pipeline_schedule": program.get("pipeline_schedule"),
+                     "unspecialized_pointer_arguments": program.get("unspecialized_pointer_arguments", ()),
+                     "scoped_entry_arguments": program.get("scoped_entry_arguments", ()),
+                     "entry_inline_function": program.get("entry_inline_function"),
+                     "tasks_per_owner": program.get("tasks_per_owner", 1)}
+        programs.append({**program, "rendered_source": registry.render("module.py.jinja", local)})
+    return {**descriptor, "programs": programs}
+
+
 def render_tir_package(
     descriptor: dict[str, object], renderer_version: str
 ) -> str:
@@ -440,6 +486,14 @@ def render_tir_package(
         "renderer_version": renderer_version,
         "entry_template": "entrypoints/call_graph.py.jinja",
     }
+    programs = descriptor.get('programs', ())
+    if programs:
+        # Each outlined entry has its own complete template namespace and
+        # schedule transformations. Assembling already rendered namespaces
+        # must not run those transformations again on the package descriptor.
+        if any(not p.get('rendered_source') and not p.get('entry_alias') for p in programs):
+            context['programs'] = prepare_tir_package(descriptor, renderer_version)['programs']
+        return TritonTemplateRegistry().render("programs.py.jinja", context)
     return TritonTemplateRegistry().render("module.py.jinja", context)
 
 

@@ -65,6 +65,8 @@ class PackedQKVMicroKernelProvider:
                 input_kind="fused_rhs",
                 rhs_layout=rhs_layout,
             )
+            if (dispatch.semantic_attrs.get("reduction_order", "relaxed") != "mma_k16"
+                or implementation.facts.get("ordered_mma_accumulation", False))
             if _applicable(context, implementation.contract)
         )
         if not implementations:
@@ -111,6 +113,7 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
     weight_lanes = _lanes(weight_type.dtype)
     output_lanes = tuple(_lanes(value.dtype) for value in outputs)
     observed = {
+        "reduction_order": dispatch.semantic_attrs.get("reduction_order", "relaxed"),
         "required_input_dtype": _scalar_dtype(source.dtype).value,
         "required_weight_dtype": _scalar_dtype(weight_type.dtype).value,
         "required_input_lanes": source_lanes,

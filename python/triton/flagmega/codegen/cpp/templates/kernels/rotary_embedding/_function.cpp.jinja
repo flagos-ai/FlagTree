@@ -7,6 +7,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
     auto *const ftt_sequence_lengths = {{ call.sequence_lengths | cppexpr }};
     const float rotary_position =
         static_cast<float>(ftt_sequence_lengths[0]);
+    const ftt::dim_t rotary_base_position = ftt_sequence_lengths[0];
     auto *const ftt_cosine = {{ call.cosine | cppexpr }};
     auto *const ftt_sine = {{ call.sine | cppexpr }};
 {{ entry.strided_loop("rotary_offsets", call.local_capacity) }} {
@@ -14,6 +15,11 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
             continue;
         }
         const ftt::dim_t rotary_dimension = {{ call.dimension_coordinate | cppexpr }};
+{% if call.cache_table %}
+        auto *const ftt_cache = {{ call.cache_table | cppexpr }};
+        ftt_cosine[{{ call.cosine_offset | cppexpr }}] = ftt_cache[{{ call.cache_offsets[0] | cppexpr }}];
+        ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt_cache[{{ call.cache_offsets[1] | cppexpr }}];
+{% else %}
         const ftt::dim_t rotary_frequency_dimension =
             rotary_dimension % ({{ call.head_dim }}LL / 2LL);
         const float rotary_inverse_frequency = ftt::exp(
@@ -31,6 +37,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
             ftt_cosine, __cosf(rotary_angle) * {{ call.attention_scaling }}f);
         ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt::store_as(
             ftt_sine, __sinf(rotary_angle) * {{ call.attention_scaling }}f);
+{% endif %}
     }
 }
 

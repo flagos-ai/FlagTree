@@ -13,8 +13,9 @@ run once per iteration. This pass moves that remaining pure tree into the bank
 fields it reads, which keeps it offline at one evaluation per row and leaves
 the body with a single weight projection.
 
-It runs after the canonicalizer, so the ABI is already correct here and only
-the placement of the offline work changes.
+The same boundary applies to numerical constant programs, such as decoding
+FP8 weights with their stored scales. Eligibility follows the operation's
+constant-evaluation contract, not the name of the weight transformation.
 """
 
 from __future__ import annotations
@@ -33,31 +34,9 @@ from triton.flagmega.ir.parameter_bank import BankField, BankFieldProgram, Param
 from triton.flagmega.ir.region import is_region
 from triton.flagmega.passes.functions.graph import function_nodes
 
-# Operations that constitute real offline weight work. A tree containing none
-# of these is only an ABI view and is left where the canonicalizer put it.
-_WEIGHT_WORK_OPS = frozenset({
-    "tensors.concat",
-    "tensors.pack",
-    "tensors.unpack",
-    "tensors.permute",
-    "tensors.reshape",
-    "tensors.bitcast",
-    # After lower-tir a boundary layout change appears as a typed buffer
-    # view, which is still offline weight work when its leaf is a bank row.
-    "tir.buffer_view",
-})
-
-# Pure value-layout operations that may be evaluated per row offline.
-_OFFLINE_OPS = frozenset({
-    "tensors.concat",
-    "tensors.pack",
-    "tensors.unpack",
-    "tensors.permute",
-    "tensors.reshape",
-    "tensors.bitcast",
-    "distributed.sharded_view",
-    "distributed.materialize_local_shards",
-    "tir.buffer_view",
+# Placement adapters have an offline evaluator even after TIR lowering.
+_OFFLINE_ADAPTER_OPS = frozenset({
+    "distributed.sharded_view", "distributed.materialize_local_shards", "tir.buffer_view",
 })
 
 # Ops that read their operand's placement rather than only its logical shape.
@@ -66,6 +45,12 @@ _DISTRIBUTION_AWARE_OPS = frozenset({
     "distributed.sharded_view",
     "distributed.materialize_local_shards",
 })
+
+
+def _is_offline(node):
+    return node.effect.is_pure and (
+        node.op in _OFFLINE_ADAPTER_OPS or get_definition(node.op).const_evaluable
+    )
 
 
 def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
@@ -97,7 +82,12 @@ def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
     fields: dict[str, tuple[str, int]] = {}
     for node in module.nodes:
         if node.op == "builtin.get_item" and node.inputs and node.inputs[0] in rows:
-            fields[node.id] = (rows[node.inputs[0]], int(node.attrs["index"]))
+            bank_id = rows[node.inputs[0]]
+            index = int(node.attrs["index"])
+            # Only checkpoint fields denote immutable stored tensors. Literal
+            # and other bank transforms have a different storage contract.
+            if banks[bank_id].attrs["schema"].fields[index].transform == "checkpoint":
+                fields[node.id] = (bank_id, index)
     if not fields:
         return module
 
@@ -106,12 +96,13 @@ def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
         return module
 
     schemas: dict[str, ParameterBankSchema] = {}
-    appended: dict[str, list[tuple[BankField, tuple[int, ...]]]] = {}
+    appended = {}
     redirects: dict[str, str] = {}
     removed: set[str] = set()
     for root, leaves, nodes in trees:
         bank_ids = {fields[leaf][0] for leaf in leaves}
-        if len(bank_ids) != 1:
+        row_ids = {node_map[leaf].inputs[0] for leaf in leaves}
+        if len(bank_ids) != 1 or len(row_ids) != 1:
             continue
         bank_id = next(iter(bank_ids))
         schema = schemas.get(bank_id, banks[bank_id].attrs["schema"])
@@ -120,7 +111,7 @@ def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
             continue
         field = _absorbed_field(schema, indices, leaves, nodes, root, module.stage)
         schemas[bank_id] = ParameterBankSchema(schema.name, (*schema.fields, field))
-        appended.setdefault(bank_id, []).append((field, indices, root.type))
+        appended.setdefault(bank_id, []).append((field, indices, root.type, next(iter(row_ids))))
         redirects[root.id] = f"{root.id}.bank_field"
         removed.update(node.id for node in nodes)
     if not schemas:
@@ -130,10 +121,10 @@ def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
 
 def _offline_trees(module, fields, users, body_nodes, node_map):
     """Find maximal pure trees inside the body whose leaves are bank fields."""
-    claimed: set[str] = set()
-    results = []
+    exposed = {value for function in module.functions for value in function.outputs}
+    candidates = {}
     for node in module.nodes:
-        if node.id not in body_nodes or node.op not in _OFFLINE_OPS or node.id in claimed:
+        if node.id not in body_nodes or not _is_offline(node):
             continue
         if node.id in fields:
             continue
@@ -143,21 +134,30 @@ def _offline_trees(module, fields, users, body_nodes, node_map):
             continue
         # Only a value consumed exactly once is purely a storage decision; a
         # shared intermediate would duplicate offline work per consumer.
-        if any(len(users.get(value.id, ())) != 1 for value in collected[:-1]):
+        if any(len(users.get(value.id, ())) != 1 or value.id in exposed for value in collected[:-1]):
             continue
-        if not leaves or any(value.id in claimed for value in collected):
+        if not leaves:
             continue
-        parent = users.get(node.id, ())
-        if len(parent) == 1 and parent[0].op in _OFFLINE_OPS and parent[0].id in body_nodes:
-            # Not maximal: the parent will claim this subtree.
+        if len({node_map[leaf].inputs[0] for leaf in leaves}) != 1:
             continue
         # A lone boundary view is an ABI adapter, not offline weight work;
         # moving it into storage would change nothing and would hide the
         # distribution contract the callee expects.
-        if not any(value.op in _WEIGHT_WORK_OPS for value in collected):
+        if not any(value.op not in _DISTRIBUTION_AWARE_OPS for value in collected):
+            continue
+        candidates[node.id] = (node, tuple(leaves), tuple(collected))
+    claimed: set[str] = set()
+    results = []
+    for node, leaves, collected in candidates.values():
+        parent = users.get(node.id, ())
+        # An evaluable parent can still depend on runtime values or share an
+        # intermediate. Defer only to a parent with a proven complete tree.
+        if len(parent) == 1 and parent[0].id in candidates:
+            continue
+        if any(value.id in claimed for value in collected):
             continue
         claimed.update(value.id for value in collected)
-        results.append((node, tuple(leaves), tuple(collected)))
+        results.append((node, leaves, collected))
     return tuple(results)
 
 
@@ -173,7 +173,7 @@ def _collect(node, fields, body_nodes, node_map, collected, leaves, seen) -> boo
             if value not in leaves:
                 leaves.append(value)
             continue
-        if source.op not in _OFFLINE_OPS or source.id not in body_nodes or not source.effect.is_pure:
+        if not _is_offline(source) or source.id not in body_nodes:
             return False
         if not _collect(source, fields, body_nodes, node_map, collected, leaves, seen):
             return False
@@ -315,10 +315,7 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
     projections: dict[str, list[Node]] = {}
     for bank_id, entries in appended.items():
         schema = schemas[bank_id]
-        row_id = next((key for key, value in rows.items() if value == bank_id), None)
-        if row_id is None:
-            continue
-        for offset, (field, _, root_type) in enumerate(entries):
+        for offset, (field, _, root_type, row_id) in enumerate(entries):
             index = len(schema.fields) - len(entries) + offset
             # The schema field is the logical layout; the projection keeps the
             # distribution the absorbed root already had, so consumers and the
@@ -377,6 +374,8 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
     return replace(
         module,
         nodes=_without_orphans(tuple(result), module, set(fields)),
+        functions=tuple(replace(function, outputs=tuple(redirects.get(value, value) for value in function.outputs))
+                        for function in module.functions),
         selection_points=points,
         selections=tuple(
             record for record in module.selections if record.point_id in point_ids
@@ -398,7 +397,7 @@ def _extended_rows(bank, entries):
     rows = []
     for row in bank.attrs["rows"]:
         values = list(row)
-        for _, indices, _root in entries:
+        for _, indices, _root, _row in entries:
             keys: list = []
             for index in indices:
                 value = row[index]
@@ -428,7 +427,7 @@ def _row_type(previous, schema, appended=()):
     old = list(previous.fields) if isinstance(previous, TupleType) else []
     extra = {
         len(schema.fields) - len(appended) + offset: root_type
-        for offset, (_, _, root_type) in enumerate(appended)
+        for offset, (_, _, root_type, _) in enumerate(appended)
     }
     fields = []
     for index, field in enumerate(schema.fields):

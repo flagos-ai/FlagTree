@@ -6,6 +6,8 @@
 {{ entry.kernel_decorator(call) }}  {#- prefer_inline=true re-tested in Trial 55; see dense_matmul/_function.py.jinja's matching note -- kept reverted, no net performance win under current conditions even though Trial 15's stability mystery is now explained (Trial 49). #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+    for qkv_local_m in range({{ call.rows | default(1) }}):
+{% filter indent(4, true) %}
 {% for output in call.outputs %}
     for qkv_local_n_start in tl.range(
         0, {{ output.local_n_capacity }}, {{ call.tile_n }}
@@ -63,6 +65,7 @@ def {{ call.symbol }}({{ call.signature }}):
                 & ({{ output.active }}),
         )
 {% endfor %}
+{% endfilter %}
 
 
 {% endif %}

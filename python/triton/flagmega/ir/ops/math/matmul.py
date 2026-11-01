@@ -23,13 +23,14 @@ class MatMul(OpDefinition):
     transpose_a = attribute_parameter(default=False)
     transpose_b = attribute_parameter(default=False)
     output_data_type = attribute_parameter(default=None)
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
         if any(not isinstance(attrs[name], bool) for name in ("transpose_a", "transpose_b")):
             raise IRSchemaError("F.math.matmul transpose flags must be bool.")
-        return normalize_output_data_type(attrs)
+        return normalize_output_data_type(normalize_reduction_order(attrs))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -40,6 +41,7 @@ class MatMul(OpDefinition):
         if lhs.rank != 2 or rhs.rank != 2 or lhs.dtype != rhs.dtype or isinstance(lhs.dtype, VectorType):
             raise IRSchemaError("F.math.matmul requires rank-2 scalar tensors with matching dtype.")
         lhs_m_axis, lhs_k_axis = (1, 0) if attrs["transpose_a"] else (0, 1)
+        validate_reduction_order(attrs, lhs_type, lhs_k_axis)
         rhs_k_axis, rhs_n_axis = (1, 0) if attrs["transpose_b"] else (0, 1)
         lm, lk = lhs.shape[lhs_m_axis], lhs.shape[lhs_k_axis]
         rk, rn = rhs.shape[rhs_k_axis], rhs.shape[rhs_n_axis]
@@ -103,7 +105,8 @@ class MatMul(OpDefinition):
             lhs = lhs.transpose(-2, -1)
         if node.attrs["transpose_b"]:
             rhs = rhs.transpose(-2, -1)
-        return matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context)
+        return matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context,
+                            reduction_order=node.attrs.get("reduction_order"))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
@@ -121,10 +124,41 @@ def normalize_output_data_type(attrs):
     return attrs
 
 
-def matmul_value(lhs, rhs, output_data_type, context):
+def normalize_reduction_order(attrs):
+    """An explicit MMA order forbids reassociating the K accumulation."""
+    order = attrs.get("reduction_order", "relaxed")
+    if order not in ("relaxed", "mma_k16"):
+        raise IRSchemaError("MatMul reduction_order must be 'relaxed' or 'mma_k16'.")
+    if order == "relaxed":
+        attrs.pop("reduction_order", None)
+    else:
+        attrs["reduction_order"] = order
+    return attrs
+
+
+def validate_reduction_order(attrs, lhs_type, k_axis):
+    if attrs.get("reduction_order", "relaxed") != "mma_k16":
+        return
+    dtype = tensor_of(lhs_type).dtype
+    scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
+    if scalar != DType.BFLOAT16:
+        raise IRSchemaError("The ordered MMA reduction requires BF16 operands.")
+    if isinstance(lhs_type, DistributedType) and (
+        lhs_type.partial is not None or lhs_type.axis_policies[k_axis] != SBP.broadcast()
+    ):
+        raise IRSchemaError("An ordered MMA reduction cannot reassociate independently accumulated K shards.")
+
+
+def matmul_value(lhs, rhs, output_data_type, context, *, reduction_order=None):
     """F32 output consumes the accumulator, never a previously rounded BF16 result."""
     dtype = context.torch_dtype(DType(output_data_type)) if output_data_type is not None else lhs.dtype
     if dtype == context.torch.float32 and lhs.is_floating_point():
+        if (reduction_order == "mma_k16" and lhs.is_cuda
+                and lhs.dtype in (context.torch.bfloat16, context.torch.float16)):
+            # Widening the operands selects a different GEMM reduction.
+            # PyTorch's mixed-output GEMM retains the declared MMA inputs
+            # while publishing its unrounded FP32 accumulator.
+            return context.torch.mm(lhs, rhs, out_dtype=context.torch.float32)
         return lhs.float() @ rhs.float()
     return (lhs @ rhs).to(dtype=dtype)
 

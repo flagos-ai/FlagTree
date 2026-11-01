@@ -37,6 +37,7 @@ from triton.flagmega.ir.ops.core import (
 from triton.flagmega.ir.ops.nn.qkv_parallel_linear import _check_heads, _project
 from triton.flagmega.ir.type_pattern import has_rank, is_none, is_tensor
 from triton.flagmega.ir.types import VectorType
+from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order, validate_reduction_order
 
 
 _OPTIONAL_TENSOR = is_tensor() | is_none()
@@ -66,6 +67,7 @@ class PackedQKVParallelLinear(OpDefinition):
     num_kv_heads = attribute_parameter()
     output_data_type = attribute_parameter()
     rhs_layout = attribute_parameter(default="k_major")
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -76,11 +78,13 @@ class PackedQKVParallelLinear(OpDefinition):
                 raise IRSchemaError(f"PackedQKVParallelLinear {name} must be positive.")
         if attrs["rhs_layout"] != "k_major":
             raise IRSchemaError("PackedQKVParallelLinear currently requires K-major RHS.")
+        normalize_reduction_order(attrs)
         return {
             "num_heads": int(attrs["num_heads"]),
             "num_kv_heads": int(attrs["num_kv_heads"]),
             "output_data_type": DType(attrs["output_data_type"]),
             "rhs_layout": "k_major",
+            "reduction_order": attrs.get("reduction_order", "relaxed"),
         }
 
     @classmethod
@@ -90,11 +94,14 @@ class PackedQKVParallelLinear(OpDefinition):
             "num_kv_heads": attrs["num_kv_heads"],
             "output_data_type": DType(attrs["output_data_type"]).value,
             "rhs_layout": attrs["rhs_layout"],
+            **({"reduction_order": attrs["reduction_order"]}
+               if attrs["reduction_order"] != "relaxed" else {}),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value = tensor_of(cls.input.type_of(inputs))
+        validate_reduction_order(attrs, cls.input.type_of(inputs), 1)
         weights = tuple(tensor_of(parameter.type_of(inputs)) for parameter in (
             cls.q_weight, cls.k_weight, cls.v_weight,
         ))

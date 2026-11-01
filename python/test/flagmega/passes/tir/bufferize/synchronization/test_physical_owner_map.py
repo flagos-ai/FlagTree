@@ -71,3 +71,25 @@ def test_canonical_and_compact_cyclic_storage_have_different_physical_owners(mod
                     distributed_storage_kind=fm.DistributedBufferStorageKind.CANONICAL_GLOBAL)
     previous, current = (write, read) if mode == "raw" else (read, write)
     assert _hazard_requirement(previous, current)[0] == "grid"
+
+
+@pytest.mark.parametrize("same_owner", [False, True])
+def test_canonical_exclusive_read_uses_consumers_execution_owners(same_owner):
+    placement = fm.Placement((2, 4), "yx", "bb")
+    ordinary = fm.DistributedType(fm.tensor_type("float32", (128,)), (fm.SBP.broadcast(),), placement)
+    exclusive = replace(ordinary, exclusive=fm.SBP.exclusive((0, 1)))
+    generic = BufferizationOptions.generic()
+    options = replace(generic, memory_spaces=tuple(replace(s, sharing_scope=MemorySharingScope.CHIP)
+                                                  if s.name == "workspace" else s for s in generic.memory_spaces))
+    builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
+    source = builder.var("source", exclusive, id="source")
+    producer = builder.call("tir.kernel", (source,), exclusive, id="producer")
+    consumer = builder.call("tir.kernel", (producer,), exclusive if same_owner else ordinary, id="consumer")
+    builder.function("main", (source,), (consumer,))
+    module = builder.build(entry="main")
+    plan = fm.make_buffer_plan(module, options=options)
+    bindings = dict(plan.function_map["main"].values)
+    buffer = bindings["producer"][0]
+    write = next(a for a in _node_accesses(module, plan, "main", producer, bindings) if a.buffer == buffer)
+    read = next(a for a in _node_accesses(module, plan, "main", consumer, bindings) if a.buffer == buffer)
+    assert _hazard_requirement(write, read)[0] == ("block" if same_owner else "grid")

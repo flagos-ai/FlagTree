@@ -134,6 +134,9 @@ def describe_function_runtime_binding(
         ):
             for binding in parameter["buffers"]:
                 used_storages.add(str(binding["abi"]["storage"]))
+    for binding in call_abi.get('loop_buffers', {}).values():
+        used_storages.add(str(binding['abi']['storage']))
+
     for event in call_abi["events"]:
         if event["kind"] != "function_call":
             continue
@@ -233,6 +236,17 @@ def describe_function_runtime_binding(
                 address_arguments = _bind_view_offset(module, plan, abi, pool_by_storage, argument_by_physical)
                 if address_arguments:
                     binding["address_arguments"] = address_arguments
+
+    for binding in call_abi.get('loop_buffers', {}).values():
+        abi = binding['abi']
+        if name != module.entry:
+            _make_pool_abi_scope_local(plan, abi)
+        argument, value_kind = _resolve_runtime_root(module, plan, abi, binding['actual'], pool_by_storage, argument_by_physical)
+        if argument is None:
+            raise CodegenError(f"Loop buffer {binding['actual']!r} has no runtime storage root.")
+        binding['runtime_argument'] = argument
+        binding['runtime_value_kind'] = value_kind
+        _bind_view_offset(module, plan, abi, pool_by_storage, argument_by_physical)
 
     for event in call_abi["events"]:
         if event["kind"] != "function_call":

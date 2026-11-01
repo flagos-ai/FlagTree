@@ -4,6 +4,7 @@
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import DistributedType, SBP
+from dataclasses import replace
 
 
 def preserve_unchanged_axes(source, output):
@@ -12,4 +13,4 @@ def preserve_unchanged_axes(source, output):
     for axis, (before, after) in enumerate(zip(source.tensor.shape, output.shape, strict=True)):
         if before != after and source.axis_policies[axis] != SBP.broadcast():
             raise IRSchemaError("Shape transforms on split axes require explicit resharding.")
-    return DistributedType(output, source.axis_policies, source.placement, source.partial)
+    return replace(source, tensor=output)

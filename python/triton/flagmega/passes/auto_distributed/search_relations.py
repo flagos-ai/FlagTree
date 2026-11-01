@@ -99,9 +99,10 @@ def add_reshard_relations(model, graph, domains, variables):
             for producer in domains[producer_id]:
                 source = producer_bucket.candidates[producer].return_type
                 for consumer in consumers:
-                    if (producer, consumer) not in matrix and source == consumer_bucket.candidates[
-                        consumer
-                    ].input_types[input_index]:
+                    candidate = consumer_bucket.candidates[consumer]
+                    target = (candidate.return_type if sites[0].edge_kind == "loop_yield"
+                              else candidate.input_types[input_index])
+                    if (producer, consumer) not in matrix and source == target:
                         matrix[(producer, consumer)] = ((0, 0),)
         producer_classes, producers = _relation_classes(
             domains[producer_id],

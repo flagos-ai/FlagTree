@@ -24,6 +24,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.ops.tensors.pack import axis_lane_products, normalize_axes, pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
+from triton.flagmega.ir.ops.tensors.cast import rounding_attrs
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import VectorType, data_type, data_type_from_data
 
@@ -47,6 +48,7 @@ class VectorizedCast(OpDefinition):
     value = input_parameter(is_tensor())
     new_type = attribute_parameter()
     vectorize_axes = attribute_parameter()
+    rounding_contract = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -72,6 +74,7 @@ class VectorizedCast(OpDefinition):
                 "lanes": tuple(new_type.lanes),
             },
             "vectorize_axes": axes,
+            **rounding_attrs(attrs),
         }
 
     @classmethod
@@ -139,6 +142,7 @@ class VectorizedCast(OpDefinition):
         return {
             "new_type": data_type_from_data(node.attrs["new_type"]),
             "vectorize_axes": tuple(int(value) for value in node.attrs["vectorize_axes"]),
+            **rounding_attrs(node.attrs),
         }
 
     @classmethod

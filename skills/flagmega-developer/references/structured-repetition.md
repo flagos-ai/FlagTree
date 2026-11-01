@@ -46,5 +46,9 @@ Acceptance requires zero implicit captures, matching init/iter/yield/result
 types, alpha-equivalent serialization after reload, correct zero/one/multiple
 trip behavior, order-preserving numerical comparison against an unrolled
 reference, and a structural report showing that body node count is independent
-of the number of repeated rows. Compute bodies still obey the no-`Pack`
-acceptance rule.
+of the number of repeated rows. Loop bodies and their reachable callees obey
+the same [IR acceptance rule](ir-acceptance.md) as other compute bodies:
+zero standalone Pack, Slice, Cast (including vectorized Cast), Concat and
+Unpack. Keep required indexing, rounding and layout semantics in the owning
+producer/consumer contract; proven offline bank-weight recipes retain the
+ordinary constant-provenance allowance.

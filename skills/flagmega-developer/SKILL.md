@@ -146,6 +146,18 @@ require exhausting every existing candidate first.
   defaults may already pin other choices; replacing one record does not unpin
   them. Use target capabilities and actual types to express applicability.
 
+The ordinary search may produce an initial IR with one uniform execution mesh,
+mapping and resource configuration. This is a valid starting point, not a restriction
+on subsequent agent optimization. The agent may edit the typed IR to change
+per-op execution meshes, participant/task mappings, program partitions and
+per-program resources. Resume before the earliest affected stage and regenerate
+distribution, candidate, boundary ABI, buffer/lifetime, synchronization, launch
+and cache decisions as needed; never keep stale physical plans or patch emitted
+source to implement the edit. Validate the edited complete module through normal
+compilation and device execution. A dynamic (`*`) op may use an ordinary or
+persistent implementation, but never fuses with other kernels; adjacent fixed
+meshes require full mapping identity and the usual fusion legality proofs.
+
 An implementation override is not a post-hoc patch to emitted
 `generated_kernels.py`. Regenerate the artifact from the edited implementation
 or registered override through normal codegen, verification, and runtime setup.
@@ -154,19 +166,42 @@ or override cannot satisfy its contract.
 
 ## IR acceptance
 
-Before accepting an imported component, IR extension, or representation
-optimization, apply [IR acceptance and repair](references/ir-acceptance.md)
+Before accepting an imported component, IR extension, representation
+optimization, or partition/scheduling change, apply
+[IR acceptance and repair](references/ir-acceptance.md)
 to the complete affected module after packing/layout propagation and again
-after distribution. **Compute bodies must contain no `tensors.pack` / `Pack`,
-including in reachable callees.** A later zero-copy lowering does not waive
-this requirement. Compile-time weight/constant packing must have proven
-constant provenance and offline materialization, not just a `weights` label.
+after distribution. **Pack, Slice, Cast, Concat and Unpack follow the same rule:
+zero standalone nodes in compute bodies, including the entry, loop/region
+bodies and reachable callees.** This includes numeric vectorized Cast variants.
+A later zero-copy lowering or required rounding does not waive this structural
+gate: implement indexing, conversion and layout in the owning producer/consumer
+contract. Pure weight/constant transforms remain
+allowed with proven constant provenance and offline materialization, not just
+a `weights` label. These restrictions apply to compute bodies, not to proven
+offline weight recipes or instructions inside the implementing device kernel.
 
 Check producer output layouts, numerical boundaries, function ABI, constant
 handling, distribution, effects, and physical lowering together. Diagnose a
-remaining Pack as an incomplete producer contract, propagation path, or layout
-choice; repair its owner before acceptance. Record the inspected checkpoint
-identity and structural/numerical/device evidence, including any failed items.
+remaining Pack, Slice, Cast, Concat or Unpack as an incomplete producer/consumer
+contract, propagation path, or representation choice; repair its owner before
+acceptance. Record each operation's compute-body count separately, together with
+the inspected checkpoint identity and structural/numerical/device evidence,
+including any failed items.
+
+Explicitly assess both kernel/program `partition` decisions and the role
+partitions inside `warp_specialize`, using the actual lowered IR and execution
+scope. Record each role's work, warp allocation and blocking waits. For a
+global producer/consumer megakernel, specialization
+should cover the outer model/layer execution so the producer can naturally
+advance across layers. A function-local specialization that joins before
+returning does not establish this global role lifetime. Justify retained cuts
+and assess their effects on weight prefetch, communication overlap, buffer
+lifetimes and resource use; unexplained
+per-op or per-layer splitting fails IR acceptance. Follow the partition checks
+in [IR acceptance and repair](references/ir-acceptance.md#assess-partitioning-and-warp-specialization-scope).
+Report the partition assessment in a table, including overlap with both
+producer prefetch and independent consumer work, and distinguish demonstrated
+overlap from unverified intent.
 
 ## Iteration and acceptance
 

@@ -8,8 +8,10 @@ from itertools import product
 from triton.flagmega.ir import DistributedType, VectorType, local_tensor_type, local_shard_descriptor, logical_type
 from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.codegen.triton.sparse_experts.mma import supports_block_fp8_wgmma
+from triton.flagmega.codegen.triton.sparse_experts.cooperative_geometry import cooperative_gate_geometry
 
 from .core import TritonCandidateProposal
+from .dense_matmul import _supports_reduction_order
 
 
 class SparseExpertsCandidateProvider:
@@ -25,7 +27,14 @@ class SparseExpertsCandidateProvider:
             context.configure_implementation(implementation)
             for implementation in context.implementations(family, indexing="local", rounding="explicit")
             if _supports_local_n(implementation, node.type)
+            and _supports_reduction_order(implementation, node.attrs)
+            and _supports_bf16(implementation, node, context)
             and _supports_weight_tiles(implementation, node, context)
+            and (not implementation.contract.get("requires_chip_scale_blocks", False)
+                 or node.op == "nn.sparse_experts_gate_up" and cooperative_gate_geometry({
+                     parameter.name: context.module.node_map[node.inputs[index]].type
+                     for index, parameter in enumerate(get_definition(node.op).input_parameters)
+                 }, node.type) is not None)
             and (not implementation.contract.get("requires_block_fp8_wgmma", False)
                  or supports_block_fp8_wgmma(node.op, {
                      parameter.name: context.module.node_map[node.inputs[index]].type
@@ -35,6 +44,18 @@ class SparseExpertsCandidateProvider:
             return None
         return TritonCandidateProposal(
             candidates, context.choose_default(family, candidates, portable_fallback=f"tir.{family}.simt"))
+
+
+def _supports_bf16(implementation, node, context):
+    if not implementation.contract.get("requires_bf16", False):
+        return True
+    from triton.flagmega.ir.ops.nn._sparse_experts import element_type
+    from triton.flagmega.ir import DType
+    definition = get_definition(node.op)
+    parameters = tuple(p for p in definition.input_parameters
+                       if p.name in {"q", "dispatched", "activations", "gate_weight", "up_weight", "down_weight"})
+    return all(element_type(logical_type(context.module.node_map[p.read(node.inputs)].type).dtype) == DType.BFLOAT16
+               for p in parameters)
 
 
 def _supports_local_n(implementation, result_type):

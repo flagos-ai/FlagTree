@@ -79,9 +79,14 @@ class TextGenerationEngine:
             del self._consumed[common:]
             self.backend.synchronize()
             prefill_started = time.perf_counter()
-            for token in prompt[common:]:
-                self.backend.append(token)
-                self._consumed.append(token)
+            batched = getattr(self.backend, "prefill", None)
+            if common == 0 and callable(batched):
+                batched(prompt)
+                self._consumed.extend(prompt)
+            else:
+                for token in prompt[common:]:
+                    self.backend.append(token)
+                    self._consumed.append(token)
             self.backend.synchronize()
             prefill_ms = (time.perf_counter() - prefill_started) * 1000
             generated, intervals = [], []

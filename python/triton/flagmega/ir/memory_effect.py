@@ -10,11 +10,12 @@ copied into a materialized :class:`KernelDispatch`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from enum import Enum, IntFlag
-from typing import ClassVar, Mapping
+from typing import ClassVar
 
-from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.errors import IRSchemaError, IRVerificationError
 
 
 class MemoryAccessMode(IntFlag):
@@ -322,6 +323,75 @@ MemoryEffect.REDUCTION_READ_WRITE = MemoryEffect(
 )
 
 
+def implementation_memory_effect(
+    effect: MemoryEffect,
+    facts: Mapping[str, object],
+    *,
+    is_result: bool = False,
+    parameter_name: str | None = None,
+    input_names: tuple[str, ...] | None = None,
+    stage: str | None = None,
+    node_id: str | None = None,
+) -> MemoryEffect:
+    """Refine an op effect with the selected implementation's physical contract.
+
+    ``source_memory_scopes`` overrides the uniform source scope by ABI input
+    name. An inferred override retains the op-local requirement; it does not
+    erase a scope required by the semantic operation. Unnamed inputs retain
+    the uniform declaration. The full input schema rejects misspelled names.
+    """
+
+    scopes = _implementation_source_scopes(facts, input_names, stage=stage, node_id=node_id)
+    if not is_result and scopes and parameter_name not in input_names:
+        raise IRVerificationError("Implementation source_memory_scopes requires the current input name.",
+                                  stage=stage, node_id=node_id)
+
+    if effect.physical_mode != MemoryAccessMode.NONE:
+        declared = MemoryAccessScope(
+            facts.get("result_memory_scope", "inferred") if is_result
+            else scopes.get(parameter_name, facts.get("source_memory_scope", "inferred")))
+        if declared is not MemoryAccessScope.INFERRED:
+            effect = replace(effect, scope=declared)
+    scope = facts.get("participant_scope", "all_programs")
+    if scope not in {"all_programs", "single_program"}:
+        raise IRVerificationError(
+            f"Unknown implementation participant_scope {scope!r}.",
+            stage=stage, node_id=node_id,
+        )
+    if scope == "all_programs" or effect.physical_mode == MemoryAccessMode.NONE:
+        return effect
+    if (
+        effect.access_domain.kind is MemoryAccessDomainKind.FIXED_BLOCK
+        and effect.access_domain.block_index != 0
+    ):
+        raise IRVerificationError(
+            "Single-program implementation conflicts with the op access domain.",
+            stage=stage, node_id=node_id,
+        )
+    return effect.in_fixed_block(0)
+
+
+def _implementation_source_scopes(facts, input_names, *, stage, node_id):
+    if "source_memory_scopes" not in facts:
+        return {}
+    raw = facts["source_memory_scopes"]
+
+    def reject(reason):
+        raise IRVerificationError(f"Implementation source_memory_scopes {reason}.", stage=stage, node_id=node_id)
+
+    if not isinstance(raw, Mapping) or any(not isinstance(name, str) for name in raw):
+        reject("must be a mapping from input names to memory scopes")
+    if input_names is None:
+        reject("requires the complete input parameter schema")
+    unknown = raw.keys() - set(input_names)
+    if unknown:
+        reject(f"names unknown inputs {sorted(unknown)}")
+    try:
+        return {name: MemoryAccessScope(scope) for name, scope in raw.items()}
+    except (ValueError, TypeError):
+        reject("contains an invalid memory scope")
+
+
 __all__ = [
     "MemoryAccessDomain",
     "MemoryAccessDomainKind",
@@ -332,6 +402,7 @@ __all__ = [
     "MemoryEffect",
     "MemoryEffectKind",
     "MemoryOwnerAccess",
-    "memory_effect",
     "expand_memory_effect",
+    "implementation_memory_effect",
+    "memory_effect",
 ]

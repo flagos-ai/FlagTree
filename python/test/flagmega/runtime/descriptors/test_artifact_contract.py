@@ -27,7 +27,7 @@ def _construct(monkeypatch, specs, *, signature, dynamic):
             "signature_arguments": signature,
             "dynamic_argument_indices": dynamic,
         }},
-        ir_module=SimpleNamespace(),
+        ir_module=SimpleNamespace(metadata={}),
         kernel=object(),
     )
 

@@ -9,7 +9,7 @@ itself remains an ``IRType`` in :mod:`model` to avoid a base-type import cycle.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 from itertools import combinations, product
@@ -378,11 +378,10 @@ def is_distributable(tensor: TensorType, policies: Sequence[SBP], placement: Pla
 def sharded_view_error(source_type: IRType, target_type: DistributedType) -> str | None:
     """Validate the semantic, zero-copy ``Distributed.ShardedView`` contract.
 
-    This mirrors nncase ``DistributedUtility.TryValidateShardedView``.  The
-    target always names the same logical tensor; a distributed source must use
-    the same placement and neither side may carry a partial value.  Whether a
-    legal semantic view is physically realizable is deliberately left to the
-    target realization policy.
+    The target names the same logical tensor. Same-placement views may narrow
+    coordinates within an exact reduction component; local-mesh changes must
+    preserve chip ownership and numerical policy. Physical realizability is
+    proved separately by the target policy and actual buffer backing.
     """
 
     from triton.flagmega.ir.model import DistributedType, TensorType
@@ -392,8 +391,10 @@ def sharded_view_error(source_type: IRType, target_type: DistributedType) -> str
     if isinstance(source_type, DistributedType):
         source_tensor = source_type.tensor
         if source_type.placement != target_type.placement:
-            return "ShardedView source and target placements must match."
+            return chip_view_error(source_type, target_type)
         if _has_partial(source_type):
+            if source_type != target_type and is_component_shard_subview(source_type, target_type):
+                return None
             return "ShardedView source cannot contain a partial value."
         if not _has_only_split_or_broadcast(source_type):
             return "ShardedView source policies must contain only Split or Broadcast."
@@ -615,6 +616,10 @@ def boxing_crossing_chip_axes(
     )
     if not chip_axes:
         return ()
+    if (isinstance(target_type, DistributedTypeImpl)
+            and target_type.placement != placement
+            and chip_view_error(source_type, target_type) is None):
+        return ()
     target = (
         target_type
         if isinstance(target_type, DistributedTypeImpl)
@@ -717,6 +722,124 @@ def _chip_projected_type(value: DistributedType) -> DistributedType | None:
         )
     except IRSchemaError:
         return None
+
+
+@lru_cache(maxsize=4096)
+def chip_data_type(value: IRType) -> IRType | None:
+    """Data available after local publication, with block axes removed.
+
+    This is an ownership/coordinate proof, not permission to alias private
+    memory. Block P/E needs reduction/publication before projection; device
+    P/E stays explicit. Vector payloads and chip split granularity are kept.
+    """
+    from triton.flagmega.ir.model import DistributedType as Dist, TensorType, TupleType
+    if isinstance(value, TupleType):
+        fields = tuple(chip_data_type(field) for field in value.fields)
+        return None if any(field is None for field in fields) else TupleType(fields, value.is_variadic)
+    if not isinstance(value, Dist):
+        return value
+    placement = value.placement
+    blocks = {i for i, level in enumerate(placement.hierarchy_levels) if level == 'b'}
+    retained = tuple(i for i in range(placement.rank) if i not in blocks)
+    mapping = {old: new for new, old in enumerate(retained)}
+    if (value.partial is not None and blocks.intersection(value.partial.axes)
+            or value.exclusive is not None and blocks.intersection(value.exclusive.axes)):
+        return None
+    policies = []
+    for policy in value.axis_policies:
+        if isinstance(policy, SBPBroadCast):
+            policies.append(policy)
+        elif isinstance(policy, SBPSplit):
+            projected = _chip_projected_split(policy, placement, blocks)
+            if projected is None:
+                return None
+            policies.append(SBP.split(*(SplitStage(tuple(mapping[i] for i in stage.hierarchy_axes),
+                                                   stage.distribution) for stage in projected.stages))
+                            if isinstance(projected, SBPSplit) else projected)
+        else:
+            return None
+    if not retained:
+        return value.tensor
+    partial = None if value.partial is None else SBP.partial(
+        tuple(mapping[i] for i in value.partial.axes), value.partial.reduce_op)
+    exclusive = None if value.exclusive is None else SBP.exclusive(
+        tuple(mapping[i] for i in value.exclusive.axes), value.exclusive.owner_coordinates)
+    try:
+        return Dist(value.tensor, tuple(policies),
+                    Placement(tuple(placement.hierarchy[i] for i in retained),
+                              ''.join(placement.name[i] for i in retained),
+                              ''.join(placement.hierarchy_levels[i] for i in retained)),
+                    partial=partial, exclusive=exclusive)
+    except IRSchemaError:
+        return None
+
+
+def chip_view_error(source: IRType, target: IRType) -> str | None:
+    """Prove local-mesh edits preserve chip values or exact partial components."""
+    from triton.flagmega.ir.model import DistributedType as Dist, TensorType
+    projected_source, projected_target = chip_data_type(source), chip_data_type(target)
+    if projected_source is None or projected_target is None:
+        return 'Chip view requires resolved block partial/exclusive ownership and expressible chip coordinates.'
+    if projected_source == projected_target:
+        return None
+    if isinstance(projected_source, Dist) and isinstance(projected_target, Dist):
+        if is_component_shard_subview(projected_source, projected_target):
+            return None
+    if isinstance(projected_source, TensorType) and isinstance(projected_target, Dist):
+        if projected_source == projected_target.tensor and projected_target.partial is None and projected_target.exclusive is None:
+            return None
+    return 'Chip view would change or widen device ownership, numerical type, or coordinate layout.'
+
+
+@lru_cache(maxsize=4096)
+def is_component_shard_subview(source: DistributedType, target: DistributedType) -> bool:
+    """Containment inside the same value/reduction component, without publishing it.
+
+    Partial ownership is independent of coordinate geometry. Compare geometry
+    only after proving the exact component owner and reduction policy agree;
+    the original IR and physical backing keep that policy throughout.
+    """
+    if source.partial != target.partial or source.exclusive != target.exclusive:
+        return False
+    if source.partial is None:
+        return is_local_shard_subview(source, target)
+    return is_local_shard_subview(replace(source, partial=None), replace(target, partial=None))
+
+
+@lru_cache(maxsize=4096)
+def chip_shared_backing_type(value: DistributedType, placement: Placement) -> DistributedType | None:
+    """Re-express one complete chip component under a new local execution mesh.
+
+    A compact array of CTA components cannot use this representation. Its
+    physical layout needs a producer/consumer materialization plan instead.
+    Actual shared-memory scope and pointer lifetime are proved by bufferization.
+    """
+    if block_owner_count(value) != 1:
+        return None
+    from triton.flagmega.ir.model import DistributedType as Dist, TensorType
+    projected = chip_data_type(value)
+    retained = tuple(i for i, level in enumerate(placement.hierarchy_levels) if level != 'b')
+    if isinstance(projected, TensorType):
+        if retained:
+            return None
+        return Dist(projected, (SBP.broadcast(),) * projected.rank, placement)
+    if not isinstance(projected, Dist):
+        return None
+    target_chip = Placement(tuple(placement.hierarchy[i] for i in retained),
+                            ''.join(placement.name[i] for i in retained),
+                            ''.join(placement.hierarchy_levels[i] for i in retained))
+    if projected.placement != target_chip:
+        return None
+    mapping = dict(enumerate(retained))
+    policies = tuple(SBP.split(*(SplitStage(tuple(mapping[i] for i in stage.hierarchy_axes), stage.distribution)
+                                for stage in policy.stages)) if isinstance(policy, SBPSplit) else policy
+                     for policy in projected.axis_policies)
+    partial = None if projected.partial is None else SBP.partial(
+        tuple(mapping[i] for i in projected.partial.axes), projected.partial.reduce_op)
+    exclusive = None if projected.exclusive is None else SBP.exclusive(
+        tuple(mapping[i] for i in projected.exclusive.axes), projected.exclusive.owner_coordinates)
+    backing = Dist(projected.tensor, policies, placement, partial, exclusive)
+    return backing if local_shape(backing) == local_shape(value) else None
 
 
 def _chip_projected_split(

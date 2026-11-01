@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from triton.flagmega.ir.tir.kernel_definition import replace_kernel_dispatch, replace_kernel_callables
 
 from triton.flagmega.errors import CodegenError, IRVerificationError
 from triton.flagmega.ir import (
@@ -14,6 +13,8 @@ from triton.flagmega.ir import (
     TIRMicroKernelSelection,
     kernel_dispatch_of,
 )
+from triton.flagmega.ir.memory_effect import implementation_memory_effect
+from triton.flagmega.ir.tir.kernel_definition import replace_kernel_callables, replace_kernel_dispatch
 
 from .core import TIRMicroKernelContext, TIRMicroKernelProviderRegistry
 from .materialization import (
@@ -29,8 +30,8 @@ class TritonMicroKernelSelectionPolicy:
         self.registry = registry
 
     def propose(self, module: IRModule, target) -> IRModule:
-        from triton.flagmega.passes.tir.plan_storage_alignments import satisfies_alignment_contract
         from triton.flagmega.passes.tir.bufferize.alignment import validate_storage_alignments
+        from triton.flagmega.passes.tir.plan_storage_alignments import satisfies_alignment_contract
 
         # Selection consumes the storage ABI; it never plans or strengthens it.
         validate_storage_alignments(module)
@@ -159,9 +160,22 @@ class TritonMicroKernelSelectionPolicy:
                 selected,
                 stage=module.stage,
             )
+            effects = tuple(
+                (name, implementation_memory_effect(
+                    effect, selected.facts, is_result=name in dispatch.outputs,
+                    parameter_name=name, input_names=dispatch.arguments,
+                    stage=module.stage, node_id=function.name,
+                ))
+                for name, effect in dispatch.memory_effect_map.items()
+            )
             rewritten = replace(
                 dispatch,
                 microkernel=selected,
+                memory_effects=(
+                    dispatch.memory_effects
+                    if effects == tuple(dispatch.memory_effect_map.items())
+                    else effects
+                ),
                 shared_workspace_buffers=materialize_shared_workspace_buffers(
                     function, selected
                 ),

@@ -46,7 +46,7 @@ def test_norm_stats_provider_exposes_partial_for_every_legal_mesh_reduction_spli
     }
     assert partial_axes == {(0,), (1,), (0, 1)}
     assert all(
-        candidate.objective_model == "flagmega.target-op-cost.unit/v1"
+        candidate.objective_model == "flagmega.target-op-cost.unit/v2"
         for candidate in candidates
     )
 

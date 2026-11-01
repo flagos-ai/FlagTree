@@ -60,8 +60,10 @@ def complete_candidate_relations(module, buckets, placement, registry, reshard_c
         processed[name] = key
         provider = registry.try_get(node.op)
         if provider is not None:
+            from triton.flagmega.ir.execution_mesh import effective_execution_mesh, placement_for_execution_mesh
+            node_placement = placement_for_execution_mesh(placement, effective_execution_mesh(module, node))
             context = DistributedCandidateContext(
-                module, node, placement, available, registry.split_candidate_provider,
+                module, node, node_placement, available, registry.split_candidate_provider,
                 reshard_cost_model, operation_cost_model, type_inference_memo=type_inference_memo)
             candidates = _provider_candidates(provider, context, node.type, requested)
         elif node.op == "builtin.tuple":

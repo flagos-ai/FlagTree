@@ -69,6 +69,9 @@
             (dense_local_n_offsets < {{ call.local_n_capacity }})
             & ({{ call.result_active }})
         )
+{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+        dense_accumulator = tle.gpu.set_layout(tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout)
+{% else %}
         dense_partial = tle.gpu.set_layout(
             tl.zeros(
                 ({{ call.tile_n }}, {{ call.reduction_group }}),
@@ -76,6 +79,7 @@
             ),
             {{ call.symbol }}__weight_layout,
         )
+{% endif %}
         for dense_local_k_start in tl.range(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
@@ -86,6 +90,11 @@
                 + dense_local_k_start // {{ call.block_k }}
             ).to(tl.int32)
             dense_pipeline_ready = {{ reader }}.wait(dense_pipeline_sequence)
+{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+            dense_accumulator = {{ call.symbol }}__ordered_mma_stage(
+                dense_pipeline_ready.slot.weight, dense_local_k_start, dense_source,
+                dense_source_owner_active, dense_source_active_extent, dense_accumulator)
+{% else %}
             dense_partial += (
                 {{ call.symbol }}__consumer_stage(
                     dense_pipeline_ready.slot.weight,
@@ -95,8 +104,13 @@
                     dense_source_active_extent,
                 )
             )
+{% endif %}
             {{ reader }}.release(dense_pipeline_sequence)
+{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+        dense_accumulator = tl.reshape(tl.gather(dense_accumulator, tl.full((1, {{ call.tile_n }}), 0, tl.int32), 0), ({{ call.tile_n }},))
+{% else %}
         dense_accumulator = tl.sum(dense_partial, axis=1)
+{% endif %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
             dense_accumulator.to({{ call.output_type }}),
@@ -107,11 +121,14 @@
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == "packed_tensor_descriptor_smem_pipeline_gemv" %}
+{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+{% include "kernels/dense_matmul/_ordered_descriptor_mma.py.jinja" %}
+{% endif %}
 {{ call.symbol }}__weight_layout = tl.constexpr(
     tle.gpu.BlockEncoding(
         [{{ call.consumer_size_per_thread | join(", ") }}],
         [{{ call.consumer_threads_per_warp | join(", ") }}],
-        [{{ call.consumer_warps_per_cta | join(", ") }}],
+        [{{ call.consumer_warps_per_cta[0] }}, {{ call.consumer_warps_per_cta[1] * (num_warps | default(call.consumer_warps)) // call.consumer_warps }}],
         [0, 1],
     )
 )
