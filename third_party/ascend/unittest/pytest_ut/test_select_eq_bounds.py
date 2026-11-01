@@ -94,3 +94,34 @@ def test_static_eq_bounds(rows, cols, axis, shift, bound, auto):
 @pytest.mark.parametrize('mode', [1, 2])
 def test_dynamic_eq_bounds(rows, cols, axis, mode, auto):
     _run(rows, cols, axis, 17, 0, mode, auto)
+
+
+@triton.jit
+def _memory_eq(X, Out, SHIFT: tl.constexpr, BOUND: tl.constexpr, STORE: tl.constexpr):
+    i = tl.arange(0, 32)
+    mask = i + SHIFT == BOUND
+    if STORE:
+        value = tl.load(X + i)
+        tl.store(Out + i, value, mask)
+    else:
+        value = tl.load(X + i, mask, other=-3.25)
+        tl.store(Out + i, value)
+
+
+@pytest.mark.parametrize('auto', [False, True])
+@pytest.mark.parametrize('store', [False, True])
+@pytest.mark.parametrize('shift,bound', [(17, 0), (17, 17), (17, 24), (17, 48), (17, 49), (2147483647, -2147483648)])
+def test_eq_masked_memory(shift, bound, store, auto):
+    cpu = torch.arange(32, dtype=torch.float32) * .125 + 1
+    source = cpu.npu()
+    storage = torch.full((160, ), -17.25, device='npu')
+    output = storage[64:-64]
+    _memory_eq[(1, )](source, output, shift, bound, store, num_warps=8, num_stages=1, multibuffer=False,
+                      enable_auto_blockify=auto)
+    torch.npu.synchronize()
+    mask = torch.arange(32, dtype=torch.int32) + shift == bound
+    expected = torch.where(mask, cpu, -17.25 if store else -3.25)
+    assert torch.equal(output.cpu(), expected)
+    assert torch.all(storage[:64].cpu() == -17.25)
+    assert torch.all(storage[-64:].cpu() == -17.25)
+    assert torch.equal(source.cpu(), cpu)
