@@ -25,7 +25,7 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.math.matmul import MatMul, matmul_value, normalize_output_data_type
+from triton.flagmega.ir.ops.math.matmul import MatMul, matmul_value, normalize_output_data_type, normalize_reduction_order
 from triton.flagmega.ir.ops.nn._norm import norm_stats_value, unpack_default_vector
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
@@ -54,6 +54,7 @@ class MatMulNormStats(OpDefinition):
     use_mean = attribute_parameter()
     addend_cast_dtypes = attribute_parameter(default=())
     output_data_type = attribute_parameter(default=None)
+    reduction_order = attribute_parameter(default="relaxed")
     inplace_output_parameters = (addend, None)
 
     @classmethod
@@ -84,14 +85,15 @@ class MatMulNormStats(OpDefinition):
             value not in ("bfloat16", "float32") for value in casts
         ):
             raise IRSchemaError("MatMulNormStats addend_cast_dtypes must be a BF16/FP32 conversion sequence.")
-        return normalize_output_data_type({
+        return normalize_output_data_type(normalize_reduction_order({
             **({"addend_cast_dtypes": tuple(DType(value).value for value in casts)} if casts else {}),
             **matmul_attrs,
             "rhs_layout": rhs_layout,
             "axis": axis,
             "use_mean": bool(attrs["use_mean"]),
             "output_data_type": attrs.get("output_data_type"),
-        })
+            "reduction_order": attrs["reduction_order"],
+        }))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -113,6 +115,7 @@ class MatMulNormStats(OpDefinition):
                 "fused_reduce": False,
                 "output_data_type": attrs.get("output_data_type", DType.BFLOAT16),
                 "rhs_layout": rhs_layout,
+                "reduction_order": attrs.get("reduction_order", "relaxed"),
             }
             matmul_type = PackedMatMul.infer_type(
                 (lhs, rhs, none, none), partial_attrs
@@ -146,7 +149,8 @@ class MatMulNormStats(OpDefinition):
                 lhs = lhs.transpose(-2, -1)
             if node.attrs["transpose_b"]:
                 rhs = rhs.transpose(-2, -1)
-            projected = matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context)
+            projected = matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context,
+                                     reduction_order=node.attrs.get("reduction_order"))
         else:
             rhs_type = tensor_of(context.types[cls.rhs.read(node.inputs)])
             if not isinstance(rhs_type.dtype, VectorType):
@@ -170,7 +174,8 @@ class MatMulNormStats(OpDefinition):
                 n_groups.fixed_value * n_vector,
             )
             projected = matmul_value(lhs, logical_rhs.to(dtype=lhs.dtype),
-                                     node.attrs.get("output_data_type", DType.BFLOAT16), context)
+                                     node.attrs.get("output_data_type", DType.BFLOAT16), context,
+                                     reduction_order=node.attrs.get("reduction_order"))
         value_type = tensor_of(context.types[cls.addend.read(node.inputs)])
         addend = cls.addend.read(arguments)
         for dtype in node.attrs.get("addend_cast_dtypes", ()):
@@ -225,6 +230,7 @@ class MatMulNormStats(OpDefinition):
             "fused_reduce": False,
             "rhs_layout": "k_major",
             "output_data_type": attrs.get("output_data_type", DType.BFLOAT16),
+            "reduction_order": attrs.get("reduction_order", "relaxed"),
         }
         projection_type = PackedMatMul.infer_type(matmul_inputs, matmul_attrs)
         if getattr(projection_type, "partial", None) is not None:

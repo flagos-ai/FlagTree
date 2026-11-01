@@ -224,20 +224,27 @@ def _lower_execution_function(
         repeated=repeated,
     )
     plan = verify_buffer_plan(module) if "buffer_plan" in module.metadata else None
+    source_spans = (
+        {} if plan is None
+        else {value.id: value.physical_access_span for value in plan.buffers}
+    )
     _add_execution_source_handoffs(
         execution_order,
         stages,
         consumer_after,
         producer_before,
         function.name,
-        {} if plan is None else {value.id: value.physical_access_span for value in plan.buffers},
+        source_spans,
         None if plan is None else transfer_source_dependencies(module, plan, function.name, calls),
     )
     consumer = _rewrite_consumer(
         function.body, stages, drains, consumer_after
     )
     producer = _build_producer(
-        function.body, stages, drains, producer_before
+        function.body, stages, drains, producer_before,
+        keep_source_barriers=_producer_needs_source_barriers(
+            execution_order, stages, source_spans
+        ),
     )
     return replace(
         function,
@@ -664,7 +671,28 @@ def _rewrite_consumer(body, stages, drains, consumer_after) -> Sequential:
     return replace(body, fields=tuple(fields))
 
 
-def _build_producer(body, stages, drains, producer_before) -> Sequential:
+def _producer_needs_source_barriers(execution_order, stages, source_spans) -> bool:
+    """Retain partition acquire points only when a producer source can change.
+
+    Include all writers, not only predecessors: a loop's trailing writer can
+    precede the first transfer on its next trip. Physical subspans also cover
+    aliases and arena reuse that logical binding names do not express.
+    """
+    sources = {
+        source
+        for statement in execution_order
+        if id(statement) in stages
+        for source in statement.transfer_sources
+    }
+    return any(
+        _writes_transfer_source(sources, _statement_writes(statement), source_spans)
+        for statement in execution_order
+    )
+
+
+def _build_producer(
+    body, stages, drains, producer_before, *, keep_source_barriers=True
+) -> Sequential:
     fields = []
     for field in body.fields:
         fields.extend(producer_before.get(id(field), ()))
@@ -684,16 +712,26 @@ def _build_producer(body, stages, drains, producer_before) -> Sequential:
             # hands over, never those global accesses.  Keeping the barrier on
             # the producer side gives its global reads the same acquire point
             # the consumer's have, so both partitions observe one order.
-            fields.append(field)
+            # Immutable sources have no consumer publication dependency.
+            # Shared slot reuse is already guarded by drains and handoffs;
+            # replaying consumer barriers would serialize independent loads.
+            if keep_source_barriers:
+                fields.append(field)
             continue
         if isinstance(field, Sequential):
-            nested = _build_producer(field, stages, drains, producer_before)
+            nested = _build_producer(
+                field, stages, drains, producer_before,
+                keep_source_barriers=keep_source_barriers,
+            )
             if nested.fields:
                 fields.append(nested)
         elif isinstance(field, For):
             # Mirror the loop so the producer issues its stages once per
             # iteration, matching the consumer's pops exactly.
-            nested = _build_producer(field.body, stages, drains, producer_before)
+            nested = _build_producer(
+                field.body, stages, drains, producer_before,
+                keep_source_barriers=keep_source_barriers,
+            )
             if nested.fields:
                 fields.append(replace(field, body=nested))
     return replace(body, fields=tuple(fields))

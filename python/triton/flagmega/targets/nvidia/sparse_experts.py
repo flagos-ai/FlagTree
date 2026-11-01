@@ -4,6 +4,7 @@
 
 from triton.flagmega.codegen.triton.implementation import TritonImplementation
 from triton.flagmega.ir import T, tensor_type
+
 from .shared_layout import align_shared_workspaces
 
 
@@ -42,3 +43,31 @@ def sparse_experts_wgmma_implementations():
         {"indexing": "local", "rounding": "explicit", "requires_block_fp8_wgmma": True},
         requires=("mma_v3", "fp8"),
     ) for family in ("sparse_experts_gate_up", "partitioned_sparse_experts_down"))
+
+
+def sparse_experts_cooperative_implementations():
+    """Optional ordered scale-block cooperation; targets opt in after measurement."""
+    return (TritonImplementation(
+        "tir.sparse_experts_gate_up.cooperative_wgmma",
+        "sparse_experts_gate_up", "cooperative_wgmma",
+        {"block_n": 64, "block_k": 128, "compute_num_warps": 8, "merge_n": 32},
+        {"indexing": "local", "rounding": "explicit",
+         "requires_block_fp8_wgmma": True, "requires_chip_scale_blocks": True},
+        requires=("mma_v3", "fp8", "cooperative_grid", "grid_sync"),
+        facts={"portable_triton": False, "internal_grid_barriers": 1,
+               "source_memory_scope": "chip"},
+    ),)
+
+
+def sparse_experts_complete_k_implementations():
+    """Optional full-K tasks publish disjoint rows without global K scratch."""
+    return tuple(TritonImplementation(
+        f"tir.sparse_experts_gate_up.complete_k_wgmma_n{task_n}",
+        "sparse_experts_gate_up", "complete_k_wgmma",
+        {"block_n": 64, "block_k": 128, "compute_num_warps": 8, "task_n": task_n, "num_stages": 1},
+        {"indexing": "local", "rounding": "explicit",
+         "requires_block_fp8_wgmma": True, "requires_chip_scale_blocks": True},
+        requires=("mma_v3", "fp8", "cooperative_grid", "grid_sync"),
+        facts={"portable_triton": False, "internal_grid_barriers": 1,
+               "source_memory_scope": "chip", "result_memory_scope": "chip"},
+    ) for task_n in (32, 64))

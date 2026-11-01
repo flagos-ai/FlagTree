@@ -30,6 +30,7 @@ from triton.flagmega.ir.ops.tensors._k_major import (
     unpack_k_major_n8_k16_weight,
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
+from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order, validate_reduction_order
 
 
 @op_definition(
@@ -49,6 +50,7 @@ class PackedDenseMatMulGlu(OpDefinition):
     gate_clamp_max = attribute_parameter(default=None)
     up_clamp = attribute_parameter(default=None)
     packed_layout = attribute_parameter(default="k_major_n8_k16")
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -67,7 +69,7 @@ class PackedDenseMatMulGlu(OpDefinition):
         _, _, mesh_interleaved = parse_k_major_layout(attrs["packed_layout"])
         if mesh_interleaved:
             raise IRSchemaError("PackedDenseMatMulGlu does not support mesh-interleaved weights.")
-        return attrs
+        return normalize_reduction_order(attrs)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -75,6 +77,7 @@ class PackedDenseMatMulGlu(OpDefinition):
         gate_type = cls.gate_weight.type_of(inputs)
         up_type = cls.up_weight.type_of(inputs)
         value = tensor_of(value_type)
+        validate_reduction_order(attrs, value_type, 1)
         gate = tensor_of(gate_type)
         up = tensor_of(up_type)
         if gate != up:

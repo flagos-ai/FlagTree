@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from triton.flagmega.codegen.triton.vectorization import (
+    ELEMENTWISE_OP_NAMES,
     configured_vector_schedule,
     vectorization_contract,
 )
@@ -28,22 +29,14 @@ def _proposal(
 
 
 class ElementwiseCandidateProvider:
-    op_names = frozenset({
-        "math.add",
-        "math.mul",
-        "math.div",
-        "math.exp",
-        "math.sigmoid",
-        "math.silu",
-        "math.vectorized_binary",
-        "math.vectorized_unary",
-        "ntt.vectorized_cast",
-        "tensors.cast",
-    })
+    op_names = ELEMENTWISE_OP_NAMES
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
         contract = vectorization_contract(node)
         semantic_op = _elementwise_semantic_op(node)
+        from triton.flagmega.ir.execution_mesh import effective_execution_mesh, ExecutionMeshKind
+        mesh = effective_execution_mesh(context.module, node)
+        dynamic = mesh is not None and mesh.kind is ExecutionMeshKind.DYNAMIC
         candidates = tuple(
             context.configure_implementation(
                 implementation,
@@ -51,6 +44,12 @@ class ElementwiseCandidateProvider:
                     "vector_schedule": _elementwise_vector_schedule(
                         contract, implementation.parameters
                     ),
+                    **({'task_mapping': {
+                        'schema': 'flagmega.independent-linear-tiles/v1',
+                        'program_kind': node.metadata.get('kernel_program_kind', 'ordinary'),
+                        'max_ctas': node.metadata.get('kernel_max_ctas'),
+                        'ctas_per_sm': node.metadata.get('kernel_ctas_per_sm', 1),
+                    }} if dynamic else {}),
                 },
             )
             for implementation in context.implementations(
@@ -91,10 +90,21 @@ class BlockFp8CandidateProvider:
             context.configure_implementation(implementation)
             for implementation in context.implementations("block_fp8")
             if (native_quant is None or implementation.variant == "simt")
-            and (implementation.variant != "mma" or mma_legal))
+            and (implementation.variant != "mma" or mma_legal)
+            and (not implementation.contract.get("requires_chip_projection_blocks", False)
+                 or _supports_chip_projection_blocks(node, context)))
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("block_fp8", candidates))
+
+
+def _supports_chip_projection_blocks(node, context):
+    from triton.flagmega.codegen.triton.block_fp8_geometry import cooperative_block_geometry
+
+    return cooperative_block_geometry(dict(zip(
+        ("value", "weight", "weight_scale"),
+        (context.module.node_map[value].type for value in node.inputs), strict=True,
+    )), node.type, node.attrs) is not None
 
 
 class MatmulGluCandidateProvider:
@@ -109,10 +119,22 @@ class MatmulGluCandidateProvider:
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations("matmul_glu")
-            if native_quant is None or implementation.variant == "simt")
+            if (native_quant is None or implementation.variant == "simt")
+            and (not implementation.contract.get("requires_chip_glu_blocks", False)
+                 or _supports_chip_glu_blocks(node, context)))
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("matmul_glu", candidates))
+
+
+def _supports_chip_glu_blocks(node, context):
+    from triton.flagmega.codegen.triton.matmul_glu_geometry import cooperative_glu_geometry
+    from triton.flagmega.ir.ops.core import get_definition
+
+    return cooperative_glu_geometry({
+        parameter.name: context.module.node_map[node.inputs[index]].type
+        for index, parameter in enumerate(get_definition(node.op).input_parameters)
+    }, node.type, node.attrs) is not None
 
 
 class EmbeddingCandidateProvider:
@@ -177,6 +199,10 @@ def _elementwise_vector_schedule(contract, parameters):
         elements = int(parameters["elements_per_program"])
     else:
         elements = int(contract["lane_count"]) * int(parameters["vector_groups"])
+        # Triton tensor ranges require a power-of-two scalar tile. The lane
+        # representation itself need not have a power-of-two payload; address
+        # each scalar using its full lane coordinate and mask the final tile.
+        elements = 1 << (elements - 1).bit_length()
     return configured_vector_schedule(
         contract,
         lowering="packed_axes",

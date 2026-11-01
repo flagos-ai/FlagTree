@@ -10,9 +10,9 @@ from triton.flagmega.runtime import load
 
 
 def execute_block_update(tmp_path, torch, values, state_type, state_values, *, head_axes=(), local_inputs=False,
-                         attrs=None, compose=False):
+                         attrs=None, compose=False, reusable=False, placement_shape=(2, 2)):
     attrs = {} if attrs is None else attrs
-    placement = fm.Placement((2, 2), "yx", "bb")
+    placement = fm.Placement(placement_shape, "yx", "bb")
     b = fm.SBP.broadcast()
     head = fm.SBP.split_contiguous(head_axes) if head_axes else b
     names = ("query", "key", "value", "beta", "alpha") if compose else ("query", "key", "value", "coefficients",
@@ -47,7 +47,15 @@ def execute_block_update(tmp_path, torch, values, state_type, state_values, *, h
             update = fm.F.nn.delta_rule_block_update(**inputs, state=state, **attrs)
             output = fm.F.tensors.get_item(update, 0)
             output = fm.F.distributed.force_boxing(output, output.type.tensor)
-            self.function("main", parameters, (output, fm.F.tensors.get_item(update, 1)))
+            outputs = (output, fm.F.tensors.get_item(update, 1))
+            if reusable:
+                self.function("worker", parameters, outputs, attrs={"noinline": True, "reusable": True})
+                actual = tuple(self.input("entry_" + n.id, n.type, id="entry_" + n.id) for n in parameters)
+                call = fm.F.builtin.call(*actual, callee="worker", result_type=fm.TupleType(tuple(n.type for n in outputs)),
+                                         effect=fm.effect("read_write", "delta_rule_state"), name="update_call")
+                self.function("main", actual, (fm.F.tensors.get_item(call, 0), fm.F.tensors.get_item(call, 1)))
+            else:
+                self.function("main", parameters, outputs)
 
     module = Graph(dialect="distributed", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
@@ -57,12 +65,14 @@ def execute_block_update(tmp_path, torch, values, state_type, state_values, *, h
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     tensors = {name: value.cuda() for name, value in zip(names, values)}
-    state_buffers = dict(runtime.buffer_plan.function_map["main"].parameters)["state"]
+    state_name = "entry_state" if reusable else "state"
+    state_buffers = dict(runtime.buffer_plan.function_map["main"].parameters)[state_name]
     state = {name: value.cuda().clone() for name, value in state_values.items()}
     state_fields = dict(zip(state_buffers, (state[name] for name, _ in state_type.fields)))
     output = torch.full_like(tensors["value"], float("nan"))
     arguments = tuple(output if spec["role"] == "result" else (
-        state_fields[spec["buffer"]] if spec["value"] == "state" else tensors[spec["value"]])
+        state_fields[spec["buffer"]] if spec["value"] == state_name else
+        tensors[spec["value"].removeprefix("entry_")])
                       for spec in runtime.external_arguments)
     runtime.prepare(*arguments)
     runtime.run_into(*arguments)

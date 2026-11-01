@@ -105,6 +105,9 @@ def {{ call.symbol }}({{ call.signature }}):
                 mask=norm_apply_mask,
                 other=0.0,
             ).to(tl.float32)
+{% if call.input_conversion_type is not none %}
+            norm_apply_value = norm_apply_value.to({{ call.input_conversion_type }}).to(tl.float32)
+{% endif %}
             norm_apply_scale = tl.load(
                 {{ call.scale }} + ({{ call.scale_offset }}),
                 mask=norm_apply_mask,

@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from collections import Counter
 from typing import Any, Mapping, Protocol
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.evaluator.context import EvaluationContext
 from triton.flagmega.evaluator.dump import EvaluatorDumpWriter
+from triton.flagmega.evaluator.recipe_scope import recipe_output_scope
 from triton.flagmega.evaluator.result import EvaluationResult
 from triton.flagmega.evaluator.support import inspect_evaluation_support
 from triton.flagmega.importer.checkpoint import Checkpoint
@@ -76,14 +78,14 @@ class TorchEvaluator:
         self.weights = weights
 
     def run(self, module: IRModule, inputs: Mapping[str, Any]) -> tuple[Any, ...]:
-        return self.run_result(module, inputs).outputs
+        return self.run_result(module, inputs, retain_trace=False).outputs
 
     def run_with_trace(self, module: IRModule, inputs: Mapping[str, Any]) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
         """Evaluate and retain named intermediate values for semantic diagnostics."""
         result = self.run_result(module, inputs)
         return result.outputs, result.trace
 
-    def run_result(self, module: IRModule, inputs: Mapping[str, Any]) -> EvaluationResult:
+    def run_result(self, module: IRModule, inputs: Mapping[str, Any], *, retain_trace: bool = True) -> EvaluationResult:
         """Evaluate a verified module and return outputs with an immutable trace."""
 
         verify_module(module)
@@ -95,6 +97,7 @@ class TorchEvaluator:
             inputs=inputs,
             weights=self.weights,
             constant_assets=constant_assets,
+            retain_values=retain_trace,
         )
         dump_writer = EvaluatorDumpWriter(module)
         _evaluate_constant_recipes(module, context, constant_assets, dump_writer)
@@ -112,6 +115,19 @@ class TorchEvaluator:
                     f"got {len(arguments)}."
                 )
             local = dict(zip(function.parameters, arguments))
+            remaining = Counter()
+            if not retain_trace:
+                scoped = set(function.parameters)
+                def include(identity):
+                    if identity in scoped:
+                        return
+                    scoped.add(identity)
+                    for dependency in node_map[identity].inputs:
+                        remaining[dependency] += 1
+                        include(dependency)
+                for identity in function.outputs:
+                    remaining[identity] += 1
+                    include(identity)
             for parameter_id, value in local.items():
                 context.validate_value(node_map[parameter_id], value)
                 context.record_value(node_map[parameter_id], value)
@@ -184,6 +200,11 @@ class TorchEvaluator:
                     dump_writer.after(dump_token, function_name, node, value)
                     local[node_id] = value
                     context.record_value(node, value)
+                    if not retain_trace:
+                        for dependency in node.inputs:
+                            remaining[dependency] -= 1
+                            if remaining[dependency] == 0:
+                                local.pop(dependency, None)
                     return value
 
                 return tuple(evaluate_node(output) for output in function.outputs)
@@ -230,8 +251,8 @@ def materialize_constant_assets(module: IRModule, weights: WeightResolver) -> Ma
     return values
 
 
-def materialize_constant_recipe(module: IRModule, recipe, weights: WeightResolver) -> tuple[Any, ...]:
-    """Evaluate one verified recipe for a bounded backend fallback."""
+def materialize_constant_recipe(module: IRModule, recipe, weights: WeightResolver, *, outputs=None) -> tuple[Any, ...]:
+    """Evaluate requested outputs of one verified recipe for the semantic backend."""
 
     verify_module(module)
     if recipe not in module.constant_recipes:
@@ -244,7 +265,7 @@ def materialize_constant_recipe(module: IRModule, recipe, weights: WeightResolve
         constant_assets={},
         type_nodes=recipe.nodes,
     )
-    return _evaluate_constant_recipe(recipe, context, EvaluatorDumpWriter(module))
+    return _evaluate_constant_recipe(recipe, context, EvaluatorDumpWriter(module), outputs=outputs)
 
 
 def iter_materialized_constant_assets(
@@ -289,8 +310,8 @@ def iter_materialized_constant_assets(
             constant_assets={},
             type_nodes=recipe.nodes,
         )
-        materialized = _evaluate_constant_recipe(recipe, context, dump_writer)
-        values = dict(zip(recipe.outputs, materialized, strict=True))
+        materialized = _evaluate_constant_recipe(recipe, context, dump_writer, outputs=selected)
+        values = dict(zip(selected, materialized, strict=True))
         for output in selected:
             yield output, values[output]
 
@@ -316,12 +337,15 @@ def _evaluate_constant_recipe(
     recipe,
     context: EvaluationContext,
     dump_writer: EvaluatorDumpWriter,
+    *,
+    outputs=None,
 ) -> tuple[Any, ...]:
     """Evaluate one frozen recipe without retaining another recipe's values."""
 
+    selected, nodes = recipe_output_scope(recipe, outputs)
     local: dict[str, Any] = {}
-    with context.type_scope(recipe.nodes):
-        for node in recipe.nodes:
+    with context.type_scope(nodes):
+        for node in nodes:
             arguments = tuple(local[value] for value in node.inputs)
             dump_token = dump_writer.before(f"@constant:{recipe.id}", node, arguments)
             with context.call_scope(node, arguments, lambda node_id: local[node_id]):
@@ -330,7 +354,7 @@ def _evaluate_constant_recipe(
             dump_writer.after(dump_token, f"@constant:{recipe.id}", node, value)
             local[node.id] = value
             context.record_value(node, value)
-    return tuple(local[value] for value in recipe.outputs)
+    return tuple(local[value] for value in selected)
 
 
 def validate_value_type(

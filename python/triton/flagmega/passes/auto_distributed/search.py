@@ -79,6 +79,7 @@ class ReshardSite:
     plans: tuple[DistributedReshardPlan, ...]
     usage: str
     invocation_count: int
+    edge_kind: str = "input"
 
     @cached_property
     def key(self) -> tuple[str, str, int]:
@@ -136,6 +137,17 @@ class SearchResult:
     fusions: tuple[CandidateFusion, ...] = ()
 
 
+def _interface_type(value, placement):
+    """Keep declared ownership; give logical tensor leaves the broadcast default."""
+    if isinstance(value, DistributedType):
+        if value.placement != placement:
+            raise IRVerificationError("An explicit distributed interface must use the active placement.")
+        return value
+    if isinstance(value, TupleType):
+        return TupleType(tuple(_interface_type(field, placement) for field in value.fields))
+    return broadcast_ir_type(value, placement)
+
+
 def _broadcast_bank_ref(value, placement):
     """Broadcast the tensors a parameter-bank handle carries.
 
@@ -151,7 +163,7 @@ def _broadcast_bank_ref(value, placement):
     if not isinstance(value, RefType) or value.name != "parameter_bank":
         return value
     return RefType(value.name, tuple(
-        (name, broadcast_ir_type(field, placement)) for name, field in value.fields
+        (name, _interface_type(field, placement)) for name, field in value.fields
     ))
 
 
@@ -186,6 +198,8 @@ def build_search_graph(
     constant_ids = ConstnessAnalysis.analyze(module).constants
     function_parameter_kinds = _infer_function_parameter_kinds(module)
     for node in module.nodes:
+        from triton.flagmega.ir.execution_mesh import effective_execution_mesh, placement_for_execution_mesh
+        node_placement = placement_for_execution_mesh(placement, effective_execution_mesh(module, node))
         input_candidates = tuple(
             tuple(candidate.return_type for candidate in available[input_id])
             for input_id in node.inputs
@@ -258,7 +272,7 @@ def build_search_graph(
                         stage=module.stage,
                         node_id=node.id,
                     )
-                return_type = node.type if is_originator else broadcast_ir_type(
+                return_type = node.type if is_originator else _interface_type(
                     node.type, placement
                 )
                 if is_originator:
@@ -287,7 +301,7 @@ def build_search_graph(
                     input_types = tuple(
                         module.node_map[value].type
                         if parameter_kind == ParameterKind.ATTRIBUTE
-                        else broadcast_ir_type(module.node_map[value].type, placement)
+                        else _interface_type(module.node_map[value].type, placement)
                         for value, parameter_kind in zip(
                             node.inputs, parameter_kinds
                         )
@@ -307,7 +321,7 @@ def build_search_graph(
                 context = DistributedCandidateContext(
                     module,
                     node,
-                    placement,
+                    node_placement,
                     input_candidates,
                     registry.split_candidate_provider,
                     reshard_cost_model or DistributedReshardCostModel(),
@@ -392,9 +406,27 @@ def build_search_graph(
                             DistributedReshardUsageKind.INTERNAL.value,
                             node_invocations.get(consumer.id, 1),
                         ))
-    # Region yields are constrained as loop backedges below. They are not
-    # ordinary DAG inputs, so they must not enter ReshardSite's input_index
-    # relation table (which indexes the physical call ABI).
+    # A Yield targets the body's selected iter argument, not a DAG input of
+    # the loop. Shared bodies have one backedge ABI and one physical adapter.
+    from .loops import loop_edges
+    for parameter, output, yield_index in loop_edges(module):
+        for consumer_index, candidate in enumerate(bucket_map[parameter].candidates):
+            if consumer_index not in domains[parameter]:
+                continue
+            for producer_index, producer in enumerate(bucket_map[output].candidates):
+                if producer_index not in domains[output]:
+                    continue
+                plans = reshard_plans(
+                    producer.return_type, candidate.return_type, realization_policy,
+                    source_kind_for_node(module.node_map[output]),
+                    DistributedReshardUsageKind.FUNCTION_BOUNDARY,
+                )
+                if plans:
+                    sites.append(ReshardSite(
+                        output, producer_index, parameter, consumer_index, yield_index,
+                        candidate.return_type, plans, DistributedReshardUsageKind.FUNCTION_BOUNDARY.value,
+                        node_invocations.get(output, 1), edge_kind="loop_yield",
+                    ))
     for function in module.functions:
         if is_region(function):
             continue
@@ -1182,7 +1214,19 @@ def _provider_candidates(
     demanded_types=(),
 ) -> tuple[DistributedCandidate, ...]:
     values: list[DistributedCandidate] = []
+    from triton.flagmega.ir.execution_mesh import effective_execution_mesh
+    constrained = effective_execution_mesh(context.module, context.source_call) is not None
+
+    def matches_placement(value):
+        if isinstance(value, DistributedType):
+            return value.placement == context.placement
+        if isinstance(value, TupleType):
+            return all(matches_placement(field) for field in value.fields)
+        return True
+
     for return_type in provider.get_return_candidate_types(context, (default_type, *demanded_types)):
+        if constrained and not matches_placement(return_type):
+            continue
         for input_tuple in provider.try_get_input_type_tuples(context, return_type) or ():
             if not provider.allows_partial_inputs and any(
                 _contains_partial(value) for value in input_tuple.input_types
@@ -1220,15 +1264,13 @@ def function_output_type(
 ) -> IRType:
     """Return the boundary type demanded after AutoDistributed.
 
-    Like nncase, function calls and their callees remain in one distributed
-    domain.  ``builtin.call`` candidates expose a recursively broadcast ABI,
-    so every callee output boundary must demand that same type.  Returning an
-    internal function to its imported logical type would select a reshard plan
-    that cannot terminate at the distributed call ABI materialized later.
+    A call and its callee share declared distributed tensor interfaces.
+    Unannotated logical tensor leaves keep the recursively broadcast default.
+    The output demand must match the call candidate's physical ABI.
     """
 
     output_type = module.node_map[output_id].type
-    return broadcast_ir_type(output_type, placement)
+    return _interface_type(output_type, placement)
 
 
 def _plan_text(plan: DistributedReshardPlan) -> str:

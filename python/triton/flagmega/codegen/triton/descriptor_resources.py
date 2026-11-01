@@ -33,6 +33,9 @@ class DescriptorResources(list):
         super().__init__()
         self.formal_origins = formal_origins
         self._contracts = {}
+        # Record the same binding while its typed resource/origin is known.
+        # Launch projection must not recover addresses by parsing source text.
+        self.argument_bindings = []
 
     def bind(self, spec, rebase_axis=None):
         if rebase_axis not in (None, -1):
@@ -95,12 +98,17 @@ class DescriptorResources(list):
         return deltas.pop()
 
     def _binding(self, name, origin, axis):
+        self.argument_bindings.append({"kind": "argument", "source": name})
         if axis is None:
             return (name,)
         # A Python integer at a noinline call would specialize every layer.
         value = f"tl.full((), {origin}, tl.int32)"
         if self.formal_origins:
             value = origin_parameter(name) if not origin else f"({origin_parameter(name)} + {value})"
+            self.argument_bindings.append({"kind": "scalar_argument", "source": origin_parameter(name),
+                                           "dtype": "int32", "add": origin})
+        else:
+            self.argument_bindings.append({"kind": "immediate", "dtype": "int32", "value": origin})
         return (name, value)
 
     def parameters(self):

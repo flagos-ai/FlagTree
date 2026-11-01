@@ -121,6 +121,7 @@ class VectorizeMatMul:
             "transpose_a": bool(node.attrs.get("transpose_a", False)),
             "transpose_b": bool(node.attrs.get("transpose_b", False)),
             **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
+            **({"reduction_order": node.attrs["reduction_order"]} if "reduction_order" in node.attrs else {}),
         }
         compute_type = VectorizedMatMul.infer_type((lhs, rhs), attrs)
         compute = Node(

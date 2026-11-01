@@ -1,0 +1,28 @@
+# flagmega-kernel: partitioned_linear/simt platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "partitioned_linear" and call.variant == "simt" %}
+
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_task in tl.range(tl.program_id(0), {{ call.tasks }}, tl.num_programs(0)):
+        _fm_n = _fm_task * {{ call.tile_n }} + tl.arange(0, {{ call.tile_n }})
+        _fm_columns = tl.arange(0, {{ call.block_k }})
+        _fm_total = tl.full(({{ call.tile_n }},), 0., tl.float32)
+        for _fm_part in tl.range(0, {{ call.parts }}):
+            _fm_part_sum = tl.full(({{ call.tile_n }},), 0., tl.float32)
+            for _fm_split in tl.range(0, {{ call.accumulation_splits }}):
+                _fm_acc = tl.full(({{ call.tile_n }}, {{ call.block_k }}), 0., tl.float32)
+                for _fm_start in tl.range(0, {{ call.accumulation_k }}, {{ call.block_k }}):
+                    _fm_k = _fm_start + _fm_columns
+                    _fm_offset = _fm_part * {{ call.part_k }} + _fm_split * {{ call.accumulation_k }} + _fm_k
+                    _fm_w = tl.load({{ call.weight }} + _fm_n[:, None] * {{ call.weight_stride }} + _fm_offset[None, :],
+                        (_fm_n[:, None] < {{ call.rows }}) & (_fm_k[None, :] < {{ call.accumulation_k }}), other=0.).to(tl.float32)
+                    _fm_x = tl.load({{ call.source }} + _fm_offset, _fm_k < {{ call.accumulation_k }}, other=0.).to(tl.float32)
+                    _fm_acc += _fm_w * _fm_x[None, :]
+                _fm_part_sum += tl.sum(_fm_acc, 1)
+            _fm_total += _fm_part_sum.to(tl.bfloat16).to(tl.float32)
+        tl.store({{ call.result }} + _fm_n, _fm_total.to(tl.bfloat16), _fm_n < {{ call.rows }})
+{% endif %}
+{% endfor %}

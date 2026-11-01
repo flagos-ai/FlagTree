@@ -10,7 +10,7 @@
 {% for call in render_calls %}
 {% if call.family == "qkv_parallel_linear" and call.variant == "packed_mma_smem_pipeline" %}
 {{ call.symbol }}__mma_layout = tl.constexpr(
-    tle.gpu.MmaEncoding([2, 0], [{{ call.consumer_warps }}, 1], [16, 8])
+    tle.gpu.MmaEncoding([2, 0], [{{ num_warps | default(call.consumer_warps) }}, 1], [16, 8])
 )
 {{ call.symbol }}__mma_a_layout = tl.constexpr(
     tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2)
@@ -31,14 +31,14 @@
     tle.gpu.BlockEncoding(
         [1, 1],
         [1, {{ call.worker_width }}],
-        [1, {{ call.consumer_warps }}],
+        [1, {{ num_warps | default(call.consumer_warps) }}],
         [0, 1],
     )
 )
 
 
 @triton.jit
-def {{ call.symbol }}__consumer_stage(weight_stage, qkv_input_pointer, qkv_k_tile):
+def {{ call.symbol }}__consumer_stage(weight_stage, qkv_input_pointer, qkv_k_tile{% if call.ordered_mma | default(false) %}, qkv_stage_accumulator{% endif %}):
 {% if call.direct_lhs %}
 {{ entry.mesh_coordinates() }}
 {% endif %}
@@ -92,10 +92,12 @@ def {{ call.symbol }}__consumer_stage(weight_stage, qkv_input_pointer, qkv_k_til
         tl.broadcast_to(qkv_input[:, None], ({{ call.block_k }}, 8)),
         {{ call.symbol }}__mma_b_layout,
     )
+{% if not call.ordered_mma | default(false) %}
     qkv_stage_accumulator = tle.gpu.set_layout(
         tl.zeros(({{ call.block_n }}, 8), tl.float32),
         {{ call.symbol }}__mma_layout,
     )
+{% endif %}
     return tl.dot(
         qkv_a,
         qkv_b,
@@ -193,10 +195,13 @@ def {{ call.symbol }}__consumer(
                 tle.gpu.async_wait_group(0)
                 tl.debug_barrier()
 {% endif %}
-            qkv_accumulator += {{ call.symbol }}__consumer_stage(
+            qkv_accumulator {{ "=" if call.ordered_mma | default(false) else "+=" }} {{ call.symbol }}__consumer_stage(
                 qkv_ready.slot.weight,
                 {{ lhs_stage }},
                 qkv_k_tile,
+{% if call.ordered_mma | default(false) %}
+                qkv_accumulator,
+{% endif %}
             )
             {{ reader }}.release(qkv_step)
         qkv_logical_m = qkv_n_tile * {{ call.block_n }} + qkv_c_m

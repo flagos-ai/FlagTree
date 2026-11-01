@@ -56,16 +56,14 @@ def materialize_memory_synchronization(
             if isinstance(statement, (PrimFunctionCall, KernelInvoke))
         } if function.name in repeated else frozenset()
         for statement in function.body.fields:
-            if isinstance(statement, For):
-                fields.append(statement)
-                continue
-            if not isinstance(statement, (PrimFunctionCall, KernelInvoke)):
+            if not isinstance(statement, (PrimFunctionCall, KernelInvoke, For)):
                 raise IRVerificationError(
                     f"ExecutionFunction @{function.name} must be a flat call "
                     "sequence before PlanMemorySynchronization."
                 )
+            statement_id = statement.call_id
             for event in by_function.get(function.name, {}).get(
-                statement.call_id, ()
+                statement_id, ()
             ):
                 if event.after not in seen_calls and event.after not in body_calls:
                     raise IRVerificationError(
@@ -75,7 +73,7 @@ def materialize_memory_synchronization(
                 fields.append(_barrier(event))
                 matched.add((event.function, event.after, event.before))
             fields.append(statement)
-            seen_calls.add(statement.call_id)
+            seen_calls.add(statement_id)
         functions.append(replace(function, body=Sequential(tuple(fields))))
 
     expected = {

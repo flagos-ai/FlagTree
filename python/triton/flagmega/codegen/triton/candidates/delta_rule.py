@@ -6,7 +6,8 @@ from .core import TritonCandidateProposal
 
 class DeltaRuleCandidateProvider:
     op_names = frozenset({"nn.delta_rule_coefficients", "nn.delta_rule_log_prefix", "nn.delta_rule_block_update",
-                          "nn.delta_rule_gates"})
+                          "nn.delta_rule_gates", "nn.delta_rule_chunk_transfer", "nn.delta_rule_chunk_fixup",
+                          "nn.delta_rule_chunked_block_update"})
 
     def propose(self, node, context):
         family = node.op.removeprefix("nn.")

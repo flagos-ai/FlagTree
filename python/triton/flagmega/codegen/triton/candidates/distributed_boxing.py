@@ -2,15 +2,21 @@
 # SPDX-License-Identifier: MIT
 """TIR candidates for executable distributed layout transitions."""
 
+from math import prod
+
+from triton.flagmega.codegen.triton.candidates.core import (
+    TritonCandidateContext,
+    TritonCandidateProposal,
+)
+from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import (
     DistributedType,
     TensorType,
     TupleType,
+    VectorType,
     boxing_reads_peer_chips,
-)
-from triton.flagmega.codegen.triton.candidates.core import (
-    TritonCandidateContext,
-    TritonCandidateProposal,
+    is_local_shard_subview,
+    local_shape,
 )
 
 
@@ -32,7 +38,9 @@ class DistributedBoxingCandidateProvider:
         if len(node.inputs) != 1:
             return None
         source = context.module.node_map[node.inputs[0]].type
-        target = node.type
+        # The transfer owns the original tensor/ownership transition. Its
+        # numeric PostOps writes the physical result type after that copy.
+        target = node.attrs["new_type"] if node.attrs.get("post_ops") else node.type
         if source == target:
             return None
         transitions = _leaf_transitions(source, target)
@@ -47,6 +55,18 @@ class DistributedBoxingCandidateProvider:
         implementations = context.implementations(
             "distributed_boxing", transition=transition
         )
+        applicable = []
+        for implementation in implementations:
+            for name, predicate in (("peer_gather", _peer_gather), ("peer_partial_reduce", _peer_partial_reduce)):
+                if name in implementation.contract:
+                    required = implementation.contract[name]
+                    if type(required) is not bool:
+                        raise CodegenError(f"A Boxing {name} contract must be boolean.")
+                    if required != predicate(source, target, int(implementation.parameters["tile"])):
+                        break
+            else:
+                applicable.append(implementation)
+        implementations = tuple(applicable)
         facts = {
             "collective_semantics": semantics,
             "tuple_field_count": len(transitions),
@@ -56,6 +76,10 @@ class DistributedBoxingCandidateProvider:
             # bytes, so the hazard planner must bracket it with device-scope
             # rendezvous instead of chip-local grid barriers.
             facts["source_memory_scope"] = "device"
+        elif _reads_peer_blocks(source, target):
+            # Destination-driven relayout reads other CTA components. Keep
+            # the producer in a chip-visible arena before bufferization.
+            facts["source_memory_scope"] = "chip"
         candidates = tuple(
             context.configure_implementation(
                 implementation,
@@ -88,6 +112,93 @@ def _reads_peer_chips(source, target) -> bool:
         if boxing_reads_peer_chips(source, target):
             return True
     return False
+
+
+def _reads_peer_blocks(source, target) -> bool:
+    pending = [(source, target)]
+    while pending:
+        before, after = pending.pop()
+        if isinstance(before, TupleType) and isinstance(after, TupleType):
+            pending.extend(zip(before.fields, after.fields, strict=True))
+        elif (isinstance(before, DistributedType) and isinstance(after, DistributedType)
+              and before.placement == after.placement and before.partial is None
+              and before.exclusive is None and after.partial is None
+              and any(level == "b" and extent > 1 for level, extent in zip(
+                  before.placement.hierarchy_levels, before.placement.hierarchy, strict=True))
+              and not is_local_shard_subview(before, after)):
+            return True
+    return False
+
+
+def _peer_gather(source, target, tile) -> bool:
+    """Whether all changed leaves admit one chip-shared copy split among CTAs."""
+    pending = [(source, target)]
+    changed = False
+    while pending:
+        before, after = pending.pop()
+        if before == after:
+            continue
+        if isinstance(before, TupleType) and isinstance(after, TupleType):
+            if len(before.fields) != len(after.fields):
+                return False
+            pending.extend(zip(before.fields, after.fields))
+            continue
+        if (not isinstance(before, DistributedType) or before.partial is not None
+                or before.exclusive is not None or not boxing_reads_peer_chips(before, after)):
+            return False
+        mesh = before.placement
+        if not _cooperative_output_tiles(mesh, after, tile):
+            return False
+        changed = True
+    return changed
+
+
+def _peer_partial_reduce(source, target, tile) -> bool:
+    """Chip partials may retain their sum tree while CTAs split output tiles."""
+    pending = [(source, target)]
+    changed = False
+    while pending:
+        before, after = pending.pop()
+        if before == after:
+            continue
+        if isinstance(before, TupleType) and isinstance(after, TupleType):
+            if len(before.fields) != len(after.fields):
+                return False
+            pending.extend(zip(before.fields, after.fields))
+            continue
+        if (not isinstance(before, DistributedType) or before.partial is None or before.exclusive is not None
+                or not boxing_reads_peer_chips(before, after)):
+            return False
+        mesh = before.placement
+        if any(mesh.hierarchy_levels[axis] != "c" for axis in before.partial.axes):
+            return False
+        if not _cooperative_output_tiles(mesh, after, tile):
+            return False
+        changed = True
+    return changed
+
+
+def _cooperative_output_tiles(mesh, result, tile) -> bool:
+    block_axes = {axis for axis, level in enumerate(mesh.hierarchy_levels) if level == "b"}
+    if prod(mesh.hierarchy[axis] for axis in block_axes) <= 1:
+        return False
+    if isinstance(result, DistributedType):
+        if result.placement != mesh or result.partial is not None or result.exclusive is not None:
+            return False
+        used = {axis for policy in result.axis_policies for stage in getattr(policy, "stages", ())
+                for axis in stage.hierarchy_axes}
+        if used & block_axes:
+            return False
+        shape, dtype = local_shape(result), result.tensor.dtype
+    elif isinstance(result, TensorType):
+        shape, dtype = result.shape, result.dtype
+    else:
+        return False
+    if any(not extent.is_fixed for extent in shape):
+        return False
+    capacity = prod(extent.fixed_value for extent in shape)
+    capacity *= prod(dtype.lanes) if isinstance(dtype, VectorType) else 1
+    return capacity > tile
 
 
 def _leaf_transitions(source, target) -> tuple[str, ...]:

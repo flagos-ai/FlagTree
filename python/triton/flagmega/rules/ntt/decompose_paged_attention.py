@@ -101,6 +101,10 @@ def decompose_paged_attention_rule(
                 "hidden_size": source.attrs["hidden_size"],
                 "split_hierarchy_axis": split_hierarchy_axis,
                 "split_count": split_count,
+                **({"probability_rounding": source.attrs["probability_rounding"],
+                    "softmax_block_size": source.attrs["softmax_block_size"],
+                    "softmax_traversal": source.attrs.get("softmax_traversal", "forward")}
+                   if source.attrs.get("probability_rounding", "normalized") != "normalized" else {}),
             },
             metadata,
         )

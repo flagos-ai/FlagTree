@@ -85,8 +85,10 @@ For packed results, derive widths from actual consumer demands and target
 contracts. Follow demand through `GetItem`, tuple, and reusable-call boundaries;
 preserve unaffected result fields, scalar consumers, and consumers requesting
 other layouts. Rebuild a shared producer once at its valid position instead
-of cloning expensive work or moving state reads. Keep necessary adapters and
-let proven inverse views fold; do not delete them based on a desired node count.
+of cloning expensive work or moving state reads. Preserve necessary adapters
+during intermediate rewrites, then absorb their semantics into supported
+producer/consumer contracts and fold proven inverse views before acceptance;
+do not delete their semantics based on a desired node count.
 
 Resolve a consistent function ABI across definitions and all call sites,
 including sequential calls and tuple returns. Check that propagation reaches
@@ -132,13 +134,20 @@ require a separate packing kernel. A Pack/Unpack can become an alias only
 after proving scalar byte order, offsets, ownership and lifetime. For a new
 TIR operation, expose its memory spans and scratch/transfer requirements to
 the ordinary planners instead of encoding hidden storage in the renderer.
+An alias implementation does not exempt a standalone forbidden adapter from
+the compute-body IL gate.
 
 ## 7. Verify integration and report completion
 
 Apply [IR acceptance and repair](ir-acceptance.md) to the complete affected
 producer/consumer chain. After packing/layout propagation and after distribution,
-compute bodies must contain no Pack, including reachable callees. Compile-time
-weight recipes require proven constant provenance and offline materialization.
+compute bodies must contain no standalone Pack, Slice, Cast (including
+vectorized Cast), Concat or Unpack, including reachable callees. Integrate
+necessary indexing, conversion/rounding, concatenation and lane access into
+the owning producer/consumer contract and its selected kernel. Compile-time
+weight recipes retain the allowance for proven constant provenance and offline
+materialization. Record each forbidden compute operation's count separately;
+zero Pack alone does not establish acceptance.
 
 Use focused tests at the levels affected by the contract:
 

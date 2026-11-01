@@ -78,6 +78,17 @@ class DeltaRuleCoefficients(OpDefinition):
                       notes=("rounded-block-triangular-inverse", "no-decay-or-state-update"))
 
 
+def _rounded_mma(left, right, dtype, *, torch):
+    """Evaluate rounded MMA operands with an unrounded FP32 accumulator."""
+    if not left.is_cuda:
+        return left @ right
+    batch = torch.broadcast_shapes(left.shape[:-2], right.shape[:-2])
+    m, k, n = left.shape[-2], left.shape[-1], right.shape[-1]
+    left = left.to(dtype).expand(*batch, m, k).reshape(-1, m, k).contiguous()
+    right = right.to(dtype).expand(*batch, k, n).reshape(-1, k, n).contiguous()
+    return torch.bmm(left, right, out_dtype=torch.float32).reshape(*batch, m, n)
+
+
 def block_inverse_fp16(lower, *, torch):
     """Preserve intermediate casts, including the final two rounded partials."""
     block_size = lower.shape[-1]
@@ -100,13 +111,13 @@ def block_inverse_fp16(lower, *, torch):
             a = inverse[..., begin:begin + half, begin:begin + half]
             d = inverse[..., begin + half:begin + width, begin + half:begin + width]
             c = inverse[..., begin + half:begin + width, begin:begin + half]
-            product = (-(d @ c)).half().float()
+            product = (-_rounded_mma(d, c, torch.float16, torch=torch)).half().float()
             if width == 64:
-                partial0 = (product[..., :16] @ a[..., :16, :]).half()
-                partial1 = (product[..., 16:] @ a[..., 16:, :]).half()
+                partial0 = _rounded_mma(product[..., :16], a[..., :16, :], torch.float16, torch=torch).half()
+                partial1 = _rounded_mma(product[..., 16:], a[..., 16:, :], torch.float16, torch=torch).half()
                 c.copy_((partial0 + partial1).half().float())
             else:
-                c.copy_((product @ a).half().float())
+                c.copy_(_rounded_mma(product, a, torch.float16, torch=torch).half().float())
     return inverse
 
 
@@ -120,7 +131,8 @@ def delta_rule_coefficients(key, beta, block_size=64, *, torch):
     padded_beta[:, :tokens] = beta.transpose(0, 1)
     keys = padded.reshape(heads, blocks, block_size, dimension).transpose(0, 1)
     betas = padded_beta.reshape(heads, blocks, block_size).transpose(0, 1)
-    lower = torch.tril((keys @ keys.transpose(-1, -2)) * betas[..., None], diagonal=-1).half().float()
+    gram = _rounded_mma(keys, keys.transpose(-1, -2), torch.bfloat16, torch=torch)
+    lower = torch.tril(gram * betas[..., None], diagonal=-1).half().float()
     inverse = block_inverse_fp16(lower, torch=torch)
     result = (inverse * betas[..., None, :]).to(key.dtype)
     # Padded rows and columns are not part of the recurrence.

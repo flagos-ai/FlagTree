@@ -2,7 +2,7 @@
 {% if render_calls is defined %}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
-{% if call.family == "reduce_sum" %}
+{% if call.family == "reduce_sum" and call.variant == "local" %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -10,8 +10,20 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if call.identity %}
 {% if call.scalar_value is not none %}
         _fm_accumulator = {{ call.scalar_value }}
+{% for line in call.fusion_identity_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_identity_value is defined %}
+        _fm_accumulator = {{ call.fusion_identity_value }}
+{% endif %}
 {% else %}
         _fm_accumulator = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=({{ call.outer_active }}), other=0.0)
+{% for line in call.fusion_identity_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_identity_value is defined %}
+        _fm_accumulator = {{ call.fusion_identity_value }}
+{% endif %}
 {% endif %}
 {% else %}
         _fm_accumulator = tl.full((), 0, tl.float32)
@@ -19,7 +31,19 @@ def {{ call.symbol }}({{ call.signature }}):
             _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
             _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
             _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=0.0).to(tl.float32)
+{% for line in call.fusion_pre_lines | default(()) %}
+            {{ line }}
+{% endfor %}
+{% if call.fusion_pre_value is defined %}
+            _fm_values = ({{ call.fusion_pre_value }}).to(tl.float32)
+{% endif %}
             _fm_accumulator += tl.sum(_fm_values, 0)
+{% endif %}
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_post_value is defined %}
+        _fm_accumulator = {{ call.fusion_post_value }}
 {% endif %}
         tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_accumulator, mask=({{ call.outer_active }}) & ({{ call.writer_active }}))
 

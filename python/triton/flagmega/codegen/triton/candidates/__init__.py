@@ -3,6 +3,9 @@
 """Reviewed Triton candidate-family providers."""
 
 from triton.flagmega.targets.nvidia.mla import NvidiaMlaProjectionSemanticTIRCandidateProvider
+from triton.flagmega.targets.nvidia.kda_input_projection import KdaInputProjectionCandidateProvider
+from triton.flagmega.targets.nvidia.partitioned_linear import PartitionedLinearCandidateProvider
+from triton.flagmega.targets.nvidia.partitioned_block_scaled_linear import PartitionedBlockScaledLinearCandidateProvider
 
 from .add_norm_stats import AddNormStatsCandidateProvider
 from .attention_primitives import AttentionPrimitiveSemanticTIRCandidateProvider
@@ -56,6 +59,9 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             TensorTransformCandidateProvider(),
             ReductionCandidateProvider(),
             KdaCandidateProvider(),
+            KdaInputProjectionCandidateProvider(),
+            PartitionedLinearCandidateProvider(),
+            PartitionedBlockScaledLinearCandidateProvider(),
             MhcCandidateProvider(),
             StagedRoutingCandidateProvider(),
             DeltaRuleCandidateProvider(),

@@ -67,3 +67,22 @@ def test_exclusive_transition_uses_only_the_selected_mesh_group():
 
     assert fm.exclusive_transition_axes(broadcast, exclusive) == (0,)
     assert fm.exclusive_transition_axes(exclusive, broadcast) == (0,)
+
+
+@pytest.mark.parametrize('op,attrs', [
+    ('tensors.pad', {'pad_end': (0, 4), 'pad_value': 0.0}),
+    ('tensors.slice_to_shape', {'shape': (1, 253)}),
+])
+@pytest.mark.parametrize('vector_lanes', [(), (4,)])
+def test_shape_extent_changes_preserve_exclusive_value_ownership(op, attrs, vector_lanes):
+    placement = fm.Placement((4, 16), 'cx', 'cb')
+    dtype = fm.vector_type('bfloat16', vector_lanes) if vector_lanes else 'bfloat16'
+    source = fm.DistributedType(fm.tensor_type(dtype, (1, 256)),
+                                (fm.SBP.broadcast(), fm.SBP.broadcast()), placement,
+                                exclusive=fm.SBP.exclusive((0,), (2,)))
+    node = fm.Node('source', 'builtin.var', (), source, attrs={'name': 'source'})
+    result = fm.get_definition(op).prepare((node,), attrs).result_type
+    assert result.exclusive == source.exclusive
+    assert result.partial is None
+    assert result.placement == placement
+    assert result.tensor.dtype == dtype

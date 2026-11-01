@@ -10,17 +10,18 @@ from triton.flagmega.passes.target_independent import decompose_complex_ops
 
 
 class WideGlu(fm.Module):
-    def __init__(self, *, reverse=False, rounded=False, different_input=False):
+    def __init__(self, *, reverse=False, rounded=False, different_input=False, reduction_order="relaxed"):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.reverse, self.rounded, self.different_input = reverse, rounded, different_input
+        self.reduction_order = reduction_order
 
     def forward(self):
         x = self.input("x", fm.tensor_type("bfloat16", (1, 16)))
         y = self.input("y", x.type)
         gate = self.input("gate", fm.tensor_type("bfloat16", (32, 16)))
         up = self.input("up", gate.type)
-        g = fm.F.math.matmul(x, gate, transpose_b=True)
-        u = fm.F.math.matmul(y if self.different_input else x, up, transpose_b=True)
+        g = fm.F.math.matmul(x, gate, transpose_b=True, reduction_order=self.reduction_order)
+        u = fm.F.math.matmul(y if self.different_input else x, up, transpose_b=True, reduction_order=self.reduction_order)
         g = fm.F.math.silu(fm.F.tensors.cast(g, dtype="float32"))
         if self.rounded:
             g = fm.F.tensors.cast(fm.F.tensors.cast(g, dtype="bfloat16"), dtype="float32")
@@ -48,6 +49,12 @@ def test_normal_pipeline_fuses_wide_glu_without_changing_rounding(reverse, tmp_p
 def test_wide_glu_does_not_change_matmul_input():
     result = decompose_complex_ops(WideGlu(different_input=True).build())
     assert result.node_map["output"].op == "tensors.cast"
+
+
+def test_wide_glu_retains_ordered_projection_contract():
+    result = decompose_complex_ops(WideGlu(reduction_order="mma_k16").build())
+    assert result.node_map["output"].op == "nn.dense_matmul_glu"
+    assert result.node_map["output"].attrs["reduction_order"] == "mma_k16"
 
 
 def test_target_independent_round_trip_elision_exposes_wide_glu():

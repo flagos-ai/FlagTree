@@ -6,7 +6,7 @@ from triton.flagmega.codegen.triton.physical_access import emit_local_scalar_off
 from triton.flagmega.codegen.triton.reduction_domain import local_reduction_domain
 from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
 from triton.flagmega.errors import CodegenError
-from triton.flagmega.ir import Node, TupleType
+from triton.flagmega.ir import Node, NoneType, TupleType
 from triton.flagmega.ir.ops.nn.staged_routing import StagedRouting
 
 
@@ -14,11 +14,12 @@ def routing_call(raw):
     from triton.flagmega.codegen.triton.kernel_call_renderers import (
         _buffer,
         _canonical_writer_active,
+        _parameter,
         _pointer,
     )
 
     source = _buffer(raw, "inputs", "value")
-    bias = _buffer(raw, "inputs", "bias")
+    bias = _buffer(raw, "inputs", "bias") if _parameter(raw, "inputs", "bias").get("buffers") else None
     values = _buffer(raw, "outputs", "result_0")
     indices = _buffer(raw, "outputs", "result_1")
     attrs = StagedRouting.normalize_attrs(raw["semantic_attrs"])
@@ -26,7 +27,8 @@ def routing_call(raw):
     bias_type = None if bias is None else _tensor_type(bias["abi"])
     result_type = TupleType((_tensor_type(values["abi"]), _tensor_type(indices["abi"])))
     if StagedRouting.infer_type((Node("source", "builtin.var", (), source_type),
-                                 None if bias is None else Node("bias", "builtin.var", (), bias_type)),
+                                 Node("bias", "builtin.none", (), NoneType()) if bias is None
+                                 else Node("bias", "builtin.var", (), bias_type)),
                                 attrs) != result_type:
         raise CodegenError("Routing tuple buffers disagree with the inferred materialized-axis contract.")
     axis = len(source["abi"]["local_capacity_shape"]) - 1
@@ -39,6 +41,8 @@ def routing_call(raw):
         **domain, "k": attrs["k"], "scoring": attrs["scoring"], "normalize": attrs["normalize"],
         "scaling": repr(float(attrs["scaling"])),
         "arithmetic": attrs["arithmetic"],
+        "score_groups": domain["tile"] // 8,
+        "score_group_steps": (domain["tile"] // 8).bit_length() - 1,
         "has_bias": bias is not None,
         "selected_tile": 1 << (attrs["k"] - 1).bit_length(),
         "source": _pointer(source), "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),

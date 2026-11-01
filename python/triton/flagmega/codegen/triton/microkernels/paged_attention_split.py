@@ -96,6 +96,14 @@ def _applicable(context, contract, parameters) -> bool:
 
     if context.dispatch.semantic_op != "ntt.paged_attention_partial":
         return True
+    attrs = context.dispatch.semantic_attrs
+    if attrs.get("probability_rounding", "normalized") == "online_bf16":
+        block = attrs.get("softmax_block_size", 64)
+        # Context shards cannot independently choose probability origins:
+        # BF16 rounding is part of one ordered online-softmax traversal.
+        tile = 1 << (int(block) - 1).bit_length()
+        if parameters.get("token_tile") != tile:
+            return False
     constrained = any(str(key).startswith("required_") for key in contract)
     if not constrained:
         return True

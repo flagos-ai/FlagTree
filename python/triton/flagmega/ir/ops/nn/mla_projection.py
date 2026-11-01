@@ -6,7 +6,6 @@ from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.model import DistributedType, DType, NoneType, VectorType, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
@@ -16,7 +15,9 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.nn.dsa_indexer import _dsa_broadcast_choices
+from triton.flagmega.ir.ops.nn._mla_head_distribution import (
+    mla_head_distribution_choices, validate_mla_head_distribution,
+)
 from triton.flagmega.ir.type_pattern import is_none, is_tensor
 
 
@@ -53,19 +54,6 @@ class MlaProjection(OpDefinition):
     @classmethod
     def infer_type(cls, inputs, attrs):
         source_type = cls.value.type_of(inputs)
-        for source in inputs:
-            kind = source.type
-            if isinstance(kind, NoneType):
-                continue
-            if isinstance(kind, DistributedType) != isinstance(source_type, DistributedType):
-                raise IRSchemaError("MLA projection tensor operands must share one distribution.")
-            if isinstance(kind, DistributedType) and (
-                kind.placement != source_type.placement
-                or kind.partial is not None
-                or kind.exclusive is not None
-                or any(not isinstance(policy, SBPBroadCast) for policy in kind.axis_policies)
-            ):
-                raise IRSchemaError("MLA projection currently requires fully broadcast tensor operands.")
         x, w = (tensor_of(cls.value.type_of(inputs)), tensor_of(cls.weight.type_of(inputs)))
         scalar = x.dtype.elem_type if isinstance(x.dtype, VectorType) else x.dtype
         if (
@@ -104,6 +92,7 @@ class MlaProjection(OpDefinition):
                 or tuple(d.fixed_value for d in scale.shape) != (rows, cols)
             ):
                 raise IRSchemaError("MLA projection scale shape must match the FP8 block grid.")
+        validate_mla_head_distribution(source_type, cls.weight.type_of(inputs), cls.scale.type_of(inputs), attrs)
         output_dim = latent if attrs["direction"] == "absorb_query" else attrs["value_head_dim"]
         lanes = attrs["output_lanes"]
         if output_dim % prod(lanes):
@@ -118,8 +107,7 @@ class MlaProjection(OpDefinition):
 
     @classmethod
     def distributed_input_type_tuples(cls, choices, attrs):
-        tensor_indices = tuple(i for i, types in enumerate(choices) if not all(isinstance(t, NoneType) for t in types))
-        yield from _dsa_broadcast_choices(choices, tensor_indices)
+        yield from mla_head_distribution_choices(choices, attrs)
 
     @classmethod
     def evaluate(cls, node, arguments, context):

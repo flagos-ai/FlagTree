@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Shared-LHS and direct-LHS variants must preserve the same arithmetic."""
 
+from dataclasses import replace
+
 import pytest
 
 from .conftest import _packed_norm_stats_pipeline_module
@@ -14,8 +16,9 @@ from triton.flagmega.runtime import load
 BASE = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats"
 
 
+@pytest.mark.parametrize("accumulation_mode", ["simt", "ordered_mma"])
 @pytest.mark.parametrize("reduction_extent", [1024, 4096, 6144, 8192])
-def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, reduction_extent):
+def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, reduction_extent, accumulation_mode):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
@@ -40,7 +43,15 @@ def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, r
     residual[:, :16] = -1
     outputs = []
     for suffix in ("", "_lhs8192"):
-        module = _packed_norm_stats_pipeline_module(BASE + suffix, reduction_extent=reduction_extent)
+        from triton.flagmega.compiler import Compiler
+        from triton.flagmega.targets import NvidiaSm90Target
+        base = NvidiaSm90Target().triton_implementation_model
+        model = replace(base, implementations=tuple(
+            replace(i, parameters={**i.parameters, "accumulation_mode": accumulation_mode, "mma_block_k": 128})
+            if i.id in {BASE, BASE + "_lhs8192"} else i for i in base.implementations))
+        compiler = Compiler()
+        compiler.target = NvidiaSm90Target(triton_implementation_model=model)
+        module = _packed_norm_stats_pipeline_module(BASE + suffix, reduction_extent=reduction_extent, compiler=compiler)
         artifact = write_artifact(module, tmp_path / (suffix or "direct"), target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True)
         runtime = load(artifact, device="cuda:0")
         output = runtime.create_outputs()

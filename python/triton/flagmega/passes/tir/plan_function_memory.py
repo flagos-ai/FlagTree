@@ -150,9 +150,42 @@ def _can_place_block_local(module, node, users_by_value, function_outputs) -> bo
             or not _effects_are_owner_local(
                 consumer, (consumer.arguments[input_index],), require_write=False
             )
+            or not _consumer_preserves_exclusive_blocks(value_type, user.type)
         ):
             return False
     return True
+
+
+def _consumer_preserves_exclusive_blocks(source_type, result_type) -> bool:
+    """Private E data is readable only by the blocks that publish it.
+
+    An owner-local read effect describes coordinates within an allocation;
+    it does not prove that every executing block owns a populated allocation.
+    An E input feeding a non-E result therefore needs chip-wide backing.
+    """
+    if isinstance(source_type, TupleType):
+        return all(_consumer_preserves_exclusive_blocks(field, result_type)
+                   for field in source_type.fields)
+    if not isinstance(source_type, DistributedType) or source_type.exclusive is None:
+        return True
+    exclusive = source_type.exclusive
+    owners = exclusive.owner_coordinates or (0,) * len(exclusive.axes)
+    required = {axis: owner for axis, owner in zip(exclusive.axes, owners)
+                if source_type.placement.is_physical_block_axis(axis)}
+    if not required:
+        return True
+    if isinstance(result_type, TupleType):
+        return bool(result_type.fields) and all(
+            _consumer_preserves_exclusive_blocks(source_type, field)
+            for field in result_type.fields)
+    if (not isinstance(result_type, DistributedType)
+            or result_type.placement != source_type.placement
+            or result_type.exclusive is None):
+        return False
+    result_exclusive = result_type.exclusive
+    result_owners = result_exclusive.owner_coordinates or (0,) * len(result_exclusive.axes)
+    retained = dict(zip(result_exclusive.axes, result_owners))
+    return all(retained.get(axis) == owner for axis, owner in required.items())
 
 
 def _may_alias_function_output(
@@ -325,10 +358,6 @@ def _is_same_owner_local_narrowing_view(source_type, result_type) -> bool:
     return (
         isinstance(source_type, DistributedType)
         and isinstance(result_type, DistributedType)
-        and all(
-            level == "b"
-            for level in source_type.placement.hierarchy_levels
-        )
         and is_local_shard_subview(source_type, result_type)
     )
 
@@ -393,10 +422,7 @@ def _all_owner_local_distributed_leaves(value_type) -> bool:
     """Return whether every physical result leaf has a block-owner component."""
 
     if isinstance(value_type, DistributedType):
-        return (
-            value_type.partial is None
-            and all(level == "b" for level in value_type.placement.hierarchy_levels)
-        )
+        return value_type.partial is None
     if isinstance(value_type, TupleType):
         return bool(value_type.fields) and all(
             _all_owner_local_distributed_leaves(field)

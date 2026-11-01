@@ -1,0 +1,65 @@
+# flagmega-kernel: block_fp8/cooperative_wgmma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% include "kernels/_activation_quantization.py.jinja" %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "block_fp8" and call.variant == "cooperative_wgmma" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__merge_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 1], [4, 8], [1, {{ num_warps }}], [1, 0]))
+@triton.jit(noinline=True)
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_n = tl.arange(0, 64)
+    _fm_kk = tl.arange(0, 128)
+    for _fm_task in tl.range(tl.program_id(0), {{ call.raw_tasks }}, tl.num_programs(0)):
+        _fm_k_block = _fm_task % {{ call.k_blocks }}
+        _fm_tile = _fm_task // {{ call.k_blocks }}
+        _fm_chip_n = _fm_tile * 64 + _fm_n
+        _fm_owner = tl.minimum(_fm_chip_n // {{ call.local_rows }}, {{ call.row_owners - 1 }})
+        _fm_local_n = _fm_chip_n % {{ call.local_rows }}
+        _fm_valid = (_fm_chip_n < {{ call.chip_rows }}) & (_fm_local_n < ({{ call.peer_rows_active }}))
+        _fm_k = _fm_k_block * 128 + _fm_kk
+        _fm_source = tl.load({{ call.source_pointer }} + ({{ call.source_offset }})).to(tl.float32)
+        _fm_q, _fm_a_scale = _flagmega_quantize_block_fp8(_fm_source, "dynamic_fp8_sm90")
+        _fm_a = tl.broadcast_to(_fm_q[:, None], (128, 16))
+        _fm_w = tl.load({{ call.weight_peer_pointer }} + ({{ call.weight_peer_offset }}), _fm_valid[:, None], other=0.)
+        _fm_product = tl.dot(_fm_w, _fm_a, out_dtype=tl.float32)
+        _fm_raw = tl.reshape(tl.gather(_fm_product, tl.full((64, 1), 0, tl.int32), 1), (64,))
+        tl.store({{ call.projection_pointer }} + _fm_k_block * {{ call.chip_rows }} + _fm_chip_n,
+                 _fm_raw, _fm_chip_n < {{ call.chip_rows }})
+        if _fm_tile == 0:
+            tl.store({{ call.activation_scale_pointer }} + _fm_k_block, _fm_a_scale)
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__merge({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_merge_k = tl.arange(0, {{ call.k_block_lanes }})
+    if {{ call.merge_writer }}:
+        for local_n_start in tl.range(0, {{ call.local_n_capacity }}, 16):
+            local_n_offsets = local_n_start + tl.arange(0, 16)
+            _fm_n_mask = {{ call.n_mask }}
+            _fm_global_n = {{ call.global_n }}
+            _fm_chip_n = ({{ call.row_owner_index }}) * {{ call.local_rows }} + local_n_offsets
+            _fm_offsets = _fm_merge_k[:, None] * {{ call.chip_rows }} + _fm_chip_n[None, :]
+            _fm_read_mask = (_fm_merge_k[:, None] < {{ call.k_blocks }}) & _fm_n_mask[None, :]
+            _fm_values = tle.gpu.set_layout(tl.load({{ call.projection_pointer }} + _fm_offsets,
+                                                    _fm_read_mask, other=0.), {{ call.symbol }}__merge_layout)
+            _fm_as = tl.load({{ call.activation_scale_pointer }} + _fm_merge_k,
+                            _fm_merge_k < {{ call.k_blocks }}, other=0.)
+            _fm_bs = tl.load({{ call.scale }} + ({{ call.merge_scale_offset }}), _fm_read_mask, other=0.)
+            # Persisting only A scales minimizes scratch. Recreate the original
+            # rounded combined scale, then perform exactly the real K-block FMAs.
+            _fm_factors = tle.gpu.set_layout(libdevice.mul_rn(_fm_as[:, None], _fm_bs), {{ call.symbol }}__merge_layout)
+            _fm_acc = tl.full((16,), 0., tl.float32)
+            for _fm_block in tl.static_range({{ call.k_blocks }}):
+                _fm_index = tl.full((1, 16), _fm_block, tl.int32)
+                _fm_value = tl.reshape(tl.gather(_fm_values, _fm_index, 0), (16,))
+                _fm_factor = tl.reshape(tl.gather(_fm_factors, _fm_index, 0), (16,))
+                _fm_acc = tl.fma(_fm_value, _fm_factor, _fm_acc)
+            tl.store({{ call.result }} + ({{ call.destination_offset }}), _fm_acc, _fm_n_mask)
+
+
+{{ entry.phase_schedule(call, ("partials", "merge")) }}
+{% endif %}
+{% endfor %}

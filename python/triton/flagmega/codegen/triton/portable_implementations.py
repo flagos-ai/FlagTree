@@ -210,6 +210,10 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
             {"mode": "decode"},
             facts=portable,
         ),
+        TritonImplementation(
+            "tir.paged_attention_partial.decode_t64", "paged_attention_partial", "decode_t64",
+            {"token_tile": 64}, {"mode": "decode"}, facts=portable,
+        ),
         # Warp-layout variants of the same token tiles: these choose how a
         # token row's 128-wide reduction maps onto warps rather than how many
         # tokens a program covers, so they are independent of `token_tile`.
@@ -329,6 +333,7 @@ def portable_attention_preferences() -> Mapping[str, tuple[str, ...]]:
             "tir.paged_attention_partial.decode_t256",
             "tir.paged_attention_partial.decode_t128",
             "tir.paged_attention_partial.decode_t128_layout32",
+            "tir.paged_attention_partial.decode_t64",
         ),
         "paged_attention_combine": ("tir.paged_attention_combine.decode",),
         "paged_attention_gated_combine": (
@@ -350,6 +355,13 @@ def portable_local_reduction_implementations() -> tuple[TritonImplementation, ..
     """
 
     return (
+        *(TritonImplementation(
+            "tir.add_norm_stats.local_rows_rms_" + layout,
+            "add_norm_stats", "local_rows_rms", {"tile": 128},
+            {"input_kind": "materialized", "axis_kind": "last", "use_mean": False,
+             "outer_rows": "multiple", "output_layout": layout},
+            facts={"portable_triton": True, "owner_local_stats": True},
+        ) for layout in ("broadcast", "distributed")),
         TritonImplementation(
             "tir.add_norm_stats.local_partial_rms",
             "add_norm_stats",
@@ -368,7 +380,8 @@ def portable_local_reduction_implementations() -> tuple[TritonImplementation, ..
 
 def portable_local_reduction_preferences() -> Mapping[str, tuple[str, ...]]:
     return {
-        "add_norm_stats": ("tir.add_norm_stats.local_partial_rms",),
+        "add_norm_stats": ("tir.add_norm_stats.local_partial_rms", "tir.add_norm_stats.local_rows_rms_distributed",
+                           "tir.add_norm_stats.local_rows_rms_broadcast"),
     }
 
 

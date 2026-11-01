@@ -15,6 +15,25 @@ def test_real_prefix_is_consumed_and_final_output_is_not_yet_cached(backend):
     assert result.to_dict()["prompt_token_count"] == 3
 
 
+def test_compiled_batched_prefill_uses_one_backend_entry_and_retains_history(backend):
+    from unittest.mock import Mock
+    calls = []
+    original_append = backend.append
+    def prefill(tokens):
+        calls.append(tuple(tokens))
+        for token in tokens:
+            original_append(token)
+    backend.prefill = prefill
+    backend.append = Mock(wraps=original_append)
+    engine = TextGenerationEngine(backend)
+    result = engine.generate([1, 2, 3], max_new_tokens=3)
+    assert calls == [(1, 2, 3)]
+    assert backend.append.call_count == 2
+    assert result.token_ids == (6, 12, 24)
+    assert engine.cached_tokens == (1, 2, 3, 6, 12)
+    assert backend.tokens == list(engine.cached_tokens)
+
+
 @pytest.mark.parametrize("prompt", [[1, 2, 3, 6, 12, 24, 7], [1, 2, 9], [1, 2, 3]])
 def test_reused_rewritten_and_shortened_prefix_match_fresh_generation(backend, prompt):
     engine = TextGenerationEngine(backend)

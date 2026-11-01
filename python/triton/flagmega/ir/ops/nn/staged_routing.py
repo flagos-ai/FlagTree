@@ -40,6 +40,12 @@ class StagedRouting(OpDefinition):
     normalization it only multiplies by scaling. Selection and tie rules are
     unchanged. The implemented device contract is CUDA libdevice tanhf;
     CPU transcendental evaluation is diagnostic rather than a bitwise oracle.
+
+    ``exp_grouped_reciprocal`` uses accurate FP32 exp, sequential sums
+    within eight-element groups, and a descending XOR butterfly between
+    groups. Selected scores are summed in selection order and normalized
+    by multiplying a round-to-nearest reciprocal. This is the native CUDA
+    BF16, 256-expert softmax contract; shorter rows are zero-padded to eight.
     """
 
     const_evaluable = True
@@ -67,10 +73,12 @@ class StagedRouting(OpDefinition):
             raise IRSchemaError("StagedRouting k must be a positive integer.")
         if attrs["index_dtype"] not in {"int32", "int64"}:
             raise IRSchemaError("StagedRouting index_dtype must be int32 or int64.")
-        if attrs["arithmetic"] not in {"standard", "tanh_scaled_reciprocal"}:
-            raise IRSchemaError("StagedRouting arithmetic must be standard or tanh_scaled_reciprocal.")
+        if attrs["arithmetic"] not in {"standard", "tanh_scaled_reciprocal", "exp_grouped_reciprocal"}:
+            raise IRSchemaError("StagedRouting arithmetic must name a supported rounding contract.")
         if attrs["arithmetic"] == "tanh_scaled_reciprocal" and (attrs["scoring"] != "sigmoid" or attrs["k"] > 32):
             raise IRSchemaError("StagedRouting tanh_scaled_reciprocal requires sigmoid scoring and k <= 32.")
+        if attrs["arithmetic"] == "exp_grouped_reciprocal" and (attrs["scoring"] != "softmax" or attrs["k"] > 32):
+            raise IRSchemaError("StagedRouting exp_grouped_reciprocal requires softmax scoring and k <= 32.")
         return attrs
 
     @classmethod
@@ -90,6 +98,10 @@ class StagedRouting(OpDefinition):
             raise IRSchemaError("StagedRouting reduces the last materialized axis with a fixed extent.")
         if not 0 < attrs["k"] <= tensor.shape[axis].fixed_value:
             raise IRSchemaError("StagedRouting k must not exceed the router extent.")
+        if attrs.get("arithmetic", "standard") == "exp_grouped_reciprocal":
+            extent = tensor.shape[axis].fixed_value
+            if not 1 <= extent <= 256 or extent & (extent - 1):
+                raise IRSchemaError("StagedRouting grouped exp requires a power-of-two extent from 1 through 256.")
         if isinstance(bias_source, NoneType):
             bias_source = None
         if bias_source is not None:
@@ -119,7 +131,21 @@ class StagedRouting(OpDefinition):
         axis, k = int(node.attrs["axis"]), int(node.attrs["k"])
         scores = logits.float()
         if node.attrs["scoring"] == "softmax":
-            scores = context.torch.softmax(scores, dim=axis)
+            if node.attrs.get("arithmetic") == "exp_grouped_reciprocal":
+                scores = context.torch.exp(scores - scores.amax(dim=axis, keepdim=True))
+                padded = context.torch.nn.functional.pad(scores, (0, max(0, 8 - scores.shape[-1])))
+                groups = padded.reshape(*padded.shape[:-1], padded.shape[-1] // 8, 8)
+                total = context.torch.zeros_like(groups[..., 0])
+                for column in range(8):
+                    total = total + groups[..., column]
+                lanes = context.torch.arange(total.shape[-1], device=total.device)
+                mask = total.shape[-1] // 2
+                while mask:
+                    total = total + total.index_select(-1, lanes ^ mask)
+                    mask //= 2
+                scores = scores * (1. / total[..., :1])
+            else:
+                scores = context.torch.softmax(scores, dim=axis)
         elif node.attrs.get("arithmetic", "standard") == "tanh_scaled_reciprocal":
             scores = context.torch.tanh(scores * 0.5) * 0.5 + 0.5
         else:
@@ -128,6 +154,14 @@ class StagedRouting(OpDefinition):
         order = context.torch.argsort(choice, dim=axis, descending=True, stable=True).narrow(axis, 0, k)
         selected = scores.gather(axis, order)
         weights = selected
+        if node.attrs.get("arithmetic") == "exp_grouped_reciprocal":
+            total = context.torch.zeros_like(selected[..., :1])
+            for index in range(k):
+                total = total + selected[..., index:index + 1]
+            scale = float(node.attrs["scaling"])
+            if node.attrs["normalize"]:
+                scale = context.torch.full_like(total, scale) / context.torch.where(total > 0., total, 1.)
+            return weights * scale, order.to(getattr(context.torch, node.attrs["index_dtype"]))
         if node.attrs.get("arithmetic", "standard") == "tanh_scaled_reciprocal":
             # Descending butterfly over a zero-padded power-of-two tile.
             # CPU tanh is diagnostic; the CUDA contract uses libdevice tanhf.

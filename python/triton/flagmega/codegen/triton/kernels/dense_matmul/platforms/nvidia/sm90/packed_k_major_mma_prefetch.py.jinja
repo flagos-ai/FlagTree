@@ -1,0 +1,62 @@
+# flagmega-kernel: dense_matmul/packed_k_major_mma_prefetch platform=nvidia architecture=sm90
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "packed_k_major_mma_prefetch" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [1, {{ num_warps }}], [16, 8]))
+{{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__prefetch_xor8_1_8 = tl.constexpr(tle.gpu.swizzled_shared_layout(
+    8, 1, 8, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0]))
+{{ call.symbol }}__prefetch_copy_k = tl.constexpr(tle.gpu.BlockEncoding([8], [32], [{{ num_warps }}], [0]))
+{{ call.symbol }}__prefetch_copy_nk = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 8], [1, 32], [{{ num_warps // 2 }}, 2], [1, 0]))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
+        for dense_local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
+            dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+            dense_global_n = {{ call.global_n }}
+            dense_n_mask = ((dense_local_n_offsets < {{ call.local_n_capacity }}) & ({{ call.result_active }}))
+            dense_accumulator = tle.gpu.set_layout(tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout)
+            dense_prefetch_source = tle.gpu.alloc(({{ call.prefetch_k }},), tl.bfloat16, nv_mma_shared_layout=False)
+            dense_prefetch_weight = tle.gpu.alloc(({{ call.prefetch_n }}, {{ call.prefetch_k }}), tl.bfloat16,
+                layout={{ call.symbol }}__prefetch_xor8_1_8, nv_mma_shared_layout=False)
+            for dense_prefetch_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.prefetch_k }}):
+                dense_bulk_n_offsets = dense_local_n_start + tl.arange(0, {{ call.prefetch_n }})
+                dense_bulk_global_n = {{ call.prefetch_global_n }}
+                dense_bulk_n_mask = ((dense_bulk_n_offsets < {{ call.local_n_capacity }}) & ({{ call.prefetch_result_active }}))
+                dense_bulk_k_offsets = dense_prefetch_start + tl.arange(0, {{ call.prefetch_k }})
+                dense_bulk_global_k = {{ call.prefetch_global_k }}
+                dense_bulk_k_mask = ((dense_bulk_k_offsets < {{ call.local_k_capacity }}) & ({{ call.prefetch_source_active }}))
+                dense_bulk_source_offset = tle.gpu.set_layout(({{ call.prefetch_source_offset }}), {{ call.symbol }}__prefetch_copy_k)
+                dense_bulk_source_mask = tle.gpu.set_layout(dense_bulk_k_mask, {{ call.symbol }}__prefetch_copy_k)
+                dense_bulk_weight_offset = tle.gpu.set_layout(({{ call.prefetch_weight_offset }}), {{ call.symbol }}__prefetch_copy_nk)
+                dense_bulk_weight_mask = tle.gpu.set_layout(dense_bulk_n_mask[:, None] & dense_bulk_k_mask[None, :], {{ call.symbol }}__prefetch_copy_nk)
+                dense_bulk_source = tl.load({{ call.source }} + dense_bulk_source_offset, mask=dense_bulk_source_mask, other=0.)
+                dense_bulk_weight = tl.load({{ call.weight }} + dense_bulk_weight_offset, mask=dense_bulk_weight_mask, other=0.)
+                dense_prefetch_source_ptr = tle.gpu.local_ptr(dense_prefetch_source, (tl.arange(0, {{ call.prefetch_k }}),), [{{ call.prefetch_k }}])
+                dense_prefetch_weight_ptr = tle.gpu.local_ptr(dense_prefetch_weight, (tl.arange(0, {{ call.prefetch_n }})[:, None], tl.arange(0, {{ call.prefetch_k }})[None, :]), [{{ call.prefetch_n }}, {{ call.prefetch_k }}])
+                tl.store(dense_prefetch_source_ptr, dense_bulk_source)
+                tl.store(dense_prefetch_weight_ptr, dense_bulk_weight)
+                tl.debug_barrier()
+                for dense_prefetch_inner in tl.range(0, tl.minimum({{ call.prefetch_k }}, {{ call.local_k_capacity }} - dense_prefetch_start), {{ call.block_k }}):
+                    dense_local_k_offsets = dense_prefetch_start + dense_prefetch_inner + tl.arange(0, {{ call.block_k }})
+                    dense_global_k = {{ call.global_k }}
+                    dense_k_mask = ((dense_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}))
+                    dense_source_ptr = tle.gpu.local_ptr(dense_prefetch_source, (dense_prefetch_inner + tl.arange(0, {{ call.block_k }}),), [{{ call.block_k }}])
+                    dense_weight_ptr = tle.gpu.local_ptr(dense_prefetch_weight, (tl.minimum(tl.arange(0, {{ call.tile_n }}), {{ call.prefetch_n - 1 }})[:, None], (dense_prefetch_inner + tl.arange(0, {{ call.block_k }}))[None, :]), [{{ call.tile_n }}, {{ call.block_k }}])
+                    dense_source_value = tl.load(dense_source_ptr, mask=dense_k_mask, other=0.)
+                    dense_weight_value = tl.load(dense_weight_ptr, mask=dense_n_mask[:, None] & dense_k_mask[None, :], other=0.)
+                    dense_activation_matrix = tl.broadcast_to(dense_source_value[None, :], (16, {{ call.block_k }}))
+                    dense_activation_matrix = tle.gpu.set_layout(dense_activation_matrix, {{ call.symbol }}__lhs_layout)
+                    dense_weight_matrix = tle.gpu.set_layout(tl.trans(dense_weight_value), {{ call.symbol }}__rhs_layout)
+                    dense_accumulator = tl.dot(dense_activation_matrix, dense_weight_matrix, dense_accumulator)
+                tl.debug_barrier()
+            dense_result = tl.reshape(tl.gather(dense_accumulator, tl.full((1, {{ call.tile_n }}), 0, tl.int32), 0), ({{ call.tile_n }},))
+            tl.store({{ call.result }} + ({{ call.result_offset }}), dense_result.to(tl.bfloat16), mask=dense_n_mask)
+{% endif %}
+{% endfor %}
+{% endif %}

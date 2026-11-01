@@ -31,7 +31,11 @@ def {{ call.symbol }}({{ call.signature }}):
             _fm_residual = tl.load(
                 {{ call.residual }} + ({{ call.residual_offset }}),
                 mask=_fm_source_active[:, None] & _fm_hidden_active[None, :],
-                other=0.).to(tl.float32)
+                other=0.)
+{% if call.residual_input_type %}
+            _fm_residual = _fm_residual.to({{ call.residual_input_type }})
+{% endif %}
+            _fm_residual = _fm_residual.to(tl.float32)
             _fm_value = tl.load({{ call.value }} + ({{ call.value_offset }}),
                                 mask=_fm_hidden_active, other=0.).to(tl.float32)
             # out[j, h] = sum_i comb[i, j] * residual[i, h] + post[j] * value[h]

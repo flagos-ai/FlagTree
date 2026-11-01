@@ -118,3 +118,25 @@ def test_bytes_budget_rejects_non_integer():
     with pytest.raises(IRVerificationError, match="budget"):
         SATBufferAllocator().allocate(
             (BufferLifetime("a", 64, 64, 0, 0),), _space(), bytes_budget=True)
+
+
+@pytest.mark.parametrize("empty_preference", (False, True))
+def test_unused_reuse_budget_cannot_introduce_a_new_alias(empty_preference):
+    # b0 completes before b3 starts. An inert budget must not change their
+    # established non-aliasing: remote readers of b0 would otherwise require
+    # a new device fence before b3 can overwrite those arena bytes.
+    lifetimes = (BufferLifetime("b0", 128, 64, 3, 3),
+                 BufferLifetime("b1", 128, 64, 5, 5),
+                 BufferLifetime("b2", 128, 64, 0, 2),
+                 BufferLifetime("b3", 64, 64, 4, 6))
+    if empty_preference:
+        lifetimes += (BufferLifetime("empty", 0, 64, 0, 0),)
+    sizes = {value.id: value.nbytes for value in lifetimes}
+    preferences = (("empty", "b0"),) if empty_preference else ()
+    allocator = SATBufferAllocator()
+    baseline = allocator.allocate(lifetimes, _space(), avoid_reuse=preferences)
+    assert baseline.pool_bytes == 192
+    assert not _overlap(baseline, "b0", "b3", sizes)
+    unused = allocator.allocate(lifetimes, _space(), avoid_reuse=preferences, bytes_budget=1024)
+    assert not _overlap(unused, "b0", "b3", sizes)
+    assert unused == baseline

@@ -327,8 +327,9 @@ class OpCostFactors:
     block_synchronizations: int = 0
     grid_synchronizations: int = 0
     communication_cycles: int = 0
-    # Already summed across owners, additive to the per-owner traffic above.
-    # Masked/ragged accesses must not charge every owner its maximum capacity.
+    # Already summed across executing blocks on the busiest chip, additive to
+    # the per-block traffic above. Each chip has an independent bandwidth
+    # budget; masked/ragged accesses use active elements, not padded capacity.
     chip_aggregate_memory_load_bytes: int = 0
     chip_aggregate_memory_store_bytes: int = 0
 
@@ -402,6 +403,10 @@ class OpDefinition:
     # contract to trace a frozen storage view back to checkpoint bytes without
     # restating op names or executing an identity recipe.
     byte_preserving_input_parameters: tuple[ParameterInfo, ...] = ()
+    # A pure Ref constructor may declare the operands whose allocations its
+    # non-owning views reference. Constructing the view does not access data;
+    # function outlining can place it at the caller's storage boundary.
+    reference_view_input_parameters: tuple[ParameterInfo, ...] = ()
     deterministic = True
     # Ordinary tensor operations can be evaluated independently on an
     # all-broadcast placement. Representation-changing distributed operators
@@ -836,6 +841,7 @@ def op_definition(
             "inplace_output_parameters",
             "result_memory_effects",
             "byte_preserving_input_parameters",
+            "reference_view_input_parameters",
             "op_name",
             "namespace",
             "functional_name",
@@ -896,6 +902,14 @@ def op_definition(
         byte_preserving_input_parameters = tuple(
             definition.__dict__.get("byte_preserving_input_parameters", ())
         )
+        reference_view_input_parameters = tuple(
+            definition.__dict__.get("reference_view_input_parameters", ())
+        )
+        if (len(set(reference_view_input_parameters)) != len(reference_view_input_parameters) or any(
+                parameter not in input_parameters or parameter.variadic or parameter.memory_effect != MemoryEffect.NONE
+                for parameter in reference_view_input_parameters)):
+            raise TypeError(f"Op {op_name!r} reference_view_input_parameters must contain unique own "
+                            "non-variadic input ParameterInfo fields without data access.")
         result_memory_effects = tuple(definition.result_memory_effects)
         if any(not isinstance(effect, MemoryEffect) for effect in result_memory_effects):
             raise TypeError(f"Op {op_name!r} result_memory_effects must be typed MemoryEffects.")
@@ -918,6 +932,7 @@ def op_definition(
         definition.inplace_output_parameters = inplace_output_parameters
         definition.result_memory_effects = result_memory_effects
         definition.byte_preserving_input_parameters = byte_preserving_input_parameters
+        definition.reference_view_input_parameters = reference_view_input_parameters
         from triton.flagmega.ir.op_fusion import install_op_fusion
         install_op_fusion(definition)
         _DEFINITIONS[op_name] = definition

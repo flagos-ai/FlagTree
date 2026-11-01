@@ -17,6 +17,7 @@ from triton.flagmega.codegen.triton.function_call import (
 from triton.flagmega.codegen.triton.function_pool_abi import (
     ROW_INDEX,
     OFFSET_TABLE,
+    bank_row_strides,
     function_pool_actuals,
     function_pool_aliases,
     function_pool_signature,
@@ -89,19 +90,7 @@ def build_pipeline_source_schedule(
     # its own definition because its handoffs release reusable slots.
     definitions: dict[tuple[str, bool], dict[str, object]] = {}
     active: list[str] = []
-    # A parameter-bank row is stored as one group member per layer, all the
-    # same size, so the byte distance between consecutive rows is that size.
-    # The planner recorded the group identity for exactly this purpose.
-    row_strides = {}
-    for buffer in verify_buffer_plan(module).buffers:
-        if not getattr(buffer, "rdata_group", None):
-            continue
-        span = buffer.mem_span
-        size = getattr(getattr(span, "size", None), "fixed_value", None)
-        if size is None:
-            size = getattr(getattr(span, "size", None), "value", None)
-        if isinstance(size, int) and size > 0:
-            row_strides[str(getattr(span.buffer, "id", span.buffer))] = size
+    row_strides = bank_row_strides(module, verify_buffer_plan(module))
     pool_abis, offset_tables = plan_function_pool_abis(
         bindings, row_strides, entry=module.entry
     )
@@ -401,6 +390,20 @@ class _PipelineSourceBuilder:
                 # The region marker's own body is empty: the loop's calls live
                 # in the body function's ExecutionFunction. Visit that body so
                 # the generated loop actually executes one iteration's work.
+                from .loop_carry import loop_copy
+                buffers = self.bindings[context.function_name]['call_abi'].get('loop_buffers', {})
+                def copies(source_field, result_field):
+                    events = []
+                    for carry in statement.carry_bindings:
+                        event = loop_copy(buffers[getattr(carry,source_field)], buffers[getattr(carry,result_field)])
+                        for key in ('source','source_offset','result','result_offset','active','writer_active','value'):
+                            if isinstance(event.get(key),str):
+                                event[key] = _substitute(event[key], context.actual_by_formal)
+                        events.append(event)
+                    return events
+                carry_barrier = {'kind':'barrier','scope':synchronization_scope_name(statement.carry_scope),
+                                 'axis_group_axes':(), 'loop_carry':True}
+                carry_prologue = [*copies('initial','current'), carry_barrier] if statement.carry_bindings else []
                 nested: list[dict[str, object]] = []
                 outer_in_loop = self.in_loop
                 outer_loop_variable = self.loop_variable
@@ -438,6 +441,12 @@ class _PipelineSourceBuilder:
                     self.in_loop = outer_in_loop
                     self.loop_variable = outer_loop_variable
                     self.loop_trips = outer_loop_trips
+                if statement.carry_bindings:
+                    nested.append(carry_barrier)
+                    nested.extend(copies('yielded','staging'))
+                    nested.append(carry_barrier)
+                    nested.extend(copies('staging','current'))
+                    nested.append(carry_barrier)
                 # A trip-scoped stream closes once after the final trip, and
                 # `tle.pipe.drain` requires that close to precede it in the
                 # same async task, so the matching drain moves out with it.
@@ -475,6 +484,9 @@ class _PipelineSourceBuilder:
                     "iter_args": tuple(value.name for value in statement.iter_args),
                     "yield_values": tuple(value.name for value in statement.yield_values),
                     "events": nested,
+                    **({'prologue_events':carry_prologue,
+                        'epilogue_events':[*copies('current','result'),carry_barrier]}
+                       if statement.carry_bindings else {}),
                 })
                 # The loop ran every trip's acquire/commit on one pipe
                 # instance, so each trip-scoped writer closes exactly once,
@@ -778,6 +790,7 @@ class _PipelineSourceBuilder:
                 {**value, "repeated": True} if self.in_loop else value
                 for value in resources["handoffs"]
             )
+            descriptor_binding_start = len(self.descriptor_specs.argument_bindings)
             descriptors = self.descriptor_instantiator(
                 {"host_tensor_descriptor_requests": descriptor_requests(
                     definition["host_tensor_descriptor_specs"])},
@@ -801,6 +814,9 @@ class _PipelineSourceBuilder:
             instance = {
                 "names": names,
                 "arguments": [*actuals, *descriptors, *pool_actuals],
+                "descriptor_argument_bindings": dict(zip(
+                    definition["host_tensor_descriptor_specs"].parameters(),
+                    self.descriptor_specs.argument_bindings[descriptor_binding_start:], strict=True)),
                 "drained_stages": tuple(names[value] for value in definition["schedule"]["drained_stage_ids"]),
             }
             self.function_instances[key] = instance
@@ -822,6 +838,7 @@ class _PipelineSourceBuilder:
             "symbol": f"{definition['symbol']}__{suffix}",
             "arguments": ", ".join(arguments),
             "argument_expressions": arguments,
+            "descriptor_argument_bindings": instance["descriptor_argument_bindings"],
             "endpoint_bindings": dict(zip(
                 definition["schedule"][f"{role}_endpoints"], endpoints, strict=True,
             )),

@@ -10,6 +10,7 @@ from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of
 from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, tensor_type
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
+from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order, validate_reduction_order
 
 
 @op_definition(
@@ -26,6 +27,7 @@ class DenseMatMulGlu(OpDefinition):
     round_activation = attribute_parameter(default=True)
     gate_clamp_max = attribute_parameter(default=None)
     up_clamp = attribute_parameter(default=None)
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -41,7 +43,7 @@ class DenseMatMulGlu(OpDefinition):
                 raise IRSchemaError(f"DenseMatMulGlu {name} must be a finite positive number or None.")
         if attrs["round_activation"]:
             attrs.pop("round_activation")  # Preserve the existing default IR encoding.
-        return attrs
+        return normalize_reduction_order(attrs)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -49,6 +51,7 @@ class DenseMatMulGlu(OpDefinition):
         gate_type = cls.gate_weight.type_of(inputs)
         up_type = cls.up_weight.type_of(inputs)
         value = tensor_of(value_type)
+        validate_reduction_order(attrs, value_type, 1)
         gate = tensor_of(gate_type)
         up = tensor_of(up_type)
         if gate != up:

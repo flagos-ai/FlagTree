@@ -95,6 +95,16 @@ def test_ntt_base_policy_only_aliases_constants_with_unified_storage():
     )
 
 
+def test_pyntt_complete_canonical_parameter_is_a_proven_local_read_view():
+    tensor = fm.tensor_type('float32', (4096,))
+    for placement in (fm.Placement((1, 1), 'yx', 'bb'), fm.Placement((4, 16), 'yx', 'bb')):
+        target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, 1), 1),), placement)
+        context = DistributedReshardRealizationContext(tensor, target,
+            DistributedReshardSourceKind.FUNCTION_PARAMETER, DistributedReshardUsageKind.INTERNAL)
+        assert PyNttDistributedReshardRealizationPolicy().classify(context) == DistributedReshardRealization.SHARDED_VIEW
+        assert NttDistributedReshardRealizationPolicy().classify(context) == DistributedReshardRealization.BOXING
+
+
 def test_pyntt_canonical_chip_view_can_reassign_physical_block_axes():
     tensor = fm.tensor_type("bfloat16", [128, 128])
     placement = fm.Placement((8, 16), "yx", "bb")

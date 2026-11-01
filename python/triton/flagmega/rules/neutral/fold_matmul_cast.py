@@ -24,6 +24,7 @@ def fold_matmul_cast_rule():
     def rewrite(match, module):
         root, matmul = match["root"], match["matmul"]
         if (module.metadata.get("floating_point_contract") == "strict"
+                or root.attrs.get("rounding_contract") == "preserve"
                 or not isinstance(matmul.type, TensorType) or matmul.type.dtype not in {DType.FLOAT16, DType.BFLOAT16}
                 or matmul.attrs.get("output_data_type") is not None
                 or any(matmul.id in function.outputs for function in module.functions)):

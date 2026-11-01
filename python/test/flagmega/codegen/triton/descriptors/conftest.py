@@ -19,8 +19,10 @@ from triton.flagmega.passes.auto_distributed.materializer import (
 from triton.flagmega.selection import override_plan
 
 
-def _two_call_descriptor_module(*, transpose_b: bool = False) -> fm.IRModule:
-    builder = fm.IRBuilder(dialect="high_level", stage="imported")
+def _two_call_descriptor_module(*, transpose_b: bool = False, program_dag: bool = False) -> fm.IRModule:
+    # This fixture exercises the logical DenseMatMul descriptor contract.
+    # Start at its typed resume boundary; AutoPacking selects another layout.
+    builder = fm.IRBuilder(dialect="high_level", stage="vector_contracts_lowered")
     value_type = fm.tensor_type("bfloat16", (1, 128))
     weight_type = fm.tensor_type("bfloat16", (128, 128))
 
@@ -32,6 +34,8 @@ def _two_call_descriptor_module(*, transpose_b: bool = False) -> fm.IRModule:
         value_type,
         id="projection",
         attrs={"transpose_a": False, "transpose_b": transpose_b},
+        metadata={"selected_vectorization": "vectorization.matmul.n",
+                  "selected_vector_axes": (1,), "selected_vector_lanes": (8,)},
     )
     builder.function(
         "worker",
@@ -54,36 +58,41 @@ def _two_call_descriptor_module(*, transpose_b: bool = False) -> fm.IRModule:
     builder.function("main", (value, first_weight, second_weight), (second,))
 
     compiler = Compiler()
-    proposed_vector = compiler.compile(
-        builder.build(entry="main"), stop_after="propose-vectorization"
+    proposed_tir = compiler.compile(
+        builder.build(entry="main"), stop_after="propose-tir"
     ).module
-    vectorized = compiler.run_stage(
-        proposed_vector,
-        "apply-vectorization",
-        plan=override_plan(
-            proposed_vector,
-            (("vectorization.projection", "vectorization.matmul.n"),),
-        ),
-    ).module
-    proposed_tir = Compiler().compile(
-        vectorized, stop_after="propose-tir"
-    ).module
-    selected_tir = Compiler().run_stage(
+    projection_point = next(point for point in proposed_tir.selection_points
+                            if point.kind == "tir" and point.owner == projection.id)
+    selected_tir = compiler.run_stage(
         proposed_tir,
         "lower-tir",
         plan=override_plan(
             proposed_tir,
-            (("tir.projection", "tir.dense_matmul.tensor_descriptor_gemv"),),
+            ((projection_point.id, "tir.dense_matmul.tensor_descriptor_gemv"),),
         ),
     ).module
-    return Compiler().compile(selected_tir).module
+    if program_dag:
+        from triton.flagmega.passes import FunctionalPass, PassManager
+        from triton.flagmega.passes.functions import function_nodes
+
+        selected_tir = compiler.compile(selected_tir, stop_after="select-microkernels").module
+        calls = [n.id for n in function_nodes(selected_tir, selected_tir.function_map[selected_tir.entry])
+                 if n.op in {"tir.call", "builtin.call", "tir.kernel"}]
+        symbols = {name: "program_"+name if name in {"first", "second"} else f"program_adapter_{index}"
+                   for index, name in enumerate(calls)}
+        programs = tuple(dict(symbol=symbols[name], calls=(name,), num_warps=4,
+                              depends_on=(symbols[calls[index-1]],) if index else ())
+                         for index, name in enumerate(calls))
+        selected_tir = PassManager().add(FunctionalPass("TestDescriptorPrograms", lambda m: replace(
+            m, metadata={**m.metadata, "kernel_program_partition": programs}))).run(selected_tir).module
+    return compiler.compile(selected_tir).module
 
 
 def _packed_descriptor_pipeline_module(
     implementation: str = (
         "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv"
     ),
-    *, k: int = 2048, n: int = 2048,
+    *, k: int = 2048, n: int = 2048, reduction_order: str = "relaxed",
     output_policy: fm.SBPSplit | None = None,
     compiler: Compiler | None = None,
 ) -> fm.IRModule:
@@ -110,6 +119,7 @@ def _packed_descriptor_pipeline_module(
                 value,
                 weight,
                 transpose_b=True,
+                reduction_order=reduction_order,
                 name="projection",
             )
             self.function("main", (value,), (projection,))

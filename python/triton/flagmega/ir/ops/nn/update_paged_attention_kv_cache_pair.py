@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Publish head-major [K | V] chunks without materializing either field."""
+"""Publish distinct [K | V] fields or one shared latent in one cache epoch."""
 
 from math import prod
 
@@ -46,11 +46,18 @@ class UpdatePagedAttentionKVCachePair(OpDefinition):
     advance_sequence = input_parameter(is_tensor() & has_rank(0) & has_dtype(DType.BOOL),
                                        parameter_kind=ParameterKind.ATTRIBUTE)
     layout = attribute_parameter()
+    shared_kv = attribute_parameter(default=False)
 
     @classmethod
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
-        return {"layout": normalize_attention_layout(attrs["layout"])}
+        if type(attrs["shared_kv"]) is not bool:
+            raise IRSchemaError("UpdatePagedAttentionKVCachePair shared_kv must be a bool.")
+        return {"layout": normalize_attention_layout(attrs["layout"]), "shared_kv": attrs["shared_kv"]}
+
+    @classmethod
+    def ir_attrs(cls, attrs):
+        return {key: value for key, value in attrs.items() if key != "shared_kv" or value}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
@@ -64,10 +71,12 @@ class UpdatePagedAttentionKVCachePair(OpDefinition):
             raise IRSchemaError("UpdatePagedAttentionKVCachePair requires bfloat16 slots.")
         if any(not dim.is_fixed for dim in slots.shape):
             raise IRSchemaError("UpdatePagedAttentionKVCachePair requires static chunk geometry.")
+        fields = 1 if attrs.get("shared_kv", False) else 2
         if (slots.shape[layout.index("seq")].fixed_value <= 0
                 or slots.shape[layout.index("head")].fixed_value != config.num_kv_heads
-                or slots.shape[layout.index("dim")].fixed_value * lanes != 2 * config.head_dim):
-            raise IRSchemaError("UpdatePagedAttentionKVCachePair slots must have scalar shape [T, H, 2D] matching the cache.")
+                or slots.shape[layout.index("dim")].fixed_value * lanes != fields * config.head_dim):
+            width = "D" if fields == 1 else "2D"
+            raise IRSchemaError(f"UpdatePagedAttentionKVCachePair slots must have scalar shape [T, H, {width}] matching the cache.")
         if isinstance(slots_type, DistributedType):
             if slots_type.partial is not None:
                 raise IRSchemaError("UpdatePagedAttentionKVCachePair requires materialized slots.")
@@ -99,7 +108,8 @@ class UpdatePagedAttentionKVCachePair(OpDefinition):
         if not isinstance(state, PagedAttentionState):
             raise EvaluationError("UpdatePagedAttentionKVCachePair state must evaluate to PagedAttentionState.")
         dim = state.config.head_dim
-        state.append(slots[..., :dim], slots[..., dim:],
+        key, value = (slots, slots) if node.attrs.get("shared_kv", False) else (slots[..., :dim], slots[..., dim:])
+        state.append(key, value,
                      layer_id=_scalar_int(cls.layer_id.read(arguments)),
                      advance_sequence=_scalar_bool(cls.advance_sequence.read(arguments)))
         return state
@@ -117,7 +127,8 @@ class UpdatePagedAttentionKVCachePair(OpDefinition):
         if size is None:
             return None
         return OpCostFactors(block_local_memory_load_bytes=size,
-                             block_local_memory_store_bytes=size, grid_synchronizations=1)
+                             block_local_memory_store_bytes=size * (2 if attrs.get("shared_kv", False) else 1),
+                             grid_synchronizations=1)
 
 
 __all__ = ["UpdatePagedAttentionKVCachePair"]

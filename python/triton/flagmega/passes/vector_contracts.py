@@ -12,12 +12,16 @@ from triton.flagmega.ir import IRModule, Node
 # witnesses used to choose a schedule and are reconstructed as their semantic
 # operation before TIR selection.
 NATIVE_VECTOR_COMPUTE_OPS = frozenset({
+    "math.reduce_sum",
     "math.vectorized_binary",
     "math.vectorized_unary",
     "nn.norm_apply",
     "nn.norm_stats",
+    "nn.mhc_post",
     "nn.qkv_rope_with_cache",
     "nn.update_paged_attention_kv_cache_pair",
+    "nn.mla_projection",
+    "nn.dsa_paged_attention",
     "nn.sparse_experts_gate_up",
     "nn.sparse_experts_combine",
     "ntt.add_norm_stats",

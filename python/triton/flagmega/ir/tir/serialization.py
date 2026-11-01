@@ -63,6 +63,11 @@ def tir_to_data(node: TIRNode) -> dict[str, object]:
         result.pop("alignment_bytes", None)
     if node.kind == "transfer_pipeline_channel" and getattr(node, "inplace_partition", None) is None:
         result.pop("inplace_partition", None)
+    if node.kind == "for_loop" and not getattr(node, "carry_bindings", ()):
+        result.pop("carry_bindings", None)
+        result.pop("carry_scope", None)
+    if node.kind == "for_loop" and getattr(node, "call_id", None) is None:
+        result.pop("call_id", None)
     return result
 
 

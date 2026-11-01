@@ -71,7 +71,7 @@ def tensor_transform_call(raw):
         "result_offset":
         emit_local_scalar_offset(output_abi, domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]),
         "pad_value":
-        attrs.get("pad_value", 0),
+        _transform_fill(input_abi, attrs.get("pad_value", 0)),
         "tile":
         int(raw["parameters"]["elements_per_program"]),
     }
@@ -85,6 +85,13 @@ def _tensor_type(abi):
     if abi["scalar_lane_shape"]:
         dtype = vector_type(dtype, abi["scalar_lane_shape"])
     return tensor_type(dtype, abi["logical_shape"])
+
+
+def _transform_fill(abi, value):
+    # Triton has no integer-to-FP8 cast for a masked load's fill. Floating
+    # literals take its supported FP32-to-FP8 conversion; integer buffers keep
+    # their exact integral fill, including values beyond FP32's mantissa.
+    return float(value) if abi["scalar_dtype"] == "float8_e4m3fn" else value
 
 
 def vector_relayout_call(raw):
@@ -145,7 +152,7 @@ def vector_relayout_call(raw):
         "result_offset":
         emit_local_scalar_offset(output_abi, domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]),
         "pad_value":
-        0,
+        _transform_fill(input_abi, 0),
         "tile":
         int(raw["parameters"]["elements_per_program"]),
     }

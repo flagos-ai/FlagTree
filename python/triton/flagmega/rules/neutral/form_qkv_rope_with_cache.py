@@ -104,6 +104,9 @@ def _legal_region(result, module):
     q_head, k_head = (qkv_head_from_match(result, prefix) for prefix in ("q", "k"))
     if q_head is None or k_head is None:
         return None
+    if any(head.norm.attrs.get("math_mode", "fast") != "fast" for head in (q_head, k_head)):
+        # This fused ABI currently specifies the fast Q/K inverse square root.
+        return None
     if (q_head.round_intermediates != k_head.round_intermediates
             or q_head.rope.attrs.get("rotary_dim") != k_head.rope.attrs.get("rotary_dim")
             or not same_table(q_head.cosine, k_head.cosine) or not same_table(q_head.sine, k_head.sine)):

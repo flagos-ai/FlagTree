@@ -14,6 +14,7 @@ from triton.flagmega.errors import IRSchemaError
 class Sm90Capability:
     compute_major: ClassVar[int] = 9
     schema: ClassVar[str] = "flagmega.nvidia-sm90-capability/v1"
+    supported_program_compile_options: ClassVar[frozenset[str]] = frozenset({'maxnreg'})
     compute_capability: tuple[int, int] = (9, 0)
     warp_size: int = 32
     max_threads_per_block: int = 1024

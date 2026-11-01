@@ -584,3 +584,30 @@ def test_same_pool_inplace_candidate_still_reuses_dead_temporary():
     assert plan.buffer_map["added"].mem_span.must_alias(
         plan.buffer_map["temporary"].mem_span
     )
+
+
+def _exclusive_edge(*, consumer_exclusive):
+    placement = fm.Placement((2, 4), "yx", "bb")
+    base = fm.DistributedType(fm.tensor_type("float32", (8, 16)),
+                              (fm.SBP.broadcast(), fm.SBP.broadcast()), placement)
+    exclusive = replace(base, exclusive=fm.SBP.exclusive((0, 1)))
+    builder = fm.IRBuilder(dialect="semantic_tir", stage="packaged_tir")
+    source = builder.var("source", exclusive, id="source")
+    producer = builder.call("tir.kernel", (source,), exclusive, id="producer", attrs=_kernel_attrs())
+    # A bitcast preserves the producer's owner identity while its consumer
+    # publishes a value for every block, as an E slice feeding split matmul does.
+    view = builder.call("tir.buffer_view", (producer,), exclusive, id="view", attrs={"alias_kind": "vector_reinterpret"})
+    consumer_type = exclusive if consumer_exclusive else base
+    consumer = builder.call("tir.kernel", (view,), consumer_type, id="consumer", attrs=_kernel_attrs())
+    builder.function("main", (source,), (consumer,))
+    return materialize_kernel_prim_functions(builder.build(entry="main"))
+
+
+def test_exclusive_value_shared_by_other_block_consumers_keeps_global_backing():
+    placed = plan_function_memory(_exclusive_edge(consumer_exclusive=False), _options())
+    assert MEMORY_SPACE_METADATA not in placed.node_map["producer"].metadata
+
+
+def test_exclusive_value_with_same_owner_consumers_keeps_private_backing():
+    placed = plan_function_memory(_exclusive_edge(consumer_exclusive=True), _options())
+    assert placed.node_map["producer"].metadata[MEMORY_SPACE_METADATA] == "block_local_data"

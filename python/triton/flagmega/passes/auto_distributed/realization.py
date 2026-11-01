@@ -139,6 +139,17 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
             return DistributedReshardRealization.BOXING
         if self.can_alias_constant(context):
             return DistributedReshardRealization.SHARDED_VIEW
+        # Plain tensor parameters denote complete canonical storage on their
+        # chip. Unified-memory kernels can read an owner-local view directly;
+        # copying them into each execution mesh would create redundant programs
+        # and tie this boundary to a default mesh. Prove the chip coordinates,
+        # dtype and ownership before treating the requested distribution as a
+        # read-only view. Partial values still require explicit publication.
+        if (isinstance(context.source_type, TensorType)
+                and context.usage_kind == DistributedReshardUsageKind.INTERNAL):
+            from triton.flagmega.ir.distributed_type import chip_view_error
+            if chip_view_error(context.source_type, context.target_type) is None:
+                return DistributedReshardRealization.SHARDED_VIEW
         if (
             context.usage_kind not in {
                 DistributedReshardUsageKind.INTERNAL,
@@ -215,6 +226,9 @@ def _can_materialize_canonical_chip_view(
 ) -> bool:
     # Comparing only the tensor axis that owns each chip misses changes to
     # split granularity/stages. Prove actual per-chip region containment.
+    if source_type.placement != target_type.placement:
+        from triton.flagmega.ir.distributed_type import chip_view_error
+        return chip_view_error(source_type, target_type) is None
     return not boxing_crossing_chip_axes(source_type, target_type)
 
 

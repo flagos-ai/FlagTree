@@ -61,14 +61,14 @@ class DsaIndexerState:
         except (ValueError, TypeError) as error:
             raise EvaluationError(f"DSA layer id {layer_id!r} is not in the state contract.") from error
 
-    def validate(self):
+    def validate(self, *, dynamic_values: bool = True):
         import torch
         expected = (len(self.config.layer_ids), *self.config.packed_shape)
         if tuple(self.packed_states.shape) != expected or self.packed_states.dtype != torch.bfloat16:
             raise EvaluationError(f"DSA packed state must be BF16{expected}.")
         if tuple(self.seq_lens.shape) != (1,) or self.seq_lens.dtype != torch.int32:
             raise EvaluationError("DSA seq_lens must be int32[1].")
-        if not 0 <= self.sequence_length <= self.config.max_sequence_length:
+        if dynamic_values and not 0 <= self.sequence_length <= self.config.max_sequence_length:
             raise EvaluationError("DSA sequence length is outside cache capacity.")
 
     def append(self, value, *, layer_id, advance_sequence=False):

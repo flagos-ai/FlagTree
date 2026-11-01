@@ -11,6 +11,14 @@ def compilation_options(contract: ResourceContract, target: str = "nvidia-sm90")
     # NVIDIA uses ptxas occupancy bounds; COREX has no equivalent ptx option.
     # Both backends still enforce the post-compilation resource contract.
     options = {"num_warps": contract.compute_num_warps}
+    if target.startswith("nvidia-"):
+        from triton.backends.nvidia.distributed import Distributed
+        libraries = Distributed().get_extern_libs()
+        if libraries:
+            # JIT looks up its per-device cache before backend option parsing.
+            # Declare dependencies here so a new runtime library cannot reuse
+            # a specialization compiled against the previous installation.
+            options["extern_libs"] = dict(sorted(libraries.items()))
     # Keep the normal compiler default unless an experiment explicitly asks
     # for a different software-pipeline depth.  This is intentionally an
     # opt-in launch-time knob: the persistent-kernel residency contract still

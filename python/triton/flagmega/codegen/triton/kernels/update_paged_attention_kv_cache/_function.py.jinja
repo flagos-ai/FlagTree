@@ -25,6 +25,12 @@ def {{ call.symbol }}__write({{ call.signature }}):
                + cache_block_offset) * {{ call.num_kv_heads }} + cache_head)
              * {{ call.head_dim }} + cache_dimension)
         )
+{% if call.shared_kv %}
+        cache_value = tl.load({{ call.slots }} + ({{ call.slots_offset }}), mask=cache_mask, other=0.0)
+        tl.store({{ call.kv_cache }} + cache_destination, cache_value, mask=cache_mask)
+        tl.store({{ call.kv_cache }} + cache_destination
+                 + {{ call.block_size * call.num_kv_heads * call.head_dim }}, cache_value, mask=cache_mask)
+{% else %}
         tl.store(
             {{ call.kv_cache }} + cache_destination,
             tl.load(
@@ -34,6 +40,7 @@ def {{ call.symbol }}__write({{ call.signature }}):
             ),
             mask=cache_mask,
         )
+{% endif %}
     if {{ call.metadata_writer_active }}:
         tl.store({{ call.slot_mapping }}, cache_position)
         tl.store({{ call.query_start_loc }}, 0)

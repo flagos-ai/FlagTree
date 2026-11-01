@@ -26,6 +26,23 @@ def element_type(dtype):
     return dtype.elem_type if isinstance(dtype, VectorType) else dtype
 
 
+def normalize_projection_order(attrs):
+    from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order
+    return normalize_reduction_order(attrs)
+
+
+def validate_projection_order(attrs, activation_type, *weight_types):
+    if attrs.get("reduction_order", "relaxed") != "mma_k16":
+        return
+    if any(element_type(tensor_of(value).dtype) != DType.BFLOAT16
+           for value in (activation_type, *weight_types)):
+        raise IRSchemaError("Ordered expert MMA projections require BF16 operands.")
+    if isinstance(activation_type, DistributedType) and (
+        activation_type.partial is not None or activation_type.axis_policies[-1] != SBP.broadcast()
+    ):
+        raise IRSchemaError("Ordered expert projections require unpartitioned K.")
+
+
 def lanes(dtype):
     return dtype.lane_count if isinstance(dtype, VectorType) else 1
 
@@ -202,7 +219,16 @@ def validate_expert_ids(ids, count):
 
 
 def scaled_projection(value, weight, input_scale, projection_scale, *, block_n=128, block_k=128,
-                      activation_quantization="dynamic_fp8"):
+                      activation_quantization="dynamic_fp8", reduction_order="relaxed"):
+    if reduction_order == "mma_k16":
+        import torch
+        if input_scale.numel() != 1 or not bool(input_scale == 1):
+            raise EvaluationError("Ordered BF16 expert projections require unit input scales.")
+        if value.device.type == "cuda":
+            projection = torch.mm(value.unsqueeze(0), weight.T, out_dtype=torch.float32).squeeze(0)
+        else:
+            projection = value.float() @ weight.float().T
+        return projection * projection_scale
     # Rank-2 scales are the historical nncase per-expert contract. Rank-3
     # scales are native FP8 inverse scales laid out as [expert, N-block, K-block].
     if projection_scale.ndim == 2:

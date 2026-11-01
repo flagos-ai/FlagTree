@@ -13,6 +13,9 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
     {"axes": ()}, {"axes": 0}, {"axes": (True,)}, {"axes": (1, -1)}, {"axes": (2,)},
     {"epsilon": 0}, {"epsilon": -1}, {"epsilon": True}, {"epsilon": float("inf")},
     {"epsilon_mode": "max_norm"}, {"division_mode": "rsqrt"},
+    {"reduction_group_size": 0}, {"reduction_group_size": True},
+    {"reduction_group_size": 3}, {"reduction_group_size": 16},
+    {"math_mode": "approximate"},
 ))
 def test_l2_rejects_ambiguous_or_invalid_numerical_contracts(attrs):
     with pytest.raises(IRSchemaError):
@@ -34,3 +37,9 @@ def test_l2_dynamic_rows_and_partial_or_reduction_split():
     for policies in ((b, b, s),):
         with pytest.raises(IRSchemaError, match="reduction axes"):
             primitive_module(L2Normalization, (fm.DistributedType(tensor, policies, placement),))
+
+
+def test_l2_default_group_preserves_the_canonical_contract():
+    tensor = fm.tensor_type("float32", (3, 8))
+    assert primitive_module(L2Normalization, (tensor,)).semantic_hash == primitive_module(
+        L2Normalization, (tensor,), reduction_group_size=1).semantic_hash

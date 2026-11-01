@@ -19,6 +19,7 @@ from triton.flagmega.ir import (
     IRModule,
     TupleType,
     effect,
+    get_definition,
     tensor_type,
     verify_module,
 )
@@ -283,7 +284,7 @@ class Qwen35Layer0Importer:
             [mlp_input, gate_weight, up_weight, gate_scale, up_scale],
             intermediate_type,
             id="mlp_gate_up",
-            attrs={
+            attrs=get_definition("nn.matmul_glu").ir_attrs(get_definition("nn.matmul_glu").normalize_attrs({
                 "activation":
                 "silu",
                 "weight_block_n":
@@ -294,7 +295,7 @@ class Qwen35Layer0Importer:
                     gate_weight_encoding=f"{self.layer_prefix}mlp.gate_proj.weight",
                     up_weight_encoding=f"{self.layer_prefix}mlp.up_proj.weight",
                 ),
-            },
+            })),
         )
         down_weight = weight("mlp.down_proj.weight", (config.hidden_size, config.intermediate_size),
                              expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8))

@@ -154,7 +154,12 @@ def gated_delta_net_convolution(
                 value = torch.addcmul(value, history[:, index].float(), weight[:, index].float())
         if round_before_activation:
             value = value.to(qkv.dtype).float()
-        outputs.append(torch.nn.functional.silu(value).to(dtype=qkv.dtype))
+        if value.is_cuda:
+            from triton.flagmega.evaluator.cuda_activation_math import fast_silu
+            activated = fast_silu(value)
+        else:
+            activated = torch.nn.functional.silu(value)
+        outputs.append(activated.to(dtype=qkv.dtype))
     state.update_convolution_layer(conv_state, 0)
     return torch.stack(outputs), state
 

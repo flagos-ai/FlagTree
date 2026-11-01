@@ -85,7 +85,8 @@ def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.si
                 projection_active, {{ call.projection_dim }}, {{ call.projection_tile }})
             beta, decay = _flagmega_gdn_head_gates(
                 beta_projection, a_projection, value_heads, projection_active,
-                {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }})
+                {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }},
+                GATE_MATH_MODE="{{ call.gate_math_mode | default('accurate') }}")
             cached_heads = tl.where(projection_active, value_heads, -1)
         _fm_ready = {{ reader }}.wait(_fm_step)
         _fm_old_state = tl.load(tle.gpu.local_ptr(_fm_ready.slot.state,
@@ -108,6 +109,7 @@ def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.si
         _flagmega_gdn_recurrent_local_norm_tile(
             {{ call.z }}, {{ call.result }}, {{ call.norm_weight }}, {{ call.core_scratch }},
             {{ call.z_offset }}, {{ call.result_offset }}, global_values,
-            recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }})
+            recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }},
+            ACCURATE_SILU={{ call.accurate_norm_silu | default(false) }})
 {% endif %}
 {% endfor %}

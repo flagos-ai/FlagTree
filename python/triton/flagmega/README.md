@@ -93,6 +93,71 @@ uses a 2D mesh in the validated configuration. Ordinary kernels consume local
 shards; communication/boxing implementations own the necessary distributed
 coordination.
 
+Triton code generation emits each independently compiled program namespace in
+`program_sources/<entry>.py`, alongside the complete `generated_kernels.py` for
+inspection. Artifact manifests describe and hash every program file; the normal
+loader imports these files and resolves shared entry aliases to the same JIT
+object. Codegen refresh preserves readonly data and stores the new program files
+under their source hashes. Legacy artifacts containing one source file continue
+to load through their original format. The renderer prepares each program
+namespace once and reuses it for the complete source and its independent file.
+Kernel schedule transforms run while preparing a concrete namespace; assembling
+the package wrapper does not replay them. Descriptor overrides should use
+`dataclasses.replace(spec, describe=...)` to preserve the renderer's preparation
+callback and other registered behavior. The registered TIR source renderer also
+owns its preparer, so existing descriptor extensions that retain `spec.render`
+through the original five-argument API keep namespace preparation intact.
+
+An edit that changes the length of one program's source now leaves unrelated
+programs' source locations and Triton JIT cache keys unchanged. Changing a
+program or one of its referenced helpers still invalidates that program through
+Triton's normal dependency tracking. Programs containing several fused operators
+remain one compilation unit, and a compiler or target change can require new
+compilation. Moving an existing artifact to this source layout requires an
+initial compilation with the new source locations.
+
+Explicit program-DAG modules may request `persistent_window_resources` in
+module metadata. Each named byte range declares its size, alignment, zero
+initialization and ordered program users. The planner verifies those users
+against the actual dependencies and appends disjoint ranges after the complete
+scratch arena in the existing chip-scoped symmetric window. Artifact loading
+reconstructs the plan from the typed request, allocates and initializes the
+complete window, and binds ordinary functions to the original scratch extent.
+Persistent ranges survive scratch reuse and belong to the module's window
+lifecycle. Implementations using a channel still own its publication and
+consumption protocol; program ordering alone does not replace peer-read
+completion.
+
+Optimized bufferization also considers keeping a leaf function's reusable
+chip buffers live until the relevant peer accesses have completed. These
+completion lifetimes are derived from semantic dependencies and full-chip or
+device fences; final synchronization still checks every physical reuse hazard.
+Candidates must fit the original pool budget and improve the composed entry
+schedule. Caller frames, loop-carried accesses and axis-group completion retain
+their existing proofs.
+
+Targets may declare a verified, serialized `memory_synchronization_protocol`
+contract for schedule comparison. NVIDIA cooperative grid rendezvous includes
+two CTA barriers; local entries include one. Device rendezvous expands through
+the declared grid phases. Unknown targets retain conservative event accounting,
+and derived targets must declare their own lowering protocol. The declaration
+participates in the normal module hash and is refreshed on target-policy resume.
+SAT objectives share one deadline, preserve feasible layouts when a later
+objective times out, and report each objective's actual proof status. Aligned
+live-set and reuse-clique bounds accelerate proof without changing feasible
+placements or optimization objectives.
+
+The packed BF16-to-FP32 threaded FMA implementation supports
+`weight_load_layout="register8"` for complete 1024-element K chunks. It loads
+eight contiguous BF16 values per lane, selects them from registers in the
+original FMA order, and retains the original warp reduction tree explicitly.
+`scalar_store_subtile_n=2` can divide a logical N8 vector tile into four
+disjoint fragments when a verified CTA replica group supplies that cooperation.
+The vector type and candidate lane-group contract remain N8; missing or
+incompatible replica proofs are compilation errors. Configure these parameters
+through the target implementation model and normal TIR selection before
+bufferization. The default scalar-load schedule retains its source identity.
+
 The supporting TLE changes preserve pipe endpoints and synchronization across
 noinline calls, carry shared offsets and compiler scratch across function
 boundaries, and maintain legal explicit memory layouts and asynchronous copies.
@@ -145,6 +210,24 @@ The PyNTT target registers shared Pattern rules in the existing
 casts/activations around **elementwise and scalar-axis softmax** kernels.
 Elementwise supports explicit vectorized-cast lane repacking. Manually authored
 bodies may also contain supported binary expressions and local constants.
+BroadcastTo and ReduceSum additionally support numeric cast boundaries that
+preserve coordinates, lane geometry and ownership. Reduction input casts run
+before the FP32 sum; its base result rounds before any output cast. Both local
+and tiled-row reductions retain their existing reduction tree, including the
+identity case. These families reject lane regrouping and arbitrary activations.
+Materialized tensor Boxing copies support coordinate-preserving numeric
+PostOps at the result store. The original copy target still defines ownership
+and peer reads; the fused result defines the output dtype and physical ABI.
+This support excludes partial reductions, exclusive values and identity copies.
+For a same-chip reshard whose destination needs other block owners' values,
+Boxing declares a chip-scoped source before memory placement. A destination
+walk inverts the source distribution into its owner component and dense local
+coordinates, retaining every packed lane and the physical component stride.
+Compact owner tables require proven chip sharing; private block components
+remain valid only for local copies and proven narrowing. No canonical staging
+tensor is required for a supported chip-local owner-table gather.
+Private casts can fuse through a ShardedView or a scalar-element-preserving
+Bitcast lane view while retaining every intermediate numeric rounding.
 Shared producers are not duplicated. Backend capability checks reject
 unsupported bodies/families, partial reductions and effectful boundaries;
 they never silently drop a Fusion. Other kernel families require explicit
@@ -307,6 +390,34 @@ Materializers index only the current closed recipe's node types. NumPy and
 Torch evaluation keep recipe namespaces separate, including when different
 recipes reuse node names; per-recipe type indexing visits each node once.
 
+### Physical input visibility contracts
+
+Selected implementations use `source_memory_scope` for a uniform physical
+input visibility requirement. `source_memory_scopes` overrides individual ABI
+input names, for example:
+
+```python
+facts = {
+    "source_memory_scope": "chip",
+    "source_memory_scopes": {"value": "inferred"},
+}
+```
+
+Here unlisted inputs retain chip visibility, while `value` retains the
+operation's own visibility requirement. An inferred override does not erase a
+scope required by the semantic operation. Both legacy kernel materialization
+and semantic microkernel selection transfer these declarations into typed
+memory effects before storage and synchronization planning. The complete input
+schema rejects unknown names, output names and invalid scopes. A logical-only
+operand with no physical access stays `NONE`.
+
+An implementation that accepts private activations must also prove its actual
+read pattern: the current CTA reads a complete identical broadcast component,
+with the correct private-pool owner index and no partial, exclusive or backing
+view. Peer-read weights and cross-phase workspaces keep their shared contracts.
+This is an explicit implementation alternative; ordinary implementations and
+their default visibility requirements stay unchanged.
+
 ### Bufferization optimization levels
 
 Use `CompileOptions(bufferize_opt_level="fast")` or `--bufferize-opt-level fast`
@@ -374,6 +485,15 @@ norm combines count the partial fan-in over their requested output region,
 including scalar vector lanes in the reduction work. Unknown shapes
 remain explicitly heuristic. These estimates do not include allocation-induced
 WAR barriers or post-distribution fusion savings and are not measured latency.
+
+Operation-cost bandwidths are per chip. Per-block traffic is multiplied only
+by executing physical `b` axes, excluding exclusive block owners; `c`/`d`
+axes represent independent chip bandwidth budgets. `chip_aggregate_memory_*`
+factors already sum the active block traffic on the busiest chip. Masked MoE
+traffic uses `max_chip_active_elements`, preserving ragged and staged shard
+geometry rather than averaging full-mesh traffic across chips. Arithmetic
+factors remain per executing block, and communication stays separately priced.
+The unit and H800 operation-cost identities are version 2 for these semantics.
 
 Distribution providers use operation-owned forward and inverse type relations.
 `distributed_output_type_candidates` lifts available input contracts;
@@ -596,6 +716,118 @@ can directly consume this producer layout; explicit agent selections remain
 authoritative and round-trip in Python proposals.
 
 ## Codegen backends: Triton and C++ (FTT)
+
+The SM90 Triton package planner also accepts an experimental
+`kernel_program_partition` tuple in module metadata. Each target-owned request
+contains `symbol`, ordered entry `calls`, and `num_warps`. Supply it before TIR
+packaging, using the actual selected call identities. The requests must cover
+the complete executable entry in order. Each distinct entry gets its own layout/helper
+namespace and launch resource contract; the generated source records those
+contracts and the runtime checks them against the manifest and TIR request.
+Requests without target support fail explicitly.
+
+Version 1 launches programs serially on the caller's stream, preserving the
+existing buffer plan. Kernel completion replaces incoming block/grid ordering;
+cross-chip device rendezvous remains explicit. A different physical grid needs
+a task-to-owner storage ABI and is rejected by this version. Concurrent programs
+require a dependency DAG and a new lifetime plan; adding streams to the serial
+plan is insufficient. Loop regions remain structured, with their original
+iter-argument/yield semantics and separate numerical acceptance requirements.
+
+For SM90 straight-line entry regions, an explicit `depends_on` tuple on **every**
+request selects experimental `flagmega.kernel-programs/v3-dag-completion`; roots
+use `()`. Supply complete legalized entry calls before packaging/bufferization:
+legalization can introduce executable scalar/reference loads. Missing, duplicate
+or foreign call identities are rejected before allocation. Lifetimes include
+every unordered reader/writer's program, allowing reuse after ordered joins.
+Private callee frames can retire at program completion; a result actually backed
+by a frame retains its lifetime. Public results and forwarded state/input
+pointers do not keep unrelated private scratch alive. Codegen independently
+rejects unordered physical read/write hazards. A minimum chain cover of the declared partial order assigns streams,
+including forks after a common prefix; unordered programs use distinct streams.
+Stable branch streams own separate prepared scratch; events enforce dependencies,
+output publication and reuse by the next request. Runtime checks joint rounded
+residency over the maximum weighted antichain for each resource, including actual
+stream ordering. Serial prefixes do not add to a later concurrent frontier's
+footprint. Complete four-warp groups are required and writable external aliases
+are rejected.
+Peer-access programs terminate with a device rendezvous: local kernel retirement
+does not prove another chip has finished reading reusable storage. The source
+and manifest record `device_completion`, verified against typed physical effects;
+these programs require cooperative grid residency. A leading memory fence can
+be removed only when every range's preceding accesses are covered by a globally
+completed ancestor. New producer publication and explicit fences remain intact.
+Unordered device rendezvous require distinct channels and are rejected by this
+version. Existing v2 artifacts retain their original launch contract.
+Before capture, it gives all programs one preferred shared-memory carveout,
+computed from their joint footprint and the device's physical shared capacity.
+This avoids a cache-preference switch between small default-cache kernels and
+larger shared-preferring kernels introducing device synchronization. The setting
+is a CUDA preference, not a promise of concurrent execution; runtime failures
+are explicit and actual overlap still needs measurement. Independent
+peer-access programs require separate distributed synchronization channels and
+are rejected by this initial version. Loop cuts and changing the physical grid
+still require their own execution/owner contracts. This is infrastructure for
+measured phase scheduling, not an enabled full-model performance policy.
+
+Reusable graph functions can expose phase boundaries before allocation with
+`FunctionStage` and `outline_function_stages` from `passes.functions`. An
+explicit partition covers the complete owned SSA body; the transformation moves
+each body node once, creates typed live-in/live-out formals, and replaces every
+direct call with calls to the same stage functions. Global readonly roots keep
+their identity. State effects and mutable reference accesses stay in the first
+stage; later stages contain pure tensor work. Changed signatures invalidate
+positional boundary-layout proofs. Allocation, physical ABI and synchronization
+must run again from this legal graph checkpoint. Structured loop bodies and
+already allocated checkpoints are rejected. A target still supplies the entry
+program partition and dependency graph; graph-function reuse alone does not
+establish reuse of the generated GPU entry binaries.
+
+Single-function DAG programs use `flagmega.kernel-programs/v4-functions` to
+separate reusable GPU entry definitions from their invocation IDs. Entry
+identity includes the callee, launch geometry, physical scope strides and the
+positions/scopes of retained fences. Calls with the same identity resolve the
+same JIT function; their parameter pointers, scalar values, descriptor origins
+and immutable offset-table rows remain per-invocation runtime bindings. Root
+primitive programs retain their own entries. Scalar values and call-record
+alignment do not specialize a new binary for each layer. Source function pool
+ABIs and duplicate-formal proofs remain intact; CTA-local frame selection stays
+inside the wrapper and host pointer projection creates views without copying.
+Descriptor bindings are recorded while constructing their typed resources,
+never recovered from generated pointer expressions. The runtime rebuilds the
+entry projection from physical TIR to reject forged offsets, sources or callees,
+and projects dynamic external arguments/descriptors on each launch. Sharing
+code never shares per-invocation prepared scratch or weakens v3 completion,
+stream, alias and joint-residency requirements. Runtime-indexed views that
+cannot be addressed from the root ABI and invented loop induction arguments
+are rejected explicitly. Existing v1/v2/v3 artifacts remain loadable.
+
+A target may declare `tasks_per_owner` for a flat program grid whose selected
+callees prove a complete, disjoint partition of every owner's output. Physical
+CTAs are ordered by owner, then task; an added block task axis preserves the
+logical storage coordinates while full-grid fences use the physical CTA index.
+The partitioned FP8 WGMMA Down implementation supports this contract when its
+local output width equals `tasks_per_owner * output_tile_n`. Each task retains
+the complete K reduction and writes one output tile. CTA-private pool slices,
+internal grid barriers and partial axis-group barriers are rejected. The
+runtime reconstructs the task partition and physical grid from typed TIR, so
+changing a manifest cannot authorize duplicated owners or missing writes.
+
+Optional input donation inside reusable functions requires legality at every
+call site. For a DAG entry, every other reader must precede the donating call
+in the declared partial order, or precede it within the same program. An
+unordered reader keeps the formal borrowed, including through views and nested
+wrappers. Ordered calls retain legal in-place reuse even though concurrent
+allocation intervals can extend beyond a syntactic last use to cover unordered
+programs.
+
+For simultaneous allocation roots, a feasible layout matching the aligned
+live-peak lower bound proves optimal high water and zero reuse conflicts. The
+allocator can use that certificate without CP-SAT search, including post-budget
+peak reclamation. Tail padding is placed above high water when a matching
+witness exists. Non-simultaneous roots retain the established SAT path because
+equal-peak placements can change incidental reuse hazards; larger alignment
+holes also require search when the bound is not attained.
 
 Selected, bufferized TIR can be emitted as Triton Python (the default) or as
 C++. `write_artifact(..., codegen_backend="cpp")` selects the second; the CLI

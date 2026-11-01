@@ -1,6 +1,7 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed.operation_cost import (
     DistributedOperationCostModel,
@@ -95,3 +96,47 @@ def test_hierarchical_target_cost_matches_nncase_packed_matmul_pick_value():
     )
 
     assert model.get_latency(factors, result_type) == 4976
+
+
+@pytest.mark.parametrize("chips", (1, 2, 4, 8))
+@pytest.mark.parametrize("level", ("c", "d"))
+def test_replicated_chip_work_has_one_chip_bandwidth_budget(chips, level):
+    result = fm.DistributedType(
+        fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
+        fm.Placement((chips, 8, 16), "cyx", level + "bb"),
+    )
+    factors = fm.OpCostFactors(
+        cpu_cycles=1280, block_local_memory_load_bytes=12292,
+        block_local_memory_store_bytes=4096,
+    )
+    assert _h800_model().get_latency(factors, result) == 1400
+
+
+@pytest.mark.parametrize("exclusive_axes,active_blocks", (
+    (None, 128), ((0,), 128), ((1,), 16), ((0, 1), 16),
+    ((1, 3), 1), ((0, 1, 2, 3), 1),
+))
+def test_only_exclusive_block_axes_reduce_per_chip_traffic(exclusive_axes, active_blocks):
+    result = fm.DistributedType(
+        fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
+        fm.Placement((4, 8, 2, 16), "cydx", "cbdb"),
+        exclusive=None if exclusive_axes is None else fm.SBP.exclusive(exclusive_axes),
+    )
+    factors = fm.OpCostFactors(
+        chip_global_memory_load_bytes=7, chip_global_memory_store_bytes=3,
+        chip_aggregate_memory_load_bytes=17, chip_aggregate_memory_store_bytes=5,
+    )
+    assert DistributedOperationCostModel().get_latency(factors, result) == 10 * active_blocks + 22
+
+
+def test_tuple_chip_traffic_uses_largest_executing_block_domain():
+    placement = fm.Placement((4, 8, 16), "cyx", "cbb")
+    def field(exclusive):
+        return fm.DistributedType(
+            fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
+            placement, exclusive=fm.SBP.exclusive(exclusive),
+        )
+    result = fm.TupleType((field((1,)), fm.TupleType((field((0, 2)),))))
+    assert DistributedOperationCostModel().get_latency(
+        fm.OpCostFactors(chip_global_memory_load_bytes=1), result,
+    ) == 16

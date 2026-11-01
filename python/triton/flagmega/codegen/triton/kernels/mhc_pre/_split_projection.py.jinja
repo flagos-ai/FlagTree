@@ -1,0 +1,44 @@
+{% include "kernels/mhc_pre/_stream_projection.py.jinja" %}
+
+
+@triton.jit(noinline=True)
+def _flagmega_mhc_project_split_pair(
+    streams, projection, row_start, split_index,
+    HC: tl.constexpr, HIDDEN: tl.constexpr, SPLITS: tl.constexpr,
+    STREAM_STRIDE: tl.constexpr, HIDDEN_STRIDE: tl.constexpr,
+    PROJECTION_ROW_STRIDE: tl.constexpr, PROJECTION_HIDDEN_STRIDE: tl.constexpr,
+    DOT_LAYOUT: tl.constexpr, SOURCE_LAYOUT: tl.constexpr,
+):
+    COUNT: tl.constexpr = HC * (HC + 2)
+    width: tl.constexpr = HIDDEN // SPLITS
+    rows = row_start + tl.arange(0, 2)
+    accumulator = tle.gpu.set_layout(tl.zeros((2, 1, 128), tl.float32), DOT_LAYOUT)
+    for iteration in tl.range(width // 128):
+        hidden = tle.gpu.set_layout(tl.full((1, 1), split_index, tl.int32) * width
+                                   + iteration * 128 + tl.arange(0, 128)[None, :], SOURCE_LAYOUT)
+        for stream in tl.static_range(HC):
+            value = tl.load(streams + stream * STREAM_STRIDE + hidden * HIDDEN_STRIDE).to(tl.float32)
+            weight = tl.load(projection + rows[:, None, None] * PROJECTION_ROW_STRIDE
+                             + (stream * HIDDEN + hidden[None, :, :]) * PROJECTION_HIDDEN_STRIDE,
+                             mask=(rows < COUNT)[:, None, None], other=0.).to(tl.float32)
+            accumulator = tl.fma(tle.gpu.set_layout(weight, DOT_LAYOUT), value[None, :, :], accumulator)
+    result = tl.reshape(_flagmega_mhc_ordered_warps(accumulator), (2,))
+    first = tl.sum(tl.gather(result, tl.full((1,), 0, tl.int32), 0), 0)
+    second = tl.sum(tl.gather(result, tl.full((1,), 1, tl.int32), 0), 0)
+    return first, second
+
+
+@triton.jit(noinline=True)
+def _flagmega_mhc_square_split(
+    streams, split_index, HC: tl.constexpr, HIDDEN: tl.constexpr, SPLITS: tl.constexpr,
+    STREAM_STRIDE: tl.constexpr, HIDDEN_STRIDE: tl.constexpr, SOURCE_LAYOUT: tl.constexpr,
+):
+    width: tl.constexpr = HIDDEN // SPLITS
+    square = tle.gpu.set_layout(tl.zeros((1, 128), tl.float32), SOURCE_LAYOUT)
+    for iteration in tl.range(width // 128):
+        hidden = tle.gpu.set_layout(tl.full((1, 1), split_index, tl.int32) * width
+                                   + iteration * 128 + tl.arange(0, 128)[None, :], SOURCE_LAYOUT)
+        for stream in tl.static_range(HC):
+            value = tl.load(streams + stream * STREAM_STRIDE + hidden * HIDDEN_STRIDE).to(tl.float32)
+            square = tl.fma(value, value, square)
+    return tl.reshape(_flagmega_mhc_ordered_warps(square), ())

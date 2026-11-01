@@ -47,9 +47,26 @@
 {% else %}    {{ event.symbol }}({{ event.arguments }})
 {% endif %}
 {% elif event.kind == "loop" %}
+{% if event.prologue_events | default(()) %}
+{{ pipeline_role_events(event.prologue_events | default(())) }}
+{% endif %}
     # control.for @{{ event.body_function }} over [{{ event.start }}, {{ event.stop }}) step {{ event.step }}
     for {{ event.loop_var }} in tl.range({{ event.start }}, {{ event.stop }}, {{ event.step }}):
 {{ pipeline_role_events(event.events) | indent(4, true) }}
+{% if event.epilogue_events | default(()) %}
+{{ pipeline_role_events(event.epilogue_events | default(())) }}
+{% endif %}
+{% elif event.kind == "loop_copy" %}
+    # Physical transfer declared by TIR LoopCarry; no graph adapter is synthesized.
+    for _fm_loop_start in tl.range(0, {{ event.capacity }}, {{ event.tile }}):
+        _fm_loop_offsets = _fm_loop_start + tl.arange(0, {{ event.tile }})
+        _fm_loop_mask = (_fm_loop_offsets < {{ event.capacity }}) & ({{ event.active }})
+{% if event.source is not none %}
+        _fm_loop_value = tl.load({{ event.source }} + ({{ event.source_offset }}), mask=_fm_loop_mask, other=0)
+{% else %}
+        _fm_loop_value = {{ event.value }}
+{% endif %}
+        tl.store({{ event.result }} + ({{ event.result_offset }}), _fm_loop_value, mask=_fm_loop_mask & ({{ event.writer_active }}))
 {% else %}
 {% if event.barrier_before %}
 {{ scoped_barrier(event.barrier_scope | default("grid"), event.barrier_axis_group_key | default(none)) }}
@@ -65,7 +82,7 @@
 {%- endmacro %}
 
 {% for definition in device_functions | default(()) %}
-@triton.jit(noinline=True)
+@triton.jit(noinline={{ definition.function != (entry_inline_function | default(none)) }})
 def {{ definition.symbol }}__consumer(
     {{ (definition.schedule.consumer_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
@@ -74,7 +91,7 @@ def {{ definition.symbol }}__consumer(
 
 
 {% if definition.schedule.producer_events %}
-@triton.jit(noinline=True)
+@triton.jit(noinline={{ definition.function != (entry_inline_function | default(none)) }})
 def {{ definition.symbol }}__producer(
     {{ (definition.schedule.producer_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
@@ -84,7 +101,7 @@ def {{ definition.symbol }}__producer(
 
 {% endif %}
 {% if definition.schedule.auxiliary_events %}
-@triton.jit(noinline=True)
+@triton.jit(noinline={{ definition.function != (entry_inline_function | default(none)) }})
 def {{ definition.symbol }}__auxiliary_consumer(
     {{ (definition.schedule.auxiliary_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
@@ -132,6 +149,10 @@ def {{ symbol }}__auxiliary_consumer(
 def {{ symbol }}(
     {{ signature }}
 ):
+{{ runtime_device_context() }}
+{% for argument in scoped_entry_arguments | default(()) %}
+    {{ argument.name }} = _flagmega_block_scope_base({{ argument.name }}.to(tl.pointer_type(tl.uint8)), {{ argument.stride }}).to(tl.pointer_type({{ argument.dtype }}))
+{% endfor %}
     _flagmega_shared_arena = tle.gpu.alloc(
         [{{ pipeline_schedule.shared_arena_nbytes }}],
         dtype=tl.uint8,
@@ -210,15 +231,22 @@ def {{ symbol }}(
         [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_registers }}, {% endif %}{{ pipeline_schedule.producer_registers }}],
     )
 {% else %}
+{% if unspecialized_pointer_arguments | default(()) %}
+@triton.jit(do_not_specialize={{ scalar_arguments }}, do_not_specialize_on_alignment={{ unspecialized_pointer_arguments }})
+{% else %}
 {% if scalar_arguments | default(()) %}
 @triton.jit(do_not_specialize={{ scalar_arguments }})
 {% else %}
 @triton.jit
 {% endif %}
+{% endif %}
 def {{ symbol }}(
     {{ signature }}
 ):
 {{ runtime_device_context() }}
+{% for argument in scoped_entry_arguments | default(()) %}
+    {{ argument.name }} = _flagmega_block_scope_base({{ argument.name }}.to(tl.pointer_type(tl.uint8)), {{ argument.stride }}).to(tl.pointer_type({{ argument.dtype }}))
+{% endfor %}
 {{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(entry_events) }}
 {% endif %}

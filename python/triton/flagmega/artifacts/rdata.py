@@ -45,6 +45,9 @@ from triton.flagmega.artifacts.source_layout import (
     SOURCE_LAYOUT_SCHEMA, SOURCE_LAYOUT_DIGEST, prepare_programs,
     program_ranges, content_digest, validate_source_layout,
 )
+from triton.flagmega.artifacts.source_verification import (
+    file_identity, remember_snapshot_digest, verified_source_digest,
+)
 
 
 RDATA_INDEX_SCHEMA = "flagmega.rdata-index/v4"
@@ -410,8 +413,9 @@ def _pack_chip_segments(
                 with budget.reserve(cost):
                     if failed.is_set():
                         return
-                    values = materialize_numpy_recipe(module, recipe, checkpoint, storage_reader=storage_reader)
-                    for key, source in zip(recipe.outputs, values, strict=True):
+                    values = materialize_numpy_recipe(module, recipe, checkpoint, storage_reader=storage_reader,
+                                                      outputs=selected)
+                    for key, source in zip(selected, values, strict=True):
                         if failed.is_set():
                             return
                         if key in evaluated_outputs:
@@ -622,9 +626,18 @@ def _range_numpy_array(buffer, source):
 
 
 def _rdata_cache_key(module: IRModule, checkpoint: Checkpoint) -> str | None:
+    key_data = _rdata_cache_key_data(module, checkpoint)
+    if key_data is None:
+        return None
+    encoded = json.dumps(key_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _rdata_cache_key_data(module: IRModule, checkpoint: Checkpoint) -> dict | None:
     plan = verify_buffer_plan(module)
     buffers = sorted(
-        (value for value in plan.buffers if value.storage == "rdata"),
+        (value for value in plan.buffers
+         if value.storage == "rdata" and not _aliases_rdata_owner(value)),
         key=lambda value: (value.offset, value.id),
     )
     recipe_by_output = {
@@ -688,12 +701,7 @@ def _rdata_cache_key(module: IRModule, checkpoint: Checkpoint) -> str | None:
         ),
         "checkpoint": identity,
     }
-    encoded = json.dumps(
-        key_data,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return key_data
 
 
 def _pack_rdata_cached(
@@ -726,7 +734,15 @@ def _pack_rdata_cached(
             for path in (image, index_path, staging / "cache.json"):
                 path.chmod(0o444)
             for source in index.get("sources", []):
-                (staging / source["path"]).chmod(0o444)
+                path = staging / source["path"]
+                before = _verified_snapshot_identity(path, source["sha256"])
+                path.chmod(0o444)
+                after = file_identity(path)
+                # Freezing our freshly published snapshot changes ctime, not
+                # its copied bytes. Bind the proof to its immutable version.
+                if after[:4] != before[:4]:
+                    raise ArtifactError(f"Readonly source snapshot changed while freezing: {path}.")
+                remember_snapshot_digest(path, source["sha256"], after)
             try:
                 staging.rename(entry)
             except FileExistsError:
@@ -748,8 +764,23 @@ def _pack_rdata_cached(
     for source in index.get("sources", []):
         target = destination / source["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        _clone_file(entry / source["path"], target)
+        original = entry / source["path"]
+        before = _verified_snapshot_identity(original, source["sha256"])
+        _clone_file(original, target)
+        if file_identity(original) != before:
+            raise ArtifactError(f"Readonly source snapshot changed while copying: {original}.")
+        remember_snapshot_digest(target, source["sha256"], file_identity(target))
     return dict(index)
+
+
+def _verified_snapshot_identity(path: Path, expected: str) -> tuple[int, ...]:
+    """Use an unchanged-file receipt, auditing unknown cache versions once."""
+    before = file_identity(path)
+    if verified_source_digest(path, expected, hash_file) != expected:
+        raise ArtifactError(f"Rdata source hash mismatch: {path}.")
+    if file_identity(path) != before:
+        raise ArtifactError(f"Readonly source snapshot changed while verifying: {path}.")
+    return before
 
 
 def _load_rdata_cache_entry(

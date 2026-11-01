@@ -22,13 +22,12 @@ def physical_identity(plan, function_name, descriptor):
 
 
 class CallAccessResolver:
-    """Memoized, transitive summaries with concrete call-frame substitution.
+    """Memoized may-access summaries with concrete call-frame substitution.
 
-Summaries conservatively retain all body accesses for the duration of a call.
-Internal barriers do not discharge the caller's outstanding hazards. This is
-sound for both RAW and frame/alias WAR/WAW, without adding a grid fence around
-calls whose relevant operands are accessed only by their local owners.
-"""
+    Keep every body access for conservative entry checks. The synchronization
+    planner tracks actual completion separately and uses ``instantiate`` to
+    map its exit effects with the same formal-span and frame proofs.
+    """
 
     def __init__(self, module, plan, leaf_accesses):
         self.module = module
@@ -41,6 +40,32 @@ calls whose relevant operands are accessed only by their local owners.
         call = self.plan.call_map.get(node.id)
         if call is None:
             return self.leaf_accesses(self.module, self.plan, function_name, node, bindings)
+        accesses = self.instantiate(function_name, node, self._summary(call.callee))
+        return (*accesses, *self._loop_copy_accesses(function_name, node, call))
+
+    def _loop_copy_accesses(self, function_name, node, call):
+        if not call.loop_carries:
+            return ()
+        from .synchronization import _Access
+        from triton.flagmega.ir.memory_effect import MemoryEffect, MemoryAccessScope
+        result = []
+        for carry in call.loop_carries:
+            for field,mode in (('initial','read'),('current','read_write'),('staging','read_write'),('yielded','read'),('result','write')):
+                descriptor = self.plan.buffer_map[getattr(carry,field)]
+                if descriptor.storage in {'scalar','rdata'} or not descriptor.nbytes:
+                    continue
+                span = descriptor.physical_access_span
+                lo,hi = span.absolute_start.minimum,span.absolute_end.maximum
+                space = self.plan.memory_space_map[span.buffer.memory_space]
+                effect = MemoryEffect(mode, MemoryAccessScope.BLOCK if space.sharing_scope.value=='block' else MemoryAccessScope.CHIP)
+                result.append(_Access(node.id,descriptor.id,descriptor.storage,physical_identity(self.plan,function_name,descriptor),
+                    lo,hi-lo,mode,descriptor.distributed_type,descriptor.distributed_storage_kind,effect,
+                    ('whole_resource',None),False,space.sharing_scope.value!='block',space.sharing_scope,descriptor.component_stride_bytes))
+        return tuple(result)
+
+    def instantiate(self, function_name, node, accesses):
+        """Map any callee effect subset using the same formal/frame proof."""
+        call = self.plan.call_map[node.id]
         if call.caller != function_name:
             raise IRVerificationError("Memory access call binding belongs to a different caller.")
         formal_bindings = {}
@@ -49,7 +74,7 @@ calls whose relevant operands are accessed only by their local owners.
             actual = self.plan.buffer_map[actual_id]
             formal_bindings.setdefault(str(formal.physical_id), []).append((formal, actual))
         result = []
-        for access in self._summary(call.callee):
+        for access in accesses:
             descriptor = self.plan.buffer_map[access.buffer]
             candidates = formal_bindings.get(str(descriptor.physical_id), ())
             if candidates:
@@ -116,7 +141,7 @@ calls whose relevant operands are accessed only by their local owners.
         try:
             bindings = dict(self.plan.function_map[function_name].values)
             accesses = tuple(access for node in function_nodes(self.module, self.module.function_map[function_name])
-                             if node.op in {"tir.kernel", "tir.call"}
+                             if node.op in {"tir.kernel", "tir.call", "control.for"}
                              for access in self.accesses(function_name, node, bindings))
             self.cache[function_name] = accesses
             return accesses

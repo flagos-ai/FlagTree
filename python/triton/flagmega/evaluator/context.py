@@ -47,6 +47,7 @@ class EvaluationContext:
         weights: WeightResolver,
         constant_assets: Mapping[str, Any],
         type_nodes=None,
+        retain_values: bool = True,
     ) -> None:
         self.module = module
         self.torch = torch
@@ -67,6 +68,7 @@ class EvaluationContext:
         self._device = None
         self._frames: list[EvaluationFrame] = []
         self._values: dict[str, Any] = {}
+        self.retain_values = retain_values
 
     @contextmanager
     def type_scope(self, nodes):
@@ -157,7 +159,8 @@ class EvaluationContext:
             raise EvaluationError(f"Value {node_id!r} has not been evaluated.", node_id=node_id) from error
 
     def record_value(self, node: Node, value: Any) -> None:
-        self._values[node.id] = value
+        if self.retain_values:
+            self._values[node.id] = value
 
     def input_value(self, node: Node) -> Any:
         name = str(node.attrs["name"])

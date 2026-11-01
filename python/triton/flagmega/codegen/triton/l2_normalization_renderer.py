@@ -21,9 +21,17 @@ def l2_normalization_call(raw):
         raise CodegenError("L2Normalization result ABI disagrees with its reduction contract.")
     axes = tuple(normalize_axis(axis, len(source["abi"]["local_capacity_shape"])) for axis in attrs["axes"])
     domain = local_reduction_domain(source["abi"], axes, int(raw["parameters"]["elements_per_program"]))
+    group = attrs.get("reduction_group_size", 1)
+    groups = domain["capacity"] // group
+    grouped_domain = local_reduction_domain(source["abi"], axes, int(raw["parameters"]["elements_per_program"]),
+                                            reduction_index="_fm_group_offsets")
     return {**domain, "source": _pointer(source), "result": _pointer(result),
+            "reduction_group_size": group, "group_tile": 1 << (max(groups, 1) - 1).bit_length(),
+            "group_active": grouped_domain["active"],
+            "group_source_offset": emit_local_scalar_offset(source["abi"], grouped_domain["coordinates"]),
             "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),
             "result_offset": emit_local_scalar_offset(result["abi"], domain["coordinates"]),
             "writer_active": _canonical_writer_active(result["abi"]),
             "epsilon": repr(attrs["epsilon"]), "epsilon_add": attrs["epsilon_mode"] == "add",
+            "accurate_math": attrs.get("math_mode", "fast") == "accurate",
             "reciprocal_multiply": attrs["division_mode"] == "reciprocal_multiply"}

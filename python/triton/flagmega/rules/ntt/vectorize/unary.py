@@ -55,7 +55,8 @@ class VectorizeUnary:
             "math.vectorized_unary",
             (packed.id,),
             packed.type,
-            attrs={"unary_op": node.op.removeprefix("math.")},
+            attrs={"unary_op": node.op.removeprefix("math."),
+                   **({"math_mode": node.attrs["math_mode"]} if "math_mode" in node.attrs else {})},
             metadata=internal_metadata(node.id, "compute"),
         )
         return finish_vector_result(

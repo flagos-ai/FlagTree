@@ -2,13 +2,31 @@
 # SPDX-License-Identifier: MIT
 
 import pytest
+import json
+from pathlib import Path
 
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
+from triton.flagmega.ir.ops.nn.delta_rule_block_update import delta_rule_block_update
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
+
+
+def test_cuda_block_update_retains_rounded_mma_operand_dtype():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" /
+                          "native_block_update_mma_rounding.json").read_text())
+    operands = tuple(torch.tensor(fixture[name], device="cuda", dtype=dtype) for name, dtype in (
+        ("query", torch.bfloat16), ("key", torch.bfloat16), ("value", torch.bfloat16),
+        ("coefficients", torch.bfloat16), ("log_prefix", torch.float32)))
+    initial = torch.zeros((1, 128, 128), device="cuda")
+    actual, _ = delta_rule_block_update(*operands, initial, torch=torch)
+    expected = torch.tensor(fixture["output"], device="cuda", dtype=torch.bfloat16)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("packed", [False, True])

@@ -25,8 +25,11 @@ from .lift_constant_expressions import lift_constant_parameter_expressions
 from .hoist_call_invariants import hoist_call_invariant_expressions
 from .thread_norm_stats import thread_norm_stats_across_function_boundaries
 from .sink_norm_stats_boxing import sink_norm_stats_boxing_across_function_boundaries
+from .outline_stages import FunctionStage, outline_function_stages
 
 __all__ = [
+    "FunctionStage",
+    "outline_function_stages",
     "callee_first_functions",
     "FormAddNormStatsPass",
     "form_add_norm_stats",

@@ -29,9 +29,15 @@ def {{ call.symbol }}({{ call.signature }}):
     topk_offsets = tl.arange(0, {{ call.token_tile }})
     query_position = tl.load({{ call.slot_mapping }}).to(tl.int32)
     for head in tl.range(0, {{ call.num_query_heads }}):
+{% if call.head_sharded %}
+        query_offset = {{ call.simt_query_offset }}
+        query_value = tl.load({{ call.query }} + query_offset, mask=head < ({{ call.head_active }}), other=0.).to(tl.float32)
+        kv_head = ({{ call.global_head }}) // ({{ call.global_query_heads }} // {{ call.num_kv_heads }})
+{% else %}
         query_offset = head * {{ call.query_head_stride }} + (query_dim // {{ call.query_dim_stride }}) * {{ call.query_dim_stride }} + query_dim % {{ call.query_dim_stride }}
         query_value = tl.load({{ call.query }} + query_offset).to(tl.float32)
         kv_head = head // ({{ call.num_query_heads }} // {{ call.num_kv_heads }})
+{% endif %}
 {% if call.probability_rounding == "online_bf16" %}
         running_max = -float("inf")
         running_sum = 0.0
@@ -50,8 +56,16 @@ def {{ call.symbol }}({{ call.signature }}):
             ).to(tl.float32)
             accumulator = accumulator * previous_scale + tl.sum(rounded_probability[:, None] * value, axis=0)
             running_max = updated_max
+{% if call.head_sharded %}
+        result_offset = {{ call.simt_result_offset }}
+{% else %}
         result_offset = head * {{ call.result_head_stride }} + (query_dim // {{ call.result_dim_stride }}) * {{ call.result_dim_stride }} + query_dim % {{ call.result_dim_stride }}
+{% endif %}
+{% if call.head_sharded %}
+        tl.store({{ call.result }} + result_offset, accumulator / tl.maximum(running_sum, 1e-20), mask=({{ call.writer_active }}) & (head < ({{ call.head_active }})))
+{% else %}
         tl.store({{ call.result }} + result_offset, accumulator / tl.maximum(running_sum, 1e-20), mask={{ call.writer_active }})
+{% endif %}
 {% else %}
         running_max = -float("inf")
         running_sum = 0.0
@@ -78,8 +92,16 @@ def {{ call.symbol }}({{ call.signature }}):
                 mask=valid_token[:, None], other=0.0,
             ).to(tl.float32)
             accumulator += tl.sum(rounded_probability[:, None] * value, axis=0)
+{% if call.head_sharded %}
+        result_offset = {{ call.simt_result_offset }}
+{% else %}
         result_offset = head * {{ call.result_head_stride }} + (query_dim // {{ call.result_dim_stride }}) * {{ call.result_dim_stride }} + query_dim % {{ call.result_dim_stride }}
+{% endif %}
+{% if call.head_sharded %}
+        tl.store({{ call.result }} + result_offset, accumulator, mask=({{ call.writer_active }}) & (head < ({{ call.head_active }})))
+{% else %}
         tl.store({{ call.result }} + result_offset, accumulator)
+{% endif %}
 {% endif %}
 {% endif %}
 {% endif %}

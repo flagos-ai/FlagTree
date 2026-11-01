@@ -50,6 +50,9 @@ class PagedAttentionPartial(OpDefinition):
     scale = attribute_parameter()
     layout = attribute_parameter()
     hidden_size = attribute_parameter()
+    probability_rounding = attribute_parameter(default="normalized")
+    softmax_block_size = attribute_parameter(default=64)
+    softmax_traversal = attribute_parameter(default="forward")
     split_hierarchy_axis = attribute_parameter()
     split_count = attribute_parameter()
 
@@ -70,6 +73,10 @@ class PagedAttentionPartial(OpDefinition):
             "split_count": count,
         })
         return result
+
+    @classmethod
+    def ir_attrs(cls, attrs):
+        return PagedAttention.ir_attrs(attrs)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -96,6 +103,9 @@ class PagedAttentionPartial(OpDefinition):
             scale=float(node.attrs["scale"]),
             layout=tuple(node.attrs["layout"]),
             context=context,
+            probability_rounding=node.attrs.get("probability_rounding", "normalized"),
+            softmax_block_size=node.attrs.get("softmax_block_size", 64),
+            softmax_traversal=node.attrs.get("softmax_traversal", "forward"),
         ).float()
         dim_axis = tuple(node.attrs["layout"]).index("dim")
         stats_shape = list(attention.shape)

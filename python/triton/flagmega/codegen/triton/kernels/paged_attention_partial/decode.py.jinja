@@ -22,7 +22,40 @@ _flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
 )
 {% endif %}
 @triton.jit
-def _flagmega_paged_attention_partial(
+def _flagmega_paged_attention_qk_mma(query, cache, key_base, valid, head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    reduction_tile: tl.constexpr = min(64, head_dim)
+    score = tl.zeros((16, token_tile), tl.float32)
+    for start in tl.range(0, head_dim, reduction_tile):
+        dimension = start + tl.arange(0, reduction_tile)
+        query_slice = tl.gather(query, dimension, axis=0).to(tl.bfloat16)
+        query_matrix = tl.broadcast_to(query_slice[None, :], (16, reduction_tile))
+        key = tl.load(cache + key_base[None, :] + dimension[:, None],
+                      mask=valid[None, :] & (dimension[:, None] < head_dim), other=0).to(tl.bfloat16)
+        score = tl.dot(query_matrix, key, score)
+    return tl.sum(tl.where(rows[:, None] == 0, score, 0.0), axis=0)
+
+
+@triton.jit
+def _flagmega_paged_attention_pv_mma(probability, cache, value_base, valid, previous,
+                                   head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    accumulator = tl.broadcast_to(previous[None, :], (16, previous.shape[0]))
+    reduction_tile: tl.constexpr = min(32, token_tile)
+    dimension = tl.arange(0, head_dim)
+    for start in tl.range(0, token_tile, reduction_tile):
+        offsets = start + tl.arange(0, reduction_tile)
+        probability_slice = tl.gather(probability, offsets, axis=0).to(tl.bfloat16)
+        probability_matrix = tl.broadcast_to(probability_slice[None, :], (16, reduction_tile))
+        base = tl.gather(value_base, offsets, axis=0)
+        mask = tl.gather(valid, offsets, axis=0)
+        value = tl.load(cache + base[:, None] + dimension[None, :], mask=mask[:, None], other=0).to(tl.bfloat16)
+        accumulator = tl.dot(probability_matrix, value, accumulator)
+    return tl.sum(tl.where(rows[:, None] == 0, accumulator, 0.0), axis=0)
+
+
+@triton.jit(noinline=True)
+def {{ paged_attention_partial_symbol | default("_flagmega_paged_attention_partial") }}(
     query,
     kv_cache,
     slot_mapping,
@@ -46,6 +79,9 @@ def _flagmega_paged_attention_partial(
     query_lanes: tl.constexpr,
     accumulator_dim_stride: tl.constexpr,
     num_blocks: tl.constexpr,
+    online_bf16: tl.constexpr = False,
+    softmax_block_size: tl.constexpr = 64,
+    reverse_softmax: tl.constexpr = False,
 ):
     """Portable per-context-shard online-softmax state computation."""
     dimension = tl.arange(0, head_dim)
@@ -56,8 +92,14 @@ def _flagmega_paged_attention_partial(
         # so it cannot describe the just-written token for every reusable
         # decode-layer invocation.
         context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
-        token_begin = (context_length * context_shard) // context_shards
-        token_end = (context_length * (context_shard + 1)) // context_shards
+        if online_bf16:
+            # A separately rounded local origin changes the logical online
+            # softmax. One context owner retains the declared full traversal.
+            token_begin = tl.where(context_shard == 0, 0, context_length)
+            token_end = context_length
+        else:
+            token_begin = (context_length * context_shard) // context_shards
+            token_end = (context_length * (context_shard + 1)) // context_shards
         # ``query`` and all partial-state pointers are already rebased to the
         # selected owner-local head by the call ABI. ``head`` remains the
         # logical head coordinate and is used only for cache-head selection.
@@ -68,9 +110,14 @@ def _flagmega_paged_attention_partial(
         running_max = -float("inf")
         running_sum = 0.0
         accumulator = tl.zeros((head_dim,), tl.float32)
-        for token_start in tl.range(token_begin, token_end, token_tile):
+        steps = tl.cdiv(token_end - token_begin, softmax_block_size if online_bf16 else token_tile)
+        for step in tl.range(0, steps):
+            if online_bf16:
+                token_start = token_begin + ((steps - 1 - step) if reverse_softmax else step) * softmax_block_size
+            else:
+                token_start = token_begin + step * token_tile
             token = token_start + token_lane
-            valid = token < token_end
+            valid = (token < token_end) & ((token_lane < softmax_block_size) if online_bf16 else True)
             logical_block = token // block_size
             block_offset = token % block_size
             # ``token < token_end`` bounds which tokens are logically part of
@@ -96,36 +143,52 @@ def _flagmega_paged_attention_partial(
             # promote this mixed expression before tl.load sees it.
             key_base = key_base.to(tl.int64)
             value_base = key_base + block_size * num_kv_heads * head_dim
-            key_value = tl.load(
+            if online_bf16:
+                score = _flagmega_paged_attention_qk_mma(
+                    query_value, kv_cache, key_base, valid, head_dim, token_tile) * scale
+            else:
+                key_value = tl.load(
                 kv_cache + key_base[:, None] + dimension[None, :],
                 mask=valid[:, None],
                 other=0.0,
-            ).to(tl.float32)
-{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") %}
-            key_value = tle.gpu.set_layout(
-                key_value, _flagmega_paged_attention_partial_reduction_layout
-            )
+                ).to(tl.float32)
+{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") or paged_attention_partial_warp_rows | default(false) %}
+                key_value = tle.gpu.set_layout(
+                    key_value, _flagmega_paged_attention_partial_reduction_layout
+                )
 {% endif %}
-            score = tl.sum(key_value * query_value[None, :], axis=1) * scale
+                score = tl.sum(key_value * query_value[None, :], axis=1) * scale
             score = tl.where(valid, score, -float("inf"))
             tile_max = tl.max(score, axis=0)
             updated_max = tl.maximum(running_max, tile_max)
-            previous_scale = tl.exp(running_max - updated_max)
-            probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
-            value_value = tl.load(
+            if online_bf16:
+                previous_scale = tl.exp2((running_max - updated_max) * 1.4426950408889634)
+                probability = tl.where(valid, tl.exp2(score * 1.4426950408889634
+                                                      - updated_max * 1.4426950408889634), 0.0)
+                product_probability = probability.to(tl.bfloat16).to(tl.float32)
+            else:
+                previous_scale = tl.exp(running_max - updated_max)
+                probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
+                product_probability = probability
+            if online_bf16:
+                accumulator = _flagmega_paged_attention_pv_mma(
+                    product_probability, kv_cache, value_base, valid, accumulator * previous_scale,
+                    head_dim, token_tile)
+            else:
+                value_value = tl.load(
                 kv_cache + value_base[:, None] + dimension[None, :],
                 mask=valid[:, None],
                 other=0.0,
-            ).to(tl.float32)
-{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") %}
-            value_value = tle.gpu.set_layout(
-                value_value, _flagmega_paged_attention_partial_reduction_layout
-            )
+                ).to(tl.float32)
+{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") or paged_attention_partial_warp_rows | default(false) %}
+                value_value = tle.gpu.set_layout(
+                    value_value, _flagmega_paged_attention_partial_reduction_layout
+                )
 {% endif %}
-            accumulator = (
-                accumulator * previous_scale
-                + tl.sum(probability[:, None] * value_value, axis=0)
-            )
+                accumulator = (
+                    accumulator * previous_scale
+                    + tl.sum(product_probability[:, None] * value_value, axis=0)
+                )
             running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
             running_max = updated_max
         # Each pointer is already rebased to this physical owner's compact

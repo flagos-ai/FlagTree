@@ -104,3 +104,37 @@ def test_spill_tolerance_defaults_to_zero_and_does_not_relax_nvidia():
     assert contract.spill_tolerance_bytes == 0
     with pytest.raises(RuntimeContractError, match="tolerated byte"):
         _validate_resources(compiled, contract)
+
+
+@pytest.mark.parametrize("cached_error_launcher", [False, True])
+def test_oversized_shared_is_rejected_before_loading_or_reading_driver_registers(cached_error_launcher):
+    class Unloaded:
+        metadata = SimpleNamespace(num_warps=4, shared=288908)
+        run_reads = 0
+
+        @property
+        def run(self):
+            self.run_reads += 1
+            if cached_error_launcher:
+                # A previous load failure caches a raising launcher without
+                # initializing n_regs/n_spills. Reading it is not admission.
+                return lambda: None
+            raise AssertionError("Oversized shared storage must be rejected before loading")
+
+    compiled = Unloaded()
+    for _ in range(2):
+        with pytest.raises(RuntimeContractError, match="288908 shared-memory bytes; limit is 227328"):
+            _validate_resources(compiled, ResourceContract(4, 1))
+    assert compiled.run_reads == 0
+
+
+def test_resident_shared_budget_is_checked_before_loading():
+    class Unloaded:
+        metadata = SimpleNamespace(num_warps=4, shared=120000)
+
+        @property
+        def run(self):
+            raise AssertionError("Resident shared budget must be checked before loading")
+
+    with pytest.raises(RuntimeContractError, match="240000 shared-memory bytes for 2 resident block"):
+        _validate_resources(Unloaded(), ResourceContract(4, 2))

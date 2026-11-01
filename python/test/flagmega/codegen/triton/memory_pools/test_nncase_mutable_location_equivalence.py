@@ -122,5 +122,5 @@ def test_block_local_data_uses_pool_scope_stride_without_double_owner_stride():
     assert abi["pool_scope_stride_bytes"] == 256
     assert emit_buffer_pointer(abi, "block_pool") == (
         "(block_pool.to(tl.pointer_type(tl.bfloat16)) "
-        "+ (shard_index) * 128)"
+        "+ (block_index) * 128)"
     )

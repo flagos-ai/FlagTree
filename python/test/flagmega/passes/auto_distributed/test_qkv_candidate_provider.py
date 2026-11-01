@@ -95,6 +95,22 @@ def test_packed_qkv_provider_couples_output_and_reduction_mesh_axes():
     assert hybrid.input_types[4:13] == (fm.NoneType(),) * 9
 
 
+def test_ordered_qkv_retains_output_sharding_without_reassociating_k():
+    original = PackedQKVModule().build()
+    module = fm.verify_module(replace(original, nodes=tuple(
+        replace(n, attrs={**n.attrs, "reduction_order": "mma_k16"}) if n.id == "qkv" else n
+        for n in original.nodes)))
+    node = module.node_map["qkv"]
+    context = DistributedCandidateContext(
+        module, node, fm.Placement((8, 16), "yx", "bb"),
+        tuple((module.node_map[n].type,) for n in node.inputs),
+        PyNttDistributedSplitCandidateProvider(block_bytes=128))
+    candidates = PackedQKVParallelLinearCandidateProvider().get_candidates(context)
+    assert any(c.reason == "packed-qkv-output-sbp" for c in candidates)
+    assert all(c.input_types[0].axis_policies[1] == fm.SBP.broadcast() for c in candidates)
+    assert all(field.partial is None for c in candidates for field in c.return_type.fields)
+
+
 def test_packed_qkv_provider_couples_heterogeneous_block_cyclic_outputs():
     module = PackedQKVModule().build()
     node = module.node_map["qkv"]

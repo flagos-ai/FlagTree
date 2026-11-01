@@ -12,6 +12,8 @@ def _flagmega_rotary_embedding(
     theta: tl.constexpr,
     attention_scaling: tl.constexpr,
     elements_per_program: tl.constexpr,
+    math_mode: tl.constexpr = "fast",
+    inverse_frequencies: tl.constexpr = (),
 ):
     """Generate the decode positions' rotary cosine and sine tensors."""
     program = tl.program_id(0)
@@ -21,18 +23,21 @@ def _flagmega_rotary_embedding(
     token = linear // head_dim
     dimension = linear % head_dim
     frequency_dimension = dimension % (head_dim // 2)
-    inverse_frequency = tl.exp(
-        (-2.0 * frequency_dimension.to(tl.float32) / head_dim) * tl.log(theta)
-    )
+    if len(inverse_frequencies):
+        inverse_frequency = tl.full((elements_per_program,), inverse_frequencies[0], tl.float32)
+        for index in tl.static_range(1, len(inverse_frequencies)):
+            inverse_frequency = tl.where(frequency_dimension == index, inverse_frequencies[index], inverse_frequency)
+    elif math_mode == "accurate":
+        inverse_frequency = tl.div_rn(1.0, libdevice.pow(theta, 2.0 * frequency_dimension.to(tl.float32) / head_dim))
+    else:
+        inverse_frequency = tl.exp(
+            (-2.0 * frequency_dimension.to(tl.float32) / head_dim) * tl.log(theta)
+        )
     position = tl.load(sequence_lengths).to(tl.float32) + token.to(tl.float32)
     angle = position * inverse_frequency
-    tl.store(
-        cosine + linear,
-        libdevice.fast_cosf(angle) * attention_scaling,
-        mask=mask,
-    )
-    tl.store(
-        sine + linear,
-        libdevice.fast_sinf(angle) * attention_scaling,
-        mask=mask,
-    )
+    if math_mode == "accurate":
+        cosine_value, sine_value = libdevice.cos(angle), libdevice.sin(angle)
+    else:
+        cosine_value, sine_value = libdevice.fast_cosf(angle), libdevice.fast_sinf(angle)
+    tl.store(cosine + linear, cosine_value * attention_scaling, mask=mask)
+    tl.store(sine + linear, sine_value * attention_scaling, mask=mask)

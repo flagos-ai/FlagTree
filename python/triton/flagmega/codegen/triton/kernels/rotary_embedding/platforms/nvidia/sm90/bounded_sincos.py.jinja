@@ -1,0 +1,42 @@
+{# NVIDIA libdevice's exact FP32 finite-angle path, with the shared reduction
+   reused by cos and sin. The renderer proves every active angle is below
+   105615 from the configured cache and constant inverse frequencies. #}
+@triton.jit
+def {{ call.symbol }}__trig_fma(a, b, c):
+    return tl.inline_asm_elementwise(
+        "fma.rn.ftz.f32 $0, $1, $2, $3;", constraints="=f,f,f,f",
+        args=[a, b, c], dtype=tl.float32, is_pure=True, pack=1)
+
+
+@triton.jit
+def {{ call.symbol }}__trig_constant(bits: tl.constexpr):
+    return tl.full((), bits, tl.uint32).to(tl.float32, bitcast=True)
+
+
+@triton.jit
+def {{ call.symbol }}__bounded_sincos(angle):
+    quadrant = tl.inline_asm_elementwise(
+        "cvt.rni.ftz.s32.f32 $0, $1;", constraints="=r,f",
+        args=[angle * {{ call.symbol }}__trig_constant(0x3f22f983)],
+        dtype=tl.int32, is_pure=True, pack=1)
+    multiple = quadrant.to(tl.float32)
+    reduced = {{ call.symbol }}__trig_fma(multiple, {{ call.symbol }}__trig_constant(0xbfc90fda), angle)
+    reduced = {{ call.symbol }}__trig_fma(multiple, {{ call.symbol }}__trig_constant(0xb3a22168), reduced)
+    reduced = {{ call.symbol }}__trig_fma(multiple, {{ call.symbol }}__trig_constant(0xa7c234c5), reduced)
+    square = tl.inline_asm_elementwise(
+        "mul.rn.ftz.f32 $0, $1, $1;", constraints="=f,f",
+        args=[reduced], dtype=tl.float32, is_pure=True, pack=1)
+    cosine_poly = {{ call.symbol }}__trig_fma({{ call.symbol }}__trig_constant(0x37cbac00), square, {{ call.symbol }}__trig_constant(0xbab607ed))
+    cosine_poly = {{ call.symbol }}__trig_fma(cosine_poly, square, {{ call.symbol }}__trig_constant(0x3d2aaabb))
+    cosine_poly = {{ call.symbol }}__trig_fma(cosine_poly, square, {{ call.symbol }}__trig_constant(0xbeffffff))
+    cosine = {{ call.symbol }}__trig_fma(cosine_poly, {{ call.symbol }}__trig_fma(square, 1., 0.), 1.)
+    sine_poly = {{ call.symbol }}__trig_fma({{ call.symbol }}__trig_constant(0xb94d4153), square, {{ call.symbol }}__trig_constant(0x3c0885e4))
+    sine_poly = {{ call.symbol }}__trig_fma(sine_poly, square, {{ call.symbol }}__trig_constant(0xbe2aaaa8))
+    sine = {{ call.symbol }}__trig_fma(sine_poly, {{ call.symbol }}__trig_fma(square, reduced, 0.), reduced)
+    cosine_value = tl.where((quadrant & 1) != 0, sine, cosine)
+    sine_value = tl.where((quadrant & 1) != 0, cosine, sine)
+    cosine_value = tl.where(((quadrant + 1) & 2) != 0,
+        {{ call.symbol }}__trig_fma(cosine_value, -1., 0.), cosine_value)
+    sine_value = tl.where((quadrant & 2) != 0,
+        {{ call.symbol }}__trig_fma(sine_value, -1., 0.), sine_value)
+    return cosine_value, sine_value

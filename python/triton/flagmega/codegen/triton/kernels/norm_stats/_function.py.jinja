@@ -12,6 +12,68 @@ import triton.experimental.tle.language as tle
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     for norm_outer_index in tl.range(0, {{ call.outer_capacity }}):
+{% if call.ordered_tree %}
+        norm_group = tl.arange(0, {{ call.group_tile }})
+{% if call.tiled_fma %}
+        norm_column = tl.arange(0, {{ call.reduction_group_size }})
+        norm_squares = tl.zeros(({{ call.group_tile }}, {{ call.reduction_group_size }}), tl.float32)
+{% if call.use_mean %}
+        norm_totals = tl.zeros(({{ call.group_tile }}, {{ call.reduction_group_size }}), tl.float32)
+{% endif %}
+        for norm_block in tl.range(0, tl.cdiv({{ call.reduction_capacity }}, {{ call.reduction_block_size }})):
+{% if call.reduction_block_traversal == "reverse" %}
+            norm_start = (tl.cdiv({{ call.reduction_capacity }}, {{ call.reduction_block_size }}) - 1 - norm_block) * {{ call.reduction_block_size }}
+{% else %}
+            norm_start = norm_block * {{ call.reduction_block_size }}
+{% endif %}
+            norm_reduction_offsets = norm_start + norm_group[:, None] * {{ call.reduction_group_size }} + norm_column[None, :]
+            norm_mask = (norm_reduction_offsets < {{ call.reduction_capacity }}) & ({{ call.source_active }})
+            norm_value = _flagmega_norm_stats_load({{ call.source }} + ({{ call.source_offset }}), norm_mask)
+            norm_value = tl.where(norm_mask, norm_value, 0.)
+            norm_squares = tl.fma(norm_value, norm_value, norm_squares)
+{% if call.use_mean %}
+            norm_totals = norm_totals + norm_value
+{% endif %}
+        norm_square_sum = tl.zeros(({{ call.group_tile }},), tl.float32)
+{% if call.use_mean %}
+        norm_sum = tl.zeros(({{ call.group_tile }},), tl.float32)
+{% endif %}
+        for norm_column_index in tl.static_range({{ call.reduction_group_size }}):
+            norm_indices = tl.full(({{ call.group_tile }}, 1), norm_column_index, tl.int32)
+            norm_square_sum = norm_square_sum + tl.sum(tl.gather(norm_squares, norm_indices, 1), 1)
+{% if call.use_mean %}
+            norm_sum = norm_sum + tl.sum(tl.gather(norm_totals, norm_indices, 1), 1)
+{% endif %}
+{% else %}
+        norm_square_sum = tl.zeros(({{ call.group_tile }},), tl.float32)
+{% if call.use_mean %}
+        norm_sum = tl.zeros(({{ call.group_tile }},), tl.float32)
+{% endif %}
+        for norm_column in tl.static_range(0, {{ call.reduction_group_size }}):
+{% if call.group_fma %}
+            norm_group_column = {{ call.reduction_group_seed_index }} if norm_column == 0 else (norm_column - 1 if norm_column <= {{ call.reduction_group_seed_index }} else norm_column)
+            norm_reduction_offsets = norm_group * {{ call.reduction_group_size }} + norm_group_column
+{% else %}
+            norm_reduction_offsets = norm_group * {{ call.reduction_group_size }} + norm_column
+{% endif %}
+            norm_mask = (norm_reduction_offsets < {{ call.reduction_capacity }}) & ({{ call.source_active }})
+            norm_value = _flagmega_norm_stats_load({{ call.source }} + ({{ call.source_offset }}), norm_mask)
+{% if call.group_fma %}
+            norm_square_sum = tl.fma(norm_value, norm_value, norm_square_sum)
+{% else %}
+            norm_square_sum = norm_square_sum + norm_value * norm_value
+{% endif %}
+{% if call.use_mean %}
+            norm_sum = norm_sum + norm_value
+{% endif %}
+{% endif %}
+{% if call.reduction_tree_group_size %}
+        norm_square_sum = tl.sum(tl.reshape(norm_square_sum, ({{ call.group_tile // call.reduction_tree_group_size }}, {{ call.reduction_tree_group_size }})), 1)
+{% if call.use_mean %}
+        norm_sum = tl.sum(tl.reshape(norm_sum, ({{ call.group_tile // call.reduction_tree_group_size }}, {{ call.reduction_tree_group_size }})), 1)
+{% endif %}
+{% endif %}
+{% else %}
 {% if call.use_mean %}
         norm_sum = tl.zeros(({{ call.tile }},), tl.float32)
 {% endif %}
@@ -44,6 +106,7 @@ def {{ call.symbol }}({{ call.signature }}):
             norm_square_sum += tl.where(
                 norm_mask, norm_value * norm_value, 0.0,
             )
+{% endif %}
         norm_store_mask = ({{ call.outer_active }}) & ({{ call.writer_active }})
 {% if call.use_mean %}
         tl.store(

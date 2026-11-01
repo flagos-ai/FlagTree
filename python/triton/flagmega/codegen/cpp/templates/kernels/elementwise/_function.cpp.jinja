@@ -8,11 +8,13 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         if (!({{ call.active | cppexpr }})) {
             continue;
         }
-        const float lhs_value = ftt::to_float(
-            ({{ call.lhs | cppexpr }})[{{ call.lhs_offset | cppexpr }}]);
+        const float lhs_value = ({{ call.lhs_read_active | default('True') | cppexpr }})
+            ? ftt::to_float(({{ call.lhs | cppexpr }})[{{ call.lhs_offset | cppexpr }}])
+            : ftt::to_float(ftt::store_as({{ call.lhs | cppexpr }}, {{ call.lhs_other | default(0.0) }}));
 {% if call.variant in ("add", "mul", "div") %}
-        const float rhs_value = ftt::to_float(
-            ({{ call.rhs | cppexpr }})[{{ call.rhs_offset | cppexpr }}]);
+        const float rhs_value = ({{ call.rhs_read_active | default('True') | cppexpr }})
+            ? ftt::to_float(({{ call.rhs | cppexpr }})[{{ call.rhs_offset | cppexpr }}])
+            : ftt::to_float(ftt::store_as({{ call.rhs | cppexpr }}, {{ call.rhs_other | default(0.0) }}));
 {% endif %}
 {% if call.fusion_lines %}
 {# Fusion epilogues are emitted as Triton statements, which have no C++

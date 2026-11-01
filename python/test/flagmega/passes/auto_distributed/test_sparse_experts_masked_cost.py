@@ -6,20 +6,21 @@ from itertools import product
 from math import prod
 
 import pytest
-
 from triton.flagmega import ir as fm
-from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.passes.auto_distributed.operation_cost import DistributedOperationCostModel
+
 from python.test.flagmega.sparse_experts.helpers import operand_types, operands
 
 
 @pytest.mark.parametrize("definition", [SparseExpertsGateUp, SparseExpertsDown])
 @pytest.mark.parametrize("layout", ["broadcast", "cyclic", "staged", "empty", "contiguous"])
-def test_selected_bank_traffic_counts_active_slots_not_owner_capacity(definition, layout):
+@pytest.mark.parametrize("chip_level", (None, "c", "d"))
+def test_selected_bank_traffic_counts_active_slots_not_owner_capacity(definition, layout, chip_level):
     b = fm.SBP.broadcast()
     routes = 4 if layout == "contiguous" else 9
-    mesh = fm.Placement((8, 2, 2), "xyz", "bbb")
+    mesh = fm.Placement((8, 2, 2), "xyz", "bbb" if chip_level is None else chip_level + "bb")
     r = {
         "broadcast": b,
         "cyclic": fm.SBP.split_block_cyclic((0,), 2),
@@ -39,14 +40,15 @@ def test_selected_bank_traffic_counts_active_slots_not_owner_capacity(definition
     factors = definition.cost_factors(inputs, prepared.attrs, prepared.result_type)
     matrix_type = types["gate_weight" if definition is SparseExpertsGateUp else "down_weight"]
     projections = 2 if definition is SparseExpertsGateUp else 1
-    expected = 0
+    per_chip = {}
     for owner in product(*(range(n) for n in mesh.hierarchy)):
         slots = prod(d.fixed_value for d in fm.local_shard_descriptor(types["router_expert_ids"], owner).active_shape)
         matrix = prod(d.fixed_value for d in fm.local_shard_descriptor(matrix_type, owner).active_shape[1:])
-        expected += projections * slots * (matrix * matrix_type.tensor.dtype.itemsize + 8)
+        chip = () if chip_level is None else (owner[0],)
+        per_chip[chip] = per_chip.get(chip, 0) + projections * slots * (matrix * matrix_type.tensor.dtype.itemsize + 8)
     memory_only = replace(factors, simt_fma_operations=0, elementwise_operations=0,
                           block_local_memory_load_bytes=0, block_local_memory_store_bytes=0)
-    assert DistributedOperationCostModel().get_latency(memory_only, prepared.result_type) == expected
+    assert DistributedOperationCostModel().get_latency(memory_only, prepared.result_type) == max(per_chip.values())
     # Masked arithmetic still runs over the maximum local domain.
     local_ids = fm.local_tensor_type(types["router_expert_ids"])
     local_matrix = fm.local_tensor_type(matrix_type)

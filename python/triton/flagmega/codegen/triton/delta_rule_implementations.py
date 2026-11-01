@@ -7,6 +7,13 @@ from triton.flagmega.codegen.triton.implementation import TritonImplementation
 
 def delta_rule_implementations():
     return (
+        TritonImplementation("tir.delta_rule_chunk_transfer.blockwise", "delta_rule_chunk_transfer", "blockwise",
+                             parameters={"compute_num_warps": 8}, contract={"indexing": "local"}, requires=("mma_v3",)),
+        TritonImplementation("tir.delta_rule_chunk_fixup.ordered", "delta_rule_chunk_fixup", "ordered",
+                             parameters={"compute_num_warps": 8}, contract={"indexing": "local"}, requires=("mma_v3",)),
+        TritonImplementation("tir.delta_rule_chunked_block_update.blockwise", "delta_rule_chunked_block_update", "blockwise",
+                             parameters={"value_tile": 64, "compute_num_warps": 8},
+                             contract={"indexing": "local"}, requires=("mma_v3",)),
         TritonImplementation("tir.delta_rule_gates.local", "delta_rule_gates", "local",
                              parameters={"elements_per_program": 128}, contract={"indexing": "local"}),
         TritonImplementation("tir.delta_rule_block_update.blockwise", "delta_rule_block_update", "blockwise",

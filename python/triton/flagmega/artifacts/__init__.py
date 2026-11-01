@@ -9,6 +9,7 @@ from triton.flagmega.artifacts.rdata import (
     read_rdata_index,
     verify_rdata,
 )
+from triton.flagmega.artifacts.cache_admission import rebind_rdata_cache_entry
 
 __all__ = [
     "ARTIFACT_SCHEMA",
@@ -19,6 +20,7 @@ __all__ = [
     "module_abi",
     "pack_rdata",
     "read_rdata_index",
+    "rebind_rdata_cache_entry",
     "refresh_artifact_codegen",
     "verify_rdata",
     "write_artifact",

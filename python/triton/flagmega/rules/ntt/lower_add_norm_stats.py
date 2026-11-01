@@ -83,6 +83,7 @@ def lower_add_norm_stats_rule() -> RewriteRule:
             "transpose_b": False,
             "rhs_layout": str(producer.attrs["rhs_layout"]),
             "output_data_type": producer.attrs["output_data_type"],
+            **({"reduction_order": producer.attrs["reduction_order"]} if "reduction_order" in producer.attrs else {}),
         }
         prepared = MatMulNormStats.prepare(
             inputs,

@@ -49,7 +49,7 @@ def test_rotary_embedding_uses_cache_position_and_has_named_parameters():
     torch.testing.assert_close(cos, frequency.cos())
     torch.testing.assert_close(sin, frequency.sin())
     definition = fm.get_definition("nn.rotary_embedding")
-    assert [value.name for value in definition.input_parameters] == ["reference", "state"]
+    assert [value.name for value in definition.input_parameters] == ["reference", "state", "cache"]
     assert pm.try_match_root(
         module.node_map["rotary"],
         pm.F.nn.is_rotary_embedding(head_dim=8),

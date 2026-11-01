@@ -31,6 +31,7 @@ from triton.flagmega.ir.tir.buffer_store import BufferStore
 from triton.flagmega.ir.tir.evaluate import Evaluate
 from triton.flagmega.ir.tir.execution_function import ExecutionFunction
 from triton.flagmega.ir.tir.execution import execution_calls_of, execution_items_of, verify_execution_functions
+from triton.flagmega.ir.tir.loop_carry import LoopCarry
 from triton.flagmega.ir.tir.execution_kind import (
     KernelExecutionKind,
     kernel_execution_kind,

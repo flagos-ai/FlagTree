@@ -26,8 +26,19 @@ def test_reusable_function_passes_one_pool_origin_and_a_call_record(compile_pipe
                                  and target.id == "FLAGMEGA_FUNCTION_OFFSET_TABLES" for target in node.targets))
     assert ast.literal_eval(source_tables) == tables
     role = functions[definition["symbol"] + "__consumer"]
+    offset_reads = [node for node in ast.walk(role)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "load" and node.args
+                    and any(isinstance(value, ast.Name) and value.id == "_flagmega_function_offsets"
+                            for value in ast.walk(node.args[0]))]
+    dynamic = [binding for binding in pointer_abi["bindings"] if "record_column" in binding]
+    assert dynamic and all("record_affine" in binding for binding in dynamic)
+    assert not offset_reads, "A proven complete affine domain does not need table reads"
+    # The scalar record remains dynamic even when its complete offset column
+    # can be expressed as signed int64 arithmetic.
     assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-               and node.func.attr == "load" and any(keyword.arg == "volatile" for keyword in node.keywords)
+               and node.func.attr == "cast" and node.args
+               and isinstance(node.args[0], ast.Name) and node.args[0].id == "_flagmega_call_offsets"
                for node in ast.walk(role))
     # Each invocation has its own offset record while sharing the same body.
     caller = functions["flagmega_main__consumer"]

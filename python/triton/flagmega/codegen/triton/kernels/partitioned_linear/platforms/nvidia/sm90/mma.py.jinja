@@ -1,0 +1,50 @@
+# flagmega-kernel: partitioned_linear/mma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "partitioned_linear" and call.variant == "mma" %}
+import triton.experimental.tle.language as tle
+{{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [{{ num_warps }}, 1], [16, 8]))
+{{ call.symbol }}__weight_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__value_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
+
+
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_task in tl.range(block_index, {{ call.tasks }}, tl.num_programs(0)):
+        _fm_n = _fm_task * 64 + tl.arange(0, 64)
+        _fm_total = tl.full((64,), 0, tl.float32)
+        for _fm_part in tl.range(0, {{ call.parts }}):
+{% if call.accumulation_splits == 1 %}
+            _fm_accumulator = tle.gpu.set_layout(tl.zeros((64, 16), tl.float32), {{ call.symbol }}__mma_layout)
+            for _fm_start in tl.range(0, {{ call.part_k }}, {{ call.block_k }}):
+                _fm_k = _fm_start + tl.arange(0, {{ call.block_k }})
+                _fm_offset = _fm_part * {{ call.part_k }} + _fm_k
+                _fm_w = tl.load({{ call.weight }} + _fm_n[:, None] * {{ call.weight_stride }} + _fm_offset[None, :],
+                                (_fm_n[:, None] < {{ call.rows }}) & (_fm_k[None, :] < {{ call.part_k }}), other=0.)
+                _fm_x = tl.load({{ call.source }} + _fm_offset, _fm_k < {{ call.part_k }}, other=0.)
+                _fm_a = tle.gpu.set_layout(_fm_w, {{ call.symbol }}__weight_layout)
+                _fm_b = tle.gpu.set_layout(tl.broadcast_to(_fm_x[:, None], ({{ call.block_k }}, 16)), {{ call.symbol }}__value_layout)
+                _fm_accumulator = tl.dot(_fm_a, _fm_b, _fm_accumulator)
+            _fm_result = tl.reshape(tl.gather(_fm_accumulator, tl.full((64, 1), 0, tl.int32), 1), (64,))
+{% else %}
+            _fm_part_sum = tl.full((64,), 0, tl.float32)
+            for _fm_split in tl.range(0, {{ call.accumulation_splits }}):
+                _fm_accumulator = tle.gpu.set_layout(tl.zeros((64, 16), tl.float32), {{ call.symbol }}__mma_layout)
+                for _fm_start in tl.range(0, {{ call.accumulation_k }}, {{ call.block_k }}):
+                    _fm_k = _fm_start + tl.arange(0, {{ call.block_k }})
+                    _fm_offset = _fm_part * {{ call.part_k }} + _fm_split * {{ call.accumulation_k }} + _fm_k
+                    _fm_w = tl.load({{ call.weight }} + _fm_n[:, None] * {{ call.weight_stride }} + _fm_offset[None, :],
+                                    (_fm_n[:, None] < {{ call.rows }}) & (_fm_k[None, :] < {{ call.accumulation_k }}), other=0.)
+                    _fm_x = tl.load({{ call.source }} + _fm_offset, _fm_k < {{ call.accumulation_k }}, other=0.)
+                    _fm_a = tle.gpu.set_layout(_fm_w, {{ call.symbol }}__weight_layout)
+                    _fm_b = tle.gpu.set_layout(tl.broadcast_to(_fm_x[:, None], ({{ call.block_k }}, 16)), {{ call.symbol }}__value_layout)
+                    _fm_accumulator = tl.dot(_fm_a, _fm_b, _fm_accumulator)
+                _fm_result = tl.reshape(tl.gather(_fm_accumulator, tl.full((64, 1), 0, tl.int32), 1), (64,))
+                _fm_part_sum += _fm_result
+            _fm_result = _fm_part_sum
+{% endif %}
+            _fm_total += _fm_result.to(tl.bfloat16).to(tl.float32)
+        tl.store({{ call.result }} + _fm_n, _fm_total.to(tl.bfloat16), _fm_n < {{ call.rows }})
+{% endif %}
+{% endfor %}

@@ -22,3 +22,15 @@ def test_coefficients_normal_compile_rounding_tail_and_storage(tmp_path, block_s
                                   local_inputs=local_inputs)
     expected = delta_rule_coefficients(key, beta, block_size, torch=torch)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_full_key_coefficients_in_eight_warp_program_do_not_spill(tmp_path):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("requires SM90")
+    generator = torch.Generator().manual_seed(20261023)
+    key = (torch.randint(-2, 3, (128, 4, 128), generator=generator).float() / 64).bfloat16()
+    beta = torch.full((128, 8), 0.5)
+    actual = execute_coefficients(tmp_path, key, beta, split_axes=(0, 1), num_warps=8)
+    expected = delta_rule_coefficients(key, beta, torch=torch)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

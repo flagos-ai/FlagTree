@@ -1,3 +1,4 @@
+{% import "kernels/qkv_rope_with_cache/_cache_position.py.jinja" as cache %}
 {% macro load_partial(partial, prefix, mask, indent) %}
 {{ indent }}{{ prefix }}_partial_lanes = tl.arange(0, {{ partial.member_width }})[:, None]
 {{ indent }}{{ partial.member }} = tl.minimum(
@@ -113,6 +114,7 @@
                 mask={{ prefix }}_mask & ({{ head.output_active }}),
             )
 {% else %}
+{{ cache.position(call, head.cache_token, prefix ~ "_mask", "            ") }}
             tl.store(
                 {{ call.kv_cache }} + ({{ head.cache_offset }}),
                 {{ prefix }}_result,
@@ -126,6 +128,7 @@
             (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
         )
 {{ load_partial(call.v.partial_input, "qkv_v", "qkv_v_mask", "        ") }}
+{{ cache.position(call, call.v.cache_token, "qkv_v_mask", "        ") }}
         tl.store(
             {{ call.kv_cache }} + ({{ call.v.cache_offset }}),
             qkv_v_value,

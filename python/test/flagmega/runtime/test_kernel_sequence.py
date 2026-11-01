@@ -129,6 +129,7 @@ def test_launch_external_launches_every_prepared_kernel_in_order(monkeypatch):
     module = SimpleNamespace(
         _prepared=(_Prepared("first"), _Prepared("second")),
         _dynamic_descriptor_indices=(),
+        _program_dag=None,
     )
     module._require_prepared = lambda: None
     module._validate_external_arguments = lambda args: None

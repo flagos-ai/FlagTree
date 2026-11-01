@@ -85,6 +85,7 @@ def _flagmega_dense_rows(
 def _flagmega_gdn_head_gates(
     beta_projection, a_projection, value_head, active,
     a_log, dt_bias, ROUND_BETA: tl.constexpr,
+    GATE_MATH_MODE: tl.constexpr = "accurate",
 ):
     """Head-only gates, valid while this invocation's projection key matches."""
     beta = tl.sigmoid(beta_projection)
@@ -93,15 +94,16 @@ def _flagmega_gdn_head_gates(
     decay_input = a_projection + tl.load(
         dt_bias + value_head, mask=active, other=0.0,
     ).to(tl.float32)
-    softplus = tl.where(
-        decay_input > 20.0,
-        decay_input,
-        libdevice.log1p(libdevice.exp(decay_input)),
-    )
-    decay_log = -libdevice.exp(
-        tl.load(a_log + value_head, mask=active, other=0.0).to(tl.float32)
-    ) * softplus
-    decay = libdevice.exp(decay_log)
+    gate_mode: tl.constexpr = GATE_MATH_MODE
+    log_value = tl.load(a_log + value_head, mask=active, other=0.0).to(tl.float32)
+    if gate_mode == "fast":
+        softplus = tl.where(decay_input > 20.0, decay_input, tl.log(1.0 + tl.exp(decay_input)))
+        decay_log = -tl.exp(log_value) * softplus
+        decay = tl.exp(decay_log)
+    else:
+        softplus = tl.where(decay_input > 20.0, decay_input, libdevice.log1p(libdevice.exp(decay_input)))
+        decay_log = -libdevice.exp(log_value) * softplus
+        decay = libdevice.exp(decay_log)
     return beta, decay
 
 
@@ -192,6 +194,7 @@ def _flagmega_gdn_recurrent_local_norm_tile(
     z, destination, norm_weight, core_scratch,
     source_offsets, result_offsets, global_values, active,
     VALUE_DIM: tl.constexpr, EPS: tl.constexpr,
+    ACCURATE_SILU: tl.constexpr = False,
 ):
     """Normalize complete heads after every owner has published core values."""
     value_head = global_values // VALUE_DIM
@@ -211,5 +214,9 @@ def _flagmega_gdn_recurrent_local_norm_tile(
         norm_weight + value_coordinate, mask=active, other=0.0,
     ).to(tl.float32)
     gate = tl.load(z + source_offsets, mask=active, other=0.0).to(tl.float32)
-    result = core * inverse_rms * norm * _flagmega_silu(gate)
+    if ACCURATE_SILU:
+        activated = gate / (1.0 + libdevice.exp(-gate))
+    else:
+        activated = _flagmega_silu(gate)
+    result = core * inverse_rms * norm * activated
     tl.store(destination + result_offsets, result.to(tl.bfloat16), mask=active)

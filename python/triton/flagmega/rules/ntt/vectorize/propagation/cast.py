@@ -7,6 +7,7 @@ from __future__ import annotations
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import DType, IRModule, Node, TensorType, VectorType, get_definition
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
+from triton.flagmega.ir.ops.tensors.cast import rounding_attrs
 from triton.flagmega.ir.vector_layout import split_vector_lanes
 from triton.flagmega.rules import RewriteResult, RewriteRule
 from triton.flagmega.rules.ntt.vectorize.utility import (
@@ -85,7 +86,7 @@ def _pack_cast(node: Node, module: IRModule) -> RewriteResult:
         node.id,
         "ntt.vectorized_cast",
         (packed,),
-        {"new_type": VectorType(cast.type.dtype, output_lanes), "vectorize_axes": axes},
+        {"new_type": VectorType(cast.type.dtype, output_lanes), "vectorize_axes": axes, **rounding_attrs(cast.attrs)},
         propagation_result_metadata(
             cast,
             node,
@@ -149,7 +150,7 @@ def _cast_unpack(node: Node, module: IRModule) -> RewriteResult:
         f"{node.id}.propagated.cast",
         "ntt.vectorized_cast",
         (vector,),
-        {"new_type": VectorType(node.type.dtype, output_lanes), "vectorize_axes": axes},
+        {"new_type": VectorType(node.type.dtype, output_lanes), "vectorize_axes": axes, **rounding_attrs(node.attrs)},
         propagation_result_metadata(
             node,
             unpack,

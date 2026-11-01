@@ -37,6 +37,7 @@ class VectorizedUnary(SameTypePointwiseOp):
     scalar_definitions = {"silu": Silu, "sigmoid": Sigmoid, "exp": Exp}
     value = input_parameter(is_tensor())
     unary_op = attribute_parameter()
+    math_mode = attribute_parameter(default="fast")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -44,7 +45,10 @@ class VectorizedUnary(SameTypePointwiseOp):
         unary_op = str(attrs["unary_op"])
         if unary_op not in cls.scalar_definitions:
             raise IRSchemaError(f"Unsupported vectorized unary op {unary_op!r}.")
-        return {"unary_op": unary_op}
+        if attrs["math_mode"] != "fast" and unary_op != "silu":
+            raise IRSchemaError("Only vectorized SiLU accepts a nondefault math_mode.")
+        mode_attrs = Silu.normalize_attrs({"math_mode": attrs["math_mode"]})
+        return {"unary_op": unary_op, **mode_attrs}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -53,7 +57,8 @@ class VectorizedUnary(SameTypePointwiseOp):
             raise IRSchemaError("F.math.vectorized_unary requires a VectorType tensor.")
         scalar = replace(tensor_of(value_type), dtype=tensor_of(value_type).dtype.elem_type)
         scalar_type = replace(value_type, tensor=scalar) if isinstance(value_type, DistributedType) else scalar
-        cls.scalar_definitions[str(attrs["unary_op"])].infer_type((replace(inputs[0], type=scalar_type),), {})
+        scalar_attrs = {"math_mode": attrs["math_mode"]} if "math_mode" in attrs else {}
+        cls.scalar_definitions[str(attrs["unary_op"])].infer_type((replace(inputs[0], type=scalar_type),), scalar_attrs)
         return value_type
 
     @classmethod

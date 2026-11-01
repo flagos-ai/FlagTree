@@ -1,0 +1,120 @@
+# flagmega-kernel: reduce_sum/tiled_rows platform=nvidia architecture=sm90
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+import triton.experimental.tle.language as tle
+{% for call in render_calls %}
+{% if call.family == "reduce_sum" and call.variant == "tiled_rows" %}
+{% if call.row_tile == 1 %}
+# A full K tile leaves no budget for row parallelism. Retain the scalar
+# loop-carried sum, including the rounding boundary after every K tile.
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.shared_work_partition | default(false) %}
+    for _fm_row in tl.range(tl.program_id(0), {{ call.rows }}, tl.num_programs(0)):
+{% else %}
+    for _fm_row in tl.range(0, {{ call.rows }}):
+{% endif %}
+{% if call.identity %}
+{% if call.scalar_value is not none %}
+        _fm_accumulator = {{ call.scalar_value }}
+{% for line in call.fusion_identity_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_identity_value is defined %}
+        _fm_accumulator = {{ call.fusion_identity_value }}
+{% endif %}
+{% else %}
+        _fm_accumulator = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=({{ call.outer_active }}), other=0.0)
+{% for line in call.fusion_identity_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_identity_value is defined %}
+        _fm_accumulator = {{ call.fusion_identity_value }}
+{% endif %}
+{% endif %}
+{% else %}
+        _fm_accumulator = tl.full((), 0, tl.float32)
+        for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+            _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+            _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+            _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=0.0).to(tl.float32)
+{% for line in call.fusion_pre_lines | default(()) %}
+            {{ line }}
+{% endfor %}
+{% if call.fusion_pre_value is defined %}
+            _fm_values = ({{ call.fusion_pre_value }}).to(tl.float32)
+{% endif %}
+            _fm_accumulator += tl.sum(_fm_values, 0)
+{% endif %}
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_post_value is defined %}
+        _fm_accumulator = {{ call.fusion_post_value }}
+{% endif %}
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_accumulator, mask=({{ call.outer_active }}) & ({{ "True" if call.shared_work_partition | default(false) else call.writer_active }}))
+
+
+{% else %}
+{% set k_lanes = [call.tile, 32] | min %}
+{% set k_warps = [call.tile // k_lanes, num_warps] | min %}
+# Keep each row's K lane/warp tree identical to the one-dimensional kernel.
+{{ call.symbol }}__tile_layout = tl.constexpr(tle.gpu.BlockEncoding([1, 1], [{{ 32 // k_lanes }}, {{ k_lanes }}], [{{ num_warps // k_warps }}, {{ k_warps }}], [1, 0]))
+{{ call.symbol }}__row_layout = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__tile_layout))
+{{ call.symbol }}__k_layout = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__tile_layout))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_rows = tle.gpu.set_layout(tl.arange(0, {{ call.row_tile }}), {{ call.symbol }}__row_layout)
+{% if call.shared_work_partition | default(false) %}
+    for _fm_row_start in tl.range(tl.program_id(0) * {{ call.row_tile }}, {{ call.rows }}, tl.num_programs(0) * {{ call.row_tile }}):
+{% else %}
+    for _fm_row_start in tl.range(0, {{ call.rows }}, {{ call.row_tile }}):
+{% endif %}
+        _fm_row = _fm_row_start + _fm_rows
+{% if call.identity %}
+{% if call.scalar_value is not none %}
+        _fm_accumulator = {{ call.scalar_value }}
+{% for line in call.fusion_identity_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_identity_value is defined %}
+        _fm_accumulator = {{ call.fusion_identity_value }}
+{% endif %}
+{% else %}
+        _fm_accumulator = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=(_fm_row < {{ call.rows }}) & ({{ call.outer_active }}), other=0.0)
+{% for line in call.fusion_identity_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_identity_value is defined %}
+        _fm_accumulator = {{ call.fusion_identity_value }}
+{% endif %}
+{% endif %}
+{% else %}
+        _fm_accumulator = tle.gpu.set_layout(tl.full(({{ call.row_tile }},), 0, tl.float32), {{ call.symbol }}__row_layout)
+        for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+            _fm_offsets = _fm_start + tle.gpu.set_layout(tl.arange(0, {{ call.tile }}), {{ call.symbol }}__k_layout)
+            _fm_mask = (_fm_row[:, None] < {{ call.rows }}) & (_fm_offsets[None, :] < {{ call.capacity }}) & ({{ call.tiled_active }})
+            _fm_values = tl.load({{ call.source }} + ({{ call.tiled_source_offset }}), mask=_fm_mask, other=0.0).to(tl.float32)
+{% for line in call.fusion_pre_lines | default(()) %}
+            {{ line }}
+{% endfor %}
+{% if call.fusion_pre_value is defined %}
+            _fm_values = ({{ call.fusion_pre_value }}).to(tl.float32)
+{% endif %}
+            _fm_accumulator += tl.sum(_fm_values, 1)
+{% endif %}
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_post_value is defined %}
+        _fm_accumulator = {{ call.fusion_post_value }}
+{% endif %}
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_accumulator, mask=(_fm_row < {{ call.rows }}) & ({{ call.outer_active }}) & ({{ "True" if call.shared_work_partition | default(false) else call.writer_active }}))
+
+
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}

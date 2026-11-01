@@ -93,7 +93,9 @@ def test_selected_native_qkv_and_gate_execute_exact_binary_fraction_inputs(tmp_p
     compiled = Compiler().compile(Graph(dialect="nn", stage="decomposed", entry="main").build()).module
     implementations = [k.dispatch.microkernel.implementation for k in compiled.kernel_definitions
                        if "qkv_parallel_linear" in k.dispatch.semantic_op]
-    assert implementations == ["tir.qkv_parallel_linear.packed_fused_gemv"]
+    assert len(implementations) == 1
+    assert implementations[0] in {"tir.qkv_parallel_linear.packed_fused_gemv",
+                                  "tir.qkv_parallel_linear.packed_fused_gemv_tn256"}
     generator = torch.Generator().manual_seed(917)
     weights = {name: (torch.randint(-3, 4, (64, size), generator=generator).float() / 8).bfloat16()
                for name, size in (("q", 64), ("k", 32), ("v", 32), ("gate", 64))}

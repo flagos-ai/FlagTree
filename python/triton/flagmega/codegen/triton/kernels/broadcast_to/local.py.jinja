@@ -15,6 +15,12 @@ def {{ call.symbol }}({{ call.signature }}):
         _fm_source_ptrs = tl.broadcast_to({{ call.source }} + ({{ call.source_offset }}), ({{ call.tile }},))
         _fm_value = tl.load(_fm_source_ptrs, mask=_fm_mask, other=0.0)
 {% endif %}
+{% for line in call.fusion_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if call.fusion_result is defined %}
+        _fm_value = {{ call.fusion_result }}
+{% endif %}
         _fm_result_ptrs = tl.broadcast_to({{ call.result }} + ({{ call.result_offset }}), ({{ call.tile }},))
         tl.store(_fm_result_ptrs, _fm_value, mask=_fm_mask & ({{ call.writer_active }}))
 

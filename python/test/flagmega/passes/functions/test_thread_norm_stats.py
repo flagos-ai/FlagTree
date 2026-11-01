@@ -2,10 +2,33 @@
 # SPDX-License-Identifier: MIT
 
 import torch
+import pytest
+from dataclasses import replace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.functions import thread_norm_stats_across_function_boundaries
+
+
+@pytest.mark.parametrize("attrs", [
+    {"reduction_order": "tree"},
+    {"reduction_order": "tile_fma", "reduction_group_size": 2, "reduction_block_size": 4},
+    {"reduction_order": "tile_fma", "reduction_group_size": 2, "reduction_block_size": 4,
+     "reduction_block_traversal": "reverse", "reduction_tree_group_size": 2},
+    {"reduction_order": "group_fma", "reduction_group_size": 2,
+     "reduction_group_seed_index": 1, "reduction_tree_group_size": 2},
+])
+def test_threading_preserves_complete_tree_contract_on_seed_and_output(attrs):
+    original = _RepeatedLayer().build()
+    original = replace(original, nodes=tuple(
+        replace(node, attrs={**node.attrs, **attrs})
+        if node.op == "nn.norm_stats" else node for node in original.nodes
+    ))
+    rewritten = thread_norm_stats_across_function_boundaries(original)
+    for node in rewritten.nodes:
+        if node.op == "nn.norm_stats":
+            for key, value in attrs.items():
+                assert node.attrs.get(key) == value
 
 
 class _RepeatedLayer(fm.Module):

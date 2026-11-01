@@ -97,7 +97,7 @@ class NttDistributionPolicy:
             for value in self._placements
         )
         return (
-            "ntt-auto-distributed/v10("
+            "ntt-auto-distributed/v11("
             f"placements={placements},"
             f"split={self._split_candidate_provider.identity})"
         )
@@ -146,6 +146,9 @@ class NttDistributionPolicy:
                     "math.vectorized_unary",
                     "nn.softmax",
                     "nn.kda_convolution",
+                    "nn.kda_input_projection",
+                    "nn.partitioned_linear",
+                    "nn.partitioned_block_scaled_linear",
                     "nn.kda_recurrent_core",
                     "nn.kda_gated_recurrent_core",
                     "nn.kda_gated_step",
@@ -156,6 +159,9 @@ class NttDistributionPolicy:
                     "nn.delta_rule_coefficients",
                     "nn.delta_rule_log_prefix",
                     "nn.delta_rule_block_update",
+                    "nn.delta_rule_chunk_transfer",
+                    "nn.delta_rule_chunk_fixup",
+                    "nn.delta_rule_chunked_block_update",
                     "nn.delta_rule_gates",
                     "nn.l2_normalization",
                     "nn.gdn_state_slice",
@@ -241,8 +247,11 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         "builtin.tuple",
         *_DISTRIBUTION_ADAPTER_OPS,
     })
+    # Native consumers own their physical operand graph even when they were
+    # constructed directly and carry no vectorization provenance.
     pending = [
-        node.id for node in module.nodes if vectorization_root(node) in native_vector_roots
+        node.id for node in module.nodes if node.op in native_vector_ops
+        or vectorization_root(node) in native_vector_roots
         or node.id in native_vector_roots and node.metadata.get("vectorized_from") is not None
         or (
             large_model
@@ -250,8 +259,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             and isinstance(tensor_of(node.type).dtype, VectorType)
         )
         or (
-            large_model
-            and node.metadata.get("vectorized_from") is not None
+            node.metadata.get("vectorized_from") is not None
             and node.op in {"tensors.unpack", "tensors.bitcast"}
         )
     ]
@@ -584,8 +592,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             prepared_by_id[node.id] = node
             continue
         if (
-            large_model
-            and node.metadata.get("vectorized_from") is not None
+            node.metadata.get("vectorized_from") is not None
             and node.op in {"tensors.unpack", "tensors.bitcast"}
         ):
             # These are explicit scalar/vector representation boundaries in

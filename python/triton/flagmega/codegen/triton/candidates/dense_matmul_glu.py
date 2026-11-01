@@ -17,7 +17,7 @@ from triton.flagmega.ir.ops.tensors._k_major import parse_k_major_layout
 from triton.flagmega.codegen.triton.vectorization import consumed_vector_contracts
 
 from .core import TritonCandidateContext, TritonCandidateProposal
-from .dense_matmul import supports_descriptor_weight_storage
+from .dense_matmul import supports_descriptor_weight_storage, _supports_reduction_order
 
 
 class DenseMatmulGluCandidateProvider:
@@ -40,6 +40,8 @@ class DenseMatmulGluCandidateProvider:
         reduction_extent = _local_scalar_last_axis_extent(source_type)
 
         def applicable(implementation) -> bool:
+            if not _supports_reduction_order(implementation, node.attrs):
+                return False
             if implementation.parameters.get("descriptor_kind") == "table" and any(
                 not isinstance(context.module.node_map[value].type, DistributedType)
                 for value in node.inputs[1:3]

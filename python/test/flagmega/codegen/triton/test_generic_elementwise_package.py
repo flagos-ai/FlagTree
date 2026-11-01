@@ -39,7 +39,7 @@ def _module(op: str) -> fm.IRModule:
     ("math.add", "add", "math.vectorized_binary"),
     ("math.mul", "mul", "math.vectorized_binary"),
     ("math.silu", "silu", "math.vectorized_unary"),
-    ("tensors.cast", "cast", "tensors.cast"),
+    ("tensors.cast", "tensor_load", "distributed.boxing"),
 ])
 def test_package_resolves_selected_elementwise_family_variant_template(
     tmp_path,
@@ -58,10 +58,20 @@ def test_package_resolves_selected_elementwise_family_variant_template(
         assert call["semantic_attrs"]["binary_op"] == variant
     elif lowered_op == "math.vectorized_unary":
         assert call["semantic_attrs"]["unary_op"] == variant
+    elif op == "tensors.cast":
+        # Conversion belongs to the normal tensor-load epilogue after fusion.
+        # Preserve its semantics rather than require a redundant cast kernel.
+        fused = call["semantic_attrs"]["post_ops"][0]["$fusion"]
+        assert any(node["op"] == "tensors.cast" and node["attrs"]["dtype"] == "float32"
+                   for node in fused["nodes"])
+        assert call["inputs"][0]["buffers"][0]["abi"]["scalar_dtype"] == "bfloat16"
+        assert call["outputs"][0]["buffers"][0]["abi"]["scalar_dtype"] == "float32"
     assert call["variant"] == variant
-    assert {"kernel": "elementwise", "variant": variant} in package["kernel_template_specs"]
-    assert f"# flagmega-kernel: elementwise/{variant} platform=generic" in source
-    assert f"_flagmega_elementwise_{variant}(" in source
+    family = "distributed_boxing" if lowered_op == "distributed.boxing" else "elementwise"
+    assert {"kernel": family, "variant": variant} in package["kernel_template_specs"]
+    assert f"# flagmega-kernel: {family}/{variant}" in source
+    if family == "elementwise":
+        assert f"_flagmega_elementwise_{variant}(" in source
     assert f"def {package['symbol']}(" in source
 
 
@@ -98,4 +108,5 @@ def test_selected_elementwise_template_executes_through_artifact_runtime_on_h800
         expected = torch.nn.functional.silu(lhs.float()).to(torch.bfloat16)
     else:
         expected = lhs.float()
-    torch.testing.assert_close(output, expected, rtol=2e-2, atol=2e-2)
+    tolerance = 0 if op == "tensors.cast" else 2e-2
+    torch.testing.assert_close(output, expected, rtol=tolerance, atol=tolerance)

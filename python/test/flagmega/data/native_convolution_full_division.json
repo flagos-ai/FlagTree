@@ -1,0 +1,24 @@
+{
+  "source": "vllm ae10e855a causal_conv1d_fn, real 32-token prefill model layer 5, token 16, channel 7445; chronological BF16 products and FP32 accumulation, approximate exp and div.full.f32 before BF16 store",
+  "cases": [
+    {
+      "input": [
+        -0.302734375,
+        -0.46875,
+        0.515625,
+        0.8203125
+      ],
+      "weight": [
+        -0.0003757476806640625,
+        -0.002471923828125,
+        -0.04248046875,
+        -0.00390625
+      ],
+      "index": [
+        16,
+        7445
+      ],
+      "expected": -0.01171875
+    }
+  ]
+}

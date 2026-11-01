@@ -9,6 +9,7 @@ from math import prod
 
 from triton.flagmega.codegen.triton.distributed_abi import kernel_execution_kind
 from triton.flagmega.codegen.triton.package_plan import PACKAGE_PLAN_SCHEMA
+from triton.flagmega.codegen.triton.kernel_programs import target_kernel_programs
 from triton.flagmega.errors import IRVerificationError
 
 
@@ -122,6 +123,7 @@ def sm90_codegen_package_plan(
             stage=module.stage,
         )
 
+    programs = target_kernel_programs(module, capability)
     return {
         "schema": PACKAGE_PLAN_SCHEMA,
         "kind": "tir_call_graph",
@@ -134,6 +136,7 @@ def sm90_codegen_package_plan(
             "cooperative_grid": cooperative,
             "mesh_hierarchy": hierarchy,
         },
+        **({"programs": programs} if programs is not None else {}),
     }
 
 

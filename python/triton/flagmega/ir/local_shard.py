@@ -456,6 +456,52 @@ def aggregate_active_elements(distributed_type: DistributedType) -> int | None:
 
 
 @lru_cache(maxsize=4096)
+def max_chip_active_elements(distributed_type: DistributedType) -> int | None:
+    """Sum executing block traffic per chip, then take the busiest chip.
+
+    Keep chip coordinates fixed while summing each split dimension's block
+    owners. Taking the maximum only after multiplying dimensions preserves
+    correlated ragged tails; dividing total mesh traffic by chip count would
+    incorrectly average away an imbalanced chip. Vector lanes belong to dtype.
+    """
+    if any(not extent.is_fixed for extent in distributed_type.tensor.shape):
+        return None
+    placement = distributed_type.placement
+    block_axes = {axis for axis in range(placement.rank) if placement.is_physical_block_axis(axis)}
+    remaining = set(block_axes)
+    split_chip_axes = set()
+    splits = []
+    base = 1
+    for extent, policy in zip(distributed_type.tensor.shape, distributed_type.axis_policies):
+        if isinstance(policy, SBPSplit):
+            splits.append((extent, policy))
+            remaining.difference_update(policy.hierarchy_axes)
+            split_chip_axes.update(set(policy.hierarchy_axes) - block_axes)
+        else:
+            base *= extent.fixed_value
+    if distributed_type.exclusive is not None:
+        remaining.difference_update(distributed_type.exclusive.axes)
+    base *= prod(placement.hierarchy[axis] for axis in remaining)
+    # Broadcast chip axes contribute replicas on other chips, not traffic on
+    # this chip. Exclusive types are fully broadcast, so their selected chip
+    # coordinate does not change this maximum either.
+    chips = product(*(range(size) if axis in split_chip_axes else (0,)
+                      for axis, size in enumerate(placement.hierarchy)))
+    return max(base * prod(_split_active_element_sum_on_chip(extent, policy, placement, chip)
+                           for extent, policy in splits) for chip in chips)
+
+
+@lru_cache(maxsize=4096)
+def _split_active_element_sum_on_chip(
+    extent: Dimension, policy: SBPSplit, placement: Placement, chip: tuple[int, ...],
+) -> int:
+    axis_type = DistributedType(tensor_type("int32", (extent,)), (policy,), placement)
+    owners = product(*(range(size) if axis in policy.hierarchy_axes and placement.is_physical_block_axis(axis)
+                       else (chip[axis],) for axis, size in enumerate(placement.hierarchy)))
+    return sum(local_shard_descriptor(axis_type, owner).active_shape[0].fixed_value for owner in owners)
+
+
+@lru_cache(maxsize=4096)
 def _split_active_element_sum(extent: Dimension, policy: SBPSplit, placement: Placement) -> int:
     axis_type = DistributedType(tensor_type("int32", (extent,)), (policy,), placement)
     ranges = tuple(range(size) if axis in policy.hierarchy_axes else (0,)
@@ -571,5 +617,6 @@ __all__ = [
     "LocalShardStageDescriptor",
     "aggregate_active_elements",
     "local_shard_descriptor",
+    "max_chip_active_elements",
     "unravel_placement_index",
 ]

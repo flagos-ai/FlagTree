@@ -3,10 +3,21 @@
 
 import torch
 import pytest
+from dataclasses import replace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.functions import form_add_norm_stats
+
+
+@pytest.mark.parametrize("attrs", [{"reduction_order": "tree"}, {"reduction_group_size": 2}])
+def test_unordered_add_stats_fusion_cannot_discard_reduction_contract(attrs):
+    original = _ProjectionResidualStats().build()
+    original = replace(original, nodes=tuple(
+        replace(node, attrs={**node.attrs, **attrs}) if node.op == "nn.norm_stats" else node
+        for node in original.nodes
+    ))
+    assert form_add_norm_stats(original) == original
 
 
 class _ProjectionResidualStats(fm.Module):

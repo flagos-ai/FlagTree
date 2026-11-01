@@ -36,7 +36,7 @@ from triton.flagmega.ir.ops.tensors._k_major import (
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.types import DType
-from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type
+from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type, normalize_reduction_order, validate_reduction_order
 
 
 @op_definition(
@@ -53,6 +53,7 @@ class PackedDenseMatMul(OpDefinition):
     packed_layout = attribute_parameter(default="k_major_n8_k16")
     logical_n = attribute_parameter(default=None)
     output_data_type = attribute_parameter(default=None)
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -68,11 +69,12 @@ class PackedDenseMatMul(OpDefinition):
             )
         if mesh_interleaved and logical_n is None:
             raise IRSchemaError("Mesh-interleaved PackedDenseMatMul requires logical_n.")
-        return normalize_output_data_type(attrs)
+        return normalize_output_data_type(normalize_reduction_order(attrs))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         lhs_type = cls.lhs.type_of(inputs)
+        validate_reduction_order(attrs, lhs_type, 1)
         weight_type = cls.weight.type_of(inputs)
         lhs = tensor_of(lhs_type)
         weight = tensor_of(weight_type)
@@ -187,7 +189,8 @@ class PackedDenseMatMul(OpDefinition):
             str(node.attrs["packed_layout"]),
             node.attrs.get("logical_n"),
         )
-        return matmul_value(lhs, weight.transpose(-2, -1), node.attrs.get("output_data_type"), context)
+        return matmul_value(lhs, weight.transpose(-2, -1), node.attrs.get("output_data_type"), context,
+                              reduction_order=node.attrs.get("reduction_order"))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

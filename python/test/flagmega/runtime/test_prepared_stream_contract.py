@@ -43,7 +43,7 @@ def test_prepared_global_scratch_binds_to_first_stream(monkeypatch):
     monkeypatch.setattr(
         prepared_runtime,
         "_prepare_global_scratch",
-        lambda _compiled, _arguments, _grid: _Scratch(),
+        lambda _compiled, _arguments, _grid, *, allocation_device=None: _Scratch(),
     )
     prepared = PreparedKernel(
         _Compiled(),

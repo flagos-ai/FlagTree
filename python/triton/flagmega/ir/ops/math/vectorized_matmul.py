@@ -14,7 +14,7 @@ from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
-from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type
+from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type, normalize_reduction_order, validate_reduction_order
 
 
 @op_definition(
@@ -34,6 +34,7 @@ class VectorizedMatMul(OpDefinition):
     transpose_a = attribute_parameter(default=False)
     transpose_b = attribute_parameter(default=False)
     output_data_type = attribute_parameter(default=None)
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -45,7 +46,7 @@ class VectorizedMatMul(OpDefinition):
             attrs[name] = tuple(value)
         if len(attrs["output_axes"]) != len(attrs["output_lanes"]):
             raise IRSchemaError("VectorizedMatMul output axes and lanes must have equal length.")
-        return normalize_output_data_type(attrs)
+        return normalize_output_data_type(normalize_reduction_order(attrs))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -53,6 +54,7 @@ class VectorizedMatMul(OpDefinition):
         rhs = cls.rhs.type_of(inputs)
         assert isinstance(lhs, TensorType) and isinstance(rhs, TensorType)
         lhs_logical = _logical_type(lhs, tuple(attrs["lhs_axes"]))
+        validate_reduction_order(attrs, lhs, 0 if attrs["transpose_a"] else 1)
         rhs_logical = _logical_type(rhs, tuple(attrs["rhs_axes"]))
         lm, lk = (lhs_logical.shape[1], lhs_logical.shape[0]) if attrs["transpose_a"] else lhs_logical.shape
         rk, rn = (rhs_logical.shape[1], rhs_logical.shape[0]) if attrs["transpose_b"] else rhs_logical.shape
@@ -82,7 +84,8 @@ class VectorizedMatMul(OpDefinition):
             lhs = lhs.transpose(-2, -1)
         if node.attrs["transpose_b"]:
             rhs = rhs.transpose(-2, -1)
-        result = matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context)
+        result = matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context,
+                              reduction_order=node.attrs.get("reduction_order"))
         lanes = tuple(node.attrs["output_lanes"])
         return result if not lanes else pack_physical(result, 2, lanes, tuple(node.attrs["output_axes"]))
 

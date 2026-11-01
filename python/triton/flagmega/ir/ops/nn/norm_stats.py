@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBP, SBPBroadCast, SBPPartial, SBPSplit
-from triton.flagmega.ir.model import DistributedType, IRType, Node
+from triton.flagmega.ir.model import DistributedType, IRType, Node, VectorType
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpCostFactors,
@@ -40,6 +40,12 @@ class NormStats(OpDefinition):
     value = input_parameter(is_tensor(), name="input")
     axis = attribute_parameter()
     use_mean = attribute_parameter()
+    reduction_group_size = attribute_parameter(default=1)
+    reduction_order = attribute_parameter(default="unspecified")
+    reduction_block_size = attribute_parameter(default=None)
+    reduction_block_traversal = attribute_parameter(default="forward")
+    reduction_tree_group_size = attribute_parameter(default=None)
+    reduction_group_seed_index = attribute_parameter(default=0)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -47,13 +53,57 @@ class NormStats(OpDefinition):
         axis = attrs["axis"]
         if isinstance(axis, bool) or not isinstance(axis, int):
             raise IRSchemaError("NormStats axis must be an integer.")
-        return {"axis": axis, "use_mean": bool(attrs["use_mean"])}
+        group = attrs["reduction_group_size"]
+        if type(group) is not int or group <= 0 or group & (group - 1):
+            raise IRSchemaError("NormStats reduction_group_size must be a positive power of two.")
+        order = attrs["reduction_order"]
+        if not isinstance(order, str) or order not in {"unspecified", "tree", "tile_fma", "group_fma"}:
+            raise IRSchemaError("NormStats reduction_order must be unspecified, tree, tile_fma or group_fma.")
+        seed = attrs["reduction_group_seed_index"]
+        if type(seed) is not int or not 0 <= seed < group or (seed != 0 and order != "group_fma"):
+            raise IRSchemaError("NormStats reduction_group_seed_index must name a group element, and nonzero seeds require group_fma.")
+        block = attrs["reduction_block_size"]
+        if block is not None and (type(block) is not int or block < group or block & (block - 1)):
+            raise IRSchemaError("NormStats reduction_block_size must be a power of two at least as large as its group.")
+        if (order == "tile_fma") != (block is not None):
+            raise IRSchemaError("NormStats tile_fma requires an explicit reduction_block_size.")
+        traversal = attrs["reduction_block_traversal"]
+        if not isinstance(traversal, str) or traversal not in {"forward", "reverse"} or (traversal != "forward" and order != "tile_fma"):
+            raise IRSchemaError("NormStats reduction_block_traversal must be forward, or reverse for tile_fma.")
+        tree_group = attrs["reduction_tree_group_size"]
+        if tree_group is not None and (type(tree_group) is not int or tree_group <= 0 or tree_group & (tree_group - 1)):
+            raise IRSchemaError("NormStats reduction_tree_group_size must be a positive power of two.")
+        if tree_group is not None and order == "unspecified":
+            raise IRSchemaError("NormStats reduction_tree_group_size requires an explicit reduction_order.")
+        return {"axis": axis, "use_mean": bool(attrs["use_mean"]),
+                **({"reduction_block_size": block} if block is not None else {}),
+                **({"reduction_block_traversal": traversal} if traversal != "forward" else {}),
+                **({"reduction_tree_group_size": tree_group} if tree_group is not None else {}),
+                **({"reduction_group_seed_index": seed} if seed != 0 else {}),
+                **({"reduction_order": order} if order != "unspecified" else {}),
+                **({"reduction_group_size": group} if group > 1 else {})}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value_type = cls.value.type_of(inputs)
         value = tensor_of(value_type)
         axis = normalize_axis(int(attrs["axis"]), value.rank)
+        group = attrs.get("reduction_group_size", 1)
+        if group > 1 or attrs.get("reduction_order", "unspecified") != "unspecified":
+            suffix = value.shape[axis:]
+            lanes = prod(value.dtype.lanes) if isinstance(value.dtype, VectorType) else 1
+            if any(not dimension.is_fixed for dimension in suffix) or prod(
+                    dimension.fixed_value for dimension in suffix) * lanes % group:
+                raise IRSchemaError("NormStats reduction_group_size must divide the fixed scalar reduction capacity.")
+            capacity = prod(d.fixed_value for d in suffix) * lanes
+            tree_capacity = min(capacity, attrs.get("reduction_block_size") or capacity) // group
+            tree_capacity = 1 << (tree_capacity - 1).bit_length()
+            tree_group = attrs.get("reduction_tree_group_size")
+            if tree_group is not None and (tree_group > tree_capacity or tree_capacity % tree_group):
+                raise IRSchemaError("NormStats reduction_tree_group_size must divide the grouped reduction capacity.")
+            if isinstance(value_type, DistributedType) and any(
+                    not isinstance(policy, SBPBroadCast) for policy in value_type.axis_policies[axis:]):
+                raise IRSchemaError("Ordered NormStats requires broadcast reduction axes.")
         stats = stats_tensor_type(value, axis, bool(attrs["use_mean"]))
         if not isinstance(value_type, DistributedType):
             return stats
@@ -86,6 +136,54 @@ class NormStats(OpDefinition):
     def evaluate(cls, node, arguments, context):
         value_type = tensor_of(context.types[cls.value.read(node.inputs)])
         value = unpack_default_vector(cls.value.read(arguments), value_type)
+        group = node.attrs.get("reduction_group_size", 1)
+        if group > 1 or node.attrs.get("reduction_order", "unspecified") != "unspecified":
+            torch = context.torch
+            axis = normalize_axis(int(node.attrs["axis"]), value.ndim)
+            outer = value.shape[:axis]
+            if node.attrs.get("reduction_order") == "tile_fma":
+                from triton.flagmega.evaluator.cuda_norm_math import tiled_squares
+                square, total = tiled_squares(value.float(), axis=axis, group=group,
+                                               block=node.attrs["reduction_block_size"], torch=torch,
+                                               traversal=node.attrs.get("reduction_block_traversal", "forward"))
+                grouped = None
+            elif node.attrs.get("reduction_order") == "group_fma":
+                from triton.flagmega.evaluator.cuda_norm_math import grouped_squares
+                square, total = grouped_squares(value.float(), axis=axis, group=group,
+                                                seed=node.attrs.get("reduction_group_seed_index", 0), torch=torch)
+            else:
+                grouped = value.float().reshape(*outer, -1, group)
+                square = torch.zeros_like(grouped[..., 0])
+                total = torch.zeros_like(square)
+                for column in range(group):
+                    square = square + grouped[..., column].square()
+                    if node.attrs["use_mean"]:
+                        total = total + grouped[..., column]
+            count = square.shape[-1]
+            tile = 1 << (count - 1).bit_length()
+            square = torch.nn.functional.pad(square, (0, tile - count))
+            total = torch.nn.functional.pad(total, (0, tile - count))
+            tree_group = node.attrs.get("reduction_tree_group_size")
+            if tree_group is not None:
+                square = square.reshape(*outer, -1, tree_group)
+                total = total.reshape(*outer, -1, tree_group)
+                local_lanes = torch.arange(tree_group, device=value.device)
+                local_mask = tree_group // 2
+                while local_mask:
+                    square = square + square.index_select(-1, local_lanes ^ local_mask)
+                    total = total + total.index_select(-1, local_lanes ^ local_mask)
+                    local_mask //= 2
+                square, total = square[..., 0], total[..., 0]
+                tile //= tree_group
+            lanes = torch.arange(tile, device=value.device)
+            mask = tile // 2
+            while mask:
+                square = square + square.index_select(-1, lanes ^ mask)
+                total = total + total.index_select(-1, lanes ^ mask)
+                mask //= 2
+            shape = (1, *outer, *((1,) * (value.ndim - axis)))
+            square = square[..., :1].reshape(shape)
+            return torch.cat((total[..., :1].reshape(shape), square), dim=0) if node.attrs["use_mean"] else square
         return norm_stats_value(
             value,
             axis=int(node.attrs["axis"]),

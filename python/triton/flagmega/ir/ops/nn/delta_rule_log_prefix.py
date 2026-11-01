@@ -67,6 +67,7 @@ class DeltaRuleLogPrefix(OpDefinition):
     def evaluate(cls, node, arguments, context):
         return delta_rule_log_prefix(cls.alpha.read(arguments), block_size=node.attrs["block_size"],
                                      scan_group_size=node.attrs["scan_group_size"], epsilon=node.attrs["epsilon"],
+                                     log2_mode=node.attrs["log2_mode"],
                                      torch=context.torch)
 
     @classmethod
@@ -75,7 +76,9 @@ class DeltaRuleLogPrefix(OpDefinition):
                       notes=("block-local-grouped-log2-scan", "fp32-addition-tree"))
 
 
-def delta_rule_log_prefix(alpha, *, block_size=64, scan_group_size=32, epsilon=1e-10, torch):
+def delta_rule_log_prefix(alpha, *, block_size=64, scan_group_size=32, epsilon=1e-10,
+                          log2_mode="fast", torch):
+    from triton.flagmega.evaluator.cuda_log_math import log2
     tokens, heads = alpha.shape
     blocks = (tokens + block_size - 1) // block_size
     values = alpha.new_ones((blocks * block_size, heads))
@@ -83,7 +86,7 @@ def delta_rule_log_prefix(alpha, *, block_size=64, scan_group_size=32, epsilon=1
     # Padding has log decay zero, including when epsilon is large enough to
     # change log2(1 + epsilon); it is not an extra recurrence step.
     valid = torch.arange(blocks * block_size, device=alpha.device) < tokens
-    values = torch.where(valid[:, None], torch.log2(values + epsilon), 0)
+    values = torch.where(valid[:, None], log2(values + epsilon, mode=log2_mode, torch=torch), 0)
     values = values.reshape(blocks, block_size, heads).transpose(1, 2)
     groups = values.reshape(blocks, heads, block_size // scan_group_size, scan_group_size)
     distance = 1

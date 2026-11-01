@@ -15,9 +15,12 @@ from triton.flagmega.codegen.triton.diagnostics import (
 from triton.flagmega.codegen.triton.registry import (
     PackageRendererRegistry,
     PackageRendererSpec,
+    PreparedSourceRenderer,
 )
+from triton.flagmega.codegen.triton.program_sources import render_program_source_files
 from triton.flagmega.codegen.triton.tir_package import (
     describe_tir_package,
+    prepare_tir_package,
     render_tir_package,
 )
 from triton.flagmega.ir import (
@@ -30,7 +33,7 @@ if TYPE_CHECKING:
     from triton.flagmega.diagnostics import Dumper
 
 
-RENDERER_VERSION = "flagmega-triton-renderer/v20"
+RENDERER_VERSION = "flagmega-triton-renderer/v21"
 
 
 renderer_registry = PackageRendererRegistry()
@@ -42,7 +45,7 @@ renderer_registry.register(PackageRendererSpec(
         and module.dialect == "bufferized_tir"
     ),
     describe_tir_package,
-    render_tir_package,
+    PreparedSourceRenderer(render_tir_package, prepare_tir_package),
 ))
 
 
@@ -62,10 +65,13 @@ def render_triton_package(
     destination.mkdir(parents=True, exist_ok=True)
     spec = renderer_registry.resolve(module)
     descriptor = spec.describe(module)
-    source = spec.render(descriptor, RENDERER_VERSION)
+    prepared = spec.prepare(descriptor, RENDERER_VERSION) if spec.prepare is not None else descriptor
+    source = spec.render(prepared, RENDERER_VERSION)
     source_path = destination / "generated_kernels.py"
     source_path.write_text(source, encoding="utf-8")
     source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    program_sources = render_program_source_files(
+        prepared, RENDERER_VERSION, spec.render, destination, source)
     package = {
         "renderer": RENDERER_VERSION,
         "renderer_spec": spec.name,
@@ -81,8 +87,9 @@ def render_triton_package(
         **{
             key: value
             for key, value in descriptor.items()
-            if key not in {"symbol", "kernel_templates", "render_calls"}
+            if key not in {"symbol", "kernel_templates", "render_calls", "programs"}
         },
+        **program_sources,
     }
     dump_schedules(module, dumper)
     dump_codegen(module, package, source, dumper)

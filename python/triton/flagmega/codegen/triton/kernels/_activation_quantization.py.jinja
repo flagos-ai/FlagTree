@@ -1,8 +1,9 @@
 @triton.jit
-def _flagmega_quantize_block_fp8(source_value, MODE: tl.constexpr):
+def _flagmega_quantize_block_fp8(source_value, MODE: tl.constexpr, AXIS: tl.constexpr = 0):
+    tl.static_assert(AXIS == 0 or AXIS == 1, "Unsupported block quantization axis")
     if MODE == "dynamic_fp8_sm90":
         # The source BF16 hmax reduction starts at zero and ignores NaNs.
-        maximum = tl.max(tl.where(source_value == source_value, tl.abs(source_value), 0.), axis=0)
+        maximum = tl.max(tl.where(source_value == source_value, tl.abs(source_value), 0.), axis=AXIS)
         multiplier = tl.inline_asm_elementwise(
             "div.approx.ftz.f32 $0, $1, $2;", constraints="=f,f,f",
             args=[tl.full((), 448., tl.float32), maximum], dtype=tl.float32,
@@ -13,6 +14,8 @@ def _flagmega_quantize_block_fp8(source_value, MODE: tl.constexpr):
             "rcp.approx.ftz.f32 $0, $1;", constraints="=f,f", args=[multiplier],
             dtype=tl.float32, is_pure=True, pack=1,
         )
+        if AXIS == 1:
+            multiplier = multiplier[:, None]
         normalized = tl.inline_asm_elementwise(
             "mul.ftz.f32 $0, $1, $2;", constraints="=f,f,f",
             args=[source_value, multiplier], dtype=tl.float32, is_pure=True, pack=1,
@@ -20,8 +23,12 @@ def _flagmega_quantize_block_fp8(source_value, MODE: tl.constexpr):
         quantized = normalized.to(tl.float8e4nv)
     else:
         tl.static_assert(MODE == "dynamic_fp8", "Unsupported block FP8 activation quantization")
-        maximum = tl.max(tl.abs(source_value), axis=0)
+        maximum = tl.max(tl.abs(source_value), axis=AXIS)
         scale = tl.where(maximum == 0., 1., tl.div_rn(maximum, 448.))
-        quantized = tl.maximum(tl.minimum(tl.div_rn(source_value, scale), 448.), -448.).to(tl.float8e4nv)
+        if AXIS == 1:
+            divisor = scale[:, None]
+        else:
+            divisor = scale
+        quantized = tl.maximum(tl.minimum(tl.div_rn(source_value, divisor), 448.), -448.).to(tl.float8e4nv)
     return quantized, scale
 

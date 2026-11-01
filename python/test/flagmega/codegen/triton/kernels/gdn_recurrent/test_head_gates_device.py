@@ -12,7 +12,7 @@ _WRAPPER = '''
 @triton.jit
 def gates_kernel(B, A, HEAD, ACTIVE, LOG, BIAS, BETA, DECAY,
                  N: tl.constexpr, SCALAR: tl.constexpr, ROUND: tl.constexpr,
-                 REFERENCE: tl.constexpr):
+                 REFERENCE: tl.constexpr, FAST: tl.constexpr = False):
     if SCALAR:
         offsets = tl.program_id(0)
     else:
@@ -27,13 +27,17 @@ def gates_kernel(B, A, HEAD, ACTIVE, LOG, BIAS, BETA, DECAY,
         if ROUND:
             beta = beta.to(tl.bfloat16).to(tl.float32)
         decay_input = a + tl.load(BIAS + head, mask=active, other=0.).to(tl.float32)
-        softplus = tl.where(decay_input > 20., decay_input,
-                            libdevice.log1p(libdevice.exp(decay_input)))
-        decay_log = -libdevice.exp(
-            tl.load(LOG + head, mask=active, other=0.).to(tl.float32)) * softplus
-        decay = libdevice.exp(decay_log)
+        log_value = tl.load(LOG + head, mask=active, other=0.).to(tl.float32)
+        if FAST:
+            softplus = tl.where(decay_input > 20., decay_input, tl.log(1.0 + tl.exp(decay_input)))
+            decay_log = -tl.exp(log_value) * softplus
+            decay = tl.exp(decay_log)
+        else:
+            softplus = tl.where(decay_input > 20., decay_input, libdevice.log1p(libdevice.exp(decay_input)))
+            decay_log = -libdevice.exp(log_value) * softplus
+            decay = libdevice.exp(decay_log)
     else:
-        beta, decay = _flagmega_gdn_head_gates(b, a, head, active, LOG, BIAS, ROUND)
+        beta, decay = _flagmega_gdn_head_gates(b, a, head, active, LOG, BIAS, ROUND, GATE_MATH_MODE="fast" if FAST else "accurate")
     tl.store(BETA + offsets, beta, mask=(offsets < N) & active)
     tl.store(DECAY + offsets, decay, mask=(offsets < N) & active)
 '''
@@ -54,10 +58,11 @@ def gates_kernel(tmp_path):
     return module.gates_kernel
 
 
+@pytest.mark.parametrize("fast", [False, True])
 @pytest.mark.parametrize("scalar", [True, False])
 @pytest.mark.parametrize("round_beta", [True, False])
 @pytest.mark.parametrize("warps", [4, 8])
-def test_cached_head_gates_match_original_formula_bitwise(gates_kernel, scalar, round_beta, warps):
+def test_cached_head_gates_match_original_formula_bitwise(gates_kernel, scalar, round_beta, warps, fast):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA required")
@@ -78,6 +83,6 @@ def test_cached_head_gates_match_original_formula_bitwise(gates_kernel, scalar, 
     grid = (b.numel() + 1 if scalar else triton.cdiv(b.numel(), 32) + 1, )
     for reference, outputs in ((True, expected), (False, actual)):
         gates_kernel[grid](b, a, heads, active, log, bias, *outputs, b.numel(), scalar, round_beta, reference,
-                           num_warps=warps, enable_fp_fusion=False)
+                           FAST=fast, num_warps=warps, enable_fp_fusion=False)
     for observed, original in zip(actual, expected):
         torch.testing.assert_close(observed.view(torch.int32), original.view(torch.int32), rtol=0, atol=0)

@@ -8,9 +8,11 @@ import importlib.util
 import os
 from pathlib import Path
 from typing import Mapping
+from types import SimpleNamespace
 
 from triton.flagmega.artifacts import load_artifact
 from triton.flagmega.artifacts.manifest import resolve_artifact_path
+from triton.flagmega.artifacts.program_sources import program_source_records
 from triton.flagmega.errors import ArtifactError
 from triton.flagmega.runtime.cpp_module import create_cpp_tir_runtime
 from triton.flagmega.runtime.module import (
@@ -37,7 +39,7 @@ def _register_builtin_packages() -> None:
 _register_builtin_packages()
 
 
-def load(path: str | Path, *, device: str | None = None):
+def load(path: str | Path, *, device: str | None = None, shared_rdata=None):
     artifact = Path(path).resolve()
     # The runtime adapter digests the rdata payload when it maps the pool, scoped
     # to the chip segment this rank reads, so loading must not hash it as well.
@@ -75,17 +77,50 @@ def load(path: str | Path, *, device: str | None = None):
     else:
         source = resolve_artifact_path(artifact, str(codegen.get("source", "")))
         module_name = f"_flagmega_artifact_{manifest['semantic_hash'][:16]}"
-        spec = importlib.util.spec_from_file_location(module_name, source)
-        if spec is None or spec.loader is None:
-            raise ArtifactError(f"Cannot import generated kernel source {source}.")
-        generated = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(generated)
-        except Exception as error:
-            raise ArtifactError(f"Cannot import generated kernel source {source}: {error}.") from error
+        records = program_source_records(codegen)
+        if records:
+            generated = _load_program_sources(artifact, codegen, records, module_name)
+        else:
+            generated = _import_source(source, module_name)
         kernel = _resolve_kernel(generated, codegen, source)
     result = adapter.factory(artifact, manifest, module, kernel)
+    if shared_rdata is not None:
+        from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+        if device is None or not isinstance(result, GeneratedTirCallGraphModule):
+            raise ArtifactError("Shared readonly loading requires a device and a TIR call graph.")
+        return result.load(device, shared_rdata=shared_rdata)
     return result.load(device) if device is not None else result
+
+
+def _import_source(source, module_name):
+    spec = importlib.util.spec_from_file_location(module_name, source)
+    if spec is None or spec.loader is None:
+        raise ArtifactError(f"Cannot import generated kernel source {source}.")
+    generated = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(generated)
+    except Exception as error:
+        raise ArtifactError(f"Cannot import generated kernel source {source}: {error}.") from error
+    return generated
+
+
+def _load_program_sources(artifact, codegen, records, module_name):
+    entries = {}
+    for record in records:
+        source = resolve_artifact_path(artifact, record["source"])
+        generated = _import_source(source, f"{module_name}_{record['symbol']}")
+        for symbol in record["symbols"]:
+            try:
+                entries[symbol] = getattr(generated, symbol)
+            except AttributeError as error:
+                raise ArtifactError(f"Program source {source} has no entry {symbol!r}.") from error
+    aliases = codegen.get("program_entry_aliases", {})
+    for symbol in aliases:
+        target = symbol
+        while target in aliases:
+            target = aliases[target]
+        entries[symbol] = entries[target]
+    return SimpleNamespace(**entries)
 
 
 def _resolve_kernel(generated, codegen: Mapping[str, object], source: Path):

@@ -105,3 +105,10 @@ def test_norm_apply_rejects_unsupported_output_precision(dtype):
 def test_default_output_precision_keeps_the_serialized_contract_unchanged():
     attrs = NormApply.normalize_attrs({"axis": -1, "epsilon": 1e-6, "use_mean": False})
     assert "output_dtype" not in attrs
+    assert "input_dtype" not in attrs
+
+
+@pytest.mark.parametrize("dtype", ["int32", "float64", "float16"])
+def test_norm_apply_rejects_unsupported_input_precision(dtype):
+    with pytest.raises(IRSchemaError, match="input_dtype"):
+        NormApply.normalize_attrs({"axis": -1, "epsilon": 1e-6, "use_mean": False, "input_dtype": dtype})

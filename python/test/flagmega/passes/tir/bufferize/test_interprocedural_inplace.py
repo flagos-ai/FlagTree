@@ -92,3 +92,38 @@ def test_unrelated_tuple_field_liveness_does_not_prevent_input_donation():
     builder.function("main", (value,), (consumed, second))
     plan = fm.make_buffer_plan(builder.build(entry="main"))
     assert plan.function_map["worker"].result_aliases == (("updated", "param"),)
+
+
+@pytest.mark.parametrize("ordered", [False, True])
+@pytest.mark.parametrize("view", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_program_dag_donation_requires_all_readers_to_precede_the_call(ordered, view, nested):
+    from dataclasses import replace
+
+    builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
+    ty = fm.tensor_type("bfloat16", (1, 128))
+    param = builder.var("param", ty, id="param")
+    updated = builder.call("math.add", (param, param), ty, id="updated")
+    builder.function("worker", (param,), (updated,))
+    callee = "worker"
+    if nested:
+        outer_param = builder.var("outer_param", ty, id="outer_param")
+        outer = builder.call("tir.call", (outer_param,), ty, id="outer", attrs={"callee": "worker"})
+        builder.function("wrapper", (outer_param,), (outer,))
+        callee = "wrapper"
+    value = builder.var("value", ty, id="value")
+    prepared = builder.call("test.unary", (value,), ty, id="prepared")
+    actual = (builder.call("tir.buffer_view", (prepared,), ty, id="view", attrs={"alias_kind": "reshape"})
+              if view else prepared)
+    observed = builder.call("test.unary", (actual,), ty, id="observed")
+    consumed = builder.call("tir.call", (actual,), ty, id="consumed", attrs={"callee": callee})
+    builder.function("main", (value,), (observed, consumed))
+    module = builder.build(entry="main")
+    programs = tuple(dict(symbol=name, calls=(name,), num_warps=4, depends_on=parents)
+                     for name, parents in (("prepared", ()), ("observed", ("prepared",)),
+                                          ("consumed", ("prepared", "observed") if ordered else ("prepared",))))
+    module = replace(module, metadata={"kernel_program_partition": programs})
+    plan = fm.make_buffer_plan(module)
+    assert bool(plan.function_map["worker"].result_aliases) is ordered
+    values = dict(plan.function_map["main"].values)
+    assert plan.buffer_map[values["prepared"][0]].mem_span.may_alias(plan.buffer_map[values["consumed"][0]].mem_span) is ordered

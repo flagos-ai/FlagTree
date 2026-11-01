@@ -7,7 +7,7 @@ from math import prod
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import local_tensor_type
-from triton.flagmega.ir.local_shard import aggregate_active_elements
+from triton.flagmega.ir.local_shard import max_chip_active_elements
 from triton.flagmega.ir.model import SBP, DistributedType, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
@@ -153,13 +153,14 @@ class PartitionedSparseExpertsDown(OpDefinition):
         if isinstance(return_type, DistributedType):
             hidden = kinds["down_weight"].axis_policies[2]
             domain = DistributedType(domain, (*return_type.axis_policies[:3], hidden, SBP.broadcast()), return_type.placement)
-            selected = aggregate_active_elements(domain)
+            selected = max_chip_active_elements(domain)
         else:
             selected = static_elements(domain.shape)
         if selected is None:
             return None
         local_output = local_tensor_type(return_type) if isinstance(return_type, DistributedType) else return_type
-        return OpCostFactors(simt_fma_operations=selected,
+        local_domain = local_tensor_type(domain) if isinstance(domain, DistributedType) else domain
+        return OpCostFactors(simt_fma_operations=static_elements(local_domain.shape),
             chip_aggregate_memory_load_bytes=selected * weight.dtype.itemsize,
             block_local_memory_store_bytes=tensor_nbytes(local_output) or 0)
 

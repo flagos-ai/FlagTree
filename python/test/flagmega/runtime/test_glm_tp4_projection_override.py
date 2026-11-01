@@ -9,7 +9,7 @@ from triton.flagmega import ir as fm
 
 
 def test_output_split_does_not_confuse_exclusive_and_replicated_operands():
-    path = Path(__file__).parents[3] / 'tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/tp4_distribution.py'
+    path = Path(__file__).parents[3] / 'tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/local_optimizations/tp4_distribution.py'
     spec = importlib.util.spec_from_file_location('glm_tp4_projection_override', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

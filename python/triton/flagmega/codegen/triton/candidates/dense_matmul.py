@@ -126,6 +126,7 @@ class DenseMatmulCandidateProvider:
                 )
                 if output_extent is not None
                 and reduction_extent is not None
+                and _supports_reduction_order(implementation, node.attrs)
                 and (implementation.contract.get("required_input_dtype", _scalar_dtype(input_type).value)
                      == _scalar_dtype(input_type).value)
                 and (implementation.contract.get("required_output_dtype", _scalar_dtype(output_type).value)
@@ -270,6 +271,8 @@ class DenseMatmulCandidateProvider:
         local_output_extent = _local_scalar_last_axis_extent(node.type)
 
         def applicable(implementation) -> bool:
+            if not _supports_reduction_order(implementation, node.attrs):
+                return False
             if not _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type):
                 return False
             required_transpose_b = implementation.contract.get("transpose_b")
@@ -655,9 +658,6 @@ class MatMulNormStatsCandidateProvider:
         value_type = output_type.fields[0]
         if (
             any(not dimension.is_fixed for dimension in value_type.shape[:-1])
-            or prod(
-                dimension.fixed_value for dimension in value_type.shape[:-1]
-            ) != 1
         ):
             return None
         axis = int(node.attrs["axis"])
@@ -672,6 +672,7 @@ class MatMulNormStatsCandidateProvider:
                 "transpose_a": bool(node.attrs["transpose_a"]),
                 "transpose_b": bool(node.attrs["transpose_b"]),
                 **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
+                **({"reduction_order": node.attrs["reduction_order"]} if "reduction_order" in node.attrs else {}),
             }
             matmul_type = MatMul.infer_type((lhs, rhs), matmul_attrs)
             synthetic_op = MatMul.op_name
@@ -683,6 +684,7 @@ class MatMulNormStatsCandidateProvider:
                 "fused_reduce": False,
                 "output_data_type": node.attrs.get("output_data_type", DType.BFLOAT16),
                 "rhs_layout": "k_major",
+                "reduction_order": node.attrs.get("reduction_order", "relaxed"),
             }
             matmul_type = PackedMatMul.infer_type(
                 (lhs, rhs, none, none), matmul_attrs
@@ -761,6 +763,9 @@ class MatMulNormStatsCandidateProvider:
         )
 
         def applicable(implementation) -> bool:
+            if (not _supports_reduction_order(implementation, node.attrs)
+                    or not _supports_local_rows(implementation, lhs.type)):
+                return False
             if not _supports_lhs_staging(implementation, lhs.type):
                 return False
             # This op fuses a projection, so it reaches the same
@@ -856,6 +861,12 @@ class MatMulNormStatsCandidateProvider:
             candidates,
             context.choose_default("dense_matmul", candidates),
         )
+
+
+def _supports_reduction_order(implementation, attrs):
+    return (attrs.get("reduction_order", "relaxed") == "relaxed"
+            or (implementation.facts.get("ordered_mma_accumulation", False)
+                and implementation.parameters.get("accumulation_splits", 1) == 1))
 
 
 def _supports_lhs_staging(implementation, value_type) -> bool:

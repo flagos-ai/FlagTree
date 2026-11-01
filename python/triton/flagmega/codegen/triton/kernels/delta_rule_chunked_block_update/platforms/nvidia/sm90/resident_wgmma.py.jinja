@@ -1,0 +1,6 @@
+# flagmega-kernel: delta_rule_chunked_block_update/resident_wgmma platform=nvidia architecture=sm90
+{% for call in render_calls | default(()) %}
+{% if call.family == "delta_rule_chunked_block_update" and call.variant == "resident_wgmma" %}
+{% include "kernels/delta_rule_block_update/_resident_wgmma.py.jinja" %}
+{% endif %}
+{% endfor %}

@@ -196,6 +196,20 @@ class DirectoryCheckpoint:
     def _source_identity(stat) -> tuple[int, ...]:
         return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
+    def verified_source_digest(self, path: str | Path) -> str | None:
+        """Return an existing digest proof for this unchanged version, without payload I/O.
+
+        Unknown or changed versions need the ordinary source_file_digest audit.
+        Cache admission can require this proof while forbidding payload reads.
+        """
+        source = Path(path).resolve()
+        if source not in set(self._resolved_shards.values()):
+            return None
+        cached = self._source_digests.get(source)
+        if cached is None or cached[0] != self._source_identity(source.stat()):
+            return None
+        return cached[1]
+
     def source_file_digest(self, path: str | Path) -> str:
         """Digest one source file once, or reuse an unchanged audited identity."""
         source = Path(path).resolve()

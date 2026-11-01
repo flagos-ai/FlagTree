@@ -69,3 +69,12 @@ def test_unrounded_affine_cannot_fuse_to_rounding_rms_norm():
         if node.op == "nn.norm_apply" else node for node in decomposed.nodes
     ))
     assert fuse_norm_stats_apply(module).node_map["output"].op == "nn.norm_apply"
+
+
+def test_ordered_stats_cannot_fuse_to_rms_norm_without_reduction_contract():
+    decomposed = DataflowPass("Decompose", (decompose_rms_norm_rule(),)).run(_Module().build())
+    module = replace(decomposed, nodes=tuple(
+        replace(node, attrs={**node.attrs, "reduction_group_size": 2})
+        if node.op == "nn.norm_stats" else node for node in decomposed.nodes
+    ))
+    assert fuse_norm_stats_apply(module).node_map["output"].op == "nn.norm_apply"

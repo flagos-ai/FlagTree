@@ -1,0 +1,59 @@
+# flagmega-kernel: kda_input_projection/wgmma platform=nvidia architecture=sm90
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "kda_input_projection" and call.variant == "wgmma" %}
+import triton.experimental.tle.language as tle
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+    tle.gpu.tensor_map_fenceproxy_acquire(source_descriptor)
+    _fm_sequence = tl.full((), 0, tl.int32)
+    for _fm_task in tl.range(block_index, {{ call.tasks }}, tl.num_programs(0)):
+{% for field in call.fields %}
+        {{ field.branch }}
+            _fm_row = (_fm_task - {{ field.start }}) * 64
+            _fm_row_origin = {{ field.row_origin }}
+            _fm_descriptor_pointer = weight_descriptor_{{ field.index }}
+{% endfor %}
+        tle.gpu.tensor_map_fenceproxy_acquire(_fm_descriptor_pointer)
+        for _fm_step in tl.range(0, {{ call.reduction // call.block_k }}):
+            _fm_slot = pipeline_projection_writer.acquire(_fm_sequence)
+            _fm_descriptor = tle.gpu.reinterpret_tensor_map(_fm_descriptor_pointer, _fm_slot.weight)
+            tle.gpu.copy(_fm_descriptor, _fm_slot.weight, [64, {{ call.block_k }}],
+                         [tl.cast(_fm_row_origin + _fm_row, tl.int32), _fm_step * {{ call.block_k }}], eviction_policy="evict_first")
+            # One real activation row suffices: only accumulator column zero
+            # is exported. TMA zero-padding supplies the other seven rows.
+            _fm_source_descriptor = tle.gpu.reinterpret_tensor_map(source_descriptor, _fm_slot.activation)
+            tle.gpu.copy(_fm_source_descriptor, _fm_slot.activation, [8, {{ call.block_k }}],
+                         [0, _fm_step * {{ call.block_k }}])
+            pipeline_projection_writer.commit(_fm_sequence)
+            _fm_sequence += 1
+    pipeline_projection_writer.close(_fm_sequence)
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+    _fm_sequence = tl.full((), 0, tl.int32)
+    for _fm_task in tl.range(block_index, {{ call.tasks }}, tl.num_programs(0)):
+{% for field in call.fields %}
+        {{ field.branch }}
+            _fm_row = (_fm_task - {{ field.start }}) * 64
+            _fm_rows = {{ field.rows }}
+            _fm_destination = {{ field.output }}
+{% endfor %}
+        _fm_accumulator = tl.zeros((64, 8), tl.float32)
+        for _fm_step in tl.range(0, {{ call.reduction // call.block_k }}):
+            _fm_ready = pipeline_projection_reader.wait(_fm_sequence)
+            _fm_accumulator = tle.gpu.wgmma(_fm_ready.slot.weight, _fm_ready.slot.activation,
+                                           _fm_accumulator, trans_b=True)
+            _fm_accumulator = tle.gpu.wgmma_wait(0, _fm_accumulator)
+            pipeline_projection_reader.release(_fm_sequence)
+            _fm_sequence += 1
+        _fm_result = tl.reshape(tl.gather(_fm_accumulator, tl.full((64, 1), 0, tl.int32), 1), (64,))
+        _fm_local = _fm_row + tl.arange(0, 64)
+        tl.store(_fm_destination + _fm_local, _fm_result.to(tl.bfloat16), _fm_local < _fm_rows)
+{% endif %}
+{% endfor %}

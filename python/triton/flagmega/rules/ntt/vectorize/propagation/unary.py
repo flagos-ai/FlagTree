@@ -48,7 +48,7 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
         "math.vectorized_unary",
         (pack.id,),
         node.type,
-        attrs={"unary_op": scalar.op.removeprefix("math.")},
+        attrs={"unary_op": scalar.op.removeprefix("math."), **scalar.attrs},
         metadata=propagation_result_metadata(
             scalar,
             node,
@@ -83,7 +83,7 @@ def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
         "math.vectorized_unary",
         (vector.id,),
         vector.type,
-        attrs={"unary_op": node.op.removeprefix("math.")},
+        attrs={"unary_op": node.op.removeprefix("math."), **node.attrs},
         metadata=propagation_result_metadata(
             node,
             unpack,

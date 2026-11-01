@@ -1,0 +1,56 @@
+# flagmega-kernel: dense_matmul/packed_k_major_mma_norm_stats platform=nvidia architecture=sm90
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "packed_k_major_mma_norm_stats" %}
+{{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding(
+    [2, 0], [1, {{ num_warps }}], [16, 8],
+))
+{{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))
+{{ call.symbol }}__rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
+{% set load_warps_n = [num_warps, call.tile_n // 4] | min %}
+{{ call.symbol }}__weight_load_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 2], [4, 8], [{{ load_warps_n }}, {{ num_warps // load_warps_n }}], [1, 0],
+))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
+        dense_stats_square_sum = tl.zeros(({{ call.tile_n }},), tl.float32)
+        for dense_local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
+            dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+            dense_global_n = {{ call.global_n }}
+            dense_n_mask = (dense_local_n_offsets < {{ call.local_n_capacity }}) & ({{ call.result_active }})
+            dense_accumulator = tle.gpu.set_layout(
+                tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout,
+            )
+            for dense_local_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
+                dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
+                dense_global_k = {{ call.global_k }}
+                dense_k_mask = (dense_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }})
+                dense_source_value = tl.load({{ call.source }} + ({{ call.source_offset }}), dense_k_mask, other=0.)
+                dense_weight_value = tl.load({{ call.weight }} + ({{ call.weight_offset }}),
+                                            dense_n_mask[:, None] & dense_k_mask[None, :], other=0.)
+                dense_weight_value = tle.gpu.set_layout(dense_weight_value, {{ call.symbol }}__weight_load_layout)
+                dense_activation_matrix = tle.gpu.set_layout(
+                    tl.broadcast_to(dense_source_value[None, :], (16, {{ call.block_k }})), {{ call.symbol }}__lhs_layout,
+                )
+                dense_weight_matrix = tle.gpu.set_layout(tl.trans(dense_weight_value), {{ call.symbol }}__rhs_layout)
+                dense_accumulator = tl.dot(dense_activation_matrix, dense_weight_matrix, dense_accumulator)
+            dense_projection = tl.sum(tl.where(
+                tl.arange(0, 16)[:, None] == 0, dense_accumulator, 0.,
+            ), 0).to({{ call.projection_type }}).to(tl.float32)
+            dense_residual = tl.load({{ call.residual }} + ({{ call.residual_offset }}), dense_n_mask, other=0.)
+{% for dtype in call.addend_cast_types %}
+            dense_residual = dense_residual.to({{ dtype }})
+{% endfor %}
+            dense_value = (dense_projection + dense_residual).to({{ call.output_type }})
+            tl.store({{ call.result }} + ({{ call.result_offset }}), dense_value,
+                     dense_n_mask & ({{ call.result_writer_active }}))
+            dense_value_fp32 = dense_value.to(tl.float32)
+            dense_stats_square_sum += tl.where(dense_n_mask, dense_value_fp32 * dense_value_fp32, 0.)
+        tl.store({{ call.stats }} + ({{ call.stats_offset }}), tl.sum(dense_stats_square_sum, 0),
+                 mask={{ call.stats_writer_active }})
+{% endif %}
+{% endfor %}
+{% endif %}

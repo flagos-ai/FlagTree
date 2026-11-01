@@ -140,7 +140,16 @@ def mhc_pre_call(raw):
     if type(splits) is not int or splits <= 0 or splits & (splits - 1):
         raise CodegenError("mHC projection_splits must be a positive power of two.")
     variant = variants[projection_reduction]
-    if raw.get("variant", "local") != variant:
+    cooperative_variants = {"cooperative_stream_fma": "stream_fma_128",
+                            "cooperative_contiguous_tf32": "contiguous_tf32"}
+    cooperative = raw.get("variant") in cooperative_variants
+    independent_pre = raw["parameters"].get("independent_collapse_pre", False)
+    if type(independent_pre) is not bool:
+        raise CodegenError("independent_collapse_pre must be a bool.")
+    if "independent_collapse_pre" in raw["parameters"] and not cooperative:
+        raise CodegenError("independent_collapse_pre requires a cooperative mHC implementation.")
+    if (raw.get("variant", "local") != variant
+            and cooperative_variants.get(raw.get("variant")) != projection_reduction):
         raise CodegenError("mHC selected variant does not implement its projection_reduction contract.")
     if (projection_reduction == "parallel" and splits != 1
             or projection_reduction == "stream_fma_128" and hidden % (128 * splits)
@@ -161,7 +170,9 @@ def mhc_pre_call(raw):
     stream_lanes = _lanes(hc)
     requested = int(raw["parameters"]["elements_per_program"])
     return {
-        "internal_grid_barriers": 0,
+        **(_cooperative_pre_workspace(raw, bindings, tokens, hc, coefficients, splits, independent_pre=independent_pre) if cooperative else
+           {"internal_grid_barriers": 0}),
+        "independent_collapse_pre": independent_pre,
         "projection_reduction": projection_reduction,
         "projection_splits": splits,
         "projection_coefficient_lanes": _lanes(coefficients),
@@ -227,6 +238,55 @@ def mhc_pre_call(raw):
     }
 
 
+def _cooperative_pre_workspace(raw, bindings, tokens, hc, coefficients, splits, *, independent_pre=False):
+    """Validate physical sharing before assigning independent tasks to CTAs."""
+    from triton.flagmega.codegen.triton.kernel_call_renderers import (
+        _buffer,
+        _exclusive_participation_active,
+        _pointer,
+    )
+
+    barriers = 1 if independent_pre else 2
+    if raw.get("facts", {}).get("internal_grid_barriers") != barriers:
+        count = "one" if independent_pre else "two"
+        raise CodegenError(f"Cooperative mHC requires exactly {count} declared internal grid barriers.")
+    if _exclusive_participation_active(raw) != "True":
+        raise CodegenError("Cooperative mHC requires all physical CTAs to participate.")
+    workspace = _buffer(raw, "workspaces", "projection_partials")
+    width = (coefficients + 1) * splits + hc
+    abi = workspace["abi"]
+    if (_capacity(abi, "projection_partials") != (tokens, width)
+            or abi.get("scalar_dtype") != "float32"
+            or abi.get("scalar_lane_shape")
+            or tuple(abi.get("scalar_storage_strides", ())) != (width, 1)):
+        raise CodegenError("Cooperative mHC workspace must hold contiguous FP32 split partials and pre coefficients.")
+    for name, binding in {**bindings, "projection_partials": workspace}.items():
+        physical = binding["abi"]
+        distributed = physical.get("distributed_type")
+        # Inputs may be identical complete block-private replicas. Only values
+        # passed between phases need a physically chip-shared allocation.
+        shared = name in {"post", "comb", "collapsed", "projection_partials"}
+        if ((shared and (physical.get("coordinate_space") != "canonical_global"
+                         or physical.get("memory_sharing_scope") != "chip"))
+                or physical.get("distributed_backing_type") is not None
+                or isinstance(distributed, Mapping) and (
+                    distributed.get("partial") is not None
+                    or distributed.get("exclusive") is not None
+                    or any(policy.get("kind") != "broadcast"
+                           for policy in distributed.get("axis_policies", ())))):
+            raise CodegenError(f"Cooperative mHC requires complete replicated {name} storage and chip-shared phase outputs.")
+    return {
+        "internal_grid_barriers": barriers,
+        "projection_partials": _pointer(workspace),
+        "projection_workspace_width": width,
+        "projection_pair_count": (coefficients + 1) // 2,
+        "projection_tasks_per_token": (splits if raw["variant"] == "cooperative_contiguous_tf32"
+                                       else ((coefficients + 1) // 2 + 1) * splits),
+        "projection_square_start": coefficients * splits,
+        "projection_pre_start": (coefficients + 1) * splits,
+    }
+
+
 def mhc_post_call(raw):
     """Render ``out[t, j] = sum_i comb[t, i, j] * residual[t, i] + post[t, j] * value[t]``.
 
@@ -245,10 +305,12 @@ def mhc_post_call(raw):
         "inputs": ("value", "residual", "post", "comb"),
         "outputs": ("result", ),
     })
-    abis = {name: _replicated_abi(binding, name) for name, binding in bindings.items()}
+    abis = {name: _replicated_abi(binding, name, scalar=name != "value") for name, binding in bindings.items()}
 
     tokens, hc, hidden = _capacity(abis["residual"], "residual")
-    if _capacity(abis["value"], "value") != (tokens, hidden):
+    value_lanes = int(abis["value"].get("scalar_lane_count", 1))
+    value_shape = _capacity(abis["value"], "value")
+    if value_shape != (tokens, hidden // value_lanes) or hidden % value_lanes:
         raise CodegenError("mHC post value must be (tokens, hidden) like the residual streams.")
     if _capacity(abis["post"], "post") != (tokens, hc) \
             or _capacity(abis["comb"], "comb") != (tokens, hc, hc):
@@ -277,7 +339,8 @@ def mhc_post_call(raw):
         "stream_active": emit_active_extent(abis["residual"], 1),
         "hidden_active": emit_active_extent(abis["residual"], 2),
         "value_offset": emit_local_scalar_offset(
-            abis["value"], ("_fm_token", "_fm_hidden")),
+            abis["value"], ("_fm_token", f"((_fm_hidden) // {value_lanes})" if value_lanes != 1 else "_fm_hidden"),
+            lane_coordinate=f"((_fm_hidden) % {value_lanes})" if value_lanes != 1 else None),
         "residual_offset": emit_local_scalar_offset(
             abis["residual"], ("_fm_token", "_fm_i[:, None]", "_fm_hidden[None, :]")),
         "post_offset": emit_local_scalar_offset(abis["post"], ("_fm_token", "_fm_j")),
@@ -286,6 +349,8 @@ def mhc_post_call(raw):
         "result_offset": emit_local_scalar_offset(
             abis["result"], ("_fm_token", "_fm_j[:, None]", "_fm_hidden[None, :]")),
         "result_type": emit_triton_scalar_type(str(abis["result"]["scalar_dtype"])),
+        "residual_input_type": (emit_triton_scalar_type(_rounding_dtype(raw["semantic_attrs"], "residual_input_dtype"))
+                                if raw["semantic_attrs"].get("residual_input_dtype") is not None else None),
         "value_first_fma": mode == "value_fma_first",
         "writer_active": _canonical_writer_active(abis["result"]),
     }

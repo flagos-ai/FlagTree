@@ -16,8 +16,8 @@ def test_each_reusable_call_binds_its_own_root_storage_descriptor(
 
     assert len(specs) == 2
     assert len({value["name"] for value in specs}) == 2
-    assert {value["source"] for value in specs} == {"workspace"}
-    assert len({value["offset_bytes"] for value in specs}) == 2
+    assert {value["source"] for value in specs} == {"first_weight", "second_weight"}
+    assert all(value["offset_bytes"] == 0 for value in specs)
     assert TensorDescriptorCache.validate_specs(
         specs, source_names=package["runtime_binding"]["signature"]
     ) == tuple(value["name"] for value in specs)

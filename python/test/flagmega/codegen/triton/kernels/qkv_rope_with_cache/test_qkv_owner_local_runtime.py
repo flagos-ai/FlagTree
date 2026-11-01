@@ -14,7 +14,7 @@ from triton.flagmega.ir.ops.nn._rotary_distribution import has_remote_rotary_pai
 from triton.flagmega.runtime import load
 
 
-def _graph(lanes, use_mean, rotary, swap, external_stats, independent_v):
+def _graph(lanes, use_mean, rotary, swap, external_stats, independent_v, *, tokens=1):
     mesh = fm.Placement((4, 2) if swap else (2, 4), "xy" if swap else "yx", "bb")
     head_axis, dim_axis = (1, 0) if swap else (0, 1)
     dtype = fm.DType.BFLOAT16 if lanes == 1 else fm.vector_type("bfloat16", (lanes,))
@@ -27,7 +27,7 @@ def _graph(lanes, use_mean, rotary, swap, external_stats, independent_v):
         def forward(self):
             values, inputs = [], []
             for role, heads in (("q", 5), ("k", 3), ("v", 3)):
-                tensor = fm.tensor_type(dtype, (1, heads, 128 // lanes))
+                tensor = fm.tensor_type(dtype, (tokens, heads, 128 // lanes))
                 source = self.input(role, tensor, id=role)
                 inputs.append(source)
                 role_policies = ((broad, fm.SBP.split_block_cyclic((dim_axis,), 1),
@@ -38,7 +38,7 @@ def _graph(lanes, use_mean, rotary, swap, external_stats, independent_v):
                 values.append(fm.F.distributed.boxing(source, distributed))
             scale = self.input("scale", fm.tensor_type("bfloat16", (128,)))
             bias = self.input("bias", scale.type)
-            cosine = self.input("cos", fm.tensor_type("float32", (1, 1, rotary or 128)))
+            cosine = self.input("cos", fm.tensor_type("float32", (tokens, 1, rotary or 128)))
             sine = self.input("sin", cosine.type)
             state = self.input("state", config.ref_type)
             inputs.extend((scale, bias, cosine, sine, state))
@@ -47,7 +47,7 @@ def _graph(lanes, use_mean, rotary, swap, external_stats, independent_v):
             stats = []
             for role, value, heads in zip(("q", "k"), values[:2], (5, 3)):
                 if external_stats:
-                    tensor = fm.tensor_type("float32", (2 if use_mean else 1, 1, heads, 1))
+                    tensor = fm.tensor_type("float32", (2 if use_mean else 1, tokens, heads, 1))
                     source = self.input(f"{role}_stats", tensor, id=f"{role}_stats")
                     inputs.append(source)
                     destination = fm.DistributedType(tensor, (broad, broad, policies[1], broad), mesh)

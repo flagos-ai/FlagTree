@@ -4,6 +4,8 @@
 
 import pytest
 import torch
+import json
+from pathlib import Path
 
 from triton.flagmega import ir as fm
 from triton.flagmega import pattern_match as pm
@@ -113,3 +115,19 @@ def test_default_evaluator_matches_current_first_device_accumulation():
     actual, _ = gated_delta_net_convolution(qkv=qkv, state=state, conv_weight=weight, conv_kernel_size=4)
     expected = torch.nn.functional.silu(qkv.float()).bfloat16()
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("fixture_name", ["native_convolution_fast_exp2.json", "native_convolution_full_division.json"])
+def test_cuda_eager_convolution_preserves_native_fast_silu_rounding(fixture_name):
+    fixture = Path(__file__).resolve().parents[3] / "data" / fixture_name
+    cases = json.loads(fixture.read_text())["cases"]
+    _, config = _module()
+    repeats = config.conv_dim // len(cases)
+    inputs = torch.tensor([case["input"] for case in cases], dtype=torch.bfloat16).T.repeat(1, repeats).cuda()
+    weight = torch.tensor([case["weight"] for case in cases], dtype=torch.bfloat16).repeat(repeats, 1).cuda()
+    expected = torch.tensor([case["expected"] for case in cases], dtype=torch.bfloat16).repeat(repeats).cuda()
+    actual, _ = gated_delta_net_convolution(
+        qkv=inputs, state=create_gdn_state(config, device="cuda"), conv_weight=weight, conv_kernel_size=4,
+        round_products=True, round_before_activation=False, accumulation_order="chronological")
+    torch.testing.assert_close(actual[-1], expected, rtol=0, atol=0)

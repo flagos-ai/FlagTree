@@ -23,6 +23,7 @@ from triton.flagmega.errors import (
     EvaluationError,
     NumpyMaterializationUnsupported,
 )
+from triton.flagmega.evaluator.recipe_scope import recipe_output_scope
 from triton.flagmega.importer.checkpoint import Checkpoint, TensorByteRange
 from triton.flagmega.ir import DType, DistributedType, IRModule, TensorType, VectorType, verify_module
 from triton.flagmega.ir.ops.core import get_definition
@@ -217,26 +218,24 @@ def iter_numpy_materialized_constant_assets(
         )
         if not selected:
             continue
-        values = materialize_numpy_recipe(module, recipe, checkpoint, storage_reader=storage_reader)
-        by_output = dict(zip(recipe.outputs, values, strict=True))
+        values = materialize_numpy_recipe(module, recipe, checkpoint, storage_reader=storage_reader, outputs=selected)
+        by_output = dict(zip(selected, values, strict=True))
         for output in selected:
             yield output, by_output[output]
 
 
-def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None):
-    """Evaluate one verified, closed recipe independently of other recipes."""
+def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None, outputs=None):
+    """Evaluate requested outputs of one verified, closed recipe."""
     # Recipes are closed graphs. A whole-module index per recipe is
     # quadratic and lets a same-named node from another recipe shadow it.
+    selected, nodes = recipe_output_scope(recipe, outputs)
     context = NumpyMaterializationContext(module, checkpoint, recipe=recipe, storage_reader=storage_reader)
     local = {}
-    uses = Counter(value for node in recipe.nodes for value in node.inputs)
-    uses.update(recipe.outputs)
-    supported = True
-    for node in recipe.nodes:
+    uses = Counter(value for node in nodes for value in node.inputs)
+    uses.update(selected)
+    supported = all(get_definition(node.op).numpy_materializable for node in nodes)
+    for node in nodes if supported else ():
         definition = get_definition(node.op)
-        if not definition.numpy_materializable:
-            supported = False
-            break
         arguments = tuple(local[value] for value in node.inputs)
         try:
             result = definition.materialize_numpy(node, arguments, context)
@@ -250,7 +249,7 @@ def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None)
             if not uses[value]:
                 del local[value]
     if supported:
-        values = tuple(local[output] for output in recipe.outputs)
+        values = tuple(local[output] for output in selected)
     else:
         # Importing Torch is intentionally delayed until the first numeric
         # recipe that needs semantic arithmetic rather than byte layout.
@@ -261,7 +260,7 @@ def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None)
         )
 
         torch_resolver = CheckpointWeightResolver(checkpoint, cache=False)
-        values = materialize_constant_recipe(module, recipe, torch_resolver)
+        values = materialize_constant_recipe(module, recipe, torch_resolver, outputs=selected)
     return values
 
 

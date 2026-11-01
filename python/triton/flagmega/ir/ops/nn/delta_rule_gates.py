@@ -93,11 +93,18 @@ class DeltaRuleGates(OpDefinition):
     def evaluate(cls, node, arguments, context):
         torch = context.torch
         a, b, a_log, bias = (parameter.read(arguments).float() for parameter in cls.input_parameters)
+        exp = (lambda value: torch.exp2(value * 1.4426950408889634)) if a.is_cuda else torch.exp
         x = a + bias
-        softplus = torch.where(x > 0, x + torch.log(1. + torch.exp(-x)), torch.log(1. + torch.exp(x)))
+        softplus = torch.where(x > 0, x + torch.log(1. + exp(-x)), torch.log(1. + exp(x)))
         softplus = torch.where(x <= node.attrs["softplus_threshold"], softplus, x)
-        g = -a_log.exp() * softplus
-        return g.exp(), b.sigmoid()
+        g = -exp(a_log) * softplus
+        alpha = exp(g) if node.attrs["alpha_exp_mode"] == "fast" else g.exp()
+        if a.is_cuda:
+            from triton.flagmega.evaluator.cuda_activation_math import fast_sigmoid
+            beta = fast_sigmoid(b)
+        else:
+            beta = b.sigmoid()
+        return alpha, beta
 
     @classmethod
     def cost(cls, node):

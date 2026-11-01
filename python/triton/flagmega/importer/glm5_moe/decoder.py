@@ -171,14 +171,21 @@ def build_kda_attention(value, conv_state, recurrent_state, weights, config, *, 
     heads = c.kda_num_heads
     dim = c.kda_head_dim
 
-    # The three projections stay separate and head-major all the way through the
-    # convolution, exactly like upstream's independent q/k/v_conv1d layers. A
-    # flat [1, 3*heads*head_dim] concat would interleave the parts on one axis
-    # and make the head axis unsplittable.
-    projections = tuple(
-        F.tensors.reshape(projection(value, weights, f"self_attn.{part}_proj.weight", c, prefix=prefix),
-                          (tokens, heads, dim), name=f"{prefix}_{part}_proj_heads")
-        for part in ("q", "k", "v"))
+    # The six independent BF16 projections share one input, but retain their
+    # numerical boundaries and separate results. Head-major immutable weight
+    # views expose legal head ownership without concatenating or packing them.
+    reduction = c.hidden_size
+    input_projection = F.nn.kda_input_projection(
+        value,
+        *(F.tensors.reshape(w(f"{part}_proj.weight"), (heads, dim, reduction),
+                            name=f"{prefix}_{part}_weight_heads") for part in ("q", "k", "v")),
+        w("b_proj.weight"), w("f_a_proj.weight"), w("g_a_proj.weight"),
+        name=f"{prefix}_input_projection")
+    projections = tuple(F.tensors.get_item(input_projection, index, name=f"{prefix}_{part}_proj_heads")
+                        for index, part in enumerate(("q", "k", "v")))
+    beta_logits, gate_a, out_gate_a = tuple(
+        F.tensors.get_item(input_projection, index, name=f"{prefix}_self_attn_{part}_proj_weight_apply")
+        for index, part in ((3, "b"), (4, "f_a"), (5, "g_a")))
     convolved_tuple = F.nn.kda_convolution(*projections, conv_state, w("conv1d.weight"),
                                            kernel_size=c.kda_conv_kernel_size, name=f"{prefix}_conv")
     q, k, v, conv_state_out = F.tensors.get_items(convolved_tuple, 0, 1, 2, 3,
@@ -191,14 +198,12 @@ def build_kda_attention(value, conv_state, recurrent_state, weights, config, *, 
     # ``decay_rate_map`` arrive as ready weight transforms from main's
     # constant island (exp/broadcast of A_log and dt_bias), so the runtime
     # dataflow has no weight-side broadcasts to vectorize.
-    gate_a = projection(value, weights, "self_attn.f_a_proj.weight", c, prefix=prefix)
     gate_raw = projection(gate_a, weights, "self_attn.f_b_proj.weight", c, prefix=prefix)
     gate_heads = F.tensors.reshape(gate_raw, (tokens, heads, dim), name=f"{prefix}_gate_heads")
     # The raw ``b_proj`` logits, not a pre-sigmoided beta: the recurrent kernel
     # widens and sigmoids them, which is both the published
     # ``torch.sigmoid(self.b_proj(hidden_states))`` order and upstream's
     # ``use_beta_sigmoid_in_kernel=True``.
-    beta_logits = projection(value, weights, "self_attn.b_proj.weight", c, prefix=prefix)
 
     # fused_recurrent_kda scales q by 1/sqrt(head_dim) after L2 normalization;
     # normalization does not replace the model's attention readout scale.
@@ -211,8 +216,7 @@ def build_kda_attention(value, conv_state, recurrent_state, weights, config, *, 
     # The published module is FusedRMSNormGated(o_norm)(core_out, g), whose
     # interior is entirely FP32: the gate's sigmoid and the multiply never round.
     out_gate = F.tensors.reshape(
-        projection(projection(value, weights, "self_attn.g_a_proj.weight", c, prefix=prefix),
-                   weights, "self_attn.g_b_proj.weight", c, prefix=prefix),
+        projection(out_gate_a, weights, "self_attn.g_b_proj.weight", c, prefix=prefix),
         (tokens, heads, dim), name=f"{prefix}_out_gate_heads")
     gated = gated_rms_norm(core_out, out_gate, w("o_norm.weight"), c.epsilon,
                            activation="sigmoid", output_dtype="bfloat16",

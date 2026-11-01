@@ -1,0 +1,28 @@
+# flagmega-kernel: add_norm_stats/local_rows_rms platform=generic
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "add_norm_stats" and call.variant == "local_rows_rms" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for add_stats_row in range({{ call.rows }}):
+        if {{ call.row_active }}:
+{% filter indent(4, true) %}
+        add_stats_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
+        for add_stats_start in tl.range(0, {{ call.columns }}, {{ call.tile }}):
+            add_stats_local_offsets = add_stats_start + tl.arange(0, {{ call.tile }})
+            add_stats_mask = (add_stats_local_offsets < {{ call.columns }}) & ({{ call.active }})
+            add_stats_value = (
+                tl.load({{ call.source }} + ({{ call.source_offset }}), add_stats_mask, other=0.0)
+                + tl.load({{ call.residual }} + ({{ call.residual_offset }}), add_stats_mask, other=0.0)
+            ).to({{ call.output_type }})
+            tl.store({{ call.result }} + ({{ call.result_offset }}), add_stats_value, add_stats_mask)
+            add_stats_fp32 = add_stats_value.to(tl.float32)
+            add_stats_square_sum += tl.where(add_stats_mask, add_stats_fp32 * add_stats_fp32, 0.0)
+        tl.store({{ call.stats }} + ({{ call.stats_offset }}), tl.sum(add_stats_square_sum, 0),
+                 mask={{ call.stats_writer_active }})
+{% endfilter %}
+
+
+{% endif %}
+{% endfor %}

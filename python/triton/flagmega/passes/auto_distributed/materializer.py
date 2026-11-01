@@ -20,6 +20,7 @@ from triton.flagmega.ir import (
     TupleType,
 )
 from triton.flagmega.ir.entry_abi import redirect_entry_abi
+from triton.flagmega.ir.region import is_region
 from triton.flagmega.passes.auto_distributed.reshard import DistributedReshardPlan
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealization,
@@ -126,7 +127,8 @@ class DistributedMaterializer:
             outputs: list[str] = []
             for output_index, output_id in enumerate(function.outputs):
                 source = self.realized[output_id]
-                target_type = (
+                parameter = function.parameters[1 + output_index] if is_region(function) else None
+                target_type = self.realized[parameter].type if parameter is not None else (
                     call_output_types[output_index]
                     if call_output_types is not None
                     else function_output_type(
@@ -142,7 +144,8 @@ class DistributedMaterializer:
                     function.name,
                     output_index,
                     self.result.selected_reshards.get(
-                        (output_id, function_boundary_id(function.name), output_index)
+                        (output_id, parameter if parameter is not None else function_boundary_id(function.name),
+                         output_index)
                     ),
                     (
                         DistributedReshardUsageKind.PROGRAM_OUTPUT

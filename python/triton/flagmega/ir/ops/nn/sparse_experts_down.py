@@ -5,7 +5,7 @@
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import local_tensor_type
-from triton.flagmega.ir.local_shard import aggregate_active_elements
+from triton.flagmega.ir.local_shard import max_chip_active_elements
 from triton.flagmega.ir.model import SBP, DistributedType, DType, SBPPartial, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
@@ -26,6 +26,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     floating_tensor,
     lanes,
     normalize_sparse_quantization,
+    normalize_projection_order,
     pack_result,
     require_policies,
     require_shape,
@@ -35,6 +36,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
     static_elements,
     unpack_value,
     validate_expert_ids,
+    validate_projection_order,
     verify_quantization_group_shards,
     verify_sparse_quantization,
 )
@@ -53,19 +55,21 @@ class SparseExpertsDown(OpDefinition):
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
     activation_quantization = attribute_parameter(default="dynamic_fp8")
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
         if type(attrs["round_projection"]) is not bool:
             raise IRSchemaError("SparseExpertsDown round_projection must be boolean")
-        return normalize_sparse_quantization(attrs)
+        return normalize_projection_order(normalize_sparse_quantization(attrs))
 
     @classmethod
     def infer_type(cls, inputs, attrs):
         types = {parameter.name: parameter.type_of(inputs) for parameter in cls.input_parameters}
         tensors = {name: tensor_of(value) for name, value in types.items()}
         activation, ids, down = (tensors[name] for name in ("activations", "router_expert_ids", "down_weight"))
+        validate_projection_order(attrs, types["activations"], types["down_weight"])
         verify_sparse_quantization(activation, down, tensors["down_proj_scale"], attrs)
         experts, hidden, intermediate = down.shape
         if down.dtype not in {element_type(activation.dtype), DType.FLOAT8_E4M3FN}:
@@ -135,7 +139,8 @@ def evaluate_down(values, activation_type, output_type, attrs, context):
                                            values["down_proj_scale"][expert],
                                            block_n=int(attrs["weight_block_n"]),
                                            block_k=int(attrs["weight_block_k"]),
-                                           activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"))
+                                           activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"),
+                                           reduction_order=attrs.get("reduction_order", "relaxed"))
             if attrs["round_projection"]:
                 projection = projection.to(dtype).float()
             output[token, route] = projection
@@ -166,8 +171,8 @@ def sparse_stage_cost_factors(definition, inputs, return_type, *, gate_up):
         domain = DistributedType(
             tensor_type(matrix.dtype, (*ids_type.tensor.shape, *matrix_type.tensor.shape[1:])),
             (*ids_type.axis_policies, *matrix_type.axis_policies[1:]), ids_type.placement)
-        selected_elements = aggregate_active_elements(domain)
-        scale_routes = aggregate_active_elements(ids_type)
+        selected_elements = max_chip_active_elements(domain)
+        scale_routes = max_chip_active_elements(ids_type)
     else:
         selected_elements = routes * matrix_elements
         scale_routes = routes

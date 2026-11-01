@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, prod
 
-from triton.flagmega.ir import DistributedType, IRType, OpCostFactors, TupleType, exclusive_owner_count
+from triton.flagmega.ir import DistributedType, IRType, OpCostFactors, TupleType
 
 
 @dataclass(frozen=True)
@@ -16,8 +16,9 @@ class DistributedOperationCostModel:
 
     This is the Python counterpart of nncase's ``TritonTargetOpCostModel``.
     Block-local work is evaluated both against the nearest block memory and
-    against aggregate chip-global traffic across every active placement
-    owner. Compute and memory paths overlap; synchronization is serialized.
+    against aggregate chip-global traffic across the active blocks of one
+    chip. Different chips have independent bandwidth budgets. Compute and
+    memory paths overlap; synchronization is serialized.
 
     The defaults form a deterministic unit machine for isolated provider
     tests. Production targets inject their physical machine profile.
@@ -33,7 +34,7 @@ class DistributedOperationCostModel:
     chip_global_latency_cycles: int = 0
     block_synchronization_cycles: int = 1
     grid_synchronization_cycles: int = 1
-    identity: str = "flagmega.target-op-cost.unit/v1"
+    identity: str = "flagmega.target-op-cost.unit/v2"
 
     def __post_init__(self) -> None:
         rates = (
@@ -106,10 +107,9 @@ class DistributedOperationCostModel:
 
 def _active_block_count(value: IRType) -> int:
     if isinstance(value, DistributedType):
-        owners = prod(value.placement.hierarchy)
-        if value.exclusive is not None:
-            owners //= exclusive_owner_count(value)
-        return max(owners, 1)
+        exclusive_axes = () if value.exclusive is None else value.exclusive.axes
+        return prod(extent for axis, extent in enumerate(value.placement.hierarchy)
+                    if value.placement.is_physical_block_axis(axis) and axis not in exclusive_axes)
     if isinstance(value, TupleType):
         return max((_active_block_count(field) for field in value.fields), default=1)
     return 1

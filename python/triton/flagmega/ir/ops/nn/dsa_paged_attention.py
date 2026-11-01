@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from itertools import product
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -20,7 +21,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.ops.nn._attention_layout import from_seq_head_dim, normalize_attention_layout, to_seq_head_dim
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
-from triton.flagmega.ir.ops.nn.dsa_indexer import _dsa_broadcast_choices
+from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPSplit
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import _scalar_int
 from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_ref, is_tensor
 from triton.flagmega.ir.types import VectorType
@@ -72,6 +73,7 @@ class DsaPagedAttention(OpDefinition):
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         query_type = cls.q.type_of(inputs)
+        _validate_head_distribution(query_type, cls.topk.type_of(inputs), attrs)
         query = tensor_of(query_type)
         scalar = query.dtype.elem_type if isinstance(query.dtype, VectorType) else query.dtype
         if attrs.get("probability_rounding", "normalized") == "online_bf16" and scalar != DType.BFLOAT16:
@@ -98,7 +100,14 @@ class DsaPagedAttention(OpDefinition):
 
     @classmethod
     def distributed_input_type_tuples(cls, choices, attrs):
-        yield from _dsa_broadcast_choices(choices, (0, 1))
+        for query in choices[0]:
+            for indices in choices[1]:
+                try:
+                    _validate_head_distribution(query, indices, attrs)
+                except IRSchemaError:
+                    continue
+                for tail in product(*choices[2:]):
+                    yield query, indices, *tail
 
     @classmethod
     def infer_effect(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> Effect:
@@ -181,3 +190,22 @@ def _online_attention(torch, query, indices, keys, values, length, scale):
             "hs,shd->hd", probability.bfloat16().float(), values[selected].float())
         maximum = updated
     return (accumulator / denominator).to(dtype=query.dtype)
+
+
+def _validate_head_distribution(query, indices, attrs):
+    """Heads are independent; query features and the top-k list are complete."""
+    if isinstance(query, DistributedType) != isinstance(indices, DistributedType):
+        raise IRSchemaError("DSA query and top-k must share a distribution placement.")
+    if not isinstance(query, DistributedType):
+        return
+    if query.placement != indices.placement:
+        raise IRSchemaError("DSA query and top-k placements must match.")
+    for value in (query, indices):
+        if value.partial is not None or value.exclusive is not None:
+            raise IRSchemaError("DSA attention requires complete nonpartial tensor operands.")
+    head_axis = tuple(attrs['layout']).index('head')
+    if any(not isinstance(p, (SBPBroadCast, SBPSplit) if axis == head_axis else SBPBroadCast)
+           for axis, p in enumerate(query.axis_policies)):
+        raise IRSchemaError("DSA query may split only independent heads; token and feature axes must be complete.")
+    if any(not isinstance(p, SBPBroadCast) for p in indices.axis_policies):
+        raise IRSchemaError("DSA top-k indices must be complete on every query owner.")

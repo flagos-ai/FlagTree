@@ -1,0 +1,9 @@
+{% macro position(call, token, mask, indent) %}
+{{ indent }}qkv_cache_token_position = qkv_cache_position + ({{ token }})
+{{ indent }}qkv_cache_logical_block = qkv_cache_token_position // {{ call.block_size }}
+{{ indent }}qkv_cache_block_offset = qkv_cache_token_position % {{ call.block_size }}
+{{ indent }}qkv_cache_physical_block = tl.load(
+{{ indent }}    {{ call.block_table }} + qkv_cache_logical_block + tl.zeros_like({{ mask }}).to(tl.int64),
+{{ indent }}    mask={{ mask }}, other=0,
+{{ indent }}).to(tl.int64)
+{% endmacro %}

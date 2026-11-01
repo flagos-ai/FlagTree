@@ -18,6 +18,12 @@ from triton.flagmega.ir import IRModule
 _SNAKE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+def _require_codegen(condition: bool, message: str) -> None:
+    if not condition:
+        raise CodegenError(message)
+
+
+
 @dataclass(frozen=True)
 class KernelTemplateSpec:
     """Template identity derived from a selected TIR candidate."""
@@ -59,6 +65,7 @@ class TritonTemplateRegistry:
             keep_trailing_newline=True,
             autoescape=False,
         )
+        self.environment.globals["require_codegen"] = _require_codegen
 
     def candidates(self, spec: KernelTemplateSpec) -> tuple[str, ...]:
         # Constructing another value applies validation even when callers use
@@ -102,8 +109,12 @@ class TritonTemplateRegistry:
             self.render(template_name, context),
         )
 
+    def prepare(self, template_name: str, context: Mapping[str, object]) -> None:
+        """Compose context and loader changes before evaluating the template."""
+
     def render(self, template_name: str, context: Mapping[str, object]) -> str:
         try:
+            self.prepare(template_name, context)
             return self.environment.get_template(template_name).render(**context)
         except TemplateError as error:
             raise CodegenError(

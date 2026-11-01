@@ -30,7 +30,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.type_pattern import is_none, is_tensor
 from triton.flagmega.ir.types import VectorType
-from triton.flagmega.ir.ops.math.matmul import matmul_value
+from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_reduction_order, validate_reduction_order
 from triton.flagmega.ir.vector_layout import split_vector_lanes
 
 
@@ -60,17 +60,19 @@ class PackedMatMul(OpDefinition):
     fused_reduce = attribute_parameter(default=False)
     output_data_type = attribute_parameter(default=DType.FLOAT32)
     rhs_layout = attribute_parameter(default="k_major")
+    reduction_order = attribute_parameter(default="relaxed")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
         if attrs["rhs_layout"] != "k_major":
             raise IRSchemaError("PackedMatMul currently requires a K-major RHS.")
-        return {
+        return normalize_reduction_order({
             "fused_reduce": bool(attrs["fused_reduce"]),
             "output_data_type": DType(attrs["output_data_type"]),
             "rhs_layout": "k_major",
-        }
+            "reduction_order": attrs["reduction_order"],
+        })
 
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
@@ -78,11 +80,13 @@ class PackedMatMul(OpDefinition):
             "fused_reduce": bool(attrs["fused_reduce"]),
             "output_data_type": DType(attrs["output_data_type"]).value,
             "rhs_layout": attrs["rhs_layout"],
+            **({"reduction_order": attrs["reduction_order"]} if "reduction_order" in attrs else {}),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         lhs_type = cls.lhs.type_of(inputs)
+        validate_reduction_order(attrs, lhs_type, 1)
         rhs_type = cls.rhs.type_of(inputs)
         lhs = tensor_of(lhs_type)
         rhs = tensor_of(rhs_type)
@@ -119,6 +123,14 @@ class PackedMatMul(OpDefinition):
                 )
             if lhs_type.partial is not None or rhs_type.partial is not None:
                 raise IRSchemaError("PackedMatMul operands cannot be partial values.")
+            exclusive = lhs_type.exclusive or rhs_type.exclusive
+            if exclusive is not None:
+                if (lhs_type.exclusive is not None and rhs_type.exclusive is not None
+                        and lhs_type.exclusive != rhs_type.exclusive):
+                    raise IRSchemaError("PackedMatMul exclusive operands must share the same owner policy.")
+                if any(policy != SBP.broadcast() for operand in (lhs_type, rhs_type)
+                       for policy in operand.axis_policies):
+                    raise IRSchemaError("PackedMatMul exclusive arithmetic requires complete broadcast operands.")
             lhs_m, lhs_k = lhs_type.axis_policies
             rhs_k, rhs_n = rhs_type.axis_policies
             logical_rhs_k = (
@@ -144,13 +156,18 @@ class PackedMatMul(OpDefinition):
             partial = None
             if reduction_axes and not bool(attrs["fused_reduce"]):
                 partial = SBPPartial(reduction_axes)
-            result = DistributedType(output, (lhs_m, rhs_n), placement, partial=partial)
+            result = DistributedType(output, (lhs_m, rhs_n), placement, partial=partial, exclusive=exclusive)
 
         scale_type = cls.scale.type_of(inputs)
         if not isinstance(scale_type, NoneType):
             scale = tensor_of(scale_type)
             if scale.rank != 0:
                 raise IRSchemaError("PackedMatMul scale must be None or a scalar tensor.")
+            if isinstance(scale_type, DistributedType):
+                if (not isinstance(result, DistributedType) or scale_type.placement != result.placement
+                        or scale_type.partial is not None
+                        or scale_type.exclusive is not None and scale_type.exclusive != result.exclusive):
+                    raise IRSchemaError("PackedMatMul scale must be available at every result owner.")
         addend_type = cls.addend.type_of(inputs)
         if not isinstance(addend_type, NoneType):
             if addend_type != result:
@@ -181,7 +198,8 @@ class PackedMatMul(OpDefinition):
             k_groups.fixed_value * k_pack * k_vector,
             n_groups.fixed_value * n_vector,
         )
-        value = matmul_value(lhs, logical_rhs.to(dtype=lhs.dtype), node.attrs["output_data_type"], context)
+        value = matmul_value(lhs, logical_rhs.to(dtype=lhs.dtype), node.attrs["output_data_type"], context,
+                              reduction_order=node.attrs.get("reduction_order"))
         scale = cls.scale.read(arguments)
         if scale is not None:
             value = value * scale

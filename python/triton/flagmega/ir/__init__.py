@@ -4,6 +4,18 @@
 
 from triton.flagmega.ir.builder import ConstantModule, IRBuilder, Module
 from triton.flagmega.ir.fusion import Fusion, fusion
+from triton.flagmega.ir.execution_mesh import (
+    ExecutionMesh,
+    ExecutionMeshKind,
+    KernelProgramKind,
+    execution_mesh,
+    node_execution_mesh,
+    with_execution_mesh,
+)
+from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
+from triton.flagmega.ir.program_execution import (
+    ProgramInvocation, CallInvocation, LoopInvocation, FunctionProgramExecution, ProgramExecution,
+)
 from triton.flagmega.ir.region import Region, Yield
 from triton.flagmega.ir.parameter_bank import BankField, BankFieldProgram, ParameterBankSchema
 from triton.flagmega.ir.constant_recipe import ConstantPhase, ConstantRecipe, constant_recipe_fingerprint
@@ -261,6 +273,14 @@ from triton.flagmega.ir.type_pattern import (
 )
 
 __all__ = [
+    "ExecutionMesh",
+    "ExecutionMeshKind",
+    "KernelProgramKind",
+    "execution_mesh",
+    "node_execution_mesh",
+    "with_execution_mesh",
+    "TaskLaunchRecipe",
+    "ProgramInvocation", "CallInvocation", "LoopInvocation", "FunctionProgramExecution", "ProgramExecution",
     "Region", "Yield",
     "BankField", "BankFieldProgram", "ParameterBankSchema",
     "Fusion",

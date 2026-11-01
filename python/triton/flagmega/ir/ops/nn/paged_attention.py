@@ -49,6 +49,9 @@ class PagedAttention(OpDefinition):
     scale = attribute_parameter()
     layout = attribute_parameter()
     hidden_size = attribute_parameter()
+    probability_rounding = attribute_parameter(default="normalized")
+    softmax_block_size = attribute_parameter(default=64)
+    softmax_traversal = attribute_parameter(default="forward")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -56,9 +59,18 @@ class PagedAttention(OpDefinition):
         return normalize_paged_attention_attrs(attrs)
 
     @classmethod
+    def ir_attrs(cls, attrs):
+        return {key: value for key, value in attrs.items()
+                if not (attrs.get("probability_rounding", "normalized") == "normalized"
+                        and key in {"probability_rounding", "softmax_block_size", "softmax_traversal"})}
+
+    @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         query_type = cls.q.type_of(inputs)
         query = tensor_of(query_type)
+        scalar = query.dtype.elem_type if isinstance(query.dtype, VectorType) else query.dtype
+        if attrs.get("probability_rounding", "normalized") == "online_bf16" and scalar != DType.BFLOAT16:
+            raise IRSchemaError("PagedAttention online BF16 probabilities require BF16 queries.")
         layout = tuple(attrs["layout"])
         head_axis = layout.index("head")
         dim_axis = layout.index("dim")
@@ -95,6 +107,9 @@ class PagedAttention(OpDefinition):
             scale=float(node.attrs["scale"]),
             layout=tuple(node.attrs["layout"]),
             context=context,
+            probability_rounding=node.attrs.get("probability_rounding", "normalized"),
+            softmax_block_size=node.attrs.get("softmax_block_size", 64),
+            softmax_traversal=node.attrs.get("softmax_traversal", "forward"),
         )
         if isinstance(query_type.dtype, VectorType):
             from triton.flagmega.ir.ops.ntt._paged_attention_split import (
@@ -126,10 +141,21 @@ def normalize_paged_attention_attrs(
         or hidden_size <= 0
     ):
         raise IRSchemaError("PagedAttention hidden_size must be a positive integer.")
+    rounding = attributes.get("probability_rounding", "normalized")
+    block = attributes.get("softmax_block_size", 64)
+    if rounding not in {"normalized", "online_bf16"}:
+        raise IRSchemaError("PagedAttention probability_rounding must be normalized or online_bf16.")
+    if isinstance(block, bool) or not isinstance(block, int) or block < 16 or block % 16:
+        raise IRSchemaError("PagedAttention softmax_block_size must be a positive multiple of 16.")
+    traversal = attributes.get("softmax_traversal", "forward")
+    if traversal not in {"forward", "reverse"}:
+        raise IRSchemaError("PagedAttention softmax_traversal must be forward or reverse.")
     return {
         "scale": scale,
         "layout": normalize_attention_layout(attributes["layout"]),
         "hidden_size": hidden_size,
+        **({"probability_rounding": rounding, "softmax_block_size": block, "softmax_traversal": traversal}
+           if rounding != "normalized" else {}),
     }
 
 
@@ -142,6 +168,9 @@ def paged_attention_scalar_value(
     scale: float,
     layout: tuple[str, str, str],
     context,
+    probability_rounding="normalized",
+    softmax_block_size=64,
+    softmax_traversal="forward",
 ):
     """Evaluate attention as scalar elements, independent of vector packing."""
 
@@ -174,6 +203,52 @@ def paged_attention_scalar_value(
     results = []
     for row, query in enumerate(query_value):
         length = base_position + row + 1
+        if probability_rounding == "online_bf16":
+            torch = context.torch
+            maximum = torch.full((query_heads, 1), -float("inf"), device=query.device, dtype=torch.float32)
+            denominator = torch.zeros_like(maximum)
+            accumulator = torch.zeros_like(query, dtype=torch.float32)
+            starts = range(0, length, softmax_block_size)
+            if softmax_traversal == "reverse":
+                starts = reversed(starts)
+            for start in starts:
+                keys = expanded_key[:, start:min(start + softmax_block_size, length)]
+                values = expanded_value[:, start:min(start + softmax_block_size, length)]
+                valid = keys.shape[1]
+                if query.is_cuda and valid < softmax_block_size:
+                    # Retain the declared MMA tile for a causal tail. A short
+                    # GEMM can select a different accumulation schedule even
+                    # when all products have the same BF16 operand dtype.
+                    padding = (0, 0, 0, softmax_block_size - valid)
+                    keys = torch.nn.functional.pad(keys, padding)
+                    values = torch.nn.functional.pad(values, padding)
+                score = (torch.bmm(query[:, None, :], keys.transpose(1, 2), out_dtype=torch.float32).squeeze(1)
+                         if query.is_cuda else torch.einsum("hd,hsd->hs", query.float(), keys.float())) * scale
+                if query.is_cuda and valid < softmax_block_size:
+                    score = score.masked_fill(torch.arange(softmax_block_size, device=query.device)[None, :] >= valid,
+                                              -float("inf"))
+                updated = torch.maximum(maximum, score.max(-1, keepdim=True).values)
+                previous_scale = torch.exp2((maximum - updated) * 1.4426950408889634)
+                if query.is_cuda:
+                    from triton.flagmega.evaluator.cuda_attention_math import probability as online_probability
+                    probability = online_probability(score, updated)
+                else:
+                    probability = torch.exp2(score * 1.4426950408889634 - updated * 1.4426950408889634)
+                denominator = denominator * previous_scale + probability.sum(-1, keepdim=True)
+                accumulator = accumulator * previous_scale
+                if query.is_cuda:
+                    accumulator = torch.baddbmm(accumulator[:, None, :], probability.bfloat16()[:, None, :],
+                                               values, out_dtype=torch.float32).squeeze(1)
+                else:
+                    accumulator += torch.einsum("hs,hsd->hd", probability.bfloat16().float(), values.float())
+                maximum = updated
+            if query.is_cuda:
+                from triton.flagmega.evaluator.cuda_attention_math import normalize
+                result = normalize(accumulator, denominator)
+            else:
+                result = accumulator / denominator
+            results.append(result.to(query.dtype))
+            continue
         scores = context.torch.einsum(
             "hd,hsd->hs", query.float(), expanded_key[:, :length].float()
         ) * scale

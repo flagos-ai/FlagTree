@@ -84,12 +84,16 @@ class SparseExpertsCombine(OpDefinition):
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         local_type = combine_type(inputs, attrs, local=True)
-        factors = SparseExpertsWeightedSum.cost_factors(inputs, attrs, local_type)
+        fan = prod(local_type.placement.hierarchy[axis] for axis in local_type.partial.axes) if isinstance(local_type, DistributedType) and local_type.partial else 1
+        # Complete sums round in their result store, with no separate FP32
+        # materialization or conversion kernel. Partial sums still need FP32.
+        factors = SparseExpertsWeightedSum.cost_factors(inputs, attrs, return_type if fan == 1 else local_type)
         if factors is None:
             return None
+        if fan == 1:
+            return factors
         local = local_tensor_type(local_type) if isinstance(local_type, DistributedType) else local_type
         result = local_tensor_type(return_type) if isinstance(return_type, DistributedType) else return_type
-        fan = prod(local_type.placement.hierarchy[axis] for axis in local_type.partial.axes) if isinstance(local_type, DistributedType) and local_type.partial else 1
         size = tensor_nbytes(local)
         cast = local.dtype != result.dtype
         return replace(factors,
@@ -110,10 +114,20 @@ class SparseExpertsWeightedSum(SparseExpertsCombine):
     router_expert_weights = input_parameter(floating_tensor(2))
     output_dtype = attribute_parameter(default=None)
     round_weighted_output = attribute_parameter(default=False)
+    cast_output = attribute_parameter(default=False)
+
+    @classmethod
+    def normalize_attrs(cls, attrs):
+        return normalize_numerics(super().normalize_attrs(attrs), "cast_output")
 
     @classmethod
     def infer_type(cls, inputs, attrs):
-        return combine_type(inputs, attrs, local=True)
+        result = combine_type(inputs, attrs, local=True)
+        if not attrs["cast_output"]:
+            return result
+        if isinstance(result, DistributedType) and result.partial is not None:
+            raise IRSchemaError("SparseExpertsWeightedSum cannot cast before owner reductions")
+        return combine_type(inputs, attrs)
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
