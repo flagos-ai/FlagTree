@@ -1,0 +1,7 @@
+{
+  "source_sha256": "697a57c7c3c780da5a3dad9a0bb3b8937a628bd75b524f2e8c76f6999207455e",
+  "stage": "selected_tir_variants",
+  "description": "Original preallocation input before physical microkernel candidates. Local implementation catalog plus normal selection and bufferization regenerate all dependent plans.",
+  "compressed_sha256": "79bc3cb1487bf984cfab511f83170cefbfe995e86c8476f52479ff119de3e32c",
+  "original_preallocation_input": true
+}

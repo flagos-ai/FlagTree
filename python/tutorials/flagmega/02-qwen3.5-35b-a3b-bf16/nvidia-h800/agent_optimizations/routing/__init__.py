@@ -61,7 +61,9 @@ def create_target(*, tuned=False):
                        parameters={**gate.parameters, "block_n": 64, "block_k": 128},
                        contract={**gate.contract, "min_local_n": 64})
         model = replace(model, implementations=(*model.implementations, wide),
-                        preferences={**model.preferences, "sparse_experts_gate_up": (wide.id, gate.id)})
+                        preferences={**model.preferences, "sparse_experts_gate_up":
+                            (wide.id, gate.id, *(value for value in model.preferences["sparse_experts_gate_up"]
+                                                if value != gate.id))})
     implementation = TritonImplementation("tir.staged_routing.local", "staged_routing", "local",
                                           {"elements_per_program": 256}, {"indexing": "local"},
                                           facts={"portable_triton": True})

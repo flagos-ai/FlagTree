@@ -1,0 +1,22 @@
+{
+  "source_sha256": "7a2f8f759182f0578bee96aa88869833ecb68a82bea862fd5a2125b8f9cd58b5",
+  "semantic_hash": "4a5961d26f917983eb8759460a55a83bb7339518d49eb8827dc1375075e2d045",
+  "full_model_acceptance_pending": true,
+  "production_promoted": false,
+  "sdk": {
+    "host_so_sha256": "19ff90b6ce3064f36b601b9fdf829c4f60ec9f46c2b42795b96b3866eb9b2102",
+    "device_bc_sha256": "2e8cec3f05fabc235ed8c7fff9e85c4a84e58fe17a4dc47d3f33e10dd7261fe8",
+    "patch_order": [
+      "capacity.patch",
+      "local-inbox-poll.patch"
+    ]
+  },
+  "original_input": {
+    "source_sha256": "697a57c7c3c780da5a3dad9a0bb3b8937a628bd75b524f2e8c76f6999207455e",
+    "stage": "selected_tir_variants",
+    "description": "Original preallocation input before physical microkernel candidates. Local implementation catalog plus normal selection and bufferization regenerate all dependent plans.",
+    "compressed_sha256": "79bc3cb1487bf984cfab511f83170cefbfe995e86c8476f52479ff119de3e32c",
+    "original_preallocation_input": true
+  },
+  "reference_artifact_source_sha256": "d63aa5960d7a8b2f9371d8192dcbaf87aa3e9185156124662ccc1ef42b2de3e9"
+}

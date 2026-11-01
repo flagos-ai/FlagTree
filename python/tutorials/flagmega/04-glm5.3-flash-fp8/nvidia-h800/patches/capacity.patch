@@ -1,0 +1,428 @@
+diff --git a/flagcx/adaptor/flagcx_device.cc b/flagcx/adaptor/flagcx_device.cc
+index 770f08e..347d2d8 100644
+--- a/flagcx/adaptor/flagcx_device.cc
++++ b/flagcx/adaptor/flagcx_device.cc
+@@ -23,6 +23,7 @@
+ #include "utils.h"    // flagcxParamSignalHostEnable
+ #include <algorithm>  // std::min, std::max
+ #include <cstddef>    // offsetof
++#include <limits>
+ #include <new>        // std::nothrow
+ #include <sched.h>    // sched_yield
+ 
+@@ -455,6 +456,12 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
+   int myRank = comm->rank;
+   int myLocalRank = comm->localRank;
+ 
++  if (localRanks <= 0 || handle->nBarriers <= 0 ||
++      size_t(handle->nBarriers) >
++          std::numeric_limits<size_t>::max() / sizeof(uint64_t) /
++              size_t(localRanks))
++    return flagcxInvalidArgument;
++
+   handle->nLocalRanks = localRanks;
+   handle->localRankToRank = (int *)malloc(localRanks * sizeof(int));
+   if (handle->localRankToRank == nullptr)
+@@ -462,7 +469,8 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
+   memcpy(handle->localRankToRank, comm->localRankToRank,
+          localRanks * sizeof(int));
+ 
+-  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
++  size_t barrierSize =
++      size_t(localRanks) * size_t(handle->nBarriers) * sizeof(uint64_t);
+ 
+   if (flagcxParamSignalHostEnable() == 0) {
+     // ── IPC device memory path (default) ─────────────────────────────────
+@@ -487,7 +495,6 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
+     handle->peerBarrierShmPtrs = nullptr;
+     handle->barrierShmSize = 0;
+     handle->barrierDevPeerPtrsRaw = nullptr; // tracked via ipcTable
+-    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+ 
+     INFO(FLAGCX_INIT,
+          "setupIpcBarriers(IPC): rank %d slot %d localBarrierFlags=%p "
+@@ -596,7 +603,6 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
+     handle->peerBarrierShmPtrs = peerCpuPtrs;
+     handle->barrierShmSize = barrierSize;
+     handle->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
+-    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+     // Store shm handles for cleanup in flagcxDevCommDestroy
+     handle->myShmHandle = myShmHandle;
+     handle->peerShmHandles = peerShmHandles;
+@@ -686,6 +692,8 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
+   if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
+     return flagcxInvalidArgument;
+   }
++  if (reqs->intraBarrierCount < 0)
++    return flagcxInvalidArgument;
+ 
+   // Allocate the opaque handle
+   flagcxDevComm_t handle =
+@@ -702,6 +710,8 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
+   handle->nRanks = comm->nranks;
+   handle->intraRank = comm->localRank;
+   handle->intraSize = comm->localRanks;
++  // The vendor path provisions the exact requested number of intra slots.
++  handle->nBarriers = reqs->intraBarrierCount;
+   {
+     int ctxCount = (reqs->interContextCount > 0) ? reqs->interContextCount : 1;
+     if (comm->heteroComm != nullptr) {
+@@ -749,6 +759,11 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
+     // ---- Default path: IPC barriers + inter-node signal relay + one-sided
+     // ----
+ 
++    // Preserve the legacy minimum while honoring larger intra-slot requests.
++    // This stride must agree with both inbox allocation and device indexing.
++    handle->nBarriers =
++        std::max(FLAGCX_DEVICE_CTA_COUNT, reqs->intraBarrierCount);
++
+     // IPC barrier layer: if barriers requested
+     if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
+       flagcxResult_t res = setupIpcBarriers(comm, handle);
+@@ -784,10 +799,11 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
+       memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
+     }
+ 
+-    // Allocate persistent epoch buffer (per-CTA intra + inter epochs).
+-    // Layout: [intra live (CTA_COUNT)] [inter live (CTA_COUNT)]
++    // The intra region follows the provisioned slot capacity. Inter-node
++    // signal relay retains its existing CTA_COUNT capacity after that region.
+     {
+-      size_t epochBufSize = 2 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
++      size_t epochBufSize =
++          (size_t(handle->nBarriers) + FLAGCX_DEVICE_CTA_COUNT) * sizeof(uint64_t);
+       flagcxResult_t res = deviceAdaptor->deviceMalloc(
+           (void **)&handle->epochBuffer, epochBufSize, flagcxMemDevice, NULL);
+       if (res != flagcxSuccess) {
+@@ -941,6 +957,16 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
+   return flagcxSuccess;
+ }
+ 
++extern "C" flagcxResult_t
++flagcxDevCommGetIntraBarrierCount(flagcxDevComm_t devComm, int *count) {
++  if (devComm == nullptr || count == nullptr)
++    return flagcxInvalidArgument;
++  *count = (devComm->devComm != nullptr || devComm->barrierPeers != nullptr)
++               ? devComm->nBarriers
++               : 0;
++  return flagcxSuccess;
++}
++
+ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
+                                                flagcxDevComm_t devComm) {
+   if (devComm == nullptr) {
+diff --git a/flagcx/adaptor/include/device_api/default_comm_traits.h b/flagcx/adaptor/include/device_api/default_comm_traits.h
+index 25ba1a0..c978eb0 100644
+--- a/flagcx/adaptor/include/device_api/default_comm_traits.h
++++ b/flagcx/adaptor/include/device_api/default_comm_traits.h
+@@ -147,7 +147,7 @@ struct CommTraits<Default<PlatformTag>> {
+     // IPC barriers
+     uint64_t **barrierPeers;
+     uint64_t
+-        *epochBuffer; // Device pointer: [intra live, inter live] × CTA_COUNT
++        *epochBuffer; // Device pointer: [nBarriers intra, CTA_COUNT inter]
+     int nBarriers;
+ 
+     // Inter-node signal relay
+@@ -889,8 +889,8 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
+       : _coop(coop), _interSignals(dc.interSignalFlags),
+         _fifoBuffer(net.fifoBuffer), _nInterPeers(nInterPeers),
+         _isLeader(dc.isInterLeader), _ctaIndex(index),
+-        _epochBuffer(&dc.epochBuffer[FLAGCX_DEVICE_CTA_COUNT + index]),
+-        _epoch(Atomic::load(&dc.epochBuffer[FLAGCX_DEVICE_CTA_COUNT + index],
++        _epochBuffer(&dc.epochBuffer[size_t(dc.nBarriers) + index]),
++        _epoch(Atomic::load(&dc.epochBuffer[size_t(dc.nBarriers) + index],
+                             flagcxDeviceMemoryOrderRelaxed)) {}
+ 
+   // arrive: FIFO BarrierSignal (leader only)
+diff --git a/flagcx/adaptor/include/device_api/flagcx_device_internal.h b/flagcx/adaptor/include/device_api/flagcx_device_internal.h
+index 6c06249..1dc95ce 100644
+--- a/flagcx/adaptor/include/device_api/flagcx_device_internal.h
++++ b/flagcx/adaptor/include/device_api/flagcx_device_internal.h
+@@ -44,11 +44,10 @@ struct flagcxDevCommInternal {
+   uint64_t *
+       *barrierPeers; // device pointer to array of nLocalRanks device pointers
+   uint64_t
+-      *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × CTA_COUNT)
++      *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × nBarriers)
+   uint64_t *epochBuffer;  // Device memory: per-CTA epoch counters
+-                          // Layout: [CTA_COUNT intra epochs, CTA_COUNT inter
+-                          // epochs]
+-  int nBarriers;          // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
++                          // Layout: [nBarriers intra epochs, CTA_COUNT inter epochs]
++  int nBarriers;          // Actual provisioned intra capacity and inbox stride
+   // Host-side cleanup bookkeeping (not passed to kernel)
+   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
+   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
+diff --git a/flagcx/include/flagcx_kernel_internal.h b/flagcx/include/flagcx_kernel_internal.h
+index 634de13..97424d4 100644
+--- a/flagcx/include/flagcx_kernel_internal.h
++++ b/flagcx/include/flagcx_kernel_internal.h
+@@ -176,6 +176,10 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
+ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
+ 
+ // ---- Device Pointer API (for Triton integration) ----
++// Return the provisioned intra-barrier capacity, or zero when unavailable.
++flagcxResult_t flagcxDevCommGetIntraBarrierCount(flagcxDevComm_t devComm,
++                                                int *count);
++
+ // Allocate device memory, copy the DevComm/DevMem struct, return device
+ // pointer. The returned pointer is immutable (epoch lives in persistent buffer)
+ // and cached. Calling multiple times returns the same pointer.
+diff --git a/test/unittest/device_api/Makefile b/test/unittest/device_api/Makefile
+index 25fb9a1..87f33d3 100644
+--- a/test/unittest/device_api/Makefile
++++ b/test/unittest/device_api/Makefile
+@@ -32,7 +32,11 @@ MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
+                $(BINDIR)/test_device_ir_inter \
+                $(BINDIR)/test_device_api
+ 
+-.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run
++.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run run-host-capacity
++
++# No CUDA initialization or MPI launch is needed for the allocator regression.
++run-host-capacity:
++	python3 test_barrier_capacity_host.py
+ 
+ all: $(MPI_TARGETS)
+ 
+--- /dev/null
++++ b/test/unittest/device_api/test_barrier_capacity_host.py
+@@ -0,0 +1,156 @@
++"""Compile the actual host allocation bodies with CPU allocation/IPC shims.
++
++This tests allocation sizes, published stride, slot aliasing and epoch partition
++without initializing CUDA. It is separate from device protocol acceptance.
++"""
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++
++ROOT = Path(os.environ.get("FLAGCX_CAPACITY_SOURCE_ROOT",Path(__file__).resolve().parents[3]))
++
++
++def block(source, start):
++    opening = source.index("{", start)
++    depth = 1
++    end = opening + 1
++    while depth:
++        depth += (source[end] == "{") - (source[end] == "}")
++        end += 1
++    return source[opening:end]
++
++
++class BarrierCapacityHostTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        source = (ROOT/"flagcx/adaptor/flagcx_device.cc").read_text()
++        start = source.index("static flagcxResult_t setupIpcBarriers(")
++        signature = source[start:source.index("{", start)]
++        allocator = signature + block(source, start)
++        query_start = source.find('extern "C" flagcxResult_t\nflagcxDevCommGetIntraBarrierCount(')
++        cls.has_query = query_start >= 0
++        query = (source[query_start:source.index("{",query_start)] + block(source,query_start)
++                 if cls.has_query else "")
++        traits = (ROOT/"flagcx/adaptor/include/device_api/default_comm_traits.h").read_text()
++        inter = traits.index("struct Barrier<Default<P>, flagcxTeamTagInter, Coop>")
++        constructor = traits.index("  Barrier(Coop coop, const Net &net",inter)
++        constructor = traits[constructor:traits.index("{}",constructor)+2]
++        inter_test = r'''
++#include <vector>
++struct EpochComm { uint64_t *epochBuffer; int nBarriers; uint64_t *interSignalFlags; bool isInterLeader; };
++struct EpochNet { void *fifoBuffer = nullptr; };
++struct EpochCoop {};
++struct EpochTeam {};
++constexpr int flagcxDeviceMemoryOrderRelaxed = 0;
++struct EpochAtomic { static uint64_t load(uint64_t *p,int) { return *p; } };
++struct Barrier {
++  using Coop = EpochCoop; using Net = EpochNet; using Comm = EpochComm;
++  using Team = EpochTeam; using Atomic = EpochAtomic;
++  Coop _coop; uint64_t *_interSignals; void *_fifoBuffer; int _nInterPeers;
++  bool _isLeader; uint32_t _ctaIndex; uint64_t *_epochBuffer; uint64_t _epoch;
++'''+constructor+r'''
++};
++static int checkInterEpochs(int capacity) {
++  std::vector<uint64_t> storage(size_t(capacity)+FLAGCX_DEVICE_CTA_COUNT);
++  EpochComm dc{storage.data(),capacity,nullptr,false};
++  bool ok = true;
++  for (int index=0; index<FLAGCX_DEVICE_CTA_COUNT; ++index) {
++    Barrier barrier(EpochCoop{},EpochNet{},dc,EpochTeam{},index,0);
++    ok &= barrier._epochBuffer == storage.data()+capacity+index;
++  }
++  std::printf("{\"intra_capacity\":%d,\"inter_epoch_disjoint\":%s}\n",capacity,ok?"true":"false");
++  return ok ? 0 : 2;
++}
++'''
++        marker = source.index("size_t epochBufSize =", source.index("flagcxDevCommCreate("))
++        epoch_start = source.rfind("{", 0, marker)
++        epochs = "static int allocateEpochs(flagcxComm_t comm, flagcxDevComm_t handle) "
++        epochs += block(source, epoch_start)[:-1] + "return 0; }"
++        fixture = Path(__file__).with_name("barrier_capacity_host_fixture.h").read_text()
++        main = r'''
++int main(int argc, char **argv) {
++  int requested = std::atoi(argv[1]);
++  if (requested < 0) return checkInterEpochs(-requested);
++  signalHostEnable = std::atoi(argv[2]);
++  MockComm comm;
++  MockHandle handle;
++#if HAS_CAPACITY_QUERY
++  if (requested == 0) {
++    int actual = -1;
++    if (flagcxDevCommGetIntraBarrierCount(nullptr,&actual) != flagcxInvalidArgument ||
++        flagcxDevCommGetIntraBarrierCount(&handle,nullptr) != flagcxInvalidArgument)
++      return 4;
++    handle.nBarriers = 129;
++    if (flagcxDevCommGetIntraBarrierCount(&handle,&actual) || actual != 0) return 4;
++    handle.devComm = &handle;
++    handle.nBarriers = 17;
++    if (flagcxDevCommGetIntraBarrierCount(&handle,&actual) || actual != 17) return 4;
++    std::puts("{\"capacity_query_passed\":true}");
++    return 0;
++  }
++#endif
++  handle.nBarriers = std::max(FLAGCX_DEVICE_CTA_COUNT, requested);
++  if (setupIpcBarriers(&comm, &handle) || allocateEpochs(&comm, &handle)) return 3;
++#if HAS_CAPACITY_QUERY
++  int published = -1;
++  if (flagcxDevCommGetIntraBarrierCount(&handle,&published) || published != handle.nBarriers) return 4;
++#endif
++  size_t flags = allocations.at(handle.localBarrierFlags);
++  size_t epochs = allocations.at(handle.epochBuffer);
++  bool unique = true, inBounds = true, zero = true;
++  std::set<size_t> addresses;
++  for (int rank = 0; rank < comm.localRanks; ++rank)
++    for (int slot = 0; slot < requested; ++slot) {
++      size_t offset = size_t(rank)*handle.nBarriers + slot;
++      unique &= addresses.insert(offset).second;
++      inBounds &= offset < flags/sizeof(uint64_t);
++    }
++  for (size_t i = 0; i < flags/sizeof(uint64_t); ++i) zero &= handle.localBarrierFlags[i] == 0;
++  for (size_t i = 0; i < epochs/sizeof(uint64_t); ++i) zero &= handle.epochBuffer[i] == 0;
++  bool epochBounds = epochs >= (size_t(handle.nBarriers)+FLAGCX_DEVICE_CTA_COUNT)*sizeof(uint64_t);
++  bool ok = unique && inBounds && zero && epochBounds && handle.nBarriers >= requested;
++  std::printf("{\"requested\":%d,\"actual\":%d,\"host_pinned\":%d,\"flags_bytes\":%zu,\"epoch_bytes\":%zu,\"unique\":%s,\"in_bounds\":%s,\"passed\":%s}\n",
++              requested,handle.nBarriers,signalHostEnable,flags,epochs,
++              unique?"true":"false",inBounds?"true":"false",ok?"true":"false");
++  return ok ? 0 : 2;
++}
++'''
++        cls.temporary = tempfile.TemporaryDirectory(prefix="flagcx-capacity-host-")
++        cls.executable = Path(cls.temporary.name)/"probe"
++        cpp = cls.executable.with_suffix(".cpp")
++        cpp.write_text(f"#define HAS_CAPACITY_QUERY {int(cls.has_query)}\n"+fixture+"\n"+inter_test+"\n"+allocator+"\n"+epochs+"\n"+query+"\n"+main)
++        subprocess.run(["g++","-std=c++17","-O0",str(cpp),"-o",str(cls.executable)],check=True)
++
++    @classmethod
++    def tearDownClass(cls):
++        cls.temporary.cleanup()
++
++    def test_capacity_stride_storage_and_initialization(self):
++        for requested in [1,17,36,37,129,257]:
++            for pinned in [0,1]:
++                with self.subTest(requested=requested,pinned=pinned):
++                    result = subprocess.run([str(self.executable),str(requested),str(pinned)],
++                                            capture_output=True,text=True,check=False)
++                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++                    row = json.loads(result.stdout)
++                    self.assertTrue(row["passed"])
++                    self.assertEqual(row["actual"],max(36,requested))
++
++    def test_actual_capacity_query(self):
++        if not self.has_query:
++            self.skipTest("The old SDK has no capacity query; allocation regression still executes.")
++        result = subprocess.run([str(self.executable),"0","0"],capture_output=True,text=True)
++        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++
++    def test_inter_epochs_follow_expanded_intra_region(self):
++        for capacity in [36,37,129,257]:
++            with self.subTest(capacity=capacity):
++                result=subprocess.run([str(self.executable),str(-capacity),"0"],capture_output=True,text=True)
++                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- /dev/null
++++ b/test/unittest/device_api/barrier_capacity_host_fixture.h
+@@ -0,0 +1,78 @@
++// CPU fixture for the actual host allocator; no CUDA context or GPU work.
++#include <algorithm>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <limits>
++#include <set>
++#include <unordered_map>
++
++using flagcxResult_t = int;
++using flagcxShmHandle_t = void *;
++constexpr int flagcxSuccess = 0, flagcxSystemError = 1, flagcxInvalidArgument = 2;
++constexpr int flagcxMemDevice = 0, flagcxMemcpyHostToDevice = 0;
++constexpr int FLAGCX_DEVICE_CTA_COUNT = 36, FLAGCX_INIT = 0;
++constexpr int SHM_PATH_MAX = 256;
++static int signalHostEnable;
++static std::unordered_map<void *, size_t> allocations;
++static int flagcxParamSignalHostEnable() { return signalHostEnable; }
++#define INFO(...) ((void)0)
++#define FLAGCXCHECK(call) do { int rc = (call); if (rc) return rc; } while (0)
++#define FLAGCXCHECKGOTO(call, result, label) do { result = (call); if (result) goto label; } while (0)
++
++struct MockDevice {
++  int deviceMalloc(void **p, size_t bytes, int, void *) {
++    *p = std::calloc(1, bytes); allocations[*p] = bytes; return !*p;
++  }
++  int deviceMemset(void *p, int value, size_t bytes, int, void *) {
++    std::memset(p, value, bytes); return 0;
++  }
++  int deviceFree(void *p, int, void *) { std::free(p); return 0; }
++  int deviceMemcpy(void *dst, const void *src, size_t bytes, int, void *, void *) {
++    std::memcpy(dst, src, bytes); return 0;
++  }
++  int hostGetDevicePointer(void **dst, void *src) { *dst = src; return 0; }
++};
++static MockDevice mockDevice;
++static MockDevice *deviceAdaptor = &mockDevice;
++struct MockIpc { uint64_t **devPeerPtrs = nullptr; };
++struct MockComm {
++  int localRanks = 4, rank = 0, localRank = 0, nranks = 4;
++  int ranks[4] = {0, 1, 2, 3};
++  int *localRankToRank = ranks;
++  uint64_t magic = 0;
++  void *bootstrap = nullptr;
++  MockIpc ipcTable[1];
++};
++using flagcxComm_t = MockComm *;
++struct MockHandle {
++  void *devComm = nullptr;
++  int nLocalRanks = 0, nBarriers = 0, barrierIpcIndex = -1;
++  int *localRankToRank = nullptr;
++  uint64_t *localBarrierFlags = nullptr, *epochBuffer = nullptr;
++  uint64_t **barrierPeers = nullptr, **barrierDevPeerPtrsRaw = nullptr;
++  void *localBarrierShmPtr = nullptr;
++  void **peerBarrierShmPtrs = nullptr;
++  size_t barrierShmSize = 0;
++  flagcxShmHandle_t myShmHandle = nullptr;
++  flagcxShmHandle_t *peerShmHandles = nullptr;
++};
++using flagcxDevComm_t = MockHandle *;
++static int buildIpcPeerPointers(flagcxComm_t comm, void *buffer, size_t) {
++  auto peers = static_cast<uint64_t **>(std::calloc(comm->localRanks, sizeof(void *)));
++  for (int i = 0; i < comm->localRanks; ++i) peers[i] = static_cast<uint64_t *>(buffer);
++  comm->ipcTable[0].devPeerPtrs = peers;
++  return 0;
++}
++static int flagcxShmOpen(char *, size_t, size_t bytes, void **cpu, void *, int,
++                        flagcxShmHandle_t *handle) {
++  *cpu = std::calloc(1, bytes); *handle = *cpu; allocations[*cpu] = bytes;
++  return !*cpu;
++}
++static int bootstrapCollBarrier(void *, int, int, int) { return 0; }
++static void flagcxShmUnlink(void *) {}
++static void flagcxShmClose(void *) {}
++static int shmHostRegister(void *, size_t) { return 0; }
++static void shmHostUnregister(void *) {}
++static int flagcxDevCommDestroy(flagcxComm_t, flagcxDevComm_t) { return 0; }

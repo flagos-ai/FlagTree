@@ -1,0 +1,14 @@
+--- a/flagcx/adaptor/include/device_api/default_comm_traits.h
++++ b/flagcx/adaptor/include/device_api/default_comm_traits.h
+@@ -835,9 +835,9 @@
+       if (peer >= _nRanks)
+         peer -= _nRanks;
+       uint64_t *slot = &_peerBuffers[_myRank][peer * _nBarriers + _ctaIndex];
+-      int iter = 0;
+       while (Atomic::load(slot, flagcxDeviceMemoryOrderAcquire) < _epoch + 1) {
+-        Intrin::spinBackoff(iter++);
++        // This inbox resides on the waiting GPU. Acquire polling stays
++        // local; exponential network backoff can oversleep peer publication.
+       }
+     }
+     _epoch += 1;

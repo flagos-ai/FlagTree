@@ -1,0 +1,32 @@
+    _qa_sum_layout: tl.constexpr = tle.gpu.BlockEncoding([8],[32],[{{ num_warps }}],[0])
+    _qa_offsets=tle.gpu.set_layout(tl.arange(0,2048),_qa_sum_layout)
+    _qa_mask=_qa_offsets<1536
+    _qa_total=tle.gpu.set_layout(tl.zeros((2048,),tl.float32),_qa_sum_layout)
+    for _qa_split in tl.static_range(2):
+        _qa_partial=tl.load({{ call.partial_pointer }}+_qa_split*1536+_qa_offsets,_qa_mask,other=0.)
+        _qa_total=libdevice.add_rn(_qa_total,_qa_partial)
+    _qa_total=libdevice.add_rn(tle.gpu.set_layout(tl.zeros((2048,),tl.float32),_qa_sum_layout),_qa_total.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
+    _qa_square_sum=tle.gpu.set_layout(tl.zeros((2048,),tl.float32),_qa_sum_layout)
+    _qa_square_sum+=tl.where(_qa_mask,_qa_total*_qa_total,0.)
+    _qa_square=tl.sum(_qa_square_sum,axis=0)
+    tl.store({{ call.qa_norm_fused.stats_output }}+({{ call.qa_norm_fused.stats_offset }}),_qa_square)
+    for norm_apply_start in tl.range(0,{{ call.qa_norm_fused.local_capacity }},{{ call.qa_norm_fused.tile }}):
+        norm_apply_local_offsets=norm_apply_start+tl.arange(0,{{ call.qa_norm_fused.tile }})
+        norm_apply_mask=(norm_apply_local_offsets<{{ call.qa_norm_fused.local_capacity }})&({{ call.qa_norm_fused.active }})
+        norm_apply_inner_count={{ call.qa_norm_fused.normalization_size }}+0.
+        norm_apply_mean=0.
+        norm_apply_square_sum=_qa_square
+        norm_apply_variance=norm_apply_square_sum/norm_apply_inner_count
+        norm_apply_variance=tl.maximum(norm_apply_variance,0.)
+        norm_apply_inverse_std=tl.rsqrt(norm_apply_variance+{{ call.qa_norm_fused.epsilon }})
+        _qa_owned=((norm_apply_local_offsets//8%12+shard_coord2*12)*8+norm_apply_local_offsets%8)
+        _qa_owned_sum=tl.zeros(({{ call.qa_norm_fused.tile }},),tl.float32)
+        for _qa_split in tl.static_range(2):
+            _qa_owned_partial=tl.load({{ call.partial_pointer }}+_qa_split*1536+_qa_owned,norm_apply_mask,other=0.)
+            _qa_owned_sum=libdevice.add_rn(_qa_owned_sum,_qa_owned_partial)
+        norm_apply_value=libdevice.add_rn(tl.zeros(({{ call.qa_norm_fused.tile }},),tl.float32),_qa_owned_sum.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
+        norm_apply_scale=tl.load({{ call.qa_norm_fused.scale }}+({{ call.qa_norm_fused.scale_offset }}),mask=norm_apply_mask,other=0.).to(tl.float32)
+        norm_apply_bias=tl.load({{ call.qa_norm_fused.bias }}+({{ call.qa_norm_fused.bias_offset }}),mask=norm_apply_mask,other=0.).to(tl.float32)
+        norm_apply_normalized=(norm_apply_value-norm_apply_mean)*norm_apply_inverse_std
+        norm_apply_output=norm_apply_normalized*norm_apply_scale+norm_apply_bias
+        tl.store({{ call.qa_norm_fused.result }}+({{ call.qa_norm_fused.result_offset }}),norm_apply_output.to({{ call.qa_norm_fused.input_type }}).to({{ call.qa_norm_fused.output_type }}),mask=norm_apply_mask&({{ call.qa_norm_fused.writer_active }}))

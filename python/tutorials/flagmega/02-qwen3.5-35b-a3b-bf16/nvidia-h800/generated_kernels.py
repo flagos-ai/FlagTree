@@ -2,9 +2,10 @@
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
+FLAGMEGA_FUNCTION_OFFSET_TABLES = [{'name': '_flagmega_function_offsets', 'dtype': 'int64', 'values': [87040, 67046138112, 68035993856, 67004164352, 68522598656, 67011897856, 67011913472, 67011936512, 2636145664, 86016, 40960, 86528, 45056, 40960, 67079692544, 68052771072, 67004295424, 68522664192, 67011898112, 67011913984, 67011944704, 4255147008, 86528, 87040, 86016, 0, 40960, 67113246976, 68069548288, 67004426496, 68522729728, 67011898368, 67011914496, 67011952896, 7514121216, 49664, 45568, 45056, 50176, 45568, 67146801408, 68086325504, 67004557568, 68522795264, 67011898624, 67011915008, 67011961088, 9133122560, 45056, 40960, 49664, 0, 40960, 67180355840, 68103102720, 67004688640, 68522860800, 67011898880, 67011915520, 67011969280, 10752123904, 49664, 268288, 267776, 535552, 0, 67213910272, 68119879936, 67004819712, 68522926336, 67011899136, 67011916032, 67011977472, 14011098112, 4096, 350208, 349696, 267776, 350208, 67247464704, 68136657152, 67004950784, 68522991872, 67011899392, 67011916544, 67011985664, 15630099456, 349696, 512, 0, 308736, 512, 67281019136, 68153434368, 67005081856, 68523057408, 67011899648, 67011917056, 67011993856, 17249100800, 0, 267776, 576000, 535040, 512, 67314573568, 68170211584, 67005212928, 68523122944, 67011899904, 67011917568, 67012002048, 20508075008, 0, 87040, 86528, 40960, 87040, 67348128000, 68186988800, 67005344000, 68523188480, 67011900160, 67011918080, 67012010240, 22127076352, 86528, 82432, 81920, 0, 82432, 67381682432, 68203766016, 67005475072, 68523254016, 67011900416, 67011918592, 67012018432, 23746077696, 81920, 267776, 263168, 535040, 263680, 67415236864, 68220543232, 67005606144, 68523319552, 67011900672, 67011919104, 67012026624, 27005051904, 576000, 268288, 267776, 272384, 268288, 67448791296, 68237320448, 67005737216, 68523385088, 67011900928, 67011919616, 67012034816, 28624053248, 267776, 263168, 267264, 313344, 263168, 67482345728, 68254097664, 67005868288, 68523450624, 67011901184, 67011920128, 67012043008, 30243054592, 267264, 572416, 530944, 531456, 526336, 67515900160, 68270874880, 67005999360, 68523516160, 67011901440, 67011920640, 67012051200, 33502028800, 530432, 1024, 512, 5120, 1024, 67549454592, 68287652096, 67006130432, 68523581696, 67011901696, 67011921152, 67012059392, 35121030144, 512, 87040, 0, 46080, 87040, 67583009024, 68304429312, 67006261504, 68523647232, 67011901952, 67011921664, 67012067584, 36740031488, 0, 530944, 530432, 535552, 526336, 67616563456, 68321206528, 67006392576, 68523712768, 67011902208, 67011922176, 67012075776, 39999005696, 535040, 350208, 349184, 263168, 350208, 67650117888, 68337983744, 67006523648, 68523778304, 67011902464, 67011922688, 67012083968, 41618007040, 349184, 345088, 349696, 304128, 345088, 67683672320, 68354760960, 67006654720, 68523843840, 67011902720, 67011923200, 67012092160, 43237008384, 349696, 571904, 576000, 263168, 304128, 67717226752, 68371538176, 67006785792, 68523909376, 67011902976, 67011923712, 67012100352, 46495982592, 308224, 40960, 45056, 0, 40960, 67750781184, 68388315392, 67006916864, 68523974912, 67011903232, 67011924224, 67012108544, 48114983936, 45056, 87040, 86528, 45568, 87040, 67784335616, 68405092608, 67007047936, 68524040448, 67011903488, 67011924736, 67012116736, 49733985280, 86528, 512, 576000, 4608, 571904, 67817890048, 68421869824, 67007179008, 68524105984, 67011903744, 67011925248, 67012124928, 52992959488, 0, 512, 390656, 349696, 512, 67851444480, 68438647040, 67007310080, 68524171520, 67011904000, 67011925760, 67012133120, 54611960832, 390656, 391680, 391168, 308736, 391680, 67884998912, 68455424256, 67007441152, 68524237056, 67011904256, 67011926272, 67012141312, 56230962176, 391168, 512, 0, 4608, 308736, 67918553344, 68472201472, 67007572224, 68524302592, 67011904512, 67011926784, 67012149504, 59489936384, 576000, 512, 0, 45568, 512, 67952107776, 68488978688, 67007703296, 68524368128, 67011904768, 67011927296, 67012157696, 61108937728, 0, 8704, 4608, 86528, 8704, 67985662208, 68505755904, 67007834368, 68524433664, 67011905024, 67011927808, 67012165888, 62727939072, 4608, 0, 8192, 271872, 87040, 69027836160, 67012501760, 7493149696, 69027815680, 86016, 40960, 49664, 272384, 268288, 69044613376, 67012509952, 13990126592, 69027816704, 267776, 0, 4096, 4608, 267776, 69061390592, 67012518144, 20487103488, 69027817728, 576000, 512, 0, 271872, 267776, 69078167808, 67012526336, 26984080384, 69027818752, 263168, 263680, 576000, 0, 572416, 69094945024, 67012534528, 33481057280, 69027819776, 530944, 526336, 530432, 263168, 530944, 69111722240, 67012542720, 39978034176, 69027820800, 530432, 526336, 535040, 0, 571904, 69128499456, 67012550912, 46475011072, 69027821824, 576000, 304128, 308224, 308736, 512, 69145276672, 67012559104, 52971987968, 69027822848, 576000, 571904, 0, 45568, 512, 69162053888, 67012567296, 59468964864, 69027823872, 0, 308736, 576000, 312832, 0, 69178831104, 67012575488, 65965941760, 69027824896, 8192, 4096, 576000, 8704]}]
 import triton.experimental.tle.language as tle
 
-_FLAGMEGA_GRID_MESH_VALUE = tle.device_mesh({"block": [('block_y', 8), ('block_x', 16)]})
+_FLAGMEGA_GRID_MESH_VALUE = tle.device_mesh({'block': [('block_y', 8), ('block_x', 16)]})
 FLAGMEGA_GRID_MESH = tl.constexpr(_FLAGMEGA_GRID_MESH_VALUE)
 
 @triton.jit
@@ -35,6 +36,7 @@ def _flagmega_decode_linear_call_0_decode_linear_hidden_distributed_boundary_res
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for boxing_start in tl.range(0, 2048, 1024):
         boxing_offsets = boxing_start + tl.arange(0, 1024)
@@ -61,6 +63,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_0_decode_linear_hidden_dist
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for boxing_start in tl.range(0, 2048, 1024):
         boxing_offsets = boxing_start + tl.arange(0, 1024)
@@ -81,12 +84,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_0_decode_linear_hidden_dist
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_0_decode_attention_hidden_reshard21(decode_attention_hidden, block_local_data):
+def _flagmega_decode_attention_call_0_decode_attention_hidden_reshard20(decode_attention_hidden, block_local_data):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for boxing_start in tl.range(0, 256, 256):
         boxing_offsets = boxing_start + tl.arange(0, 256)
@@ -107,12 +111,13 @@ def _flagmega_decode_attention_call_0_decode_attention_hidden_reshard21(decode_a
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_3_decode_attention_qkv_packed_combine_field_0(workspace):
+def _flagmega_decode_attention_call_6_decode_attention_gate_vectorized_compute_reshard628_accumulator(workspace, block_local_data):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for boxing_start in tl.range(0, 256, 256):
         boxing_offsets = boxing_start + tl.arange(0, 256)
@@ -128,7 +133,7 @@ def _flagmega_decode_attention_call_3_decode_attention_qkv_packed_combine_field_
             boxing_partial_owner = ((boxing_partial_member) * 16 + shard_x)
             boxing_source_offset = (((((boxing_offsets) // 8)) // 32)) * 256 + (((((boxing_offsets) // 8)) % 32)) * 8 + (((boxing_offsets) % 8))
             boxing_partial_values = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 12800)
+                (workspace.to(tl.pointer_type(tl.float32)) + 256)
                 + boxing_partial_owner[:, None] * 256
                 + boxing_source_offset[None, :],
                 mask=(boxing_partial_member[:, None] < 8)
@@ -138,125 +143,8 @@ def _flagmega_decode_attention_call_3_decode_attention_qkv_packed_combine_field_
             boxing_reduced = tl.sum(boxing_partial_values, axis=0)
             boxing_accumulator = boxing_accumulator + boxing_reduced
         tl.store(
-            (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192) + (((((((boxing_offsets) // 8)) // 32))) * 4096 + ((((shard_x) * 8) + ((((((((boxing_offsets) // 8)) % 32))) // (8)) * 128) + (((((((boxing_offsets) // 8)) % 32))) % (8)))) * 8 + (((boxing_offsets) % 8))),
-            boxing_accumulator.to(tl.bfloat16),
-            mask=boxing_mask & ((shard_y == 0)),
-        )
-
-
-@triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_4_decode_attention_qkv_packed_combine_field_1(workspace):
-    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
-    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
-    shard_y = shard_coord0
-    shard_x = shard_coord1
-    shard_index = (shard_coord0 * 16 + shard_coord1)
-
-    for boxing_start in tl.range(0, 32, 32):
-        boxing_offsets = boxing_start + tl.arange(0, 32)
-        boxing_mask = (
-            (boxing_offsets < 32) & (((((((boxing_offsets) // 8)) // 4)) < (1)) & ((((((boxing_offsets) // 8)) % 4)) < (4)))
-        )
-        boxing_accumulator = tl.full((32,), 0, tl.float32)
-        for boxing_partial_start in tl.range(
-            0, 8, 8,
-            loop_unroll_factor=1,
-        ):
-            boxing_partial_member = boxing_partial_start + tl.arange(0, 8)
-            boxing_partial_owner = ((boxing_partial_member) * 16 + shard_x)
-            boxing_source_offset = (((((boxing_offsets) // 8)) // 4)) * 32 + (((((boxing_offsets) // 8)) % 4)) * 8 + (((boxing_offsets) % 8))
-            boxing_partial_values = tl.load(
-                workspace.to(tl.pointer_type(tl.bfloat16))
-                + boxing_partial_owner[:, None] * 32
-                + boxing_source_offset[None, :],
-                mask=(boxing_partial_member[:, None] < 8)
-                     & boxing_mask[None, :],
-                other=0,
-            ).to(tl.float32)
-            boxing_reduced = tl.sum(boxing_partial_values, axis=0)
-            boxing_accumulator = boxing_accumulator + boxing_reduced
-        tl.store(
-            (workspace.to(tl.pointer_type(tl.bfloat16)) + 12288) + (((((((boxing_offsets) // 8)) // 4))) * 512 + ((((shard_x) * 4) + ((((((((boxing_offsets) // 8)) % 4))) // (4)) * 64) + (((((((boxing_offsets) // 8)) % 4))) % (4)))) * 8 + (((boxing_offsets) % 8))),
-            boxing_accumulator.to(tl.bfloat16),
-            mask=boxing_mask & ((shard_y == 0)),
-        )
-
-
-@triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_5_decode_attention_qkv_packed_combine_field_2(workspace):
-    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
-    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
-    shard_y = shard_coord0
-    shard_x = shard_coord1
-    shard_index = (shard_coord0 * 16 + shard_coord1)
-
-    for boxing_start in tl.range(0, 32, 32):
-        boxing_offsets = boxing_start + tl.arange(0, 32)
-        boxing_mask = (
-            (boxing_offsets < 32) & (((((((boxing_offsets) // 8)) // 4)) < (1)) & ((((((boxing_offsets) // 8)) % 4)) < (4)))
-        )
-        boxing_accumulator = tl.full((32,), 0, tl.float32)
-        for boxing_partial_start in tl.range(
-            0, 8, 8,
-            loop_unroll_factor=1,
-        ):
-            boxing_partial_member = boxing_partial_start + tl.arange(0, 8)
-            boxing_partial_owner = ((boxing_partial_member) * 16 + shard_x)
-            boxing_source_offset = (((((boxing_offsets) // 8)) // 4)) * 32 + (((((boxing_offsets) // 8)) % 4)) * 8 + (((boxing_offsets) % 8))
-            boxing_partial_values = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 4096)
-                + boxing_partial_owner[:, None] * 32
-                + boxing_source_offset[None, :],
-                mask=(boxing_partial_member[:, None] < 8)
-                     & boxing_mask[None, :],
-                other=0,
-            ).to(tl.float32)
-            boxing_reduced = tl.sum(boxing_partial_values, axis=0)
-            boxing_accumulator = boxing_accumulator + boxing_reduced
-        tl.store(
-            workspace.to(tl.pointer_type(tl.bfloat16)) + (((((((boxing_offsets) // 8)) // 4))) * 512 + ((((shard_x) * 4) + ((((((((boxing_offsets) // 8)) % 4))) // (4)) * 64) + (((((((boxing_offsets) // 8)) % 4))) % (4)))) * 8 + (((boxing_offsets) % 8))),
-            boxing_accumulator.to(tl.bfloat16),
-            mask=boxing_mask & ((shard_y == 0)),
-        )
-
-
-@triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_11_decode_attention_gate_vectorized_compute_reshard628(workspace, block_local_data):
-    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
-    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
-    shard_y = shard_coord0
-    shard_x = shard_coord1
-    shard_index = (shard_coord0 * 16 + shard_coord1)
-
-    for boxing_start in tl.range(0, 256, 256):
-        boxing_offsets = boxing_start + tl.arange(0, 256)
-        boxing_mask = (
-            (boxing_offsets < 256) & (((((((boxing_offsets) // 8)) // 32)) < (1)) & ((((((boxing_offsets) // 8)) % 32)) < (32)))
-        )
-        boxing_accumulator = tl.full((256,), 0, tl.float32)
-        for boxing_partial_start in tl.range(
-            0, 8, 4,
-            loop_unroll_factor=1,
-        ):
-            boxing_partial_member = boxing_partial_start + tl.arange(0, 4)
-            boxing_partial_owner = ((boxing_partial_member) * 16 + shard_x)
-            boxing_source_offset = (((((boxing_offsets) // 8)) // 32)) * 256 + (((((boxing_offsets) // 8)) % 32)) * 8 + (((boxing_offsets) % 8))
-            boxing_partial_values = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 512)
-                + boxing_partial_owner[:, None] * 256
-                + boxing_source_offset[None, :],
-                mask=(boxing_partial_member[:, None] < 8)
-                     & boxing_mask[None, :],
-                other=0,
-            ).to(tl.float32)
-            boxing_reduced = tl.sum(boxing_partial_values, axis=0)
-            boxing_accumulator = boxing_accumulator + boxing_reduced
-        tl.store(
-            block_local_data.to(tl.pointer_type(tl.bfloat16)) + ((((((boxing_offsets) // 8)) // 32)) * 256 + (((((boxing_offsets) // 8)) % 32)) * 8 + (((boxing_offsets) % 8))),
-            boxing_accumulator.to(tl.bfloat16),
+            block_local_data.to(tl.pointer_type(tl.float32)) + ((((((boxing_offsets) // 8)) // 32)) * 256 + (((((boxing_offsets) // 8)) % 32)) * 8 + (((boxing_offsets) % 8))),
+            boxing_accumulator.to(tl.float32),
             mask=boxing_mask & (True),
         )
 
@@ -272,6 +160,7 @@ def _flagmega_main_call_0_input_ids_reshard1(input_ids, block_local_data):
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for boxing_start in tl.range(0, 1, 1):
         boxing_offsets = boxing_start + tl.arange(0, 1)
@@ -284,13 +173,58 @@ def _flagmega_main_call_0_input_ids_reshard1(input_ids, block_local_data):
             other=0.0,
         )
         tl.store(
-            (block_local_data.to(tl.pointer_type(tl.int32)) + (shard_index) * 1152) + ((boxing_offsets) * 1),
+            (block_local_data.to(tl.pointer_type(tl.int32)) + (block_index) * 3456) + ((boxing_offsets) * 1),
             boxing_value,
             mask=boxing_mask & (True),
         )
 
 
 # flagmega-kernel: embedding/decode
+@triton.jit
+def _flagmega_iq4_xs_embedding(weight, token_id, feature, mask, H: tl.constexpr):
+    u8 = weight.to(tl.pointer_type(tl.uint8))
+    f16 = weight.to(tl.pointer_type(tl.float16))
+    u16 = weight.to(tl.pointer_type(tl.uint16))
+    block = feature // 256
+    inside = feature % 256
+    group = inside // 32
+    lane = inside % 32
+    base = token_id * (H // 256) * 136 + block * 136
+    sl = tl.load(u8 + base + 4 + group // 2, mask=mask, other=0)
+    sh = tl.load(u16 + (base + 2) // 2, mask=mask, other=0)
+    sc = ((sl >> ((group % 2) * 4)) & 0xF) | (((sh >> (group * 2)) & 0x3) * 16)
+    d = tl.load(f16 + base // 2, mask=mask, other=0.0).to(tl.float32)
+    packed = tl.load(u8 + base + 8 + group * 16 + lane % 16, mask=mask, other=0)
+    code = tl.where(lane // 16 == 0, packed & 0xF, packed >> 4)
+    cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+    return (d * (sc.to(tl.float32) - 32.0) * cv).to(tl.bfloat16)
+
+@triton.jit
+def _flagmega_q4_k_embedding(weight, token_id, feature, mask, H: tl.constexpr):
+    u8 = weight.to(tl.pointer_type(tl.uint8))
+    f16 = weight.to(tl.pointer_type(tl.float16))
+    block = feature // 256
+    inside = feature % 256
+    group = inside // 32
+    lane = inside % 32
+    base = token_id * (H // 256) * 144 + block * 144
+    d = tl.load(f16 + base // 2, mask=mask, other=0.0).to(tl.float32)
+    dmin = tl.load(f16 + (base + 2) // 2, mask=mask, other=0.0).to(tl.float32)
+    scales = u8 + base + 4
+    s0 = tl.load(scales + group % 4, mask=mask, other=0)
+    s1 = tl.load(scales + 4 + group % 4, mask=mask, other=0)
+    s2 = tl.load(scales + 8 + group % 4, mask=mask, other=0)
+    low_group = group < 4
+    sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+    mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+    packed = tl.load(
+        u8 + base + 16 + (group // 2) * 32 + lane,
+        mask=mask,
+        other=0,
+    )
+    q = tl.where(group % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+    return (d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)).to(tl.bfloat16)
+
 @triton.jit
 def _flagmega_embedding(input_ids, embedding, destination, shard_index,
                         VOCAB_SIZE: tl.constexpr, SIZE: tl.constexpr,
@@ -313,29 +247,32 @@ def _flagmega_main_call_1_token_embedding_packed(block_local_data, rdata, worksp
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    token_id = tl.load((block_local_data.to(tl.pointer_type(tl.int32)) + (shard_index) * 1152)).to(tl.int32)
-    tl.device_assert(
-        (token_id >= 0) & (token_id < 248320),
-        "input id outside vocabulary",
-    )
-    for local_start in tl.range(0, 16, 16):
-        local_offsets = local_start + tl.arange(0, 16)
-        local_mask = local_offsets < ((2) * 8)
-        value = tl.load(
-            rdata.to(tl.pointer_type(tl.bfloat16)) + ((token_id) * 2048 + ((((local_offsets // 8)) + ((shard_x) * 2) + ((shard_y) * 32))) * 8 + ((local_offsets % 8))),
-            mask=local_mask,
-            other=0.0,
-        ).to(tl.bfloat16)
-        if -1 >= 0:
-            value = tl.where(
-                token_id == -1, 0.0, value,
-            ).to(tl.bfloat16)
-        tl.store(
-            (workspace.to(tl.pointer_type(tl.bfloat16)) + 22784) + (((0)) * 2048 + ((((local_offsets // 8)) + ((shard_x) * 2) + ((shard_y) * 32))) * 8 + ((local_offsets % 8))),
-            value,
-            mask=local_mask,
-        )
+    for embedding_row in range(1):
+        if (embedding_row < (1)):
+            token_id = tl.load((block_local_data.to(tl.pointer_type(tl.int32)) + (block_index) * 3456) + (((embedding_row)) * 1)).to(tl.int32)
+            tl.device_assert(
+                (token_id >= 0) & (token_id < 248320),
+                "input id outside vocabulary",
+            )
+            for local_start in tl.range(0, 16, 16):
+                local_offsets = local_start + tl.arange(0, 16)
+                local_mask = local_offsets < ((2) * 8)
+                value = tl.load(
+                    rdata.to(tl.pointer_type(tl.bfloat16)) + ((token_id) * 2048 + ((((local_offsets // 8)) + ((shard_x) * 2) + ((shard_y) * 32))) * 8 + ((local_offsets % 8))),
+                    mask=local_mask,
+                    other=0.0,
+                ).to(tl.bfloat16)
+                if -1 >= 0:
+                    value = tl.where(
+                        token_id == -1, 0.0, value,
+                    ).to(tl.bfloat16)
+                tl.store(
+                    (workspace.to(tl.pointer_type(tl.bfloat16)) + 20480) + (((embedding_row)) * 2048 + ((((local_offsets // 8)) + ((shard_x) * 2) + ((shard_y) * 32))) * 8 + ((local_offsets % 8))),
+                    value,
+                    mask=local_mask,
+                )
 
 
 # flagmega-kernel: rotary_embedding/decode
@@ -347,8 +284,10 @@ def _flagmega_main_call_2_position_embeddings_packed(paged_state_0, paged_state_
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    rotary_position = tl.load(paged_state_2).to(tl.float32)
+    rotary_base_position = tl.load(paged_state_2).to(tl.int64)
+    rotary_position = rotary_base_position.to(tl.float32)
     for rotary_start in tl.range(0, 64, 64):
         rotary_offsets = rotary_start + tl.arange(0, 64)
         rotary_mask = (
@@ -365,13 +304,13 @@ def _flagmega_main_call_2_position_embeddings_packed(paged_state_0, paged_state_
         rotary_token_position = rotary_position + ((((((rotary_offsets) // 16)) // 4))).to(tl.float32)
         rotary_angle = rotary_token_position * rotary_inverse_frequency
         tl.store(
-            (workspace.to(tl.pointer_type(tl.float32)) + 51776) + (((((((rotary_offsets) // 16)) // 4))) * 64 + ((((((((rotary_offsets) // 16)) // 4)) % 1))) * 64 + ((((((rotary_offsets) // 16)) % 4))) * 16 + (((rotary_offsets) % 16))),
-            libdevice.fast_cosf(rotary_angle) * 1.0,
+            (workspace.to(tl.pointer_type(tl.float32)) + 144192) + (((((((rotary_offsets) // 16)) // 4))) * 64 + ((((((((rotary_offsets) // 16)) // 4)) % 1))) * 64 + ((((((rotary_offsets) // 16)) % 4))) * 16 + (((rotary_offsets) % 16))),
+libdevice.fast_cosf(rotary_angle) * 1.0,
             mask=rotary_mask,
         )
         tl.store(
-            (workspace.to(tl.pointer_type(tl.float32)) + 51712) + (((((((rotary_offsets) // 16)) // 4))) * 64 + ((((((((rotary_offsets) // 16)) // 4)) % 1))) * 64 + ((((((rotary_offsets) // 16)) % 4))) * 16 + (((rotary_offsets) % 16))),
-            libdevice.fast_sinf(rotary_angle) * 1.0,
+            (workspace.to(tl.pointer_type(tl.float32)) + 144128) + (((((((rotary_offsets) // 16)) // 4))) * 64 + ((((((((rotary_offsets) // 16)) // 4)) % 1))) * 64 + ((((((rotary_offsets) // 16)) % 4))) * 16 + (((rotary_offsets) % 16))),
+libdevice.fast_sinf(rotary_angle) * 1.0,
             mask=rotary_mask,
         )
 
@@ -386,6 +325,8 @@ def _flagmega_rotary_embedding(
     theta: tl.constexpr,
     attention_scaling: tl.constexpr,
     elements_per_program: tl.constexpr,
+    math_mode: tl.constexpr = "fast",
+    inverse_frequencies: tl.constexpr = (),
 ):
     """Generate the decode positions' rotary cosine and sine tensors."""
     program = tl.program_id(0)
@@ -395,21 +336,24 @@ def _flagmega_rotary_embedding(
     token = linear // head_dim
     dimension = linear % head_dim
     frequency_dimension = dimension % (head_dim // 2)
-    inverse_frequency = tl.exp(
-        (-2.0 * frequency_dimension.to(tl.float32) / head_dim) * tl.log(theta)
-    )
+    if len(inverse_frequencies):
+        inverse_frequency = tl.full((elements_per_program,), inverse_frequencies[0], tl.float32)
+        for index in tl.static_range(1, len(inverse_frequencies)):
+            inverse_frequency = tl.where(frequency_dimension == index, inverse_frequencies[index], inverse_frequency)
+    elif math_mode == "accurate":
+        inverse_frequency = tl.div_rn(1.0, libdevice.pow(theta, 2.0 * frequency_dimension.to(tl.float32) / head_dim))
+    else:
+        inverse_frequency = tl.exp(
+            (-2.0 * frequency_dimension.to(tl.float32) / head_dim) * tl.log(theta)
+        )
     position = tl.load(sequence_lengths).to(tl.float32) + token.to(tl.float32)
     angle = position * inverse_frequency
-    tl.store(
-        cosine + linear,
-        libdevice.fast_cosf(angle) * attention_scaling,
-        mask=mask,
-    )
-    tl.store(
-        sine + linear,
-        libdevice.fast_sinf(angle) * attention_scaling,
-        mask=mask,
-    )
+    if math_mode == "accurate":
+        cosine_value, sine_value = libdevice.cos(angle), libdevice.sin(angle)
+    else:
+        cosine_value, sine_value = libdevice.fast_cosf(angle), libdevice.fast_sinf(angle)
+    tl.store(cosine + linear, cosine_value * attention_scaling, mask=mask)
+    tl.store(sine + linear, sine_value * attention_scaling, mask=mask)
 # flagmega-kernel: norm_apply/local platform=generic
 @triton.jit(noinline=True)
 
@@ -419,6 +363,7 @@ def _flagmega_decode_linear_call_1_decode_linear_input_norm_vectorized_compute(b
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for norm_apply_start in tl.range(
         0, 2048, 1024
@@ -582,13 +527,13 @@ def _flagmega_main_call_5_logits_vectorized_compute__consumer_stage(
 
 @triton.jit(noinline=True)
 def _flagmega_main_call_5_logits_vectorized_compute__producer(
-    pipeline_weight_writer, block_local_data, rdata, logits_reshard652, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, block_local_data, rdata, logits_reshard651, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # The uint8 table contains 128-byte CUDA tensor-map descriptors.
     dense_weight_descriptor_entry = weight_descriptor + shard_index * 128
@@ -631,15 +576,15 @@ def _flagmega_main_call_5_logits_vectorized_compute__producer(
 
 @triton.jit(noinline=True)
 def _flagmega_main_call_5_logits_vectorized_compute__consumer(
-    pipeline_weight_reader, block_local_data, rdata, logits_reshard652, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, block_local_data, rdata, logits_reshard651, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    dense_source = (block_local_data.to(tl.pointer_type(tl.bfloat16)) + (shard_index) * 2304) + ((0) * 2048 + (0) * 1)
+    dense_source = (block_local_data.to(tl.pointer_type(tl.bfloat16)) + (block_index) * 6912 + 4608) + ((0) * 2048 + (0) * 1)
     dense_source_owner_active = (0 < (1))
     dense_source_active_extent = 2048
     for dense_local_n_start in tl.range(
@@ -681,7 +626,7 @@ def _flagmega_main_call_5_logits_vectorized_compute__consumer(
             pipeline_weight_reader.release(dense_pipeline_sequence)
         dense_accumulator = tl.sum(dense_partial, axis=1)
         tl.store(
-            logits_reshard652 + (((0)) * 248320 + (((shard_x) + ((shard_y) * 16) + ((((dense_local_n_offsets) // 8)) * 128))) * 8 + (((dense_local_n_offsets) % 8))),
+            logits_reshard651 + (((0)) * 248320 + (((shard_x) + ((shard_y) * 16) + ((((dense_local_n_offsets) // 8)) * 128))) * 8 + (((dense_local_n_offsets) % 8))),
             dense_accumulator.to(tl.float32),
             mask=dense_n_mask,
         )
@@ -797,13 +742,13 @@ def _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__consume
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__producer(
-    pipeline_weight_writer, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_weight_descriptor_entry = weight_descriptor
     tle.gpu.tensor_map_fenceproxy_acquire(dense_weight_descriptor_entry)
@@ -845,13 +790,13 @@ def _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__produce
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__consumer(
-    pipeline_weight_reader, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_source = block_local_data.to(tl.pointer_type(tl.bfloat16)) + ((0) * 2048 + (0) * 1)
     dense_source_owner_active = (0 < (1))
@@ -1011,13 +956,13 @@ def _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__consumer_
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__producer(
-    pipeline_weight_writer, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_weight_descriptor_entry = weight_descriptor
     tle.gpu.tensor_map_fenceproxy_acquire(dense_weight_descriptor_entry)
@@ -1059,13 +1004,13 @@ def _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__producer(
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__consumer(
-    pipeline_weight_reader, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_source = block_local_data.to(tl.pointer_type(tl.bfloat16)) + ((0) * 2048 + (0) * 1)
     dense_source_owner_active = (0 < (1))
@@ -1225,13 +1170,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectori
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__producer(
-    pipeline_weight_writer, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_weight_descriptor_entry = weight_descriptor
     tle.gpu.tensor_map_fenceproxy_acquire(dense_weight_descriptor_entry)
@@ -1273,13 +1218,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectori
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__consumer(
-    pipeline_weight_reader, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_source = block_local_data.to(tl.pointer_type(tl.bfloat16)) + ((0) * 2048 + (0) * 1)
     dense_source_owner_active = (0 < (1))
@@ -1439,13 +1384,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorize
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__producer(
-    pipeline_weight_writer, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_weight_descriptor_entry = weight_descriptor
     tle.gpu.tensor_map_fenceproxy_acquire(dense_weight_descriptor_entry)
@@ -1487,13 +1432,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorize
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__consumer(
-    pipeline_weight_reader, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_source = block_local_data.to(tl.pointer_type(tl.bfloat16)) + ((0) * 2048 + (0) * 1)
     dense_source_owner_active = (0 < (1))
@@ -1544,7 +1489,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorize
 
 
 
-_flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout = tl.constexpr(
+_flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout = tl.constexpr(
     tle.gpu.BlockEncoding(
         [1, 8],
         [8, 4],
@@ -1552,22 +1497,22 @@ _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__wei
         [0, 1],
     )
 )
-_flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__lhs_layout = tl.constexpr(
+_flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__lhs_layout = tl.constexpr(
     tle.gpu.SlicedEncoding(
         0,
-        _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout.value,
+        _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout.value,
     )
 )
-_flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__output_layout = tl.constexpr(
+_flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__output_layout = tl.constexpr(
     tle.gpu.SlicedEncoding(
         1,
-        _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout.value,
+        _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout.value,
     )
 )
 
 
 @triton.jit
-def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__consumer_stage(
+def _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__consumer_stage(
     weight_stage,
     dense_local_k_start,
     dense_source,
@@ -1578,24 +1523,24 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
     dense_local_n = tle.gpu.set_layout(
         tle.gpu.set_layout(
             dense_local_n_source,
-            _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__output_layout,
+            _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__output_layout,
         )[:, None],
-        _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout,
+        _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout,
     )
     dense_local_k_vector = tle.gpu.set_layout(
         tl.arange(0, 32),
-        _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__lhs_layout,
+        _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__lhs_layout,
     )
     dense_local_k = tle.gpu.set_layout(
         dense_local_k_vector[None, :],
-        _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout,
+        _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout,
     )
     dense_partial = tle.gpu.set_layout(
         tl.zeros(
             (64, 32),
             tl.float32,
         ),
-        _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout,
+        _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout,
     )
     for dense_k_group in tl.range(
         0, 4, loop_unroll_factor=4
@@ -1624,7 +1569,7 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
         )
         dense_weight_value = tle.gpu.set_layout(
             tl.load(dense_weight_pointer),
-            _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout,
+            _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout,
         ).to(tl.float32)
         dense_local_k_offsets = (
             dense_local_k_start
@@ -1642,24 +1587,24 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
                 mask=dense_k_mask,
                 other=0.0,
             ),
-            _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__lhs_layout,
+            _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__lhs_layout,
         ).to(tl.float32)
         dense_partial += dense_weight_value * tle.gpu.set_layout(
             dense_source_value[None, :],
-            _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout,
+            _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout,
         )
     return dense_partial
 
 
 @triton.jit(noinline=True)
-def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__producer(
-    pipeline_weight_writer, block_local_data, decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter, workspace, weight_descriptor, weight_descriptor__origin_elements
-):
+def _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__producer(
+    pipeline_weight_writer, block_local_data, decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter, workspace, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_weight_descriptor_entry = weight_descriptor
     tle.gpu.tensor_map_fenceproxy_acquire(dense_weight_descriptor_entry)
@@ -1700,14 +1645,14 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
 
 
 @triton.jit(noinline=True)
-def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__consumer(
-    pipeline_weight_reader, block_local_data, decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter, workspace, weight_descriptor, weight_descriptor__origin_elements
-):
+def _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__consumer(
+    pipeline_weight_reader, block_local_data, decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter, workspace, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_source = block_local_data.to(tl.pointer_type(tl.bfloat16)) + ((0) * 256 + (0) * 1)
     dense_source_owner_active = (0 < (1))
@@ -1717,7 +1662,7 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
     ):
         dense_local_n_offsets = dense_local_n_start + tle.gpu.set_layout(
             tl.arange(0, 64),
-            _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__output_layout,
+            _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__output_layout,
         )
         dense_n_mask = (
             (dense_local_n_offsets < 256)
@@ -1728,7 +1673,7 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
                 (64, 32),
                 tl.float32,
             ),
-            _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__weight_layout,
+            _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__weight_layout,
         )
         for dense_local_k_start in tl.range(
             0, 256, 128
@@ -1740,7 +1685,7 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
             ).to(tl.int32)
             dense_pipeline_ready = pipeline_weight_reader.wait(dense_pipeline_sequence)
             dense_partial += (
-                _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__consumer_stage(
+                _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__consumer_stage(
                     dense_pipeline_ready.slot.weight,
                     dense_local_k_start,
                     dense_source,
@@ -1751,8 +1696,8 @@ def _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute_
             pipeline_weight_reader.release(dense_pipeline_sequence)
         dense_accumulator = tl.sum(dense_partial, axis=1)
         tl.store(
-            ((workspace.to(tl.pointer_type(tl.bfloat16)) + 512) + (shard_index) * 256) + ((0) * 256 + (((dense_local_n_offsets) // 8)) * 8 + (((dense_local_n_offsets) % 8))),
-            dense_accumulator.to(tl.bfloat16),
+            ((workspace.to(tl.pointer_type(tl.float32)) + 256) + (shard_index) * 256) + ((0) * 256 + (((dense_local_n_offsets) // 8)) * 8 + (((dense_local_n_offsets) % 8))),
+            dense_accumulator.to(tl.float32),
             mask=dense_n_mask,
         )
 
@@ -1831,6 +1776,7 @@ def _flagmega_decode_linear_call_3_decode_linear_convolution(block_local_data, d
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for channel_start in tl.range(0, 64, 128):
         local_channels = channel_start + tl.arange(0, 128)
@@ -1841,7 +1787,7 @@ def _flagmega_decode_linear_call_3_decode_linear_convolution(block_local_data, d
         global_channels = ((local_channels) + ((shard_x) * 64) + ((shard_y) * 1024))
         for token_index in range(1):
             _flagmega_gdn_convolution_local_tile(
-                (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 2048), (workspace.to(tl.pointer_type(tl.bfloat16)) + 12288), (decode_linear_state_0 + ((((decode_linear_layer_id).to(tl.int64) * 49152)) // 2)), decode_linear_linear_attn_conv1d_weight,
+                (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 2048), workspace.to(tl.pointer_type(tl.bfloat16)), (decode_linear_state_0 + ((((decode_linear_layer_id).to(tl.int64) * 49152)) // 2)), decode_linear_linear_attn_conv1d_weight,
                 ((token_index)) * 64 + ((local_channels)) * 1, ((token_index)) * 8192 + (((local_channels) + ((shard_x) * 64) + ((shard_y) * 1024))) * 1, (((local_channels) + ((shard_x) * 64) + ((shard_y) * 1024))) * 4 + ((0)) * 4 + ((0)) * 1,
                 global_channels, channel_mask,
                 3, 1,
@@ -1858,6 +1804,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_3_decode_linear_convolution
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for channel_start in tl.range(0, 64, 128):
         local_channels = channel_start + tl.arange(0, 128)
@@ -1913,8 +1860,12 @@ def _flagmega_dense_rows(
     source, weight, rows, active,
     K: tl.constexpr, TILE_K: tl.constexpr,
     UNIFORM_ROWS: tl.constexpr = False,
+    ENCODING: tl.constexpr = None,
 ):
     """Dense projections for the value heads touched by one local tile."""
+    # Bind a local constexpr: omitted string defaults are raw Python values
+    # in the JIT caller, whereas annotated body constants support comparison.
+    FORMAT: tl.constexpr = "" if ENCODING is None else ENCODING
     lane_active = active
     if UNIFORM_ROWS:
         # The logical shard map proves that active lanes name the same row.
@@ -1923,6 +1874,49 @@ def _flagmega_dense_rows(
         active = tl.sum(active.to(tl.int32), 0) > 0
         rows = tl.where(active, rows, 0)
     REDUCE_AXIS: tl.constexpr = len(rows.shape)
+    if FORMAT == "IQ4_XS" or FORMAT == "Q4_K":
+        weight_u8 = weight.to(tl.pointer_type(tl.uint8))
+        weight_f16 = weight.to(tl.pointer_type(tl.float16))
+        if FORMAT == "IQ4_XS":
+            weight_u16 = weight.to(tl.pointer_type(tl.uint16))
+            block_bytes: tl.constexpr = 136
+        else:
+            block_bytes: tl.constexpr = 144
+        packed_rows = rows * (K // 256) * block_bytes
+        accumulator = tl.full(rows.shape, 0, tl.float32)
+        for k_start in tl.range(0, K, 128):
+            k = k_start + tl.arange(0, 128)
+            km = k < K
+            block = k // 256
+            inside = k % 256
+            group = inside // 32
+            lane = inside % 32
+            base = tl.expand_dims(packed_rows, REDUCE_AXIS) + block * block_bytes
+            active_matrix = tl.expand_dims(active, REDUCE_AXIS) & km
+            d = tl.load(weight_f16 + base // 2, mask=active_matrix, other=0.0).to(tl.float32)
+            if FORMAT == "IQ4_XS":
+                sl = tl.load(weight_u8 + base + 4 + group // 2, mask=active_matrix, other=0)
+                sh = tl.load(weight_u16 + (base + 2) // 2, mask=active_matrix, other=0)
+                sc = ((sl >> ((group % 2) * 4)) & 0xF) | (((sh >> (group * 2)) & 0x3) * 16)
+                packed = tl.load(weight_u8 + base + 8 + group * 16 + (lane % 16), mask=active_matrix, other=0)
+                code = tl.where((lane // 16) == 0, packed & 0xF, packed >> 4)
+                cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+                decoded = d * (sc.to(tl.float32) - 32.0) * cv
+            else:
+                dmin = tl.load(weight_f16 + (base + 2) // 2, mask=active_matrix, other=0.0).to(tl.float32)
+                scales = weight_u8 + base + 4
+                s0 = tl.load(scales + group % 4, mask=active_matrix, other=0)
+                s1 = tl.load(scales + 4 + group % 4, mask=active_matrix, other=0)
+                s2 = tl.load(scales + 8 + group % 4, mask=active_matrix, other=0)
+                low_group = group < 4
+                sc = tl.where(low_group, s0 & 0x3F, (s2 & 0xF) | ((s0 >> 2) & 0x30))
+                mn = tl.where(low_group, s1 & 0x3F, (s2 >> 4) | ((s1 >> 2) & 0x30))
+                packed = tl.load(weight_u8 + base + 16 + (group // 2) * 32 + lane, mask=active_matrix, other=0)
+                q = tl.where(group % 2 == 0, packed & 0xF, packed >> 4).to(tl.float32)
+                decoded = d * sc.to(tl.float32) * q - dmin * mn.to(tl.float32)
+            source_value = tl.load(source + k, mask=km, other=0.0).to(tl.float32)
+            accumulator += tl.sum(decoded * source_value, axis=REDUCE_AXIS)
+        return tl.where(lane_active, accumulator.to(tl.bfloat16).to(tl.float32), 0.0)
     accumulator = tl.full(rows.shape, 0, tl.float32)
     compensation = tl.full(rows.shape, 0, tl.float32)
     for k_start in tl.range(0, K, TILE_K):
@@ -1947,6 +1941,7 @@ def _flagmega_dense_rows(
 def _flagmega_gdn_head_gates(
     beta_projection, a_projection, value_head, active,
     a_log, dt_bias, ROUND_BETA: tl.constexpr,
+    GATE_MATH_MODE: tl.constexpr = "accurate",
 ):
     """Head-only gates, valid while this invocation's projection key matches."""
     beta = tl.sigmoid(beta_projection)
@@ -1955,15 +1950,16 @@ def _flagmega_gdn_head_gates(
     decay_input = a_projection + tl.load(
         dt_bias + value_head, mask=active, other=0.0,
     ).to(tl.float32)
-    softplus = tl.where(
-        decay_input > 20.0,
-        decay_input,
-        libdevice.log1p(libdevice.exp(decay_input)),
-    )
-    decay_log = -libdevice.exp(
-        tl.load(a_log + value_head, mask=active, other=0.0).to(tl.float32)
-    ) * softplus
-    decay = libdevice.exp(decay_log)
+    gate_mode: tl.constexpr = GATE_MATH_MODE
+    log_value = tl.load(a_log + value_head, mask=active, other=0.0).to(tl.float32)
+    if gate_mode == "fast":
+        softplus = tl.where(decay_input > 20.0, decay_input, tl.log(1.0 + tl.exp(decay_input)))
+        decay_log = -tl.exp(log_value) * softplus
+        decay = tl.exp(decay_log)
+    else:
+        softplus = tl.where(decay_input > 20.0, decay_input, libdevice.log1p(libdevice.exp(decay_input)))
+        decay_log = -libdevice.exp(log_value) * softplus
+        decay = libdevice.exp(decay_log)
     return beta, decay
 
 
@@ -1977,12 +1973,16 @@ def _flagmega_gdn_recurrent_local_core_tile(
     QK_NORM_ADD: tl.constexpr, QK_NORM_EPS: tl.constexpr,
     ROUND_NORMALIZED_QK: tl.constexpr, ROUND_CORE: tl.constexpr,
     old_state=None,
+    TILED_VALUE_HEADS: tl.constexpr = False,
 ):
     """Update exactly the state/value coordinates owned by this shard."""
     KEY_TOTAL: tl.constexpr = KEY_HEADS * KEY_DIM
     value_head = global_values // VALUE_DIM
     value_coordinate = global_values % VALUE_DIM
-    key_head = value_head // REPEATS
+    if TILED_VALUE_HEADS:
+        key_head = value_head % KEY_HEADS
+    else:
+        key_head = value_head // REPEATS
     # Proven uniform heads use a scalar gate. Other maps use one per value
     # lane; both broadcast over the key dimension without a reduction.
     decay_columns = tl.expand_dims(decay, len(decay.shape))
@@ -2050,6 +2050,7 @@ def _flagmega_gdn_recurrent_local_norm_tile(
     z, destination, norm_weight, core_scratch,
     source_offsets, result_offsets, global_values, active,
     VALUE_DIM: tl.constexpr, EPS: tl.constexpr,
+    ACCURATE_SILU: tl.constexpr = False,
 ):
     """Normalize complete heads after every owner has published core values."""
     value_head = global_values // VALUE_DIM
@@ -2069,7 +2070,11 @@ def _flagmega_gdn_recurrent_local_norm_tile(
         norm_weight + value_coordinate, mask=active, other=0.0,
     ).to(tl.float32)
     gate = tl.load(z + source_offsets, mask=active, other=0.0).to(tl.float32)
-    result = core * inverse_rms * norm * _flagmega_silu(gate)
+    if ACCURATE_SILU:
+        activated = gate / (1.0 + libdevice.exp(-gate))
+    else:
+        activated = _flagmega_silu(gate)
+    result = core * inverse_rms * norm * activated
     tl.store(destination + result_offsets, result.to(tl.bfloat16), mask=active)
 @triton.jit
 
@@ -2079,6 +2084,7 @@ def _flagmega_decode_linear_call_5_decode_linear_recurrent(decode_linear_state_0
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     cached_heads = tl.full((), -1, tl.int64)
     beta = tl.zeros((), tl.float32)
@@ -2098,11 +2104,12 @@ projection_active,
             beta, decay = _flagmega_gdn_head_gates(
                 beta_projection, a_projection, value_heads, projection_active,
                 decode_linear_linear_attn_a_log, decode_linear_linear_attn_dt_bias, True,
+                GATE_MATH_MODE="accurate",
             )
             cached_heads = tl.where(projection_active, value_heads, -1)
         _flagmega_gdn_recurrent_local_core_tile(
-            (workspace.to(tl.pointer_type(tl.bfloat16)) + 12288), beta, decay, (decode_linear_state_1 + ((((decode_linear_layer_id).to(tl.int64) * 2097152)) // 4)),
-            (workspace.to(tl.pointer_type(tl.float32)) + 2048), local_values, global_values,
+            workspace.to(tl.pointer_type(tl.bfloat16)), beta, decay, (decode_linear_state_1 + ((((decode_linear_layer_id).to(tl.int64) * 2097152)) // 4)),
+            (workspace.to(tl.pointer_type(tl.float32)) + 6144), local_values, global_values,
             recurrent_mask, 32, 16,
             128, 128,
             2, 128,
@@ -2116,9 +2123,10 @@ projection_active,
         recurrent_norm_mask = ((local_values < (32)) & (True))
         global_values = ((local_values) + ((shard_x) * 32) + ((shard_y) * 512))
         _flagmega_gdn_recurrent_local_norm_tile(
-            (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 2048), workspace.to(tl.pointer_type(tl.bfloat16)), decode_linear_linear_attn_norm_weight,
-            (workspace.to(tl.pointer_type(tl.float32)) + 2048), ((0)) * 32 + ((local_values)) * 1, ((0)) * 4096 + (((local_values) + ((shard_x) * 32) + ((shard_y) * 512))) * 1, global_values,
+            (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 2048), (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192), decode_linear_linear_attn_norm_weight,
+            (workspace.to(tl.pointer_type(tl.float32)) + 6144), ((0)) * 32 + ((local_values)) * 1, ((0)) * 4096 + (((local_values) + ((shard_x) * 32) + ((shard_y) * 512))) * 1, global_values,
             recurrent_norm_mask, 128, 1e-06,
+            ACCURATE_SILU=False,
         )
 
 
@@ -2130,6 +2138,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_5_decode_linear_recurrent_d
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     cached_heads = tl.full((), -1, tl.int64)
     beta = tl.zeros((), tl.float32)
@@ -2149,6 +2158,7 @@ projection_active,
             beta, decay = _flagmega_gdn_head_gates(
                 beta_projection, a_projection, value_heads, projection_active,
                 decode_linear_linear_attn_a_log_decode_linear_norm_stats_layout_1, decode_linear_linear_attn_dt_bias_decode_linear_norm_stats_layout_1, True,
+                GATE_MATH_MODE="accurate",
             )
             cached_heads = tl.where(projection_active, value_heads, -1)
         _flagmega_gdn_recurrent_local_core_tile(
@@ -2170,6 +2180,7 @@ projection_active,
             (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 2048), (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192), decode_linear_linear_attn_norm_weight_decode_linear_norm_stats_layout_1,
             (workspace.to(tl.pointer_type(tl.float32)) + 6144), ((0)) * 32 + ((local_values)) * 1, ((0)) * 4096 + (((local_values) + ((shard_x) * 32) + ((shard_y) * 512))) * 1, global_values,
             recurrent_norm_mask, 128, 1e-06,
+            ACCURATE_SILU=False,
         )
 
 
@@ -2182,36 +2193,29 @@ def _flagmega_main_call_4_final_norm_vectorized_compute(workspace, rdata, block_
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    norm_partial_member_count = (
-        tl.num_programs(0) * 128
-        // 128
-    )
     for norm_outer_index in tl.range(0, 1):
         norm_apply_inner_count = 2048 + 0.0
-        norm_apply_mean = 0.0
         norm_apply_square_sum = 0.0
         for norm_partial_start in tl.range(
-            0, norm_partial_member_count, 32
+            0, 128, 32
         ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, 32
-            )
+            norm_partial_lane = norm_partial_start + tl.arange(0, 32)
             norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & (((norm_outer_index) < (1)))
+                (norm_partial_lane < 128) & (((norm_outer_index) < (1)))
             )
             norm_partial_owner = (norm_partial_lane)
             norm_apply_square_sum += tl.sum(
                 tl.load(
-                    workspace.to(tl.pointer_type(tl.float32))
-                    + norm_partial_owner * 1
-                    + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
+                    (workspace.to(tl.pointer_type(tl.float32)) + 144000)
+                    + norm_partial_owner * 1 + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
+                    mask=norm_partial_mask, other=0.0,
+                ).to(tl.float32), axis=0,
             )
+
+
+        norm_apply_mean = 0.0
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
         norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
         norm_apply_inverse_std = tl.rsqrt(
@@ -2229,7 +2233,7 @@ def _flagmega_main_call_4_final_norm_vectorized_compute(workspace, rdata, block_
                 & (((((norm_apply_inner_offsets) // 8)) < (256)))
             )
             norm_apply_value = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 101120) + (((norm_outer_index)) * 2048 + ((((norm_apply_inner_offsets) // 8))) * 8 + (((norm_apply_inner_offsets) % 8))),
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 2048) + (((norm_outer_index)) * 2048 + ((((norm_apply_inner_offsets) // 8))) * 8 + (((norm_apply_inner_offsets) % 8))),
                 mask=norm_apply_mask,
                 other=0.0,
             ).to(tl.float32)
@@ -2245,7 +2249,7 @@ def _flagmega_main_call_4_final_norm_vectorized_compute(workspace, rdata, block_
             )
             norm_apply_output = norm_apply_normalized * norm_apply_scale + norm_apply_bias
             tl.store(
-                (block_local_data.to(tl.pointer_type(tl.bfloat16)) + (shard_index) * 2304) + ((norm_outer_index) * 2048 + (((norm_apply_inner_offsets) // 8)) * 8 + (((norm_apply_inner_offsets) % 8))),
+                (block_local_data.to(tl.pointer_type(tl.bfloat16)) + (block_index) * 6912 + 4608) + ((norm_outer_index) * 2048 + (((norm_apply_inner_offsets) // 8)) * 8 + (((norm_apply_inner_offsets) % 8))),
                 norm_apply_output.to(tl.bfloat16).to(tl.bfloat16),
                 mask=norm_apply_mask & (True),
             )
@@ -2259,36 +2263,29 @@ def _flagmega_decode_linear_call_7_decode_linear_post_norm_vectorized_compute(wo
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    norm_partial_member_count = (
-        tl.num_programs(0) * 128
-        // 128
-    )
     for norm_outer_index in tl.range(0, 1):
         norm_apply_inner_count = 2048 + 0.0
-        norm_apply_mean = 0.0
         norm_apply_square_sum = 0.0
         for norm_partial_start in tl.range(
-            0, norm_partial_member_count, 32
+            0, 128, 32
         ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, 32
-            )
+            norm_partial_lane = norm_partial_start + tl.arange(0, 32)
             norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & (((norm_outer_index) < (1)))
+                (norm_partial_lane < 128) & (((norm_outer_index) < (1)))
             )
             norm_partial_owner = (norm_partial_lane)
             norm_apply_square_sum += tl.sum(
                 tl.load(
-                    (workspace.to(tl.pointer_type(tl.float32)) + 4096)
-                    + norm_partial_owner * 1
-                    + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
+                    (workspace.to(tl.pointer_type(tl.float32)) + 6144)
+                    + norm_partial_owner * 1 + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
+                    mask=norm_partial_mask, other=0.0,
+                ).to(tl.float32), axis=0,
             )
+
+
+        norm_apply_mean = 0.0
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
         norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
         norm_apply_inverse_std = tl.rsqrt(
@@ -2336,36 +2333,29 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_1_decode_linear_input_norm_
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    norm_partial_member_count = (
-        tl.num_programs(0) * 128
-        // 128
-    )
     for norm_outer_index in tl.range(0, 1):
         norm_apply_inner_count = 2048 + 0.0
-        norm_apply_mean = 0.0
         norm_apply_square_sum = 0.0
         for norm_partial_start in tl.range(
-            0, norm_partial_member_count, 32
+            0, 128, 32
         ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, 32
-            )
+            norm_partial_lane = norm_partial_start + tl.arange(0, 32)
             norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & (((norm_outer_index) < (1)))
+                (norm_partial_lane < 128) & (((norm_outer_index) < (1)))
             )
             norm_partial_owner = (norm_partial_lane)
             norm_apply_square_sum += tl.sum(
                 tl.load(
                     decode_linear_hidden_norm_stats_decode_linear_norm_stats_layout_1
-                    + norm_partial_owner * 1
-                    + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
+                    + norm_partial_owner * 1 + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
+                    mask=norm_partial_mask, other=0.0,
+                ).to(tl.float32), axis=0,
             )
+
+
+        norm_apply_mean = 0.0
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
         norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
         norm_apply_inverse_std = tl.rsqrt(
@@ -2413,36 +2403,29 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_7_decode_linear_post_norm_v
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    norm_partial_member_count = (
-        tl.num_programs(0) * 128
-        // 128
-    )
     for norm_outer_index in tl.range(0, 1):
         norm_apply_inner_count = 2048 + 0.0
-        norm_apply_mean = 0.0
         norm_apply_square_sum = 0.0
         for norm_partial_start in tl.range(
-            0, norm_partial_member_count, 32
+            0, 128, 32
         ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, 32
-            )
+            norm_partial_lane = norm_partial_start + tl.arange(0, 32)
             norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & (((norm_outer_index) < (1)))
+                (norm_partial_lane < 128) & (((norm_outer_index) < (1)))
             )
             norm_partial_owner = (norm_partial_lane)
             norm_apply_square_sum += tl.sum(
                 tl.load(
-                    (workspace.to(tl.pointer_type(tl.float32)) + 8192)
-                    + norm_partial_owner * 1
-                    + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
+                    (workspace.to(tl.pointer_type(tl.float32)) + 6144)
+                    + norm_partial_owner * 1 + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
+                    mask=norm_partial_mask, other=0.0,
+                ).to(tl.float32), axis=0,
             )
+
+
+        norm_apply_mean = 0.0
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
         norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
         norm_apply_inverse_std = tl.rsqrt(
@@ -2490,36 +2473,29 @@ def _flagmega_decode_attention_call_1_decode_attention_input_norm_vectorized_com
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    norm_partial_member_count = (
-        tl.num_programs(0) * 128
-        // 128
-    )
     for norm_outer_index in tl.range(0, 1):
         norm_apply_inner_count = 2048 + 0.0
-        norm_apply_mean = 0.0
         norm_apply_square_sum = 0.0
         for norm_partial_start in tl.range(
-            0, norm_partial_member_count, 32
+            0, 128, 32
         ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, 32
-            )
+            norm_partial_lane = norm_partial_start + tl.arange(0, 32)
             norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & (((norm_outer_index) < (1)))
+                (norm_partial_lane < 128) & (((norm_outer_index) < (1)))
             )
             norm_partial_owner = (norm_partial_lane)
             norm_apply_square_sum += tl.sum(
                 tl.load(
                     decode_attention_hidden_norm_stats
-                    + norm_partial_owner * 1
-                    + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
+                    + norm_partial_owner * 1 + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
+                    mask=norm_partial_mask, other=0.0,
+                ).to(tl.float32), axis=0,
             )
+
+
+        norm_apply_mean = 0.0
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
         norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
         norm_apply_inverse_std = tl.rsqrt(
@@ -2561,42 +2537,35 @@ def _flagmega_decode_attention_call_1_decode_attention_input_norm_vectorized_com
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_14_decode_attention_post_norm_vectorized_compute(workspace, decode_attention_hidden, n56_constant_parameter, rdata, block_local_data):
+def _flagmega_decode_attention_call_10_decode_attention_post_norm_vectorized_compute(workspace, decode_attention_hidden, n56_constant_parameter, rdata, block_local_data):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    norm_partial_member_count = (
-        tl.num_programs(0) * 128
-        // 128
-    )
     for norm_outer_index in tl.range(0, 1):
         norm_apply_inner_count = 2048 + 0.0
-        norm_apply_mean = 0.0
         norm_apply_square_sum = 0.0
         for norm_partial_start in tl.range(
-            0, norm_partial_member_count, 32
+            0, 128, 32
         ):
-            norm_partial_lane = norm_partial_start + tl.arange(
-                0, 32
-            )
+            norm_partial_lane = norm_partial_start + tl.arange(0, 32)
             norm_partial_mask = (
-                (norm_partial_lane < norm_partial_member_count)
-                & (((norm_outer_index) < (1)))
+                (norm_partial_lane < 128) & (((norm_outer_index) < (1)))
             )
             norm_partial_owner = (norm_partial_lane)
             norm_apply_square_sum += tl.sum(
                 tl.load(
                     (workspace.to(tl.pointer_type(tl.float32)) + 4096)
-                    + norm_partial_owner * 1
-                    + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
-                    mask=norm_partial_mask,
-                    other=0.0,
-                ).to(tl.float32),
-                axis=0,
+                    + norm_partial_owner * 1 + ((0) * 1 + (norm_outer_index) * 1 + (0) * 1),
+                    mask=norm_partial_mask, other=0.0,
+                ).to(tl.float32), axis=0,
             )
+
+
+        norm_apply_mean = 0.0
         norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
         norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
         norm_apply_inverse_std = tl.rsqrt(
@@ -2724,13 +2693,13 @@ def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__co
 
 @triton.jit(noinline=True)
 def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__producer(
-    pipeline_weight_writer, block_local_data, decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused, workspace, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, block_local_data, decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused, workspace, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # The uint8 table contains 128-byte CUDA tensor-map descriptors.
     qkv_weight_descriptor_entry = weight_descriptor + shard_index * 128
@@ -2761,13 +2730,13 @@ def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__pr
 
 @triton.jit(noinline=True)
 def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__consumer(
-    pipeline_weight_reader, pipeline_consumer_lhs_stage, block_local_data, decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused, workspace, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, pipeline_consumer_lhs_stage, block_local_data, decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused, workspace, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     qkv_input_copy_k = tle.gpu.set_layout(
         tl.arange(0, 256)[None, :],
@@ -2816,7 +2785,7 @@ def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__co
         qkv_logical_m = qkv_n_tile * 64 + qkv_c_m
         qkv_local_n_offsets = qkv_logical_m - 0
         qkv_output_pointer = tle.gpu.set_layout(
-            (((workspace.to(tl.pointer_type(tl.bfloat16)) + 12800) + (shard_index) * 256) + ((0) * 256 + (((qkv_local_n_offsets) // 8)) * 8 + (((qkv_local_n_offsets) % 8))))[:, None]
+            ((workspace.to(tl.pointer_type(tl.bfloat16)) + (shard_index) * 256) + ((0) * 256 + (((qkv_local_n_offsets) // 8)) * 8 + (((qkv_local_n_offsets) % 8))))[:, None]
             + qkv_c_n_zero,
             _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__mma_layout,
         )
@@ -2839,7 +2808,7 @@ def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__co
         )
         qkv_local_n_offsets = qkv_logical_m - 256
         qkv_output_pointer = tle.gpu.set_layout(
-            ((workspace.to(tl.pointer_type(tl.bfloat16)) + (shard_index) * 32) + ((0) * 32 + (((qkv_local_n_offsets) // 8)) * 8 + (((qkv_local_n_offsets) % 8))))[:, None]
+            (((workspace.to(tl.pointer_type(tl.bfloat16)) + 32768) + (shard_index) * 32) + ((0) * 32 + (((qkv_local_n_offsets) // 8)) * 8 + (((qkv_local_n_offsets) % 8))))[:, None]
             + qkv_c_n_zero,
             _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__mma_layout,
         )
@@ -2862,7 +2831,7 @@ def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__co
         )
         qkv_local_n_offsets = qkv_logical_m - 288
         qkv_output_pointer = tle.gpu.set_layout(
-            (((workspace.to(tl.pointer_type(tl.bfloat16)) + 4096) + (shard_index) * 32) + ((0) * 32 + (((qkv_local_n_offsets) // 8)) * 8 + (((qkv_local_n_offsets) % 8))))[:, None]
+            (((workspace.to(tl.pointer_type(tl.bfloat16)) + 36864) + (shard_index) * 32) + ((0) * 32 + (((qkv_local_n_offsets) // 8)) * 8 + (((qkv_local_n_offsets) % 8))))[:, None]
             + qkv_c_n_zero,
             _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__mma_layout,
         )
@@ -2885,138 +2854,53 @@ def _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__co
         )
 
 
-# flagmega-kernel: norm_stats/local platform=generic
-@triton.jit
-def _flagmega_norm_stats_load(source, mask):
-    return tl.load(source, mask=mask, other=0.0).to(tl.float32)
+# flagmega-kernel: gather_reduce_qkv_rope_with_cache/decode platform=generic
 @triton.jit(noinline=True)
-
-def _flagmega_main_call_3_layer_0_call_norm_stats(workspace):
+def _flagmega_decode_attention_call_3_n48_qkv_rope_with_cache__write(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
-
-    for norm_outer_index in tl.range(0, 1):
-        norm_square_sum = tl.zeros((128,), tl.float32)
-        for norm_reduction_start in tl.range(
-            0, 2048, 128
-        ):
-            norm_reduction_offsets = (
-                norm_reduction_start + tl.arange(0, 128)
-            )
-            norm_mask = (
-                (norm_reduction_offsets < 2048)
-                & (((norm_outer_index) < (1)) & ((((norm_reduction_offsets) // 8)) < (256)))
-            )
-            norm_value = _flagmega_norm_stats_load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 22784) + (((norm_outer_index)) * 2048 + ((((norm_reduction_offsets) // 8))) * 8 + (((norm_reduction_offsets) % 8))), norm_mask,
-            )
-            norm_square_sum += tl.where(
-                norm_mask, norm_value * norm_value, 0.0,
-            )
-        norm_store_mask = (((norm_outer_index) < (1))) & ((shard_y == 0) & (shard_x == 0))
-        tl.store(
-            (workspace.to(tl.pointer_type(tl.float32)) + 12416) + (((0)) * 1 + ((norm_outer_index)) * 1 + ((0)) * 1),
-            tl.sum(norm_square_sum, axis=0),
-            mask=norm_store_mask,
-        )
-
-
-@triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_6_n37(workspace, block_local_data):
-    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
-    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
-    shard_y = shard_coord0
-    shard_x = shard_coord1
-    shard_index = (shard_coord0 * 16 + shard_coord1)
-
-    for norm_outer_index in tl.range(0, 1):
-        norm_square_sum = tl.zeros((128,), tl.float32)
-        for norm_reduction_start in tl.range(
-            0, 256, 128
-        ):
-            norm_reduction_offsets = (
-                norm_reduction_start + tl.arange(0, 128)
-            )
-            norm_mask = (
-                (norm_reduction_offsets < 256)
-                & (((norm_outer_index) < (1)) & ((((norm_outer_index) % 1)) < (1)) & ((((norm_reduction_offsets) // 8)) < (32)))
-            )
-            norm_value = _flagmega_norm_stats_load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192) + (((norm_outer_index)) * 4096 + (((((norm_outer_index) % 1)) + (shard_x))) * 256 + ((((norm_reduction_offsets) // 8))) * 8 + (((norm_reduction_offsets) % 8))), norm_mask,
-            )
-            norm_square_sum += tl.where(
-                norm_mask, norm_value * norm_value, 0.0,
-            )
-        norm_store_mask = (((norm_outer_index) < (1)) & ((((norm_outer_index) % 1)) < (1))) & (True)
-        tl.store(
-            (block_local_data.to(tl.pointer_type(tl.float32)) + 128) + ((0) * 1 + (norm_outer_index) * 1 + (((norm_outer_index) % 1)) * 1 + (0) * 1),
-            tl.sum(norm_square_sum, axis=0),
-            mask=norm_store_mask,
-        )
-
-
-@triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_7_n42(workspace, block_local_data):
-    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
-    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
-    shard_y = shard_coord0
-    shard_x = shard_coord1
-    shard_index = (shard_coord0 * 16 + shard_coord1)
-
-    for norm_outer_index in tl.range(0, 1):
-        norm_square_sum = tl.zeros((128,), tl.float32)
-        for norm_reduction_start in tl.range(
-            0, 256, 128
-        ):
-            norm_reduction_offsets = (
-                norm_reduction_start + tl.arange(0, 128)
-            )
-            norm_mask = (
-                (norm_reduction_offsets < 256)
-                & (((norm_outer_index) < (1)) & ((((norm_outer_index) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_y) * -1) + 2))))) & ((((norm_reduction_offsets) // 8)) < (32)))
-            )
-            norm_value = _flagmega_norm_stats_load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 12288) + (((norm_outer_index)) * 512 + (((shard_y) + ((((norm_outer_index) % 1)) * 8))) * 256 + ((((norm_reduction_offsets) // 8))) * 8 + (((norm_reduction_offsets) % 8))), norm_mask,
-            )
-            norm_square_sum += tl.where(
-                norm_mask, norm_value * norm_value, 0.0,
-            )
-        norm_store_mask = (((norm_outer_index) < (1)) & ((((norm_outer_index) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_y) * -1) + 2)))))) & (True)
-        tl.store(
-            (block_local_data.to(tl.pointer_type(tl.float32)) + 192) + ((0) * 1 + (norm_outer_index) * 1 + (((norm_outer_index) % 1)) * 1 + (0) * 1),
-            tl.sum(norm_square_sum, axis=0),
-            mask=norm_store_mask,
-        )
-
-
-# flagmega-kernel: qkv_rope_with_cache/decode platform=generic
-# The executable body is emitted here from the typed local-shard ABI.
-# Distribution changes coordinate maps, not this semantic kernel.
-@triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence, block_local_data):
-    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
-    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
-    shard_y = shard_coord0
-    shard_x = shard_coord1
-    shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     qkv_cache_position = tl.load(decode_attention_state_2).to(tl.int64)
-    qkv_cache_logical_block = qkv_cache_position // 256
-    qkv_cache_block_offset = qkv_cache_position % 256
-    qkv_cache_physical_block = tl.load(
-        decode_attention_state_4 + qkv_cache_logical_block
-    ).to(tl.int64)
     for qkv_q_outer_index in tl.range(0, 1):
-        qkv_q_square_sum = tl.load(
-            (block_local_data.to(tl.pointer_type(tl.float32)) + 128) + ((0) * 1 + (qkv_q_outer_index) * 1 + (((qkv_q_outer_index) % 1)) * 1 + (0) * 1),
-            mask=((shard_y == 0)) & (((qkv_q_outer_index) < (1)) & ((((qkv_q_outer_index) % 1)) < (1))), other=0.0,
-        ).to(tl.float32)
+        qkv_q_square_sum = tl.full((), 0.0, tl.float32)
+        for qkv_q_reduce_start in tl.range(
+            0, 256, 128
+        ):
+            qkv_q_reduce_offsets = (
+                qkv_q_reduce_start + tl.arange(0, 128)
+            )
+            qkv_q_reduce_mask = (
+                (qkv_q_reduce_offsets < 256)
+                & (((qkv_q_outer_index) < (1) * 1) & ((((qkv_q_outer_index) % 1)) < (1) * 1) & ((qkv_q_reduce_offsets) < (32) * 8))
+                & ((shard_y == 0))
+            )
+            qkv_q_reduce_partial_lanes = tl.arange(0, 8)[:, None]
+            qkv_q_partial_member = tl.minimum(
+                qkv_q_reduce_partial_lanes, 7
+            )
+            qkv_q_reduce_partial_values = tl.load(
+                workspace.to(tl.pointer_type(tl.bfloat16))
+                + (((((0) * 16 + (((((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_reduce_offsets) // 8))) * 8 + (((qkv_q_reduce_offsets) % 8)))))) // 8)) // 1) % 512)) // 8) % 16)))) + (((((qkv_q_partial_member) % 8)) * 16 + (0))))) * 256
+                + (((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_reduce_offsets) // 8))) * 8 + (((qkv_q_reduce_offsets) % 8)))))) // 8)) // 512) % 1)) * 256 + (((((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_reduce_offsets) // 8))) * 8 + (((qkv_q_reduce_offsets) % 8)))))) // 8)) // 1) % 512)) // 128) * 8 + ((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_reduce_offsets) // 8))) * 8 + (((qkv_q_reduce_offsets) % 8)))))) // 8)) // 1) % 512)) % 8)) * 8 + (((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_reduce_offsets) // 8))) * 8 + (((qkv_q_reduce_offsets) % 8)))))) % 8))),
+                mask=(qkv_q_reduce_mask)[None, :]
+                    & (qkv_q_reduce_partial_lanes < 8),
+                other=0.0,
+            ).to(tl.float32)
+            qkv_q_reduce_value = tl.sum(
+                qkv_q_reduce_partial_values, axis=0
+            ).to(tl.bfloat16).to(tl.float32)
+
+            qkv_q_square_sum += tl.sum(
+                tl.where(
+                    qkv_q_reduce_mask,
+                    qkv_q_reduce_value * qkv_q_reduce_value,
+                    0.0,
+                ), axis=0,
+            )
         qkv_q_mean = 0.0
         qkv_q_variance = (
             qkv_q_square_sum / 256
@@ -3035,14 +2919,39 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
                 & (((qkv_q_outer_index) < (1) * 1) & ((((qkv_q_outer_index) % 1)) < (1) * 1) & ((qkv_q_element_offsets) < (32) * 8))
                 & ((shard_y == 0))
             )
-            qkv_q_value = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192) + (((qkv_q_outer_index)) * 4096 + (((((qkv_q_outer_index) % 1)) + (shard_x))) * 256 + ((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8))),
-                mask=qkv_q_mask, other=0.0,
+            qkv_q_partial_lanes = tl.arange(0, 8)[:, None]
+            qkv_q_partial_member = tl.minimum(
+                qkv_q_partial_lanes, 7
+            )
+            qkv_q_partial_values = tl.load(
+                workspace.to(tl.pointer_type(tl.bfloat16))
+                + (((((0) * 16 + (((((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))))) // 8)) // 1) % 512)) // 8) % 16)))) + (((((qkv_q_partial_member) % 8)) * 16 + (0))))) * 256
+                + (((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))))) // 8)) // 512) % 1)) * 256 + (((((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))))) // 8)) // 1) % 512)) // 128) * 8 + ((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))))) // 8)) // 1) % 512)) % 8)) * 8 + (((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))))) % 8))),
+                mask=(qkv_q_mask)[None, :]
+                    & (qkv_q_partial_lanes < 8),
+                other=0.0,
             ).to(tl.float32)
-            qkv_q_partner = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192) + (((qkv_q_outer_index)) * 4096 + (((((qkv_q_outer_index) % 1)) + (shard_x))) * 256 + (((tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))) // 8)) * 8 + (((tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))) % 8))),
-                mask=qkv_q_mask, other=0.0,
+            qkv_q_value = tl.sum(
+                qkv_q_partial_values, axis=0
+            ).to(tl.bfloat16).to(tl.float32)
+
+            qkv_q_partner_partial_lanes = tl.arange(0, 8)[:, None]
+            qkv_q_partial_member = tl.minimum(
+                qkv_q_partner_partial_lanes, 7
+            )
+            qkv_q_partner_partial_values = tl.load(
+                workspace.to(tl.pointer_type(tl.bfloat16))
+                + (((((0) * 16 + (((((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + (tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 1) % 512)) // 8) % 16)))) + (((((qkv_q_partial_member) % 8)) * 16 + (0))))) * 256
+                + (((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + (tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 512) % 1)) * 256 + (((((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + (tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 1) % 512)) // 128) * 8 + ((((((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + (tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 1) % 512)) % 8)) * 8 + (((((((((0) * 1 + ((qkv_q_outer_index)))) * 16 + (((((qkv_q_outer_index) % 1)) + (shard_x))))) * 256 + (tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) >= 64, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))), tl.where(((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) < 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) + 64 // 2, ((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) - 64 // 2))))) % 8))),
+                mask=(qkv_q_mask)[None, :]
+                    & (qkv_q_partner_partial_lanes < 8),
+                other=0.0,
             ).to(tl.float32)
+            qkv_q_partner_value = tl.sum(
+                qkv_q_partner_partial_values, axis=0
+            ).to(tl.bfloat16).to(tl.float32)
+
+            qkv_q_partner = qkv_q_partner_value
             qkv_q_scale = tl.load(
                 n36_constant_parameter + (((((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) // 8)) * 8 + ((((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) % 8))),
                 mask=qkv_q_mask, other=0.0,
@@ -3089,7 +2998,7 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
                 qkv_q_result, qkv_q_normalized,
             )
             tl.store(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 512) + (((qkv_q_outer_index)) * 4096 + (((((qkv_q_outer_index) % 1)) + (shard_x))) * 256 + ((((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) // 8)) * 8 + (((qkv_q_element_offsets) % 8))),
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 40960) + (((qkv_q_outer_index)) * 4096 + (((((qkv_q_outer_index) % 1)) + (shard_x))) * 256 + ((((((((qkv_q_element_offsets) // 8))) * 8 + (((qkv_q_element_offsets) % 8)))) // 8)) * 8 + (((qkv_q_element_offsets) % 8))),
                 qkv_q_result,
                 mask=(
                     qkv_q_mask & (((qkv_q_outer_index) < (1) * 1) & ((((qkv_q_outer_index) % 1)) < (1) * 1) & ((qkv_q_element_offsets) < (32) * 8))
@@ -3097,10 +3006,41 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
                 ),
             )
     for qkv_k_outer_index in tl.range(0, 1):
-        qkv_k_square_sum = tl.load(
-            (block_local_data.to(tl.pointer_type(tl.float32)) + 192) + ((0) * 1 + (qkv_k_outer_index) * 1 + (((qkv_k_outer_index) % 1)) * 1 + (0) * 1),
-            mask=((shard_x == 0)) & (((qkv_k_outer_index) < (1)) & ((((qkv_k_outer_index) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_y) * -1) + 2)))))), other=0.0,
-        ).to(tl.float32)
+        qkv_k_square_sum = tl.full((), 0.0, tl.float32)
+        for qkv_k_reduce_start in tl.range(
+            0, 256, 128
+        ):
+            qkv_k_reduce_offsets = (
+                qkv_k_reduce_start + tl.arange(0, 128)
+            )
+            qkv_k_reduce_mask = (
+                (qkv_k_reduce_offsets < 256)
+                & (((qkv_k_outer_index) < (1) * 1) & ((((qkv_k_outer_index) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_x) * -1) + 2)))) * 1) & ((qkv_k_reduce_offsets) < (32) * 8))
+                & ((shard_y == 0))
+            )
+            qkv_k_reduce_partial_lanes = tl.arange(0, 8)[:, None]
+            qkv_k_partial_member = tl.minimum(
+                qkv_k_reduce_partial_lanes, 7
+            )
+            qkv_k_reduce_partial_values = tl.load(
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 32768)
+                + (((((0) * 16 + (((((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_reduce_offsets) // 8))) * 8 + (((qkv_k_reduce_offsets) % 8)))))) // 8)) // 1) % 64)) // 4) % 16)))) + (((((qkv_k_partial_member) % 8)) * 16 + (0))))) * 32
+                + (((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_reduce_offsets) // 8))) * 8 + (((qkv_k_reduce_offsets) % 8)))))) // 8)) // 64) % 1)) * 32 + (((((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_reduce_offsets) // 8))) * 8 + (((qkv_k_reduce_offsets) % 8)))))) // 8)) // 1) % 64)) // 64) * 4 + ((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_reduce_offsets) // 8))) * 8 + (((qkv_k_reduce_offsets) % 8)))))) // 8)) // 1) % 64)) % 4)) * 8 + (((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_reduce_offsets) // 8))) * 8 + (((qkv_k_reduce_offsets) % 8)))))) % 8))),
+                mask=(qkv_k_reduce_mask)[None, :]
+                    & (qkv_k_reduce_partial_lanes < 8),
+                other=0.0,
+            ).to(tl.float32)
+            qkv_k_reduce_value = tl.sum(
+                qkv_k_reduce_partial_values, axis=0
+            ).to(tl.bfloat16).to(tl.float32)
+
+            qkv_k_square_sum += tl.sum(
+                tl.where(
+                    qkv_k_reduce_mask,
+                    qkv_k_reduce_value * qkv_k_reduce_value,
+                    0.0,
+                ), axis=0,
+            )
         qkv_k_mean = 0.0
         qkv_k_variance = (
             qkv_k_square_sum / 256
@@ -3116,17 +3056,42 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
             )
             qkv_k_mask = (
                 (qkv_k_element_offsets < 256)
-                & (((qkv_k_outer_index) < (1) * 1) & ((((qkv_k_outer_index) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_y) * -1) + 2)))) * 1) & ((qkv_k_element_offsets) < (32) * 8))
-                & ((shard_x == 0))
+                & (((qkv_k_outer_index) < (1) * 1) & ((((qkv_k_outer_index) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_x) * -1) + 2)))) * 1) & ((qkv_k_element_offsets) < (32) * 8))
+                & ((shard_y == 0))
             )
-            qkv_k_value = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 12288) + (((qkv_k_outer_index)) * 512 + (((shard_y) + ((((qkv_k_outer_index) % 1)) * 8))) * 256 + ((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8))),
-                mask=qkv_k_mask, other=0.0,
+            qkv_k_partial_lanes = tl.arange(0, 8)[:, None]
+            qkv_k_partial_member = tl.minimum(
+                qkv_k_partial_lanes, 7
+            )
+            qkv_k_partial_values = tl.load(
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 32768)
+                + (((((0) * 16 + (((((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))))) // 8)) // 1) % 64)) // 4) % 16)))) + (((((qkv_k_partial_member) % 8)) * 16 + (0))))) * 32
+                + (((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))))) // 8)) // 64) % 1)) * 32 + (((((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))))) // 8)) // 1) % 64)) // 64) * 4 + ((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))))) // 8)) // 1) % 64)) % 4)) * 8 + (((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))))) % 8))),
+                mask=(qkv_k_mask)[None, :]
+                    & (qkv_k_partial_lanes < 8),
+                other=0.0,
             ).to(tl.float32)
-            qkv_k_partner = tl.load(
-                (workspace.to(tl.pointer_type(tl.bfloat16)) + 12288) + (((qkv_k_outer_index)) * 512 + (((shard_y) + ((((qkv_k_outer_index) % 1)) * 8))) * 256 + (((tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))) // 8)) * 8 + (((tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))) % 8))),
-                mask=qkv_k_mask, other=0.0,
+            qkv_k_value = tl.sum(
+                qkv_k_partial_values, axis=0
+            ).to(tl.bfloat16).to(tl.float32)
+
+            qkv_k_partner_partial_lanes = tl.arange(0, 8)[:, None]
+            qkv_k_partial_member = tl.minimum(
+                qkv_k_partner_partial_lanes, 7
+            )
+            qkv_k_partner_partial_values = tl.load(
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 32768)
+                + (((((0) * 16 + (((((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + (tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 1) % 64)) // 4) % 16)))) + (((((qkv_k_partial_member) % 8)) * 16 + (0))))) * 32
+                + (((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + (tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 64) % 1)) * 32 + (((((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + (tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 1) % 64)) // 64) * 4 + ((((((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + (tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))))) // 8)) // 1) % 64)) % 4)) * 8 + (((((((((0) * 1 + ((qkv_k_outer_index)))) * 2 + (((shard_x) + ((((qkv_k_outer_index) % 1)) * 16))))) * 256 + (tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) >= 64, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))), tl.where(((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) + 64 // 2, ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) - 64 // 2))))) % 8))),
+                mask=(qkv_k_mask)[None, :]
+                    & (qkv_k_partner_partial_lanes < 8),
+                other=0.0,
             ).to(tl.float32)
+            qkv_k_partner_value = tl.sum(
+                qkv_k_partner_partial_values, axis=0
+            ).to(tl.bfloat16).to(tl.float32)
+
+            qkv_k_partner = qkv_k_partner_value
             qkv_k_scale = tl.load(
                 n41_constant_parameter + (((((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) // 8)) * 8 + ((((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) % 8))),
                 mask=qkv_k_mask, other=0.0,
@@ -3172,10 +3137,18 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
                 ((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) < 64,
                 qkv_k_result, qkv_k_normalized,
             )
+            qkv_cache_token_position = qkv_cache_position + ((qkv_k_outer_index))
+            qkv_cache_logical_block = qkv_cache_token_position // 256
+            qkv_cache_block_offset = qkv_cache_token_position % 256
+            qkv_cache_physical_block = tl.load(
+                decode_attention_state_4 + qkv_cache_logical_block + tl.zeros_like(qkv_k_mask).to(tl.int64),
+                mask=qkv_k_mask, other=0,
+            ).to(tl.int64)
+
             tl.store(
-                decode_attention_state_0 + (((qkv_cache_physical_block)) * 2621440 + ((decode_attention_layer_id)) * 262144 + ((0)) * 131072 + ((qkv_cache_block_offset)) * 512 + ((((shard_y) + ((((qkv_k_outer_index) % 1)) * 8)))) * 256 + (((((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) // 8))) * 8 + ((((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) % 8))),
+                decode_attention_state_0 + (((qkv_cache_physical_block)) * 2621440 + ((decode_attention_layer_id)) * 262144 + ((0)) * 131072 + ((qkv_cache_block_offset)) * 512 + ((((shard_x) + ((((qkv_k_outer_index) % 1)) * 16)))) * 256 + (((((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) // 8))) * 8 + ((((((((qkv_k_element_offsets) // 8))) * 8 + (((qkv_k_element_offsets) % 8)))) % 8))),
                 qkv_k_result,
-                mask=qkv_k_mask & ((shard_x == 0)),
+                mask=qkv_k_mask & ((shard_y == 0)),
             )
     for qkv_v_start in tl.range(0, 256, 128):
         qkv_v_offsets = qkv_v_start + tl.arange(0, 128)
@@ -3183,10 +3156,30 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
             (qkv_v_offsets < 256) & (((((qkv_v_offsets) // 256)) < (1) * 1) & ((((((qkv_v_offsets) // 256)) % 1)) < (tl.minimum(1, tl.maximum(0, (((shard_y) * -1) + 2)))) * 1) & ((((qkv_v_offsets) % 256)) < (32) * 8))
             & ((shard_x == 1))
         )
-        qkv_v_value = tl.load(
-            workspace.to(tl.pointer_type(tl.bfloat16)) + (((((qkv_v_offsets) // 256))) * 512 + (((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8))) * 256 + ((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8))),
-            mask=qkv_v_mask, other=0.0,
+        qkv_v_partial_lanes = tl.arange(0, 8)[:, None]
+        qkv_v_partial_member = tl.minimum(
+            qkv_v_partial_lanes, 7
         )
+        qkv_v_partial_values = tl.load(
+            (workspace.to(tl.pointer_type(tl.bfloat16)) + 36864)
+            + (((((0) * 16 + (((((((((((((((0) * 1 + ((((qkv_v_offsets) // 256))))) * 2 + (((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8))))) * 256 + ((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))))) // 8)) // 1) % 64)) // 4) % 16)))) + (((((qkv_v_partial_member) % 8)) * 16 + (0))))) * 32
+            + (((((((((((((0) * 1 + ((((qkv_v_offsets) // 256))))) * 2 + (((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8))))) * 256 + ((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))))) // 8)) // 64) % 1)) * 32 + (((((((((((((((0) * 1 + ((((qkv_v_offsets) // 256))))) * 2 + (((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8))))) * 256 + ((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))))) // 8)) // 1) % 64)) // 64) * 4 + ((((((((((((0) * 1 + ((((qkv_v_offsets) // 256))))) * 2 + (((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8))))) * 256 + ((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))))) // 8)) // 1) % 64)) % 4)) * 8 + (((((((((0) * 1 + ((((qkv_v_offsets) // 256))))) * 2 + (((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8))))) * 256 + ((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))))) % 8))),
+            mask=(qkv_v_mask)[None, :]
+                & (qkv_v_partial_lanes < 8),
+            other=0.0,
+        ).to(tl.float32)
+        qkv_v_value = tl.sum(
+            qkv_v_partial_values, axis=0
+        ).to(tl.bfloat16).to(tl.float32)
+
+        qkv_cache_token_position = qkv_cache_position + ((((qkv_v_offsets) // 256)))
+        qkv_cache_logical_block = qkv_cache_token_position // 256
+        qkv_cache_block_offset = qkv_cache_token_position % 256
+        qkv_cache_physical_block = tl.load(
+            decode_attention_state_4 + qkv_cache_logical_block + tl.zeros_like(qkv_v_mask).to(tl.int64),
+            mask=qkv_v_mask, other=0,
+        ).to(tl.int64)
+
         tl.store(
             decode_attention_state_0 + (((qkv_cache_physical_block)) * 2621440 + ((decode_attention_layer_id)) * 262144 + ((1)) * 131072 + ((qkv_cache_block_offset)) * 512 + ((((shard_y) + ((((((qkv_v_offsets) // 256)) % 1)) * 8)))) * 256 + (((((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))) // 8))) * 8 + ((((((((((qkv_v_offsets) % 256)) // 8))) * 8 + (((((qkv_v_offsets) % 256)) % 8)))) % 8))),
             qkv_v_value,
@@ -3194,12 +3187,71 @@ def _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_con
         )
     if shard_index == 0:
         tl.store(decode_attention_state_3, qkv_cache_position)
-        if decode_attention_advance_sequence:
-            tl.store(decode_attention_state_2, qkv_cache_position + 1)
+        tl.store(decode_attention_state_1, 0)
+        tl.store(decode_attention_state_1 + 1, 1)
+
+
+@triton.jit(noinline=True)
+def _flagmega_decode_attention_call_3_n48_qkv_rope_with_cache__advance(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence):
+    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
+    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+    shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    if shard_index == 0:
+        qkv_cache_position = tl.load(decode_attention_state_2).to(tl.int64)
+        tl.store(decode_attention_state_2, qkv_cache_position + 1)
+
+
+@triton.jit
+def _flagmega_decode_attention_call_3_n48_qkv_rope_with_cache(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence):
+    _flagmega_decode_attention_call_3_n48_qkv_rope_with_cache__write(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence)
+    if decode_attention_advance_sequence:
+        # Keep the old cache-position epoch alive until every owner has read it.
+        # The arithmetic stays in a reusable device function; no values cross
+        # this entry-relative grid barrier in registers.
+        tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+        _flagmega_decode_attention_call_3_n48_qkv_rope_with_cache__advance(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence)
 
 
 # flagmega-kernel: paged_attention_partial/decode
 @triton.jit
+def _flagmega_paged_attention_qk_mma(query, cache, key_base, valid, head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    reduction_tile: tl.constexpr = min(64, head_dim)
+    score = tl.zeros((16, token_tile), tl.float32)
+    for start in tl.range(0, head_dim, reduction_tile):
+        dimension = start + tl.arange(0, reduction_tile)
+        query_slice = tl.gather(query, dimension, axis=0).to(tl.bfloat16)
+        query_matrix = tl.broadcast_to(query_slice[None, :], (16, reduction_tile))
+        key = tl.load(cache + key_base[None, :] + dimension[:, None],
+                      mask=valid[None, :] & (dimension[:, None] < head_dim), other=0).to(tl.bfloat16)
+        score = tl.dot(query_matrix, key, score)
+    return tl.sum(tl.where(rows[:, None] == 0, score, 0.0), axis=0)
+
+
+@triton.jit
+def _flagmega_paged_attention_pv_mma(probability, cache, value_base, valid, previous,
+                                   head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    accumulator = tl.broadcast_to(previous[None, :], (16, previous.shape[0]))
+    reduction_tile: tl.constexpr = min(32, token_tile)
+    dimension = tl.arange(0, head_dim)
+    for start in tl.range(0, token_tile, reduction_tile):
+        offsets = start + tl.arange(0, reduction_tile)
+        probability_slice = tl.gather(probability, offsets, axis=0).to(tl.bfloat16)
+        probability_matrix = tl.broadcast_to(probability_slice[None, :], (16, reduction_tile))
+        base = tl.gather(value_base, offsets, axis=0)
+        mask = tl.gather(valid, offsets, axis=0)
+        value = tl.load(cache + base[:, None] + dimension[None, :], mask=mask[:, None], other=0).to(tl.bfloat16)
+        accumulator = tl.dot(probability_matrix, value, accumulator)
+    return tl.sum(tl.where(rows[:, None] == 0, accumulator, 0.0), axis=0)
+
+
+@triton.jit(noinline=True)
 def _flagmega_paged_attention_partial(
     query,
     kv_cache,
@@ -3223,6 +3275,10 @@ def _flagmega_paged_attention_partial(
     query_dim_stride: tl.constexpr,
     query_lanes: tl.constexpr,
     accumulator_dim_stride: tl.constexpr,
+    num_blocks: tl.constexpr,
+    online_bf16: tl.constexpr = False,
+    softmax_block_size: tl.constexpr = 64,
+    reverse_softmax: tl.constexpr = False,
 ):
     """Portable per-context-shard online-softmax state computation."""
     dimension = tl.arange(0, head_dim)
@@ -3233,8 +3289,14 @@ def _flagmega_paged_attention_partial(
         # so it cannot describe the just-written token for every reusable
         # decode-layer invocation.
         context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
-        token_begin = (context_length * context_shard) // context_shards
-        token_end = (context_length * (context_shard + 1)) // context_shards
+        if online_bf16:
+            # A separately rounded local origin changes the logical online
+            # softmax. One context owner retains the declared full traversal.
+            token_begin = tl.where(context_shard == 0, 0, context_length)
+            token_end = context_length
+        else:
+            token_begin = (context_length * context_shard) // context_shards
+            token_end = (context_length * (context_shard + 1)) // context_shards
         # ``query`` and all partial-state pointers are already rebased to the
         # selected owner-local head by the call ABI. ``head`` remains the
         # logical head coordinate and is used only for cache-head selection.
@@ -3245,37 +3307,75 @@ def _flagmega_paged_attention_partial(
         running_max = -float("inf")
         running_sum = 0.0
         accumulator = tl.zeros((head_dim,), tl.float32)
-        for token_start in tl.range(token_begin, token_end, token_tile):
+        steps = tl.cdiv(token_end - token_begin, softmax_block_size if online_bf16 else token_tile)
+        for step in tl.range(0, steps):
+            if online_bf16:
+                token_start = token_begin + ((steps - 1 - step) if reverse_softmax else step) * softmax_block_size
+            else:
+                token_start = token_begin + step * token_tile
             token = token_start + token_lane
-            valid = token < token_end
+            valid = (token < token_end) & ((token_lane < softmax_block_size) if online_bf16 else True)
             logical_block = token // block_size
             block_offset = token % block_size
+            # ``token < token_end`` bounds which tokens are logically part of
+            # the sequence, but not whether ``block_table`` has actually been
+            # refreshed out to ``logical_block`` for *this* call -- the host
+            # driver only overwrites its leading ``width`` columns per step
+            # (see vllm_adapter.py's block_table update), so a stale/garbage
+            # tail entry can otherwise compute a genuinely out-of-bounds
+            # kv_cache address for an in-range token and fault the whole
+            # device (observed as dmesg "XID: 24 mmu page fault", which the
+            # in-kernel grid barrier then surfaces as a permanent hang: the
+            # faulted program never reaches its barrier and every other
+            # program spins forever). Clamp to the cache's real block count
+            # so a stale entry can only select a physically valid line.
             physical_block = tl.load(block_table + logical_block, mask=valid, other=0)
+            physical_block = tl.minimum(tl.maximum(physical_block, 0), num_blocks - 1)
             key_base = (
                 ((((physical_block * num_layers + active_layer) * 2) * block_size
                    + block_offset) * num_kv_heads + kv_head) * head_dim
             )
+            # Keep the address calculation in an integer type at the pointer
+            # boundary; nested persistent-kernel specialization can otherwise
+            # promote this mixed expression before tl.load sees it.
+            key_base = key_base.to(tl.int64)
             value_base = key_base + block_size * num_kv_heads * head_dim
-            key_value = tl.load(
+            if online_bf16:
+                score = _flagmega_paged_attention_qk_mma(
+                    query_value, kv_cache, key_base, valid, head_dim, token_tile) * scale
+            else:
+                key_value = tl.load(
                 kv_cache + key_base[:, None] + dimension[None, :],
                 mask=valid[:, None],
                 other=0.0,
-            ).to(tl.float32)
-            score = tl.sum(key_value * query_value[None, :], axis=1) * scale
+                ).to(tl.float32)
+                score = tl.sum(key_value * query_value[None, :], axis=1) * scale
             score = tl.where(valid, score, -float("inf"))
             tile_max = tl.max(score, axis=0)
             updated_max = tl.maximum(running_max, tile_max)
-            previous_scale = tl.exp(running_max - updated_max)
-            probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
-            value_value = tl.load(
+            if online_bf16:
+                previous_scale = tl.exp2((running_max - updated_max) * 1.4426950408889634)
+                probability = tl.where(valid, tl.exp2(score * 1.4426950408889634
+                                                      - updated_max * 1.4426950408889634), 0.0)
+                product_probability = probability.to(tl.bfloat16).to(tl.float32)
+            else:
+                previous_scale = tl.exp(running_max - updated_max)
+                probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
+                product_probability = probability
+            if online_bf16:
+                accumulator = _flagmega_paged_attention_pv_mma(
+                    product_probability, kv_cache, value_base, valid, accumulator * previous_scale,
+                    head_dim, token_tile)
+            else:
+                value_value = tl.load(
                 kv_cache + value_base[:, None] + dimension[None, :],
                 mask=valid[:, None],
                 other=0.0,
-            ).to(tl.float32)
-            accumulator = (
-                accumulator * previous_scale
-                + tl.sum(probability[:, None] * value_value, axis=0)
-            )
+                ).to(tl.float32)
+                accumulator = (
+                    accumulator * previous_scale
+                    + tl.sum(product_probability[:, None] * value_value, axis=0)
+                )
             running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
             running_max = updated_max
         # Each pointer is already rebased to this physical owner's compact
@@ -3290,32 +3390,308 @@ def _flagmega_paged_attention_partial(
             partial_accumulator + dimension * accumulator_dim_stride,
             accumulator,
         )
+
+_flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [1, 1], [1, 32], [8, 1], [1, 0],
+    )
+)
+# flagmega-kernel: paged_attention_partial/decode
+@triton.jit
+def _flagmega_paged_attention_qk_mma(query, cache, key_base, valid, head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    reduction_tile: tl.constexpr = min(64, head_dim)
+    score = tl.zeros((16, token_tile), tl.float32)
+    for start in tl.range(0, head_dim, reduction_tile):
+        dimension = start + tl.arange(0, reduction_tile)
+        query_slice = tl.gather(query, dimension, axis=0).to(tl.bfloat16)
+        query_matrix = tl.broadcast_to(query_slice[None, :], (16, reduction_tile))
+        key = tl.load(cache + key_base[None, :] + dimension[:, None],
+                      mask=valid[None, :] & (dimension[:, None] < head_dim), other=0).to(tl.bfloat16)
+        score = tl.dot(query_matrix, key, score)
+    return tl.sum(tl.where(rows[:, None] == 0, score, 0.0), axis=0)
+
+
+@triton.jit
+def _flagmega_paged_attention_pv_mma(probability, cache, value_base, valid, previous,
+                                   head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    accumulator = tl.broadcast_to(previous[None, :], (16, previous.shape[0]))
+    reduction_tile: tl.constexpr = min(32, token_tile)
+    dimension = tl.arange(0, head_dim)
+    for start in tl.range(0, token_tile, reduction_tile):
+        offsets = start + tl.arange(0, reduction_tile)
+        probability_slice = tl.gather(probability, offsets, axis=0).to(tl.bfloat16)
+        probability_matrix = tl.broadcast_to(probability_slice[None, :], (16, reduction_tile))
+        base = tl.gather(value_base, offsets, axis=0)
+        mask = tl.gather(valid, offsets, axis=0)
+        value = tl.load(cache + base[:, None] + dimension[None, :], mask=mask[:, None], other=0).to(tl.bfloat16)
+        accumulator = tl.dot(probability_matrix, value, accumulator)
+    return tl.sum(tl.where(rows[:, None] == 0, accumulator, 0.0), axis=0)
+
+
+@triton.jit(noinline=True)
+def _flagmega_paged_attention_warp_rows(
+    query,
+    kv_cache,
+    slot_mapping,
+    block_table,
+    layer_id,
+    partial_max,
+    partial_sum,
+    partial_accumulator,
+    context_shard,
+    head,
+    query_token,
+    num_layers: tl.constexpr,
+    num_query_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    block_size: tl.constexpr,
+    scale: tl.constexpr,
+    token_tile: tl.constexpr,
+    context_shards: tl.constexpr,
+    query_dim_stride: tl.constexpr,
+    query_lanes: tl.constexpr,
+    accumulator_dim_stride: tl.constexpr,
+    num_blocks: tl.constexpr,
+    online_bf16: tl.constexpr = False,
+    softmax_block_size: tl.constexpr = 64,
+    reverse_softmax: tl.constexpr = False,
+):
+    """Portable per-context-shard online-softmax state computation."""
+    dimension = tl.arange(0, head_dim)
+    token_lane = tl.arange(0, token_tile)
+    if head < num_query_heads:
+        # Cache update publishes the current query chunk base through
+        # slot_mapping. sequence_lengths advances only after the final layer,
+        # so it cannot describe the just-written token for every reusable
+        # decode-layer invocation.
+        context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
+        if online_bf16:
+            # A separately rounded local origin changes the logical online
+            # softmax. One context owner retains the declared full traversal.
+            token_begin = tl.where(context_shard == 0, 0, context_length)
+            token_end = context_length
+        else:
+            token_begin = (context_length * context_shard) // context_shards
+            token_end = (context_length * (context_shard + 1)) // context_shards
+        # ``query`` and all partial-state pointers are already rebased to the
+        # selected owner-local head by the call ABI. ``head`` remains the
+        # logical head coordinate and is used only for cache-head selection.
+        query_offset = (dimension // query_lanes) * query_dim_stride + dimension % query_lanes
+        query_value = tl.load(query + query_offset).to(tl.float32)
+        kv_head = head // (num_query_heads // num_kv_heads)
+        active_layer = layer_id
+        running_max = -float("inf")
+        running_sum = 0.0
+        accumulator = tl.zeros((head_dim,), tl.float32)
+        steps = tl.cdiv(token_end - token_begin, softmax_block_size if online_bf16 else token_tile)
+        for step in tl.range(0, steps):
+            if online_bf16:
+                token_start = token_begin + ((steps - 1 - step) if reverse_softmax else step) * softmax_block_size
+            else:
+                token_start = token_begin + step * token_tile
+            token = token_start + token_lane
+            valid = (token < token_end) & ((token_lane < softmax_block_size) if online_bf16 else True)
+            logical_block = token // block_size
+            block_offset = token % block_size
+            # ``token < token_end`` bounds which tokens are logically part of
+            # the sequence, but not whether ``block_table`` has actually been
+            # refreshed out to ``logical_block`` for *this* call -- the host
+            # driver only overwrites its leading ``width`` columns per step
+            # (see vllm_adapter.py's block_table update), so a stale/garbage
+            # tail entry can otherwise compute a genuinely out-of-bounds
+            # kv_cache address for an in-range token and fault the whole
+            # device (observed as dmesg "XID: 24 mmu page fault", which the
+            # in-kernel grid barrier then surfaces as a permanent hang: the
+            # faulted program never reaches its barrier and every other
+            # program spins forever). Clamp to the cache's real block count
+            # so a stale entry can only select a physically valid line.
+            physical_block = tl.load(block_table + logical_block, mask=valid, other=0)
+            physical_block = tl.minimum(tl.maximum(physical_block, 0), num_blocks - 1)
+            key_base = (
+                ((((physical_block * num_layers + active_layer) * 2) * block_size
+                   + block_offset) * num_kv_heads + kv_head) * head_dim
+            )
+            # Keep the address calculation in an integer type at the pointer
+            # boundary; nested persistent-kernel specialization can otherwise
+            # promote this mixed expression before tl.load sees it.
+            key_base = key_base.to(tl.int64)
+            value_base = key_base + block_size * num_kv_heads * head_dim
+            if online_bf16:
+                score = _flagmega_paged_attention_qk_mma(
+                    query_value, kv_cache, key_base, valid, head_dim, token_tile) * scale
+            else:
+                key_value = tl.load(
+                kv_cache + key_base[:, None] + dimension[None, :],
+                mask=valid[:, None],
+                other=0.0,
+                ).to(tl.float32)
+                key_value = tle.gpu.set_layout(
+                    key_value, _flagmega_paged_attention_partial_reduction_layout
+                )
+                score = tl.sum(key_value * query_value[None, :], axis=1) * scale
+            score = tl.where(valid, score, -float("inf"))
+            tile_max = tl.max(score, axis=0)
+            updated_max = tl.maximum(running_max, tile_max)
+            if online_bf16:
+                previous_scale = tl.exp2((running_max - updated_max) * 1.4426950408889634)
+                probability = tl.where(valid, tl.exp2(score * 1.4426950408889634
+                                                      - updated_max * 1.4426950408889634), 0.0)
+                product_probability = probability.to(tl.bfloat16).to(tl.float32)
+            else:
+                previous_scale = tl.exp(running_max - updated_max)
+                probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
+                product_probability = probability
+            if online_bf16:
+                accumulator = _flagmega_paged_attention_pv_mma(
+                    product_probability, kv_cache, value_base, valid, accumulator * previous_scale,
+                    head_dim, token_tile)
+            else:
+                value_value = tl.load(
+                kv_cache + value_base[:, None] + dimension[None, :],
+                mask=valid[:, None],
+                other=0.0,
+                ).to(tl.float32)
+                value_value = tle.gpu.set_layout(
+                    value_value, _flagmega_paged_attention_partial_reduction_layout
+                )
+                accumulator = (
+                    accumulator * previous_scale
+                    + tl.sum(product_probability[:, None] * value_value, axis=0)
+                )
+            running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
+            running_max = updated_max
+        # Each pointer is already rebased to this physical owner's compact
+        # partial-state component by the call ABI.  The component contains one
+        # local head, so both context_shard and the global head coordinate have
+        # already selected storage.  Reapplying ``head`` here writes into a
+        # later owner's component (and can leave this component undefined).
+        partial_index = 0
+        tl.store(partial_max + partial_index, running_max)
+        tl.store(partial_sum + partial_index, running_sum)
+        tl.store(
+            partial_accumulator + dimension * accumulator_dim_stride,
+            accumulator,
+        )
+
+
+@triton.jit
+def _flagmega_paged_attention_decode_dispatch(
+    query, kv_cache, slot_mapping, block_table, layer_id,
+    partial_max, partial_sum, partial_accumulator, context_shard,
+    head, query_token, num_layers: tl.constexpr, num_query_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr, head_dim: tl.constexpr, block_size: tl.constexpr,
+    scale: tl.constexpr, token_tile: tl.constexpr, context_shards: tl.constexpr,
+    query_dim_stride: tl.constexpr, query_lanes: tl.constexpr,
+    accumulator_dim_stride: tl.constexpr, num_blocks: tl.constexpr,
+    online_bf16: tl.constexpr = False, softmax_block_size: tl.constexpr = 64,
+    reverse_softmax: tl.constexpr = False,
+):
+    if online_bf16:
+        _flagmega_paged_attention_partial(
+            query, kv_cache, slot_mapping, block_table, layer_id,
+            partial_max, partial_sum, partial_accumulator, context_shard,
+            head, query_token, num_layers, num_query_heads, num_kv_heads,
+            head_dim, block_size, scale, token_tile, context_shards,
+            query_dim_stride, query_lanes, accumulator_dim_stride, num_blocks,
+            online_bf16, softmax_block_size, reverse_softmax,
+        )
+
+    else:
+        context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
+        if context_length <= context_shards * 32:
+            _flagmega_paged_attention_partial(
+                query, kv_cache, slot_mapping, block_table, layer_id,
+                partial_max, partial_sum, partial_accumulator, context_shard,
+                head, query_token, num_layers, num_query_heads, num_kv_heads,
+                head_dim, block_size, scale, 32, context_shards,
+                query_dim_stride, query_lanes, accumulator_dim_stride, num_blocks,
+                online_bf16, softmax_block_size, reverse_softmax,
+            )
+
+        else:
+            _flagmega_paged_attention_warp_rows(
+                query, kv_cache, slot_mapping, block_table, layer_id,
+                partial_max, partial_sum, partial_accumulator, context_shard,
+                head, query_token, num_layers, num_query_heads, num_kv_heads,
+                head_dim, block_size, scale, token_tile, context_shards,
+                query_dim_stride, query_lanes, accumulator_dim_stride, num_blocks,
+                online_bf16, softmax_block_size, reverse_softmax,
+            )
+
+
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_9_n49_partial(workspace, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id):
+def _flagmega_decode_attention_call_4_n49_partial(workspace, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for attention_state_start in tl.range(0, 1):
         attention_state_offsets = attention_state_start
         if ((attention_state_offsets) < (1)) & ((((attention_state_offsets) % 1)) < (1)) & ((((attention_state_offsets) % 1)) < (1)):
-            _flagmega_paged_attention_partial(
-                ((workspace.to(tl.pointer_type(tl.bfloat16)) + 512) + (((attention_state_offsets)) * 4096 + (((((attention_state_offsets) % 1)) + (shard_x))) * 256 + ((0)) * 8)), decode_attention_state_0,
+            _flagmega_paged_attention_decode_dispatch(
+                ((workspace.to(tl.pointer_type(tl.bfloat16)) + 40960) + (((attention_state_offsets)) * 4096 + (((((attention_state_offsets) % 1)) + (shard_x))) * 256 + ((0)) * 8)), decode_attention_state_0,
                 decode_attention_state_3, decode_attention_state_4,
                 decode_attention_layer_id, ((workspace.to(tl.pointer_type(tl.float32)) + (shard_index) * 1) + ((attention_state_offsets) * 1 + (((attention_state_offsets) % 1)) * 1 + (0) * 1)),
-                (((workspace.to(tl.pointer_type(tl.float32)) + 128) + (shard_index) * 1) + ((attention_state_offsets) * 1 + (((attention_state_offsets) % 1)) * 1 + (0) * 1)), (((workspace.to(tl.pointer_type(tl.float32)) + 16640) + (shard_index) * 256) + ((attention_state_offsets) * 256 + (((attention_state_offsets) % 1)) * 256 + (0) * 1)),
+                (((workspace.to(tl.pointer_type(tl.float32)) + 128) + (shard_index) * 1) + ((attention_state_offsets) * 1 + (((attention_state_offsets) % 1)) * 1 + (0) * 1)), (((workspace.to(tl.pointer_type(tl.float32)) + 33024) + (shard_index) * 256) + ((attention_state_offsets) * 256 + (((attention_state_offsets) % 1)) * 256 + (0) * 1)),
                 shard_y, ((((attention_state_offsets) % 1)) + (shard_x)),
                 (attention_state_offsets),
                 10, 16,
                 2, 256,
                 256, 0.0625,
-                32, 8,
+                64, 8,
                 8, 8,
-                1,
+                1, 16,
+                False,
+                64,
+                False,
             )
+
+
+# flagmega-kernel: norm_stats/local platform=generic
+@triton.jit
+def _flagmega_norm_stats_load(source, mask):
+    return tl.load(source, mask=mask, other=0.0).to(tl.float32)
+@triton.jit(noinline=True)
+
+def _flagmega_main_call_3_layer_0_call_norm_stats(workspace):
+    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
+    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+    shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    for norm_outer_index in tl.range(0, 1):
+        norm_square_sum = tl.zeros((128,), tl.float32)
+        for norm_reduction_start in tl.range(
+            0, 2048, 128
+        ):
+            norm_reduction_offsets = (
+                norm_reduction_start + tl.arange(0, 128)
+            )
+            norm_mask = (
+                (norm_reduction_offsets < 2048)
+                & (((norm_outer_index) < (1)) & ((((norm_reduction_offsets) // 8)) < (256)))
+            )
+            norm_value = _flagmega_norm_stats_load(
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 20480) + (((norm_outer_index)) * 2048 + ((((norm_reduction_offsets) // 8))) * 8 + (((norm_reduction_offsets) % 8))), norm_mask,
+            )
+            norm_square_sum += tl.where(
+                norm_mask, norm_value * norm_value, 0.0,
+            )
+        norm_store_mask = (((norm_outer_index) < (1))) & ((shard_y == 0) & (shard_x == 0))
+        tl.store(
+            (workspace.to(tl.pointer_type(tl.float32)) + 11264) + (((0)) * 1 + ((norm_outer_index)) * 1 + ((0)) * 1),
+            tl.sum(norm_square_sum, axis=0),
+            mask=norm_store_mask,
+        )
 
 
 # flagmega-kernel: dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats platform=generic
@@ -3348,6 +3724,7 @@ def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_c
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_local_n_source = tl.arange(0, 16)
     dense_local_n = tle.gpu.set_layout(
@@ -3408,7 +3785,7 @@ def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_c
         )
         dense_source_value = tle.gpu.set_layout(
             tl.load(
-                workspace.to(tl.pointer_type(tl.bfloat16)) + (((0)) * 4096 + ((dense_local_k_offsets)) * 1),
+                (workspace.to(tl.pointer_type(tl.bfloat16)) + 8192) + (((0)) * 4096 + ((dense_local_k_offsets)) * 1),
                 mask=dense_k_mask,
                 other=0.0,
             ),
@@ -3423,13 +3800,13 @@ def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_c
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__producer(
-    pipeline_weight_writer, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_linear_hidden, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_linear_hidden, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # The uint8 table contains 128-byte CUDA tensor-map descriptors.
     dense_weight_descriptor_entry = weight_descriptor + shard_index * 128
@@ -3473,13 +3850,13 @@ def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_c
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__consumer(
-    pipeline_weight_reader, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_linear_hidden, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_linear_hidden, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_stats_square_sum = tle.gpu.set_layout(
         tl.zeros((1,), tl.float32),
@@ -3554,7 +3931,7 @@ def _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_c
         _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout,
     )
     tl.store(
-        ((workspace.to(tl.pointer_type(tl.float32)) + 4096) + (shard_index) * 1) + ((0) * 1 + (0) * 1 + (0) * 1) + dense_stats_offset,
+        ((workspace.to(tl.pointer_type(tl.float32)) + 6144) + (shard_index) * 1) + ((0) * 1 + (0) * 1 + (0) * 1) + dense_stats_offset,
         dense_stats_square_sum,
         mask=dense_stats_offset == 0,
     )
@@ -3588,6 +3965,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_r
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_local_n_source = tl.arange(0, 16)
     dense_local_n = tle.gpu.set_layout(
@@ -3663,13 +4041,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_r
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__producer(
-    pipeline_weight_writer, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, decode_linear_hidden_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_writer, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, decode_linear_hidden_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # The uint8 table contains 128-byte CUDA tensor-map descriptors.
     dense_weight_descriptor_entry = weight_descriptor + shard_index * 128
@@ -3713,13 +4091,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_r
 
 @triton.jit(noinline=True)
 def _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__consumer(
-    pipeline_weight_reader, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, decode_linear_hidden_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements
-):
+    pipeline_weight_reader, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, decode_linear_hidden_decode_linear_norm_stats_layout_1, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_stats_square_sum = tle.gpu.set_layout(
         tl.zeros((1,), tl.float32),
@@ -3794,13 +4172,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_r
         _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__stats_output_layout,
     )
     tl.store(
-        ((workspace.to(tl.pointer_type(tl.float32)) + 8192) + (shard_index) * 1) + ((0) * 1 + (0) * 1 + (0) * 1) + dense_stats_offset,
+        ((workspace.to(tl.pointer_type(tl.float32)) + 6144) + (shard_index) * 1) + ((0) * 1 + (0) * 1 + (0) * 1) + dense_stats_offset,
         dense_stats_square_sum,
         mask=dense_stats_offset == 0,
     )
 
 
-_flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout = tl.constexpr(
+_flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout = tl.constexpr(
     tle.gpu.BlockEncoding(
         [1, 8],
         [2, 16],
@@ -3808,17 +4186,17 @@ _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorize
         [0, 1],
     )
 )
-_flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__lhs_layout = tl.constexpr(
-    tle.gpu.SlicedEncoding(0, _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout.value)
+_flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__lhs_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(0, _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout.value)
 )
-_flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__output_layout = tl.constexpr(
-    tle.gpu.SlicedEncoding(1, _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout.value)
+_flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__output_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout.value)
 )
-_flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout = tl.constexpr(
-    tle.gpu.SlicedEncoding(0, _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout.value)
+_flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(0, _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout.value)
 )
 @triton.jit
-def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer_stage(
+def _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer_stage(
     weight_stage,
     dense_local_k_start,
     workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, weight_descriptor, weight_descriptor__origin_elements,
@@ -3828,28 +4206,29 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_local_n_source = tl.arange(0, 16)
     dense_local_n = tle.gpu.set_layout(
         tle.gpu.set_layout(
             dense_local_n_source,
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__output_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__output_layout,
         )[:, None],
-        _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+        _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
     )
     dense_local_k_vector = tle.gpu.set_layout(
         tl.arange(0, 128),
-        _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__lhs_layout,
+        _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__lhs_layout,
     )
     dense_local_k = tle.gpu.set_layout(
         dense_local_k_vector[None, :],
-        _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+        _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
     )
     dense_partial = tle.gpu.set_layout(
         tl.zeros(
             (16, 128), tl.float32,
         ),
-        _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+        _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
     )
     for dense_k_group in tl.range(
         0, 4,
@@ -3875,7 +4254,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
         )
         dense_weight_value = tle.gpu.set_layout(
             tl.load(dense_weight_pointer),
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
         ).to(tl.float32)
         dense_local_k_offsets = (
             dense_local_k_start
@@ -3892,24 +4271,24 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
                 mask=dense_k_mask,
                 other=0.0,
             ),
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__lhs_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__lhs_layout,
         ).to(tl.float32)
         dense_partial += dense_weight_value * tle.gpu.set_layout(
             dense_source_value[None, :],
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
         )
     return dense_partial
 
 
 @triton.jit(noinline=True)
-def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__producer(
-    pipeline_weight_writer, workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, weight_descriptor, weight_descriptor__origin_elements
-):
+def _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__producer(
+    pipeline_weight_writer, workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # The uint8 table contains 128-byte CUDA tensor-map descriptors.
     dense_weight_descriptor_entry = weight_descriptor + shard_index * 128
@@ -3952,18 +4331,18 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
 
 
 @triton.jit(noinline=True)
-def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer(
-    pipeline_weight_reader, workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, weight_descriptor, weight_descriptor__origin_elements
-):
+def _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer(
+    pipeline_weight_reader, workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, weight_descriptor, weight_descriptor__origin_elements):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     dense_stats_square_sum = tle.gpu.set_layout(
         tl.zeros((1,), tl.float32),
-        _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout,
+        _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout,
     )
     for dense_local_n_start in tl.range(
         0,
@@ -3972,7 +4351,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
     ):
         dense_local_n_offsets = dense_local_n_start + tle.gpu.set_layout(
             tl.arange(0, 16),
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__output_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__output_layout,
         )
         dense_n_mask = (
             (dense_local_n_offsets < 16)
@@ -3982,7 +4361,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
             tl.zeros(
                 (16, 128), tl.float32,
             ),
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
         )
         for dense_local_k_start in tl.range(
             0, 4096, 512
@@ -3993,7 +4372,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
                 + dense_local_k_start // 512
             ).to(tl.int32)
             dense_pipeline_ready = pipeline_weight_reader.wait(dense_pipeline_sequence)
-            dense_partial += _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer_stage(
+            dense_partial += _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer_stage(
                 dense_pipeline_ready.slot.weight,
                 dense_local_k_start,
                 workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, weight_descriptor, weight_descriptor__origin_elements,
@@ -4023,7 +4402,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
             tl.where(
                 dense_n_mask, dense_value.to(tl.float32), 0.0,
             )[:, None],
-            _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
+            _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_layout,
         )
         dense_stats_square_sum += tl.sum(
             dense_stats_value * dense_stats_value,
@@ -4031,7 +4410,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
         )
     dense_stats_offset = tle.gpu.set_layout(
         tl.arange(0, 1),
-        _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout,
+        _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__stats_output_layout,
     )
     tl.store(
         ((workspace.to(tl.pointer_type(tl.float32)) + 4096) + (shard_index) * 1) + ((0) * 1 + (0) * 1 + (0) * 1) + dense_stats_offset,
@@ -4045,7 +4424,7 @@ def _flagmega_decode_attention_call_13_decode_attention_attention_residual_vecto
 def _flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate(
     source, weight, source_offsets, weight_offsets, k_mask, n_mask,
 ):
-    """Accumulate one ABI-addressed local M=1 GEMV tile."""
+    """Multiply in FP32 so BF16 products retain their full precision."""
     source_value = tl.load(
         source + source_offsets, mask=k_mask, other=0.0,
     ).to(tl.float32)
@@ -4056,24 +4435,26 @@ def _flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate(
     ).to(tl.float32)
     return tl.sum(weight_value * source_value[None, :], axis=1)
 @triton.jit(noinline=True)
-
 def _flagmega_decode_linear_call_8_decode_linear_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter, workspace):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for dense_local_n_start in tl.range(
-        0, 32, 16
+        0, 32, 32
     ):
-        dense_local_n_offsets = dense_local_n_start + tl.arange(0, 16)
+        dense_local_n_offsets = dense_local_n_start + tl.arange(0, 32)
         dense_global_n = ((((((dense_local_n_offsets) // 8)) + ((shard_x) * 4))) * 8 + (((dense_local_n_offsets) % 8)))
         dense_n_mask = (
             (dense_local_n_offsets < 32)
             & ((0 < (1)) & ((((dense_local_n_offsets) // 8)) < (4)))
         )
-        dense_accumulator = tl.zeros((16,), tl.float32)
+        dense_accumulator = tl.zeros(
+            (32, 64), tl.float32
+        )
         for dense_local_k_start in tl.range(
             0, 256, 64
         ):
@@ -4083,37 +4464,47 @@ def _flagmega_decode_linear_call_8_decode_linear_moe_output_shared_route_router_
                 (dense_local_k_offsets < 256)
                 & ((0 < (1)) & ((dense_local_k_offsets) < (256)))
             )
-            dense_accumulator += _flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate(
-                block_local_data.to(tl.pointer_type(tl.bfloat16)), decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter,
-                ((0)) * 2048 + (((dense_local_k_offsets) + ((shard_y) * 256))) * 1, ((dense_global_k[None, :]) // 16) * 8192 + ((dense_global_n[:, None]) // 8) * 128 + (((dense_global_n[:, None]) % 8) * 16 + ((dense_global_k[None, :]) % 16)),
-                dense_k_mask, dense_n_mask,
+            dense_source_value = tl.load(
+                block_local_data.to(tl.pointer_type(tl.bfloat16)) + (((0)) * 2048 + (((dense_local_k_offsets) + ((shard_y) * 256))) * 1),
+                mask=dense_k_mask, other=0.0,
             )
+            dense_weight_value = tl.load(
+                decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter + (((dense_global_k[None, :]) // 16) * 8192 + ((dense_global_n[:, None]) // 8) * 128 + (((dense_global_n[:, None]) % 8) * 16 + ((dense_global_k[None, :]) % 16))),
+                mask=dense_n_mask[:, None] & dense_k_mask[None, :],
+                other=0.0,
+            )
+            dense_accumulator += (
+                dense_weight_value.to(tl.float32) * dense_source_value[None, :].to(tl.float32)
+            ).to(tl.float32)
+        dense_result = tl.sum(dense_accumulator, axis=1)
         tl.store(
             (workspace.to(tl.pointer_type(tl.float32)) + (shard_index) * 32) + ((0) * 32 + (((dense_local_n_offsets) // 8)) * 8 + (((dense_local_n_offsets) % 8))),
-            dense_accumulator.to(tl.float32),
+            dense_result.to(tl.float32),
             mask=dense_n_mask,
         )
 
 
 @triton.jit(noinline=True)
-
 def _flagmega_decode_linear_norm_stats_layout_1_call_8_decode_linear_moe_output_shared_route_router_projection_vectorized_compute_decode_linear_norm_stats_layout_1(block_local_data, decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, workspace):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for dense_local_n_start in tl.range(
-        0, 32, 16
+        0, 32, 32
     ):
-        dense_local_n_offsets = dense_local_n_start + tl.arange(0, 16)
+        dense_local_n_offsets = dense_local_n_start + tl.arange(0, 32)
         dense_global_n = ((((((dense_local_n_offsets) // 8)) + ((shard_x) * 4))) * 8 + (((dense_local_n_offsets) % 8)))
         dense_n_mask = (
             (dense_local_n_offsets < 32)
             & ((0 < (1)) & ((((dense_local_n_offsets) // 8)) < (4)))
         )
-        dense_accumulator = tl.zeros((16,), tl.float32)
+        dense_accumulator = tl.zeros(
+            (32, 64), tl.float32
+        )
         for dense_local_k_start in tl.range(
             0, 256, 64
         ):
@@ -4123,37 +4514,47 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_8_decode_linear_moe_output_
                 (dense_local_k_offsets < 256)
                 & ((0 < (1)) & ((dense_local_k_offsets) < (256)))
             )
-            dense_accumulator += _flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate(
-                block_local_data.to(tl.pointer_type(tl.bfloat16)), decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-                ((0)) * 2048 + (((dense_local_k_offsets) + ((shard_y) * 256))) * 1, ((dense_global_k[None, :]) // 16) * 8192 + ((dense_global_n[:, None]) // 8) * 128 + (((dense_global_n[:, None]) % 8) * 16 + ((dense_global_k[None, :]) % 16)),
-                dense_k_mask, dense_n_mask,
+            dense_source_value = tl.load(
+                block_local_data.to(tl.pointer_type(tl.bfloat16)) + (((0)) * 2048 + (((dense_local_k_offsets) + ((shard_y) * 256))) * 1),
+                mask=dense_k_mask, other=0.0,
             )
+            dense_weight_value = tl.load(
+                decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1 + (((dense_global_k[None, :]) // 16) * 8192 + ((dense_global_n[:, None]) // 8) * 128 + (((dense_global_n[:, None]) % 8) * 16 + ((dense_global_k[None, :]) % 16))),
+                mask=dense_n_mask[:, None] & dense_k_mask[None, :],
+                other=0.0,
+            )
+            dense_accumulator += (
+                dense_weight_value.to(tl.float32) * dense_source_value[None, :].to(tl.float32)
+            ).to(tl.float32)
+        dense_result = tl.sum(dense_accumulator, axis=1)
         tl.store(
             (workspace.to(tl.pointer_type(tl.float32)) + (shard_index) * 32) + ((0) * 32 + (((dense_local_n_offsets) // 8)) * 8 + (((dense_local_n_offsets) % 8))),
-            dense_accumulator.to(tl.float32),
+            dense_result.to(tl.float32),
             mask=dense_n_mask,
         )
 
 
 @triton.jit(noinline=True)
-
-def _flagmega_decode_attention_call_15_decode_attention_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter, workspace):
+def _flagmega_decode_attention_call_11_decode_attention_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter, workspace):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for dense_local_n_start in tl.range(
-        0, 32, 16
+        0, 32, 32
     ):
-        dense_local_n_offsets = dense_local_n_start + tl.arange(0, 16)
+        dense_local_n_offsets = dense_local_n_start + tl.arange(0, 32)
         dense_global_n = ((((((dense_local_n_offsets) // 8)) + ((shard_x) * 4))) * 8 + (((dense_local_n_offsets) % 8)))
         dense_n_mask = (
             (dense_local_n_offsets < 32)
             & ((0 < (1)) & ((((dense_local_n_offsets) // 8)) < (4)))
         )
-        dense_accumulator = tl.zeros((16,), tl.float32)
+        dense_accumulator = tl.zeros(
+            (32, 64), tl.float32
+        )
         for dense_local_k_start in tl.range(
             0, 256, 64
         ):
@@ -4163,14 +4564,22 @@ def _flagmega_decode_attention_call_15_decode_attention_moe_output_shared_route_
                 (dense_local_k_offsets < 256)
                 & ((0 < (1)) & ((dense_local_k_offsets) < (256)))
             )
-            dense_accumulator += _flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate(
-                block_local_data.to(tl.pointer_type(tl.bfloat16)), decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter,
-                ((0)) * 2048 + (((dense_local_k_offsets) + ((shard_y) * 256))) * 1, ((dense_global_k[None, :]) // 16) * 8192 + ((dense_global_n[:, None]) // 8) * 128 + (((dense_global_n[:, None]) % 8) * 16 + ((dense_global_k[None, :]) % 16)),
-                dense_k_mask, dense_n_mask,
+            dense_source_value = tl.load(
+                block_local_data.to(tl.pointer_type(tl.bfloat16)) + (((0)) * 2048 + (((dense_local_k_offsets) + ((shard_y) * 256))) * 1),
+                mask=dense_k_mask, other=0.0,
             )
+            dense_weight_value = tl.load(
+                decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter + (((dense_global_k[None, :]) // 16) * 8192 + ((dense_global_n[:, None]) // 8) * 128 + (((dense_global_n[:, None]) % 8) * 16 + ((dense_global_k[None, :]) % 16))),
+                mask=dense_n_mask[:, None] & dense_k_mask[None, :],
+                other=0.0,
+            )
+            dense_accumulator += (
+                dense_weight_value.to(tl.float32) * dense_source_value[None, :].to(tl.float32)
+            ).to(tl.float32)
+        dense_result = tl.sum(dense_accumulator, axis=1)
         tl.store(
             (workspace.to(tl.pointer_type(tl.float32)) + (shard_index) * 32) + ((0) * 32 + (((dense_local_n_offsets) // 8)) * 8 + (((dense_local_n_offsets) % 8))),
-            dense_accumulator.to(tl.float32),
+            dense_result.to(tl.float32),
             mask=dense_n_mask,
         )
 
@@ -4184,6 +4593,7 @@ def _flagmega_decode_linear_call_9_decode_linear_moe_output_shared_route_routing
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_row in tl.range(0, 1):
         _fm_offsets = tl.arange(0, 256)
@@ -4221,6 +4631,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_9_decode_linear_moe_output_
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_row in tl.range(0, 1):
         _fm_offsets = tl.arange(0, 256)
@@ -4252,12 +4663,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_9_decode_linear_moe_output_
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_16_decode_attention_moe_output_shared_route_routing(workspace, block_local_data):
+def _flagmega_decode_attention_call_12_decode_attention_moe_output_shared_route_routing(workspace, block_local_data):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_row in tl.range(0, 1):
         _fm_offsets = tl.arange(0, 256)
@@ -4286,8 +4698,6 @@ def _flagmega_decode_attention_call_16_decode_attention_moe_output_shared_route_
         tl.store((block_local_data.to(tl.pointer_type(tl.int64)) + 512) + ((_fm_row) * 9 + (_sr_selected_offsets) * 1), _sr_indices, mask=_sr_write & (True))
         tl.store((block_local_data.to(tl.pointer_type(tl.float32)) + 1088) + ((_fm_row) * 9 + (8) * 1), tl.sigmoid(_sr_gate), mask=(((_fm_row) < (1))) & (True))
         tl.store((block_local_data.to(tl.pointer_type(tl.int64)) + 512) + ((_fm_row) * 9 + (8) * 1), 256, mask=(((_fm_row) < (1))) & (True))
-
-
 
 # flagmega-kernel: sparse_experts_gate_up/simt platform=generic
 @triton.jit(noinline=True)
@@ -4298,6 +4708,7 @@ def _flagmega_decode_linear_call_10_decode_linear_moe_output_gate_up(block_local
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_token in tl.range(0, 1):
         for _fm_route in tl.range(0, 1, num_stages=3):
@@ -4334,6 +4745,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_10_decode_linear_moe_output
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_token in tl.range(0, 1):
         for _fm_route in tl.range(0, 1, num_stages=3):
@@ -4364,12 +4776,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_10_decode_linear_moe_output
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_17_decode_attention_moe_output_gate_up(block_local_data, rdata, decode_attention_moe_output_shared_route_gate_weight_bank_constant_parameter, decode_attention_moe_output_shared_route_up_weight_bank_constant_parameter, workspace):
+def _flagmega_decode_attention_call_13_decode_attention_moe_output_gate_up(block_local_data, rdata, decode_attention_moe_output_shared_route_gate_weight_bank_constant_parameter, decode_attention_moe_output_shared_route_up_weight_bank_constant_parameter, workspace):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_token in tl.range(0, 1):
         for _fm_route in tl.range(0, 1, num_stages=3):
@@ -4407,6 +4820,7 @@ def _flagmega_decode_linear_call_11_decode_linear_output_vectorized_pack1(worksp
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_token in tl.range(0, 1):
         for _fm_n_start in tl.range(0, 16, 16):
@@ -4439,6 +4853,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_11_decode_linear_output_vec
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_token in tl.range(0, 1):
         for _fm_n_start in tl.range(0, 16, 16):
@@ -4465,12 +4880,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_11_decode_linear_output_vec
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_18_decode_attention_output_vectorized_pack1(workspace, block_local_data, rdata, decode_attention_moe_output_shared_route_down_weight_bank_constant_parameter, decode_attention_output_vectorized_compute_0):
+def _flagmega_decode_attention_call_14_decode_attention_output_vectorized_pack1(workspace, block_local_data, rdata, decode_attention_moe_output_shared_route_down_weight_bank_constant_parameter, decode_attention_output_vectorized_compute_0):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for _fm_token in tl.range(0, 1):
         for _fm_n_start in tl.range(0, 16, 16):
@@ -4506,6 +4922,7 @@ def _flagmega_decode_linear_call_12_decode_linear_output_vectorized_compute_norm
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     add_stats_square_sum = tl.zeros((16,), tl.float32)
     for add_stats_start in tl.range(
@@ -4554,6 +4971,7 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_12_decode_linear_output_vec
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     add_stats_square_sum = tl.zeros((16,), tl.float32)
     for add_stats_start in tl.range(
@@ -4596,12 +5014,13 @@ def _flagmega_decode_linear_norm_stats_layout_1_call_12_decode_linear_output_vec
 
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_19_decode_attention_output_vectorized_compute_norm_stats_combine(decode_attention_hidden, decode_attention_output_vectorized_compute_0, decode_attention_output_norm_stats_1):
+def _flagmega_decode_attention_call_15_decode_attention_output_vectorized_compute_norm_stats_combine(decode_attention_hidden, decode_attention_output_vectorized_compute_0, decode_attention_output_norm_stats_1):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     add_stats_square_sum = tl.zeros((16,), tl.float32)
     for add_stats_start in tl.range(
@@ -4642,15 +5061,53 @@ def _flagmega_decode_attention_call_19_decode_attention_output_vectorized_comput
     )
 
 
-# flagmega-kernel: paged_attention_gated_combine/decode
+# flagmega-kernel: elementwise/cast platform=generic
+# flagmega-kernel-helper: elementwise/packed_axes
+@triton.jit
+def _flagmega_elementwise_packed_offsets(schedule_offsets, schedule_size: tl.constexpr):
+    return schedule_offsets, schedule_offsets < schedule_size
+@triton.jit
+def _flagmega_elementwise_cast(source, destination, size: tl.constexpr, block: tl.constexpr, output_type: tl.constexpr):
+    schedule_offsets = tl.program_id(0) * 256 + tl.arange(0, 256)
+    offsets, mask = _flagmega_elementwise_packed_offsets(schedule_offsets, size)
+    tl.store(destination + offsets, tl.load(source + offsets, mask=mask).to(output_type), mask=mask)
 @triton.jit(noinline=True)
 
-def _flagmega_decode_attention_call_12_n51_vectorized_compute(workspace, block_local_data):
+def _flagmega_decode_attention_call_7_decode_attention_gate_vectorized_compute_reshard628(block_local_data):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    for local_start in tl.range(0, 256, 256):
+        local_offsets = local_start + tl.arange(0, 256)
+        local_mask = (
+            (local_offsets < 256) & ((((((((local_offsets) // 8)) // 32)) < (1)) & ((((((local_offsets) // 8)) % 32)) < (32))) & (((((((local_offsets) // 8)) // 32)) < (1)) & ((((((((((((local_offsets) // 8)) % 32)) * 8 + (((((local_offsets) % 8)) % 8)))) // 4)) // 2)) < (32))))
+        )
+        lhs_value = tl.load(
+            block_local_data.to(tl.pointer_type(tl.float32)) + (((((((local_offsets) // 8)) // 32)) * 256 + (((((((((((local_offsets) // 8)) % 32)) * 8 + (((((local_offsets) % 8)) % 8)))) // 4)) // 2)) * 8 + ((((((((((((local_offsets) // 8)) % 32)) * 8 + (((((local_offsets) % 8)) % 8)))) // 4)) % 2)) * 4 + ((((((((local_offsets) // 8)) % 32)) * 8 + (((((local_offsets) % 8)) % 8)))) % 4))) + tl.zeros_like(local_offsets)),
+            mask=local_mask,
+            other=0.0,
+        )
+        tl.store(
+            (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 512) + (((((((local_offsets) // 8)) // 32)) * 256 + (((((local_offsets) // 8)) % 32)) * 8 + (((local_offsets) % 8))) + tl.zeros_like(local_offsets)),
+            lhs_value.to(tl.bfloat16),
+            mask=local_mask,
+        )
+
+
+# flagmega-kernel: paged_attention_gated_combine/decode
+@triton.jit(noinline=True)
+
+def _flagmega_decode_attention_call_8_n51_vectorized_compute(workspace, block_local_data):
+    shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
+    shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+    shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for attention_output_start in tl.range(0, 32, 32):
         attention_output_offsets = (
@@ -4700,7 +5157,7 @@ def _flagmega_decode_attention_call_12_n51_vectorized_compute(workspace, block_l
                 other=0.0,
             ).to(tl.float32) * attention_factor
             attention_value = tl.load(
-                (workspace.to(tl.pointer_type(tl.float32)) + 16640)
+                (workspace.to(tl.pointer_type(tl.float32)) + 33024)
                 + attention_index * 256
                 + (((((attention_output_offsets) // 32))) * 256 + (((((attention_output_offsets) // 32)) % 1)) * 256 + (((((((((attention_output_offsets) % 32)) // 8)) + ((shard_y) * 4))) * 8 + (((((attention_output_offsets) % 32)) % 8)))) * 1),
                 mask=attention_output_mask,
@@ -4709,7 +5166,7 @@ def _flagmega_decode_attention_call_12_n51_vectorized_compute(workspace, block_l
             attention_merged_accumulator += attention_value * attention_factor
         attention_merged = attention_merged_accumulator / attention_merged_sum
         attention_gate = tl.load(
-            block_local_data.to(tl.pointer_type(tl.bfloat16)) + (((((attention_output_offsets) // 32))) * 256 + ((((((attention_output_offsets) // 32)) % 1))) * 256 + (((((((attention_output_offsets) % 32)) // 8)) + ((shard_y) * 4))) * 8 + (((((attention_output_offsets) % 32)) % 8))), mask=attention_output_mask, other=0.0,
+            (block_local_data.to(tl.pointer_type(tl.bfloat16)) + 512) + (((((attention_output_offsets) // 32))) * 256 + ((((((attention_output_offsets) // 32)) % 1))) * 256 + (((((((attention_output_offsets) % 32)) // 8)) + ((shard_y) * 4))) * 8 + (((((attention_output_offsets) % 32)) % 8))), mask=attention_output_mask, other=0.0,
         )
         attention_sigmoid = tl.sigmoid(attention_gate.to(tl.float32)).to(tl.bfloat16)
         attention_merged = (attention_merged.to(tl.bfloat16) * attention_sigmoid).to(tl.bfloat16)
@@ -4771,12 +5228,13 @@ def _flagmega_merge_greedy_argmax(
         tl.store(next_token, index.to(tl.int32))
 
 @triton.jit(noinline=True)
-def _flagmega_main_call_6_next_token__partials(logits_reshard652, next_token, workspace):
+def _flagmega_main_call_6_next_token__partials(logits_reshard651, next_token, workspace):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     for batch_local in tl.range(0, 1):
         greedy_best = -float("inf")
@@ -4787,7 +5245,7 @@ def _flagmega_main_call_6_next_token__partials(logits_reshard652, next_token, wo
                 (vocab_offsets < 1944) & (((batch_local) < (1)) & ((vocab_offsets) < ((tl.minimum(8, tl.maximum(0, (((shard_y) * -128) + ((shard_x) * -8) + 512))) + 1936))))
             )
             vocab_value = tl.load(
-                logits_reshard652 + (((batch_local)) * 248320 + ((((shard_x) * 8) + ((shard_y) * 128) + ((((vocab_offsets)) // (8)) * 1024) + (((vocab_offsets)) % (8)))) * 1),
+                logits_reshard651 + (((batch_local)) * 248320 + ((((shard_x) * 8) + ((shard_y) * 128) + ((((vocab_offsets)) // (8)) * 1024) + (((vocab_offsets)) % (8)))) * 1),
                 mask=vocab_mask, other=-float("inf"),
             ).to(tl.float32)
             vocab_index = tl.where(vocab_mask, (((shard_x) * 8) + ((shard_y) * 128) + ((((vocab_offsets)) // (8)) * 1024) + (((vocab_offsets)) % (8))), 248320).to(tl.int32)
@@ -4795,18 +5253,19 @@ def _flagmega_main_call_6_next_token__partials(logits_reshard652, next_token, wo
                 (vocab_value, vocab_index), 0, _flagmega_argmax_combine)
             greedy_best, greedy_index = _flagmega_argmax_combine(
                 greedy_best, greedy_index, vocab_tile_max, vocab_tile_index)
-        partial_offset = batch_local * 128 + shard_index
+        partial_offset = batch_local * 128 + (shard_index)
         tl.store(workspace.to(tl.pointer_type(tl.float32)) + partial_offset, greedy_best)
         tl.store((workspace.to(tl.pointer_type(tl.int32)) + 128) + partial_offset, greedy_index)
 
 
 @triton.jit(noinline=True)
-def _flagmega_main_call_6_next_token__finalize(logits_reshard652, next_token, workspace):
+def _flagmega_main_call_6_next_token__finalize(logits_reshard651, next_token, workspace):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     if (shard_y == 0) & (shard_x == 0):
         greedy_owners = tl.arange(0, triton.next_power_of_2(128))
@@ -4831,11 +5290,13 @@ def _flagmega_main_call_6_next_token__finalize(logits_reshard652, next_token, wo
 
 
 @triton.jit
-def _flagmega_main_call_6_next_token(logits_reshard652, next_token, workspace):
-    _flagmega_main_call_6_next_token__partials(logits_reshard652, next_token, workspace)
+def _flagmega_main_call_6_next_token(logits_reshard651, next_token, workspace):
+    _flagmega_main_call_6_next_token__partials(logits_reshard651, next_token, workspace)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
-    _flagmega_main_call_6_next_token__finalize(logits_reshard652, next_token, workspace)
+    _flagmega_main_call_6_next_token__finalize(logits_reshard651, next_token, workspace)
+
+
 
 
 
@@ -4847,90 +5308,85 @@ def _flagmega_function_decode_linear__consumer(
     _flagmega_decode_linear_qkv_vectorized_compute_reader,
     _flagmega_decode_linear_z_vectorized_compute_reader,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_reader,
-    decode_linear_hidden,
     decode_linear_state_0,
     decode_linear_state_1,
     decode_linear_layer_id,
-    decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_linear_linear_attn_in_proj_b_weight,
-    decode_linear_linear_attn_in_proj_a_weight,
-    decode_linear_linear_attn_conv1d_weight,
-    decode_linear_linear_attn_a_log,
-    decode_linear_linear_attn_dt_bias,
-    decode_linear_linear_attn_norm_weight,
-    decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter,
-    n3_constant_parameter,
-    n9_constant_parameter,
-    decode_linear_moe_output_shared_route_gate_weight_bank_constant_parameter,
-    decode_linear_moe_output_shared_route_up_weight_bank_constant_parameter,
-    decode_linear_moe_output_shared_route_down_weight_bank_constant_parameter,
-    decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_linear_hidden_norm_stats,
-    decode_linear_output_vectorized_compute_0,
-    decode_linear_output_norm_stats_1,
-    rdata,
-    workspace,
     block_local_data,
     _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor,
     _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor,
     _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor,
-    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements
+    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements,
+    _flagmega_function_offsets,
+    _flagmega_call_pool_rdata,
+    _flagmega_call_pool_workspace
 ):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # tir.call decode_linear_hidden.distributed_boundary_restore -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_linear_call_0_decode_linear_hidden_distributed_boundary_restore(decode_linear_hidden, block_local_data)
+    _flagmega_decode_linear_call_0_decode_linear_hidden_distributed_boundary_restore(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 40960), 256).to(tl.pointer_type(tl.bfloat16)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_linear_input_norm.vectorized.compute -> norm_apply/local (local_shard)
-    _flagmega_decode_linear_call_1_decode_linear_input_norm_vectorized_compute(block_local_data, decode_linear_hidden_norm_stats, n3_constant_parameter, rdata)
+    _flagmega_decode_linear_call_1_decode_linear_input_norm_vectorized_compute(block_local_data, tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 45056), 256).to(tl.pointer_type(tl.float32)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67011928320), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)))
     tl.debug_barrier()
+
     # tir.call decode_linear_qkv.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__consumer(_flagmega_decode_linear_qkv_vectorized_compute_reader, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter, _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__consumer(_flagmega_decode_linear_qkv_vectorized_compute_reader, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67012583680), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_qkv_vectorized_compute_reader.pipe.wait_drained()
     tl.debug_barrier()
+
     # tir.call decode_linear_convolution -> gdn_convolution/persistent (synchronized_local)
-    _flagmega_decode_linear_call_3_decode_linear_convolution(block_local_data, decode_linear_state_0, decode_linear_layer_id, decode_linear_state_1, decode_linear_linear_attn_conv1d_weight, workspace)
+    _flagmega_decode_linear_call_3_decode_linear_convolution(block_local_data, decode_linear_state_0, decode_linear_layer_id, decode_linear_state_1, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 68522533120), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)))
     tl.debug_barrier()
+
     # tir.call decode_linear_z.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__consumer(_flagmega_decode_linear_z_vectorized_compute_reader, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter, _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__consumer(_flagmega_decode_linear_z_vectorized_compute_reader, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 68019216640), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_z_vectorized_compute_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call decode_linear_recurrent -> gdn_recurrent/persistent (synchronized_local)
-    _flagmega_decode_linear_call_5_decode_linear_recurrent(decode_linear_state_0, decode_linear_layer_id, decode_linear_state_1, workspace, block_local_data, decode_linear_linear_attn_in_proj_b_weight, decode_linear_linear_attn_in_proj_a_weight, decode_linear_linear_attn_a_log, decode_linear_linear_attn_dt_bias, decode_linear_linear_attn_norm_weight)
+    _flagmega_decode_linear_call_5_decode_linear_recurrent(decode_linear_state_0, decode_linear_layer_id, decode_linear_state_1, tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)), block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67004033280), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67007965440), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67011897600), 256).to(tl.pointer_type(tl.float32)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67011905280), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67011912960), 256).to(tl.pointer_type(tl.float32)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_attention_residual.vectorized.compute.norm_stats_combine -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats (local_shard)
-    _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__consumer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_reader, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_linear_hidden, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__consumer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_reader, tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 68524499200), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 40960), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_post_norm.vectorized.compute -> gather_reduce_norm_apply/sum (synchronized_local)
-    _flagmega_decode_linear_call_7_decode_linear_post_norm_vectorized_compute(workspace, decode_linear_hidden, n9_constant_parameter, rdata, block_local_data)
+    _flagmega_decode_linear_call_7_decode_linear_post_norm_vectorized_compute(tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 40960), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67012174080), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_linear_moe_output.shared_route.router_projection.vectorized.compute -> dense_matmul/split_k_n_packed_k_major_gemv (local_shard)
-    _flagmega_decode_linear_call_8_decode_linear_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter, workspace)
+    _flagmega_decode_linear_call_8_decode_linear_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 2634048512), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_moe_output.shared_route.routing -> shared_router/gather_reduce (local_shard)
-    _flagmega_decode_linear_call_9_decode_linear_moe_output_shared_route_routing(workspace, block_local_data)
+    _flagmega_decode_linear_call_9_decode_linear_moe_output_shared_route_routing(tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_linear_moe_output.gate_up -> sparse_experts_gate_up/simt (local_shard)
-    _flagmega_decode_linear_call_10_decode_linear_moe_output_gate_up(block_local_data, rdata, decode_linear_moe_output_shared_route_gate_weight_bank_constant_parameter, decode_linear_moe_output_shared_route_up_weight_bank_constant_parameter, workspace)
+    _flagmega_decode_linear_call_10_decode_linear_moe_output_gate_up(block_local_data, _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 1017144320), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 1556112384), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_output.vectorized.pack1 -> sparse_experts_down/simt (local_shard)
-    _flagmega_decode_linear_call_11_decode_linear_output_vectorized_pack1(workspace, block_local_data, rdata, decode_linear_moe_output_shared_route_down_weight_bank_constant_parameter, decode_linear_output_vectorized_compute_0)
+    _flagmega_decode_linear_call_11_decode_linear_output_vectorized_pack1(tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)), block_local_data, _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 2095080448), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 87040), 256).to(tl.pointer_type(tl.bfloat16)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call decode_linear_output.vectorized.compute.norm_stats_combine -> add_norm_stats/local_partial_rms (local_shard)
-    _flagmega_decode_linear_call_12_decode_linear_output_vectorized_compute_norm_stats_combine(decode_linear_hidden, decode_linear_output_vectorized_compute_0, decode_linear_output_norm_stats_1)
+    _flagmega_decode_linear_call_12_decode_linear_output_vectorized_compute_norm_stats_combine(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 40960), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 87040), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 86016), 4).to(tl.pointer_type(tl.float32)))
 
 
 
@@ -4939,52 +5395,65 @@ def _flagmega_function_decode_linear__producer(
     _flagmega_decode_linear_qkv_vectorized_compute_writer,
     _flagmega_decode_linear_z_vectorized_compute_writer,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_writer,
-    decode_linear_hidden,
     decode_linear_state_0,
     decode_linear_state_1,
     decode_linear_layer_id,
-    decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_linear_linear_attn_in_proj_b_weight,
-    decode_linear_linear_attn_in_proj_a_weight,
-    decode_linear_linear_attn_conv1d_weight,
-    decode_linear_linear_attn_a_log,
-    decode_linear_linear_attn_dt_bias,
-    decode_linear_linear_attn_norm_weight,
-    decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter,
-    n3_constant_parameter,
-    n9_constant_parameter,
-    decode_linear_moe_output_shared_route_gate_weight_bank_constant_parameter,
-    decode_linear_moe_output_shared_route_up_weight_bank_constant_parameter,
-    decode_linear_moe_output_shared_route_down_weight_bank_constant_parameter,
-    decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_linear_hidden_norm_stats,
-    decode_linear_output_vectorized_compute_0,
-    decode_linear_output_norm_stats_1,
-    rdata,
-    workspace,
     block_local_data,
     _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor,
     _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor,
     _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor,
-    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements
+    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements,
+    _flagmega_function_offsets,
+    _flagmega_call_pool_rdata,
+    _flagmega_call_pool_workspace
 ):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    tl.debug_barrier()
+
+    tl.debug_barrier()
 
     # tir.call decode_linear_qkv.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__producer(_flagmega_decode_linear_qkv_vectorized_compute_writer, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter, _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_call_2_decode_linear_qkv_vectorized_compute__producer(_flagmega_decode_linear_qkv_vectorized_compute_writer, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 67012583680), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_qkv_vectorized_compute_writer.pipe.wait_drained()
+    tl.debug_barrier()
+
+    tl.debug_barrier()
+
     # tir.call decode_linear_z.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__producer(_flagmega_decode_linear_z_vectorized_compute_writer, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter, _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_call_4_decode_linear_z_vectorized_compute__producer(_flagmega_decode_linear_z_vectorized_compute_writer, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 68019216640), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_z_vectorized_compute_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call decode_linear_attention_residual.vectorized.compute.norm_stats_combine -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats (local_shard)
-    _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__producer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_writer, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_linear_hidden, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__producer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_writer, tl.multiple_of(_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + 68524499200), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 40960), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
 
 
 
@@ -4993,90 +5462,86 @@ def _flagmega_function_decode_linear_norm_stats_layout_1__consumer(
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader,
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader,
-    decode_linear_hidden_decode_linear_norm_stats_layout_1,
     decode_linear_state_decode_linear_norm_stats_layout_1_0,
     decode_linear_state_decode_linear_norm_stats_layout_1_1,
     decode_linear_layer_id_decode_linear_norm_stats_layout_1,
-    decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_in_proj_b_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_in_proj_a_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_conv1d_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_a_log_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_dt_bias_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_norm_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    n3_constant_parameter_decode_linear_norm_stats_layout_1,
-    n9_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_gate_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_up_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_down_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_hidden_norm_stats_decode_linear_norm_stats_layout_1,
-    decode_linear_output_vectorized_compute_decode_linear_norm_stats_layout_1_0,
-    decode_linear_output_norm_stats_decode_linear_norm_stats_layout_1_1,
-    rdata,
-    workspace,
     block_local_data,
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor,
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor,
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor,
-    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements
+    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements,
+    _flagmega_function_offsets,
+    _flagmega_call_pool_rdata,
+    _flagmega_call_pool_workspace,
+    _flagmega_call_offsets
 ):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # tir.call decode_linear_hidden.distributed_boundary_restore.decode_linear_norm_stats_layout_1 -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_linear_norm_stats_layout_1_call_0_decode_linear_hidden_distributed_boundary_restore_decode_linear_norm_stats_layout_1(decode_linear_hidden_decode_linear_norm_stats_layout_1, block_local_data)
+    _flagmega_decode_linear_norm_stats_layout_1_call_0_decode_linear_hidden_distributed_boundary_restore_decode_linear_norm_stats_layout_1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_linear_input_norm.vectorized.compute.decode_linear_norm_stats_layout_1 -> gather_reduce_norm_apply/sum (synchronized_local)
-    _flagmega_decode_linear_norm_stats_layout_1_call_1_decode_linear_input_norm_vectorized_compute_decode_linear_norm_stats_layout_1(decode_linear_hidden_norm_stats_decode_linear_norm_stats_layout_1, block_local_data, n3_constant_parameter_decode_linear_norm_stats_layout_1, rdata)
+    _flagmega_decode_linear_norm_stats_layout_1_call_1_decode_linear_input_norm_vectorized_compute_decode_linear_norm_stats_layout_1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 9, volatile=True)), 4).to(tl.pointer_type(tl.float32)), block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 7, volatile=True)), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)))
     tl.debug_barrier()
+
     # tir.call decode_linear_qkv.vectorized.compute.decode_linear_norm_stats_layout_1 -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__consumer(_flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__consumer(_flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 1, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tl.debug_barrier()
+
     # tir.call decode_linear_convolution.decode_linear_norm_stats_layout_1 -> gdn_convolution/persistent (synchronized_local)
-    _flagmega_decode_linear_norm_stats_layout_1_call_3_decode_linear_convolution_decode_linear_norm_stats_layout_1(block_local_data, decode_linear_state_decode_linear_norm_stats_layout_1_0, decode_linear_layer_id_decode_linear_norm_stats_layout_1, decode_linear_state_decode_linear_norm_stats_layout_1_1, decode_linear_linear_attn_conv1d_weight_decode_linear_norm_stats_layout_1, workspace)
+    _flagmega_decode_linear_norm_stats_layout_1_call_3_decode_linear_convolution_decode_linear_norm_stats_layout_1(block_local_data, decode_linear_state_decode_linear_norm_stats_layout_1_0, decode_linear_layer_id_decode_linear_norm_stats_layout_1, decode_linear_state_decode_linear_norm_stats_layout_1_1, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 4, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)))
     tl.debug_barrier()
+
     # tir.call decode_linear_z.vectorized.compute.decode_linear_norm_stats_layout_1 -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__consumer(_flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__consumer(_flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 2, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call decode_linear_recurrent.decode_linear_norm_stats_layout_1 -> gdn_recurrent/persistent (synchronized_local)
-    _flagmega_decode_linear_norm_stats_layout_1_call_5_decode_linear_recurrent_decode_linear_norm_stats_layout_1(decode_linear_state_decode_linear_norm_stats_layout_1_0, decode_linear_layer_id_decode_linear_norm_stats_layout_1, decode_linear_state_decode_linear_norm_stats_layout_1_1, workspace, block_local_data, decode_linear_linear_attn_in_proj_b_weight_decode_linear_norm_stats_layout_1, decode_linear_linear_attn_in_proj_a_weight_decode_linear_norm_stats_layout_1, decode_linear_linear_attn_a_log_decode_linear_norm_stats_layout_1, decode_linear_linear_attn_dt_bias_decode_linear_norm_stats_layout_1, decode_linear_linear_attn_norm_weight_decode_linear_norm_stats_layout_1)
+    _flagmega_decode_linear_norm_stats_layout_1_call_5_decode_linear_recurrent_decode_linear_norm_stats_layout_1(decode_linear_state_decode_linear_norm_stats_layout_1_0, decode_linear_layer_id_decode_linear_norm_stats_layout_1, decode_linear_state_decode_linear_norm_stats_layout_1_1, tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True) + 3932160)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 5, volatile=True)), 256).to(tl.pointer_type(tl.float32)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 5, volatile=True) + 7680)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 6, volatile=True)), 256).to(tl.pointer_type(tl.float32)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_attention_residual.vectorized.compute.norm_stats_combine.decode_linear_norm_stats_layout_1 -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__consumer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, decode_linear_hidden_decode_linear_norm_stats_layout_1, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__consumer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 2, volatile=True) + 505282560)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_post_norm.vectorized.compute.decode_linear_norm_stats_layout_1 -> gather_reduce_norm_apply/sum (synchronized_local)
-    _flagmega_decode_linear_norm_stats_layout_1_call_7_decode_linear_post_norm_vectorized_compute_decode_linear_norm_stats_layout_1(workspace, decode_linear_hidden_decode_linear_norm_stats_layout_1, n9_constant_parameter_decode_linear_norm_stats_layout_1, rdata, block_local_data)
+    _flagmega_decode_linear_norm_stats_layout_1_call_7_decode_linear_post_norm_vectorized_compute_decode_linear_norm_stats_layout_1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 7, volatile=True) + 245760)), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_linear_moe_output.shared_route.router_projection.vectorized.compute.decode_linear_norm_stats_layout_1 -> dense_matmul/split_k_n_packed_k_major_gemv (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_8_decode_linear_moe_output_shared_route_router_projection_vectorized_compute_decode_linear_norm_stats_layout_1(block_local_data, decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, workspace)
+    _flagmega_decode_linear_norm_stats_layout_1_call_8_decode_linear_moe_output_shared_route_router_projection_vectorized_compute_decode_linear_norm_stats_layout_1(block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True) + 1616904192)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_moe_output.shared_route.routing.decode_linear_norm_stats_layout_1 -> shared_router/gather_reduce (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_9_decode_linear_moe_output_shared_route_routing_decode_linear_norm_stats_layout_1(workspace, block_local_data)
+    _flagmega_decode_linear_norm_stats_layout_1_call_9_decode_linear_moe_output_shared_route_routing_decode_linear_norm_stats_layout_1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_linear_moe_output.gate_up.decode_linear_norm_stats_layout_1 -> sparse_experts_gate_up/simt (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_10_decode_linear_moe_output_gate_up_decode_linear_norm_stats_layout_1(block_local_data, rdata, decode_linear_moe_output_shared_route_gate_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1, decode_linear_moe_output_shared_route_up_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1, workspace)
+    _flagmega_decode_linear_norm_stats_layout_1_call_10_decode_linear_moe_output_gate_up_decode_linear_norm_stats_layout_1(block_local_data, _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True) + 538968064)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_linear_output.vectorized.pack1.decode_linear_norm_stats_layout_1 -> sparse_experts_down/simt (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_11_decode_linear_output_vectorized_pack1_decode_linear_norm_stats_layout_1(workspace, block_local_data, rdata, decode_linear_moe_output_shared_route_down_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1, decode_linear_output_vectorized_compute_decode_linear_norm_stats_layout_1_0)
+    _flagmega_decode_linear_norm_stats_layout_1_call_11_decode_linear_output_vectorized_pack1_decode_linear_norm_stats_layout_1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data, _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True) + 1077936128)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 10, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call decode_linear_output.vectorized.compute.norm_stats_combine.decode_linear_norm_stats_layout_1 -> add_norm_stats/local_partial_rms (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_12_decode_linear_output_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1(decode_linear_hidden_decode_linear_norm_stats_layout_1, decode_linear_output_vectorized_compute_decode_linear_norm_stats_layout_1_0, decode_linear_output_norm_stats_decode_linear_norm_stats_layout_1_1)
+    _flagmega_decode_linear_norm_stats_layout_1_call_12_decode_linear_output_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 10, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 11, volatile=True)), 4).to(tl.pointer_type(tl.float32)))
 
 
 
@@ -5085,52 +5550,66 @@ def _flagmega_function_decode_linear_norm_stats_layout_1__producer(
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer,
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer,
-    decode_linear_hidden_decode_linear_norm_stats_layout_1,
     decode_linear_state_decode_linear_norm_stats_layout_1_0,
     decode_linear_state_decode_linear_norm_stats_layout_1_1,
     decode_linear_layer_id_decode_linear_norm_stats_layout_1,
-    decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_in_proj_b_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_in_proj_a_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_conv1d_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_a_log_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_dt_bias_decode_linear_norm_stats_layout_1,
-    decode_linear_linear_attn_norm_weight_decode_linear_norm_stats_layout_1,
-    decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    n3_constant_parameter_decode_linear_norm_stats_layout_1,
-    n9_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_gate_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_up_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_down_weight_bank_constant_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1,
-    decode_linear_hidden_norm_stats_decode_linear_norm_stats_layout_1,
-    decode_linear_output_vectorized_compute_decode_linear_norm_stats_layout_1_0,
-    decode_linear_output_norm_stats_decode_linear_norm_stats_layout_1_1,
-    rdata,
-    workspace,
     block_local_data,
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor,
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor,
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor,
-    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements
+    _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements,
+    _flagmega_function_offsets,
+    _flagmega_call_pool_rdata,
+    _flagmega_call_pool_workspace,
+    _flagmega_call_offsets
 ):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    tl.debug_barrier()
+
+    tl.debug_barrier()
 
     # tir.call decode_linear_qkv.vectorized.compute.decode_linear_norm_stats_layout_1 -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__producer(_flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, block_local_data, decode_linear_qkv_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_norm_stats_layout_1_call_2_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__producer(_flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 1, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tl.debug_barrier()
+
+    tl.debug_barrier()
+
     # tir.call decode_linear_z.vectorized.compute.decode_linear_norm_stats_layout_1 -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__producer(_flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, block_local_data, decode_linear_z_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_norm_stats_layout_1_call_4_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__producer(_flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 2, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call decode_linear_attention_residual.vectorized.compute.norm_stats_combine.decode_linear_norm_stats_layout_1 -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats (local_shard)
-    _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__producer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, workspace, decode_linear_attention_output_vectorized_compute_rhs_k_major_physical_parameter_decode_linear_norm_stats_layout_1, decode_linear_hidden_decode_linear_norm_stats_layout_1, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_linear_norm_stats_layout_1_call_6_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__producer(_flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 12, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 2, volatile=True) + 505282560)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor, _flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1__weight_descriptor_descriptor__origin_elements)
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
 
 
 
@@ -5140,7 +5619,6 @@ def _flagmega_function_decode_attention__consumer(
     _flagmega_decode_attention_gate_vectorized_compute_reader,
     _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader,
     _flagmega_decode_attention_qkv_packed_projection_shared_1,
-    decode_attention_hidden,
     decode_attention_state_0,
     decode_attention_state_1,
     decode_attention_state_2,
@@ -5148,108 +5626,99 @@ def _flagmega_function_decode_attention__consumer(
     decode_attention_state_4,
     decode_attention_layer_id,
     decode_attention_advance_sequence,
-    decode_attention_rotary_cos,
-    decode_attention_rotary_sin,
-    decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter,
-    n23_constant_parameter,
-    decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused,
-    n36_constant_parameter,
-    n41_constant_parameter,
-    n56_constant_parameter,
-    decode_attention_moe_output_shared_route_gate_weight_bank_constant_parameter,
-    decode_attention_moe_output_shared_route_up_weight_bank_constant_parameter,
-    decode_attention_moe_output_shared_route_down_weight_bank_constant_parameter,
-    decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_attention_hidden_norm_stats,
-    decode_attention_output_vectorized_compute_0,
-    decode_attention_output_norm_stats_1,
-    rdata,
-    workspace,
     block_local_data,
     _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor,
     _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor,
     _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor,
-    _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements
+    _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements,
+    _flagmega_function_offsets,
+    _flagmega_call_pool_rdata,
+    _flagmega_call_pool_workspace,
+    _flagmega_call_offsets
 ):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
-    # tir.call decode_attention_hidden.reshard21 -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_attention_call_0_decode_attention_hidden_reshard21(decode_attention_hidden, block_local_data)
+    # tir.call decode_attention_hidden.reshard20 -> distributed_boxing/gather_reduce_scatter (collective)
+    _flagmega_decode_attention_call_0_decode_attention_hidden_reshard20(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_attention_input_norm.vectorized.compute -> gather_reduce_norm_apply/sum (synchronized_local)
-    _flagmega_decode_attention_call_1_decode_attention_input_norm_vectorized_compute(decode_attention_hidden_norm_stats, block_local_data, n23_constant_parameter, rdata)
+    _flagmega_decode_attention_call_1_decode_attention_input_norm_vectorized_compute(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 5, volatile=True)), 4).to(tl.pointer_type(tl.float32)), block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 2, volatile=True)), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)))
     tl.debug_barrier()
+
     # tir.call decode_attention_qkv.packed_projection -> qkv_parallel_linear/packed_mma_smem_pipeline (local_shard)
-    _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__consumer(_flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_decode_attention_qkv_packed_projection_shared_1, block_local_data, decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused, workspace, _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor, _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__consumer(_flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_decode_attention_qkv_packed_projection_shared_1, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor, _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_attention_qkv_packed_projection_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
-    # tir.call decode_attention_qkv.packed_combine.field_0 -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_attention_call_3_decode_attention_qkv_packed_combine_field_0(workspace)
-    # tir.call decode_attention_qkv.packed_combine.field_1 -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_attention_call_4_decode_attention_qkv_packed_combine_field_1(workspace)
+
+    # tir.call n48.qkv_rope_with_cache -> gather_reduce_qkv_rope_with_cache/decode (synchronized_local)
+    _flagmega_decode_attention_call_3_n48_qkv_rope_with_cache(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 4, volatile=True)), 256).to(tl.pointer_type(tl.float32)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 4, volatile=True) + 10240)), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 576768), 256).to(tl.pointer_type(tl.float32)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + 576512), 256).to(tl.pointer_type(tl.float32)), decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
-    # tir.call decode_attention_qkv.packed_combine.field_2 -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_attention_call_5_decode_attention_qkv_packed_combine_field_2(workspace)
-    # tir.call n37 -> norm_stats/local (local_shard)
-    _flagmega_decode_attention_call_6_n37(workspace, block_local_data)
-    # tir.call n42 -> norm_stats/local (local_shard)
-    _flagmega_decode_attention_call_7_n42(workspace, block_local_data)
+
+    # tir.call n49.partial -> paged_attention_partial/decode_t64 (local_shard)
+    _flagmega_decode_attention_call_4_n49_partial(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
-    # tir.call n48.qkv_rope_with_cache -> qkv_rope_with_cache/decode (local_shard)
-    _flagmega_decode_attention_call_8_n48_qkv_rope_with_cache(workspace, n36_constant_parameter, n41_constant_parameter, rdata, decode_attention_rotary_cos, decode_attention_rotary_sin, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id, decode_attention_advance_sequence, block_local_data)
-    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
-
-    # tir.call n49.partial -> paged_attention_partial/decode_t32 (local_shard)
-    _flagmega_decode_attention_call_9_n49_partial(workspace, decode_attention_state_0, decode_attention_state_1, decode_attention_state_2, decode_attention_state_3, decode_attention_state_4, decode_attention_layer_id)
-    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
     # tir.call decode_attention_gate.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__consumer(_flagmega_decode_attention_gate_vectorized_compute_reader, block_local_data, decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter, workspace, _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__consumer(_flagmega_decode_attention_gate_vectorized_compute_reader, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 1, volatile=True) + 167772160)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_attention_gate_vectorized_compute_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
-    # tir.call decode_attention_gate.vectorized.compute.reshard628 -> distributed_boxing/gather_reduce_scatter (collective)
-    _flagmega_decode_attention_call_11_decode_attention_gate_vectorized_compute_reshard628(workspace, block_local_data)
+
+    # tir.call decode_attention_gate.vectorized.compute.reshard628.accumulator -> distributed_boxing/gather_reduce_scatter (collective)
+    _flagmega_decode_attention_call_6_decode_attention_gate_vectorized_compute_reshard628_accumulator(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data)
+    tl.debug_barrier()
+
+    # tir.call decode_attention_gate.vectorized.compute.reshard628 -> elementwise/cast (local_shard)
+    _flagmega_decode_attention_call_7_decode_attention_gate_vectorized_compute_reshard628(block_local_data)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call n51.vectorized.compute -> paged_attention_gated_combine/decode (synchronized_local)
-    _flagmega_decode_attention_call_12_n51_vectorized_compute(workspace, block_local_data)
+    _flagmega_decode_attention_call_8_n51_vectorized_compute(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_attention_attention_residual.vectorized.compute.norm_stats_combine -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats (local_shard)
-    _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer(_flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__consumer(_flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 1, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_attention_post_norm.vectorized.compute -> gather_reduce_norm_apply/sum (synchronized_local)
-    _flagmega_decode_attention_call_14_decode_attention_post_norm_vectorized_compute(workspace, decode_attention_hidden, n56_constant_parameter, rdata, block_local_data)
+    _flagmega_decode_attention_call_10_decode_attention_post_norm_vectorized_compute(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 2, volatile=True) + -81920)), 256).to(tl.pointer_type(tl.float32)), _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_attention_moe_output.shared_route.router_projection.vectorized.compute -> dense_matmul/split_k_n_packed_k_major_gemv (local_shard)
-    _flagmega_decode_attention_call_15_decode_attention_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter, workspace)
+    _flagmega_decode_attention_call_11_decode_attention_moe_output_shared_route_router_projection_vectorized_compute(block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True) + -2097152)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_attention_moe_output.shared_route.routing -> shared_router/gather_reduce (local_shard)
-    _flagmega_decode_attention_call_16_decode_attention_moe_output_shared_route_routing(workspace, block_local_data)
+    _flagmega_decode_attention_call_12_decode_attention_moe_output_shared_route_routing(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data)
     tl.debug_barrier()
+
     # tir.call decode_attention_moe_output.gate_up -> sparse_experts_gate_up/simt (local_shard)
-    _flagmega_decode_attention_call_17_decode_attention_moe_output_gate_up(block_local_data, rdata, decode_attention_moe_output_shared_route_gate_weight_bank_constant_parameter, decode_attention_moe_output_shared_route_up_weight_bank_constant_parameter, workspace)
+    _flagmega_decode_attention_call_13_decode_attention_moe_output_gate_up(block_local_data, _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True) + -1619001344)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True) + -1080033280)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call decode_attention_output.vectorized.pack1 -> sparse_experts_down/simt (local_shard)
-    _flagmega_decode_attention_call_18_decode_attention_output_vectorized_pack1(workspace, block_local_data, rdata, decode_attention_moe_output_shared_route_down_weight_bank_constant_parameter, decode_attention_output_vectorized_compute_0)
+    _flagmega_decode_attention_call_14_decode_attention_output_vectorized_pack1(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), block_local_data, _flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True) + -541065216)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 6, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call decode_attention_output.vectorized.compute.norm_stats_combine -> add_norm_stats/local_partial_rms (local_shard)
-    _flagmega_decode_attention_call_19_decode_attention_output_vectorized_compute_norm_stats_combine(decode_attention_hidden, decode_attention_output_vectorized_compute_0, decode_attention_output_norm_stats_1)
+    _flagmega_decode_attention_call_15_decode_attention_output_vectorized_compute_norm_stats_combine(tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 6, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 7, volatile=True)), 4).to(tl.pointer_type(tl.float32)))
 
 
 
@@ -5258,7 +5727,6 @@ def _flagmega_function_decode_attention__producer(
     _flagmega_decode_attention_qkv_packed_projection_writer,
     _flagmega_decode_attention_gate_vectorized_compute_writer,
     _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer,
-    decode_attention_hidden,
     decode_attention_state_0,
     decode_attention_state_1,
     decode_attention_state_2,
@@ -5266,46 +5734,73 @@ def _flagmega_function_decode_attention__producer(
     decode_attention_state_4,
     decode_attention_layer_id,
     decode_attention_advance_sequence,
-    decode_attention_rotary_cos,
-    decode_attention_rotary_sin,
-    decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter,
-    n23_constant_parameter,
-    decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused,
-    n36_constant_parameter,
-    n41_constant_parameter,
-    n56_constant_parameter,
-    decode_attention_moe_output_shared_route_gate_weight_bank_constant_parameter,
-    decode_attention_moe_output_shared_route_up_weight_bank_constant_parameter,
-    decode_attention_moe_output_shared_route_down_weight_bank_constant_parameter,
-    decode_attention_moe_output_shared_route_router_projection_vectorized_compute_rhs_k_major_physical_parameter,
-    decode_attention_hidden_norm_stats,
-    decode_attention_output_vectorized_compute_0,
-    decode_attention_output_norm_stats_1,
-    rdata,
-    workspace,
     block_local_data,
     _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor,
     _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor,
     _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor__origin_elements,
     _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor,
-    _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements
+    _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements,
+    _flagmega_function_offsets,
+    _flagmega_call_pool_rdata,
+    _flagmega_call_pool_workspace,
+    _flagmega_call_offsets
 ):
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    tl.debug_barrier()
+
+    tl.debug_barrier()
 
     # tir.call decode_attention_qkv.packed_projection -> qkv_parallel_linear/packed_mma_smem_pipeline (local_shard)
-    _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__producer(_flagmega_decode_attention_qkv_packed_projection_writer, block_local_data, decode_attention_qkv_q_weight_pack_k_major_parameter_qkv_fused, workspace, _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor, _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_attention_call_2_decode_attention_qkv_packed_projection__producer(_flagmega_decode_attention_qkv_packed_projection_writer, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 3, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor, _flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_attention_qkv_packed_projection_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call decode_attention_gate.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_decode_attention_call_10_decode_attention_gate_vectorized_compute__producer(_flagmega_decode_attention_gate_vectorized_compute_writer, block_local_data, decode_attention_gate_vectorized_compute_rhs_k_major_physical_parameter, workspace, _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_attention_call_5_decode_attention_gate_vectorized_compute__producer(_flagmega_decode_attention_gate_vectorized_compute_writer, block_local_data, tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + (tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 1, volatile=True) + 167772160)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor, _flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor__origin_elements)
     _flagmega_decode_attention_gate_vectorized_compute_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call decode_attention_attention_residual.vectorized.compute.norm_stats_combine -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats (local_shard)
-    _flagmega_decode_attention_call_13_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__producer(_flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, workspace, decode_attention_attention_output_vectorized_compute_rhs_k_major_physical_parameter, decode_attention_hidden, _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
+    _flagmega_decode_attention_call_9_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__producer(_flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 8, volatile=True)), 256).to(tl.pointer_type(tl.uint8)), tl.multiple_of((_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 1, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), tl.multiple_of((_flagmega_call_pool_workspace.to(tl.pointer_type(tl.uint8)) + tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 0, volatile=True)), 256).to(tl.pointer_type(tl.bfloat16)), _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor, _flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor__origin_elements)
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
 
 
 
@@ -5450,7 +5945,7 @@ def flagmega_main__consumer(
     paged_state_2,
     paged_state_3,
     paged_state_4,
-    logits_reshard652,
+    logits_reshard651,
     next_token,
     rdata,
     workspace,
@@ -5469,236 +5964,284 @@ def flagmega_main__consumer(
     _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
     _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
     _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
-    _flagmega_logits_vectorized_compute__weight_descriptor_descriptor
+    _flagmega_logits_vectorized_compute__weight_descriptor_descriptor,
+    _flagmega_function_offsets
 ):
+
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
 
     # tir.call input_ids.reshard1 -> distributed_boxing/tensor_load (collective)
     _flagmega_main_call_0_input_ids_reshard1(input_ids, block_local_data)
     tl.debug_barrier()
+
     # tir.call token_embedding.packed -> embedding/decode (local_shard)
     _flagmega_main_call_1_token_embedding_packed(block_local_data, rdata, workspace)
     # tir.call position_embeddings.packed -> rotary_embedding/decode (local_shard)
     _flagmega_main_call_2_position_embeddings_packed(paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, workspace)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_0_call.norm_stats -> norm_stats/local (local_shard)
     _flagmega_main_call_3_layer_0_call_norm_stats(workspace)
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_0_call -> @decode_linear
-    _flagmega_function_decode_linear__consumer(_flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute_reader, _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute_reader, _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 22784), gdn_state_0, gdn_state_1, tl.full((), 0, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33506291840), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34009608320), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502016640), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503982720), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261266560), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505952640), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262249600), ((rdata).to(tl.pointer_type(tl.float32)) + 16752982080), ((rdata).to(tl.pointer_type(tl.float32)) + 16753043520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 508572160), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 778056192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1047540224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1317024256), ((workspace).to(tl.pointer_type(tl.float32)) + 12416), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32))
+    _flagmega_function_decode_linear__consumer(_flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute_reader, _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute_reader, _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_reader, gdn_state_0, gdn_state_1, tl.full((), 0, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_function_offsets, rdata, workspace)
     _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_1_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_1_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_1_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_1_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), gdn_state_0, gdn_state_1, tl.full((), 1, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33523069056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34017996928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502082176), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504048256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261299328), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505952768), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978368), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34270638208), ((rdata).to(tl.pointer_type(tl.float32)) + 16752984128), ((rdata).to(tl.pointer_type(tl.float32)) + 16753045568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1318072832), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1587556864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1857040896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2126524928), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 45568), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_1_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_1_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_1_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 1, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(0, tl.int64))
     _flagmega_layer_1_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_2_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_2_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_2_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_2_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), gdn_state_0, gdn_state_1, tl.full((), 2, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33539846272), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34026385536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502147712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504113792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261332096), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974528), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505952896), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978496), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34279026816), ((rdata).to(tl.pointer_type(tl.float32)) + 16752986176), ((rdata).to(tl.pointer_type(tl.float32)) + 16753047616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2127573504), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2397057536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2666541568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2936025600), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_2_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_2_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_2_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 2, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(13, tl.int64))
     _flagmega_layer_2_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_3_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_3_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection_shared_1, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 0, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34513918080), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34597804160), ((rdata).to(tl.pointer_type(tl.float32)) + 16753125440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3746574848), ((rdata).to(tl.pointer_type(tl.float32)) + 17256953920), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956480), ((rdata).to(tl.pointer_type(tl.float32)) + 16753104960), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2937074176), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3206558208), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3476042240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3745526272), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 251668480, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_3_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 0, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 251668480, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(377, tl.int64))
     _flagmega_layer_3_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_4_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_4_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_4_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_4_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), gdn_state_0, gdn_state_1, tl.full((), 3, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33556623488), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34034774144), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502213248), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504179328), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261364864), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974592), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953024), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34287415424), ((rdata).to(tl.pointer_type(tl.float32)) + 16752988224), ((rdata).to(tl.pointer_type(tl.float32)) + 16753049664), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3757060608), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4026544640), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4296028672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4565512704), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_4_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_4_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_4_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 3, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(26, tl.int64))
     _flagmega_layer_4_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_5_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_5_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_5_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_5_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), gdn_state_0, gdn_state_1, tl.full((), 4, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33573400704), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34043162752), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502278784), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504244864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261397632), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953152), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978752), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34295804032), ((rdata).to(tl.pointer_type(tl.float32)) + 16752990272), ((rdata).to(tl.pointer_type(tl.float32)) + 16753051712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4566561280), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4836045312), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5105529344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5375013376), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_5_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_5_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_5_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 4, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(39, tl.int64))
     _flagmega_layer_5_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_6_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_6_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_6_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_6_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 5, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33590177920), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34051551360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502344320), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504310400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261430400), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974720), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953280), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978880), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34304192640), ((rdata).to(tl.pointer_type(tl.float32)) + 16752992320), ((rdata).to(tl.pointer_type(tl.float32)) + 16753053760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5376061952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5645545984), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5915030016), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6184514048), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_6_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_6_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_6_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 5, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(52, tl.int64))
     _flagmega_layer_6_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_7_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_7_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_7_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection_shared_1, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 1, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34522306688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34606192768), ((rdata).to(tl.pointer_type(tl.float32)) + 16753127488), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6995063296), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954176), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956736), ((rdata).to(tl.pointer_type(tl.float32)) + 16753107008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6185562624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6455046656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6724530688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6994014720), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 260057088, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_7_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_7_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 1, tl.int32), tl.full((), False, tl.int1), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 260057088, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(386, tl.int64))
     _flagmega_layer_7_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_8_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_8_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_8_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_8_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, (workspace).to(tl.pointer_type(tl.bfloat16)), gdn_state_0, gdn_state_1, tl.full((), 6, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33606955136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34059939968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502409856), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504375936), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261463168), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974784), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953408), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34312581248), ((rdata).to(tl.pointer_type(tl.float32)) + 16752994368), ((rdata).to(tl.pointer_type(tl.float32)) + 16753055808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7005549056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7275033088), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7544517120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7814001152), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_8_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_8_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_8_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 6, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(65, tl.int64))
     _flagmega_layer_8_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_9_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_9_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_9_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_9_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 7, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33623732352), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34068328576), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502475392), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504441472), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261495936), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974848), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953536), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34320969856), ((rdata).to(tl.pointer_type(tl.float32)) + 16752996416), ((rdata).to(tl.pointer_type(tl.float32)) + 16753057856), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7815049728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8084533760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8354017792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8623501824), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_9_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_9_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_9_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 7, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(78, tl.int64))
     _flagmega_layer_9_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_10_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_10_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_10_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_10_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 8, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33640509568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34076717184), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502540928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504507008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261528704), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953664), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979264), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34329358464), ((rdata).to(tl.pointer_type(tl.float32)) + 16752998464), ((rdata).to(tl.pointer_type(tl.float32)) + 16753059904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8624550400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8894034432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9163518464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9433002496), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_10_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_10_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_10_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 8, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(91, tl.int64))
     _flagmega_layer_10_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_11_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_11_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_11_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection_shared_1, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 2, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34530695296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34614581376), ((rdata).to(tl.pointer_type(tl.float32)) + 16753129536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10243551744), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954432), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956992), ((rdata).to(tl.pointer_type(tl.float32)) + 16753109056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9434051072), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9703535104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9973019136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10242503168), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 268445696, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_11_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_11_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 2, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 268445696, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(395, tl.int64))
     _flagmega_layer_11_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_12_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_12_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_12_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_12_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 9, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33657286784), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34085105792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502606464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504572544), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261561472), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974976), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953792), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979392), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34337747072), ((rdata).to(tl.pointer_type(tl.float32)) + 16753000512), ((rdata).to(tl.pointer_type(tl.float32)) + 16753061952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10254037504), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10523521536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10793005568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11062489600), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_12_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_12_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_12_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 9, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(104, tl.int64))
     _flagmega_layer_12_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_13_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_13_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_13_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_13_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 10, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33674064000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34093494400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502672000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504638080), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261594240), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975040), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953920), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34346135680), ((rdata).to(tl.pointer_type(tl.float32)) + 16753002560), ((rdata).to(tl.pointer_type(tl.float32)) + 16753064000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11063538176), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11333022208), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11602506240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11871990272), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_13_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_13_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_13_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 10, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(117, tl.int64))
     _flagmega_layer_13_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_14_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_14_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_14_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_14_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 11, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33690841216), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34101883008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502737536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504703616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261627008), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954048), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979648), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34354524288), ((rdata).to(tl.pointer_type(tl.float32)) + 16753004608), ((rdata).to(tl.pointer_type(tl.float32)) + 16753066048), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11873038848), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12142522880), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12412006912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12681490944), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_14_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_14_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_14_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 11, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(130, tl.int64))
     _flagmega_layer_14_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_15_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_15_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_15_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection_shared_1, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 3, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34539083904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34622969984), ((rdata).to(tl.pointer_type(tl.float32)) + 16753131584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13492040192), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954688), ((rdata).to(tl.pointer_type(tl.float32)) + 17256957248), ((rdata).to(tl.pointer_type(tl.float32)) + 16753111104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12682539520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12952023552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13221507584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13490991616), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 276834304, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_15_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_15_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 3, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 276834304, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(404, tl.int64))
     _flagmega_layer_15_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_16_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_16_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_16_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_16_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 12, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33707618432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34110271616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502803072), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504769152), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261659776), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975168), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954176), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34362912896), ((rdata).to(tl.pointer_type(tl.float32)) + 16753006656), ((rdata).to(tl.pointer_type(tl.float32)) + 16753068096), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13502525952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13772009984), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14041494016), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14310978048), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_16_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_16_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_16_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 12, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(143, tl.int64))
     _flagmega_layer_16_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_17_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_17_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_17_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_17_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 13, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33724395648), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34118660224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502868608), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504834688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261692544), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975232), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954304), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34371301504), ((rdata).to(tl.pointer_type(tl.float32)) + 16753008704), ((rdata).to(tl.pointer_type(tl.float32)) + 16753070144), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14312026624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14581510656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14850994688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15120478720), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 512), ((workspace).to(tl.pointer_type(tl.float32)) + 128), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_17_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_17_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_17_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 13, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(156, tl.int64))
     _flagmega_layer_17_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_18_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_18_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_18_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_18_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 512), gdn_state_0, gdn_state_1, tl.full((), 14, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33741172864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34127048832), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502934144), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504900224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261725312), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954432), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980032), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34379690112), ((rdata).to(tl.pointer_type(tl.float32)) + 16753010752), ((rdata).to(tl.pointer_type(tl.float32)) + 16753072192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15121527296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15391011328), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15660495360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15929979392), ((workspace).to(tl.pointer_type(tl.float32)) + 128), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_18_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_18_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_18_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 14, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(169, tl.int64))
     _flagmega_layer_18_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_19_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_19_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_19_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection_shared_1, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 4, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34547472512), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34631358592), ((rdata).to(tl.pointer_type(tl.float32)) + 16753133632), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16740528640), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954944), ((rdata).to(tl.pointer_type(tl.float32)) + 17256957504), ((rdata).to(tl.pointer_type(tl.float32)) + 16753113152), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15931027968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16200512000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16469996032), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16739480064), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 285222912, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_19_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_19_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 4, tl.int32), tl.full((), False, tl.int1), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 285222912, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(413, tl.int64))
     _flagmega_layer_19_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_20_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_20_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_20_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_20_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), gdn_state_0, gdn_state_1, tl.full((), 15, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33757950080), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34135437440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502999680), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504965760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261758080), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954560), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980160), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34388078720), ((rdata).to(tl.pointer_type(tl.float32)) + 16753012800), ((rdata).to(tl.pointer_type(tl.float32)) + 16753074240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16751014400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17020498432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17289982464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17559466496), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 251658240, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_20_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_20_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_20_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 15, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 251658240, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(182, tl.int64))
     _flagmega_layer_20_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_21_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_21_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_21_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_21_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), gdn_state_0, gdn_state_1, tl.full((), 16, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33774727296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34143826048), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503065216), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505031296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261790848), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975424), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954688), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980288), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34396467328), ((rdata).to(tl.pointer_type(tl.float32)) + 16753014848), ((rdata).to(tl.pointer_type(tl.float32)) + 16753076288), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17560515072), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17829999104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18099483136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18368967168), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 45568), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 268435456, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_21_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_21_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_21_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 16, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 268435456, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(195, tl.int64))
     _flagmega_layer_21_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_22_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_22_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_22_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_22_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), gdn_state_0, gdn_state_1, tl.full((), 17, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33791504512), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34152214656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503130752), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505096832), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261823616), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975488), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954816), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980416), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34404855936), ((rdata).to(tl.pointer_type(tl.float32)) + 16753016896), ((rdata).to(tl.pointer_type(tl.float32)) + 16753078336), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18370015744), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18639499776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18908983808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19178467840), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 285212672, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_22_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_22_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_22_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 17, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 285212672, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(208, tl.int64))
     _flagmega_layer_22_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_23_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_23_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_23_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection_shared_1, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 5, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34555861120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34639747200), ((rdata).to(tl.pointer_type(tl.float32)) + 16753135680), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19989017088), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955200), ((rdata).to(tl.pointer_type(tl.float32)) + 17256957760), ((rdata).to(tl.pointer_type(tl.float32)) + 16753115200), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19179516416), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19449000448), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19718484480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19987968512), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 293611520, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_23_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_23_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 5, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 293611520, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(422, tl.int64))
     _flagmega_layer_23_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_24_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_24_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_24_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_24_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 18, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33808281728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34160603264), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503196288), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505162368), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261856384), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954944), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980544), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34413244544), ((rdata).to(tl.pointer_type(tl.float32)) + 16753018944), ((rdata).to(tl.pointer_type(tl.float32)) + 16753080384), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19999502848), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20268986880), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20538470912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20807954944), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), ((workspace).to(tl.pointer_type(tl.float32)) + 128), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 301989888, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_24_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_24_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_24_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 18, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 301989888, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(221, tl.int64))
     _flagmega_layer_24_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_25_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_25_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_25_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_25_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 19, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33825058944), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34168991872), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503261824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505227904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261889152), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955072), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34421633152), ((rdata).to(tl.pointer_type(tl.float32)) + 16753020992), ((rdata).to(tl.pointer_type(tl.float32)) + 16753082432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20809003520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21078487552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21347971584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21617455616), ((workspace).to(tl.pointer_type(tl.float32)) + 128), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 318767104, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_25_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_25_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_25_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 19, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 318767104, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(234, tl.int64))
     _flagmega_layer_25_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_26_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_26_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_26_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_26_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 20, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33841836160), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34177380480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503327360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505293440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261921920), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975680), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955200), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980800), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34430021760), ((rdata).to(tl.pointer_type(tl.float32)) + 16753023040), ((rdata).to(tl.pointer_type(tl.float32)) + 16753084480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21618504192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21887988224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22157472256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22426956288), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 335544320, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_26_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_26_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_26_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 20, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 335544320, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(247, tl.int64))
     _flagmega_layer_26_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_27_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_27_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_27_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection_shared_1, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 6, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34564249728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34648135808), ((rdata).to(tl.pointer_type(tl.float32)) + 16753137728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23237505536), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955456), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958016), ((rdata).to(tl.pointer_type(tl.float32)) + 16753117248), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22428004864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22697488896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22966972928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23236456960), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 302000128, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_27_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_27_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 6, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 302000128, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(431, tl.int64))
     _flagmega_layer_27_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_28_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_28_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_28_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_28_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 21, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33858613376), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34185769088), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503392896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505358976), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261954688), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975744), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955328), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34438410368), ((rdata).to(tl.pointer_type(tl.float32)) + 16753025088), ((rdata).to(tl.pointer_type(tl.float32)) + 16753086528), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23247991296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23517475328), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23786959360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24056443392), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 352321536, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_28_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_28_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_28_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 21, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 352321536, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(260, tl.int64))
     _flagmega_layer_28_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_29_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_29_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_29_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_29_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 22, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33875390592), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34194157696), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503458432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505424512), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261987456), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955456), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34446798976), ((rdata).to(tl.pointer_type(tl.float32)) + 16753027136), ((rdata).to(tl.pointer_type(tl.float32)) + 16753088576), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24057491968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24326976000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24596460032), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24865944064), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 369098752, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_29_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_29_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_29_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 22, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 369098752, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(273, tl.int64))
     _flagmega_layer_29_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_30_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_30_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_30_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_30_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 23, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33892167808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34202546304), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503523968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505490048), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262020224), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975872), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955584), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981184), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34455187584), ((rdata).to(tl.pointer_type(tl.float32)) + 16753029184), ((rdata).to(tl.pointer_type(tl.float32)) + 16753090624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24866992640), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25136476672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25405960704), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25675444736), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 385875968, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_30_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_30_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_30_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 23, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 385875968, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(286, tl.int64))
     _flagmega_layer_30_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_31_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_31_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_31_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection_shared_1, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 7, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34572638336), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34656524416), ((rdata).to(tl.pointer_type(tl.float32)) + 16753139776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26485993984), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955712), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958272), ((rdata).to(tl.pointer_type(tl.float32)) + 16753119296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25676493312), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25945977344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26215461376), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26484945408), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 310388736, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_31_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_31_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 7, tl.int32), tl.full((), False, tl.int1), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 310388736, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(440, tl.int64))
     _flagmega_layer_31_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_32_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_32_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_32_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_32_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 24, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33908945024), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34210934912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503589504), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505555584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262052992), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975936), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955712), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981312), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34463576192), ((rdata).to(tl.pointer_type(tl.float32)) + 16753031232), ((rdata).to(tl.pointer_type(tl.float32)) + 16753092672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26496479744), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26765963776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27035447808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27304931840), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 402653184, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_32_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_32_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_32_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 24, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 402653184, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(299, tl.int64))
     _flagmega_layer_32_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_33_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_33_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_33_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_33_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 25, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33925722240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34219323520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503655040), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505621120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262085760), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955840), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34471964800), ((rdata).to(tl.pointer_type(tl.float32)) + 16753033280), ((rdata).to(tl.pointer_type(tl.float32)) + 16753094720), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27305980416), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27575464448), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27844948480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28114432512), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 419430400, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_33_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_33_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_33_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 25, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 419430400, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(312, tl.int64))
     _flagmega_layer_33_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_34_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_34_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_34_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_34_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 26, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33942499456), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34227712128), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503720576), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505686656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262118528), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976064), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955968), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34480353408), ((rdata).to(tl.pointer_type(tl.float32)) + 16753035328), ((rdata).to(tl.pointer_type(tl.float32)) + 16753096768), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28115481088), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28384965120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28654449152), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28923933184), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 436207616, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_34_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_34_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_34_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 26, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 436207616, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(325, tl.int64))
     _flagmega_layer_34_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_35_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_35_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_35_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection_shared_1, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 8, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34581026944), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34664913024), ((rdata).to(tl.pointer_type(tl.float32)) + 16753141824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29734482432), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955968), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958528), ((rdata).to(tl.pointer_type(tl.float32)) + 16753121344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28924981760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29194465792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29463949824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29733433856), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 318777344, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_35_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_35_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 8, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 318777344, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(449, tl.int64))
     _flagmega_layer_35_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_36_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_36_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_36_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_36_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 27, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33959276672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34236100736), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503786112), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505752192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262151296), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976128), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505956096), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981696), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34488742016), ((rdata).to(tl.pointer_type(tl.float32)) + 16753037376), ((rdata).to(tl.pointer_type(tl.float32)) + 16753098816), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29744968192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30014452224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30283936256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30553420288), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 452984832, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_36_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_36_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_36_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 27, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 452984832, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(338, tl.int64))
     _flagmega_layer_36_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_37_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_37_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_37_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_37_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 28, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33976053888), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34244489344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503851648), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505817728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262184064), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505956224), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34497130624), ((rdata).to(tl.pointer_type(tl.float32)) + 16753039424), ((rdata).to(tl.pointer_type(tl.float32)) + 16753100864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30554468864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30823952896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31093436928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31362920960), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 469762048, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_37_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_37_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_37_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 28, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 469762048, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(351, tl.int64))
     _flagmega_layer_37_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_38_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_38_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_38_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_38_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 29, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33992831104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34252877952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503917184), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505883264), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262216832), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505956352), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34505519232), ((rdata).to(tl.pointer_type(tl.float32)) + 16753041472), ((rdata).to(tl.pointer_type(tl.float32)) + 16753102912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31363969536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31633453568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31902937600), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32172421632), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 486539264, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__consumer(_flagmega_layer_38_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_38_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_reader, _flagmega_layer_38_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader, gdn_state_0, gdn_state_1, tl.full((), 29, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 486539264, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(364, tl.int64))
     _flagmega_layer_38_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call layer_39_call -> @decode_attention
-    _flagmega_function_decode_attention__consumer(_flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_39_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_39_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection_shared_1, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 9, tl.int32), tl.full((), True, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34589415552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34673301632), ((rdata).to(tl.pointer_type(tl.float32)) + 16753143872), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32982970880), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956224), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958784), ((rdata).to(tl.pointer_type(tl.float32)) + 16753123392), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32173470208), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32442954240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32712438272), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32981922304), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 327165952, tl.int32))
+    _flagmega_function_decode_attention__consumer(_flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection_reader, _flagmega_layer_39_call___flagmega_decode_attention_gate_vectorized_compute_reader, _flagmega_layer_39_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader, _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection_shared_1, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 9, tl.int32), tl.full((), True, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 327165952, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(458, tl.int64))
     _flagmega_layer_39_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_reader.pipe.wait_drained()
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call final_norm.vectorized.compute -> gather_reduce_norm_apply/sum (synchronized_local)
     _flagmega_main_call_4_final_norm_vectorized_compute(workspace, rdata, block_local_data)
     tl.debug_barrier()
+
     # tir.call logits.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_main_call_5_logits_vectorized_compute__consumer(_flagmega_logits_vectorized_compute_reader, block_local_data, rdata, logits_reshard652, _flagmega_logits_vectorized_compute__weight_descriptor_descriptor, tl.full((), 0, tl.int32))
+    _flagmega_main_call_5_logits_vectorized_compute__consumer(_flagmega_logits_vectorized_compute_reader, block_local_data, rdata, logits_reshard651, _flagmega_logits_vectorized_compute__weight_descriptor_descriptor, tl.full((), 0, tl.int32))
     tle.distributed_barrier(FLAGMEGA_GRID_MESH)
 
+
     # tir.call next_token -> greedy_sample/distributed_argmax (synchronized_local)
-    _flagmega_main_call_6_next_token(logits_reshard652, next_token, workspace)
+    _flagmega_main_call_6_next_token(logits_reshard651, next_token, workspace)
 
 
 
@@ -5833,7 +6376,7 @@ def flagmega_main__producer(
     paged_state_2,
     paged_state_3,
     paged_state_4,
-    logits_reshard652,
+    logits_reshard651,
     next_token,
     rdata,
     workspace,
@@ -5852,136 +6395,272 @@ def flagmega_main__producer(
     _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
     _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
     _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
-    _flagmega_logits_vectorized_compute__weight_descriptor_descriptor
+    _flagmega_logits_vectorized_compute__weight_descriptor_descriptor,
+    _flagmega_function_offsets
 ):
+
     shard_coord0 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_y').to(tl.int64)
     shard_coord1 = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_x').to(tl.int64)
     shard_y = shard_coord0
     shard_x = shard_coord1
     shard_index = (shard_coord0 * 16 + shard_coord1)
+    block_index = ((0 * 8 + shard_coord0) * 16 + shard_coord1)
+
+    tl.debug_barrier()
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
 
     # tir.call layer_0_call -> @decode_linear
-    _flagmega_function_decode_linear__producer(_flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute_writer, _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute_writer, _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 22784), gdn_state_0, gdn_state_1, tl.full((), 0, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33506291840), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34009608320), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502016640), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503982720), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261266560), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505952640), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262249600), ((rdata).to(tl.pointer_type(tl.float32)) + 16752982080), ((rdata).to(tl.pointer_type(tl.float32)) + 16753043520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 508572160), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 778056192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1047540224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1317024256), ((workspace).to(tl.pointer_type(tl.float32)) + 12416), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32))
+    _flagmega_function_decode_linear__producer(_flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute_writer, _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute_writer, _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_writer, gdn_state_0, gdn_state_1, tl.full((), 0, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_function_offsets, rdata, workspace)
     _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_1_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_1_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_1_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_1_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), gdn_state_0, gdn_state_1, tl.full((), 1, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33523069056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34017996928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502082176), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504048256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261299328), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505952768), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978368), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34270638208), ((rdata).to(tl.pointer_type(tl.float32)) + 16752984128), ((rdata).to(tl.pointer_type(tl.float32)) + 16753045568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1318072832), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1587556864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 1857040896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2126524928), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 45568), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_1_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_1_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_1_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 1, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(0, tl.int64))
     _flagmega_layer_1_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_2_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_2_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_2_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_2_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), gdn_state_0, gdn_state_1, tl.full((), 2, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33539846272), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34026385536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502147712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504113792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261332096), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974528), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505952896), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978496), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34279026816), ((rdata).to(tl.pointer_type(tl.float32)) + 16752986176), ((rdata).to(tl.pointer_type(tl.float32)) + 16753047616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2127573504), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2397057536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2666541568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2936025600), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_2_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_2_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_2_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 2, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(13, tl.int64))
     _flagmega_layer_2_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_3_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_3_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 0, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34513918080), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34597804160), ((rdata).to(tl.pointer_type(tl.float32)) + 16753125440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3746574848), ((rdata).to(tl.pointer_type(tl.float32)) + 17256953920), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956480), ((rdata).to(tl.pointer_type(tl.float32)) + 16753104960), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 2937074176), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3206558208), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3476042240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3745526272), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 251668480, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_3_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 0, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_3_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 251668480, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(377, tl.int64))
     _flagmega_layer_3_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_4_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_4_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_4_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_4_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), gdn_state_0, gdn_state_1, tl.full((), 3, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33556623488), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34034774144), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502213248), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504179328), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261364864), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974592), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953024), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34287415424), ((rdata).to(tl.pointer_type(tl.float32)) + 16752988224), ((rdata).to(tl.pointer_type(tl.float32)) + 16753049664), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 3757060608), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4026544640), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4296028672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4565512704), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_4_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_4_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_4_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 3, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(26, tl.int64))
     _flagmega_layer_4_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_5_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_5_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_5_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_5_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), gdn_state_0, gdn_state_1, tl.full((), 4, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33573400704), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34043162752), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502278784), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504244864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261397632), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953152), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978752), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34295804032), ((rdata).to(tl.pointer_type(tl.float32)) + 16752990272), ((rdata).to(tl.pointer_type(tl.float32)) + 16753051712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4566561280), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 4836045312), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5105529344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5375013376), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_5_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_5_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_5_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 4, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(39, tl.int64))
     _flagmega_layer_5_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_6_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_6_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_6_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_6_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 5, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33590177920), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34051551360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502344320), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504310400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261430400), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974720), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953280), ((rdata).to(tl.pointer_type(tl.float32)) + 16752978880), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34304192640), ((rdata).to(tl.pointer_type(tl.float32)) + 16752992320), ((rdata).to(tl.pointer_type(tl.float32)) + 16753053760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5376061952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5645545984), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 5915030016), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6184514048), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_6_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_6_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_6_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 5, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(52, tl.int64))
     _flagmega_layer_6_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_7_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_7_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_7_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 1, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34522306688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34606192768), ((rdata).to(tl.pointer_type(tl.float32)) + 16753127488), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6995063296), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954176), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956736), ((rdata).to(tl.pointer_type(tl.float32)) + 16753107008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6185562624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6455046656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6724530688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 6994014720), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 260057088, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_7_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_7_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 1, tl.int32), tl.full((), False, tl.int1), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_7_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 8388608, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 260057088, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(386, tl.int64))
     _flagmega_layer_7_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_8_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_8_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_8_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_8_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, (workspace).to(tl.pointer_type(tl.bfloat16)), gdn_state_0, gdn_state_1, tl.full((), 6, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33606955136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34059939968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502409856), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504375936), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261463168), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974784), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953408), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34312581248), ((rdata).to(tl.pointer_type(tl.float32)) + 16752994368), ((rdata).to(tl.pointer_type(tl.float32)) + 16753055808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7005549056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7275033088), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7544517120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7814001152), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_8_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_8_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_8_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 6, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(65, tl.int64))
     _flagmega_layer_8_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_9_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_9_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_9_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_9_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 7, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33623732352), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34068328576), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502475392), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504441472), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261495936), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974848), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953536), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34320969856), ((rdata).to(tl.pointer_type(tl.float32)) + 16752996416), ((rdata).to(tl.pointer_type(tl.float32)) + 16753057856), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 7815049728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8084533760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8354017792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8623501824), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_9_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_9_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_9_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 7, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(78, tl.int64))
     _flagmega_layer_9_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_10_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_10_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_10_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_10_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 8, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33640509568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34076717184), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502540928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504507008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261528704), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953664), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979264), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34329358464), ((rdata).to(tl.pointer_type(tl.float32)) + 16752998464), ((rdata).to(tl.pointer_type(tl.float32)) + 16753059904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8624550400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 8894034432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9163518464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9433002496), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_10_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_10_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_10_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 8, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(91, tl.int64))
     _flagmega_layer_10_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_11_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_11_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_11_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 2, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34530695296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34614581376), ((rdata).to(tl.pointer_type(tl.float32)) + 16753129536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10243551744), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954432), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956992), ((rdata).to(tl.pointer_type(tl.float32)) + 16753109056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9434051072), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9703535104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 9973019136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10242503168), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 268445696, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_11_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_11_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 2, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_11_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 16777216, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 268445696, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(395, tl.int64))
     _flagmega_layer_11_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_12_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_12_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_12_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_12_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 9, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33657286784), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34085105792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502606464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504572544), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261561472), ((rdata).to(tl.pointer_type(tl.float32)) + 16752974976), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953792), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979392), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34337747072), ((rdata).to(tl.pointer_type(tl.float32)) + 16753000512), ((rdata).to(tl.pointer_type(tl.float32)) + 16753061952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10254037504), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10523521536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 10793005568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11062489600), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_12_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_12_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_12_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 9, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(104, tl.int64))
     _flagmega_layer_12_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_13_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_13_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_13_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_13_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 10, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33674064000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34093494400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502672000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504638080), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261594240), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975040), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505953920), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34346135680), ((rdata).to(tl.pointer_type(tl.float32)) + 16753002560), ((rdata).to(tl.pointer_type(tl.float32)) + 16753064000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11063538176), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11333022208), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11602506240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11871990272), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_13_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_13_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_13_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 10, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 83886080, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(117, tl.int64))
     _flagmega_layer_13_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_14_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_14_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_14_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_14_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 11, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33690841216), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34101883008), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502737536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504703616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261627008), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954048), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979648), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34354524288), ((rdata).to(tl.pointer_type(tl.float32)) + 16753004608), ((rdata).to(tl.pointer_type(tl.float32)) + 16753066048), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 11873038848), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12142522880), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12412006912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12681490944), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_14_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_14_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_14_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 11, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 92274688, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(130, tl.int64))
     _flagmega_layer_14_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_15_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_15_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_15_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 3, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34539083904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34622969984), ((rdata).to(tl.pointer_type(tl.float32)) + 16753131584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13492040192), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954688), ((rdata).to(tl.pointer_type(tl.float32)) + 17256957248), ((rdata).to(tl.pointer_type(tl.float32)) + 16753111104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12682539520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 12952023552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13221507584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13490991616), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 276834304, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_15_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_15_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 3, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_15_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 25165824, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 276834304, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(404, tl.int64))
     _flagmega_layer_15_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_16_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_16_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_16_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_16_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 12, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33707618432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34110271616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502803072), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504769152), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261659776), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975168), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954176), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34362912896), ((rdata).to(tl.pointer_type(tl.float32)) + 16753006656), ((rdata).to(tl.pointer_type(tl.float32)) + 16753068096), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13502525952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 13772009984), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14041494016), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14310978048), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_16_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_16_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_16_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 12, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 100663296, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(143, tl.int64))
     _flagmega_layer_16_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_17_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_17_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_17_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_17_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 13, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33724395648), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34118660224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502868608), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504834688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261692544), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975232), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954304), ((rdata).to(tl.pointer_type(tl.float32)) + 16752979904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34371301504), ((rdata).to(tl.pointer_type(tl.float32)) + 16753008704), ((rdata).to(tl.pointer_type(tl.float32)) + 16753070144), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14312026624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14581510656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 14850994688), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15120478720), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 512), ((workspace).to(tl.pointer_type(tl.float32)) + 128), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_17_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_17_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_17_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 13, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 109051904, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(156, tl.int64))
     _flagmega_layer_17_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_18_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_18_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_18_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_18_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 512), gdn_state_0, gdn_state_1, tl.full((), 14, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33741172864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34127048832), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502934144), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504900224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261725312), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954432), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980032), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34379690112), ((rdata).to(tl.pointer_type(tl.float32)) + 16753010752), ((rdata).to(tl.pointer_type(tl.float32)) + 16753072192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15121527296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15391011328), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15660495360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15929979392), ((workspace).to(tl.pointer_type(tl.float32)) + 128), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_18_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_18_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_18_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 14, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 117440512, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(169, tl.int64))
     _flagmega_layer_18_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_19_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_19_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_19_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 100864), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 4, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34547472512), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34631358592), ((rdata).to(tl.pointer_type(tl.float32)) + 16753133632), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16740528640), ((rdata).to(tl.pointer_type(tl.float32)) + 17256954944), ((rdata).to(tl.pointer_type(tl.float32)) + 17256957504), ((rdata).to(tl.pointer_type(tl.float32)) + 16753113152), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 15931027968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16200512000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16469996032), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16739480064), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 285222912, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_19_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_19_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 4, tl.int32), tl.full((), False, tl.int1), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_19_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 33554432, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 285222912, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(413, tl.int64))
     _flagmega_layer_19_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_20_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_20_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_20_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_20_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 98816), gdn_state_0, gdn_state_1, tl.full((), 15, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33757950080), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34135437440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33502999680), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33504965760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261758080), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954560), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980160), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34388078720), ((rdata).to(tl.pointer_type(tl.float32)) + 16753012800), ((rdata).to(tl.pointer_type(tl.float32)) + 16753074240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 16751014400), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17020498432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17289982464), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17559466496), ((workspace).to(tl.pointer_type(tl.float32)) + 51456), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), rdata, workspace, _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 251658240, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_20_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_20_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_20_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 15, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 251658240, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 125829120, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(182, tl.int64))
     _flagmega_layer_20_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_21_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_21_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_21_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_21_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 20736), gdn_state_0, gdn_state_1, tl.full((), 16, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33774727296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34143826048), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503065216), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505031296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261790848), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975424), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954688), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980288), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34396467328), ((rdata).to(tl.pointer_type(tl.float32)) + 16753014848), ((rdata).to(tl.pointer_type(tl.float32)) + 16753076288), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17560515072), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 17829999104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18099483136), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18368967168), ((workspace).to(tl.pointer_type(tl.float32)) + 10240), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 45568), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 268435456, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_21_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_21_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_21_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 16, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 268435456, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 134217728, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(195, tl.int64))
     _flagmega_layer_21_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_22_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_22_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_22_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_22_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 43264), gdn_state_0, gdn_state_1, tl.full((), 17, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33791504512), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34152214656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503130752), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505096832), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261823616), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975488), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954816), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980416), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34404855936), ((rdata).to(tl.pointer_type(tl.float32)) + 16753016896), ((rdata).to(tl.pointer_type(tl.float32)) + 16753078336), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18370015744), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18639499776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 18908983808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19178467840), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 285212672, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_22_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_22_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_22_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 17, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 285212672, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 142606336, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(208, tl.int64))
     _flagmega_layer_22_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_23_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_23_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_23_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 5, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34555861120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34639747200), ((rdata).to(tl.pointer_type(tl.float32)) + 16753135680), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19989017088), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955200), ((rdata).to(tl.pointer_type(tl.float32)) + 17256957760), ((rdata).to(tl.pointer_type(tl.float32)) + 16753115200), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19179516416), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19449000448), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19718484480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19987968512), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 293611520, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_23_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_23_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 5, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_23_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 41943040, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 293611520, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(422, tl.int64))
     _flagmega_layer_23_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_24_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_24_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_24_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_24_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 18, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33808281728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34160603264), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503196288), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505162368), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261856384), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505954944), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980544), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34413244544), ((rdata).to(tl.pointer_type(tl.float32)) + 16753018944), ((rdata).to(tl.pointer_type(tl.float32)) + 16753080384), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 19999502848), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20268986880), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20538470912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20807954944), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), ((workspace).to(tl.pointer_type(tl.float32)) + 128), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 301989888, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_24_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_24_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_24_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 18, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 301989888, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 150994944, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(221, tl.int64))
     _flagmega_layer_24_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_25_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_25_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_25_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_25_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 19, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33825058944), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34168991872), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503261824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505227904), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261889152), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975616), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955072), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34421633152), ((rdata).to(tl.pointer_type(tl.float32)) + 16753020992), ((rdata).to(tl.pointer_type(tl.float32)) + 16753082432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 20809003520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21078487552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21347971584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21617455616), ((workspace).to(tl.pointer_type(tl.float32)) + 128), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 318767104, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_25_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_25_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_25_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 19, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 318767104, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 159383552, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(234, tl.int64))
     _flagmega_layer_25_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_26_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_26_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_26_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_26_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 20, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33841836160), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34177380480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503327360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505293440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261921920), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975680), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955200), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980800), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34430021760), ((rdata).to(tl.pointer_type(tl.float32)) + 16753023040), ((rdata).to(tl.pointer_type(tl.float32)) + 16753084480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21618504192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 21887988224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22157472256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22426956288), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 335544320, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_26_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_26_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_26_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 20, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 335544320, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 167772160, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(247, tl.int64))
     _flagmega_layer_26_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_27_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_27_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_27_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 6, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34564249728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34648135808), ((rdata).to(tl.pointer_type(tl.float32)) + 16753137728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23237505536), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955456), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958016), ((rdata).to(tl.pointer_type(tl.float32)) + 16753117248), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22428004864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22697488896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 22966972928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23236456960), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 302000128, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_27_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_27_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 6, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_27_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 50331648, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 302000128, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(431, tl.int64))
     _flagmega_layer_27_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_28_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_28_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_28_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_28_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 21, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33858613376), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34185769088), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503392896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505358976), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261954688), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975744), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955328), ((rdata).to(tl.pointer_type(tl.float32)) + 16752980928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34438410368), ((rdata).to(tl.pointer_type(tl.float32)) + 16753025088), ((rdata).to(tl.pointer_type(tl.float32)) + 16753086528), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23247991296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23517475328), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 23786959360), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24056443392), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 352321536, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_28_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_28_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_28_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 21, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 352321536, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 176160768, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(260, tl.int64))
     _flagmega_layer_28_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_29_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_29_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_29_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_29_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 22, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33875390592), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34194157696), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503458432), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505424512), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34261987456), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955456), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981056), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34446798976), ((rdata).to(tl.pointer_type(tl.float32)) + 16753027136), ((rdata).to(tl.pointer_type(tl.float32)) + 16753088576), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24057491968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24326976000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24596460032), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24865944064), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 369098752, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_29_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_29_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_29_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 22, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 369098752, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 184549376, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(273, tl.int64))
     _flagmega_layer_29_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_30_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_30_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_30_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_30_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 23, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33892167808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34202546304), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503523968), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505490048), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262020224), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975872), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955584), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981184), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34455187584), ((rdata).to(tl.pointer_type(tl.float32)) + 16753029184), ((rdata).to(tl.pointer_type(tl.float32)) + 16753090624), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 24866992640), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25136476672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25405960704), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25675444736), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 385875968, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_30_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_30_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_30_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 23, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 385875968, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 192937984, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(286, tl.int64))
     _flagmega_layer_30_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_31_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_31_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_31_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 7, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34572638336), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34656524416), ((rdata).to(tl.pointer_type(tl.float32)) + 16753139776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26485993984), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955712), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958272), ((rdata).to(tl.pointer_type(tl.float32)) + 16753119296), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25676493312), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 25945977344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26215461376), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26484945408), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 310388736, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_31_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_31_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 7, tl.int32), tl.full((), False, tl.int1), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 58720256, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 310388736, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(440, tl.int64))
     _flagmega_layer_31_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_32_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_32_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_32_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_32_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 24, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33908945024), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34210934912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503589504), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505555584), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262052992), ((rdata).to(tl.pointer_type(tl.float32)) + 16752975936), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955712), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981312), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34463576192), ((rdata).to(tl.pointer_type(tl.float32)) + 16753031232), ((rdata).to(tl.pointer_type(tl.float32)) + 16753092672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26496479744), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 26765963776), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27035447808), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27304931840), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 402653184, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_32_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_32_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_32_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 24, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 402653184, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 201326592, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(299, tl.int64))
     _flagmega_layer_32_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_33_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_33_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_33_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_33_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 25, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33925722240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34219323520), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503655040), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505621120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262085760), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976000), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955840), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981440), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34471964800), ((rdata).to(tl.pointer_type(tl.float32)) + 16753033280), ((rdata).to(tl.pointer_type(tl.float32)) + 16753094720), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27305980416), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27575464448), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 27844948480), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28114432512), ((workspace).to(tl.pointer_type(tl.float32)) + 13568), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 419430400, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_33_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_33_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_33_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 25, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 419430400, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 209715200, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(312, tl.int64))
     _flagmega_layer_33_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_34_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_34_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_34_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_34_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 26, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33942499456), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34227712128), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503720576), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505686656), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262118528), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976064), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505955968), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34480353408), ((rdata).to(tl.pointer_type(tl.float32)) + 16753035328), ((rdata).to(tl.pointer_type(tl.float32)) + 16753096768), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28115481088), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28384965120), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28654449152), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28923933184), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), (workspace).to(tl.pointer_type(tl.bfloat16)), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 436207616, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_34_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_34_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_34_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 26, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 436207616, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 218103808, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(325, tl.int64))
     _flagmega_layer_34_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_35_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_35_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_35_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, (workspace).to(tl.pointer_type(tl.bfloat16)), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 8, tl.int32), tl.full((), False, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34581026944), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34664913024), ((rdata).to(tl.pointer_type(tl.float32)) + 16753141824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29734482432), ((rdata).to(tl.pointer_type(tl.float32)) + 17256955968), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958528), ((rdata).to(tl.pointer_type(tl.float32)) + 16753121344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 28924981760), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29194465792), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29463949824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29733433856), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 318777344, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_35_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_35_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 8, tl.int32), tl.full((), False, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 9216), _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 67108864, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 318777344, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(449, tl.int64))
     _flagmega_layer_35_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_36_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_36_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_36_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_36_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), gdn_state_0, gdn_state_1, tl.full((), 27, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33959276672), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34236100736), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503786112), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505752192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262151296), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976128), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505956096), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981696), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34488742016), ((rdata).to(tl.pointer_type(tl.float32)) + 16753037376), ((rdata).to(tl.pointer_type(tl.float32)) + 16753098816), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 29744968192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30014452224), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30283936256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30553420288), ((workspace).to(tl.pointer_type(tl.float32)) + 1024), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 452984832, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_36_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_36_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_36_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 27, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 452984832, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 226492416, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(338, tl.int64))
     _flagmega_layer_36_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_37_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_37_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_37_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_37_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 25088), gdn_state_0, gdn_state_1, tl.full((), 28, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33976053888), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34244489344), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503851648), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505817728), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262184064), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976192), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505956224), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981824), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34497130624), ((rdata).to(tl.pointer_type(tl.float32)) + 16753039424), ((rdata).to(tl.pointer_type(tl.float32)) + 16753100864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30554468864), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 30823952896), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31093436928), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31362920960), (workspace).to(tl.pointer_type(tl.float32)), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 469762048, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_37_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_37_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_37_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 28, tl.int32), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 469762048, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 234881024, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(351, tl.int64))
     _flagmega_layer_37_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_38_call -> @decode_linear_norm_stats_layout_1
-    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_38_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_38_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_38_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 23040), gdn_state_0, gdn_state_1, tl.full((), 29, tl.int32), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33992831104), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34252877952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33503917184), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505883264), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34262216832), ((rdata).to(tl.pointer_type(tl.float32)) + 16752976256), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 33505956352), ((rdata).to(tl.pointer_type(tl.float32)) + 16752981952), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34505519232), ((rdata).to(tl.pointer_type(tl.float32)) + 16753041472), ((rdata).to(tl.pointer_type(tl.float32)) + 16753102912), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31363969536), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31633453568), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 31902937600), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32172421632), ((workspace).to(tl.pointer_type(tl.float32)) + 1152), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), rdata, ((workspace) + 5120), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 486539264, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32))
+    _flagmega_function_decode_linear_norm_stats_layout_1__producer(_flagmega_layer_38_call___flagmega_decode_linear_qkv_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_38_call___flagmega_decode_linear_z_vectorized_compute_decode_linear_norm_stats_layout_1_writer, _flagmega_layer_38_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer, gdn_state_0, gdn_state_1, tl.full((), 29, tl.int32), _flagmega_block_scope_base((block_local_data), 13824), _flagmega_layer_0_call___flagmega_decode_linear_qkv_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 486539264, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_z_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 243269632, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(364, tl.int64))
     _flagmega_layer_38_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine_decode_linear_norm_stats_layout_1_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
     # tir.call layer_39_call -> @decode_attention
-    _flagmega_function_decode_attention__producer(_flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_39_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_39_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, ((workspace).to(tl.pointer_type(tl.bfloat16)) + 256), paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 9, tl.int32), tl.full((), True, tl.int1), ((workspace).to(tl.pointer_type(tl.float32)) + 51776), ((workspace).to(tl.pointer_type(tl.float32)) + 51712), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34589415552), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 34673301632), ((rdata).to(tl.pointer_type(tl.float32)) + 16753143872), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32982970880), ((rdata).to(tl.pointer_type(tl.float32)) + 17256956224), ((rdata).to(tl.pointer_type(tl.float32)) + 17256958784), ((rdata).to(tl.pointer_type(tl.float32)) + 16753123392), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32173470208), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32442954240), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32712438272), ((rdata).to(tl.pointer_type(tl.bfloat16)) + 32981922304), ((workspace).to(tl.pointer_type(tl.float32)) + 51584), ((workspace).to(tl.pointer_type(tl.bfloat16)) + 101120), (workspace).to(tl.pointer_type(tl.float32)), rdata, ((workspace) + 4608), _flagmega_block_scope_base((block_local_data), 4608), _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 327165952, tl.int32))
+    _flagmega_function_decode_attention__producer(_flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection_writer, _flagmega_layer_39_call___flagmega_decode_attention_gate_vectorized_compute_writer, _flagmega_layer_39_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer, paged_state_0, paged_state_1, paged_state_2, paged_state_3, paged_state_4, tl.full((), 9, tl.int32), tl.full((), True, tl.int1), (_flagmega_block_scope_base((block_local_data), 13824) + 4608), _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor, tl.full((), 0, tl.int32), _flagmega_layer_3_call___flagmega_decode_attention_gate_vectorized_compute__weight_descriptor_descriptor_descriptor, tl.full((), 75497472, tl.int32), _flagmega_layer_0_call___flagmega_decode_linear_attention_residual_vectorized_compute_norm_stats_combine__weight_descriptor_descriptor_descriptor, tl.full((), 327165952, tl.int32), _flagmega_function_offsets, rdata, workspace, tl.cast(458, tl.int64))
     _flagmega_layer_39_call___flagmega_decode_attention_attention_residual_vectorized_compute_norm_stats_combine_writer.pipe.wait_drained()
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
+    tl.debug_barrier()
+
     # tir.call logits.vectorized.compute -> dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv (local_shard)
-    _flagmega_main_call_5_logits_vectorized_compute__producer(_flagmega_logits_vectorized_compute_writer, block_local_data, rdata, logits_reshard652, _flagmega_logits_vectorized_compute__weight_descriptor_descriptor, tl.full((), 0, tl.int32))
+    _flagmega_main_call_5_logits_vectorized_compute__producer(_flagmega_logits_vectorized_compute_writer, block_local_data, rdata, logits_reshard651, _flagmega_logits_vectorized_compute__weight_descriptor_descriptor, tl.full((), 0, tl.int32))
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+
+
 
 
 
@@ -5995,7 +6674,7 @@ def flagmega_main(
     paged_state_2,
     paged_state_3,
     paged_state_4,
-    logits_reshard652,
+    logits_reshard651,
     next_token,
     rdata,
     workspace,
@@ -6014,7 +6693,8 @@ def flagmega_main(
     _flagmega_layer_31_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
     _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
     _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
-    _flagmega_logits_vectorized_compute__weight_descriptor_descriptor
+    _flagmega_logits_vectorized_compute__weight_descriptor_descriptor,
+    _flagmega_function_offsets
 ):
     _flagmega_shared_arena = tle.gpu.alloc(
         [65536],
@@ -8315,7 +8995,7 @@ def flagmega_main(
                     paged_state_2,
                     paged_state_3,
                     paged_state_4,
-                    logits_reshard652,
+                    logits_reshard651,
                     next_token,
                     rdata,
                     workspace,
@@ -8335,6 +9015,7 @@ def flagmega_main(
                     _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
                     _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
                     _flagmega_logits_vectorized_compute__weight_descriptor_descriptor,
+                    _flagmega_function_offsets,
                 ),
             ),
             (
@@ -8469,7 +9150,7 @@ def flagmega_main(
                     paged_state_2,
                     paged_state_3,
                     paged_state_4,
-                    logits_reshard652,
+                    logits_reshard651,
                     next_token,
                     rdata,
                     workspace,
@@ -8489,6 +9170,7 @@ def flagmega_main(
                     _flagmega_layer_35_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
                     _flagmega_layer_39_call___flagmega_decode_attention_qkv_packed_projection__weight_descriptor_descriptor_descriptor,
                     _flagmega_logits_vectorized_compute__weight_descriptor_descriptor,
+                    _flagmega_function_offsets,
                 ),
             ),
         ],

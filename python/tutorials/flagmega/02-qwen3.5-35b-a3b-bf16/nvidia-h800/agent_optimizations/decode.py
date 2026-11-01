@@ -8,6 +8,7 @@ from .shared_router import create_target as router_target, install as install_ro
 
 
 QKV_PIPELINE = "tir.qkv_parallel_linear.packed_partial_mma_n_tiled_table_pipeline"
+ORDERED_QKV_PIPELINE = "tir.qkv_parallel_linear.packed_ordered_mma_table_pipeline"
 PROJECTION_K = {
     "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv": 512,
     "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_tn64_bk512": 256,
@@ -26,6 +27,7 @@ def create_target(*, qkv_kernel="mma", bufferize_opt_level="optimized"):
     target = router_target()
     model = target.triton_implementation_model
     entries = []
+    ordered_projections = {}
     for value in model.implementations:
         if value.id in PROJECTION_K:
             k = PROJECTION_K[value.id]
@@ -44,8 +46,18 @@ def create_target(*, qkv_kernel="mma", bufferize_opt_level="optimized"):
                     workspace = replace(workspace, type=fm.tensor_type(workspace.type.dtype, (shape[0], k // 16, *shape[2:])))
                 workspaces.append(workspace)
             value = replace(value, parameters=parameters, shared_workspaces=tuple(workspaces))
+            # Native ordered arithmetic is a separate implementation. Replacing
+            # the SIMT GEMV also forced unordered BF16 imports to execute sixteen
+            # replicated MMA rows for their single-token projection.
+            ordered = replace(value, id=value.id + "_ordered_mma",
+                parameters={**parameters, "accumulation_mode": "ordered_mma", "mma_block_k": 128},
+                facts={**value.facts, "ordered_mma_accumulation": True})
+            ordered_projections[value.id] = ordered.id
+            entries.append(ordered)
         elif value.id == "tir.add_norm_stats.persistent_rms":
             value = replace(value, parameters={**value.parameters, "tile": 2048})
+        elif value.id == "tir.paged_attention_partial.decode_t64":
+            value = replace(value, parameters={**value.parameters, "compute_num_warps": 8})
         elif value.id == QKV_PIPELINE:
             stages, k = 2, 64
             n = value.parameters["block_n"]
@@ -56,8 +68,19 @@ def create_target(*, qkv_kernel="mma", bufferize_opt_level="optimized"):
                             transfer_pipeline=replace(value.transfer_pipeline, capacity=stages))
         entries.append(value)
     preferences = {**model.preferences,
+                   "paged_attention_partial": tuple(dict.fromkeys((
+                       "tir.paged_attention_partial.decode_t64",
+                       *model.preferences["paged_attention_partial"]))),
                    "add_norm_stats": tuple(dict.fromkeys(("tir.add_norm_stats.persistent_rms", *model.preferences["add_norm_stats"]))),
-                   "qkv_parallel_linear": (QKV_PIPELINE if qkv_kernel == "mma" else
-                                           "tir.qkv_parallel_linear.packed_fused_gemv",)}
+                   "qkv_parallel_linear": tuple(dict.fromkeys((
+                       ORDERED_QKV_PIPELINE,
+                       QKV_PIPELINE if qkv_kernel == "mma" else
+                       "tir.qkv_parallel_linear.packed_fused_gemv",
+                       *model.preferences["qkv_parallel_linear"]))) }
+    for family in ("dense_matmul", "dense_matmul_norm_stats"):
+        if family in preferences:
+            preferences[family] = tuple(identity for original in preferences[family]
+                for identity in ((original, ordered_projections[original])
+                                 if original in ordered_projections else (original,)))
     target.triton_implementation_model = replace(model, implementations=tuple(entries), preferences=preferences)
     return target.with_bufferize_opt_level(bufferize_opt_level)

@@ -1,0 +1,20 @@
+{
+  "schema": "glm53.complete-fusion/verified-parallel-probability-joint64-v4",
+  "semantic_hash": "7a073b51c9d72f7383aa0a5763697ee53917de427451b6f57841a4468c43a6c1",
+  "historical_semantic_hash": "4a5961d26f917983eb8759460a55a83bb7339518d49eb8827dc1375075e2d045",
+  "typed_region_audit": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/complete-fusion-adaptive-QK-reviewed-region-contract-CPU-20261031-r1706.json",
+  "typed_region_audit_sha256": "4d5e455af19236c870ab1c7c71e144d61d3bd18bf5d0eefe3a2516d2a4255a44",
+  "normal_selected_IR_sha256": "74b1dab4a1bcc12374b7a2ce8f2666f353c9b4622085452a5a366e8647b917eb",
+  "numerical_acceptance": false,
+  "performance_acceptance": false,
+  "storage_extension_IR_audit": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/QA-KV-live-alias-verified-storage-extension-private-recipe-CPU-20261031-r1917/storage-extension-IR-audit.json",
+  "storage_extension_IR_audit_sha256": "ad7147bd1ae4be5739ab6ed277647ffb795d875f05a7a66f82e7be8d2a923949",
+  "joint_DSA_IR_audit": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/joint-DSA-normal-selected-IR-complete-semantic-and-region-audit-CPU-20261031-r1957.json",
+  "joint_DSA_IR_audit_sha256": "024ec81182a16cd245b4e70dc1d1c50c4ec4e255fead699b2b44596fac8da4e1",
+  "parallel_probability_joint64_IR_audit": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/parallel-probability-joint64-normal-IR-semantic-resource-independent-CPU-audit-20261031-r2002.json",
+  "IR_audit_sha256": "2256b94695cb228fec570cb2bc168996f8f47f7ac1aee7e729d4dd1be2ea3e03",
+  "concurrent_lifetimes_IR_audit": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/parallel-probability-joint64-concurrent-lifetimes-normal-IR-storage-independent-CPU-audit-20261031-r2022.json",
+  "concurrent_lifetimes_IR_audit_sha256": "2f24ef355433bb4dcc3eaf8b30d75cfc6029291ff2419e5a3833ea954657e384",
+  "adaptive_complete_IR_source_proof": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/multi-prompt-20261022/long-context-opt/DSA-adaptive-CTA-declared-complete-IR-CPU-20261101-r2240c/source-proof.json",
+  "adaptive_complete_IR_source_sha256": "78c91cc414e22e99a283f8f34b90bfc563acb37e28523b5da3fd4247bd69d705"
+}

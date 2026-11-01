@@ -1,0 +1,25 @@
+        _oproj_local = _fm_total.to(tl.bfloat16)
+        tl.store((_oproj_window + {{ call.owner_matched_oproj.payload }}).to(tl.pointer_type(tl.bfloat16)) + _fm_n, _oproj_local)
+        tl.debug_barrier()
+        tl.atomic_xchg(_oproj_ready, _oproj_epoch, sem='release', scope='sys')
+        _oproj_ptrs = (_oproj_bases + {{ call.owner_matched_oproj.ready }} + _fm_task * 8).to(tl.pointer_type(tl.uint64))
+        _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        while tl.min(_oproj_observed, 0) < _oproj_epoch:
+            _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        tl.debug_barrier()
+        _oproj_value = tl.full((64,), 0, tl.float32)
+{% for peer in range(4) %}
+        _oproj_value = libdevice.add_rn(_oproj_value, tl.load((_oproj_p{{ peer }} + {{ call.owner_matched_oproj.payload }}).to(tl.pointer_type(tl.bfloat16)) + _fm_n).to(tl.float32))
+{% endfor %}
+        _oproj_value = _oproj_value.to(tl.bfloat16).to(tl.float32)
+        tl.debug_barrier()
+        tl.atomic_xchg(_oproj_consumed, _oproj_epoch, sem='release', scope='sys')
+{% set post = call.owner_matched_oproj %}
+{% for sink in range(4) %}
+        _oproj_out{{ sink }} = libdevice.mul_rn(tl.load({{ post.comb }} + {{ sink }}), tl.load(_oproj_residual + _fm_n).to(tl.bfloat16).to(tl.float32))
+        _oproj_out{{ sink }} = tl.fma(tl.load({{ post.post }} + {{ sink }}), _oproj_value, _oproj_out{{ sink }})
+{% for stream in range(1,4) %}
+        _oproj_out{{ sink }} = tl.fma(tl.load({{ post.comb }} + {{ stream*4+sink }}), tl.load(_oproj_residual + {{ stream*4096 }} + _fm_n).to(tl.bfloat16).to(tl.float32), _oproj_out{{ sink }})
+{% endfor %}
+        tl.store({{ post.result }} + {{ sink*4096 }} + _fm_n, _oproj_out{{ sink }})
+{% endfor %}

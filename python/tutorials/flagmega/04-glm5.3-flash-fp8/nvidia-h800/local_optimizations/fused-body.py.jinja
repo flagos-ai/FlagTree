@@ -1,0 +1,94 @@
+"""Compute ordered collapse and its exact RMS lanes in one CTA-local region."""
+import triton
+import triton.language as tl
+import triton.language.extra.cuda.libdevice as libdevice
+import triton.experimental.tle.language as tle
+
+FLAGMEGA_MHC_RMS_LANES=tl.constexpr(tle.gpu.BlockEncoding([1],[32],[8],[0]))
+FLAGMEGA_MHC_RMS_MATRIX=tl.constexpr(tle.gpu.BlockEncoding([1,4],[32,1],[2,4],[0,1]))
+
+@triton.jit
+def _flagmega_mhc_rms_fused_body(streams,base,scale,partials,collapsed,stats,weight,bias,normalized):
+    i=tl.arange(0,4)
+    mixes=tl.zeros((4,),tl.float32)
+    square_sum=tl.full((),0.,tl.float32)
+    for split in tl.static_range(8):
+        mixes=libdevice.add_rn(mixes,tl.load(partials+i*8+split))
+        square_sum=libdevice.add_rn(square_sum,tl.load(partials+192+split))
+    rms=tl.rsqrt(square_sum/16384+1.e-5)
+    logits=tl.fma(mixes*rms,tl.load(scale),tl.load(base+i))
+    pre=libdevice.div_rn(1.,1.+libdevice.exp(-logits))+1.e-6
+    p0=tl.reshape(tl.gather(pre,tl.full((1,),0,tl.int32),0),())
+    p1=tl.reshape(tl.gather(pre,tl.full((1,),1,tl.int32),0),())
+    p2=tl.reshape(tl.gather(pre,tl.full((1,),2,tl.int32),0),())
+    p3=tl.reshape(tl.gather(pre,tl.full((1,),3,tl.int32),0),())
+    lanes=tl.arange(0,64)
+    elements=tl.arange(0,16)
+    offsets=lanes[:,None]*8+(elements[None,:]//8)*512+elements[None,:]%8
+    squares=tle.gpu.set_layout(tl.zeros((64,16),tl.float32),FLAGMEGA_MHC_RMS_MATRIX)
+    for start in tl.range(0,4096,1024):
+        hidden=start+offsets
+        x0=tle.gpu.set_layout(tl.load(streams+hidden).to(tl.bfloat16).to(tl.float32),FLAGMEGA_MHC_RMS_MATRIX)
+        x1=tle.gpu.set_layout(tl.load(streams+4096+hidden).to(tl.bfloat16).to(tl.float32),FLAGMEGA_MHC_RMS_MATRIX)
+        x2=tle.gpu.set_layout(tl.load(streams+8192+hidden).to(tl.bfloat16).to(tl.float32),FLAGMEGA_MHC_RMS_MATRIX)
+        x3=tle.gpu.set_layout(tl.load(streams+12288+hidden).to(tl.bfloat16).to(tl.float32),FLAGMEGA_MHC_RMS_MATRIX)
+        value=tl.fma(p0,x0,tl.full((64,16),0.,tl.float32))
+        value=tl.fma(p1,x1,value)
+        value=tl.fma(p2,x2,value)
+        value=tl.fma(p3,x3,value)
+        # The complete region consumes its collapse in registers.
+        squares=tl.fma(value,value,squares)
+    # The distributed FMA loop computes each value once. Restore the
+    # original sixteen-value lane ownership once for ordered reduction.
+    squares=tle.gpu.set_layout(squares,tle.gpu.BlockEncoding([1,16],[32,1],[2,4],[0,1]))
+    # Generated register extraction below retains the original order.
+    even,odd=tl.split(tl.reshape(squares,(64,8,2)))
+    e0,e1=tl.split(tl.reshape(even,(64,4,2)))
+    o0,o1=tl.split(tl.reshape(odd,(64,4,2)))
+    e00,e01=tl.split(tl.reshape(e0,(64,2,2)))
+    e10,e11=tl.split(tl.reshape(e1,(64,2,2)))
+    o00,o01=tl.split(tl.reshape(o0,(64,2,2)))
+    o10,o11=tl.split(tl.reshape(o1,(64,2,2)))
+    v0,v8=tl.split(e00)
+    v4,v12=tl.split(e01)
+    v2,v10=tl.split(e10)
+    v6,v14=tl.split(e11)
+    v1,v9=tl.split(o00)
+    v5,v13=tl.split(o01)
+    v3,v11=tl.split(o10)
+    v7,v15=tl.split(o11)
+    total=tl.zeros((64,),tl.float32)
+    total=total+tl.reshape(v0,(64,));total=total+tl.reshape(v8,(64,))
+    total=total+tl.reshape(v1,(64,));total=total+tl.reshape(v9,(64,))
+    total=total+tl.reshape(v2,(64,));total=total+tl.reshape(v10,(64,))
+    total=total+tl.reshape(v3,(64,));total=total+tl.reshape(v11,(64,))
+    total=total+tl.reshape(v4,(64,));total=total+tl.reshape(v12,(64,))
+    total=total+tl.reshape(v5,(64,));total=total+tl.reshape(v13,(64,))
+    total=total+tl.reshape(v6,(64,));total=total+tl.reshape(v14,(64,))
+    total=total+tl.reshape(v7,(64,));total=total+tl.reshape(v15,(64,))
+    warp_lanes=tl.arange(0,32)
+    pair=tl.gather(total,warp_lanes,0)+tl.gather(total,warp_lanes+32,0)
+    pair=tle.gpu.set_layout(pair,FLAGMEGA_MHC_RMS_LANES)
+    square=tl.sum(pair,0)
+    tl.store(stats,square)
+    own_hidden=(tl.program_id(0)-1)*32+tl.arange(0,32)
+    own_value=tl.full((32,),0.,tl.float32)
+    own_value=tl.fma(p0,tl.load(streams+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+    own_value=tl.fma(p1,tl.load(streams+4096+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+    own_value=tl.fma(p2,tl.load(streams+8192+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+    own_value=tl.fma(p3,tl.load(streams+12288+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+    inverse=tl.rsqrt(tl.maximum(square/4096.,0.)+1.e-5)
+    norm=(own_value.to(tl.bfloat16).to(tl.float32)-0.)*inverse
+    result=norm*tl.load(weight+own_hidden).to(tl.float32)+tl.load(bias+own_hidden).to(tl.float32)
+    tl.store(normalized+own_hidden,result.to(tl.bfloat16))
+    if tl.program_id(0)==127:
+        own_hidden=127*32+tl.arange(0,32)
+        own_value=tl.full((32,),0.,tl.float32)
+        own_value=tl.fma(p0,tl.load(streams+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+        own_value=tl.fma(p1,tl.load(streams+4096+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+        own_value=tl.fma(p2,tl.load(streams+8192+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+        own_value=tl.fma(p3,tl.load(streams+12288+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
+        inverse=tl.rsqrt(tl.maximum(square/4096.,0.)+1.e-5)
+        norm=(own_value.to(tl.bfloat16).to(tl.float32)-0.)*inverse
+        result=norm*tl.load(weight+own_hidden).to(tl.float32)+tl.load(bias+own_hidden).to(tl.float32)
+        tl.store(normalized+own_hidden,result.to(tl.bfloat16))

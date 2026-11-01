@@ -9,6 +9,9 @@ from .op import StagedRouting
 
 
 def routing_call(raw):
+    if raw.get("semantic_op") == "nn.staged_routing":
+        from triton.flagmega.codegen.triton.routing_renderer import routing_call as core_routing_call
+        return core_routing_call(raw)
     from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer, _pointer, _canonical_writer_active
     source = _buffer(raw, "inputs", "value")
     values = _buffer(raw, "outputs", "result_0")
@@ -25,7 +28,8 @@ def routing_call(raw):
     coordinates = list(domain["coordinates"])
     coordinates[axis] = "_fm_selected_offsets"
     return {
-        **domain, "k": attrs["k"], "selected_tile": 1 << (attrs["k"] - 1).bit_length(),
+        **domain, "scoring": "softmax", "normalize": True, "scaling": "1.0",
+        "arithmetic": "standard", "has_bias": False, "k": attrs["k"], "selected_tile": 1 << (attrs["k"] - 1).bit_length(),
         "source": _pointer(source), "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),
         "values_pointer": _pointer(values), "indices_pointer": _pointer(indices),
         "values_offset": emit_local_scalar_offset(values["abi"], coordinates),
