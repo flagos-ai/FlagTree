@@ -64,7 +64,9 @@ def test_probability_publish_order_and_original_bf16_sum_expressions():
         expression = next(line.strip() for line in original.splitlines() if line.strip().startswith(name + ' = '))
         assert expression in stages[2]
     assert stages[3].count('tl.exp2(') == 0
-    assert '_fm_dsa_sum * _fm_dsa_previous + ' in stages[3]
+    # The ordered consumer retains the native fused recurrence even when its
+    # tile probability sum is supplied by the parallel producer.
+    assert '_fm_dsa_sum = tl.fma(_fm_dsa_sum, _fm_dsa_previous, ' in stages[3]
 
 
 def test_declared_column_owner_rejects_incompatible_geometry():
