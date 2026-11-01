@@ -118,11 +118,7 @@ endmacro()
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
   # FlagPrism: enable the external tools for supported backends.
-  # FlagPrism：retain upstream Enflame support and add MetaX.
-  # if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
-  # if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
   if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
-  # FlagPrism end
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -132,18 +128,10 @@ macro(flagtree_configure_flagprism)
   if(TRITON_BUILD_FLAGPRISM)
     # FlagPrism: allow the default NVIDIA build and supported named backends.
     if(FLAGTREE_BACKEND AND
-       # FlagPrism：allow both integrations through the existing build boundary.
-       # NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
-       # NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
        NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
-       # FlagPrism end
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        # FlagPrism：keep supported backend diagnostics consistent.
-        # "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
-        # "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, or enflame.")
         "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, or metax.")
-        # FlagPrism end
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
