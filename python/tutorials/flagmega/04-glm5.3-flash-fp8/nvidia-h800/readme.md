@@ -2,12 +2,17 @@
 
 累计改动、验证结果及未完成项见[工作区总结](workspace-summary-zh.md)。
 
+合并后 `53843322b` 的重新验收未通过：新 Core 和当前 runtime 在四张 H800、CUDA Graph 下，
+第 2 个生成 token 均为 `646`，参考为 `284`；本轮没有新的性能验收结果。
+详细范围、失败证据及本轮修正见[重新验收记录](reacceptance-20261101-zh.md)。
+
 完整45层、E288/top8、H4096、cache4096、TP4，batch1，独立生成8token。
-2026-11-01在同一四张H800/1980MHz上完成N/F/F/N和F/N/N/F，保留全部320正式请求。
+以下为合并前 Source6881d6c8… 的历史验收：2026-11-01在同一四张H800/1980MHz上
+完成N/F/F/N和F/N/N/F，保留全部320正式请求。
 32、128、1024、2048四种prompt长度的decode TPOT均通过原严格性能门槛，完整数值和硬件检查通过。
 TPOT排除prefill和首个生成token；完整请求吞吐另行保留，包含prefill，仍低于vLLM。
 
-## 最新完整八段结果（2026-11-01）
+## 合并前完整八段结果（2026-11-01）
 
 | 上下文 | FlagMega TPOT | vLLM TPOT | 降低 | 四Flag对四Native最小余量 |
 | --- | ---: | ---: | ---: | ---: |
@@ -20,20 +25,20 @@ TPOT排除prefill和首个生成token；完整请求吞吐另行保留，包含p
 每个Flag段均快于本顺序两个Native段，全部四Flag段也均快于全部四Native段。
 完整100请求及全状态Gold、实际26编译key/228调用零spill、双CUDA Graph、独占1980MHz/无thermal验收通过。
 
-![当前decode延迟](figures/decode_latency-20261101.svg)
+![合并前decode延迟](figures/decode_latency-20261101.svg)
 
-![当前decode吞吐](figures/decode_throughput-20261101.svg)
+![合并前decode吞吐](figures/decode_throughput-20261101.svg)
 
-![当前完整请求吞吐，包含prefill](figures/request_throughput-20261101.svg)
+![合并前完整请求吞吐，包含prefill](figures/request_throughput-20261101.svg)
 
 结果与全部正式样本：[summary-20261101.json](figures/summary-20261101.json)。
 完整原始请求和两个独立审计保存在[中文迭代日志](.local/iteration-log-zh.md)链接的本地证据目录。
-当前接受的是正常API载入并完整验收的已生成artifact，Source6881d6c8…、语义7a073b51…；
+该历史验收接受的是正常API载入的已生成artifact，Source6881d6c8…、语义7a073b51…；
 正常生成/预编译只更新011，其余25入口源码和key保持。
 
 原始IR fresh重建入口另有未解决限制：直接脚本运行的三个包导入已因果修正，23项回归通过；
 历史物理选型按固定kernel名字排除特例的合同在新命名下仍失败，fresh全量重建尚未验收。
-下文构建流程及2026-10-22实测保留为历史说明，不能据此宣称当前已生成artifact的公开fresh复现通过。
+下文构建流程及2026-10-22实测保留为历史说明，不能据此宣称合并后源码或公开fresh复现通过。
 
 ## 目录与入口
 
