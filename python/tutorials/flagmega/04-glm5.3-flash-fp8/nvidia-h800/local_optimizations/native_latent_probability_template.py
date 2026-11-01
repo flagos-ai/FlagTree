@@ -28,9 +28,9 @@ def shifted(source, delta):
     return ''.join(lines)
 
 
-def expression(source, name):
+def expression(source, name, *, contains=None):
     values = [line.strip().split(' = ', 1)[1] for line in source.splitlines()
-              if line.strip().startswith(name + ' = ')]
+              if line.strip().startswith(name + ' = ') and (contains is None or contains in line)]
     if len(values) != 1:
         raise CodegenError('Original online probability expression changed: ' + name)
     return values[0]
@@ -86,7 +86,10 @@ def probability_template(source):
     consumer = replace_expression(consumer, '_fm_dsa_updated_max', max_load)
     consumer = replace_expression(consumer, '_fm_dsa_previous', previous_load)
     consumer = replace_expression(consumer, '_fm_dsa_p', '_fm_dsa_score')
-    consumer = replace_expression(consumer, '_fm_dsa_sum', '_fm_dsa_sum * _fm_dsa_previous + ' + sum_load,
+    sum_expression = expression(math, '_fm_dsa_sum', contains='tl.sum(_fm_dsa_p, 1)')
+    if sum_expression.count('tl.sum(_fm_dsa_p, 1)') != 1:
+        raise CodegenError('Original online probability sum changed')
+    consumer = replace_expression(consumer, '_fm_dsa_sum', sum_expression.replace('tl.sum(_fm_dsa_p, 1)', sum_load),
                                   contains='tl.sum(_fm_dsa_p, 1)')
     if consumer.count('call.probability_schedule.column_tile') != 3:
         raise CodegenError('Long PV column geometry changed')

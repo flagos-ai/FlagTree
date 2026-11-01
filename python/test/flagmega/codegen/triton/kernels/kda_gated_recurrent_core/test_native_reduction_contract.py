@@ -16,6 +16,7 @@ from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
 
 from .test_kda_gated_recurrent_runtime import _module
+from .test_replica_value_groups import optimization
 
 
 @triton.jit
@@ -44,7 +45,8 @@ def _one_warp_reference(Q, K, V, Gate, Beta, LogRate, Bias, Initial, Out, State,
         tl.store(Rate + head * 128 + keys, rate)
 
 
-def _compile(tmp_path, lanes, *, decay_input=None, layout="warp_k", dim=128, request_phase=True):
+def _compile(tmp_path, lanes, *, decay_input=None, layout="warp_k", dim=128, request_phase=True,
+             floating_point_contract=None):
     compiler = Compiler()
     base = NvidiaSm90Target().triton_implementation_model
     catalog = replace(
@@ -65,6 +67,8 @@ def _compile(tmp_path, lanes, *, decay_input=None, layout="warp_k", dim=128, req
         output_lanes=lanes,
         **({} if decay_input is None else {"decay_input": decay_input}),
     )
+    if floating_point_contract is not None:
+        source = replace(source, metadata={**source.metadata, "floating_point_contract": floating_point_contract})
     module = compiler.compile(source).module
     restored = fm.load_module(fm.emit_module(module, tmp_path / "selected.py"))
     assert restored.semantic_hash == module.semantic_hash
@@ -74,7 +78,8 @@ def _compile(tmp_path, lanes, *, decay_input=None, layout="warp_k", dim=128, req
 
 @pytest.mark.parametrize("lanes", [(), (8,)])
 @pytest.mark.parametrize("decay_input", ["rate", "log_rate"])
-def test_warp_k_schedule_matches_independent_one_warp_state(tmp_path, lanes, decay_input):
+@pytest.mark.parametrize("floating_point_contract", [None, "strict"])
+def test_warp_k_schedule_matches_independent_one_warp_state(tmp_path, lanes, decay_input, floating_point_contract):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     generator = torch.Generator().manual_seed(117)
@@ -107,18 +112,50 @@ def test_warp_k_schedule_matches_independent_one_warp_state(tmp_path, lanes, dec
     values["decay_rate"] = rate if decay_input == "rate" else a_log.reshape(1, 2, 1).expand(1, 2, 128).contiguous()
     shape = (1, 2, 128 // (8 if lanes else 1), *lanes)
     outputs = (torch.empty(shape, dtype=torch.bfloat16, device="cuda"), torch.empty_like(expected_state))
-    runtime = load(_compile(tmp_path, lanes, decay_input=decay_input), device="cuda:0")
+    runtime = load(_compile(tmp_path, lanes, decay_input=decay_input,
+                            floating_point_contract=floating_point_contract), device="cuda:0")
     try:
         specs = [s for s in runtime.external_arguments if s["role"] == "result"]
         values.update({spec["value"]: output for spec, output in zip(specs, outputs, strict=True)})
         args = tuple(values[spec["value"]] for spec in runtime.external_arguments)
         runtime.prepare(*args)
+        assert all(
+            prepared.compiled_kernel.metadata.enable_fp_fusion == (floating_point_contract != "strict")
+            for prepared in runtime._prepared
+        )
         runtime.run_into(*args)
         torch.testing.assert_close(outputs[0].reshape_as(expected), expected, rtol=0, atol=0)
         torch.testing.assert_close(outputs[1], expected_state, rtol=0, atol=0)
         assert runtime.resource_report["spill_bytes"] == 0
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("floating_point_contract", [None, "strict"])
+def test_warp_k_schedule_retains_coalesced_state_io(tmp_path, monkeypatch, optimization,
+                                                   floating_point_contract):
+    from jinja2 import ChoiceLoader, DictLoader
+    from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
+
+    prepare = TritonTemplateRegistry.prepare
+
+    def coalesced(self, name, context):
+        if name != "module.py.jinja":
+            return prepare(self, name, context)
+        for call in context["render_calls"]:
+            if call["family"] == "kda_gated_recurrent_core":
+                call["kda_value_replica_group"] = True
+        prepare(self, name, context)
+        key = "kernels/kda_gated_recurrent_core/local.py.jinja"
+        source = self.environment.loader.get_source(self.environment, key)[0]
+        self.environment.loader = ChoiceLoader([
+            DictLoader({key: optimization.coalesced_state_io(source)}), self.environment.loader,
+        ])
+
+    monkeypatch.setattr(TritonTemplateRegistry, "prepare", coalesced)
+    test_warp_k_schedule_matches_independent_one_warp_state(
+        tmp_path, (), "rate", floating_point_contract,
+    )
 
 
 @pytest.mark.parametrize("layout,dim", [("unknown", 128), ("warp_k", 64)])

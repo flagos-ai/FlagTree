@@ -28,13 +28,13 @@ def optimization():
     package = ModuleType(name)
     package.__path__ = [str(root)]
     sys.modules[name] = package
-    previous = TritonTemplateRegistry.render
+    previous = TritonTemplateRegistry.prepare
     try:
         spec = importlib.util.spec_from_file_location(name + '.dsa_work', root / 'dsa_work.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
-        TritonTemplateRegistry.render = previous
+        TritonTemplateRegistry.prepare = previous
     try:
         yield module
     finally:
@@ -96,7 +96,7 @@ def test_head_tasks_keep_mma_order_and_complete_outputs(tmp_path, monkeypatch, o
     module = compiler.compile(_graph(config,heads,mesh,traversal)).module
     baseline = write_artifact(module,tmp_path/'baseline',target='nvidia-sm90',emit_executable=True)
     with monkeypatch.context() as patch:
-        patch.setattr(TritonTemplateRegistry,'render',optimization.override)
+        patch.setattr(TritonTemplateRegistry,'prepare',optimization.prepare)
         candidate = write_artifact(module,tmp_path/'candidate',target='nvidia-sm90',emit_executable=True)
     runtimes = [load(p,device='cuda:0') for p in (baseline,candidate)]
     state = create_paged_attention_state(config,device='cuda')

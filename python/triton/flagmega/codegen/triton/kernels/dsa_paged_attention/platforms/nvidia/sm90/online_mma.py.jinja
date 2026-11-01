@@ -5,6 +5,13 @@ import triton.experimental.tle.language as tle
 {{ call.symbol }}__rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2))
 {{ call.symbol }}__row_layout = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__mma_layout))
 {{ call.symbol }}__column_layout = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__mma_layout))
+@triton.jit
+def {{ call.symbol }}__online_probability(score, maximum):
+    # The native exponent rounds maximum * scale before its fused subtraction.
+    # Keep both boundaries explicit under the enclosing strict contract.
+    maximum_scaled = tl.inline_asm_elementwise("mul.rn.f32 $0, $1, $2;", constraints="=f,f,f", args=[maximum, {{ call.scale_log2 }}], dtype=tl.float32, is_pure=True, pack=1)
+    return tl.exp2(tl.fma(score, {{ call.scale_log2 }}, -maximum_scaled[:, None]))
+
 @triton.jit(noinline=True)
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -61,8 +68,8 @@ def {{ call.symbol }}({{ call.signature }}):
                     _fm_dsa_score = tl.where(_fm_dsa_valid[None, :], _fm_dsa_score, -float("inf"))
                     _fm_dsa_updated_max = tl.maximum(_fm_dsa_max, tl.max(_fm_dsa_score, 1))
                     _fm_dsa_previous = tl.exp2((_fm_dsa_max - _fm_dsa_updated_max) * {{ call.scale_log2 }})
-                    _fm_dsa_p = tl.exp2(_fm_dsa_score * {{ call.scale_log2 }} - _fm_dsa_updated_max[:, None] * {{ call.scale_log2 }})
-                    _fm_dsa_sum = _fm_dsa_sum * _fm_dsa_previous + tl.sum(_fm_dsa_p, 1)
+                    _fm_dsa_p = {{ call.symbol }}__online_probability(_fm_dsa_score, _fm_dsa_updated_max)
+                    _fm_dsa_sum = tl.fma(_fm_dsa_sum, _fm_dsa_previous, tl.sum(_fm_dsa_p, 1))
                     _fm_dsa_rounded_p = _fm_dsa_p.to(tl.bfloat16)
                     _fm_dsa_acc = _fm_dsa_acc * _fm_dsa_previous[:, None]
                     # Consume K16 value fragments in order. Materializing the

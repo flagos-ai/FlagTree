@@ -8,6 +8,36 @@ import triton.experimental.tle.language as tle
 {{ call.symbol }}__warp_k = tl.constexpr(tle.gpu.BlockEncoding([4, 1], [32, 1], [1, {{ num_warps }}], [0, 1]))
 {{ call.symbol }}__k_vector = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__warp_k))
 {{ call.symbol }}__v_vector = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__warp_k))
+{{ call.symbol }}__warp_partial = tl.constexpr(tle.gpu.BlockEncoding([1, 1], [32, 1], [1, {{ num_warps }}], [0, 1]))
+
+
+@triton.jit
+def {{ call.symbol }}__warp_dot(a, b):
+    # Native K128 reductions round the second K4 product, then use three
+    # FMAs before the warp's 16/8/4/2/1 butterfly. Make that arithmetic
+    # explicit so the strict module contract does not disable these FMAs.
+    b = tl.broadcast_to(b, a.shape)
+    a = tle.gpu.set_layout(a, {{ call.symbol }}__warp_k)
+    b = tle.gpu.set_layout(b, {{ call.symbol }}__warp_k)
+    a = tl.reshape(tl.trans(tl.reshape(a, (32, 4, 32)), (0, 2, 1)), (32, 32, 2, 2))
+    b = tl.reshape(tl.trans(tl.reshape(b, (32, 4, 32)), (0, 2, 1)), (32, 32, 2, 2))
+    a_even, a_odd = tl.split(a)
+    b_even, b_odd = tl.split(b)
+    a0, a2 = tl.split(a_even)
+    a1, a3 = tl.split(a_odd)
+    b0, b2 = tl.split(b_even)
+    b1, b3 = tl.split(b_odd)
+    product1 = tl.inline_asm_elementwise("mul.rn.f32 $0, $1, $2;", constraints="=f,f,f",
+                                       args=[a1, b1], dtype=tl.float32, is_pure=True, pack=1)
+    subtotal = tl.fma(a0, b0, product1)
+    subtotal = tl.fma(a2, b2, subtotal)
+    subtotal = tl.fma(a3, b3, subtotal)
+    # Fusion can otherwise redistribute the 32 partials into K4 groups
+    # and shorten the butterfly, changing its FP32 addition order.
+    subtotal = tle.gpu.set_layout(subtotal, {{ call.symbol }}__warp_partial)
+    # Return to the caller's value layout before its K4 state update. The
+    # partial layout describes K groups rather than individual state rows.
+    return tle.gpu.set_layout(tl.sum(subtotal, 0), {{ call.symbol }}__v_vector)
 {% endif %}
 {% set phase_dispatch = call.request_prefill is not none %}
 {% set arithmetic_modes = ("chunk_bf16", "recurrent") if phase_dispatch else (call.arithmetic,) %}
@@ -117,14 +147,15 @@ def {{ symbol }}({{ call.signature }}):
                             mask=_fm_v_active[None, :], other=0.0).to(tl.float32)
             _fm_h = _fm_h * _fm_decay_exp
 {% if call.kda_reduction_layout == "warp_k" %}
-            _fm_correction = tl.sum(tle.gpu.set_layout(_fm_h * _fm_k[:, None], {{ call.symbol }}__warp_k), 0)
+            _fm_correction = {{ call.symbol }}__warp_dot(_fm_h, _fm_k[:, None])
 {% else %}
             _fm_correction = tl.sum(_fm_h * _fm_k[:, None], 0)
 {% endif %}
             _fm_v = (_fm_v - _fm_correction) * _fm_beta
-            _fm_h = _fm_h + _fm_k[:, None] * _fm_v[None, :]
+            # The native recurrent state update has a single rounding.
+            _fm_h = tl.fma(_fm_k[:, None], _fm_v[None, :], _fm_h)
 {% if call.kda_reduction_layout == "warp_k" %}
-            _fm_o = tl.sum(tle.gpu.set_layout(_fm_h * _fm_q[:, None], {{ call.symbol }}__warp_k), 0)
+            _fm_o = {{ call.symbol }}__warp_dot(_fm_h, _fm_q[:, None])
 {% else %}
             _fm_o = tl.sum(_fm_h * _fm_q[:, None], 0)
 {% endif %}
