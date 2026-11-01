@@ -425,7 +425,7 @@ def ws_pipe_multi_tma_writer_gemm(A, B, C, launch_num_warps, block_k, num_slots)
 class TestTLEWarpSpecializeTmaGemm:
 
     @pytest.mark.parametrize("launch_num_warps", [4])
-    @pytest.mark.require_tle(
+    @pytest.mark.skip_if_tle_unsupported(
         "gpu.alloc",
         "gpu.alloc_barriers",
         "gpu.barrier_arrive",
@@ -452,7 +452,7 @@ class TestTLEWarpSpecializeTmaGemm:
         torch.testing.assert_close(c, expected, atol=5e-2, rtol=5e-2)
 
     @pytest.mark.parametrize("launch_num_warps", [4])
-    @pytest.mark.require_tle(
+    @pytest.mark.skip_if_tle_unsupported(
         "gpu.alloc",
         "gpu.copy",
         "gpu.warp_specialize",

@@ -7,6 +7,8 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton.experimental.tle.language.gpu.mthreads import (
+    warp_specialize as mthreads_warp_specialize, )
 from triton._C import libtriton
 from triton._C.libtriton import ir
 from triton.backends.compiler import Language
@@ -276,6 +278,7 @@ def _compile_ws_ir(
     signature=None,
     constexprs=None,
     consumer_warps=16,
+    include_late=False,
 ):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": consumer_warps, "num_stages": 1})
@@ -302,6 +305,16 @@ def _compile_ws_ir(
     ttir = module.str_nodebug()
     module = stages["ttgir"](module, metadata)
     ttgir = module.str_nodebug()
+    if include_late:
+        pm = ir.pass_manager(context)
+        libtriton.passes.convert.add_scf_to_cf(pm)
+        libtriton.passes.convert.add_index_to_llvmir(pm)
+        libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+        libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+        libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+        libtriton.mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
+        pm.run(module, "lower_static_ws_to_llvm_cfg")
+        return ttir, ttgir, module.str_nodebug()
     return ttir, ttgir
 
 
@@ -350,7 +363,25 @@ def test_tle_warp_specialize_multi_worker_barrier_runtime():
 
 def test_tle_warp_specialize_musa_container_contract():
     builder = libtriton.ir.builder
+    expected_capabilities = {
+        "mthreads_tle_pipe_sqmma_version": 2,
+        "mthreads_tle_multifield_pipe_version": 3,
+        "mthreads_tle_one_shot_pipe_version": 1,
+        "mthreads_tle_spmc_pipe_version": 2,
+        "mthreads_tle_dynamic_loops_version": 1,
+        "mthreads_tle_split_m_sqmma_version": 1,
+        "mthreads_tle_split128_sqmma_version": 1,
+        "mthreads_tle_local_barrier_version": 1,
+        "mthreads_tle_persistent_ordered_sqmma_version": 1,
+        "mthreads_tle_dynamic_partition_sync_version": 1,
+        "mthreads_tle_grouped_completion_version": 1,
+        "mthreads_tle_16_warp_persistent_version": 1,
+        "mthreads_tle_fused_pipe_consumer_version": 1,
+    }
+    for capability, minimum in expected_capabilities.items():
+        assert getattr(builder, capability, 0) >= minimum
     for method in (
+            "create_mthreads_local_barrier",
             "create_warp_specialize",
             "create_warp_specialize_partitions",
             "create_warp_yield",
@@ -370,6 +401,20 @@ def test_tle_warp_specialize_musa_container_contract():
         compiled[(1, 1, 1)](out, value, 7)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), torch.tensor([value + 1, value + 7, value + 8], dtype=torch.int32))
+
+
+def test_tle_warp_specialize_keeps_old_builder_call_compatible():
+
+    class OldBuilder:
+
+        def create_warp_specialize(self, result_types, worker_num_warps):
+            return result_types, worker_num_warps
+
+    builder = OldBuilder()
+    assert mthreads_warp_specialize.create_op(builder, ["result"], [4]) == (
+        ["result"],
+        [4],
+    )
 
 
 @pytest.mark.parametrize(

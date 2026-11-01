@@ -254,7 +254,7 @@ class TestShardId:
 
 class TestDistributedBarrierScope:
 
-    @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.skip_if_tle_unsupported("distributed_barrier")
     @pytest.mark.parametrize(
         ("space", "mesh", "required_level"),
         (("inter", tle.device_mesh({"device": 2}), "node"), ("world", tle.device_mesh({"device": 2}), "node"),
@@ -290,7 +290,7 @@ class TestDistributedBarrierScope:
         assert semantic.builder.distributed_barrier_calls == 1
         assert semantic.builder.distributed_barrier_group_args == [tuple()]
 
-    @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.skip_if_tle_unsupported("distributed_barrier")
     def test_distributed_barrier_submesh_emits_group_descriptor(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         sub = mesh[0, :]
@@ -310,7 +310,7 @@ class TestDistributedBarrierScope:
         with pytest.raises(NotImplementedError, match="requires rebuilt TLE extension"):
             tle.distributed_barrier(mesh=sub, _semantic=semantic)
 
-    @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.skip_if_tle_unsupported("distributed_barrier")
     def test_distributed_barrier_grid_mesh_enables_coop_launch(self):
         mesh = tle.device_mesh({"block": [("block_x", 4)]})
         semantic = _FakeSemantic()
@@ -327,7 +327,7 @@ class TestDistributedBarrierScope:
         with pytest.raises(ValueError, match="requires cluster_dims=\\(1, 1, 1\\)"):
             tle.distributed_barrier(mesh=mesh, _semantic=semantic)
 
-    @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.skip_if_tle_unsupported("distributed_barrier")
     def test_distributed_barrier_auto_can_pick_cluster_or_grid(self):
         mesh = tle.device_mesh({
             "block_cluster": [("cluster_x", 2)],

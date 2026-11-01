@@ -5,6 +5,7 @@
 # file above.
 #
 import hashlib
+import json
 import logging
 import tempfile
 import os
@@ -52,6 +53,11 @@ else:
     libraries = ['hpgr', 'torch', 'torch_cpu', 'torch_python', 'c10', 'dl']
 
 
+def _device_timing_requested():
+    return (txda_tools.is_use_tsm_profiler()
+            or os.getenv("TILELANG_TX_EVENT_TIMING", "0").lower() in ("1", "true", "yes"))
+
+
 def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     suffix = sysconfig.get_config_var('EXT_SUFFIX')
     so = os.path.join(srcdir, '{name}{suffix}'.format(name=name, suffix=suffix))
@@ -79,7 +85,7 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-std=c++17", "-Wno-psabi", "-o", so]
     if txda_tools.is_use_profile():
         cc_cmd += ["-DENABLE_PROFILING"]
-    if txda_tools.is_use_tsm_profiler():
+    if _device_timing_requested():
         cc_cmd += ["-DTSM_PROFILER_EN"]
     if txda_tools.is_debug():
         cc_cmd += ["-DCMAKE_BUILD_TYPE=Debug"]
@@ -94,16 +100,36 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
         cc_cmd += [f"-Wl,-rpath={profiling_lib_dir}"]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
-    txda_tools.runLoweringCmd(src, so, cc_cmd)
+    txda_tools.runLoweringCmd(src, cc_cmd)
     txda_tools.dump_ir_if_needed([so])
     txda_tools.dump_cmd_if_needed(cc_cmd, cc)
     return so
 
 
 # Build a native ELF on the platform running this python script
+def _native_build_fingerprint(src):
+    """Identify generated source *and* every option that changes its binary."""
+    kernel_file_cache = txda_tools.is_enable_kernel_file_cache()
+    # get_kernel_cache_size() raises when the cache is disabled; only hash the
+    # size when it actually affects the -DKERNEL_CACHE_SIZE compile flag.
+    config = {
+        "source_sha256": hashlib.sha256(src.encode("utf-8")).hexdigest(),
+        "enable_profiling": txda_tools.is_use_profile(),
+        "tx_event_timing": _device_timing_requested(),
+        "use_sim_mode": os.getenv("USE_SIM_MODE", "0").lower() in ("1", "true", "yes"),
+        "debug": txda_tools.is_debug(),
+        "kernel_file_cache": kernel_file_cache,
+        "kernel_cache_size": txda_tools.get_kernel_cache_size() if kernel_file_cache else "",
+    }
+    return json.dumps(config, sort_keys=True, separators=(",", ":"))
+
+
 def compile_native(src, name):
     fname = "native_" + name
-    key = hashlib.sha256(src.encode("utf-8")).hexdigest()
+    # Profiling is a compile-time feature. Without the build fingerprint a
+    # non-profile launcher cached by an earlier process is silently reused when
+    # TSM_PROFILER_EN=1, leaving kernel_time_ns at zero.
+    key = hashlib.sha256(_native_build_fingerprint(src).encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
     cache_path = cache.get_file(f"{fname}.so")
 
@@ -421,16 +447,13 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <structmember.h>
-#include <torch/extension.h>
-#include <torch/csrc/autograd/python_variable.h>
 #include <stdint.h>
 #include <vector>
 #include <memory>
 #include <string>
-#include <filesystem>
 #include <unistd.h>
-#include <thread>
-#include <fstream>
+#include <sstream>
+#include <chrono>
 #include <dlfcn.h>
 
 #include "logger.h"
@@ -482,10 +505,11 @@ struct LaunchRes {{
     std::string log_buffer;
     uint64_t kernel_time_ns;
     uint64_t ap_duration_ns;
+    int timing_kind;
 
-    LaunchRes() : res(0), log_buffer(), kernel_time_ns(0), ap_duration_ns(0) {{}}
-    LaunchRes(int v, const char* n, uint64_t kt = 0, uint64_t ap = 0)
-        : res(v), log_buffer(n ? n : ""), kernel_time_ns(kt), ap_duration_ns(ap) {{}}
+    LaunchRes() : res(0), log_buffer(), kernel_time_ns(0), ap_duration_ns(0), timing_kind(0) {{}}
+    LaunchRes(int v, const char* n, uint64_t kt = 0, uint64_t ap = 0, int tk = 0)
+        : res(v), log_buffer(n ? n : ""), kernel_time_ns(kt), ap_duration_ns(ap), timing_kind(tk) {{}}
 }};
 
 typedef struct {{
@@ -500,17 +524,19 @@ static void LaunchRes_dealloc(LaunchResObj* self) {{
 }}
 
 static PyObject* LaunchRes_repr(LaunchResObj* self) {{
-    return PyUnicode_FromFormat("LaunchRes(res=%d, log_buffer='%s', kernel_time_ns=%llu, ap_duration_ns=%llu)",
+    return PyUnicode_FromFormat("LaunchRes(res=%d, log_buffer='%s', kernel_time_ns=%llu, ap_duration_ns=%llu, timing_kind=%d)",
                                 self->data.res,
                                 self->data.log_buffer.c_str(),
                                 (unsigned long long)self->data.kernel_time_ns,
-                                (unsigned long long)self->data.ap_duration_ns);
+                                (unsigned long long)self->data.ap_duration_ns,
+                                self->data.timing_kind);
 }}
 
 static PyMemberDef LaunchRes_members[] = {{
     {{"res", T_INT, offsetof(LaunchResObj, data.res), 0, "integer res"}},
     {{"kernel_time_ns", T_ULONGLONG, offsetof(LaunchResObj, data.kernel_time_ns), 0, "kernel device time in ns"}},
     {{"ap_duration_ns", T_ULONGLONG, offsetof(LaunchResObj, data.ap_duration_ns), 0, "AP duration in ns"}},
+    {{"timing_kind", T_INT, offsetof(LaunchResObj, data.timing_kind), 0, "0=none, 1=TX event, 2=TSM profiler"}},
     {{NULL}}
 }};
 
@@ -527,10 +553,10 @@ static PyTypeObject LaunchResObjType = {{
     PyVarObject_HEAD_INIT(NULL, 0)
 }};
 
-static PyObject* make_LaunchRes(int res, const char* log_buffer = "", uint64_t kernel_time_ns = 0, uint64_t ap_duration_ns = 0) {{
+static PyObject* make_LaunchRes(int res, const char* log_buffer = "", uint64_t kernel_time_ns = 0, uint64_t ap_duration_ns = 0, int timing_kind = 0) {{
     LaunchResObj* obj = (LaunchResObj*)LaunchResObjType.tp_alloc(&LaunchResObjType, 0);
     if (obj != NULL) {{
-        new (&obj->data) LaunchRes(res, log_buffer, kernel_time_ns, ap_duration_ns);
+        new (&obj->data) LaunchRes(res, log_buffer, kernel_time_ns, ap_duration_ns, timing_kind);
     }}
     return (PyObject*)obj;
 }}
@@ -869,6 +895,28 @@ static void _launch(Launch_args &l_args) {{
 
     PROFILE_CALL(RcsProcessProfData, l_args.device_id, profiling_key, PROF_START, 7);
 #ifdef TSM_PROFILER_EN
+    // TX events are part of the runtime API and provide a self-contained
+    // device-clock measurement even when the optional API tracing plugin is
+    // not installed in the target image.
+    txEvent_t _timing_start = nullptr;
+    txEvent_t _timing_end = nullptr;
+    auto _destroy_timing_events = [&]() {{
+        if (_timing_start != nullptr) {{
+            txEventDestroy(_timing_start);
+            _timing_start = nullptr;
+        }}
+        if (_timing_end != nullptr) {{
+            txEventDestroy(_timing_end);
+            _timing_end = nullptr;
+        }}
+    }};
+    bool _event_timing_available =
+        txEventCreate(&_timing_start) == TX_SUCCESS &&
+        txEventCreate(&_timing_end) == TX_SUCCESS;
+    if (_event_timing_available) {{
+        _event_timing_available =
+            txEventRecord(_timing_start, l_args.stream) == TX_SUCCESS;
+    }}
     static bool _prof_available = false;
     static bool _prof_checked   = false;
     if (!_prof_checked) {{
@@ -893,6 +941,9 @@ static void _launch(Launch_args &l_args) {{
         Py_END_ALLOW_THREADS;
         if (launch_st != TX_SUCCESS) {{
             PyErr_Format(PyExc_RuntimeError, "Failed to txLaunchKernel (err=%d)", (int)launch_st);
+#ifdef TSM_PROFILER_EN
+            _destroy_timing_events();
+#endif
             return;
         }}
     }} else {{
@@ -901,6 +952,9 @@ static void _launch(Launch_args &l_args) {{
         int ret = read_bin_file(l_args.kernel_file, &kernel_ptr, &kernel_len);
         if (ret != 0 || kernel_ptr == nullptr) {{
             PyErr_SetString(PyExc_RuntimeError, "Failed to read kernel so");
+#ifdef TSM_PROFILER_EN
+            _destroy_timing_events();
+#endif
             return;
         }}
         Py_BEGIN_ALLOW_THREADS;
@@ -909,6 +963,9 @@ static void _launch(Launch_args &l_args) {{
         Py_END_ALLOW_THREADS;
         if (launch_st != TX_SUCCESS) {{
             PyErr_SetString(PyExc_RuntimeError, "Failed to txLaunchKernelGGL");
+#ifdef TSM_PROFILER_EN
+            _destroy_timing_events();
+#endif
             return;
         }}
     }}
@@ -918,13 +975,27 @@ static void _launch(Launch_args &l_args) {{
     }}
     PROFILE_CALL(txStreamSynchronize, l_args.stream);
 #ifdef TSM_PROFILER_EN
-    txStreamSynchronize(l_args.stream);
+    if (_event_timing_available &&
+        txEventRecord(_timing_end, l_args.stream) == TX_SUCCESS &&
+        txEventSynchronize(_timing_end) == TX_SUCCESS) {{
+        float _elapsed_ms = 0.0f;
+        if (txEventElapsedTime(&_elapsed_ms, _timing_start, _timing_end) == TX_SUCCESS &&
+            _elapsed_ms > 0.0f) {{
+            l_args.result.kernel_time_ns =
+                (uint64_t)(_elapsed_ms * 1000000.0f + 0.5f);
+            l_args.result.timing_kind = 1;
+        }}
+    }} else {{
+        txStreamSynchronize(l_args.stream);
+    }}
+    _destroy_timing_events();
     if (_prof_available) {{
         tsm_prof_timing_t _prof_t = {{}};
         int _prof_rc = resolve_tsm_prof_get_timing(_prof_token, &_prof_t, 5000);
         if (_prof_rc == 0) {{
             l_args.result.kernel_time_ns = _prof_t.kcore_duration_nsec;
             l_args.result.ap_duration_ns = _prof_t.ap_duration_nsec;
+            l_args.result.timing_kind = 2;
             logger.log(simple_logger::DEBUG,
                 "tsm_prof token=%llu corid=%llu host_ns=%llu ap_ns=%llu kcore_ns=%llu",
                 (unsigned long long)_prof_token,
@@ -1028,20 +1099,6 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
 }}
 
 
-static size_t getTensorStorageSize(PyObject* tensor_obj) {{
-    const at::Tensor& tensor = THPVariable_Unpack(tensor_obj);
-    logger.log(simple_logger::DEBUG, "========== total size ================: %ld\\n", tensor.storage().nbytes());
-    return tensor.storage().nbytes();
-}}
-
-// Extract tensor raw ptr
-static void* extractTensor(PyObject* tensor_obj) {{
-    const at::Tensor& tensor = THPVariable_Unpack(tensor_obj);
-    torch::Tensor contiguous_tensor = tensor.contiguous();
-    logger.log(simple_logger::DEBUG, "========== ptr ================: %p\\n", contiguous_tensor.data_ptr());
-    return contiguous_tensor.data_ptr();
-}}
-
 static PyObject* release(PyObject* self, PyObject* args) {{
 #ifdef ENABLE_KERNEL_FILE_CACHE
     cache_cleanup();
@@ -1086,11 +1143,6 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     logger.setLogLevel((simple_logger::LogLevel)l_args.log_level);
     l_args.stream = (txStream_t)_stream;
     l_args.function = _function;
-
-    //{' '.join([f"l_args.kargs.emplace_back(_arg{i}, PyObject_Size(_arg{i})*4);" if ty[0]=="*" else f"l_args.kargs.emplace_back(*(uint64_t*)&_arg{i}, sizeof(_arg{i}));" for i, ty in signature.items() if ty != "constexpr"])}
-    // {' '.join([f"l_args.kargs.emplace_back(extractTensor(_arg{i}), getTensorStorageSize(_arg{i}));"
-               if ty[0]=="*" else f"l_args.kargs.emplace_back(*(uint64_t*)&_arg{i}, sizeof(_arg{i}));"
-                  for i, ty in signature.items() if ty != "constexpr"])}
 
     uint64_t buf = 0;
     {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items() if ty != "constexpr"])};
@@ -1205,7 +1257,9 @@ class SimulatorUtils(object):
             return (lib, fn_ptr_as_void_p, 0, 0, 1024)
 
     def get_device_properties(self, *args):
-        return {"max_shared_mem": 1024 * 1024 * 3 - 0x10000 - 0x10000}
+        from .core_ir import SPM_CAPACITY_BYTES
+
+        return {"max_shared_mem": SPM_CAPACITY_BYTES}
 
 
 _last_launch_res = None

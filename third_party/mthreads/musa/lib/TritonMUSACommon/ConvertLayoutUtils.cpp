@@ -23,6 +23,8 @@ static bool isNonSingleCtaMusaSqmmaDotOperand(Attribute layout) {
 }
 
 bool isMusaSqmmaLike(Attribute layout) {
+  while (auto slice = dyn_cast<ttg::SliceEncodingAttr>(layout))
+    layout = slice.getParent();
   return isa<ttg::MUSASqmmaEncodingAttr>(layout);
 }
 
@@ -40,7 +42,7 @@ bool useMusaReplicatedScratch(Attribute srcLayout, Attribute dstLayout) {
 
 bool isMusaSqmmaAccumulatorToBlockedLike(Attribute srcLayout,
                                          Attribute dstLayout) {
-  return isa<ttg::MUSASqmmaEncodingAttr>(srcLayout) &&
+  return isMusaSqmmaLike(srcLayout) &&
          isa<ttg::BlockedEncodingAttr, ttg::SliceEncodingAttr>(dstLayout);
 }
 

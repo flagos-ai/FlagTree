@@ -1,4 +1,5 @@
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/BarrierUtils.h"
 #include "TritonMUSACommon/MemDescUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
@@ -171,6 +172,21 @@ static LogicalResult lowerDescriptorStore(tt::DescriptorStoreOp op,
 }
 
 #ifdef __TLE__
+static FailureOr<triton::musa::TMEPersistence>
+getTMEPersistence(ttg::TMACopyOp op, StringRef name) {
+  Attribute attr = op->getAttr(name);
+  if (!attr)
+    return triton::musa::TMEPersistence::CACHE_NORMAL;
+  auto value = dyn_cast<IntegerAttr>(attr);
+  if (!value || !value.getType().isInteger(32) || value.getInt() < 0 ||
+      value.getInt() > 3) {
+    op.emitOpError() << name << " must be an i32 in [0, 3] "
+                     << "(none, once, normal, persist)";
+    return failure();
+  }
+  return static_cast<triton::musa::TMEPersistence>(value.getInt());
+}
+
 static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
   auto loc = op.getLoc();
   auto srcDescTy = dyn_cast<tt::TensorDescType>(op.getSrc().getType());
@@ -184,6 +200,10 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
     return op.emitOpError("expects one tensor descriptor operand and one "
                           "shared memdesc operand");
   }
+  if (!globalToLocal && (op->hasAttr(triton::musa::kTMEInnerPersistenceAttr) ||
+                         op->hasAttr(triton::musa::kTMEOuterPersistenceAttr)))
+    return op.emitOpError("cache persistence is only supported for "
+                          "descriptor-to-shared copies");
 
   auto descTy = globalToLocal ? srcDescTy : dstDescTy;
   auto memDescTy = globalToLocal ? dstMemDescTy : srcMemDescTy;
@@ -207,6 +227,12 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
         triton::musa::TMECopyKind::GlobalToLocal);
     if (failed(config))
       return op.emitOpError("unable to resolve final TME load config");
+    auto inner = getTMEPersistence(op, triton::musa::kTMEInnerPersistenceAttr);
+    auto outer = getTMEPersistence(op, triton::musa::kTMEOuterPersistenceAttr);
+    if (failed(inner) || failed(outer))
+      return failure();
+    config->innerPersistence = *inner;
+    config->outerPersistence = *outer;
 
     // An explicitly supplied TLE completion barrier belongs to the caller's
     // staged pipeline.  Preserve that hardware barrier ID and defer its
@@ -220,15 +246,18 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
       auto asyncCopy = triton::musa::createAsyncTMECopyGlobalToLocal(
           rewriter, loc, op.getSrc(), *coord, completionBarrier, op.getDst(),
           pred, *config);
-      asyncCopy->setAttr("musa_tle.expect_bytes",
+      asyncCopy->setAttr(triton::musa::kTLEExpectBytesAttr,
                          rewriter.getI32IntegerAttr(expectBytes.getInt()));
       if (Attribute completionGroup =
               op->getAttr(triton::musa::kTLECompletionGroupAttr))
         asyncCopy->setAttr(triton::musa::kTLECompletionGroupAttr,
                            completionGroup);
-      if (op->hasAttr(triton::musa::kTLEPipeDeferredArrivalAttr))
+      if (op->hasAttr(triton::musa::kTLEPipeDeferredArrivalAttr)) {
         asyncCopy->setAttr(triton::musa::kTLEPipeDeferredArrivalAttr,
                            rewriter.getUnitAttr());
+        asyncCopy->setAttr(triton::musa_tle::kMUSATLEPipePayloadCopyAttr,
+                           rewriter.getUnitAttr());
+      }
       rewriter.eraseOp(op);
       return success();
     }

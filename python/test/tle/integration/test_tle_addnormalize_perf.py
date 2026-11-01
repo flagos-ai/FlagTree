@@ -195,7 +195,7 @@ class TestTLEAddNormalizePerf:
         torch.testing.assert_close(y, torch_addnormalize(a, b), atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize("M, N", [(512, 1024), (256, 512), (100, 1024), (2048, 2048)])
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     @pytest.mark.skipif(not (torch.cuda.is_available() and is_hopper_or_newer()),
                         reason="Requires Hopper or newer NVIDIA GPU (TMA)")
     def test_correctness_tle(self, M, N):
@@ -207,7 +207,7 @@ class TestTLEAddNormalizePerf:
         addnormalize_tle(a, b, y)
         torch.testing.assert_close(y, torch_addnormalize(a, b), atol=1e-4, rtol=1e-4)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     @pytest.mark.skipif(
         not (torch.cuda.is_available() and is_hopper_or_newer()) or is_h20(),
         reason="Requires Hopper or newer NVIDIA GPU (TMA); perf target validated on H100, "

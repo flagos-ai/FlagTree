@@ -270,23 +270,25 @@ class FlagPrismSetup:
         self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
         # FlagPrism: register all supported integration backends together.
-        # FlagPrism：enable the existing component build for MetaX.
+        # FlagPrism：retain upstream Enflame support and add MetaX.
         # supported_backends = {"ascend", "iluvatar", "mthreads"}
-        supported_backends = {"ascend", "iluvatar", "mthreads", "metax"}
+        # supported_backends = {"ascend", "iluvatar", "mthreads", "enflame"}
+        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame", "metax"}
         # FlagPrism end
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
-        # FlagPrism: FLAGTREE_BACKEND is unset for the default NVIDIA build.
+        # FlagPrism: allow the default NVIDIA build and supported named backends.
         if self.enabled and backend and backend not in supported_backends:
-            # FlagPrism: report the newly supported mthreads backend.
-            raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               # FlagPrism：include the supported MetaX build.
-                               # "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
-                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, or metax.")
-                               # FlagPrism end
+            raise RuntimeError(
+                "TRITON_BUILD_FLAGPRISM is only supported when "
+                # FlagPrism：include both supported integration backends.
+                # "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
+                # "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, or enflame.")
+                "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, enflame, or metax.")
+            # FlagPrism end
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):

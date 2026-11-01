@@ -503,16 +503,14 @@ class MacaLauncher(object):
                                               _allocation._allocator)
             profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
                                                _allocation._profile_allocator)
-            self.launch(gridX, gridY, gridZ, stream, function, global_scratch, profile_scratch,
-                        *args, *hidden_args)
+            self.launch(gridX, gridY, gridZ, stream, function, global_scratch, profile_scratch, *args, *hidden_args)
 
         if not bool(getattr(self.metadata, "debug_enabled", False)):
             return launch()
         user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
         launch_metadata = args[1] if len(args) > 1 else None
-        with _flagprism.debugger_launch_context(
-            "maca", self.metadata, (gridX, gridY, gridZ), stream, launch_metadata, user_args
-        ) as hidden_args:
+        with _flagprism.debugger_launch_context("maca", self.metadata, (gridX, gridY, gridZ), stream, launch_metadata,
+                                                user_args) as hidden_args:
             return launch(hidden_args)
         # FlagPrism end
 

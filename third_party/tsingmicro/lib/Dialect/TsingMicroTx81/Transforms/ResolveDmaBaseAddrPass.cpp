@@ -17,6 +17,8 @@
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
 #include "tsingmicro-tx81/Transforms/Passes.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
 
 #define DEBUG_TYPE "tx81-resolve-dma-base-addr"
@@ -310,8 +312,29 @@ static void insertEpLogForFunc(func::FuncOp funcOp, ModuleOp mod) {
   builder.create<LLVM::CallOp>(loc, callType, rcsRef, callArgs);
 }
 
-/// Rewrite a tx.rdma or tx.wdma op by appending the resolved base DDR address.
-template <typename TxDmaOp> LogicalResult resolveOp(TxDmaOp op) {
+/// Creates and dedups LLVM global strings holding the op #loc source info.
+struct DmaLocGlobals {
+  llvm::StringMap<std::string> nameByLoc;
+  unsigned counter = 0;
+
+  Value get(Location loc, OpBuilder &builder, ModuleOp mod) {
+    std::string locStr;
+    llvm::raw_string_ostream os(locStr);
+    loc.print(os);
+    os.flush();
+    std::string &name = nameByLoc[locStr];
+    if (name.empty())
+      name = "__dma_loc_" + std::to_string(counter++);
+    locStr.push_back('\0');
+    return getOrCreateGlobalString(loc, builder, name, locStr, mod);
+  }
+};
+
+/// Rewrite a tx.rdma or tx.wdma op: replace the placeholder base_ddr_addr
+/// with the resolved base DDR address, and the placeholder loc_str with the
+/// op #loc source info string pointer.
+template <typename TxDmaOp>
+LogicalResult resolveOp(TxDmaOp op, DmaLocGlobals &locGlobals) {
   // Determine which operand is the DDR address
   Value ddrAddr;
   if constexpr (std::is_same_v<TxDmaOp, tx::RdmaOp> ||
@@ -333,12 +356,17 @@ template <typename TxDmaOp> LogicalResult resolveOp(TxDmaOp op) {
     baseAddr = ddrAddr;
   }
 
-  // Replace the placeholder base_ddr_addr (last operand) with the resolved one.
+  ModuleOp mod = op->template getParentOfType<ModuleOp>();
+  Value locPtr = locGlobals.get(op.getLoc(), builder, mod);
+
+  // Replace the placeholder base_ddr_addr (second-to-last operand) with the
+  // resolved one, and the placeholder loc_str (last operand) with the loc ptr.
   // Keep the same number of operands so the existing operandSegmentSizes is
   // valid.
   SmallVector<Value, 20> newOperands;
-  newOperands.append(op->operand_begin(), std::prev(op->operand_end()));
+  newOperands.append(op->operand_begin(), std::prev(op->operand_end(), 2));
   newOperands.push_back(baseAddr);
+  newOperands.push_back(locPtr);
 
   // Create new op with the resolved base_ddr_addr operand
   OperationState state(op.getLoc(), op->getName());
@@ -384,18 +412,19 @@ public:
       mod.walk([&](func::FuncOp funcOp) { insertEpLogForFunc(funcOp, mod); });
     }
 
+    DmaLocGlobals locGlobals;
     mod.walk([&](Operation *op) {
       if (auto rdmaOp = dyn_cast<tx::RdmaOp>(op)) {
-        if (failed(resolveOp(rdmaOp)))
+        if (failed(resolveOp(rdmaOp, locGlobals)))
           signalPassFailure();
       } else if (auto wdmaOp = dyn_cast<tx::WdmaOp>(op)) {
-        if (failed(resolveOp(wdmaOp)))
+        if (failed(resolveOp(wdmaOp, locGlobals)))
           signalPassFailure();
       } else if (auto rdma1dOp = dyn_cast<tx::Rdma1dOp>(op)) {
-        if (failed(resolveOp(rdma1dOp)))
+        if (failed(resolveOp(rdma1dOp, locGlobals)))
           signalPassFailure();
       } else if (auto wdma1dOp = dyn_cast<tx::Wdma1dOp>(op)) {
-        if (failed(resolveOp(wdma1dOp)))
+        if (failed(resolveOp(wdma1dOp, locGlobals)))
           signalPassFailure();
       }
     });

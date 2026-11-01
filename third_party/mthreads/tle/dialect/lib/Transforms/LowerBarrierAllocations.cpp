@@ -2,7 +2,9 @@
 
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/BarrierUtils.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -34,9 +36,6 @@ static constexpr StringLiteral kExhaustedDiagnostic =
     "mthreads TLE barrier allocation exhausted hardware barrier ids";
 static constexpr StringLiteral kPipeExhaustedDiagnostic =
     "MUSA TLE pipe barrier allocation exceeds hardware barrier id limit";
-static constexpr StringLiteral kPipeBarrierRingAttr =
-    "musa_tle.pipe_barrier_ring";
-
 class LowerBarrierAllocationsPass
     : public impl::TritonMUSAGPUTLELowerBarrierAllocationsBase<
           LowerBarrierAllocationsPass> {
@@ -110,7 +109,7 @@ class LowerBarrierAllocationsPass
 
     BarrierAllocOp pipeAlloc;
     for (BarrierAllocOp alloc : allocs) {
-      if (alloc->hasAttr(kPipeBarrierRingAttr)) {
+      if (alloc->hasAttr(triton::musa_tle::kMUSATLEPipeBarrierRingAttr)) {
         pipeAlloc = alloc;
         break;
       }
@@ -159,10 +158,17 @@ class LowerBarrierAllocationsPass
             arith::ConstantIntOp::create(rewriter, loc, nextBase + slot, 32);
         lastInitArrival = triton::musa::InitArrivalOp::create(
             rewriter, loc, barId, arriveCount, initPolarity);
+        // Barrier rings are CTA-wide state initialized before static warp
+        // dispatch.  Use the physical CTA leader rather than Triton's
+        // partition-local logical thread id: the latter wraps at each
+        // warp-specialize partition width and can initialize the same hardware
+        // barrier several times after dispatch lowering.
+        lastInitArrival->setAttr(triton::musa::kTMEIssueThreadAttr,
+                                 rewriter.getI32IntegerAttr(0));
       }
 
       rewriter.replaceAllUsesWith(alloc.getBaseId(), base);
-      alloc->removeAttr(kPipeBarrierRingAttr);
+      alloc->removeAttr(triton::musa_tle::kMUSATLEPipeBarrierRingAttr);
       rewriter.eraseOp(alloc);
       nextBase += alloc.getNumBarriers();
     }

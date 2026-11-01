@@ -1118,6 +1118,12 @@ class MusaDriver(DriverBase):
         from triton.testing import do_bench
         return do_bench
 
+    # FlagTree MThreads additive extension (no matching upstream Triton PR and
+    # no original block replaced): override the default because MThreads TME
+    # descriptors support 4-byte-aligned strides.
+    def get_tensor_descriptor_stride_alignment(self):
+        return 4
+
     def get_empty_cache_for_benchmark(self):
         cache_size = 256 * 1024 * 1024
         return self._torch.empty(int(cache_size // 4), dtype=self._torch.int, device="musa")

@@ -22,8 +22,11 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
-from typing import Any
+import os
+from collections.abc import Callable, Iterable
+from typing import Any, Union
+
+from triton import _flagtree_backend
 
 _TLE_LANGUAGE_PREFIX = "triton.experimental.tle.language."
 _TLE_PRIMITIVE_PREFIXES = (
@@ -78,10 +81,8 @@ def primitive_name(primitive: str | Callable[..., Any]) -> str:
                 break
         if name.startswith("language."):
             name = name[len("language."):]
-    elif callable(primitive):
+    else:  # callable(primitive)
         return _callable_primitive_name(primitive)
-    else:
-        raise TypeError(f"TLE primitive must be a string or callable, got {type(primitive).__name__}")
 
     aliases = (
         ("gpu.core.", "gpu."),
@@ -117,26 +118,80 @@ def _backend_config_module(backend_name: str):
         return None
 
 
-def get_supported_primitives(backend_name: str) -> frozenset[str]:
-    """Read and validate a backend's strict TLE primitive whitelist."""
+def supported_primitives(backend_name: str) -> frozenset[str]:
+    """Read and validate one backend's ``tle_supported.TLE_SUPPORTED_PRIMITIVES``."""
     module = _backend_config_module(backend_name)
     configured = getattr(module, "TLE_SUPPORTED_PRIMITIVES", []) if module is not None else []
     if not isinstance(configured, list):
-        raise TypeError(f"backend {backend_name!r} TLE_SUPPORTED_PRIMITIVES must be a list of strings, "
+        raise TypeError(f"backend {backend_name!r}: TLE_SUPPORTED_PRIMITIVES must be a list of strings, "
                         f"got {type(configured).__name__}")
     if not all(isinstance(item, str) for item in configured):
-        raise TypeError(f"backend {backend_name!r} TLE_SUPPORTED_PRIMITIVES must contain only strings")
+        raise TypeError(f"backend {backend_name!r}: TLE_SUPPORTED_PRIMITIVES must contain only strings")
     return frozenset(primitive_name(item) for item in configured)
 
 
-def is_primitive_supported(backend_name: str, primitive: str | Callable[..., Any]) -> bool:
-    name = primitive_name(primitive)
-    return name not in TLE_PRIMITIVES or name in get_supported_primitives(backend_name)
+def _routable_backend_names() -> tuple[str, ...]:
+    """Backends a kernel can be routed to in this build and environment.
+
+    TileIR builds leave ``FLAGTREE_BACKEND`` empty; TileIR is only routable
+    when ``FLAGTREE_USE_TILEIR=1``, matching the TileIR router opt-in.
+    """
+    from triton.backends import backends
+
+    backend_name = _flagtree_backend.FLAGTREE_BACKEND
+    if backend_name and backend_name != "tileir":
+        return (backend_name, )
+    if "tileir" in backends and os.environ.get("FLAGTREE_USE_TILEIR", "0") == "1":
+        return ("tileir", "nvidia")
+    return ("nvidia", )
 
 
-def require_tle(backend_name: str, primitive: str | Callable[..., Any]) -> None:
+def _route_backend_name(names: frozenset[str]) -> str:
+    """Mirror the TileIR router: TileIR only if every TLE name is in its whitelist."""
+    *preferred, fallback = _routable_backend_names()
+    for backend_name in preferred:
+        if names <= supported_primitives(backend_name):
+            return backend_name
+    return fallback
+
+
+def get_supported_primitives() -> frozenset[str]:
+    """Union of ``tle_supported`` whitelists of the currently routable backends."""
+    return frozenset().union(*(supported_primitives(name) for name in _routable_backend_names()))
+
+
+_PrimitiveArg = Union[str, Callable[..., Any]]
+
+
+def _unsupported_primitives(primitives: _PrimitiveArg | Iterable[_PrimitiveArg]) -> tuple[str, list[str]]:
+    """Return the backend these primitives route to and the ones it rejects."""
+    if isinstance(primitives, str) or callable(primitives):
+        primitives = [primitives]
+    names = [name for name in map(primitive_name, primitives) if name in TLE_PRIMITIVES]
+    backend_name = _route_backend_name(frozenset(names))
+    supported = supported_primitives(backend_name)
+    return backend_name, [name for name in names if name not in supported]
+
+
+# For pytest skip or gems implementation routing
+def is_tle_supported(primitives: _PrimitiveArg | Iterable[_PrimitiveArg]) -> bool:
+    """Whether a kernel using all of ``primitives`` is supported by the backend it routes to."""
+    return not _unsupported_primitives(primitives)[1]
+
+
+# For assertion in gems implementation
+def require_tle(primitives: _PrimitiveArg | Iterable[_PrimitiveArg]) -> None:
+    backend_name, unsupported = _unsupported_primitives(primitives)
+    if unsupported:
+        raise TLEUnsupportedPrimitiveError(f"backend {backend_name!r} does not support TLE primitive(s) "
+                                           f"{', '.join(repr(name) for name in unsupported)}")
+
+
+# For the compiler guard, which must check the backend actually generating code
+# rather than every backend this build could route to.
+def _require_tle_for_backend(backend_name: str, primitive: str | Callable[..., Any]) -> None:
     name = primitive_name(primitive)
-    if name in TLE_PRIMITIVES and name not in get_supported_primitives(backend_name):
+    if name in TLE_PRIMITIVES and name not in supported_primitives(backend_name):
         raise TLEUnsupportedPrimitiveError(f"backend {backend_name!r} does not support TLE primitive {name!r}")
 
 
@@ -153,7 +208,7 @@ __all__ = [
     "TLE_PRIMITIVES",
     "TLEUnsupportedPrimitiveError",
     "get_supported_primitives",
-    "is_primitive_supported",
+    "is_tle_supported",
     "primitive_name",
     "require_tle",
 ]

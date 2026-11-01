@@ -64,6 +64,128 @@ _SQMMA_TRANSPOSE_CASES = (
 )
 
 
+def _sqmma_encoding_fixture(warps_per_cta, shape=(64, 64)):
+    warps = ", ".join(str(value) for value in warps_per_cta)
+    m, n = shape
+    mma = ("#mma = #ttg.musa_sqmma<{versionMajor = 3, versionMinor = 1, "
+           f"warpsPerCTA = [{warps}], instrShape = [64, 64, 64]}}>")
+    module_attrs = ('module attributes {"ttg.num-ctas" = 1 : i32, '
+                    '"ttg.num-warps" = 8 : i32, ttg.target = "musa:31", '
+                    '"ttg.threads-per-warp" = 32 : i32}')
+    return f"""{mma}
+{module_attrs} {{
+  tt.func public @carrier_probe(%arg0: !mtgpu.sqmma_accumulator<tensor<{m}x{n}xf32, #mma>>) {{
+    tt.return
+  }}
+}}
+"""
+
+
+@pytest.mark.parametrize("warps_per_cta", [(4, 1), (4, 2), (8, 2, 1)])
+def test_musa_sqmma_encoding_accepts_power_of_two_warp_domains(tmp_path, warps_per_cta):
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    fixture_path = tmp_path / "valid_sqmma_encoding.ttgir"
+    fixture_path.write_text(_sqmma_encoding_fixture(warps_per_cta))
+
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    assert "#ttg.musa_sqmma" in module.str_nodebug()
+
+
+@pytest.mark.parametrize("warps_per_cta", [(4, 3), (12, 1), (4, 2, 3)])
+def test_musa_sqmma_encoding_rejects_non_power_of_two_warp_domains(tmp_path, capfd, warps_per_cta):
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    fixture_path = tmp_path / "invalid_sqmma_encoding.ttgir"
+    fixture_path.write_text(_sqmma_encoding_fixture(warps_per_cta))
+
+    with pytest.raises(RuntimeError):
+        ir.parse_mlir_module(str(fixture_path), context)
+    assert ("SQMMA warpsPerCTA elements must be powers of two" in capfd.readouterr().err)
+
+
+def _lower_sqmma_carrier_type(tmp_path, shape):
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    fixture_path = tmp_path / f"sqmma_carrier_{shape[0]}x{shape[1]}.ttgir"
+    fixture_path.write_text(_sqmma_encoding_fixture((4, 1), shape))
+    module = ir.parse_mlir_module(str(fixture_path), context)
+
+    pm = ir.pass_manager(context)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    libtriton.passes.convert.add_index_to_llvmir(pm)
+    libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+    pm.run(module, "lower_sqmma_carrier_type")
+    return module.str_nodebug()
+
+
+def _sqmma_carrier_roundtrip_fixture():
+    tensor = "tensor<128x128xf32, #mma>"
+    carrier = f"!mtgpu.sqmma_accumulator<{tensor}>"
+    return f"""#mma = #ttg.musa_sqmma<{{versionMajor = 3, versionMinor = 1,
+    warpsPerCTA = [4, 1], instrShape = [64, 64, 64]}}>
+module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32,
+    ttg.target = "musa:31", "ttg.threads-per-warp" = 32 : i32}} {{
+  tt.func public @carrier_roundtrip(%arg0: {carrier}) {{
+    %unpacked = mtgpu.unpack_sqmma_accumulator %arg0 : {carrier} -> {tensor}
+    %packed = mtgpu.pack_sqmma_accumulator %unpacked : {tensor} -> {carrier}
+    %ready = mtgpu.sqmma_wait %packed : {carrier}
+    tt.return
+  }}
+}}
+"""
+
+
+def _lower_sqmma_carrier_roundtrip(tmp_path):
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    fixture_path = tmp_path / "sqmma_carrier_roundtrip.ttgir"
+    fixture_path.write_text(_sqmma_carrier_roundtrip_fixture())
+    module = ir.parse_mlir_module(str(fixture_path), context)
+
+    pm = ir.pass_manager(context)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    libtriton.passes.convert.add_index_to_llvmir(pm)
+    libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+    pm.run(module, "lower_sqmma_carrier_roundtrip")
+    return module.str_nodebug()
+
+
+def test_multi_fragment_sqmma_carrier_lowers_to_literal_struct(tmp_path):
+    lowered = _lower_sqmma_carrier_type(tmp_path, (128, 128))
+    assert "!llvm.struct<(" in lowered
+    assert lowered.count("vector<32xf32>") >= 4
+
+
+def test_multi_fragment_sqmma_carrier_roundtrip_uses_struct_fields(tmp_path):
+    lowered = _lower_sqmma_carrier_roundtrip(tmp_path)
+    carrier = ("!llvm.struct<(vector<32xf32>, vector<32xf32>, "
+               "vector<32xf32>, vector<32xf32>)>")
+    assert carrier in lowered, lowered
+    for index in range(4):
+        assert re.search(rf"llvm\.extractvalue .*\[{index}\]", lowered), lowered
+        assert re.search(rf"llvm\.insertvalue .*\[{index}\]", lowered), lowered
+    assert 'llvm.call_intrinsic "llvm.musa.sqmma.wait"' in lowered, lowered
+
+
+def test_single_fragment_sqmma_carrier_remains_vector(tmp_path):
+    lowered = _lower_sqmma_carrier_type(tmp_path, (64, 64))
+    assert "!llvm.struct<(" not in lowered
+    assert "vector<32xf32>" in lowered
+
+
 @triton.jit
 def _tle_sqmma_kernel(out):
     a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None)
@@ -72,6 +194,202 @@ def _tle_sqmma_kernel(out):
     acc = tle.gpu.wgmma(a, b, acc)
     acc = tle.gpu.wgmma_wait(0, acc)
     offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_dead_result_wait_kernel(out):
+    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None)
+    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None)
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    acc = tle.gpu.wgmma(a, b, acc)
+    completed = tle.gpu.wgmma_wait(0, acc)
+    # Keep the source completion boundary while deliberately leaving its SSA
+    # result dead.  The native wait is global and may also drain unrelated
+    # outstanding SQMMA operations.
+    _ = completed
+    tl.store(out, 1.0)
+
+
+@triton.jit
+def _tle_sqmma_loop_direct_yield_kernel(out, k_tiles: tl.constexpr):
+    a = tle.gpu.alloc(
+        (128, 64),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (64, 128),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    for _ in range(0, k_tiles):
+        acc = tle.gpu.wgmma(a, b, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_loop_if_yield_kernel(out, k_tiles: tl.constexpr):
+    a = tle.gpu.alloc(
+        (128, 64),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (64, 128),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    for k_iter in tl.range(0, k_tiles, num_stages=1):
+        if k_iter < k_tiles:
+            acc = tle.gpu.wgmma(a, b, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_loop_nested_if_yield_kernel(
+    out,
+    outer_gate,
+    inner_gate,
+    k_tiles: tl.constexpr,
+):
+    a = tle.gpu.alloc(
+        (128, 64),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (64, 128),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    for _ in tl.range(0, k_tiles, num_stages=1):
+        if outer_gate != 0:
+            if inner_gate != 0:
+                acc = tle.gpu.wgmma(a, b, acc)
+    acc = tle.gpu.wgmma_wait(0, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_loop_wait_chain_kernel(out, k_tiles: tl.constexpr):
+    a = tle.gpu.alloc(
+        (128, 64),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (64, 128),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    for _ in range(0, k_tiles):
+        acc = tle.gpu.wgmma(a, b, acc)
+        acc = tle.gpu.wgmma_wait(0, acc)
+        acc = tle.gpu.wgmma(a, b, acc)
+        acc = tle.gpu.wgmma_wait(0, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_loop_post_wait_kernel(out, k_tiles: tl.constexpr):
+    """Keep the source result type when a completed loop is waited again."""
+    a = tle.gpu.alloc(
+        (128, 64),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (64, 128),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    for _ in range(0, k_tiles):
+        acc = tle.gpu.wgmma(a, b, acc)
+        acc = tle.gpu.wgmma_wait(0, acc)
+    acc = tle.gpu.wgmma_wait(0, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_loop_carrier_runtime_kernel(
+    a_desc,
+    b_desc,
+    out,
+    k_tiles: tl.constexpr,
+    BRANCH: tl.constexpr,
+):
+    block_m: tl.constexpr = 128
+    block_n: tl.constexpr = 128
+    block_k: tl.constexpr = 64
+    a = tle.gpu.alloc(
+        (block_m, block_k),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (block_k, block_n),
+        dtype=tl.float16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    a_full = tle.gpu.alloc_barrier(expect_bytes=block_m * block_k * 2)
+    b_full = tle.gpu.alloc_barrier(expect_bytes=block_k * block_n * 2)
+    tle.gpu.copy(a_desc, a, (block_m, block_k), (0, 0), barrier=a_full)
+    tle.gpu.copy(b_desc, b, (block_k, block_n), (0, 0), barrier=b_full)
+    tle.gpu.barrier_wait(a_full, phaseIdx=0)
+    tle.gpu.barrier_wait(b_full, phaseIdx=0)
+
+    acc = tl.zeros((block_m, block_n), dtype=tl.float32)
+    for k_iter in tl.range(0, k_tiles, num_stages=1):
+        if BRANCH:
+            if k_iter < k_tiles:
+                acc = tle.gpu.wgmma(a, b, acc)
+        else:
+            acc = tle.gpu.wgmma(a, b, acc)
+
+    offsets = tl.arange(0, block_m)[:, None] * block_n + tl.arange(0, block_n)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_ph1_bf16_k128_static_kernel(out):
+    a = tle.gpu.alloc(
+        (16, 128),
+        dtype=tl.bfloat16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (128, 64),
+        dtype=tl.bfloat16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    acc = tle.gpu.wgmma(a, b, tl.zeros((16, 64), dtype=tl.float32))
+    acc = tle.gpu.wgmma_wait(0, acc)
+    offsets = tl.arange(0, 16)[:, None] * 64 + tl.arange(0, 64)[None, :]
     tl.store(out + offsets, acc)
 
 
@@ -124,6 +442,71 @@ def _tle_sqmma_runtime_kernel(a_desc, b_desc, out):
     acc = tle.gpu.wgmma_wait(0, acc)
     offsets = tl.arange(0, block_m)[:, None] * block_n + tl.arange(0, block_n)[None, :]
     tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_sliced_bias_runtime_kernel(a_desc, b_desc, bias, out):
+    """Exercise SliceEncoding views whose parent is an SQMMA accumulator."""
+    block_m: tl.constexpr = 64
+    block_n: tl.constexpr = 256
+    block_k: tl.constexpr = 64
+    a = tle.gpu.alloc(
+        (block_m, block_k),
+        dtype=tl.bfloat16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (block_k, block_n),
+        dtype=tl.bfloat16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    a_full = tle.gpu.alloc_barrier(expect_bytes=block_m * block_k * 2)
+    b_full = tle.gpu.alloc_barrier(expect_bytes=block_k * block_n * 2)
+    tle.gpu.copy(a_desc, a, (block_m, block_k), (0, 0), barrier=a_full)
+    tle.gpu.copy(b_desc, b, (block_k, block_n), (0, 0), barrier=b_full)
+    tle.gpu.barrier_wait(a_full, phaseIdx=0)
+    tle.gpu.barrier_wait(b_full, phaseIdx=0)
+
+    acc = tle.gpu.wgmma(a, b, tl.zeros((block_m, block_n), dtype=tl.float32))
+    acc = tle.gpu.wgmma_wait(0, acc)
+    columns = tl.arange(0, block_n)
+    bias_values = tl.load(bias + columns).to(tl.float32)
+    acc += bias_values[None, :]
+    rows = tl.arange(0, block_m)
+    tl.store(out + rows[:, None] * block_n + columns[None, :], acc)
+
+
+@triton.jit
+def _tle_sqmma_dual_wait_kernel(out):
+    """Keep two independent SQMMA accumulators live through adjacent waits."""
+    block_m: tl.constexpr = 256
+    block_n: tl.constexpr = 256
+    half_n: tl.constexpr = 128
+    block_k: tl.constexpr = 64
+    a = tle.gpu.alloc(
+        (block_m, block_k),
+        dtype=tl.bfloat16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b = tle.gpu.alloc(
+        (block_k, block_n),
+        dtype=tl.bfloat16,
+        layout=None,
+        nv_mma_shared_layout=True,
+    )
+    b_lo = b.subslice(0, half_n, dim=1)
+    b_hi = b.subslice(half_n, half_n, dim=1)
+    acc_lo = tle.gpu.wgmma(a, b_lo, tl.zeros((block_m, half_n), tl.float32))
+    acc_hi = tle.gpu.wgmma(a, b_hi, tl.zeros((block_m, half_n), tl.float32))
+    acc_lo = tle.gpu.wgmma_wait(0, acc_lo)
+    acc_hi = tle.gpu.wgmma_wait(0, acc_hi)
+    rows = tl.arange(0, block_m)
+    cols = tl.arange(0, half_n)
+    tl.store(out + rows[:, None] * block_n + cols[None, :], acc_lo)
+    tl.store(out + rows[:, None] * block_n + half_n + cols[None, :], acc_hi)
 
 
 @triton.jit
@@ -547,6 +930,240 @@ def test_mthreads_tle_sqmma_lowers_to_parameterless_wait():
     assert "call void @llvm.musa.sqmma.wait()" in compiled.asm["llir"]
 
 
+def test_mthreads_ph1_bf16_k128_opt_in_lowers_to_two_k64_intrinsics(monkeypatch, ):
+    monkeypatch.delenv("TRITON_OVERRIDE_ARCH", raising=False)
+    monkeypatch.setenv("TRITON_MUSA_ARCH", "ph1")
+    monkeypatch.setenv("TRITON_MUSA_ENABLE_K128_SQMMA", "1")
+    monkeypatch.setattr(triton.knobs.compilation, "always_compile", True)
+    _tle_sqmma_ph1_bf16_k128_static_kernel.device_caches.clear()
+
+    compiled = compile_musa(
+        _tle_sqmma_ph1_bf16_k128_static_kernel,
+        {"out": "*fp32"},
+        options={"num_warps": 4, "num_stages": 1},
+    )
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    assert "instrShape = [16, 64, 128]" in ttgir, ttgir
+    assert "llvm.musa.sqmma.bfmma.m16n64k128.mma" not in llir, llir
+    assert llir.count("@llvm.musa.sqmma.bfmma.m16n64k64.mma(") >= 3, llir
+    assert "call void @llvm.musa.sqmma.wait()" in llir, llir
+
+
+@pytest.mark.parametrize("opt_in", ["", "10", "1debug"])
+def test_mthreads_ph1_bf16_k128_requires_exact_opt_in(monkeypatch, opt_in):
+    monkeypatch.delenv("TRITON_OVERRIDE_ARCH", raising=False)
+    monkeypatch.setenv("TRITON_MUSA_ARCH", "ph1")
+    monkeypatch.setenv("TRITON_MUSA_ENABLE_K128_SQMMA", opt_in)
+    monkeypatch.setattr(triton.knobs.compilation, "always_compile", True)
+    _tle_sqmma_ph1_bf16_k128_static_kernel.device_caches.clear()
+
+    compiled = compile_musa(
+        _tle_sqmma_ph1_bf16_k128_static_kernel,
+        {"out": "*fp32"},
+        options={"num_warps": 4, "num_stages": 1},
+    )
+    assert "instrShape = [16, 64, 128]" not in compiled.asm["ttgir"]
+
+
+def test_mthreads_tle_sqmma_merges_adjacent_equal_pending_waits():
+    compiled = compile_musa(_tle_sqmma_dual_wait_kernel, {"out": "*fp32"})
+    assert compiled.asm["llir"].count("call void @llvm.musa.sqmma.wait()") == 1
+
+
+def test_mthreads_tle_sqmma_keeps_dead_result_completion_wait():
+    compiled = compile_musa(_tle_sqmma_dead_result_wait_kernel, {"out": "*fp32"})
+    assert "ttmg.squad_dot_wait" in compiled.asm["ttgir"], compiled.asm["ttgir"]
+    assert "call void @llvm.musa.sqmma.wait()" in compiled.asm["llir"], compiled.asm["llir"]
+
+
+def test_mthreads_tle_sqmma_lowers_direct_loop_yield():
+    compiled = compile_musa(
+        _tle_sqmma_loop_direct_yield_kernel,
+        {"out": "*fp32", "k_tiles": "constexpr"},
+        {"k_tiles": 2},
+    )
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    assert "mtgpu.sqmma" in ttgir, ttgir
+    assert "mtgpu.sqmma_wait" in ttgir, ttgir
+    assert llir.count("call void @llvm.musa.sqmma.wait()") == 1, llir
+
+
+def test_mthreads_tle_sqmma_lowers_if_carried_loop_yield():
+    compiled = compile_musa(
+        _tle_sqmma_loop_if_yield_kernel,
+        {"out": "*fp32", "k_tiles": "constexpr"},
+        {"k_tiles": 2},
+    )
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    assert "mtgpu.sqmma_accumulator" in ttgir, ttgir
+    assert "mtgpu.sqmma" in ttgir, ttgir
+    assert "mtgpu.sqmma_wait" in ttgir, ttgir
+    assert "ttg.convert_layout" not in ttgir, ttgir
+    # Each branch-local async result must reach a completion boundary before
+    # the carrier is merged.  Current loop canonicalization may keep one wait
+    # per branch/iteration in addition to the final consumer wait; requiring a
+    # single LLVM wait would incorrectly reward moving completion across the
+    # conditional.
+    # Keep both the branch-local completion and the source-level global
+    # boundary.  The latter also drains unrelated outstanding SQMMA.
+    assert llir.count("call void @llvm.musa.sqmma.wait()") >= 2, llir
+
+
+def test_mthreads_tle_sqmma_lowers_nested_if_carried_loop_yield():
+    compiled = compile_musa(
+        _tle_sqmma_loop_nested_if_yield_kernel,
+        {
+            "out": "*fp32",
+            "outer_gate": "i32",
+            "inner_gate": "i32",
+            "k_tiles": "constexpr",
+        },
+        {"k_tiles": 2},
+    )
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    assert ttgir.count("scf.if") >= 2, ttgir
+    assert "mtgpu.sqmma_accumulator" in ttgir, ttgir
+    assert "mtgpu.sqmma" in ttgir, ttgir
+    assert "mtgpu.sqmma_wait" in ttgir, ttgir
+    # Nested branch completion does not make the source global wait redundant.
+    assert llir.count("call void @llvm.musa.sqmma.wait()") >= 2, llir
+
+
+def test_mthreads_tle_sqmma_keeps_wait_inside_loop_chain():
+    compiled = compile_musa(
+        _tle_sqmma_loop_wait_chain_kernel,
+        {"out": "*fp32", "k_tiles": "constexpr"},
+        {"k_tiles": 2},
+    )
+    ttgir = compiled.asm["ttgir"]
+    assert ttgir.count("sqmma_wait") >= 2, ttgir
+    assert "mtgpu.sqmma_accumulator" in ttgir, ttgir
+    assert ttgir.count("ttg.convert_layout") == 0, ttgir
+
+
+def test_mthreads_tle_sqmma_lowers_wait_after_completed_loop():
+    compiled = compile_musa(
+        _tle_sqmma_loop_post_wait_kernel,
+        {"out": "*fp32", "k_tiles": "constexpr"},
+        {"k_tiles": 2},
+    )
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    assert "tt.store" in ttgir, ttgir
+    assert "mtgpu.sqmma_accumulator" in ttgir, ttgir
+    assert llir.count("call void @llvm.musa.sqmma.wait()") >= 2, llir
+
+
+def _convert_sqmma_carrier_fixture(path):
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(path), context)
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_convert_sqmma_to_mtgpu(pm)
+    pm.run(module, "convert_sqmma_carrier_fixture")
+    return module.str_nodebug()
+
+
+def _invalid_sqmma_carrier_fixture(yield_kind):
+    if yield_kind == "wrong-root":
+        iter_args = "%lhs = %zero, %rhs = %zero"
+        result_types = f"{_SQMMA_CARRIER_TENSOR}, {_SQMMA_CARRIER_TENSOR}"
+        result_binding = "%result:2"
+        dot_c = "%rhs"
+        after_dot = ""
+        yielded = "%dot, %rhs"
+    else:
+        iter_args = "%acc = %zero"
+        result_types = _SQMMA_CARRIER_TENSOR
+        result_binding = "%result"
+        dot_c = "%acc"
+        after_dot = f"%neg = arith.negf %dot : {_SQMMA_CARRIER_TENSOR}"
+        yielded = "%neg"
+
+    return f"""#mma = #ttg.musa_sqmma<{{versionMajor = 3, versionMinor = 1,
+    warpsPerCTA = [4, 1], instrShape = [128, 128, 64]}}>
+#shared_a = #ttg.swizzled_shared<{{vec = 8, perPhase = 2, maxPhase = 16, order = [1, 0]}}>
+#shared_b = #ttg.swizzled_shared<{{vec = 16, perPhase = 1, maxPhase = 8, order = [1, 0]}}>
+#smem = #ttg.shared_memory
+module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
+    ttg.target = "musa:ph1", "ttg.threads-per-warp" = 32 : i32}} {{
+  tt.func public @invalid_carrier() attributes {{noinline = false}} {{
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %true = arith.constant true
+    %zero = arith.constant dense<0.000000e+00> : {_SQMMA_CARRIER_TENSOR}
+    %a = ttg.local_alloc : () -> !ttg.memdesc<128x64xf16, #shared_a, #smem, mutable>
+    %b = ttg.local_alloc : () -> !ttg.memdesc<64x128xf16, #shared_b, #smem, mutable>
+    {result_binding} = scf.for %iv = %c0 to %c1 step %c1 iter_args({iter_args}) -> ({result_types}) {{
+      %dot = ttmg.squad_dot %a, %b, {dot_c}, %true {{
+        eltTypeA = 4 : i32, eltTypeB = 4 : i32, eltTypeC = 7 : i32,
+        inputPrecision = 2 : i32, isAsync = true, k = 64 : i32,
+        layoutA = 0 : i32, layoutB = 0 : i32, m = 128 : i32,
+        musa_tle.explicit_sqmma, n = 128 : i32
+      }} : !ttg.memdesc<128x64xf16, #shared_a, #smem, mutable> *
+           !ttg.memdesc<64x128xf16, #shared_b, #smem, mutable> ->
+           {_SQMMA_CARRIER_TENSOR}
+      {after_dot}
+      scf.yield {yielded} : {result_types}
+    }}
+    tt.return
+  }}
+}}
+"""
+
+
+_SQMMA_CARRIER_TENSOR = "tensor<128x128xf32, #mma>"
+
+
+@pytest.mark.parametrize("yield_kind", ["wrong-root", "unary"])
+def test_mthreads_sqmma_carrier_rejects_unproven_paths(tmp_path, yield_kind):
+    fixture_path = tmp_path / f"invalid_carrier_{yield_kind}.ttgir"
+    fixture_path.write_text(_invalid_sqmma_carrier_fixture(yield_kind))
+    converted = _convert_sqmma_carrier_fixture(fixture_path)
+    assert "mtgpu.sqmma_accumulator" not in converted, converted
+    assert "ttmg.squad_dot" in converted, converted
+
+
+def test_mthreads_tle_sqmma_can_disable_m_split_preference_per_kernel():
+    signature = {"out": "*fp32"}
+    default = compile_musa(
+        _tle_sqmma_dual_wait_kernel,
+        signature,
+        options={"num_warps": 16},
+    )
+    n_split = compile_musa(
+        _tle_sqmma_dual_wait_kernel,
+        signature,
+        options={
+            "num_warps": 16,
+            "disable_sqmma_m_split_preference": True,
+        },
+    )
+    assert "llvm.musa.sqmma.bfmma.m64n128k64" in default.asm["llir"]
+    assert "llvm.musa.sqmma.bfmma.m128n64k64" in n_split.asm["llir"]
+
+
+def test_mthreads_tle_sqmma_sliced_accumulator_layout_compiles():
+    compiled = compile_musa(
+        _tle_sqmma_sliced_bias_runtime_kernel,
+        {
+            "a_desc": "tensordesc<bf16[64, 64]>",
+            "b_desc": "tensordesc<bf16[64, 256]>",
+            "bias": "*bf16",
+            "out": "*fp32",
+        },
+    )
+    ttgir = compiled.asm["ttgir"]
+    assert "parent = #" in ttgir and "musa_sqmma" in ttgir, ttgir
+    assert "llvm.musa.sqmma.bfmma." in compiled.asm["llir"]
+
+
 @pytest.mark.parametrize("trans_a,trans_b,layout_a,layout_b", _SQMMA_TRANSPOSE_CASES)
 def test_mthreads_tle_sqmma_transpose_ir(trans_a, trans_b, layout_a, layout_b):
     signature = {
@@ -599,6 +1216,38 @@ def test_mthreads_tle_sqmma_transpose_validates_before_building_view():
         compile_to_ttir(_tle_sqmma_trans_invalid_rank_kernel, {"out": "*fp32"})
 
 
+@pytest.mark.parametrize("branch", [False, True], ids=["direct", "scf-if"])
+def test_mthreads_tle_sqmma_loop_carrier_runtime_precision(branch):
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    torch.manual_seed(20261014)
+    a_cpu = torch.randn((128, 64), dtype=torch.float16)
+    b_cpu = torch.randn((64, 128), dtype=torch.float16)
+    a = a_cpu.to("musa")
+    b = b_cpu.to("musa")
+    out = torch.empty((128, 128), device="musa", dtype=torch.float32)
+    a_desc = TensorDescriptor.from_tensor(a, block_shape=[128, 64])
+    b_desc = TensorDescriptor.from_tensor(b, block_shape=[64, 128])
+
+    kernel = _tle_sqmma_loop_carrier_runtime_kernel[(1, )](
+        a_desc,
+        b_desc,
+        out,
+        2,
+        branch,
+        num_warps=4,
+        num_stages=1,
+    )
+    torch.musa.synchronize()
+
+    expected = 2.0 * torch.matmul(a_cpu.float(), b_cpu.float())
+    torch.testing.assert_close(out.cpu(), expected, atol=1.4e-1, rtol=5.0e-2)
+    assert "llvm.musa.sqmma.fmma." in kernel.asm["llir"]
+
+
 def test_mthreads_tle_sqmma_runtime_precision():
     import torch
     from triton.tools.tensor_descriptor import TensorDescriptor
@@ -621,6 +1270,39 @@ def test_mthreads_tle_sqmma_runtime_precision():
     expected = torch.matmul(a_cpu.float(), b_cpu.float())
     torch.testing.assert_close(out.cpu(), expected, atol=5e-2, rtol=5e-2)
     assert "llvm.musa.sqmma.fmma." in kernel.asm["llir"]
+
+
+def test_mthreads_tle_sqmma_sliced_accumulator_layout_runtime():
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    block_m, block_n, block_k = 64, 256, 64
+    torch.manual_seed(20260925)
+    a_cpu = torch.randn((block_m, block_k), dtype=torch.bfloat16)
+    b_cpu = torch.randn((block_k, block_n), dtype=torch.bfloat16)
+    bias_cpu = torch.randn((block_n, ), dtype=torch.bfloat16)
+    a = a_cpu.to("musa")
+    b = b_cpu.to("musa")
+    bias = bias_cpu.to("musa")
+    out = torch.empty((block_m, block_n), device="musa", dtype=torch.float32)
+    a_desc = TensorDescriptor.from_tensor(a, block_shape=[block_m, block_k])
+    b_desc = TensorDescriptor.from_tensor(b, block_shape=[block_k, block_n])
+
+    kernel = _tle_sqmma_sliced_bias_runtime_kernel[(1, )](
+        a_desc,
+        b_desc,
+        bias,
+        out,
+        num_warps=4,
+        num_stages=1,
+    )
+    torch.musa.synchronize()
+
+    expected = torch.matmul(a_cpu.float(), b_cpu.float()) + bias_cpu.float()
+    torch.testing.assert_close(out.cpu(), expected, atol=3e-1, rtol=1e-1)
+    assert "llvm.musa.sqmma.bfmma." in kernel.asm["llir"]
 
 
 @pytest.mark.parametrize("trans_a,trans_b,layout_a,layout_b", _SQMMA_TRANSPOSE_CASES)
@@ -874,6 +1556,50 @@ def test_mthreads_tle_sqmma_all_supported_shapes_runtime(
     assert intrinsic in kernel.asm["llir"]
 
 
+@pytest.mark.parametrize("m,n", [(16, 64), (64, 16)])
+def test_mthreads_tle_sqmma_ph1_bf16_narrow_k128_runtime(monkeypatch, m, n):
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    monkeypatch.delenv("TRITON_OVERRIDE_ARCH", raising=False)
+    monkeypatch.setenv("TRITON_MUSA_ARCH", "ph1")
+    monkeypatch.setenv("TRITON_MUSA_ENABLE_K128_SQMMA", "1")
+    monkeypatch.setattr(triton.knobs.compilation, "always_compile", True)
+    _tle_sqmma_all_shapes_runtime_kernel.device_caches.clear()
+
+    k = 128
+    torch.manual_seed(4321)
+    a_cpu = torch.randn((m, k), dtype=torch.float32).to(torch.bfloat16)
+    b_cpu = torch.randn((k, n), dtype=torch.float32).to(torch.bfloat16)
+    a = a_cpu.to("musa")
+    b = b_cpu.to("musa")
+    out = torch.empty((m, n), device="musa", dtype=torch.float32)
+    a_desc = TensorDescriptor.from_tensor(a, block_shape=[m, k])
+    b_desc = TensorDescriptor.from_tensor(b, block_shape=[k, n])
+
+    kernel = _tle_sqmma_all_shapes_runtime_kernel[(1, )](
+        a_desc,
+        b_desc,
+        out,
+        m,
+        n,
+        k,
+        1,
+        2,
+        num_warps=4,
+        num_stages=1,
+    )
+    torch.musa.synchronize()
+
+    expected = torch.matmul(a_cpu.float(), b_cpu.float())
+    torch.testing.assert_close(out.cpu(), expected, atol=3.0e-1, rtol=1.0e-1)
+    assert f"instrShape = [{m}, {n}, 128]" in kernel.asm["ttgir"]
+    assert f"llvm.musa.sqmma.bfmma.m{m}n{n}k128.mma" not in kernel.asm["llir"]
+    assert kernel.asm["llir"].count(f"@llvm.musa.sqmma.bfmma.m{m}n{n}k64.mma(") >= 3
+
+
 def test_mthreads_tle_sqmma_macro_tile_auto_decomposition_runtime():
     import torch
     from triton.tools.tensor_descriptor import TensorDescriptor
@@ -947,6 +1673,32 @@ def _sqmma_partition_dot_kernel(a, b, out, N: tl.constexpr, MODE: tl.constexpr):
                                  (_sqmma_partition_idle_role, ())], [4, 4], [240, 168])
     else:
         _sqmma_partition_dot_role(a, b, out, N)
+
+
+def test_mthreads_arch_alias_is_canonical_before_sqmma_lowering(monkeypatch):
+    monkeypatch.delenv("TRITON_OVERRIDE_ARCH", raising=False)
+    monkeypatch.setenv("TRITON_MUSA_ARCH", "mp_31")
+    monkeypatch.setattr(triton.knobs.compilation, "always_compile", True)
+    _sqmma_partition_dot_kernel.device_caches.clear()
+
+    compiled = compile_musa(
+        _sqmma_partition_dot_kernel,
+        {
+            "a": "*fp16",
+            "b": "*fp16",
+            "out": "*fp32",
+            "N": "constexpr",
+            "MODE": "constexpr",
+        },
+        {"N": 1, "MODE": 3},
+        options={"num_warps": 4, "num_stages": 1},
+    )
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    # The raw alias used to reach the C++ pass, miss capability detection,
+    # and leave this otherwise eligible dot on the scalar FMA fallback.
+    assert 'ttg.target = "musa:31"' in ttgir, ttgir
+    assert "llvm.musa.sqmma.fmma." in llir, llir
 
 
 def _run_sqmma_partition_dot(mode, dtype_name, stages):

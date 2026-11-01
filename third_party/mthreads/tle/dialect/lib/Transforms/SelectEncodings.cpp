@@ -1,6 +1,7 @@
 #ifdef __TLE__
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h"
 
@@ -25,7 +26,6 @@ namespace {
 
 // Triton shared-memory pointers use LLVM address space 3 (NVVM shared).
 constexpr int kSharedMemoryAddressSpace = 3;
-constexpr StringLiteral kBarrierGroupAttr = "musa_tle.barrier_group";
 constexpr StringLiteral kTTContiguityAttr = "tt.contiguity";
 constexpr StringLiteral kTTDivisibilityAttr = "tt.divisibility";
 constexpr StringLiteral kTTConstancyAttr = "tt.constancy";
@@ -1048,12 +1048,13 @@ class SelectEncodingsPass
         getMemDescRoot(op.getSrc()).getDefiningOp<triton::gpu::LocalAllocOp>();
     if (!alloc)
       return;
-    auto groupAttr = alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
+    auto groupAttr = alloc->getAttrOfType<IntegerAttr>(
+        triton::musa_tle::kMUSATLEBarrierGroupAttr);
     if (!groupAttr) {
       groupAttr = builder.getI64IntegerAttr(nextBarrierGroupId++);
-      alloc->setAttr(kBarrierGroupAttr, groupAttr);
+      alloc->setAttr(triton::musa_tle::kMUSATLEBarrierGroupAttr, groupAttr);
     }
-    op->setAttr(kBarrierGroupAttr, groupAttr);
+    op->setAttr(triton::musa_tle::kMUSATLEBarrierGroupAttr, groupAttr);
   }
 
   int64_t nextBarrierGroupId = 0;
