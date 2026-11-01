@@ -47,7 +47,7 @@ def _run(rows, cols, axis, shift, bound, mode, auto):
     output = storage[64:-64]
     state = torch.zeros(2, dtype=torch.int32, device='npu')
     extent = cols if rows == 0 or axis == 1 else rows
-    index = torch.arange(extent)
+    index = torch.arange(extent, dtype=torch.int32)
     if rows:
         index = index[:, None] if axis == 0 else index[None, :]
     values = [(shift, bound)]
@@ -78,6 +78,9 @@ _STATIC = [(r, c, axis, 17, 17 + i)
            for i in (-1, 0, 7, (c if r == 0 or axis == 1 else r) - 1, c if r == 0 or axis == 1 else r,
                      (c if r == 0 or axis == 1 else r) + 9)]
 _STATIC += [(0, 32, 0, -17, -17 + i) for i in (-1, 0, 7, 31, 32, 41)]
+
+_STATIC += [(0, 32, 0, 2147483647, -2147483648), (0, 32, 0, 2147483630, -2147483648),
+            (0, 32, 0, -2147483648, -2147483648)]
 
 
 @pytest.mark.parametrize('auto', [False, True])
