@@ -3,10 +3,12 @@
 """Candidate: register-local MHC and one output per warp for narrow GEMV."""
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from jinja2 import ChoiceLoader, DictLoader
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
+from triton.flagmega.errors import CodegenError
 
 from . import mhc  # noqa: F401 -- install the preceding kernel policy
 
@@ -18,8 +20,12 @@ def prepare(self, name, context):
         return original_prepare(self, name, context)
     key = 'kernels/dense_matmul/_function.py.jinja'
     source = (self.root/key).read_text()
-    marker = '{{ entry.kernel_decorator(call) }}'
-    assert source.count(marker) == 1
+    # Entry options belong to the selected template; retain its whole call
+    # while inserting the warp layout before the decorator expression.
+    decorators = re.findall(r'{{\s*entry\.kernel_decorator\(call(?:,[^{}]*)?\)\s*}}', source)
+    if len(decorators) != 1:
+        raise CodegenError('Narrow GEMV requires one selected entry decorator')
+    marker = decorators[0]
     condition = '''{% set narrow_warp_rows = (not dense_matmul_uses_descriptor)
     and call.variant in ("packed_k_major_gemv", "split_k_n_packed_k_major_gemv")
     and call.tile_n >= num_warps and call.block_k >= 32 %}
