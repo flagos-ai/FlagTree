@@ -197,3 +197,39 @@ def test_legacy_policy_name_remains_a_pyntt_compatibility_alias():
         CanonicalStorageReshardRealizationPolicy(),
         PyNttDistributedReshardRealizationPolicy,
     )
+
+
+def test_same_chip_parameter_views_only_on_rdna():
+    from triton.flagmega.passes.auto_distributed.realization import SameChipParameterViewReshardRealizationPolicy
+    from triton.flagmega.targets import get_target
+
+    tensor = fm.tensor_type("bfloat16", [1, 640])
+    placement = fm.Placement((8, 24), "yx", "bb")
+    owned = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, 1), 2)), placement)
+    gathered = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement)
+    row_slice = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 80)), placement)
+
+    def classify(policy, target, usage=DistributedReshardUsageKind.INTERNAL):
+        return policy.classify(DistributedReshardRealizationContext(
+            owned, target, DistributedReshardSourceKind.FUNCTION_PARAMETER, usage))
+
+    # A decode layer's hidden parameter restored before its norm: copied by
+    # the PyNTT policy, read in place by the same-chip parameter view.
+    default, viewing = PyNttDistributedReshardRealizationPolicy(), SameChipParameterViewReshardRealizationPolicy()
+    for target in (gathered, row_slice):
+        assert classify(default, target) == DistributedReshardRealization.BOXING
+        assert classify(viewing, target) == DistributedReshardRealization.SHARDED_VIEW
+    # Only internal uses are viewed; a boundary result keeps its Boxing.
+    assert classify(viewing, gathered, DistributedReshardUsageKind.PROGRAM_OUTPUT) == DistributedReshardRealization.BOXING
+    # A reshard that reaches other chips cannot be read in place.
+    chips = fm.Placement((2, 8, 24), "dyx", "cbb")
+    chip_owned = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 320)), chips)
+    chip_gathered = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), chips)
+    assert viewing.classify(DistributedReshardRealizationContext(
+        chip_owned, chip_gathered, DistributedReshardSourceKind.FUNCTION_PARAMETER,
+        DistributedReshardUsageKind.INTERNAL)) != DistributedReshardRealization.SHARDED_VIEW
+
+    for name in ("amd-gfx1100", "amd-gfx1201"):
+        assert isinstance(get_target(name).distributed_reshard_realization_policy(),
+                          SameChipParameterViewReshardRealizationPolicy)
+    assert type(get_target("nvidia-sm120").distributed_reshard_realization_policy()) is PyNttDistributedReshardRealizationPolicy

@@ -221,6 +221,15 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             {"tile_n": 16},
             requires=("fp8_mma", ),
         ),
+        # Native GGUF weights (IQ4_XS, Q4_K) take the SIMT template's packed
+        # dequant path, which never quantizes activations, so no fp8 is needed.
+        _implementation(
+            "tir.block_fp8.native_simt",
+            "block_fp8",
+            "simt",
+            {"tile_n": 16},
+            contract={"weight_encoding": "gguf_native"},
+        ),
         _implementation(
             "tir.matmul_glu.simt",
             "matmul_glu",
@@ -234,6 +243,13 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "mma",
             {"tile_n": 16},
             requires=("fp8_mma", ),
+        ),
+        _implementation(
+            "tir.matmul_glu.native_simt",
+            "matmul_glu",
+            "simt",
+            {"tile_n": 16},
+            contract={"weight_encoding": "gguf_native"},
         ),
         _implementation(
             "tir.greedy_sample.distributed_argmax",
@@ -2076,8 +2092,8 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
         **attention_preferences,
         **portable_local_reduction_preferences(),
         **portable_normalization_preferences(),
-        "block_fp8": ("tir.block_fp8.mma", "tir.block_fp8.simt"),
-        "matmul_glu": ("tir.matmul_glu.mma", "tir.matmul_glu.simt"),
+        "block_fp8": ("tir.block_fp8.mma", "tir.block_fp8.simt", "tir.block_fp8.native_simt"),
+        "matmul_glu": ("tir.matmul_glu.mma", "tir.matmul_glu.simt", "tir.matmul_glu.native_simt"),
         "greedy_sample": ("tir.greedy_sample.distributed_argmax",),
         "rms_norm": ("tir.rms_norm.local",),
         "norm_stats": (

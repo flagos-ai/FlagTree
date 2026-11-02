@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from triton.flagmega.targets.pyntt import PyNttTarget
 from triton.flagmega.targets.ntt_options import NttTargetOptions
+from triton.flagmega.ir import Placement
 from triton.flagmega.targets.amd.machine import AmdGfx1100Machine
 
 
@@ -26,4 +29,18 @@ class AmdGfx1100Target(PyNttTarget):
             options=active_options,
             triton_implementation_model=triton_implementation_model,
             **policies,
+        )
+
+    def with_placement(self, placement: Placement) -> "AmdGfx1100Target":
+        """Return the same RDNA policy with one explicit block placement.
+
+        Used by the compiler's ``--placement`` option; the default placement is
+        unchanged when no placement is requested.
+        """
+        if not isinstance(placement, Placement):
+            raise TypeError("placement must be a Placement")
+        return type(self)(
+            self.machine.capability,
+            options=replace(self.options, placements=(placement,)),
+            triton_implementation_model=self.triton_implementation_model,
         )

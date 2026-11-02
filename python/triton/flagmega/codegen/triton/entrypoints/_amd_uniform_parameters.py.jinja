@@ -1,0 +1,15 @@
+@triton.jit
+def _flagmega_amd_uniform_parameter(value):
+    """Pin a pointer parameter to SGPRs (Triton scalars are uniform per program)."""
+    if isinstance(value, tl.tensor) and value.dtype.is_ptr():
+        address = value.to(tl.int64)
+        low = tl.inline_asm_elementwise("v_readfirstlane_b32 $0, $1", "=s,v", [address.to(tl.int32)],
+                                        dtype=tl.int32, is_pure=True, pack=1)
+        high = tl.inline_asm_elementwise("v_readfirstlane_b32 $0, $1", "=s,v", [(address >> 32).to(tl.int32)],
+                                         dtype=tl.int32, is_pure=True, pack=1)
+        pinned = ((high.to(tl.int64) << 32) | (low.to(tl.int64) & 0xFFFFFFFF)).to(value.dtype)
+        # The round trip drops the pointer's alignment facts, which would change
+        # the chosen layouts (and reduction order). Device-function pointers are
+        # pool bases or aligned pool/tensor views, so 16 bytes always holds.
+        return tl.multiple_of(pinned, 16)
+    return value

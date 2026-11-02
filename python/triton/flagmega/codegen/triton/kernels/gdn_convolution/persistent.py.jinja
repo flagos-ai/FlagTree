@@ -1,4 +1,7 @@
 # flagmega-kernel: gdn_convolution/persistent
+{% if gdn_convolution_local_tile is defined %}
+{% include gdn_convolution_local_tile %}
+{% else %}
 @triton.jit
 def _flagmega_gdn_convolution_local_tile(
     qkv, destination, conv_state, conv_weight,
@@ -63,6 +66,7 @@ def _flagmega_gdn_convolution_local_tile(
         mask=active,
     )
 
+{% endif %}
 {% if render_calls is defined %}
 {% include "kernels/gdn_convolution/_function.py.jinja" %}
 {% endif %}

@@ -114,7 +114,7 @@
                 mask={{ prefix }}_mask & ({{ head.output_active }}),
             )
 {% else %}
-{{ cache.position(call, head.cache_token, prefix ~ "_mask", "            ") }}
+{{ cache.position(call, head.cache_token, prefix ~ "_mask", "            ", prefix) }}
             tl.store(
                 {{ call.kv_cache }} + ({{ head.cache_offset }}),
                 {{ prefix }}_result,
@@ -128,7 +128,7 @@
             (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
         )
 {{ load_partial(call.v.partial_input, "qkv_v", "qkv_v_mask", "        ") }}
-{{ cache.position(call, call.v.cache_token, "qkv_v_mask", "        ") }}
+{{ cache.position(call, call.v.cache_token, "qkv_v_mask", "        ", "qkv_v") }}
         tl.store(
             {{ call.kv_cache }} + ({{ call.v.cache_offset }}),
             qkv_v_value,

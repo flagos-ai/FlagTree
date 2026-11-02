@@ -19,12 +19,20 @@ from dataclasses import replace
 from triton.flagmega.ir import IRModule, Placement
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.targets.ntt_options import NttTargetOptions
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.rules.ntt.decompose_paged_attention import (
+    head_divisible_paged_attention_split_plan,
+)
 from triton.flagmega.targets.amd.capability import (
     AmdCapability,
     Gfx1100Capability,
     Gfx1201Capability,
 )
 from triton.flagmega.targets.selection import CapabilitySelectionPolicy
+from triton.flagmega.passes.norm_stats import fold_widening_norm_stats_casts
+from triton.flagmega.passes.auto_distributed.realization import (
+    SameChipParameterViewReshardRealizationPolicy,
+)
 from triton.flagmega.passes.auto_distributed.operation_cost import (
     DistributedOperationCostModel,
 )
@@ -64,6 +72,28 @@ class _AmdRdnaMachine:
             verify_shared_workspaces(implementation_model)
         self._implementation_model = implementation_model
 
+    def paged_attention_split_plan(self, module, placements):
+        """Split decode attention context on an axis that keeps heads sharded.
+
+        With the default (smallest) context-split axis, a query head count the
+        other mesh axis does not divide (e.g. 24 heads over 16 blocks) leaves
+        every block computing every head. Decode only; prefill keeps the
+        default split.
+        """
+
+        query_heads = []
+        for node in module.nodes:
+            if node.op != "nn.paged_attention":
+                continue
+            layout = tuple(node.attrs["layout"])
+            shape = tensor_of(node.type).shape
+            seq = shape[layout.index("seq")]
+            heads = shape[layout.index("head")]
+            if not (seq.is_fixed and seq.fixed_value == 1 and heads.is_fixed):
+                return None
+            query_heads.append(heads.fixed_value)
+        return head_divisible_paged_attention_split_plan(placements, query_heads)
+
     def default_ntt_options(self) -> NttTargetOptions:
         # The placement is the on-chip physical block hierarchy ("bb") that tiles
         # a megakernel across the block grid of a single GPU -- not a device mesh.
@@ -86,6 +116,22 @@ class _AmdRdnaMachine:
     # deadlocks. Cap the warp count so the cooperative launch fits. (Perf tuning
     # of RDNA-native tiles is later Target work; correctness first.)
     _COOPERATIVE_MAX_WARPS = 4
+
+    # RDNA parameter defaults for the machine's own model. A recipe-supplied
+    # model keeps its parameters. GDN recurrent: 16-value state tiles (the AMD
+    # template computes head-only q/k and gates once per head, so wider tiles
+    # mean fewer serialized per-tile load/update chains).
+    _RDNA_PARAMETERS = {"tir.gdn_recurrent.persistent": {"tile_state": (128, 16)}}
+
+    def distributed_reshard_realization_policy(self):
+        # Restoring a function's distributed parameter otherwise copies it into
+        # every block before each use; a same-chip view reads it in place.
+        return SameChipParameterViewReshardRealizationPolicy()
+
+    def pre_vectorization_rewrite(self, module):
+        # Lets each RMSNorm's statistics fuse with its residual add and be
+        # threaded to the next layer instead of running as cast + stats calls.
+        return fold_widening_norm_stats_casts(module)
 
     def triton_implementation_model(self, supplied=None):
         # The cooperative warp cap is a correctness invariant for the grid-wide
@@ -112,9 +158,14 @@ class _AmdRdnaMachine:
                 return replace(impl, parameters=params)
             return impl
 
+        def _rdna_parameters(impl):
+            if supplied is not None or self._implementation_model is not None or impl.id not in self._RDNA_PARAMETERS:
+                return impl
+            return replace(impl, parameters={**impl.parameters, **self._RDNA_PARAMETERS[impl.id]})
+
         return replace(
             model,
-            implementations=tuple(_cap_cooperative_warps(i) for i in model.implementations),
+            implementations=tuple(_cap_cooperative_warps(_rdna_parameters(i)) for i in model.implementations),
         )
 
     def bufferization_options(self):

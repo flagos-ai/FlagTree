@@ -1,0 +1,117 @@
+{#- AMD RDNA GDN helpers for platforms/amd/_function.py.jinja: calls whose
+    value tiles provably stay inside one value head. #}
+
+@triton.jit
+def _flagmega_amd_gdn_gate_rows(source, b_weight, a_weight, row, K: tl.constexpr,
+                                B_FORMAT: tl.constexpr, A_FORMAT: tl.constexpr):
+    """Both gate projections of value head `row` (a scalar) in one pass.
+
+    IQ4_XS rows walk the same groups in the same order as
+    _flagmega_amd_gdn_native_row, so each result is bitwise identical; the two
+    rows' group loads are issued together instead of one row after the other.
+    """
+    if B_FORMAT == "IQ4_XS" and A_FORMAT == "IQ4_XS":
+        GROUPS: tl.constexpr = K // 32
+        G: tl.constexpr = 128
+        row_bytes = row.to(tl.int64) * ((K // 256) * 136)
+        source_pairs = source.to(tl.pointer_type(tl.uint32))
+        b_accumulator = tl.zeros((G, ), tl.float32)
+        a_accumulator = tl.zeros((G, ), tl.float32)
+        for group0 in tl.static_range(0, GROUPS, G):
+            group = group0 + tl.arange(0, G)
+            b_accumulator += _flagmega_amd_iq4_xs_step(
+                source_pairs, b_weight, row_bytes, group, GROUPS % G != 0, GROUPS)
+            a_accumulator += _flagmega_amd_iq4_xs_step(
+                source_pairs, a_weight, row_bytes, group, GROUPS % G != 0, GROUPS)
+        b_value = tl.sum(b_accumulator, axis=0)
+        a_value = tl.sum(a_accumulator, axis=0)
+    else:
+        b_value = _flagmega_amd_gdn_native_row(source, b_weight, row, K, B_FORMAT)
+        a_value = _flagmega_amd_gdn_native_row(source, a_weight, row, K, A_FORMAT)
+    return b_value.to(tl.bfloat16).to(tl.float32), a_value.to(tl.bfloat16).to(tl.float32)
+
+@triton.jit
+def _flagmega_amd_gdn_norm_columns(
+    z, destination, norm_weight, core_scratch,
+    source_offsets, result_offsets, global_values, active,
+    VALUE_DIM: tl.constexpr, EPS: tl.constexpr, ACCURATE_SILU: tl.constexpr = False,
+):
+    """The generic norm tile with [V, 1] value columns."""
+    head_offsets = tl.arange(0, triton.next_power_of_2(VALUE_DIM))[None, :]
+    head_core = tl.load(core_scratch + (global_values // VALUE_DIM) * VALUE_DIM + head_offsets,
+                        mask=active & (head_offsets < VALUE_DIM), other=0.0).to(tl.float32)
+    inverse_rms = tl.rsqrt(tl.sum(head_core * head_core, axis=1, keep_dims=True) / VALUE_DIM + EPS)
+    core = tl.load(core_scratch + global_values, mask=active, other=0.0)
+    norm = tl.load(norm_weight + global_values % VALUE_DIM, mask=active, other=0.0).to(tl.float32)
+    gate = tl.load(z + source_offsets, mask=active, other=0.0).to(tl.float32)
+    if ACCURATE_SILU:
+        activated = gate / (1.0 + libdevice.exp(-gate))
+    else:
+        activated = _flagmega_silu(gate)
+    result = core * inverse_rms * norm * activated
+    tl.store(destination + result_offsets, result.to(tl.bfloat16), mask=active)
+
+@triton.jit
+def _flagmega_amd_gdn_key_lanes(TILE_K: tl.constexpr):
+    # Same values as arange, but only 4-contiguous: q/k (bf16) and the state
+    # (fp32) then get one [1, 4] layout, so no tile is re-laid through LDS.
+    key_offsets = tl.arange(0, TILE_K)
+    return ((key_offsets // 4) * 4 + key_offsets % 4)[None, :]
+
+@triton.jit
+def _flagmega_amd_gdn_head_qk_columns(
+    qkv, global_values, active,
+    KEY_HEADS: tl.constexpr, KEY_DIM: tl.constexpr, VALUE_DIM: tl.constexpr, REPEATS: tl.constexpr,
+    TILE_K: tl.constexpr, QK_NORM_ADD: tl.constexpr, QK_NORM_EPS: tl.constexpr,
+    ROUND_NORMALIZED_QK: tl.constexpr, TILED_VALUE_HEADS: tl.constexpr,
+):
+    """Normalized key and scaled query rows of a [V, 1] column tile.
+
+    Every row of a uniform tile names the same head, so the rows are equal;
+    each is computed exactly as the generic core tile computes it.
+    """
+    KEY_TOTAL: tl.constexpr = KEY_HEADS * KEY_DIM
+    key_offsets = _flagmega_amd_gdn_key_lanes(TILE_K)
+    mask = active & (key_offsets < KEY_DIM)
+    value_head = global_values // VALUE_DIM
+    if TILED_VALUE_HEADS:
+        key_head = value_head % KEY_HEADS
+    else:
+        key_head = value_head // REPEATS
+    query_raw = tl.load(qkv + key_head * KEY_DIM + key_offsets, mask=mask, other=0.0).to(tl.float32)
+    key_raw = tl.load(qkv + KEY_TOTAL + key_head * KEY_DIM + key_offsets, mask=mask, other=0.0).to(tl.float32)
+    if QK_NORM_ADD:
+        query_norm = tl.sqrt(tl.sum(query_raw * query_raw, axis=1, keep_dims=True) + QK_NORM_EPS)
+        key_norm = tl.sqrt(tl.sum(key_raw * key_raw, axis=1, keep_dims=True) + QK_NORM_EPS)
+    else:
+        query_norm = tl.maximum(tl.sqrt(tl.sum(query_raw * query_raw, axis=1, keep_dims=True)), QK_NORM_EPS)
+        key_norm = tl.maximum(tl.sqrt(tl.sum(key_raw * key_raw, axis=1, keep_dims=True)), QK_NORM_EPS)
+    normalized_key = key_raw / key_norm
+    normalized_query = query_raw / query_norm
+    if ROUND_NORMALIZED_QK:
+        normalized_key = normalized_key.to(tl.bfloat16).to(tl.float32)
+        normalized_query = normalized_query.to(tl.bfloat16).to(tl.float32)
+    normalized_query *= 1.0 / (KEY_DIM ** 0.5)
+    return normalized_key, normalized_query
+
+@triton.jit
+def _flagmega_amd_gdn_core_hoisted(
+    qkv, beta, decay, recurrent_state, core_scratch, global_values, active,
+    normalized_key, normalized_query,
+    KEY_HEADS: tl.constexpr, KEY_DIM: tl.constexpr, TILE_K: tl.constexpr, ROUND_CORE: tl.constexpr,
+):
+    """The generic core update of a [V, 1] column tile with per-head q/k rows."""
+    KEY_TOTAL: tl.constexpr = KEY_HEADS * KEY_DIM
+    key_offsets = _flagmega_amd_gdn_key_lanes(TILE_K)
+    mask = active & (key_offsets < KEY_DIM)
+    state_offsets = global_values.to(tl.int64) * KEY_DIM + key_offsets
+    old_state = tl.load(recurrent_state + state_offsets, mask=mask, other=0.0).to(tl.float32)
+    recalled = tl.sum(old_state * decay * normalized_key, axis=1, keep_dims=True)
+    target = tl.load(qkv + 2 * KEY_TOTAL + global_values, mask=active, other=0.0).to(tl.float32)
+    delta = (target - recalled) * beta
+    new_state = old_state * decay + normalized_key * delta
+    core = tl.sum(new_state * normalized_query, axis=1, keep_dims=True)
+    if ROUND_CORE:
+        core = core.to(tl.bfloat16).to(tl.float32)
+    tl.store(core_scratch + global_values, core, mask=active)
+    tl.store(recurrent_state + state_offsets, new_state, mask=mask{% if gdn_amd_state_cache_modifier is defined %}, cache_modifier="{{ gdn_amd_state_cache_modifier }}"{% endif %})

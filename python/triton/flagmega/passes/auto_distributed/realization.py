@@ -179,6 +179,34 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
         )
 
 
+class SameChipParameterViewReshardRealizationPolicy(PyNttDistributedReshardRealizationPolicy):
+    """PyNTT realization that also views a function parameter within one chip.
+
+    A distributed function parameter is bound to canonical-global storage, so
+    a same-chip reshard of it at an internal use can read the parameter's
+    bytes in place instead of first copying them into a Boxing result. The
+    byte-range hazard planner sees the remote-owner reads at each call site
+    and keeps the caller's barrier between the producer and the call.
+    """
+
+    def _classify_realization(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> DistributedReshardRealization:
+        realization = super()._classify_realization(context)
+        if (
+            realization is DistributedReshardRealization.BOXING
+            and context.source_kind is DistributedReshardSourceKind.FUNCTION_PARAMETER
+            and context.usage_kind is DistributedReshardUsageKind.INTERNAL
+            and isinstance(context.source_type, DistributedType)
+            and isinstance(context.target_type, DistributedType)
+            and sharded_view_error(context.source_type, context.target_type) is None
+            and _can_materialize_canonical_chip_view(context.source_type, context.target_type)
+        ):
+            return DistributedReshardRealization.SHARDED_VIEW
+        return realization
+
+
 def reads_unaddressable_peer_instance(
     context: DistributedReshardRealizationContext,
 ) -> bool:
@@ -245,4 +273,5 @@ __all__ = [
     "DistributedReshardUsageKind",
     "NttDistributedReshardRealizationPolicy",
     "PyNttDistributedReshardRealizationPolicy",
+    "SameChipParameterViewReshardRealizationPolicy",
 ]

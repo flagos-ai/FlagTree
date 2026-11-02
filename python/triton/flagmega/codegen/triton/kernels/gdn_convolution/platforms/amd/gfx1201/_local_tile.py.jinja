@@ -1,0 +1,77 @@
+@triton.jit
+def _flagmega_amd_gdn_convolution_accumulate(accumulator, value, coefficient, ROUND_PRODUCTS: tl.constexpr):
+    if ROUND_PRODUCTS:
+        accumulator += (value * coefficient).to(tl.bfloat16).to(tl.float32)
+    else:
+        accumulator = tl.fma(value, coefficient, accumulator)
+    return accumulator
+
+@triton.jit
+def _flagmega_gdn_convolution_local_tile(
+    qkv, destination, conv_state, conv_weight,
+    source_offsets, result_offsets, weight_offsets, global_channels, active,
+    HISTORY: tl.constexpr, WEIGHT_KERNEL_STRIDE: tl.constexpr,
+    ROUND_PRODUCTS: tl.constexpr, ROUND_BEFORE_ACTIVATION: tl.constexpr,
+    CURRENT_FIRST: tl.constexpr,
+):
+    """The generic convolution tile with every history slot loaded before the state shift."""
+    tl.static_assert(1 <= HISTORY and HISTORY <= 4)
+    state_base = (global_channels // 8) * HISTORY * 8 + global_channels % 8
+    current = tl.load(qkv + source_offsets, mask=active, other=0.0).to(tl.float32)
+    current_coefficient = tl.load(
+        conv_weight + weight_offsets + HISTORY * WEIGHT_KERNEL_STRIDE, mask=active, other=0.0,
+    ).to(tl.float32)
+    history_0 = tl.load(conv_state + state_base, mask=active, other=0.0)
+    coefficient_0 = tl.load(conv_weight + weight_offsets, mask=active, other=0.0).to(tl.float32)
+    history_1 = history_0
+    history_2 = history_0
+    history_3 = history_0
+    coefficient_1 = coefficient_0
+    coefficient_2 = coefficient_0
+    coefficient_3 = coefficient_0
+    if HISTORY > 1:
+        history_1 = tl.load(conv_state + state_base + 8, mask=active, other=0.0)
+        coefficient_1 = tl.load(conv_weight + weight_offsets + WEIGHT_KERNEL_STRIDE, mask=active,
+                                other=0.0).to(tl.float32)
+    if HISTORY > 2:
+        history_2 = tl.load(conv_state + state_base + 16, mask=active, other=0.0)
+        coefficient_2 = tl.load(conv_weight + weight_offsets + 2 * WEIGHT_KERNEL_STRIDE, mask=active,
+                                other=0.0).to(tl.float32)
+    if HISTORY > 3:
+        history_3 = tl.load(conv_state + state_base + 24, mask=active, other=0.0)
+        coefficient_3 = tl.load(conv_weight + weight_offsets + 3 * WEIGHT_KERNEL_STRIDE, mask=active,
+                                other=0.0).to(tl.float32)
+    accumulator = tl.full(current.shape, 0.0, tl.float32)
+    if CURRENT_FIRST:
+        if ROUND_PRODUCTS:
+            accumulator = (current * current_coefficient).to(tl.bfloat16).to(tl.float32)
+        else:
+            accumulator = current * current_coefficient
+    accumulator = _flagmega_amd_gdn_convolution_accumulate(
+        accumulator, history_0.to(tl.float32), coefficient_0, ROUND_PRODUCTS)
+    if HISTORY > 1:
+        accumulator = _flagmega_amd_gdn_convolution_accumulate(
+            accumulator, history_1.to(tl.float32), coefficient_1, ROUND_PRODUCTS)
+        tl.store(conv_state + state_base, history_1, mask=active)
+    if HISTORY > 2:
+        accumulator = _flagmega_amd_gdn_convolution_accumulate(
+            accumulator, history_2.to(tl.float32), coefficient_2, ROUND_PRODUCTS)
+        tl.store(conv_state + state_base + 8, history_2, mask=active)
+    if HISTORY > 3:
+        accumulator = _flagmega_amd_gdn_convolution_accumulate(
+            accumulator, history_3.to(tl.float32), coefficient_3, ROUND_PRODUCTS)
+        tl.store(conv_state + state_base + 16, history_3, mask=active)
+    tl.store(conv_state + state_base + (HISTORY - 1) * 8, current.to(tl.bfloat16), mask=active)
+    if not CURRENT_FIRST:
+        if ROUND_PRODUCTS:
+            accumulator += (current * current_coefficient).to(tl.bfloat16).to(tl.float32)
+        else:
+            accumulator = tl.fma(current, current_coefficient, accumulator)
+    if ROUND_BEFORE_ACTIVATION:
+        accumulator = accumulator.to(tl.bfloat16).to(tl.float32)
+    tl.store(
+        destination + result_offsets,
+        _flagmega_silu(accumulator).to(tl.bfloat16),
+        mask=active,
+    )
+

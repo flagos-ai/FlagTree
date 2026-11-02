@@ -1,0 +1,6 @@
+{#- AMD RDNA4 (gfx1201): the GDN convolution tile loads every history slot
+    before it shifts the state, so the loads are not ordered behind the
+    shifted stores; the arithmetic order is the generic one. gfx1100 keeps the
+    generic tile (a 3-process W7900 determinism check with it diverged). #}
+{% set gdn_convolution_local_tile = "kernels/gdn_convolution/platforms/amd/gfx1201/_local_tile.py.jinja" %}
+{% include "kernels/gdn_convolution/persistent.py.jinja" %}

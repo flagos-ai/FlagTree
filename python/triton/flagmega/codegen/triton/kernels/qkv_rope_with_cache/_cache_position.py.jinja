@@ -1,4 +1,5 @@
-{% macro position(call, token, mask, indent) %}
+{#- `alias` also binds the position under the per-head names the renderer's cache_offset reads. #}
+{% macro position(call, token, mask, indent, alias=none) %}
 {{ indent }}qkv_cache_token_position = qkv_cache_position + ({{ token }})
 {{ indent }}qkv_cache_logical_block = qkv_cache_token_position // {{ call.block_size }}
 {{ indent }}qkv_cache_block_offset = qkv_cache_token_position % {{ call.block_size }}
@@ -6,4 +7,8 @@
 {{ indent }}    {{ call.block_table }} + qkv_cache_logical_block + tl.zeros_like({{ mask }}).to(tl.int64),
 {{ indent }}    mask={{ mask }}, other=0,
 {{ indent }}).to(tl.int64)
+{% if alias %}
+{{ indent }}{{ alias }}_cache_physical_block = qkv_cache_physical_block
+{{ indent }}{{ alias }}_cache_block_offset = qkv_cache_block_offset
+{% endif %}
 {% endmacro %}

@@ -305,6 +305,12 @@ class CompositeModelState:
 class GeneratedTirCallGraphModule(RuntimeModule):
     """Model-neutral runtime for the flattened bufferized-TIR entry ABI."""
 
+    # No template counter slots unless __init__ reads them from the artifact,
+    # so runtimes assembled without __init__ stay slot-free.
+    _counter_slots = 0
+    _counter_argument_names = ()
+    _counter_values = None
+
     def __init__(self, artifact: Path, manifest: dict[str, object], ir_module, kernel) -> None:
         super().__init__()
         self.artifact = artifact
@@ -390,18 +396,29 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         ) if self._needs_device_dptr else ()
         if set(descriptor_names).intersection(("device_dptr", *self._context_argument_names)):
             raise ArtifactError("Host tensor descriptor name conflicts with a device context argument.")
+        # Template-requested int64 counters: one runtime-owned allocation,
+        # zeroed at every prepare and never reused for other data.
+        self._counter_slots = int(self.codegen.get("counter_slots", 0) or 0)
+        counter_argument = self.codegen.get("counter_slot_argument")
+        if self._counter_slots < 0 or bool(self._counter_slots) != bool(counter_argument):
+            raise ArtifactError("Invalid template counter-slot ABI.")
+        self._counter_argument_names = (str(counter_argument),) if self._counter_slots else ()
+        self._counter_values = None
         self._function_offset_specs = validate_function_offset_tables(
             self.codegen.get("function_offset_tables", ()),
-            existing_names=(*expected, "device_dptr", *self._context_argument_names, *descriptor_names),
+            existing_names=(*expected, "device_dptr", *self._context_argument_names,
+                            *self._counter_argument_names, *descriptor_names),
         )
         for entry_kernel in self.kernels:
             verify_function_offset_source(
                 entry_kernel, self._function_offset_specs,
-                existing_names=(*expected, "device_dptr", *self._context_argument_names, *descriptor_names),
+                existing_names=(*expected, "device_dptr", *self._context_argument_names,
+                                *self._counter_argument_names, *descriptor_names),
             )
         expected_codegen_signature = (
             *expected,
             *self._context_argument_names,
+            *self._counter_argument_names,
             *descriptor_names,
             *(spec["name"] for spec in self._function_offset_specs),
         )
@@ -416,7 +433,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                 "host tensor descriptors and function offset tables."
             )
         external_names = {str(value["name"]) for value in arguments}
-        descriptor_base = len(expected) + len(self._context_argument_names)
+        descriptor_base = len(expected) + len(self._context_argument_names) + len(self._counter_argument_names)
         self._dynamic_descriptor_indices = tuple(
             index
             for index, spec in enumerate(self._descriptor_specs)
@@ -524,6 +541,10 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                 "this artifact does not allocate."
             )
         self._pool_values = pools
+        self._counter_values = (
+            torch.zeros((self._counter_slots,), dtype=torch.int64, device=device)
+            if self._counter_slots else None
+        )
         self._mark_loaded(device)
         return self
 
@@ -701,6 +722,10 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                     # process-local handle addresses remain runtime data.
                     context_arguments = (*context_arguments, bool(self._device_dptr.is_lite_mode))
             arguments = (*arguments, *context_arguments)
+        if self._counter_values is not None:
+            # The kernel's counter contract starts from zero at each prepare.
+            self._counter_values.zero_()
+            arguments = (*arguments, self._counter_values)
         arguments = (*arguments, *descriptors, *self._function_offset_values)
         specs = self._kernel_launch_specs()
         target = self.manifest.get("target", "")
@@ -893,6 +918,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self._prepared = None
         self._program_dag = None
         self._pool_values = {}
+        self._counter_values = None
         self._tensor_descriptors.clear()
         self._function_offset_values = ()
         self._device_dptr = None

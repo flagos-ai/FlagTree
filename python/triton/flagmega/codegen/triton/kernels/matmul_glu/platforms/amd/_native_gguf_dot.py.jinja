@@ -1,0 +1,9 @@
+{% include "kernels/block_fp8/platforms/amd/_native_gguf.py.jinja" %}
+@triton.jit
+def _flagmega_iq4_xs_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    return _flagmega_amd_native_rows(source, weight, row_offsets, n_mask, K, "IQ4_XS", {{ tn }})
+
+@triton.jit
+def _flagmega_q4_k_dot(source, weight, row_offsets, n_mask, K: tl.constexpr):
+    return _flagmega_amd_native_rows(source, weight, row_offsets, n_mask, K, "Q4_K", {{ tn }})
+

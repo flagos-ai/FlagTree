@@ -1,0 +1,7 @@
+{#- AMD RDNA: native IQ4_XS/Q4_K GEMVs use the layout-aware helpers in
+    _native_gguf.py.jinja (v_perm_b32 codebook lookup, wide group loads,
+    per-group scales, one reduction per tile) instead of the generic
+    per-element dequant; every other block-FP8 path is the generic one. #}
+{% set block_fp8_simt_platform = "amd" %}
+{% set block_fp8_native_gguf_helpers = "kernels/block_fp8/platforms/amd/_native_gguf_linear.py.jinja" %}
+{% include "kernels/block_fp8/simt.py.jinja" %}

@@ -3,5 +3,5 @@
 {% include "kernels/gdn_recurrent/_helpers.py.jinja" %}
 {% endif %}
 {% if render_calls is defined %}
-{% include "kernels/gdn_recurrent/_function.py.jinja" %}
+{% include gdn_function_template | default("kernels/gdn_recurrent/_function.py.jinja") %}
 {% endif %}

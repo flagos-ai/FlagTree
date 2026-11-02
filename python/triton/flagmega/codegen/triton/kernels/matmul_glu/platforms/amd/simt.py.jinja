@@ -1,0 +1,6 @@
+{#- AMD RDNA: native IQ4_XS/Q4_K gate/up dots use the layout-aware helpers in
+    block_fp8/platforms/amd/_native_gguf.py.jinja; every other GLU path is
+    the generic one. #}
+{% set matmul_glu_simt_platform = "amd" %}
+{% set matmul_glu_native_gguf_helpers = "kernels/matmul_glu/platforms/amd/_native_gguf_dot.py.jinja" %}
+{% include "kernels/matmul_glu/simt.py.jinja" %}

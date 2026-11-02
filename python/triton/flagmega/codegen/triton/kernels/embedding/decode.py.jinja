@@ -1,4 +1,7 @@
-# flagmega-kernel: embedding/decode
+# flagmega-kernel: embedding/decode{{ (" platform=" ~ embedding_platform) if embedding_platform is defined else "" }}
+{% if embedding_native_gguf_helpers is defined %}
+{% include embedding_native_gguf_helpers %}
+{% else %}
 @triton.jit
 def _flagmega_iq4_xs_embedding(weight, token_id, feature, mask, H: tl.constexpr):
     u8 = weight.to(tl.pointer_type(tl.uint8))
@@ -18,6 +21,7 @@ def _flagmega_iq4_xs_embedding(weight, token_id, feature, mask, H: tl.constexpr)
     cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
     return (d * (sc.to(tl.float32) - 32.0) * cv).to(tl.bfloat16)
 
+{% endif %}
 @triton.jit
 def _flagmega_q4_k_embedding(weight, token_id, feature, mask, H: tl.constexpr):
     u8 = weight.to(tl.pointer_type(tl.uint8))

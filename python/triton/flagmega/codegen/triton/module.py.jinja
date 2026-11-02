@@ -44,6 +44,9 @@ def _flagmega_silu(value):
 {% if amd_prefetch | default(false) %}
 {% include "entrypoints/_amd_prefetch.py.jinja" %}
 {% endif %}
+{% if amd_uniform_parameters | default(false) %}
+{% include "entrypoints/_amd_uniform_parameters.py.jinja" %}
+{% endif %}
 
 
 {% for kernel_template in kernel_templates %}

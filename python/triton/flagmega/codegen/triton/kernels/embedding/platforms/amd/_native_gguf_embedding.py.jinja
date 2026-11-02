@@ -1,0 +1,23 @@
+{#- AMD RDNA: the IQ4_XS embedding row maps its codebook with the v_perm_b32
+    table lookup of the native GEMV instead of a tl.where chain. The codebook
+    values are exact integers, so the result is bitwise the generic one. #}
+{% include "kernels/block_fp8/platforms/amd/_native_gguf.py.jinja" %}
+@triton.jit
+def _flagmega_iq4_xs_embedding(weight, token_id, feature, mask, H: tl.constexpr):
+    u8 = weight.to(tl.pointer_type(tl.uint8))
+    f16 = weight.to(tl.pointer_type(tl.float16))
+    u16 = weight.to(tl.pointer_type(tl.uint16))
+    block = feature // 256
+    inside = feature % 256
+    group = inside // 32
+    lane = inside % 32
+    base = token_id * (H // 256) * 136 + block * 136
+    sl = tl.load(u8 + base + 4 + group // 2, mask=mask, other=0)
+    sh = tl.load(u16 + (base + 2) // 2, mask=mask, other=0)
+    sc = ((sl >> ((group % 2) * 4)) & 0xF) | (((sh >> (group * 2)) & 0x3) * 16)
+    d = tl.load(f16 + base // 2, mask=mask, other=0.0).to(tl.float32)
+    packed = tl.load(u8 + base + 8 + group * 16 + lane % 16, mask=mask, other=0)
+    code = tl.where(lane // 16 == 0, packed & 0xF, packed >> 4).to(tl.uint32)
+    cv = _flagmega_amd_signed_byte(_flagmega_amd_iq4_nl_lookup(code), 0)
+    return (d * (sc.to(tl.float32) - 32.0) * cv).to(tl.bfloat16)
+

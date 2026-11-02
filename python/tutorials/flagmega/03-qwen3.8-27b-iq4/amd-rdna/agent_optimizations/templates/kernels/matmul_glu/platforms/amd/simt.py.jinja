@@ -1,0 +1,9 @@
+{#- RDNA native IQ4_XS gate/up with q8_1 activations (agent_optimizations):
+    the shared activation is quantized once per CTA for both dots. #}
+{% set matmul_glu_simt_platform = "amd" %}
+{% set matmul_glu_native_gguf_helpers = "kernels/matmul_glu/platforms/amd/_native_gguf_q8_dot.py.jinja" %}
+{% set native_gguf_activation_prologue = "kernels/_amd_q8_prologue.py.jinja" %}
+{% set native_gguf_activation_arguments = "q8_words, q8_scales, q8_tail_words, q8_tail_scales, q8_main_groups" %}
+{% include "kernels/matmul_glu/simt.py.jinja" %}
+{% include "kernels/block_fp8/platforms/amd/_native_gguf.py.jinja" %}
+{% include "kernels/_amd_q8.py.jinja" %}

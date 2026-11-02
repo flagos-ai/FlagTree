@@ -1,4 +1,7 @@
-# flagmega-kernel: gdn_recurrent/persistent
+# flagmega-kernel: gdn_recurrent/persistent{{ (" platform=" ~ gdn_recurrent_platform) if gdn_recurrent_platform is defined else "" }}
+{% if gdn_native_dense_rows is defined %}
+{% include gdn_native_dense_rows %}
+{% endif %}
 @triton.jit
 def _flagmega_dense_rows(
     source, weight, rows, active,
@@ -19,6 +22,11 @@ def _flagmega_dense_rows(
         rows = tl.where(active, rows, 0)
     REDUCE_AXIS: tl.constexpr = len(rows.shape)
     if FORMAT == "IQ4_XS" or FORMAT == "Q4_K":
+{% if gdn_native_dense_rows is defined %}
+        if REDUCE_AXIS == 0:
+            row_value = _flagmega_amd_gdn_native_row(source, weight, rows, K, FORMAT)
+            return tl.where(lane_active, row_value.to(tl.bfloat16).to(tl.float32), 0.0)
+{% endif %}
         weight_u8 = weight.to(tl.pointer_type(tl.uint8))
         weight_f16 = weight.to(tl.pointer_type(tl.float16))
         if FORMAT == "IQ4_XS":

@@ -120,7 +120,10 @@ class PyNttTarget(NttTarget):
                 distribution_policy or NttDistributionPolicy(
                     options.placements,
                     split_candidate_provider,
-                    PyNttDistributedReshardRealizationPolicy(),
+                    realization_policy_factory()
+                    if (realization_policy_factory := getattr(
+                        machine, "distributed_reshard_realization_policy", None)) is not None
+                    else PyNttDistributedReshardRealizationPolicy(),
                 )
             ),
             reshard_cost_model=machine.distributed_reshard_cost_model(),
@@ -155,6 +158,23 @@ class PyNttTarget(NttTarget):
             target_options=self.options,
             implementation_model=self.triton_implementation_model,
         )
+
+    def propose_vectorization(self, module):
+        """Apply the machine's graph rewrite, if any, before vectorization."""
+
+        rewrite = getattr(self.machine, "pre_vectorization_rewrite", None)
+        return super().propose_vectorization(module if rewrite is None else rewrite(module))
+
+    def paged_attention_split_plan(self, module):
+        """The split axis for paged-attention partials; a machine may override."""
+
+        placements = self.distributed_placements(module)
+        override = getattr(self.machine, "paged_attention_split_plan", None)
+        if override is not None:
+            plan = override(module, placements)
+            if plan is not None:
+                return plan
+        return paged_attention_split_plan(placements)
 
     def register_post_auto_packing_passes(self, registry) -> None:
         super().register_post_auto_packing_passes(registry)
