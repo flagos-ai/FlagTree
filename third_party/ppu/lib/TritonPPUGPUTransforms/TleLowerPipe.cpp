@@ -80,7 +80,8 @@ constexpr int64_t kFirstVirtualNamedBarrierId = 16;
 constexpr int64_t kNumHardwareBarriers = 16;
 // Ids the warp specialization lowering reserves: the default group's barrier,
 // the switch loop, and one per partition.
-constexpr int64_t kNumWarpSpecializeReservedBarriers = 2;
+constexpr int64_t kNumWarpSpecializeReservedBarriers =
+    tle::kTleWarpSpecializeReservedNamedBarriers;
 
 // The threads that execute an op: a ttg.warp_specialize worker partition, or
 // the default warps (the default region and everything outside the op).
@@ -1024,7 +1025,7 @@ private:
                // The queue crosses structured joins through scalar registers
                // rather than async tokens. updateWaits cannot reconstruct its
                // distance.
-               wait->setAttr("ppugpu.pipe_wait", nested.getUnitAttr());
+               wait->setAttr(tle::kTlePipeWaitAttr, nested.getUnitAttr());
              });
   }
 
@@ -1248,7 +1249,7 @@ private:
       auto wait =
           ttg::AsyncWaitOp::create(builder, loc, tokenType, ValueRange{group},
                                    builder.getI32IntegerAttr(0));
-      wait->setAttr("ppugpu.pipe_wait", builder.getUnitAttr());
+      wait->setAttr(tle::kTlePipeWaitAttr, builder.getUnitAttr());
     }
   }
 

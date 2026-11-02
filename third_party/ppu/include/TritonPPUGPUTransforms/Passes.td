@@ -71,9 +71,35 @@ def TritonPPUTleLowerPipe : Pass<"tritonppu-tle-lower-pipe", "mlir::ModuleOp"> {
     Lowers tle.pipe.* lifecycle ops to ttng named barrier ops that the PPU
     backend maps to hardware barriers: per stage, one full barrier for each
     reader group and one empty barrier. Pipes that do not fit the 16 hardware
-    barriers use counters in shared memory instead. cp.async copy groups are
-    drained before a stage is published. Must run after the TLE barrier
-    lowering and before the software pipeliner.
+    barriers use counters in shared memory instead. Must run after the TLE
+    barrier lowering and before the software pipeliner.
+
+    Supported forms, rejected before rewriting:
+
+    - CTA-scoped pipes with one writer warp group and one reader per group,
+      named or default; pipes that only order accesses inside one group lower
+      to group barriers and need no hand-over.
+    - A pipe handing over between warp groups is created, and its
+      warp_specialize runs, once per kernel: the hardware barriers keep their
+      state across executions, so neither may sit inside a loop (a persistent
+      kernel loops inside the partitions).
+    - Capacity 1 and above; close, or one_shot without close, as on NVIDIA.
+      A writer that runs its pipe twice without an intervening reader drains
+      is a hang, not diagnosed. The phase of the lifecycle ops continues
+      across the loops of a kernel, as on NVIDIA: the hardware barriers do not
+      read it, the shared-memory counters do.
+    - cp.async payloads published through pipe.writer.commit; a stage is
+      published only after its copies completed.
+
+    Performance, not correctness: a single mixed pipe (capacity 2-4, with a
+    reader in the writer's group, no close or one_shot, structured control
+    flow, no AIU, inline assembly or calls in the writer region) keeps its
+    pending copy groups in registers and completes a group when its local
+    reader reaches the slot. The FIFO schedule replaces that queue when the
+    writer region is exactly a prefetch loop of min(n, depth) followed by a
+    consume loop that waits, releases and refills under `position + depth < n`.
+    Every other shape completes the copies at the commit. Each fallback emits
+    a remark naming the reason; see MLIR_ENABLE_DIAGNOSTICS=remarks.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",

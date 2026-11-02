@@ -65,17 +65,12 @@ static bool willIncreaseRegisterPressure(Operation *op) {
   return false;
 }
 
-#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
-constexpr bool kUnknownEffectsAreWrites = true;
-#else  // __FLAGTREE_KEEP_SMEM_READ_ORDER__
-constexpr bool kUnknownEffectsAreWrites = false;
-#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
-
 // Return true if it has side effects that are either unknown or writes.
-static bool hasWriteSideEffect(Operation *op) {
+static bool hasWriteSideEffect(Operation *op,
+                               bool unknownEffectsAreWrites = false) {
   auto effects = getEffectsRecursively(op);
   if (!effects)
-    return kUnknownEffectsAreWrites;
+    return unknownEffectsAreWrites;
   return llvm::any_of(*effects, [](MemoryEffects::EffectInstance effect) {
     return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
                 MemoryEffects::Free>(effect.getEffect());
@@ -84,14 +79,15 @@ static bool hasWriteSideEffect(Operation *op) {
 
 // Return true if there is a write side effect on any path between start and end
 // ops. This assumes start dominates end.
-static bool crossWriteSideEffectingOp(Operation *start, Operation *end) {
+static bool crossWriteSideEffectingOp(Operation *start, Operation *end,
+                                      bool unknownEffectsAreWrites = false) {
   auto ancestor = start->getBlock()->findAncestorOpInBlock(*end);
   // Couldn't find an ancestor in the same block, conservatively assume true.
   if (!ancestor)
     return true;
   Operation *nextOp = start->getNextNode();
   while (nextOp) {
-    if ((hasWriteSideEffect(nextOp)))
+    if (hasWriteSideEffect(nextOp, unknownEffectsAreWrites))
       return true;
     if (nextOp == ancestor)
       return false;
@@ -155,11 +151,13 @@ public:
         return;
 #ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
       // A load of mutable shared memory must not move past a write that may
-      // change what it reads (e.g. a buffer refilled inside the loop).
+      // change what it reads (e.g. a buffer refilled inside the loop). An op
+      // whose effects are unknown may write, so it counts here only.
       if (keepSmemReadOrder)
         if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op))
           if (load.getSrc().getType().getMutableMemory() &&
-              crossWriteSideEffectingOp(op, *user_begin))
+              crossWriteSideEffectingOp(op, *user_begin,
+                                        /*unknownEffectsAreWrites=*/true))
             return;
 #endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
       opToMove.insert({op, *user_begin});
