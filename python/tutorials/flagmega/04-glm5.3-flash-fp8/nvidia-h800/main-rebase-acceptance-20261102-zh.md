@@ -33,6 +33,8 @@
 | 1024 | 6.687358 | 6.426791 | 4.05% |
 | 2048 | 6.907239 | 6.463474 | 6.87% |
 
+与 rebase 前已通过门槛的 N8/join4 历史轮次相比，v7 的 Flag TPOT 在 32/128/1024 分别变化 -0.104%/+0.007%/+0.025%，2048 增加 0.741%；同轮 Native 四上下文则减少约 6.17%–6.86%。这是跨轮变化的描述，尚未定位 Native 变化的原因；不能把旧轮更慢的 Native 基线用于本轮门槛，也不能将全部胜负变化归因于 rebase。
+
 这是四个 Flag leg 和四个 Native leg 各上下文所有 40 个正式请求的中位数，不能覆盖更严格的逐段门槛；四种上下文的逐段门槛全部失败。2048 完整请求中位数约 13.635 s，vLLM 约 0.520 s；TPOT 排除了 prefill 与首个输出 token，完整请求优势尚未达到。CUDA Graph 和双流启用，原 GPU1–4 独占、实际 1980 MHz、无热降频。正式对照真实用时 2501.94 s。
 
 ## 异步填充契约的根因修复
@@ -45,8 +47,35 @@ NVIDIA LoadStoreOpToLLVM.cpp::AsyncCopyGlobalToLocalOpConversion::matchAndRewrit
 
 最小复现与回归：third_party/tle/test/GPU/local-pointer-async-copy-fill.mlir 使用 triton-opt --triton-tle-optimize-local-pointer-async-stores | FileCheck；python/test/tle/unit/test_async_copy_fill_bits.py 使用 pytest -q，覆盖 FP16/BF16/FP32/FP64 的 ±0/1/-inf，8/16/32/64 位整数的逐元素运行时填充，以及混合、全开、全关 mask。中间独立 Core（v15）44 项填充 GPU 回归通过，同时断言有效位置仍有 cp.async；包含原有 pipe/TMA、FP8 N8、scan 的扩展套件 109 项 GPU 全部通过，CPU 130 passed / 51 skipped。整模 Source、全部调度和计时循环不变。进一步检查发现，将非零填充直接放在 opaque PTX 的谓词之后，会保留 LLVM 范围分析已经证明永远不执行的 shared store。原实现使专家 program_012/018 各增加约 20 行 PTX 和 4 个谓词寄存器；最小全真 mask 回归四项失败，包含只有 LLVM 才能证明全真的表达式后共八项失败。最终将填充置于 LLVM 条件分支，使无效分支可被优化删除；转换后的 LLVM 标量位模式负责区分零字节与负零，并识别全真常量 mask。v18 的 48 项回归全部通过，涵盖 ±0/1/-inf、运行时逐元素整数填充、空/全/混合 mask 与后端才能证明全真的 mask，同时保持异步复制。
 
-最终 Core 为正常 CMake 构建的独立 v18；公开和历史 Core 未改变。正常候选生成及 fresh 原始输入重建分别实际用时 128.44/140.21 秒，fresh semantic hash 仍为 b0d11885153361af9c38246b9be979a65c0a21e5456a4686784f05a919779f97，输出未采用作性能候选。后续仅修改 NVIDIA 低层 copy lowering，1293 个生成相关 Python 源文件逐一核对不变，因此保留既有正常生成产物，通过正常缓存接口用当前 Core 重新预编译全部 program；没有复制 Core、cubin 或 checkpoint payload。最终 v18 的扩展 GPU 套件 113 项全部通过，48 项填充回归和 158 项 TLE MLIR 全部通过；正常冷预编译实际 95.14 秒，26 program、228 调用全部零 spill。最终四卡 Gold 与正式性能对照待完成：原 GPU1–3 被外部任务占用，按用户此前选择等待原卡释放，独占检查通过后自动继续；未修改外部任务或变更比较卡组。
+最终 Core 为正常 CMake 构建的独立 v18；公开和历史 Core 未改变。正常候选生成及 fresh 原始输入重建分别实际用时 128.44/140.21 秒，fresh semantic hash 仍为 b0d11885153361af9c38246b9be979a65c0a21e5456a4686784f05a919779f97，输出未采用作性能候选。后续仅修改 NVIDIA 低层 copy lowering，1293 个生成相关 Python 源文件逐一核对不变，因此保留既有正常生成产物，通过正常缓存接口用当前 Core 重新预编译全部 program；没有复制 Core、cubin 或 checkpoint payload。最终 v18 的扩展 GPU 套件 113 项全部通过，48 项填充回归和 158 项 TLE MLIR 全部通过；正常冷预编译实际 95.14 秒，26 program、228 调用全部零 spill。原卡组释放后，最终 v18 完整四卡 Gold 已通过，真实顶层 OS wait/退出码为 0，实际 523.29 秒；独立审计退出 0，2.92 秒。四 rank 各 100 请求、每 rank 792 次后续状态比较、rank0 的 1216 次 decode Gold 与 4864 次 ctx32 prefill Gold 比较均通过；811 个请求窗口样本均确认原 GPU1–4 独占、实际 1980 MHz、无热降频。26 GPU key 与 CPU key 一致，228 调用全部零 spill，双 stream/CUDA Graph 保持。八段正式对照及独立审计均已完成，数值和硬件条件通过、性能失败，具体结果见下节；未将 Gold 的单请求诊断时间计作性能通过。完整 Gold 摘要及真实退出码见[最终 Gold 记录](figures/gold-main-rebase-v18-20261102.json)。
 
 范围检查：TLE MLIR 158 项通过（比 v7 新增一项）。原生 SM100 TCGen5 邻接 membar 测试 wait_after_mma 出现额外 CTA barrier，根因是 lib/Analysis/Membar.cpp::addEffectIntervals 对无 allocation ID 的 borrowed shared 参数作保守 allShared 区间，产生与等待 barrier 的潜在 WAR；H800 不执行该 TCGen5 路径，未删断言或禁用 pass。本任务没有 SM100/Iluvatar 硬件结论；原生邻接三项通过、一项失败的事实保留。
 
 首次 rebase 全部样本及审计摘要：[v7 完整结果](figures/summary-main-rebase-v7-20261102.json)。最终源码 commit 6073b0e9457083163387764f6c49c8a21a0b1e4b；3338 个源文件的冻结证明保留，后续仅编辑验收文档。最终证据：.local/rebase-async-fill-complete-reaccept-20261102-v18；首次证据：.local/rebase-main-reaccept-20261102-ff363313e。各 phase 保留真实顶层 OS wait/退出码；构建、失败前/后、CPU/GPU/lit、fresh、生成与预编译均有独立日志。中文优化记录：.local/iteration-log-zh.md。
+
+## 最终 v18 完整八段验收
+
+数值和硬件条件通过，性能失败。八段真实顶层 OS wait/退出码为 0，实际 2436.98 秒（约 40.62 分钟）；独立审计退出 0，1.35 秒。完整 45 层/E288/top8/H4096/cache4096/TP4/b1/out8，原 GPU1–4 独占、实际 1980 MHz、无热降频；CUDA Graph、双流、严格浮点和全部模型数据保持。384 原始请求、64 warmup、320 formal 全部保留，未删除异常值。
+
+| 上下文 | FlagMega TPOT (ms) | vLLM TPOT (ms) | FlagMega 变慢 |
+| --- | ---: | ---: | ---: |
+| 32 | 6.421345 | 6.352620 | 1.08% |
+| 128 | 6.514912 | 6.324222 | 3.02% |
+| 1024 | 6.689215 | 6.417206 | 4.24% |
+| 2048 | 6.910378 | 6.480465 | 6.63% |
+
+表中每端每上下文合并全部 40 个正式请求的中位数；NFFN/FNNF 各自逐段门槛及四个 Flag 对四个 Native 的严格门槛在四上下文全部失败，合并中位数不能覆盖该结论。全部逐段中位数和请求保留在结果 JSON。
+
+与第一版 rebase 的 v7 相比，v18 四上下文 Flag 中位 TPOT 的变化约为 +0.0043/-0.0003/+0.0019/+0.0031 ms；本次位模式修复和合法 cp.async 恢复未显示可量化的整模提速。更快的合法 Native 轮次仍保留，跨轮原因未定位，下一步通过单独的完整模型剖析定位主要耗时；不改变本轮正式样本或把剖析时间作为验收时间。
+
+2048 完整请求中位数为 Flag 13.6368 s、vLLM 0.5143 s；TTFT 约 13.5885/0.4690 s。TPOT 排除 prefill 和首个生成 token，不能据解码指标宣称端到端胜出。
+
+实际受验源码 commit 6073b0e9457083163387764f6c49c8a21a0b1e4b，main 基底 7f25177d2af4eb49dd8193fec31e03070ea13c38；最终 v18 正常 CMake 独立 Core 不变。48 项填充回归、扩展 113 项 GPU 和 158 项 MLIR 通过；CPU 130 passed/51 skipped，生成相关 1293 个 Python 文件不变后的正常产物复用和独立 fresh 流水的真实退出码均保留。fresh 输出未用作正式候选。SM100 邻接失败及其他后端/全仓检查限制仍见前文。
+
+结果与所有正式样本：[最终完整结果](figures/summary-main-rebase-20261102.json)。
+
+![最终 decode 延迟](figures/decode_latency-main-rebase-20261102.svg)
+
+![最终 decode 吞吐](figures/decode_throughput-main-rebase-20261102.svg)
+
+![最终完整请求吞吐](figures/request_throughput-main-rebase-20261102.svg)

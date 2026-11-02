@@ -1,0 +1,121 @@
+{
+  "base_main": "7f25177d2af4eb49dd8193fec31e03070ea13c38",
+  "validated_source_commit": "6073b0e9457083163387764f6c49c8a21a0b1e4b",
+  "independent_audit": {
+    "strict_100_complete_requests_passed": true,
+    "strict_requests_per_rank": 100,
+    "exact_later_state_comparisons_per_rank": 792,
+    "one_normal_model_load_per_rank": true,
+    "audit_passed": true,
+    "numerical_acceptance": true,
+    "actual_observed_controller_exit_code": 0,
+    "real_child_wait": true,
+    "whole_seconds": 518.7743240129785,
+    "initialization_seconds": [
+      348.69535518303746,
+      348.69811767095234,
+      348.6893831299967,
+      348.69892112299567
+    ],
+    "source_sha256": "ebc471b31f7df9adab032f6e759578ac44b1ad7bb7701f4eb2037ea7efd52c00",
+    "semantic_hash": "7aac2d727a46b5d89c85b0f30d2680e63f1dd76da379075f3a30e65d6950be22",
+    "Core_stat": {
+      "path": "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/rebase-main-reaccept-20261102-ff363313e/compiler-build-v18/private-Core/libtriton.so",
+      "dev": 64768,
+      "inode": 9671193493,
+      "size": 887155080,
+      "mtime_ns": 1793606485609332445,
+      "ctime_ns": 1793606485609332445
+    },
+    "frozen_source_files_rechecked": 1174,
+    "actual26_GPU_keys_equal_corrected_CPU": true,
+    "all228_invocations_zero_spill": true,
+    "physical_warp_counts": {
+      "8": 60,
+      "4": 168
+    },
+    "public_Core_stat_unchanged": true,
+    "private_Core_normal_build": true,
+    "cuda_graph": true,
+    "actual_two_streams": true,
+    "joint_resources": [
+      {
+        "registers": 45056,
+        "shared_bytes": 162816,
+        "threads": 640,
+        "blocks": 5,
+        "streams": 2,
+        "shared_carveout_percent": 70
+      },
+      {
+        "registers": 45056,
+        "shared_bytes": 162816,
+        "threads": 640,
+        "blocks": 5,
+        "streams": 2,
+        "shared_carveout_percent": 70
+      },
+      {
+        "registers": 45056,
+        "shared_bytes": 162816,
+        "threads": 640,
+        "blocks": 5,
+        "streams": 2,
+        "shared_carveout_percent": 70
+      },
+      {
+        "registers": 45056,
+        "shared_bytes": 162816,
+        "threads": 640,
+        "blocks": 5,
+        "streams": 2,
+        "shared_carveout_percent": 70
+      }
+    ],
+    "rank0_decode_gold_signature_comparisons": 1216,
+    "rank0_ctx32_prefill_gold_signature_comparisons": 4864,
+    "hardware_request_windows_all1980_exclusive_no_thermal": true,
+    "hardware_window_rows": 811,
+    "original_TP4_UUIDs": [
+      "GPU-344fa712-6ca8-3673-b04b-33b9c3cbffac",
+      "GPU-701b606f-5e57-e434-5e2b-d5cc774c3c9e",
+      "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "GPU-1f2fad96-e938-be19-e775-94e8ae7501a4"
+    ],
+    "original_TP4_numerical_acceptance": true,
+    "diagnostic_four_ctx_single_request_worst_rank_TPOT_ms": {
+      "32": 6.449882290326059,
+      "128": 6.522819574456662,
+      "1024": 6.701723431303565,
+      "2048": 6.931028428620526
+    },
+    "performance_acceptance": false,
+    "formal_measurements": 0,
+    "manual_Core_or_checkpoint_payload_read": false
+  },
+  "actual_phase_waits": {
+    "gold-final": {
+      "phase": "gold-final",
+      "actual_top_level_OS_exit_code": 0,
+      "real_child_wait": true,
+      "seconds": 523.2935105180368,
+      "command": [
+        "/root/miniconda3/envs/flagtree/bin/python",
+        "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/rebase-async-fill-complete-reaccept-20261102-v18/run_gold_candidate_n8_join4.py"
+      ]
+    },
+    "audit-gold": {
+      "phase": "audit-gold",
+      "actual_top_level_OS_exit_code": 0,
+      "real_child_wait": true,
+      "seconds": 2.918153663049452,
+      "command": [
+        "/root/miniconda3/envs/flagtree/bin/python",
+        "/root/repos/flagtree/python/tutorials/flagmega/04-glm5.3-flash-fp8/nvidia-h800/.local/rebase-async-fill-complete-reaccept-20261102-v18/audit_gold_candidate_n8_join4.py",
+        "--observed-controller-exit-code",
+        "0"
+      ]
+    }
+  },
+  "formal_performance_acceptance": "pending complete NFFN/FNNF"
+}
