@@ -3,7 +3,9 @@
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Conversion/CommonIRToTTGIR/BsmLayout.h"
+#include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
 #include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -74,8 +76,12 @@ FailureOr<DotLayoutPlan> inferBsmDotLayout(triton::DotOp dot,
                                           a.getElementType()),
       ttg::DotOperandEncodingAttr::get(dot.getContext(), 1, mma,
                                       b.getElementType())};
-  if (failed(validateDotLayoutPlan(dot, plan, computeCapability, numWarps)))
+  if (auto error = checkMacaDotLayout(dot, plan.mma, plan.operandA,
+                                     plan.operandB, computeCapability,
+                                     numWarps)) {
+    dot.emitError("MMA layout is not legal for this dot and target: ") << *error;
     return failure();
+  }
   return plan;
 }
 

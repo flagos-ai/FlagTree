@@ -2,9 +2,9 @@
 #define TRITON_METAX_COMMONIR_LAYOUT_RULES_H
 
 #include "mlir-ext/Dialect/CommonIR/Transforms/BufferLayoutPropagation.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
 #include "mlir-ext/Dialect/CommonIR/Transforms/TensorLayoutPropagation.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace mlir::triton::metax {
 
@@ -47,14 +47,9 @@ void applyLayoutRequirements(ModuleOp module,
                              const TensorLayoutRequirements &requirements,
                              const TensorLayoutAdapter &adapter);
 
-// All collectors are read-only. Requirements are committed once, after every
-// rule has accepted the candidate.
-LogicalResult
-collectBsmLayoutRequirements(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
-                             TensorLayoutRequirements &requirements,
-                             const tile::BufferLayoutPlan *buffers = nullptr);
+// Plan shared storage from existing dot operand layouts without changing IR.
 FailureOr<tile::BufferLayoutPlan>
-planSharedLayouts(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
+planSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
                   const TensorLayoutRequirements &writerPreferences);
 
 } // namespace mlir::triton::metax

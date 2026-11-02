@@ -1,4 +1,5 @@
 #include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
+#include "mlir/IR/Matchers.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/STLExtras.h"
@@ -43,6 +44,35 @@ unsigned getAsyncCopyVectorSize(RankedTensorType source,
   if (shared.getMaxPhase() > 1)
     vec = std::min(vec, shared.getVec());
   return vec;
+}
+
+FailureOr<unsigned> getAsyncCopyMaxVectorSize(
+    gpu::AsyncCopyGlobalToLocalOp copy, gpu::MemDescType destination,
+    ModuleAxisInfoAnalysis &axisInfo) {
+  auto shared =
+      cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
+  unsigned dim = shared.getOrder().front();
+  unsigned maxVec = 128 / destination.getElementTypeBitWidth();
+  if (Value mask = copy.getMask()) {
+    auto *info = axisInfo.getAxisInfo(mask);
+    if (!info || info->getRank() != destination.getRank())
+      return copy.emitOpError("cannot prove async-copy mask uniformity");
+    // LLVM swizzles source addresses but not predicates along this axis.
+    if (shared.getMaxPhase() > 1 &&
+        info->getConstancy(dim) < destination.getShape()[dim])
+      return copy.emitOpError(
+          "swizzled shared layout requires an async-copy mask uniform along "
+          "the swizzled axis");
+    maxVec = std::min<int64_t>(maxVec, info->getConstancy(dim));
+  }
+  if (Value other = copy.getOther()) {
+    while (auto convert = other.getDefiningOp<gpu::ConvertLayoutOp>())
+      other = convert.getSrc();
+    if (!matchPattern(other, m_Zero()) &&
+        !matchPattern(other, m_PosZeroFloat()))
+      return copy.emitOpError("MetaX async copy requires zero fill");
+  }
+  return maxVec;
 }
 
 gpu::BlockedEncodingAttr chooseAsyncCopyLayout(

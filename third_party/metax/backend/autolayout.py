@@ -1,12 +1,14 @@
-"""CommonIR layout candidate composition, injection and compilation."""
+"""Prepare layout candidates without requiring an executable kernel."""
 
 import hashlib
+import json
 import logging
-from dataclasses import replace
+from dataclasses import dataclass
+from pathlib import Path
 
 from triton._C.libtriton import metax
 from triton._common_ir import ENABLED
-from triton.runtime.cache import get_cache_manager
+from triton.runtime.cache import get_cache_key, get_cache_manager
 
 
 def compose_kernel_candidates(domains):
@@ -48,20 +50,66 @@ def insert_dot_layout_candidate(module, candidate, capability, num_warps):
     return module
 
 
-def make_ttgir_candidates(module, metadata, options, capability, backend):
+@dataclass
+class LayoutCandidates:
+    hash: str
+    src: object
+    target: object
+    options: dict
+    env_vars: dict
+    manifest: dict
+
+
+def prepare_layout_candidates(src, backend, options, env_vars):
+    """Optimize TTIR once, then cache one anchored TTIR per layout assignment.
+
+    Every candidate enters the normal compiler at TTIR -> TTGIR. No candidate
+    needs to survive that conversion, LLVM or mxcc to publish the list.
+    """
+    from triton import knobs
+    from triton._C.libtriton import ir
+    from flagtree import _flagprism
+
     if not ENABLED:
         raise ValueError("autolayout requires a FLAGTREE_COMMON_IR build")
+    key = get_cache_key(src, backend, options, env_vars)
+    identity = hashlib.sha256(("commonir-candidates-v2:" + key).encode()).hexdigest()
+    cache = get_cache_manager(identity)
+    manifest_path = cache.get_file("commonir-candidates.json")
+    manifest = None
+    if manifest_path and not knobs.compilation.always_compile:
+        try:
+            cached = json.loads(Path(manifest_path).read_text())
+            if cached["version"] == 2 and cached["variants"] and all(
+                (path := cache.get_file(v["file"])) is not None
+                and hashlib.sha256(Path(path).read_bytes()).hexdigest() == v["id"] for v in cached["variants"]
+            ):
+                manifest = cached
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    if manifest is None:
+        context = ir.context()
+        ir.load_dialects(context)
+        backend.load_dialects(context)
+        _flagprism.load_dialects(context)
+        module = backend.make_ir(src, options, backend.get_codegen_implementation(options),
+                                 backend.get_module_map(), context)
+        metadata = {"hash": identity, "target": backend.target, **options.__dict__, **env_vars}
+        stages = {}
+        backend.add_stages(stages, options, src.language)
+        module = stages["ttir"](module, metadata)
+        manifest = _make_candidates(module, options, backend._parse_arch(options.arch), cache)
+        cache.put(json.dumps(manifest), "commonir-candidates.json", binary=False)
+    return LayoutCandidates(identity, src, backend.target, options.__dict__, env_vars, manifest)
+
+
+def _make_candidates(module, options, capability, cache):
     dots = []
     module.walk(lambda op: dots.append(op) if op.get_name() == "tt.dot" else None)
-    normal_options = replace(options, autolayout=False)
-    if not dots:
-        return backend.make_ttgir(module, metadata, normal_options, capability)
+    domains = metax.autolayout.enumerate_dot_layout_plans(module, capability, options.num_warps) if dots else []
 
-    domains = metax.autolayout.enumerate_dot_layout_plans(module, capability, options.num_warps)
     assignments = compose_kernel_candidates(domains)
-    cache = get_cache_manager(metadata["hash"])
     variants, failures = [], []
-    fallback = None
     for index, assignment in enumerate(assignments):
         selection = {
             dot_id: {key: plan[key]
@@ -70,31 +118,26 @@ def make_ttgir_candidates(module, metadata, options, capability, backend):
         }
         try:
             variant = module.clone()
-            insert_dot_layout_candidate(variant, assignment, capability, options.num_warps)
-            variant_metadata = dict(metadata)
-            variant = backend.make_ttgir(variant, variant_metadata, normal_options, capability)
+            if assignment:
+                insert_dot_layout_candidate(variant, assignment, capability, options.num_warps)
         except Exception as error:
             failures.append({"plans": selection, "error": str(error)})
             logging.getLogger(__name__).warning("CommonIR layout candidate %d failed: %s", index, error)
             continue
         source = variant.str()
         digest = hashlib.sha256(source.encode()).hexdigest()
-        filename = f"commonir-{digest}.ttgir"
+        filename = f"commonir-{digest}.ttir"
         cache.put(source, filename, binary=False)
         variants.append({"id": digest, "file": filename, "plans": selection})
-        if fallback is None:
-            fallback = variant
-            metadata.update(variant_metadata)
 
-    if fallback is None:
+    if not variants:
         details = "; ".join(item["error"] for item in failures)
         raise RuntimeError(f"CommonIR autolayout: all layout candidates failed. {details}")
 
-    entry = fallback.get_function(fallback.get_entry_func_name())
-    metadata["commonir_layout_candidates"] = {
-        "version": 1,
-        "signature": list(fallback.get_function_signature(entry)),
+    entry = module.get_function(module.get_entry_func_name())
+    return {
+        "version": 2,
+        "signature": list(module.get_function_signature(entry)),
         "variants": variants,
         "failures": failures,
     }
-    return fallback
