@@ -46,13 +46,11 @@ def test_inserts_before_the_last_collective_on_gfx1201():
     index = next(i for i, e in enumerate(events) if e.get("kind") == "prefetch")
     assert events[index + 1]["family"] == "distributed_boxing"
     event = events[index]
-    assert event["guard"] == (
-        "_flagmega_call_offsets.to(tl.int64, bitcast=True) != "
-        "(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + 16).to(tl.int64, bitcast=True)"
-    )
+    # The call record is an int64 displacement into the offset table, not a pointer.
+    assert event["guard"] == "tl.cast(_flagmega_call_offsets, tl.int64) != 16"
     assert event["base"] == (
         "_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) "
-        "+ tl.load(_flagmega_call_offsets + 9, volatile=True)"
+        "+ tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + _flagmega_call_offsets + 9)"
     )
     assert event["slab_bytes"] == 131072 and event["chunks"] == 32
 
@@ -78,6 +76,15 @@ def test_unproven_shapes_are_left_alone(kwargs):
     before = copy.deepcopy(definition)
     assert not add_next_invocation_qkv_prefetch([definition], calls, platform="amd", architecture="gfx1201")
     assert definition == before
+
+
+def test_affine_records_prefetch_the_next_invocations_slab():
+    definition, calls = _layer()
+    definition["function_pool_abi"]["bindings"][0]["record_affine"] = {
+        "record_start": 0, "record_width": 8, "base": 4096, "stride": 131072, "records": 3}
+    assert add_next_invocation_qkv_prefetch([definition], calls, platform="amd", architecture="gfx1201")
+    event = next(e for e in definition["schedule"]["consumer_events"] if e.get("kind") == "prefetch")
+    assert event["base"].endswith("+ (4096 + (((tl.cast(_flagmega_call_offsets, tl.int64) - 0) // 8) + 1) * 131072)")
 
 
 def test_rendered_prefetch_compiles_and_runs_on_gfx12(tmp_path):
@@ -110,7 +117,7 @@ def test_rendered_prefetch_compiles_and_runs_on_gfx12(tmp_path):
     rdata = torch.zeros(2 * event["slab_bytes"] + 4096, dtype=torch.uint8, device="cuda")
     for record in (0, 16):  # a middle record prefetches; the last record must not
         out = torch.zeros(2, dtype=torch.int64, device="cuda")
-        kernel = module.run[(2,)](table, table[record:], rdata, out)
+        kernel = module.run[(2,)](table, record, rdata, out)
         torch.cuda.synchronize()
         assert out.tolist() == [1, 2]
     assert "s_prefetch_data" in kernel.asm["amdgcn"]

@@ -92,16 +92,23 @@ def _prefetch_event(definition: Mapping, calls: Sequence[Mapping]) -> dict | Non
         return None
     if slab_bytes <= 0:
         return None
-    displacement = f"tl.load({CALL_RECORD} + {width + int(field['record_column'])}, volatile=True)"
+    # The call record is this invocation's int64 displacement into the module's
+    # offset table; the next invocation's record follows it.
+    affine = field.get("record_affine")
+    if affine is None:
+        displacement = (f"tl.load({OFFSET_TABLE}.to(tl.pointer_type(tl.int64)) + "
+                        f"{CALL_RECORD} + {width + int(field['record_column'])})")
+    else:
+        index = f"((tl.cast({CALL_RECORD}, tl.int64) - {affine['record_start']}) // {affine['record_width']})"
+        displacement = f"({affine['base']} + ({index} + 1) * {affine['stride']})"
     if int(field.get("byte_offset", 0)):
         displacement = f"({displacement} + {int(field['byte_offset'])})"
     nbytes = min(slab_bytes, MAX_PREFETCH_BYTES)
     return {
         "kind": "prefetch",
         "call": str(qkv_events[0]["call"]),
-        # Triton rejects pointer comparisons, so compare the record addresses.
-        "guard": (f"{CALL_RECORD}.to(tl.int64, bitcast=True) != "
-                  f"({OFFSET_TABLE}.to(tl.pointer_type(tl.int64)) + {offsets[-1]}).to(tl.int64, bitcast=True)"),
+        # The last invocation has no next record to prefetch.
+        "guard": f"tl.cast({CALL_RECORD}, tl.int64) != {offsets[-1]}",
         "base": f"{pool_parameter(str(field['storage']))}.to(tl.pointer_type(tl.uint8)) + {displacement}",
         "slab_bytes": slab_bytes,
         "chunks": -(-nbytes // PREFETCH_CHUNK_BYTES),
