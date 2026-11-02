@@ -31,6 +31,15 @@ on:
         description: 'Backend name, e.g. nvidia, mthreads, ppu'
         required: true
         type: string
+      variant:
+        description: >-
+          Configuration label for a backend that tests several at once, e.g.
+          a matrix over devices or python versions. It becomes part of the
+          record id, so those results do not overwrite one another. Leave
+          unset when the backend tests a single configuration.
+        required: false
+        type: string
+        default: ''
       gpu-env-var:
         description: 'GPU device environment variable name'
         required: false
@@ -220,6 +229,7 @@ jobs:
         env:
           CTX_KIND: baseline
           CTX_BACKEND: ${{ inputs.backend }}
+          CTX_VARIANT: ${{ inputs.variant }}
           CTX_RUNNER: ${{ inputs.runner }}
           CTX_FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
           CTX_FLAGTREE_SHA: ${{ github.sha }}

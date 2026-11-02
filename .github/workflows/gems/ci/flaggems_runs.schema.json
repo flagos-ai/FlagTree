@@ -18,6 +18,11 @@
     "                 overwriting the failed attempt.",
     "kind             'test' (PR) or 'baseline' (push)",
     "backend/runner   e.g. 'tsingmicro' / 'tsingmicro3.6'",
+    "variant          configuration label, empty for backends running a",
+    "                 single configuration. Part of record_id, so a",
+    "                 backend testing several at once (ascend: three",
+    "                 device/python combinations) keeps one row each",
+    "                 instead of overwriting itself.",
     "flaggems_tag     FlagGems release tested, also the asset directory name",
     "flagtree_sha     commit under test: PR head for test, github.sha for",
     "                 baseline",
@@ -98,6 +103,10 @@
     },
     {
       "field_name": "backend",
+      "type": 1
+    },
+    {
+      "field_name": "variant",
       "type": 1
     },
     {
