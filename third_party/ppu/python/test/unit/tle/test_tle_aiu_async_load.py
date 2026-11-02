@@ -12,10 +12,15 @@ Covers:
   - Mixed: AIU load + regular load
   - is_async=False (no promotion)
   - TTGIR/LLIR stage verification
+  - Row strides: constant and run-time strides, the forms they take, and the
+    device check of run-time strides the descriptor cannot zero fill
 """
 
 import os
 import shutil
+import subprocess
+import sys
+import textwrap
 import pytest
 import torch
 import triton
@@ -901,3 +906,146 @@ def test_strided_rows_negative_offset_aiu_load_device_correctness(heads):
     expected = torch.zeros_like(y)
     expected[:, shift:shift + seq_len] = x.permute(1, 0, 2)
     torch.testing.assert_close(y, expected, rtol=0, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# 12. Run-time row strides the descriptor cannot express, and large row counts
+# ---------------------------------------------------------------------------
+
+
+@triton.jit
+def _runtime_stride_aiu_load_checked(x_ptr, y_ptr, T, V, stride_t, BT: tl.constexpr, BV: tl.constexpr,
+                                     CHECK_COLUMNS: tl.constexpr):
+    i_t = tl.program_id(0)
+    p = tl.make_block_ptr(x_ptr, (T, V), (stride_t, 1), (i_t * BT, 0), (BT, BV), (1, 0))
+    if CHECK_COLUMNS:
+        a = tle.load(p, boundary_check=(0, 1), is_async=True)
+    else:
+        a = tle.load(p, boundary_check=(0, ), is_async=True)
+    offs_t = i_t * BT + tl.arange(0, BT)
+    offs_v = tl.arange(0, BV)
+    tl.store(y_ptr + offs_t[:, None] * BV + offs_v[None, :], a, mask=offs_t[:, None] < T)
+
+
+_ZERO_FILL_ASSERT = "cannot be zero filled"
+_OVERLAP_ASSERT = "smaller than the row length"
+
+
+@_skip_no_sdk
+@pytest.mark.parametrize("check_columns", [True, False])
+def test_runtime_row_stride_zero_fill_is_checked_on_device(check_columns):
+    # A run-time stride that is not a multiple of the row length has no form
+    # that zero fills the columns past the row length: a load that needs them
+    # traps on the device instead of reading the next row, as the compile-time
+    # gate rejects such constant strides. Without a column check nothing is
+    # zero filled, so nothing is checked. A stride smaller than the row length
+    # (overlapping rows) is checked either way: the 2d copy takes the stride
+    # as the row length and would zero fill the columns past it.
+    compiled = _compile_through_llir(_runtime_stride_aiu_load_checked,
+                                     {"x_ptr": "*bf16", "y_ptr": "*bf16", "T": "i32", "V": "i32", "stride_t": "i32"},
+                                     {"BT": 64, "BV": 128, "CHECK_COLUMNS": check_columns})
+    assert "tt.aiu_load" in compiled.asm["ttir"]
+    assert (_ZERO_FILL_ASSERT in compiled.asm["llir"]) == check_columns
+    assert _OVERLAP_ASSERT in compiled.asm["llir"]
+
+
+# A device assertion poisons the CUDA context, so the trap runs in its own process.
+_INEXPRESSIBLE_STRIDE_SCRIPT = textwrap.dedent("""
+    import torch
+    import triton
+    import triton.language as tl
+    import triton.experimental.tle.language as tle
+
+    @triton.jit
+    def kernel(x_ptr, y_ptr, T, V, stride_t, BT: tl.constexpr, BV: tl.constexpr):
+        i_t = tl.program_id(0)
+        p = tl.make_block_ptr(x_ptr, (T, V), (stride_t, 1), (i_t * BT, 0), (BT, BV), (1, 0))
+        a = tle.load(p, boundary_check=(0, 1), is_async=True)
+        offs_t = i_t * BT + tl.arange(0, BT)
+        offs_v = tl.arange(0, BV)
+        tl.store(y_ptr + offs_t[:, None] * BV + offs_v[None, :], a, mask=offs_t[:, None] < T)
+
+    # Rows of 100 elements that are 128 apart: the 28 padding columns of the
+    # [64, 128] tile cannot be zero filled.
+    x = torch.randn((200, 128), device="cuda", dtype=torch.bfloat16)
+    y = torch.empty((200, 128), device="cuda", dtype=torch.bfloat16)
+    kernel[(4, )](x, y, 200, 100, 128, 64, 128, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+""")
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_runtime_row_stride_inexpressible_zero_fill_traps(tmp_path):
+    script = tmp_path / "inexpressible_stride.py"
+    script.write_text(_INEXPRESSIBLE_STRIDE_SCRIPT)
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=300)
+    assert result.returncode != 0
+    assert _ZERO_FILL_ASSERT in result.stdout + result.stderr
+
+
+# Rows of 128 elements that are 64 apart overlap: the [64, 128] tile has
+# columns past the stride, which the 2d copy would zero fill.
+_OVERLAPPING_ROWS_SCRIPT = textwrap.dedent("""
+    import torch
+    import triton
+    import triton.language as tl
+    import triton.experimental.tle.language as tle
+
+    @triton.jit
+    def kernel(x_ptr, y_ptr, T, V, stride_t, BT: tl.constexpr, BV: tl.constexpr, CHECK_COLUMNS: tl.constexpr):
+        i_t = tl.program_id(0)
+        p = tl.make_block_ptr(x_ptr, (T, V), (stride_t, 1), (i_t * BT, 0), (BT, BV), (1, 0))
+        if CHECK_COLUMNS:
+            a = tle.load(p, boundary_check=(0, 1), is_async=True)
+        else:
+            a = tle.load(p, boundary_check=(0, ), is_async=True)
+        offs_t = i_t * BT + tl.arange(0, BT)
+        offs_v = tl.arange(0, BV)
+        tl.store(y_ptr + offs_t[:, None] * BV + offs_v[None, :], a, mask=offs_t[:, None] < T)
+
+    x = torch.randn(200 * 64 + 128, device="cuda", dtype=torch.bfloat16)
+    y = torch.empty((200, 128), device="cuda", dtype=torch.bfloat16)
+    kernel[(4, )](x, y, 200, 128, 64, 64, 128, CHECK_COLUMNS={check_columns}, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+""")
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("check_columns", [True, False])
+def test_runtime_row_stride_overlapping_rows_trap(tmp_path, check_columns):
+    script = tmp_path / "overlapping_rows.py"
+    script.write_text(_OVERLAPPING_ROWS_SCRIPT.replace("{check_columns}", str(check_columns)))
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=300)
+    assert result.returncode != 0
+    assert _OVERLAP_ASSERT in result.stdout + result.stderr
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_runtime_row_stride_overlapping_rows_within_stride():
+    # A tile that stays within the stride reads the overlapping rows as the
+    # pointer arithmetic says: row t starts at element t * stride.
+    T, V, stride, BT, BV = 200, 128, 64, 64, 64
+    x = torch.randn(T * stride + V, device="cuda", dtype=torch.bfloat16)
+    y = torch.empty((T, BV), device="cuda", dtype=torch.bfloat16)
+    _runtime_stride_aiu_load[(triton.cdiv(T, BT), )](x, y, T, V, stride, BT=BT, BV=BV, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    expected = torch.stack([x[t * stride:t * stride + BV] for t in range(T)])
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_strided_rows_beyond_descriptor_row_field_device_correctness():
+    # More rows than the 15-bit row count of the 3d form: the copy counts the
+    # rows from the warp's first row, so only the rows left after it are bounded
+    seq_len, cols, row_stride, block_t, block_v = 40000, 128, 256, 64, 128
+    torch.manual_seed(0)
+    x = torch.randn((seq_len, row_stride), device="cuda", dtype=torch.bfloat16)
+    y = torch.full((seq_len, block_v), float("nan"), device="cuda", dtype=torch.bfloat16)
+    _runtime_stride_aiu_load[(triton.cdiv(seq_len, block_t), )](x, y, seq_len, cols, row_stride, block_t, block_v,
+                                                                num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(y, _padded_tile_reference(x, cols, block_v), rtol=0, atol=0)

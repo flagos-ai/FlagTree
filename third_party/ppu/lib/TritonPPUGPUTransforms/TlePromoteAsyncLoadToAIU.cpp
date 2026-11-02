@@ -72,7 +72,8 @@ static triton::MakeTensorPtrOp findMakeTensorPtrOp(Value ptr) {
 
 // The copy reads a 2-D tile with one unit-stride dimension and fills
 // everything out of bounds with zeros. Rows that are a constant stride apart
-// must fit the descriptor (see AIUUtility.h).
+// must fit the descriptor (see AIUUtility.h); a run-time stride is checked
+// where the copy is issued, and a tile it cannot zero fill traps.
 static bool isAIULoadLayout(triton::LoadOp loadOp) {
   if (cast<RankedTensorType>(loadOp.getType()).getRank() != 2 ||
       loadOp.getPadding() == triton::PaddingOption::PAD_NAN)
