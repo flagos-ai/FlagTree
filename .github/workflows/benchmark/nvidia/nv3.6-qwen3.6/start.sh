@@ -27,6 +27,7 @@ source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
 echo "[INFO] vLLM $(python3 -m pip show vllm |grep Version)"
 echo "[INFO] vllm-plugin-fl $(python3 -m pip show vllm-plugin-FL |grep Version)"
+echo "[INFO] flagcx $(python3 -m pip show flagcx |grep Version)"
 echo "[INFO] Torch $(python3 -m pip show torch |grep Version)"
 echo "[INFO] FlagGems $(python3 -m pip show flag_gems |grep Version)"
 echo "[INFO] FlagTree $(python3 -m pip show flagtree |grep Version)"
