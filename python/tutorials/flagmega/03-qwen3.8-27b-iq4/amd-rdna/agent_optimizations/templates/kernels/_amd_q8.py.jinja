@@ -129,6 +129,34 @@ def _flagmega_amd_iq4_xs_q8_rows8(words, scales, tail_words, tail_scales, weight
     return tl.reshape(tl.sum(accumulator, axis=2), (8, ))
 
 
+{% if q8_wave_rows is defined and q8_wave_rows %}
+@triton.jit
+def _flagmega_amd_iq4_xs_q8_rows8_wave(words, scales, tail_words, tail_scales, weight, rows8, K: tl.constexpr,
+                                       MAIN_GROUPS: tl.constexpr):
+    """_flagmega_amd_iq4_xs_q8_rows8 on a [32 groups, 8 rows] tile. With the group axis first, load
+    coalescing puts the 32 groups of a row on one wave's lanes (rows8's [2, 4, 32] tile spread them over
+    four waves), so the per-row sum needs no LDS or barrier. The sum adds one pair per group-index bit
+    in the order of rows8's reduction (16, 2, 1, 8, 4), so results are bitwise."""
+    GROUPS: tl.constexpr = K // 32
+    G: tl.constexpr = 32
+    rows = rows8[None, :]
+    lanes = tl.arange(0, G)[:, None]
+    accumulator = tl.zeros((G, 8), tl.float32)
+    for group0 in tl.range(0, MAIN_GROUPS, G):
+        accumulator += _flagmega_amd_iq4_xs_q8_step(words, scales, weight, rows, group0 + lanes, group0 + lanes,
+                                                    MAIN_GROUPS % G != 0, MAIN_GROUPS)
+    for group0 in tl.range(MAIN_GROUPS, GROUPS, G):
+        accumulator += _flagmega_amd_iq4_xs_q8_step(tail_words, tail_scales, weight, rows, group0 + lanes,
+                                                    group0 - MAIN_GROUPS + lanes, GROUPS % G != 0, GROUPS)
+    tree = tl.reshape(accumulator, (2, 2, 2, 2, 2, 8))
+    tree = tl.sum(tree, axis=0)
+    tree = tl.sum(tree, axis=2)
+    tree = tl.sum(tree, axis=2)
+    tree = tl.sum(tree, axis=0)
+    return tl.sum(tree, axis=0)
+
+
+{% endif %}
 @triton.jit
 def _flagmega_amd_iq4_xs_q8_rows(words, scales, tail_words, tail_scales, weight, row_offsets, n_mask,
                                  K: tl.constexpr, MAIN_GROUPS: tl.constexpr, TN: tl.constexpr):

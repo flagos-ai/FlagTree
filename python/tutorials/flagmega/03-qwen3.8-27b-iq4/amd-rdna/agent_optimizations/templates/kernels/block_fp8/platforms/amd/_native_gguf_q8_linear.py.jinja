@@ -5,8 +5,16 @@ def _flagmega_iq4_xs_linear_local_tile(
     Q8_MAIN_GROUPS: tl.constexpr,
 ):
     """IQ4_XS GEMV of q8_1 activations already quantized into LDS."""
+{% if q8_wave_rows is defined and q8_wave_rows %}
+    safe = tl.where(n_mask, weight_row_offsets, tl.max(tl.where(n_mask, weight_row_offsets, 0), axis=0))
+    result = _flagmega_amd_iq4_xs_q8_rows8_wave(q8_words, q8_scales, q8_tail_words, q8_tail_scales, weight, safe, K,
+                                                Q8_MAIN_GROUPS)
+    # The destination is a VGPR pointer parameter; in SGPRs the store needs no readfirstlane waterfall.
+    destination = _flagmega_amd_uniform_parameter(destination)
+{% else %}
     result = _flagmega_amd_iq4_xs_q8_rows(q8_words, q8_scales, q8_tail_words, q8_tail_scales, weight,
                                           weight_row_offsets, n_mask, K, Q8_MAIN_GROUPS, {{ native_gguf_tile_rows | default(tn) }})
+{% endif %}
     tl.store(destination + destination_offsets, result.to(destination.dtype.element_ty), mask=n_mask)
 
 @triton.jit

@@ -402,6 +402,17 @@ def test_gfx1100_projections_dot_8_row_tiles(tmp_path, installed):
     source = _wide_source(tmp_path, "rows8", "projection", "amd-gfx1100")
     assert "for local_n_start in tl.range(0, 32, 8):" in source
     assert "local_n_offsets = local_n_start + tl.arange(0, 8)" in source
-    assert "n_mask, K, Q8_MAIN_GROUPS, 8)" in source
     r9700 = _wide_source(tmp_path, "r9700", "projection", "amd-gfx1201")
     assert "local_n_start + tl.arange(0, 16)" in r9700 and "Q8_MAIN_GROUPS, 16)" in r9700
+
+
+def test_gfx1100_projections_sum_rows_within_a_wave(tmp_path, installed):
+    source = _wide_source(tmp_path, "wave", "projection", "amd-gfx1100")
+    # The [32 groups, 8 rows] tile puts a row's groups on one wave; the sum keeps rows8's pairwise order.
+    assert "result = _flagmega_amd_iq4_xs_q8_rows8_wave(q8_words, q8_scales" in source
+    assert "tree = tl.reshape(accumulator, (2, 2, 2, 2, 2, 8))" in source
+    assert "destination = _flagmega_amd_uniform_parameter(destination)" in source
+    for target in ("amd-gfx1201", ):
+        assert "_rows8_wave" not in _wide_source(tmp_path, "r9700", "projection", target)
+    # gate+up keeps rows8.
+    assert "rows8_wave" not in _wide_source(tmp_path, "glu", "glu", "amd-gfx1100")

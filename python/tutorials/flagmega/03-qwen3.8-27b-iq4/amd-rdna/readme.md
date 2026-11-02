@@ -224,7 +224,8 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles (default) | **26.9** | **37.2** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles (default) | **26.7** | **37.4** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles | 26.9 | 37.2 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue | 27.3 | 36.7 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` | 28.4 | 35.2 |
 | FlagMega, 8x24 block mesh, floating-point activations | 34.3 | 29.2 |
@@ -297,6 +298,20 @@ dotted as before: three processes reproduce the 64-step tokens and logits bitwis
 44 B of scratch. Six interleaved runs each: 27.19 -> 26.90 ms (llama.cpp 29.34 ms, 1.09x),
 about 506 GB/s (72% of the ~700 GB/s this card streams). The core template only gains a
 default-off `native_gguf_tile_rows`; other targets render unchanged.
+The 8-row projection tile is then dotted as [32 groups, 8 rows]: with the group axis first, load
+coalescing puts a row's 32 groups on one wave's lanes, where the [2, 4, 32] tile spread them over four
+waves and summed them through LDS with three barriers per tile. The sum adds one pair per group-index
+bit in the old order (16, 2, 1, 8, 4), so results stay bitwise (three processes, 64 steps), and the
+store's pointer is read into SGPRs. Per phase (stamps, us): out_proj 51.0 -> 49.7, o_proj 46.9 -> 45.5,
+k 15.6 -> 14.6, v 14.8 -> 14.3, down 86.7 -> 86.1, q 60.3 -> 61.3; end to end 26.84 -> 26.72 ms (six
+interleaved runs; 26.83 -> 26.71 in a second check). The same layout in gate+up made it 2 us slower,
+so gate+up keeps its tile. Issuing all five K steps' loads at once for k/v (one 8-row tile each) was
+slower (k 15.6 -> 18.3 us).
+With these, the GEMV phases take 24.1 ms of the 26.7 ms token at about 565 GB/s (81% of ~700 GB/s);
+the rest is GDN recurrent (about 19 us per GDN layer), the chains of small residual/norm/reshard calls
+around each projection (6-7 us each, twice per layer) and the attention core (about 33 us per attention
+layer). The 6-11 us later start of some CTAs in z and v is not on the critical path: those CTAs finish
+within 0.5 us of the last one, because they stream with less contention.
 Per phase (stamps, before the 8-row tiles; GB/s and share of ~700): gate+up 624-631 (89-90%),
 down 533 (76%), q_proj 535 (76%), in_proj_qkv / z 468 / 474 (67-68%), out_proj / o_proj
 319 / 336 (46-48%), k / v 172 / 192 (25-27%); the per-CTA q8 quantization takes 1.5-8 us of
