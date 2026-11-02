@@ -1,420 +1,72 @@
 # Qwen3.8-27B IQ4_XS decode on AMD RDNA (R9700 / gfx1201, W7900 / gfx1100)
 
-This tutorial compiles the same original GGUF as
-[the RTX 5060 Ti tutorial](../nvidia-rtx5060ti/readme.md) for the `amd-gfx1201`
-and `amd-gfx1100` FlagMega targets: all 64 text decoder layers (48 GDN, 16 gated full attention),
-the IQ4_XS output head and GPU greedy sampling, in one cooperative megakernel.
-IQ4_XS weights stay packed in IR, readonly data and GPU storage. The NVIDIA
-`pc_tma` agent optimizations rely on TMA, DP4A and PTX and are not used here.
-On AMD the native IQ4_XS/Q4_K GEMVs render
-from RDNA templates (`kernels/{block_fp8,matmul_glu}/platforms/amd/`): one
-thread owns a 32-value group of two rows, loads its 16 packed bytes with wide
-loads, maps the IQ4_NL codebook with `v_perm_b32` table lookups (as llama.cpp's
-`get_int_from_table_16`), applies each group's `d*(scale-32)` once to the group
-sum and reduces across threads once per tile; a 16-row tile runs as two
-8-row halves and skips a half with no active row. By default `compile.py`
-also installs this tutorial's `agent_optimizations` (below), which give the
-IQ4_XS GEMVs int8 activations; with `--q8-activations off` activations stay
-floating point. The GDN gate projections (`in_proj_b` / `in_proj_a`, one row per tile)
-and the IQ4_XS embedding use the same group step and lookup
-(`kernels/{gdn_recurrent,embedding}/platforms/amd/`). The AMD GDN body computes
-each head's normalized q/k and both gate rows once per head and steps the fp32
-state in (128, 16) tiles (`gdn_recurrent/platforms/amd/`). For decode attention
-the RDNA targets split the context on the mesh axis whose remaining extent
-divides every query-head count: Qwen3.8's 24 query heads do not divide the
-default 8x16 mesh's x axis, so the context is split 16 ways over x and each
-block computes 3 heads instead of all 24.
+FlagMega compiles the original IQ4_XS GGUF used by
+[the RTX 5060 Ti tutorial](../nvidia-rtx5060ti/readme.md) into a single cooperative
+decode megakernel for the `amd-gfx1201` / `amd-gfx1100` targets. The megakernel covers all 64 layers
+(48 GDN, 16 gated full attention), the IQ4_XS output head and GPU greedy sampling. Weights
+stay packed IQ4_XS from IR to GPU memory.
 
-The native IQ4_XS GEMVs never use fp8, so they also run on gfx1100,
-which has no fp8: they select the fp8-free `tir.block_fp8.native_simt` /
-`tir.matmul_glu.native_simt` implementations there, which render the same RDNA
-templates.
+## Performance (batch 1 decode, ROCm 7.2, one GPU)
 
-### q8_1 activations (`--q8-activations`, default `on`)
+| GPU | FlagMega | llama.cpp (HIP) | Speedup | Weight bandwidth | % of measured peak | % of nominal peak |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Radeon AI PRO R9700 (gfx1201) | **26.3 ms** (38.1 tok/s) | 29.8 ms (33.6 tok/s) | **1.13x** | 518 GB/s | 82% of 631 | 80% of 644.6 |
+| Radeon PRO W7900 (gfx1100) | **25.8 ms** (38.8 tok/s) | 29.7 ms (33.7 tok/s) | **1.15x** | 528 GB/s | 75% of ~700 | 61% of 864 |
 
-`agent_optimizations.install()` puts the tutorial's templates in front of
-FlagMega's for the compile process, the same mechanism as the NVIDIA tutorial.
-Each IQ4_XS GEMV call (projection, GLU gate/up, down and the output head) then
-quantizes its activation once per block into LDS with the NVIDIA tutorial's
-`q8_1_rne` contract, which is also llama.cpp's MMVQ activation: per 32 values,
-`int8 = rne(fl32(x * fl32(127 / amax)))` packed four per int32 word and an fp16
-scale `amax / 127`. The GEMV maps each weight word's eight nibbles to int8 codes
-with `v_perm_b32` and dots them with `v_dot4_i32_iu8` (both operands signed), so
-a group is one int32 sum scaled once by `(ls - 32) * d_w * d_x`. The core
-templates only gain a default-off hook (`native_gguf_activation_prologue`) and
-render byte-identically without the package; Q4_K, the GDN gate rows and the
-NVIDIA targets keep their kernels.
+- Measured at `bb0edd2a2`, `benchmark.py --measurement host-token` (graph replay, GPU sampling,
+  one token returned to the host per step, the same boundary as `llama_performance.py`).
+  Synthetic32 and Chinese64 workloads, three interleaved FlagMega / llama.cpp rounds of three repeats.
+  FlagMega rounds vary by less than 0.1 ms; llama.cpp rounds by less than 0.4 ms.
+- Weight bandwidth = 13,611,666,080 bytes read per decode call / latency.
+  - The measured peak is a large streaming read on the same card.
+  - The W7900 has inline VRAM ECC, which caps it at about 700 of 864 GB/s; see the
+    [Qwen3-1.7B readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md).
+- Starting point: the generic native GGUF GEMV took 257 ms (R9700) and 192 ms (W7900) per token.
 
-LDS extents must be powers of two, so a call's groups are split into the
-largest power-of-two main buffer and a power-of-two tail (5120: 128 + 32,
-6144: 128 + 64, 17408: 512 + 32), each with its own K loop. The quantization
-loads all of a call's values before packing any (one memory latency) and gets
-round-to-nearest-even with `v_mul_f32` + `v_add_f32 0x4b400000` (1.5 * 2^23)
-instead of `v_rndne_f32` + `v_cvt_i32_f32`. The GEMV's inner loop runs 156
-VALU instructions with 16 `v_dot4` for 64 weight values per lane, about 2.4 per
-value against about 8 (a convert and an FMA per value) for floating-point
-activations; the megakernel has 960 `v_dot4`, still 248 VGPRs and no spills,
-and 26,688 B of LDS per block instead of 4,096.
+## What makes it fast
 
-On the R9700 the int8 K loops are 3.4 ms faster than the floating-point ones
-(removing every GEMV K loop leaves 2.1 ms). The first per-block quantization,
-a TG=128 loop with derived indices and four masked stores, gave all of that back
-(30.0 ms either way); loading every piece first and the cheaper rounding brought
-its cost to 1.6 ms, of which 0.6 ms is the activation load latency.
+| Optimization | Where | Effect |
+| --- | --- | --- |
+| RDNA IQ4_XS / Q4_K GEMV templates: wide loads, `v_perm_b32` codebook lookup, one scale per 32-value group, one cross-thread reduction per tile | both | 257 → 32 ms (R9700) |
+| q8_1 activations dotted with `v_dot4_i32_iu8` (llama.cpp MMVQ contract), quantized once per block into LDS | both | R9700 30.1 → 28.2 ms, W7900 34.3 → 28.4 ms |
+| Attention heads sharded over the mesh; GDN q/k norms and gates computed once per head | both | R9700 31.8 → 29.9 ms |
+| gate+up row tiles taken from an atomic tile queue, so slower blocks take fewer tiles | both | W7900 −1.1 ms, R9700 −0.3 ms |
+| 8-row projection tiles with each row reduced within one wave | both | −0.3 to −0.4 ms |
+| Compiler: same-chip parameter reshards read as views; residual add fused with the next RMSNorm statistics | both | W7900 26.7 → 25.7 ms, R9700 26.6 → 26.3 ms |
+| 64 KB `s_prefetch_data` of each weight during quantization; write-through GDN state stores | gfx1201 | 28.2 → 27.3 ms |
+| Pointers kept in SGPRs and 64-bit activation offsets (no `readfirstlane` waterfalls) | gfx1100 | 42.7 → 38.5 ms |
+| 8x24 = 192-block mesh (128 blocks cannot saturate ECC GDDR6) | gfx1100 | 37.2 → 34.3 ms |
 
-On gfx1201 each IQ4_XS call first issues `s_prefetch_data` for the first 64 KB
-of every weight it streams (gate and up for the GLU), from this block's first
-row, so DRAM is already busy while the activation is quantized. The prefetch
-changes no arithmetic: logits are bitwise equal to the build without it. Sizes
-measured on one card (ms/token, Synthetic32 / Chinese64): none 28.26 / 28.27,
-16 KB 28.19 / 28.18, 32 KB 27.86 / 27.87, **64 KB 27.48 / 27.45**, 128 KB
-27.61 / 27.57, 256 KB 27.76 / 27.77, the whole block slice 28.70 / 28.70. The 64 KB build keeps 248 VGPRs and
-72 B of scratch (13 SGPR spills go to VGPR lanes). gfx1100 has no
-`s_prefetch_data` and renders unchanged.
+The tutorial templates live in `agent_optimizations/templates/kernels/**/platforms/amd/`
+(arch-specific ones under `gfx1100/` and `gfx1201/`). The core templates only gain
+default-off hooks, so other targets render unchanged.
 
-On gfx1201 the GDN layers also write the fp32 recurrent state through the
-cache (`.wt`; only its owner reads it again, on the next token), and
-the convolution tile loads all history slots before it shifts the state, so the
-loads no longer wait behind the shifted stores
-(`gdn_{recurrent,convolution}/platforms/amd/gfx1201/`). Both keep the arithmetic
-order: logits are bitwise equal to the build without them, with 248 VGPRs and
-72 B of scratch. Together they take about 0.18 ms off a token. gfx1100 renders
-unchanged: on the W7900 one of three processes with these changes diverged at
-step 3. The 3 MB of state written per token has to reach DRAM somewhere.
-Per-CTA timestamps show where (µs per GDN layer, recurrent phase / out_proj
-GEMV that follows it): `.cs` 17.1 / 39.2, `.wt` 21.7 / 34.0, no state store at
-all 16.9 / 34.1. A nontemporal store finishes inside the phase and its drain
-slows out_proj by 5 µs. A write-through store moves that drain into the
-recurrent phase, and the grid barrier waits for it there, so it costs slightly
-less. Plain write-back is slower (27.27 ms), and so is storing each tile right
-after its update (27.14 to 27.33 ms). Dropping the store entirely, which is
-wrong, would save only 0.27 ms. Graph replay, three interleaved rounds on one card:
-`.cs` 27.15/27.14/27.16 ms vs `.wt` 27.11/27.11/27.11 ms; llama.cpp
-29.35/29.36/29.35 ms. Three `.wt` processes reproduce the 64-step tokens and
-logits of the `.cs` build bitwise. Removing the GDN convolution and recurrent phases entirely saves about
-1.3 ms per token, against about 0.74 ms for llama.cpp's whole GDN. The
-recurrent core (about 1.1 ms of that) is latency-bound on layout conversions
-between the `[16, 128]` state tiles and the per-value vectors. Preloading the
-next state tile or deferring the state stores kept logits bitwise but was
-slower (28.6 vs 27.5 ms). Keeping the norm in the head-tile layout spilled to
-360 B of scratch and was 1.3 ms slower. All of these run inside the
-248-VGPR megakernel.
+## Correctness
 
-Sharing one quantization across CTAs or across the calls that consume the same
-input (in_proj qkv/z, attention q/k/v) was evaluated and not done: the norm
-that produces a GEMV input writes 40-value shards per CTA (5120 / 128), so no
-producer owns whole 32-value q8 groups; an invocation-scoped workspace cannot
-outlive the call; and quantizing once per call into global memory needs a grid
-barrier before the dot, about the cost of the per-block quantization it
-replaces. The NVIDIA optimized path also quantizes per CTA.
+Checked against llama.cpp HIP built from the same pinned commit, on the same GGUF and GPU:
 
-On gfx1201 each native GEMV block also starts its row-tile loop at tile
-`(shard_index mod tiles)` (`native_gguf_rotate_tiles`, set by the agent templates under
-`platforms/amd/gfx1201/`), so at any moment the 128 blocks stream
-different offsets of their row slabs. Every row is still dotted by one tile in the same
-order: logits are bitwise equal to the build without it, with 248 VGPRs and 72 B of
-scratch. It shortens the big GEMV phases by 0.5–1% (qkv 54.8 → 53.7 µs, gate+up
-158.6 → 157.7 µs, down 87.5 → 86.7 µs per layer) but does not narrow their arrival skew,
-which is uneven memory access between blocks rather than uneven row counts (the slow
-blocks change from phase to phase). Graph replay, three interleaved rounds on one card:
-27.28/27.28/27.29 ms without vs 27.15/27.15/27.16 ms with it; llama.cpp 29.32/29.32/29.35 ms.
-Loading each IQ4 block header once per block instead of once per 32-value group was also
-tried and dropped: LLVM already merges the header into one 64-bit load per group, a
-lane broadcast cannot work because a block's eight groups span two waves, and a
-block-shaped header tile broadcast through a layout conversion cost 1.2 ms.
-gfx1100 renders unchanged; the rotation has not been run on the W7900.
-
-Changing which rows a block owns does narrow that skew. On gfx1201 and gfx1100 the gate+up
-GEMVs take their rows from a tile queue over the whole output
-(`native_gguf_tile_queue`, planned by `agent_optimizations`): each block computes
-8-row tile `shard_index` first, then claims further tiles from a relaxed atomic
-counter, at most 24 tiles per block, so blocks that stream slower DRAM pages take
-fewer tiles. Each invocation makes exactly 128 x 23 claims (192 x 18 on the
-gfx1100 8x24 mesh) and the block holding
-the last one resets the counter to zero, so it is ready for the next layer, call
-or graph replay without a reset elsewhere. The counter is a template counter
-slot: the agent registry requests one int64 counter for `matmul_glu`, and the
-compiler threads it only to those calls and the functions that lead to them.
-The runtime allocates the counter and zeroes it when it prepares the kernel.
-Without a request, nothing is allocated, threaded or recorded. The planner evaluates
-each call's owner-local row expressions over the whole mesh and uses the queue
-only if the rows form one progression, each owned once. Every row is still
-dotted once by one tile in the same order, so logits are bitwise equal to the
-build without it (three processes, 64 graph-replayed steps). The megakernel keeps
-248 VGPRs; SGPR spills drop from 17 to 6 and spill sites from 22 to 18 (none
-left in gate+up), but the attention-layer function that carries the counter to
-its gate+up call needs 16 B more scratch (88 B in total). Graph replay, three
-interleaved rounds on one card: 27.11/27.12/27.12 ms without vs
-26.83/26.83/26.83 ms with it; llama.cpp 29.37/29.33/29.37 ms, i.e. 1.09x
-llama.cpp (1.08x before). `FLAGMEGA_AMD_TILE_QUEUE=0` renders the rotated static
-tiles instead.
-
-## Accepted results: R9700 (gfx1201), ROCm 7.2, one GPU
-
-| Backend | ms/decode call | tokens/s |
-| --- | ---: | ---: |
-| FlagMega, as below + 8-row wave-reduced projection tiles + viewed layer parameters + fused residual/norm statistics (default) | **26.3** | **38.1** |
-| FlagMega, as below + 8-row wave-reduced projection tiles + viewed layer parameters | 26.5 | 37.8 |
-| FlagMega, as below + 8-row wave-reduced projection tiles | 26.6 | 37.6 |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + gate+up tile queue | 26.9 | 37.2 |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + rotated row tiles | 27.1 | 36.9 |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores + rotated row tiles | 27.2 | 36.8 |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores | 27.3 | 36.6 |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch | 27.5 | 36.4 |
-| FlagMega, q8_1 activations + `v_dot4`, no prefetch | 28.2 | 35.4 |
-| FlagMega, floating-point activations (`--q8-activations off`) | 30.1 | 33.2 |
-| FlagMega, RDNA native GGUF templates (before the attention/GDN changes) | 32.1 | 31.2 |
-| FlagMega, generic native GGUF GEMV (before) | 257 | 3.9 |
-| llama.cpp (HIP, gfx1201) | 29.8 | 33.6 |
-
-Re-measured at `bb0edd2a2` (.101, three interleaved rounds of three repeats):
-Synthetic32 26.30/26.25/26.25 ms and Chinese64 26.27/26.28/26.32 ms, about 518
-GB/s (80% of 644.6 GB/s); llama.cpp Synthetic32 29.98/29.93/29.87 ms and
-Chinese64 29.62/29.68/29.66 ms, 1.13x. All six FlagMega runs pass the llama.cpp
-token check.
-
-Rotated FlagMega / llama.cpp runs of three repeats on one idle card (.101, no
-ECC); host time around graph replay, GPU greedy sampling and one CPU token
-return, the same boundary as the NVIDIA tutorial and `llama_performance.py`.
-q8_1 activations, three interleaved rounds of q8 / floating point / llama.cpp
-(the third on a second idle card): Synthetic32 28.27/28.21/28.33 ms vs
-29.93/30.12/29.96 ms and llama.cpp 29.99/29.98/29.88 ms; Chinese64
-28.24/28.22/28.30 ms vs 30.10/30.18/30.13 ms and llama.cpp 29.77/29.70/29.78 ms,
-5–6% faster than llama.cpp at about 481 GB/s (75% of 644.6 GB/s).
-With the gfx1201 weight prefetch (same card, three interleaved rounds against
-the build without it): Synthetic32 27.54/27.47/27.45 ms vs 28.29/28.24/28.24 ms,
-Chinese64 27.46/27.43/27.44 ms vs 28.30/28.25/28.25 ms, about 8% faster than
-llama.cpp; tokens and logits are bitwise equal to the build without prefetch.
-With the gfx1201 GDN stores (three interleaved rounds against the build without
-them, graph replay): Synthetic32 27.33/27.31/27.40 ms vs 27.48/27.53/27.45 ms;
-Chinese64 27.34 ms vs 27.45 ms, about 9% faster than llama.cpp; 64 tokens and
-logits bitwise equal.
-The W7900 projection tiles, parameter views and norm-statistics fusion (below)
-also apply to gfx1201 (same card .101 after a reboot, four interleaved rounds of
-Synthetic32 / Chinese64, graph replay): 26.91/26.87/26.95 ms before; 8-row
-wave-reduced tiles 26.59–26.66 ms; plus parameter views 26.44–26.47 ms (one
-outlier at 26.64); plus fused norm statistics 26.20–26.32 ms, about 13% faster
-than llama.cpp and ~518 GB/s (80% of 644.6 GB/s). The first two keep 64 tokens and
-logits bitwise equal to the build without them. The fused statistics sum in a
-different order, so logits are not bitwise: three processes agree bitwise with
-each other, and teacher-forced against llama.cpp on five prompts (32–128 steps)
-the max error, relative L2 error, KL divergence and top-1 disagreements (only at
-llama.cpp top-1/top-2 margins of 0.006 and 0.048) equal the build without it to
-the printed precision.
-Floating-point activations, before:
-Synthetic32: 29.90/30.09/30.04/30.11 ms (llama.cpp 29.93/29.87 ms);
-Chinese64: 30.08/30.20 ms (llama.cpp 29.62/29.60 ms). Model weight bandwidth
-is 13,611,666,080 bytes per call / latency: about 453 GB/s, 70% of the R9700's
-644.6 GB/s (72% of the ~631 GB/s it streams). Sharding the attention heads took
-decode from 31.8 to 29.9 ms together with the GDN body (CUDA-graph replay of the
-same artifacts, three interleaved rounds: 31.72–31.77 vs 29.84–29.92 ms).
-The IQ4 GEMVs were 97% of the
-generic kernel's time: its 15-deep `tl.where` codebook, per-element byte loads
-and a cross-thread reduction every K step left it latency-bound at ~55 GB/s.
-In isolation the RDNA templates stream 450–560 GB/s on the model's projection
-shapes; skipping empty half tiles (owners of 40 and 8 rows end in a half-full
-tile) took decode from 37.0 to 34.4 ms. The GDN gate projections then still
-walked K in 40 serial 128-value steps of byte gathers and a `tl.where`
-codebook in each of the 48 GDN layers; dotting their row with the GEMV's group
-step took decode from 34.4 to 32.1 ms. The megakernel still uses 248 VGPRs per
-thread (the GEMV helpers use 170) and 88 SGPRs, with no register spills and
-72 B of scratch.
-
-Correctness is checked against llama.cpp built for HIP from the same pinned
-commit on the same GGUF and GPU:
-
-- **Synthetic32** (token 1, 32 calls): all 32 greedy tokens equal llama.cpp,
-  including the first 8 generated independently, with either activation path.
-- **Chinese64** (17 prompt tokens, 64 calls): with q8_1 activations all 64
-  tokens equal llama.cpp. With floating-point activations the prefix equals
-  llama.cpp up to step 22, a genuine near-tie: llama.cpp HIP ranks 98832 over
-  4960 by 0.009 logits and FlagMega picks 4960 (as does the CUDA build of
-  llama.cpp).
-- Against a one-step fp64 reference (GGUF dequantization, token 1), the logits
-  max error is 0.187 with q8_1 activations, 0.096 with floating-point ones and
-  0.223 for llama.cpp HIP itself (0.156 for the generic kernel); all have the
-  same top-5. q8_1 also doubles the worst GDN convolution / KV cache state
-  errors (0.625 / 0.5 vs 0.25 / 0.25): within llama.cpp's own error, but not
-  the floating-point path's.
-- Logits are finite; three independent processes reproduce the 64-step
-  trajectory and logits bitwise (q8_1 activations on an R9700 with ECC
-  enabled; floating-point activations likewise after the attention and GDN
-  changes).
-
-## Results: W7900 (gfx1100), ROCm 7.2, one GPU
-
-| Backend | ms/decode call | tokens/s |
-| --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters + fused residual/norm statistics (default) | **25.8** | **38.8** |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters | 26.1 | 38.3 |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles | 26.7 | 37.4 |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles | 26.9 | 37.2 |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue | 27.3 | 36.7 |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` | 28.4 | 35.2 |
-| FlagMega, 8x24 block mesh, floating-point activations | 34.3 | 29.2 |
-| FlagMega, 8x16 block mesh (`--mesh 8x16`) | 37.2 | 26.9 |
-| FlagMega, 8x16, before the attention/GDN changes | 38.7 | 25.8 |
-| FlagMega, before the gfx1100 address changes | 42.7 | 23.4 |
-| FlagMega, generic native GGUF GEMV (before) | 192 | 5.2 |
-| llama.cpp (HIP, gfx1100) | 29.7 | 33.7 |
-
-Re-measured at `bb0edd2a2` (three interleaved rounds of three repeats): Synthetic32
-25.73/25.79/25.80 ms and Chinese64 25.73/25.81/25.83 ms, about 528 GB/s (75% of the
-~700 GB/s this card streams); llama.cpp Synthetic32 29.72/29.75/29.75 ms and Chinese64
-29.58/29.69/29.71 ms, 1.15x. All six FlagMega runs pass the llama.cpp token check.
-The rows below the default are from earlier sessions, each against its own baseline.
-
-Three repeats per round. q8_1 activations, two interleaved rounds against the
-floating-point build: Synthetic32 28.34 / 28.40 ms vs 34.33 / 34.47 ms,
-Chinese64 28.39 / 28.44 ms vs 34.65 / 34.70 ms, about 480 GB/s; llama.cpp (not
-rerun) 29.5 / 29.7 ms. The int8 dot pays off more than on the R9700 because the
-floating-point GEMV was further from the bandwidth limit here. The 26,688 B of LDS
-per block leave 4 blocks per WGP (5 with 4 KB), 192 on 48 WGPs: still the whole
-8x24 grid. The megakernel keeps 248 VGPRs and 44 B of scratch (the quantization
-holds its loaded activations as bf16 until it packs them; converting them first
-spilled the down projection to 128 B).
-
-With the gate+up tile queue (three repeats per run): Synthetic32 27.21 / 27.32 ms
-vs 28.37 ms without it, Chinese64 27.32 ms vs 28.39 ms, about 1.1 ms (4%) per token,
-more than on the R9700. On the 8x24 mesh the GEMV owners are two 64-row
-cycles per block, which the queue replaces with 8-row tiles over all 17,408 rows.
-Three processes reproduce the 64-step Chinese64 tokens and logits of the build
-without the queue bitwise; the megakernel keeps 248 VGPRs and 44 B of scratch.
-The second round of the build without the queue hung in the megakernel (GPU busy,
-memory idle) after its first round and the five queue runs had passed, so
-that round is missing; llama.cpp was not rerun on this card (29.5 / 29.7 ms
-above, about 1.08x).
-
-128 blocks of 4 waves cannot keep the W7900's ECC
-GDDR6 busy (the GEMV streams 371–389 GB/s at 128 blocks but 456–495 GB/s with
-more waves; the R9700 already saturates at 128), so the tutorial compiles for
-gfx1100 on an 8x24 = 192-block mesh through the compiler's `--placement`
-option. At 248 VGPRs (5 wave32 waves per SIMD) a WGP holds 5 blocks of 4
-waves, about 240 on the W7900's 48 WGPs, and each block uses 4 KB of LDS, so
-all 192 blocks of the grid barrier stay co-resident. `--mesh 8x16` restores
-the gfx1100 target default; other tutorials and the target default are unchanged. 8x24:
-Synthetic32 34.13 / 34.32 ms, Chinese64 34.33 / 34.50 ms; 8x16: Chinese64
-37.15 ms. With the RDNA templates before the attention/GDN changes (8x16):
-Synthetic32 38.35 / 38.69 ms, Chinese64 38.90 ms. Before
-the two gfx1100 address changes below: Chinese64 42.74 / 43.12 ms, Synthetic32
-42.56 / 42.64 ms (45.7 ms with the RDNA GEMVs but the generic GDN gate
-projections). With the generic kernel: Chinese64 191.8 / 192.3 ms, Synthetic32
-192.5 / 192.4 ms. llama.cpp: 29.5 / 29.7 ms. On 8x24 that is about 397 GB/s
-of weight bandwidth (71 GB/s with the generic kernel), 57% of the ~700 GB/s
-this W7900 streams. Its VRAM ECC is enabled, which limits streaming
-bandwidth to about 700 of the 864 GB/s nominal (see the Qwen3-1.7B
-[amd-rdna readme](../../01-qwen3-1.7b-bf16/amd-rdna/readme.md)). The megakernel
-uses 248 VGPRs, 105 SGPRs and 44 B of scratch (160 B before), and builds in
-about 60–75 s.
-
-gfx1100 still converts global loads to buffer loads (gfx1201 does not), and a
-buffer load needs its base in SGPRs. Activation pointers built from 32-bit
-offsets in the GEMVs, and pointer parameters of the noinline device functions
-(which arrive in VGPRs), turned into `readfirstlane` waterfall loops. 64-bit
-activation offsets keep the GEMV loads as global loads (42.6 → 39.6 ms), and
-on gfx1100 every non-GEMV device function reads its pointer parameters back
-into SGPRs (39.6 → 38.5 ms): `s_cbranch_execnz` loops drop from 258 to 28.
-Both keep the logits bitwise. The q8 quantization's own source pointer (a VGPR
-parameter too) is read back into SGPRs once per call on gfx1100
-(`platforms/amd/gfx1100/`): `s_cbranch_execnz` loops 114 -> 28, 27.33 -> 27.13 ms
-(six interleaved runs each; llama.cpp 29.34 / 29.36 ms, 1.08x), 248 VGPRs and 44 B of
-scratch unchanged; three processes reproduce the 64-step tokens and logits bitwise.
-On gfx1100 the projections also dot 8-row tiles directly instead of 16-row tiles split into
-two 8-row halves (`native_gguf_tile_rows`): the split, permute and join of every 16-row tile
-went through LDS with barriers. Per-CTA stamps put the projections' K loops at 2.3-2.8 GB/s
-per block against 3.5 GB/s for the gate+up queue, which already used 8-row tiles. Each row is
-dotted as before: three processes reproduce the 64-step tokens and logits bitwise, 248 VGPRs,
-44 B of scratch. Six interleaved runs each: 27.19 -> 26.90 ms (llama.cpp 29.34 ms, 1.09x),
-about 506 GB/s (72% of the ~700 GB/s this card streams). The core template only gains a
-default-off `native_gguf_tile_rows`; other targets render unchanged.
-The 8-row projection tile is then dotted as [32 groups, 8 rows]: with the group axis first, load
-coalescing puts a row's 32 groups on one wave's lanes, where the [2, 4, 32] tile spread them over four
-waves and summed them through LDS with three barriers per tile. The sum adds one pair per group-index
-bit in the old order (16, 2, 1, 8, 4), so results stay bitwise (three processes, 64 steps), and the
-store's pointer is read into SGPRs. Per phase (stamps, us): out_proj 51.0 -> 49.7, o_proj 46.9 -> 45.5,
-k 15.6 -> 14.6, v 14.8 -> 14.3, down 86.7 -> 86.1, q 60.3 -> 61.3; end to end 26.84 -> 26.72 ms (six
-interleaved runs; 26.83 -> 26.71 in a second check). The same layout in gate+up made it 2 us slower,
-so gate+up keeps its tile. Issuing all five K steps' loads at once for k/v (one 8-row tile each) was
-slower (k 15.6 -> 18.3 us).
-Before each norm a decode layer restored its distributed hidden parameter to a broadcast copy:
-every block copied all 5120 values into its own storage and then read its 640-value slice.
-On gfx1100 the compiler now realizes a same-chip reshard of a function parameter as a read-only
-view (`SameChipParameterViewReshardRealizationPolicy`): the parameter is canonical global
-storage and the hazard planner keeps the barrier before remote reads. The copies and the
-separate slice reshards disappear (17 -> 15 calls per GDN layer), logits stay bitwise (three
-processes, 64 steps), and decode goes from 26.73 to 26.12 ms (six interleaved runs), about 521
-GB/s (74% of ~700 GB/s); llama.cpp 29.34 ms, 1.12x. On gfx1100 the compiler also feeds each
-NormStats the bf16 value instead of its exact f32 widening (NormStats squares and sums in f32
-itself). Without the cast in between, the existing residual-add + statistics formation and the
-cross-layer statistics threading apply, as in tutorial 01: each layer ends with one add that also
-publishes the next norm's partial sums (13 -> 11 calls per GDN layer), and decode goes from 26.11 to
-25.70 ms (six interleaved runs each), about 530 GB/s (76% of ~700 GB/s); llama.cpp 29.34 ms, 1.14x.
-The statistics now sum per-block partials of the bf16 residual (192 partials, no FMA in the
-square) instead of eight 640-value slices (with FMA), so the logits are no longer bitwise equal
-to the build without it; three processes still reproduce each other bitwise, the fused kernels'
-GPU tests pass, and with every step's input forced to llama.cpp's (five prompts, 418 steps:
-Chinese64, Synthetic32 and three 128-step prompts) the logits error against llama.cpp is at the
-same level as before (mean relative L2 0.0116-0.0178 vs 0.0124-0.0174, no growth over the
-sequence), and every top-1 difference from llama.cpp is a near-tie (top-2 margin <= 0.035).
-The 8-row wave-reduced projection tiles, the parameter views and the NormStats cast fold were
-later enabled on gfx1201 too (R9700 results above); only the SGPR pointer reads stay gfx1100-only.
-With these, the GEMV phases take 24.1 ms of the 26.7 ms token at about 565 GB/s (81% of ~700 GB/s);
-the rest is GDN recurrent (about 19 us per GDN layer), the chains of small residual/norm/reshard calls
-around each projection (6-7 us each, twice per layer) and the attention core (about 33 us per attention
-layer). The 6-11 us later start of some CTAs in z and v is not on the critical path: those CTAs finish
-within 0.5 us of the last one, because they stream with less contention.
-Per phase (stamps, before the 8-row tiles; GB/s and share of ~700): gate+up 624-631 (89-90%),
-down 533 (76%), q_proj 535 (76%), in_proj_qkv / z 468 / 474 (67-68%), out_proj / o_proj
-319 / 336 (46-48%), k / v 172 / 192 (25-27%); the per-CTA q8 quantization takes 1.5-8 us of
-each call. Tutorial 01's "80%" is the same measure (574 of ~700 GB/s); its bf16 GEMVs move
-four times the bytes per K step, and gate+up and down stream at 90-100% there.
-Tried on the W7900 and not kept (all bitwise, ms/token against 27.33): skipping row
-tiles whose rows are all inactive (27.2-27.3, no gain), 4/8-row block-cyclic owners for the
-5120/10240-row projections (27.15, the same as the pin: a half tile costs the same with
-4 live rows as with 8), two K steps of weights in flight in the projections (27.05, same
-as the pin; in gate+up it spills, 27.95), and touching the first 16 / 32 / 48 KB of each
-weight with plain loads during the quantization (27.4 / 27.55 / 28.1; issued after the activation loads and unmasked, so the quantization does not wait for them: 16 / 32 KB 27.22 / 27.47 against 27.18). With 8-row tiles, two K steps of weights in flight is also level (26.86 vs 26.87). Per-CTA stamps
-show gate+up (tile queue) ends within 4% across CTAs at about 620 GB/s, while 32-row
-owners of the 5120-row projections run 86 vs 73 us (down) and 47 vs 41 us (out_proj) longer
-than 16-row owners; their outputs feed the block's local residual add, so the queue
-cannot move rows between blocks without a grid barrier. Packing the activation in 128-group pieces
-cuts the megakernel's LDS from 26,688 to 22,592 B (the 8 KB layout-conversion scratch of the
-256-group piece of the down projection), so five 4-wave blocks fit a WGP and 240-block meshes are
-admitted, bitwise on 8x24 and at 27.1 ms. None of them is faster, with q8 and the gate+up queue:
-10x24 28.15 ms, 8x30 29.6, 6x40 30.1, 5x48 31.9, 15x16 33.1 (8x24 27.1). It is not kept.
-The model streams 501 GB/s on the
-W7900 (58% of 864 GB/s nominal, 72% of the ~700 GB/s it sustains).
-
-Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
-
-- **Chinese64**: all 64 tokens equal llama.cpp, with either activation path.
-  The gfx1100 llama.cpp build itself picks 4960 at the step-22 near-tie, like
-  FlagMega and the CUDA build.
-- **Synthetic32**: the first 18 tokens equal llama.cpp, with either activation
-  path. Step 18 is a near-tie: llama.cpp ranks 14791 over 56239 by 0.022 logits
-  and FlagMega picks 56239, its second choice.
-- Logits are finite.
-- Three independent processes reproduce the 64-step Chinese64 tokens and logits
-  bitwise with q8_1 activations on the 8x24 mesh, and with floating-point
-  activations on both the 8x24 and the 8x16 mesh, as with each earlier kernel
-  (four processes for the generic kernel, one before and three after a host
-  reboot).
-
-On gfx1100 every FlagMega change must reproduce bitwise across independent
-processes like this, because FlagTree's LLVM 22 has a schedule-sensitive
-gfx1100 codegen defect.
-
-`benchmark.py` therefore accepts a generated prefix that equals llama.cpp's, or
-whose first differing step is a golden-logit near-tie (top-2 margin below
-`--near-tie-margin`, default 0.1, with our token as llama.cpp's second choice).
-After such a step the two contexts differ, so later prefix tokens are not
-compared.
+- **Chinese64** (17-token prompt, 64 steps): all 64 tokens equal llama.cpp on both cards.
+- **Synthetic32** (token 1, 32 steps):
+  - R9700: all 32 tokens equal llama.cpp.
+  - W7900: the first 18 tokens equal llama.cpp. Step 18 is a near-tie that llama.cpp
+    ranks by 0.022 logits.
+- **Near-tie rule:** `benchmark.py` also accepts a first difference where llama.cpp's
+  top-1/top-2 margin is below `--near-tie-margin` (default 0.1) and FlagMega's token is
+  llama.cpp's second choice.
+- **Reproducibility:** three independent processes reproduce the 64-step tokens and logits
+  bitwise. This is required on gfx1100, where FlagTree's LLVM 22 has a schedule-sensitive
+  codegen defect.
+- **Accuracy:** against an fp64 one-step reference on the R9700, measured before the fused
+  norm statistics, the logits max error is 0.19, against 0.22 for llama.cpp HIP; both have
+  the same top-5.
+- **Fused residual/norm statistics:** they sum in a different order, so logits are not
+  bitwise equal to the unfused build. With teacher forcing on five prompts (up to 128
+  steps), the error against llama.cpp is unchanged.
 
 ## Reproduce
 
-Run from the repository root in the FlagTree environment (validated with
-PyTorch 2.10 + ROCm 7.2.4). The checkpoint, `prepare_checkpoint.py` and
-requirements are shared with the NVIDIA tutorial.
+Run from the repository root in the FlagTree environment (validated with PyTorch 2.10 +
+ROCm 7.2.4). The checkpoint and requirements are shared with the NVIDIA tutorial.
 
 ```sh
 export TUTORIAL="$PWD/python/tutorials/flagmega/03-qwen3.8-27b-iq4/amd-rdna"
@@ -423,45 +75,37 @@ export LOCAL="$TUTORIAL/.local"
 export CHECKPOINT="$LOCAL/checkpoint/qwen3.8-27b-IQ4_XS-pure.gguf"
 export TRITON_CACHE_DIR="$LOCAL/triton-cache"
 export PYTHONPATH="$PWD/python${PYTHONPATH:+:$PYTHONPATH}"
+export ARCH=gfx1201   # gfx1100 on a W7900
 python -m pip install -r "$NVIDIA_TUTORIAL/requirements.txt"
 python "$NVIDIA_TUTORIAL/download_checkpoint.py" --output "$LOCAL/checkpoint"
 
-python "$TUTORIAL/compile.py" --checkpoint "$CHECKPOINT" --arch gfx1201 \
-  --trial "$LOCAL/trials/baseline-001"
+# 1. Compile (CPU only, ~1-2 min) and smoke-run four steps.
+python "$TUTORIAL/compile.py" --checkpoint "$CHECKPOINT" --arch $ARCH --trial "$LOCAL/trials/baseline-001"
 python "$TUTORIAL/run.py" --artifact "$LOCAL/trials/baseline-001/artifact" --steps 4
-```
 
-Use `--arch gfx1100` (and `-DAMDGPU_TARGETS=gfx1100` for llama.cpp) on a W7900;
-it compiles on the 8x24 mesh unless `--mesh 8x16` is given. `--q8-activations
-off` compiles the floating-point activation GEMVs instead.
-Build the pinned llama.cpp with HIP for the same GPU, record the goldens and
-compare (Synthetic32: `--steps 32 --token-id 1` and no `--prompt`):
-
-```sh
-export LLAMA_SOURCE="$LOCAL/llama.cpp"
-export LLAMA_BUILD="$LOCAL/llama-build"
-# Fetch commit 4413a192410fad1f054e9216114087a3e01527a0 as in the NVIDIA tutorial, then:
-cmake -S "$LLAMA_SOURCE" -B "$LLAMA_BUILD" -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1201 \
+# 2. Build the pinned llama.cpp (commit 4413a192410fad1f054e9216114087a3e01527a0) with HIP.
+export LLAMA_SOURCE="$LOCAL/llama.cpp" LLAMA_BUILD="$LOCAL/llama-build"
+cmake -S "$LLAMA_SOURCE" -B "$LLAMA_BUILD" -DGGML_HIP=ON -DAMDGPU_TARGETS=$ARCH \
   -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF \
   -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_COMMON=OFF
 cmake --build "$LLAMA_BUILD" --target llama -j16
 
+# 3. llama.cpp golden + performance, then FlagMega performance and correctness (Chinese64).
 PROMPT='请用中文解释为什么量化模型的单 token decode 通常受显存带宽限制。'
-python "$TUTORIAL/llama_golden.py" --arch gfx1201 --llama-source "$LLAMA_SOURCE" \
-  --llama-build "$LLAMA_BUILD" --checkpoint "$CHECKPOINT" \
-  --output "$LOCAL/llama-golden-chinese" --steps 64 --prompt "$PROMPT"
-python "$TUTORIAL/llama_performance.py" --arch gfx1201 --llama-source "$LLAMA_SOURCE" \
-  --llama-build "$LLAMA_BUILD" --checkpoint "$CHECKPOINT" \
-  --output "$LOCAL/llama-performance-chinese" --steps 64 --repeats 3 --prompt "$PROMPT"
-python "$TUTORIAL/benchmark.py" --arch gfx1201 \
-  --artifact "$LOCAL/trials/baseline-001/artifact" \
-  --llama-reference "$LOCAL/llama-golden-chinese" --independent-generation \
-  --golden-token-prefix 8 --steps 64 --repeats 3 --measurement host-token \
-  --output "$LOCAL/baseline-chinese.json"
+LLAMA="--arch $ARCH --llama-source $LLAMA_SOURCE --llama-build $LLAMA_BUILD --checkpoint $CHECKPOINT"
+python "$TUTORIAL/llama_golden.py" $LLAMA --output "$LOCAL/golden-chinese64" --steps 64 --prompt "$PROMPT"
+python "$TUTORIAL/llama_performance.py" $LLAMA --output "$LOCAL/llama-perf-chinese64" \
+  --steps 64 --repeats 3 --prompt "$PROMPT"
+python "$TUTORIAL/benchmark.py" --arch $ARCH --artifact "$LOCAL/trials/baseline-001/artifact" \
+  --llama-reference "$LOCAL/golden-chinese64" --independent-generation --golden-token-prefix 8 \
+  --steps 64 --repeats 3 --measurement host-token --output "$LOCAL/flagmega-chinese64.json"
 ```
 
-`run.py`, `llama_golden.py` and `llama_performance.py` run the vendor-neutral
-NVIDIA scripts and only relabel the llama.cpp backend. `benchmark.py` runs the
-NVIDIA graph-replay protocol (HIP graphs capture the cooperative launch) and
-reports bandwidth against the AMD card. Keep GPU runs sequential and rotate the
-backend order when comparing repeated performance runs.
+For Synthetic32, use `--steps 32 --token-id 1` instead of `--steps 64 --prompt ...`.
+
+`benchmark.py` reports ms/token, GB/s and whether the tokens are accepted against llama.cpp.
+Run GPU jobs one at a time and alternate the FlagMega / llama.cpp order between rounds.
+
+Compile options:
+- `--q8-activations off`: floating-point activation GEMVs.
+- `--mesh 8x16`: the gfx1100 target's default mesh instead of 8x24.
