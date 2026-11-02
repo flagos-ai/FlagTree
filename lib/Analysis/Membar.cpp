@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/ExactSMEM.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -44,6 +45,7 @@ namespace mlir {
 namespace {
 
 namespace tt = mlir::triton;
+namespace tle = mlir::triton::tle;
 namespace ttg = mlir::triton::gpu;
 
 struct StaticAccessView {
@@ -632,7 +634,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   // publishes to a peer that waits on a named barrier. Keep tracking pending
   // memory effects here; the rendezvous belongs at consumption, not at the
   // per-thread completion wait.
-  if (isa<triton::gpu::AsyncWaitOp>(op) && op->hasAttr("ppugpu.pipe_wait") &&
+  if (isa<triton::gpu::AsyncWaitOp>(op) && op->hasAttr(tle::kTlePipeWaitAttr) &&
       target && target.getValue().starts_with("ppu:"))
     return;
 #endif
