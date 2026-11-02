@@ -1,0 +1,5 @@
+{#- gfx1100 keeps ConvertToBufferOps: the q8 activation source is a VGPR pointer parameter, so its
+    quantization loads became readfirstlane waterfall loops (114 in the megakernel). Reading the source
+    back into SGPRs once per call removes them; the arithmetic is unchanged, so results are bitwise. #}
+{% set q8_pin_source = true %}
+{% include "kernels/block_fp8/platforms/amd/simt.py.jinja" %}

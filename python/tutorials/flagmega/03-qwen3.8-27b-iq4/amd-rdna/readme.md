@@ -283,7 +283,22 @@ offsets in the GEMVs, and pointer parameters of the noinline device functions
 activation offsets keep the GEMV loads as global loads (42.6 → 39.6 ms), and
 on gfx1100 every non-GEMV device function reads its pointer parameters back
 into SGPRs (39.6 → 38.5 ms): `s_cbranch_execnz` loops drop from 258 to 28.
-Both keep the logits bitwise.
+Both keep the logits bitwise. The q8 quantization's own source pointer (a VGPR
+parameter too) is read back into SGPRs once per call on gfx1100
+(`platforms/amd/gfx1100/`): `s_cbranch_execnz` loops 114 -> 28, 27.33 -> 27.13 ms
+(six interleaved runs each; llama.cpp 29.34 / 29.36 ms, 1.08x), 248 VGPRs and 44 B of
+scratch unchanged; three processes reproduce the 64-step tokens and logits bitwise.
+Tried on the W7900 and not kept (all bitwise, ms/token against 27.33): skipping row
+tiles whose rows are all inactive (27.2-27.3, no gain), 4/8-row block-cyclic owners for the
+5120/10240-row projections (27.15, the same as the pin: a half tile costs the same with
+4 live rows as with 8), two K steps of weights in flight in the projections (27.05, same
+as the pin; in gate+up it spills, 27.95), and touching the first 16 / 32 / 48 KB of each
+weight with plain loads during the quantization (27.4 / 27.55 / 28.1). Per-CTA stamps
+show gate+up (tile queue) ends within 4% across CTAs at about 620 GB/s, while 32-row
+owners of the 5120-row projections run 86 vs 73 us (down) and 47 vs 41 us (out_proj) longer
+than 16-row owners; their outputs feed the block's local residual add, so the queue
+cannot move rows between blocks without a grid barrier. The model streams 501 GB/s on the
+W7900 (58% of 864 GB/s nominal, 72% of the ~700 GB/s it sustains).
 
 Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
 

@@ -49,6 +49,9 @@ def _flagmega_amd_q8_quantize(source, words, scales, tail_words, tail_scales, K:
     """Groups below MAIN_GROUPS go to `words`/`scales` in one or two CHUNK-group pieces, the rest to the
     tail buffers (TAIL groups, zero padded). Every piece is loaded before any is packed, so the
     activation reads cost one memory latency."""
+{% if q8_pin_source is defined and q8_pin_source %}
+    source = _flagmega_amd_uniform_parameter(source)
+{% endif %}
     GROUPS: tl.constexpr = K // 32
     tl.static_assert(MAIN_GROUPS <= 2 * CHUNK)
     first = _flagmega_amd_q8_load(source, 0, CHUNK, CHUNK)

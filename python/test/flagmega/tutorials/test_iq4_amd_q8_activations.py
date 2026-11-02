@@ -385,3 +385,14 @@ def test_gfx1100_and_disabled_prefetch_render_no_prefetch(tmp_path, installed, m
     assert "_flagmega_amd_q8_prefetch" not in _source(tmp_path, "nopf", build, "IQ4_XS", "amd-gfx1100")
     monkeypatch.setenv("FLAGMEGA_AMD_Q8_PREFETCH_KB", "0")
     assert "_flagmega_amd_q8_prefetch" not in _source(tmp_path, "off", build, "IQ4_XS", "amd-gfx1201")
+
+
+@pytest.mark.parametrize("build", ("projection", "glu"))
+def test_gfx1100_pins_the_q8_source_pointer_to_sgprs(tmp_path, installed, build):
+    def quantize(source):
+        start = source.index("def _flagmega_amd_q8_quantize(")
+        return source[start:source.index("\n@triton.jit", start)]
+
+    assert "source = _flagmega_amd_uniform_parameter(source)" in quantize(
+        _source(tmp_path, "pin", build, "IQ4_XS", "amd-gfx1100"))
+    assert "uniform_parameter" not in quantize(_source(tmp_path, "r9700", build, "IQ4_XS", "amd-gfx1201"))
