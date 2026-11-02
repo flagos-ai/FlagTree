@@ -115,7 +115,6 @@ def get_lld_version():
 
 @dataclass(frozen=True)
 class MACAOptions:
-    autolayout: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 3
@@ -256,10 +255,6 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
-        # Auto layout tune
-        if opt.autolayout:
-            from .autolayout import make_ttgir_candidates
-            return make_ttgir_candidates(mod, metadata, opt, capability, MACABackend)
         explicit_layouts = COMMON_IR_ENABLED and passes.commonir.has_layout_hints(mod)
 
         assert opt.pipeline_load_num >= -1, "invalid pipeline_load_num value!"

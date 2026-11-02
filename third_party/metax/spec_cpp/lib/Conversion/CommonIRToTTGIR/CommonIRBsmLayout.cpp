@@ -3,6 +3,7 @@
 
 #include "triton/Conversion/CommonIRToTTGIR/BsmLayout.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
 #include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Tools/LayoutUtils.h"

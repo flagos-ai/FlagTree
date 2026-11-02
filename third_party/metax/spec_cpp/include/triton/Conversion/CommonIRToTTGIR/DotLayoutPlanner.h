@@ -29,10 +29,6 @@ struct DotLayoutPlan {
 FailureOr<SmallVector<DotLayoutPlan>>
 generateDotLayoutPlans(triton::DotOp dot, int computeCapability, int numWarps);
 
-// Validate a fixed plan without requiring already encoded TTGIR operands.
-LogicalResult validateDotLayoutPlan(triton::DotOp dot, const DotLayoutPlan &plan,
-                                    int computeCapability, int numWarps);
-
 struct DotLayoutDomain {
   triton::DotOp dot;
   std::string functionName;

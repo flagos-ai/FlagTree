@@ -14,6 +14,12 @@ unsigned getAsyncCopyVectorSize(RankedTensorType source,
                                gpu::MemDescType destination,
                                const AxisInfo *sourceInfo);
 
+// Validate mask/zero-fill semantics and bound vector width in elements.
+// The destination may be a proposed shared type during layout planning.
+FailureOr<unsigned> getAsyncCopyMaxVectorSize(
+    gpu::AsyncCopyGlobalToLocalOp copy, gpu::MemDescType destination,
+    ModuleAxisInfoAnalysis &axisInfo);
+
 // ldg.bsm uses a wave-uniform shared base and implicit lane offsets.
 bool isAsyncCopyLayoutCompatible(RankedTensorType source,
                                 gpu::MemDescType destination, unsigned vec);

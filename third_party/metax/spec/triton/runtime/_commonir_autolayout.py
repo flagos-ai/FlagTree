@@ -14,12 +14,12 @@ from pathlib import Path
 from triton.runtime.cache import get_cache_manager
 from triton import knobs
 from triton.runtime.driver import driver
-from triton.runtime.jit import JITFunction, KernelInterface
+from triton.runtime.jit import JITFunction, KernelInterface, compute_cache_key
 from triton.runtime._distributed import DistributedRtContext, validate_node_launch_bindings
 
 _LOGGER = logging.getLogger(__name__)
 # One elimination look after 16 samples, then refine survivors to 32.
-_PROTOCOL = "commonir-autolayout-v4"
+_PROTOCOL = "commonir-autolayout-v5"
 _WARMUP = 5
 _COARSE_SAMPLES = 16
 _TOTAL_SAMPLES = 32
@@ -50,7 +50,7 @@ def _median_intervals(samples, candidate_count):
     return intervals
 
 
-def _specialization_key(kernel):
+def _specialization_key(bundle):
     """Persist one winner per compiled specialization and physical device.
 
     Ordinary JIT specialization already captures compilation assumptions.
@@ -60,7 +60,7 @@ def _specialization_key(kernel):
     import torch
 
     device = torch.cuda.get_device_properties(torch.cuda.current_device())
-    payload = (_PROTOCOL, "jit-specialization-v1", kernel.hash, str(getattr(device, "uuid", device.name)),
+    payload = (_PROTOCOL, "jit-specialization-v1", bundle.hash, str(getattr(device, "uuid", device.name)),
                device.name, device.multi_processor_count)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -144,34 +144,76 @@ class LayoutTuner(KernelInterface):
         self.arg_names = fn.arg_names
         self._layout_lock = threading.RLock()
         self._layout_kernels = {}
+        self._compile_failures = {}
+        self._bundles = defaultdict(dict)
+        self._warmups = defaultdict(dict)
+        self._notified = set()
         self._winners = defaultdict(dict)
         self.autolayout_results = {}
 
     def run(self, *args, grid, warmup, **kwargs):
         from triton._common_ir import ENABLED
+        from triton._C.libtriton import get_cache_invalidating_env_vars
+        from triton.backends.metax.autolayout import prepare_layout_candidates
+        from triton.runtime import _async_compile
+        from flagtree import _flagprism
 
         device = driver.active.get_current_device()
-        _, _, target, _, binder = self.fn.device_caches[device]
+        _, key_cache, target, backend, binder = self.fn.device_caches[device]
         if target.backend != "maca" or not ENABLED:
             raise ValueError("layout_tune requires the MetaX CommonIR backend")
-        kwargs["autolayout"] = True
-        # JIT owns specialization, compilation, pre-run hooks and global checks.
-        kernel = self.fn.run(*args, grid=grid, warmup=True, **kwargs)
-        if kernel is None:
-            return None
+        kwargs["debug"] = kwargs.get("debug", self.fn.debug) or knobs.runtime.debug
+        kwargs["instrumentation_mode"] = knobs.compilation.instrumentation_mode
+        _flagprism.apply_compile_options(kwargs)
+        for hook in self.fn.pre_run_hooks:
+            hook(*args, **kwargs)
+        bound_args, specialization, raw_options = binder(*args, **kwargs)
+        key = compute_cache_key(key_cache, specialization, raw_options)
+        with self._layout_lock:
+            bundle = self._bundles[device].get(key)
+            if bundle is None:
+                options, signature, constants, attrs = self.fn._pack_args(
+                    backend, kwargs, bound_args, specialization, raw_options)
+                if self.fn._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constants, options,
+                                      [attrs], True):
+                    return None
+                src = self.fn.ASTSource(self.fn, signature, constants, attrs)
+                bundle = prepare_layout_candidates(src, backend, options, get_cache_invalidating_env_vars())
+                self._bundles[device][key] = bundle
+
+        missing = object()
+        for (name, _), (value, globals_dict) in self.fn.used_global_vals.items():
+            current = globals_dict.get(name, missing)
+            if current != value:
+                raise RuntimeError(f"Global variable {name} has changed since we compiled this kernel, "
+                                   f"from {value} to {current}")
         winners = self._winners[device]
         if warmup:
-            return winners.get(getattr(kernel, "hash", None), kernel)
-        if hasattr(kernel, "result"):
-            kernel = kernel.result()
+            if key in winners:
+                return winners[key]
+            if key not in self._warmups[device]:
+                def finalize(kernel):
+                    self._warmups[device][key] = kernel
+                    self._finish_compile(kernel, bundle, backend, device, key)
 
-        bound_args, specialization, _ = binder(*args, **kwargs)
+                mode = _async_compile.active_mode.get()
+                if mode is not None:
+                    result = mode.submit((id(self), device, bundle.hash), lambda: self._first_compiled(bundle), finalize)
+                    self._warmups[device][key] = result
+                else:
+                    finalize(self._first_compiled(bundle))
+            return self._warmups[device][key]
+
+        pending = self._warmups[device].get(key)
+        if hasattr(pending, "result"):
+            pending.result()
         assert grid is not None
         if callable(grid):
             grid = grid(bound_args)
         launch_grid = (grid[0], grid[1] if len(grid) > 1 else 1, grid[2] if len(grid) > 2 else 1)
         stream = driver.active.get_current_stream(device)
-        kernel = self._select_kernel(kernel, launch_grid, stream, bound_args, kernel_cache=winners, key=kernel.hash)
+        kernel = self._select_kernel(bundle, launch_grid, stream, bound_args, kernel_cache=winners, key=key)
+        self._finish_compile(kernel, bundle, backend, device, key)
         validate_node_launch_bindings(kernel, bound_args, specialization)
         launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
         ctx = DistributedRtContext()
@@ -180,42 +222,61 @@ class LayoutTuner(KernelInterface):
                    knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *dist_params, *bound_args.values())
         return kernel
 
-    def _compile_variant(self, fallback, manifest, variant):
-        if variant is manifest["variants"][0]:
-            return fallback
-        identity = (fallback.hash, variant["id"])
+    def _finish_compile(self, kernel, bundle, backend, device, key):
+        if (device, key) not in self._notified:
+            if getattr(kernel.metadata, "kernel_init_hooks", ()):
+                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                run_kernel_init_hooks(kernel)
+            self.fn._call_hook(knobs.runtime.jit_post_compile_hook, key, bundle.src.signature, device,
+                               bundle.src.constants, backend.parse_options(bundle.options), [bundle.src.attrs], True)
+            self._notified.add((device, key))
+
+    def _compile_variant(self, bundle, variant):
+        # Bundles are per device; loaded kernel handles must not cross devices.
+        identity = (id(bundle), variant["id"])
         if identity in self._layout_kernels:
             return self._layout_kernels[identity]
-        cache = get_cache_manager(fallback.hash)
-        path = cache.get_file(variant["file"])
-        if path is None or hashlib.sha256(Path(path).read_bytes()).hexdigest() != variant["id"]:
-            raise RuntimeError(f"missing or changed CommonIR candidate source: {variant['file']}")
-        from triton.backends.metax.compiler import MACAOptions
-
-        options = {name: getattr(fallback.metadata, name) for name in MACAOptions.__dataclass_fields__}
-        options["autolayout"] = False
-        kernel = self.fn.compile(path, target=fallback.metadata.target, options=options)
-        if list(kernel.src.signature.values()) != manifest["signature"]:
-            raise RuntimeError("CommonIR candidate changed the device argument signature")
-        # IRSource omits constexpr host arguments. Reuse the AST launch ABI
-        # before the candidate's launcher is initialized.
-        kernel.src = fallback.src
+        if identity in self._compile_failures:
+            raise RuntimeError(self._compile_failures[identity])
+        try:
+            cache = get_cache_manager(bundle.hash)
+            path = cache.get_file(variant["file"])
+            if path is None or hashlib.sha256(Path(path).read_bytes()).hexdigest() != variant["id"]:
+                raise RuntimeError(f"missing or changed CommonIR candidate source: {variant['file']}")
+            kernel = self.fn.compile(path, target=bundle.target, options=bundle.options, _env_vars=bundle.env_vars)
+            if list(kernel.src.signature.values()) != bundle.manifest["signature"]:
+                raise RuntimeError("CommonIR candidate changed the device argument signature")
+            # IRSource omits constexpr host arguments. Restore the AST launch ABI.
+            kernel.src = bundle.src
+        except Exception as error:
+            self._compile_failures[identity] = str(error)
+            raise
         self._layout_kernels[identity] = kernel
         return kernel
 
-    def _compile_candidates(self, fallback, manifest):
+    def _first_compiled(self, bundle, *, load=False):
+        failures = {}
+        for variant in bundle.manifest["variants"]:
+            try:
+                kernel = self._compile_variant(bundle, variant)
+                if load:
+                    kernel._init_handles()
+                return kernel
+            except Exception as error:
+                failures[variant["id"]] = f"compilation/loading: {error}"
+                _LOGGER.warning("CommonIR candidate %s failed compilation/loading: %s", variant["id"], error)
+        self._raise_all_failed(bundle, failures)
+
+    @staticmethod
+    def _raise_all_failed(bundle, failures):
+        errors = [item["error"] for item in bundle.manifest["failures"]]
+        errors.extend(f"{identity}: {reason}" for identity, reason in failures.items())
+        raise RuntimeError("CommonIR autolayout: all candidates failed. " + "; ".join(errors))
+
+    def _compile_candidates(self, bundle):
         """Compile independently, then load on the caller's GPU thread in order."""
-        fallback_id = manifest["variants"][0]["id"]
         compiled, failures = {}, {}
-        try:
-            fallback._init_handles()
-            compiled[fallback_id] = fallback
-        except Exception as error:
-            failures[fallback_id] = f"compilation/loading: {error}"
-            _LOGGER.warning("CommonIR candidate %s failed compilation/loading: %s", fallback_id, error)
-        variants = {v["id"]: v for v in manifest["variants"][1:] if v["id"] != fallback_id}
-        if not variants:
-            return compiled, failures
+        variants = {v["id"]: v for v in bundle.manifest["variants"]}
 
         workers = int(os.getenv("TRITON_COMMONIR_AUTOLAYOUT_COMPILE_WORKERS", "4"))
         if workers < 1:
@@ -223,7 +284,7 @@ class LayoutTuner(KernelInterface):
         with ThreadPoolExecutor(max_workers=min(workers, len(variants)),
                                 thread_name_prefix="commonir-layout-compile") as executor:
             futures = {
-                identity: executor.submit(self._compile_variant, fallback, manifest, variant)
+                identity: executor.submit(self._compile_variant, bundle, variant)
                 for identity, variant in variants.items()
             }
             # Completion order must not change benchmark order or tie-breaking.
@@ -297,17 +358,15 @@ class LayoutTuner(KernelInterface):
         kernel_cache[key] = winner
         return winner
 
-    def _select_kernel(self, kernel, grid, stream, bound_args, *, kernel_cache, key):
+    def _select_kernel(self, bundle, grid, stream, bound_args, *, kernel_cache, key):
         if key in kernel_cache:
             return kernel_cache[key]
-        manifest = getattr(kernel.metadata, "commonir_layout_candidates", None)
-        if manifest is None or len(manifest["variants"]) == 1:
-            return kernel
-        if manifest["version"] != 1:
+        manifest = bundle.manifest
+        if manifest["version"] != 2:
             raise RuntimeError("unsupported CommonIR candidate manifest version")
         grid = tuple(grid) + (1, ) * (3 - len(grid))
         if any(size == 0 for size in grid):
-            return kernel
+            return self._first_compiled(bundle, load=True)
         import torch
 
         jit_key = key
@@ -315,7 +374,9 @@ class LayoutTuner(KernelInterface):
             # Another caller may have selected this specialization while we waited.
             if jit_key in kernel_cache:
                 return kernel_cache[jit_key]
-            key = _specialization_key(kernel)
+            if len(manifest["variants"]) == 1:
+                return self._remember_winner(kernel_cache, jit_key, self._first_compiled(bundle, load=True))
+            key = _specialization_key(bundle)
             if torch.cuda.is_current_stream_capturing():
                 raise RuntimeError("run autolayout once before capturing this specialization in a GPU graph")
 
@@ -327,7 +388,7 @@ class LayoutTuner(KernelInterface):
                     selected = next(v for v in manifest["variants"] if v["id"] == record["selected"])
                     if record["version"] != 1:
                         raise ValueError("stale autolayout record")
-                    winner = self._compile_variant(kernel, manifest, selected)
+                    winner = self._compile_variant(bundle, selected)
                     winner._init_handles()
                 except Exception as error:
                     _LOGGER.warning("CommonIR cached candidate could not be reused: %s", error)
@@ -338,7 +399,9 @@ class LayoutTuner(KernelInterface):
             # Materialize all binaries before benchmarking, keeping compiler
             # and launcher setup out of the timed regions.
             _require_quantile_test()
-            compiled, failures = self._compile_candidates(kernel, manifest)
+            compiled, failures = self._compile_candidates(bundle)
+            if not compiled:
+                self._raise_all_failed(bundle, failures)
             args = tuple(bound_args.values())
 
             def validate_pointer(value, signature):
@@ -348,7 +411,7 @@ class LayoutTuner(KernelInterface):
                 elif signature.startswith("*") and value is not None and not isinstance(value, torch.Tensor):
                     raise TypeError("autolayout replay requires torch.Tensor pointer arguments")
 
-            for name, signature in kernel.src.signature.items():
+            for name, signature in bundle.src.signature.items():
                 validate_pointer(bound_args[name], signature)
             # Keep PyTorch's wrapper for its current stream, including handle 0.
             replay_stream = torch.cuda.current_stream()
@@ -362,8 +425,7 @@ class LayoutTuner(KernelInterface):
                     "version": 1, "selected": None, "timings_ms": {}, "failures": failures, "source": "failed",
                     "benchmark": benchmark,
                 }
-                details = "; ".join(f"{identity}: {reason}" for identity, reason in failures.items())
-                raise RuntimeError(f"CommonIR autolayout: all candidates failed. {details}")
+                self._raise_all_failed(bundle, failures)
             # Manifest order breaks ties among the successful candidates.
             selected = min(timings, key=timings.get)
             record = {"version": 1, "selected": selected, "timings_ms": timings, "failures": failures,

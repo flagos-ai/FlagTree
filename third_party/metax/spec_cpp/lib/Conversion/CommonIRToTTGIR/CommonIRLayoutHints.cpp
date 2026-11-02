@@ -2,7 +2,7 @@
 
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/Transforms/LayoutHints.h"
-#include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/MathExtras.h"
@@ -223,11 +223,12 @@ LogicalResult validateDotLayouts(ModuleOp module) {
       dot.emitError("requires a target compute capability for MMA validation");
       return WalkResult::interrupt();
     }
-    DotLayoutPlan plan{mma, a, b};
-    return failed(validateDotLayoutPlan(dot, plan, capability,
-                                        ttg::lookupNumWarps(dot)))
-               ? WalkResult::interrupt()
-               : WalkResult::advance();
+    if (auto error = checkMacaDotLayout(dot, mma, a, b, capability,
+                                       ttg::lookupNumWarps(dot))) {
+      dot.emitError("MMA layout is not legal for this dot and target: ") << *error;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
   return failure(result.wasInterrupted());
 }

@@ -36,11 +36,16 @@ public:
                          "shared views with a different allocation shape");
         return signalPassFailure();
       }
+      auto maxVec = getAsyncCopyMaxVectorSize(copy, dstTy, axisInfo);
+      if (failed(maxVec))
+        return signalPassFailure();
       auto *info = axisInfo.getAxisInfo(copy.getSrc());
-      auto replacement = chooseAsyncCopyLayout(srcTy, dstTy, info);
+      auto replacement =
+          chooseAsyncCopyLayout(srcTy, dstTy, info, /*minVec=*/1, *maxVec);
       if (!replacement) {
         copy.emitOpError(
-            "cannot legalize lane-to-shared addresses for MetaX async copy");
+            "cannot legalize lane-to-shared addresses and mask vector width "
+            "for MetaX async copy");
         return signalPassFailure();
       }
       if (replacement == blocked)

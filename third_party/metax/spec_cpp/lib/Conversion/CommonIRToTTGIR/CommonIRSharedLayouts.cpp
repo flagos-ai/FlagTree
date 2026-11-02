@@ -2,7 +2,6 @@
 // Copyright (c) 2026 The FlagOS Contributors
 #include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
 #include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
-#include "mlir/IR/Matchers.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -118,32 +117,14 @@ LogicalResult checkSharedCopy(
       source.getShape() != destination.getShape())
     return copy.emitError(
         "automatic shared layout requires a rank-2 async copy");
-  unsigned dim = shared.getOrder().front();
   unsigned elemBytes = destination.getElementType().getIntOrFloatBitWidth() / 8;
-  unsigned maxVec = 16 / elemBytes;
-  if (Value mask = copy.getMask()) {
-    auto maskInfo = axisInfo.getAxisInfo(mask);
-    if (!maskInfo)
-      return copy.emitError("cannot prove async-copy mask uniformity");
-    // LLVM swizzles source addresses along this axis, but does not swizzle
-    // predicates. Axis-uniform masks are unchanged by that permutation.
-    if (shared.getMaxPhase() > 1 &&
-        maskInfo->getConstancy(dim) < source.getShape()[dim])
-      return copy.emitError("automatic swizzled shared layout requires an "
-                            "async-copy mask uniform along the swizzled axis");
-    maxVec = std::min<int64_t>(maxVec, maskInfo->getConstancy(dim));
-  }
-  if (Value other = copy.getOther()) {
-    while (auto convert = other.getDefiningOp<ttg::ConvertLayoutOp>())
-      other = convert.getSrc();
-    if (!matchPattern(other, m_Zero()) &&
-        !matchPattern(other, m_PosZeroFloat()))
-      return copy.emitError("MetaX async copy requires zero fill");
-  }
+  auto maxVec = getAsyncCopyMaxVectorSize(copy, destination, axisInfo);
+  if (failed(maxVec))
+    return failure();
   // Validate the proposed shared type without prescribing a tensor layout.
   // Keep this planner's 16/8/4-byte policy; propagation chooses the source later.
   if (chooseAsyncCopyLayout(source, destination, info,
-                            /*minVec=*/std::max(4 / elemBytes, 1u), maxVec))
+                            /*minVec=*/std::max(4 / elemBytes, 1u), *maxVec))
     return success();
   return copy.emitError("no legal 16/8/4-byte async copy for the selected "
                         "shared layout and proven address continuity");
@@ -151,15 +132,16 @@ LogicalResult checkSharedCopy(
 } // namespace
 
 FailureOr<tile::BufferLayoutPlan>
-planSharedLayouts(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
+planSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
                   const TensorLayoutRequirements &writerPreferences) {
   TTGIRBufferLayoutAdapter buffers;
   TTGIRLayoutAdapter tensors;
   auto writerOrders = collectWriterOrders(module, writerPreferences, buffers);
   SmallVector<tile::BufferLayoutRequirement> sharedRequirements;
-  for (auto [dot, plan] : choices) {
+  for (triton::DotOp dot : dots) {
     for (unsigned index : {0u, 1u}) {
-      Attribute encoding = index == 0 ? plan.operandA : plan.operandB;
+      Attribute encoding =
+          cast<RankedTensorType>(dot->getOperand(index).getType()).getEncoding();
       for (Value value :
            collectTensorLayoutComponent(dot->getOperand(index), tensors)) {
         auto load = value.getDefiningOp<ttg::LocalLoadOp>();

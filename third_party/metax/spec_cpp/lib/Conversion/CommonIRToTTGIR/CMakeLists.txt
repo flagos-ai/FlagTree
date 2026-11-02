@@ -50,5 +50,6 @@ add_triton_library(MetaxCommonIRLayouts
   MLIRTransforms
   TritonGPUIR
   TritonGPUTransforms
+  TritonAnalysis
   TritonTools
 )
