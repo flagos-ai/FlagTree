@@ -31,6 +31,15 @@ on:
         description: 'Backend name, e.g. nvidia, mthreads, ppu'
         required: true
         type: string
+      variant:
+        description: >-
+          Configuration label for a backend that tests several at once, e.g.
+          a matrix over devices or python versions. It becomes part of the
+          record id, so those results do not overwrite one another. Leave
+          unset when the backend tests a single configuration.
+        required: false
+        type: string
+        default: ''
       gpu-env-var:
         description: 'GPU device environment variable name'
         required: false
@@ -106,20 +115,20 @@ jobs:
           fi
 
       - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        uses: ./.github/actions/smart-checkout
         with:
           checkout_version: 'v6'
 
       - name: Check if backend-relevant files changed
         id: check_backend
         if: success()
-        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        uses: ./.github/actions/check-backend-changed
         with:
           backend: ${{ inputs.backend }}
 
       - name: Cleanup FlagTree Environment
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+        uses: ./.github/actions/cleanup-flagtree-env
 
       - name: Build FlagTree
         id: build
@@ -130,7 +139,7 @@ jobs:
 
       - name: Clone FlagGems Repo
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        uses: ./.github/actions/git-clone-retry
         with:
           repo-url: 'https://github.com/flagos-ai/FlagGems.git'
           ref: ${{ inputs.flaggems-tag }}
@@ -139,7 +148,7 @@ jobs:
       - name: Clear cache if ClearCache label present
         id: clear_cache
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        uses: ./.github/actions/clear-cache-if-labeled
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ${{ inputs.backend }}
@@ -147,7 +156,7 @@ jobs:
       - name: Run FlagGems Test
         id: run-flaggems-test
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        uses: ./.github/actions/run-flaggems-test
         with:
           flaggems-path: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           gpus: '${{ steps.setup.outputs.gpus }}'
@@ -161,7 +170,7 @@ jobs:
       - name: Compare with Baseline
         id: compare-baseline
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        uses: ./.github/actions/compare-flaggems-test
         with:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
@@ -177,6 +186,7 @@ jobs:
         env:
           CTX_KIND: test
           CTX_BACKEND: ${{ inputs.backend }}
+          CTX_VARIANT: ${{ inputs.variant }}
           CTX_RUNNER: ${{ inputs.runner }}
           CTX_FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
           CTX_FLAGTREE_SHA: ${{ github.event.pull_request.head.sha }}
@@ -211,7 +221,7 @@ jobs:
       - name: Report Record to Feishu
         if: ${{ always() && steps.collect.outputs.record-file != '' }}
         continue-on-error: true
-        uses: flagos-ai/FlagTree/.github/actions/report-feishu@main
+        uses: ./.github/actions/report-feishu
         with:
           record: ${{ steps.collect.outputs.record-file }}
           table-name: flaggems_runs

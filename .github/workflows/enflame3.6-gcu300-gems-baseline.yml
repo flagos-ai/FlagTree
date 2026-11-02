@@ -23,6 +23,10 @@ name: Enflame3.6-GCU300-Gems-Baseline
 on:
   push:
     branches: ["main", "triton_v3.6.x"]
+  # TEMP(pr-validation): remove before merge
+  pull_request:
+    branches: ["main", "triton_v3.6.x"]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -38,8 +42,9 @@ concurrency:
 
 jobs:
   enflame36x-gcu300:
-    if: ${{ github.event_name == 'push' }}
-    uses: flagos-ai/FlagTree/.github/workflows/template-gems-baseline.yml@main
+    # TEMP(pr-validation): restore to `github.event_name == 'push'` before merge
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/template-gems-baseline.yml
     with:
       runner: enflame3.6-gcu300
       backend: enflame
@@ -54,3 +59,6 @@ jobs:
         MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v --break-system-packages
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      FLAGTREE_FEISHU_APP_ID: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+      FLAGTREE_FEISHU_APP_SECRET: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+      FLAGTREE_FEISHU_BITABLE_APP_TOKEN: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
