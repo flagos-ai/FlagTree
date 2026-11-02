@@ -12,7 +12,7 @@ struct CommonIRPlanSharedLayoutsPass
     : impl::CommonIRPlanSharedLayoutsBase<CommonIRPlanSharedLayoutsPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    SmallVector<DotLayoutChoice> choices;
+    SmallVector<triton::DotOp> dots;
     module.walk([&](triton::DotOp dot) {
       auto mma = dyn_cast_or_null<gpu::MACAMmaEncodingAttr>(
           dot.getType().getEncoding());
@@ -20,11 +20,9 @@ struct CommonIRPlanSharedLayoutsPass
       if (!mma || mma.getVersionMajor() != 2 || mma.getIsATrans() ||
           mma.getIsBTrans() || (!elementType.isF16() && !elementType.isBF16()))
         return;
-      choices.push_back({dot,
-                         {mma, dot.getA().getType().getEncoding(),
-                          dot.getB().getType().getEncoding()}});
+      dots.push_back(dot);
     });
-    if (choices.empty())
+    if (dots.empty())
       return;
 
     // Writer preferences guide shared order even when logical tiles hide
@@ -32,7 +30,7 @@ struct CommonIRPlanSharedLayoutsPass
     TensorLayoutRequirements writerPreferences;
     collectCopyWriterPreferences(module, writerPreferences);
     collectLoadStoreLayoutRequirements(module, writerPreferences);
-    auto buffers = planSharedLayouts(module, choices, writerPreferences);
+    auto buffers = planSharedLayouts(module, dots, writerPreferences);
     if (failed(buffers))
       return signalPassFailure();
 
