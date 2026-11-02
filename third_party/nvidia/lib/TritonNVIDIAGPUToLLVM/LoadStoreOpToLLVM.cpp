@@ -14,6 +14,7 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/IR/CopyFill.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/RemotePointerUtils.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
@@ -1397,6 +1398,17 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value llSrc = adaptor.getSrc();
     Value llMask = adaptor.getMask();
     Value llOther = adaptor.getOther();
+#ifdef __TLE__
+    // cp.async zero fill cannot represent arbitrary values or negative zero.
+    // Active lanes copy asynchronously; inactive lanes store other directly.
+    const bool materializeOther = llMask && llOther &&
+                                  !tte::hasZeroFillBits(other);
+    SmallVector<Value> otherElems;
+    if (materializeOther) {
+      otherElems = unpackLLElements(loc, llOther, rewriter);
+      assert(otherElems.size() == getTotalElemsPerThread(srcTy));
+    }
+#endif
 
     // %src
     auto srcElems = unpackLLElements(loc, llSrc, rewriter);
@@ -1421,11 +1433,20 @@ struct AsyncCopyGlobalToLocalOpConversion
     auto ptrTy = srcElems[0].getType();
     auto structTy =
         LLVM::LLVMStructType::getLiteral(ctx, ArrayRef<Type>{ptrTy, i1_ty});
+#ifdef __TLE__
+    if (materializeOther)
+      structTy = LLVM::LLVMStructType::getLiteral(
+          ctx, ArrayRef<Type>{ptrTy, i1_ty, resElemTy});
+#endif
     for (int i = 0; i < srcElems.size(); i++) {
       Value packedArr = LLVM::UndefOp::create(rewriter, loc, structTy);
       packedArr = b.insert_val(packedArr, srcElems[i], 0);
       auto maskElem = llMask ? maskElems[i] : b.false_val();
       packedArr = b.insert_val(packedArr, maskElem, 1);
+#ifdef __TLE__
+      if (materializeOther)
+        packedArr = b.insert_val(packedArr, otherElems[i], 2);
+#endif
       vals.push_back(packedArr);
     }
 
@@ -1490,6 +1511,9 @@ struct AsyncCopyGlobalToLocalOpConversion
 
     auto emitCpAsync =
         [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
+#ifdef __TLE__
+         materializeOther,
+#endif
          l2PolicyReg](RewriterBase &rewriter, Location loc,
                       ArrayRef<Value> vals, Value shmemAddr, int startIdx,
                       VectorType vecTy) -> SmallVector<Value> {
@@ -1537,14 +1561,46 @@ struct AsyncCopyGlobalToLocalOpConversion
         // When 'other != 0' is supported, we will need to fold the
         // op.getMask() and redundantDataMask() into the same predicate, the
         // way it is done for LoadOp.
+#ifdef __TLE__
+        if (!materializeOther) {
+#endif
         auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
         srcSize = ptxBuilder.newOperand(selectOp, "r");
+#ifdef __TLE__
+        }
+#endif
       }
       auto &copyExec =
           evictOpr
               ? copyAsyncOp(dstOperand, srcOperand, copySize, srcSize, evictOpr)
               : copyAsyncOp(dstOperand, srcOperand, copySize, srcSize);
+#ifdef __TLE__
+      if (materializeOther) {
+        // An absent redundancy predicate means every thread participates.
+        copyExec.maybePredicate(maybeAnd(rewriter, loc, threadPred, maskElem));
+        auto fillPred = maybeAnd(rewriter, loc, threadPred,
+                                 b.xor_(maskElem, b.true_val()));
+        unsigned width = elemTy.getIntOrFloatBitWidth();
+        auto intTy = IntegerType::get(ctx, width);
+        for (unsigned i = 0; i < vecTy.getNumElements(); ++i) {
+          Value fill = b.extract_val(elemTy, vals[startIdx + i], 2);
+          fill = b.bitcast(fill, intTy);
+          if (width < 16)
+            fill = b.zext(i16_ty, fill);
+          auto *address = ptxBuilder.newAddrOperand(
+              shmemAddr, "r", i * width / 8);
+          auto *value = ptxBuilder.newOperand(
+              fill, width <= 16 ? "h" : width == 32 ? "r" : "l");
+          auto &store = *ptxBuilder.create<>("st");
+          store.shared().b(width);
+          store(address, value).maybePredicate(fillPred);
+        }
+      } else {
+#endif
       copyExec.maybePredicate(threadPred);
+#ifdef __TLE__
+      }
+#endif
       ptxBuilder.launch(rewriter, loc, void_ty(ctx));
       return {};
     };

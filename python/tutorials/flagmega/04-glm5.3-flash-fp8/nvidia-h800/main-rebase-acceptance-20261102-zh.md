@@ -24,6 +24,27 @@
 
 正式候选完整 45 层/E288/top8/H4096/cache4096/TP4/b1/out8；Source ebc471b31f7df9adab032f6e759578ac44b1ad7bb7701f4eb2037ea7efd52c00，228 调用/26 独立 program。正常生成约 120.52 秒，当前 Core 冷预编译约 94.83 秒，全部零 spill；host layout 修复后的正常缓存复用约 16 秒。首次 Gold 初始化为修复 layout 主动结束，真实退出 1，不能计作数值通过或失败。
 
-完整 Gold 与八段 NFFN/FNNF 正式 vLLM 对照进行中。历史性能数值不作为此次 rebase 的验收结果。
+第一版独立 Core（v7）的完整 Gold 四 rank 各 100 次请求通过，八段 NFFN/FNNF 对照真实退出 0，独立审计确认数值和硬件条件通过、性能失败。384 原始请求（64 warmup、320 formal）全部保留，无异常值剔除。
+
+| 上下文 | FlagMega TPOT (ms) | vLLM TPOT (ms) | FlagMega 变慢 |
+| --- | ---: | ---: | ---: |
+| 32 | 6.417071 | 6.330361 | 1.37% |
+| 128 | 6.515189 | 6.349773 | 2.61% |
+| 1024 | 6.687358 | 6.426791 | 4.05% |
+| 2048 | 6.907239 | 6.463474 | 6.87% |
+
+这是四个 Flag leg 和四个 Native leg 各上下文所有 40 个正式请求的中位数，不能覆盖更严格的逐段门槛；四种上下文的逐段门槛全部失败。2048 完整请求中位数约 13.635 s，vLLM 约 0.520 s；TPOT 排除了 prefill 与首个输出 token，完整请求优势尚未达到。CUDA Graph 和双流启用，原 GPU1–4 独占、实际 1980 MHz、无热降频。正式对照真实用时 2501.94 s。
+
+## 异步填充契约的根因修复
+
+目标是在保留 cp.async 搬运能力时保持 mask 排除位置的全部位模式。main 新增的零值条件在经过 ttg.convert_layout 后漏掉合法字节零；其数值零比较也将浮点负零错误视为 cp.async 的字节零。TLEOptimizeLocalPointerAsyncStores.cpp::matchAsyncStoreCandidate 改用 TLE-owned CopyFill.h::hasZeroFillBits，穿过布局转换并检查实际位模式。program_011 的 cp.async 数量恢复 410→462；24/26 个 program 的全部 PTX 指令与 rebase 前一致，两个仍有 main 布局/点积变化，不能声称全体代码等价。
+
+TLEFrontendSemantic::scalar_constant 的继承路径在 value == 0 时生成 null，先于 lowering 丢失 -0.0 的符号。TLE-owned frontend 改为按实际浮点精度生成负零，不修改 native semantic.py。四种浮点位模式回归在修复前 4 failed / 12 passed，修复后通过。
+
+NVIDIA LoadStoreOpToLLVM.cpp::AsyncCopyGlobalToLocalOpConversion::matchAndRewrite 原先忽略 other，显式异步 copy 的负零、1、负无穷在四种浮点类型上全部被写成零（12 failed / 20 passed）。修复保留有效位置的异步 copy，仅在无效位置使用 st.shared 写入 other，两类操作不会覆盖对方。所有原生新增行受 __TLE__ 保护。冗余线程谓词的空值表示全体线程参与，谓词组合统一使用 maybeAnd；直接对空值做 AND 的诊断版本产生 6 项编译失败，最终实现消除该缺陷。
+
+最小复现与回归：third_party/tle/test/GPU/local-pointer-async-copy-fill.mlir 使用 triton-opt --triton-tle-optimize-local-pointer-async-stores | FileCheck；python/test/tle/unit/test_async_copy_fill_bits.py 使用 pytest -q，覆盖 FP16/BF16/FP32/FP64 的 ±0/1/-inf，8/16/32/64 位整数的逐元素运行时填充，以及混合、全开、全关 mask。最终独立 Core（v15）44 项填充 GPU 回归通过，同时断言有效位置仍有 cp.async；包含原有 pipe/TMA、FP8 N8、scan 的扩展套件 109 项 GPU 全部通过，CPU 130 passed / 51 skipped。当前整模 Source、全部调度和计时循环不变，最终 Core 的完整 Gold 与正式性能对照待完成。
+
+范围检查：TLE MLIR 158 项通过（比 v7 新增一项）。原生 SM100 TCGen5 邻接 membar 测试 wait_after_mma 出现额外 CTA barrier，根因是 lib/Analysis/Membar.cpp::addEffectIntervals 对无 allocation ID 的 borrowed shared 参数作保守 allShared 区间，产生与等待 barrier 的潜在 WAR；H800 不执行该 TCGen5 路径，未删断言或禁用 pass。本任务没有 SM100/Iluvatar 硬件结论；原生邻接三项通过、一项失败的事实保留。
 
 本地证据：.local/rebase-main-reaccept-20261102-ff363313e。各 phase 保留真实顶层 OS wait/退出码；构建、失败前/后、CPU/GPU/lit、fresh、生成与预编译均有独立日志。中文优化记录：.local/iteration-log-zh.md。
