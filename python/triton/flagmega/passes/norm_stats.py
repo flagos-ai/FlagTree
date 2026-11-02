@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from triton.flagmega.ir import IRModule
+from triton.flagmega.ir import DType, IRModule, TensorType, verify_module
 from triton.flagmega.passes.functions.equivalent_variants import merge_equivalent_function_variants
 from triton.flagmega.passes.rewriter import DataflowPass
 from triton.flagmega.rules.neutral import (
@@ -58,8 +58,45 @@ def lower_add_norm_stats(module: IRModule) -> IRModule:
     ).run(module)
 
 
+def fold_widening_norm_stats_casts(module: IRModule) -> IRModule:
+    """Feed ``NormStats`` the 16-bit value instead of its exact f32 widening.
+
+    NormStats squares and sums in f32 whatever its input dtype, so the cast is
+    redundant; without it the residual-add/statistics formation and the
+    cross-function threading see the add or parameter they match. A cast with
+    other users stays in place for them.
+    """
+
+    node_map = module.node_map
+    users: dict[str, int] = {}
+    for node in module.nodes:
+        for value in node.inputs:
+            users[value] = users.get(value, 0) + 1
+    outputs = {value for function in module.functions for value in function.outputs}
+    folded, nodes = set(), []
+    for node in module.nodes:
+        if node.op == "nn.norm_stats":
+            cast = node_map[node.inputs[0]]
+            source = node_map[cast.inputs[0]] if cast.op == "tensors.cast" else None
+            if (
+                source is not None
+                and isinstance(cast.type, TensorType)
+                and cast.type.dtype == DType.FLOAT32
+                and isinstance(source.type, TensorType)
+                and source.type.dtype in {DType.BFLOAT16, DType.FLOAT16}
+            ):
+                node = replace(node, inputs=(source.id, *node.inputs[1:]))
+                if users[cast.id] == 1 and cast.id not in outputs:
+                    folded.add(cast.id)
+        nodes.append(node)
+    if not folded and all(a is b for a, b in zip(nodes, module.nodes)):
+        return module
+    return verify_module(replace(module, nodes=tuple(node for node in nodes if node.id not in folded)))
+
+
 __all__ = [
     "finalize_norm_stats_bindings",
+    "fold_widening_norm_stats_casts",
     "fuse_norm_stats_apply",
     "lower_add_norm_stats",
 ]

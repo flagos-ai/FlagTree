@@ -159,6 +159,12 @@ class PyNttTarget(NttTarget):
             implementation_model=self.triton_implementation_model,
         )
 
+    def propose_vectorization(self, module):
+        """Apply the machine's graph rewrite, if any, before vectorization."""
+
+        rewrite = getattr(self.machine, "pre_vectorization_rewrite", None)
+        return super().propose_vectorization(module if rewrite is None else rewrite(module))
+
     def paged_attention_split_plan(self, module):
         """The split axis for paged-attention partials; a machine may override."""
 

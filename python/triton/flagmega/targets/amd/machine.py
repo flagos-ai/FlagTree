@@ -29,6 +29,7 @@ from triton.flagmega.targets.amd.capability import (
     Gfx1201Capability,
 )
 from triton.flagmega.targets.selection import CapabilitySelectionPolicy
+from triton.flagmega.passes.norm_stats import fold_widening_norm_stats_casts
 from triton.flagmega.passes.auto_distributed.realization import (
     SameChipParameterViewReshardRealizationPolicy,
 )
@@ -253,6 +254,11 @@ class AmdGfx1100Machine(_AmdRdnaMachine):
         # Restoring a function's distributed parameter otherwise copies it into
         # every block before each use; a same-chip view reads it in place.
         return SameChipParameterViewReshardRealizationPolicy()
+
+    def pre_vectorization_rewrite(self, module):
+        # Lets each RMSNorm's statistics fuse with its residual add and be
+        # threaded to the next layer instead of running as cast + stats calls.
+        return fold_widening_norm_stats_casts(module)
 
 
 class AmdGfx1201Machine(_AmdRdnaMachine):

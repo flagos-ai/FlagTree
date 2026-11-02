@@ -224,7 +224,8 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters (default) | **26.1** | **38.3** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters + fused residual/norm statistics (default) | **25.7** | **38.9** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters | 26.1 | 38.3 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles | 26.7 | 37.4 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles | 26.9 | 37.2 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue | 27.3 | 36.7 |
@@ -315,10 +316,19 @@ view (`SameChipParameterViewReshardRealizationPolicy`): the parameter is canonic
 storage and the hazard planner keeps the barrier before remote reads. The copies and the
 separate slice reshards disappear (17 -> 15 calls per GDN layer), logits stay bitwise (three
 processes, 64 steps), and decode goes from 26.73 to 26.12 ms (six interleaved runs), about 521
-GB/s (74% of ~700 GB/s); llama.cpp 29.34 ms, 1.12x. Removing the f32 casts in front of each
-NormStats (NormStats upcasts itself) lets the existing add+stats fusion and the cross-layer
-stats threading apply, as in tutorial 01: 25.70 ms, but the fused statistics sum in a different
-order and the logits are no longer bitwise (tokens equal), so it is not enabled.
+GB/s (74% of ~700 GB/s); llama.cpp 29.34 ms, 1.12x. On gfx1100 the compiler also feeds each
+NormStats the bf16 value instead of its exact f32 widening (NormStats squares and sums in f32
+itself). Without the cast in between, the existing residual-add + statistics formation and the
+cross-layer statistics threading apply, as in tutorial 01: each layer ends with one add that also
+publishes the next norm's partial sums (13 -> 11 calls per GDN layer), and decode goes from 26.11 to
+25.70 ms (six interleaved runs each), about 530 GB/s (76% of ~700 GB/s); llama.cpp 29.34 ms, 1.14x.
+The statistics now sum per-block partials of the bf16 residual (192 partials, no FMA in the
+square) instead of eight 640-value slices (with FMA), so the logits are no longer bitwise equal
+to the build without it; three processes still reproduce each other bitwise, the fused kernels'
+GPU tests pass, and with every step's input forced to llama.cpp's (five prompts, 418 steps:
+Chinese64, Synthetic32 and three 128-step prompts) the logits error against llama.cpp is at the
+same level as before (mean relative L2 0.0116-0.0178 vs 0.0124-0.0174, no growth over the
+sequence), and every top-1 difference from llama.cpp is a near-tie (top-2 margin <= 0.035).
 With these, the GEMV phases take 24.1 ms of the 26.7 ms token at about 565 GB/s (81% of ~700 GB/s);
 the rest is GDN recurrent (about 19 us per GDN layer), the chains of small residual/norm/reshard calls
 around each projection (6-7 us each, twice per layer) and the attention core (about 33 us per attention
