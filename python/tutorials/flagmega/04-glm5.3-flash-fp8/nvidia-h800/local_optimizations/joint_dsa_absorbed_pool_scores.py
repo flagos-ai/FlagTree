@@ -38,7 +38,8 @@ def helpers(source):
     end=result.index('{% if call.joint_dsa_sort_tiles | default(none) %}',start)
     long_score=result[start:end].replace('__pool_scores(', '__pool_scores__long96(').replace('call.joint_dsa_pool_scores.count','call.joint_dsa_pool_scores.long_count')
     result=result[:end]+long_score+result[end:]
-    return result
+    from .visibility_publish import helpers as visibility_helpers
+    return visibility_helpers(result)
 
 def wrapper(original_wrapper):
     return '''{% if call.joint_dsa_pool_scores | default(none) %}
@@ -90,6 +91,8 @@ def activate():
             if query_group is None or query_group['count']!=128:
                 raise CodegenError('Joint DSA query needs complete owned-head operands')
             call['joint_dsa_pool_scores']=dict(index='tl.program_id(0)',count=SCORE_CTAS,long_count=LONG_SCORE_CTAS,long_min_base=LONG_MIN_BASE)
+            from .visibility_publish import configure as configure_visibility
+            configure_visibility(call)
             call['joint_dsa_sort_tiles']=(16,64,256,512,1024)
             ab['dsa_absorbed_score_ctas']=SCORE_CTAS
             ab['dsa_adaptive_long_score_ctas']=LONG_SCORE_CTAS

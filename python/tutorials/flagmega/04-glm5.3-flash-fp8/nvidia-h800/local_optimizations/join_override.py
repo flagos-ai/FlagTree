@@ -6,12 +6,12 @@ communication channel. The ordinary caller retains its device fences and ABI.
 """
 from pathlib import Path
 import hashlib
+import json
 
 from triton.flagmega.errors import CodegenError
 
 OUT = Path(__file__).resolve().parent
 FUNCTIONS = {"decode_mla_attention_sparse.join", "decode_linear_attention_sparse.join"}
-SEMANTIC_HASH = "7a073b51c9d72f7383aa0a5763697ee53917de427451b6f57841a4468c43a6c1"
 FAMILIES = ["broadcast_to", "sparse_experts_weighted_sum", "elementwise",
             "reduce_sum", "distributed_boxing", "mhc_post"]
 DTYPES = ["float32", "float32", "float32", "float32", "int32",
@@ -19,7 +19,8 @@ DTYPES = ["float32", "float32", "float32", "float32", "int32",
 
 
 def describe(module, previous):
-    if module.semantic_hash != SEMANTIC_HASH:
+    planned_hash = json.loads((OUT / 'plan.json').read_text())['semantic_hash']
+    if module.semantic_hash != planned_hash:
         raise CodegenError("Persistent join override requires its frozen verified typed module")
     descriptor = previous(module)
     plan = descriptor["persistent_window_resources"]
@@ -54,8 +55,11 @@ def describe(module, previous):
         seen.add(definition["function"])
     if seen != FUNCTIONS:
         raise CodegenError("Both full-model join implementations must be selected")
+    assert all(s["num_warps"] == 4 for s in descriptor["kernels"] if s["entry_function"] in FUNCTIONS)
+    descriptor["join_warp_schedule"] = dict(warps=4, full42_invocations=True,
+        channel_ABI_owner_epoch_release_math_and_DAG_unchanged=True)
     descriptor["implementation_override"] = dict(
-        kind="owner-matched-persistent-join/v1", typed_module=SEMANTIC_HASH,
+        kind="owner-matched-persistent-join/v1", typed_module=planned_hash,
         inputs={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in [OUT / "join_override.py", OUT / "join-body.py.jinja", OUT / "fences.py"]},
     )

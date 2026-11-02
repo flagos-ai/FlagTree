@@ -1108,6 +1108,32 @@ struct TritonScanPattern : public OpConversionPattern<triton::ScanOp> {
     auto &newCombineOp = newScan.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
                                newCombineOp.end());
+#ifdef __TLE__
+    // A scan preserves its input encoding. A consumer's explicit result
+    // encoding requires a conversion after the scan, independently per result.
+    SmallVector<Value> results;
+    for (auto [original, scanned] :
+         llvm::zip(op.getResults(), newScan.getResults())) {
+      Value result = scanned;
+      if (getTleExplicitValueEncoding(original)) {
+        auto targetType = getTypeConverter()->convertType(original);
+        auto scannedType = cast<RankedTensorType>(scanned.getType());
+        setTleExplicitResultEncoding(cast<OpResult>(scanned),
+                                     scannedType.getEncoding());
+        if (scannedType != targetType) {
+          auto conversion =
+              ConvertLayoutOp::create(rewriter, op.getLoc(), targetType, scanned);
+          setTleExplicitResultEncoding(cast<OpResult>(conversion.getResult()),
+                                      cast<RankedTensorType>(targetType)
+                                          .getEncoding());
+          result = conversion;
+        }
+      }
+      results.push_back(result);
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+#endif
     rewriter.replaceOp(op, newScan.getResult());
     return success();
   }
