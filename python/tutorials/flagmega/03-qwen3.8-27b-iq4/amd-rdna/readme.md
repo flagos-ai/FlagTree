@@ -167,6 +167,12 @@ tiles instead.
 | FlagMega, generic native GGUF GEMV (before) | 257 | 3.9 |
 | llama.cpp (HIP, gfx1201) | 29.8 | 33.6 |
 
+Re-measured at `bb0edd2a2` (.101, three interleaved rounds of three repeats):
+Synthetic32 26.30/26.25/26.25 ms and Chinese64 26.27/26.28/26.32 ms, about 518
+GB/s (80% of 644.6 GB/s); llama.cpp Synthetic32 29.98/29.93/29.87 ms and
+Chinese64 29.62/29.68/29.66 ms, 1.13x. All six FlagMega runs pass the llama.cpp
+token check.
+
 Rotated FlagMega / llama.cpp runs of three repeats on one idle card (.101, no
 ECC); host time around graph replay, GPU greedy sampling and one CPU token
 return, the same boundary as the NVIDIA tutorial and `llama_performance.py`.
@@ -239,7 +245,7 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters + fused residual/norm statistics (default) | **25.7** | **38.9** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters + fused residual/norm statistics (default) | **25.8** | **38.8** |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters | 26.1 | 38.3 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles | 26.7 | 37.4 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles | 26.9 | 37.2 |
@@ -250,7 +256,13 @@ commit on the same GGUF and GPU:
 | FlagMega, 8x16, before the attention/GDN changes | 38.7 | 25.8 |
 | FlagMega, before the gfx1100 address changes | 42.7 | 23.4 |
 | FlagMega, generic native GGUF GEMV (before) | 192 | 5.2 |
-| llama.cpp (HIP, gfx1100) | 29.6 | 33.8 |
+| llama.cpp (HIP, gfx1100) | 29.7 | 33.7 |
+
+Re-measured at `bb0edd2a2` (three interleaved rounds of three repeats): Synthetic32
+25.73/25.79/25.80 ms and Chinese64 25.73/25.81/25.83 ms, about 528 GB/s (75% of the
+~700 GB/s this card streams); llama.cpp Synthetic32 29.72/29.75/29.75 ms and Chinese64
+29.58/29.69/29.71 ms, 1.15x. All six FlagMega runs pass the llama.cpp token check.
+The rows below the default are from earlier sessions, each against its own baseline.
 
 Three repeats per round. q8_1 activations, two interleaved rounds against the
 floating-point build: Synthetic32 28.34 / 28.40 ms vs 34.33 / 34.47 ms,
