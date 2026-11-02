@@ -1,8 +1,10 @@
 # 工作区总结（2026-11-02）
 
-本次保存累计的 TLE/FlagMega 开发状态、回归用例及 H800 教程结果。完整 GLM decode 的性能结论已有四卡验证；这不代表所有后端、全量测试及原始 IR fresh 重建均已通过。
+当前分支已 rebase 到 main `7f25177d`。首次 rebase 的完整四卡 Gold 和硬件检查通过，八段对照的性能门槛失败：FlagMega 在四上下文比 vLLM 慢 1.37%–6.87%。最终异步填充修复已通过 48 项回归、113 项 GPU 测试和 158 项 MLIR 测试；完整 Gold 与八段性能验收等待原 TP4 卡组释放。原始输入 fresh 重建已真实退出 0，输出尚未作为性能候选。详见[main rebase 验收](main-rebase-acceptance-20261102-zh.md)。
 
-最新：N8 原生 FP8 累加能力与 scan explicit-result conversion 已因果修复，20 个 GPU 回归、6 个相关 lit 测试通过。已验收 recipe 接入 up N8/stage8、down N8、join 4 warps 和 DSA 单 writer 整数可见性发布；仓库入口正常重新生成的完整 manifest/26 个源码与验收候选相等，23 个 helper 测试通过、1 个跳过。原四卡 Gold100、792 次后续状态比较、228 调用零 spill、双 stream/CUDA Graph 均通过。本轮八段全部 320 正式请求的严格性能门槛通过：四上下文 TPOT 6.424/6.515/6.686/6.856 ms。2048 最小余量约 0.019 ms；历史更快的合法 Native 轮次继续保留，完整请求含 prefill 仍慢，原始输入 fresh 重建仍有已知失败。详细数据、因果说明及范围见[本轮验收](performance-acceptance-20261102-zh.md)。下文保留此前历史结果。
+下文保存 rebase 前的累计开发状态和历史验收，不代表最新源码已通过整模性能门槛，也不代表所有后端或全量测试通过。
+
+rebase 前状态：N8 原生 FP8 累加能力与 scan explicit-result conversion 已因果修复，20 个 GPU 回归、6 个相关 lit 测试通过。已验收 recipe 接入 up N8/stage8、down N8、join 4 warps 和 DSA 单 writer 整数可见性发布；仓库入口正常重新生成的完整 manifest/26 个源码与验收候选相等，23 个 helper 测试通过、1 个跳过。原四卡 Gold100、792 次后续状态比较、228 调用零 spill、双 stream/CUDA Graph 均通过。本轮八段全部 320 正式请求的严格性能门槛通过：四上下文 TPOT 6.424/6.515/6.686/6.856 ms。2048 最小余量约 0.019 ms；历史更快的合法 Native 轮次继续保留，完整请求含 prefill 仍慢，原始输入 fresh 重建仍有已知失败。详细数据、因果说明及范围见[本轮验收](performance-acceptance-20261102-zh.md)。下文保留此前历史结果。
 
 合并后 strict 数值失配的 KDA 原生 FMA/归约布局和 DSA 指数/normalizer 修复仍保留，见[严格浮点修复记录](strict-fp-fix-20261101-zh.md)。mode0 的 1830 MHz 旧诊断没有计作 1980 MHz 结果。
 
@@ -40,7 +42,7 @@
 - GLM 本地 CPU 回归：58 passed、3 skipped。此次发现旧 column-overlay 测试输入遗漏正常调用必有的 `parameters` 字段，实际 2 failed/56 passed/3 skipped；仅补齐测试输入后全组通过，模型实现和原断言保持。
 - 改动的 FlagMega 测试抽取了 266 个文件；达到预定 5 个失败停止点时为 654 passed、157 skipped、5 failed。失败涉及三个 C++ artifact 测试、一个 elementwise family 期望和一个 FP8 workspace 合同，未将其记录为全量通过。
 - 全量 FlagMega 检查仍有 collection/API 及架构归属断言失败。重复测试文件名用 pytest importlib 模式处理；`pipeline_source` 的旧私有 slot/drain API 在本次起点已不存在，保留实际 collection 失败。其他失败仍需逐项定位。
-- 含 prefill 的完整请求吞吐仍低于 vLLM。原始 IR fresh 重建在 `compile_model.py::measured_physical_tir` 仍因两个历史固定 kernel 名未匹配而违反 6 个更新的合同，实际产生 7 个更新；没有添加 hash 白名单、放宽合同或绕过规划。直接脚本的三个包导入问题已有回归修复。
+- 含 prefill 的完整请求吞吐仍低于 vLLM。历史原始 IR fresh 重建曾因两个固定 kernel 名未匹配而产生 7 个更新、违反 6 个更新的合同；最新源码已在 `compile_model.py::measured_physical_tir` 按原调用语义识别 dense FFN，保持六项合同并完成全量重建，没有添加 hash 白名单、放宽合同或绕过规划。fresh 输出尚未作为性能候选。
 - 当前性能验收对应正常 API 载入的已生成 artifact；合并新的上游代码后不能沿用旧验收直接宣称新源码也已完成整模 GPU 验证。
 
 `reports/flagmega` 禁止保留。本次及上游同目录的任务记录统一归入教程 `.local/reports/`；`.local/` 的实验、原始回执、构建产物和临时张量文件不纳入提交，`third_party/triton_shared` 的 gitlink 不纳入提交。
