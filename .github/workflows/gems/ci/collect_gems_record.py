@@ -242,6 +242,10 @@ def build_record_id() -> str:
     the current values stays visible through run_id/run_attempt/run_url, and
     the superseded attempts remain in the ledger.
 
+    A backend that tests several configurations at once appends CTX_VARIANT,
+    so those results do not overwrite each other. Backends running a single
+    configuration leave it unset and keep the shorter key.
+
     Falls back to the run id when neither a PR number nor a commit is known,
     so a manual invocation still produces something unique.
     """
@@ -249,12 +253,15 @@ def build_record_id() -> str:
     kind = ctx("KIND", "test")
     pr_number = ctx_int("PR_NUMBER")
     sha = ctx("FLAGTREE_SHA")
+    # Suffix, empty for the single-configuration case
+    variant = ctx("VARIANT")
+    suffix = f"{backend}-{variant}" if variant else backend
 
     if kind == "test" and pr_number:
-        return f"pr-{pr_number}-{backend}"
+        return f"pr-{pr_number}-{suffix}"
     if sha:
-        return f"{kind}-{sha[:SHORT_SHA_LEN]}-{backend}"
-    return f"{ctx('RUN_ID') or 'local'}-{ctx_int('RUN_ATTEMPT') or 1}-{backend}"
+        return f"{kind}-{sha[:SHORT_SHA_LEN]}-{suffix}"
+    return f"{ctx('RUN_ID') or 'local'}-{ctx_int('RUN_ATTEMPT') or 1}-{suffix}"
 
 
 def job_status(compare: Optional[Dict]) -> str:
@@ -289,6 +296,9 @@ def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "")
         "record_id": build_record_id(),
         "kind": ctx("KIND", "test"),
         "backend": ctx("BACKEND"),
+        # Set only by backends testing several configurations at once; it is
+        # part of record_id, so those results do not overwrite each other.
+        "variant": ctx("VARIANT"),
         "runner": ctx("RUNNER"),
         "flaggems_tag": ctx("FLAGGEMS_TAG"),
         "flagtree_sha": ctx("FLAGTREE_SHA"),
@@ -413,6 +423,7 @@ def build_operator_rows(record: Dict, summary: Dict, compare: Optional[Dict]) ->
         rows.append({
             "record_id": record["record_id"],
             "backend": record["backend"],
+            "variant": record["variant"],
             "runner": record["runner"],
             "kind": record["kind"],
             "flagtree_sha": record["flagtree_sha"],
@@ -448,6 +459,9 @@ Context is read from CTX_* environment variables, all optional:
 
   CTX_KIND            test | baseline            (default: test)
   CTX_BACKEND         amd, nvidia, ...
+  CTX_VARIANT         configuration label, for a backend that tests
+                      several at once; part of record_id so they do
+                      not overwrite each other
   CTX_RUNNER          amd3.6, ...
   CTX_FLAGGEMS_TAG    v5.3.5
   CTX_FLAGTREE_SHA    commit under test
