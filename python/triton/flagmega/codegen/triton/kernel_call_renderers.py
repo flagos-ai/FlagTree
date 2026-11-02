@@ -5216,6 +5216,7 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
 
 
 def _qkv_parallel_linear_call(raw) -> dict[str, object]:
+    variant = raw.get("variant")
     source = _buffer(raw, "inputs", "input")
     weight = _buffer(raw, "inputs", "q_weight_qkv_fused")
     outputs = tuple(
