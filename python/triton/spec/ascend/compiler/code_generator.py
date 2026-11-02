@@ -738,7 +738,8 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             values = _sanitize_value(self.visit(node.value))
         # FlagPrism: emit normalized statement data before symbol binding.
-        _flagprism.emit_statement_event("assignment", self, node, target, values)
+        if knobs.runtime.use_prism:
+            _flagprism.emit_statement_event("assignment", self, node, target, values)
         self.assignTarget(target, values)
 
     def visit_AugAssign(self, node):
@@ -1583,7 +1584,8 @@ class CodeGenerator(ast.NodeVisitor):
         # ast.NodeVisitor.generic_visit(self, node)
         value = self.visit(node.value)
         # FlagPrism: retain the operation created by a void expression.
-        _flagprism.emit_statement_event("expression", self, node, None, value)
+        if knobs.runtime.use_prism:
+            _flagprism.emit_statement_event("expression", self, node, None, value)
 
     def visit_NoneType(self, node):
         return None

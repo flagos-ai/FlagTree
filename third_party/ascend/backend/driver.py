@@ -31,6 +31,7 @@ import functools
 import hashlib
 
 from flagtree import _flagprism  # FlagPrism
+from triton import knobs
 from triton.runtime.cache import get_cache_manager, get_dump_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
@@ -164,7 +165,7 @@ class NPULauncher(object):
             if self.compile_only:
                 return
             debug_enabled = bool(getattr(self.metadata, "debug_enabled", False))
-            if debug_enabled:
+            if knobs.runtime.use_prism and debug_enabled:
                 # FlagPrism: use the backend-neutral launch gateway; this
                 # backend only supplies its name and launch state.
                 with _flagprism.debugger_launch_context(

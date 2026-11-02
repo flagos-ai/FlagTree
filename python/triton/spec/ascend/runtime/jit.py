@@ -710,7 +710,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
     def run(self, *args, grid, warmup, **kwargs):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
         # FlagPrism: options must affect specialization and cache keys.
-        _flagprism.apply_compile_options(kwargs)
+        if knobs.runtime.use_prism:
+            _flagprism.apply_compile_options(kwargs)
 
         # parse options
         device = driver.active.get_current_device()

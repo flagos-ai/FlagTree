@@ -103,9 +103,10 @@ def test_language_extensions_are_owned_only_by_flagtree():
         importlib.import_module("triton._flagprism")
 
 
-def test_language_extensions_forward_to_registered_component():
+def test_language_extensions_forward_to_registered_component(monkeypatch):
     import flagtree.language as ftl
 
+    monkeypatch.setenv("USE_PRISM", "1")
     calls = []
     component = _component(
         "debugger",
@@ -122,6 +123,23 @@ def test_language_extensions_forward_to_registered_component():
         ("start", semantic, 2, 1),
         ("end", semantic),
     ]
+
+
+def test_language_extensions_skip_component_when_prism_is_disabled(monkeypatch):
+    import flagtree.language as ftl
+
+    calls = []
+    component = _component(
+        "debugger",
+        debug_collect_start=lambda *args: calls.append(("start", args)),
+        debug_collect_end=lambda *args: calls.append(("end", args)),
+    )
+    _flagprism.register_component("debugger", component)
+    monkeypatch.setenv("USE_PRISM", "0")
+
+    assert ftl.debug_collect_start(_semantic=object()) is None
+    assert ftl.debug_collect_end(_semantic=object()) is None
+    assert calls == []
 
 
 @pytest.mark.parametrize(

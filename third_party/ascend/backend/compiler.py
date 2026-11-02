@@ -33,6 +33,7 @@ from types import ModuleType
 from typing import Any, Dict, Optional, Tuple, Union
 
 from flagtree import _flagprism  # FlagPrism
+from triton import knobs
 from triton._C.libtriton import ir, passes, ascend
 from triton.backends.ascend.utils import (
     _check_bishengir_api_change,
@@ -192,12 +193,13 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         pm.run(mod)
 
         # FlagPrism: publish the last structured IR before backend serialization.
-        _flagprism.emit_compiler_event(
-            phase="pre_backend_serialize",
-            ir_kind="ttadapter",
-            module=mod,
-            metadata=metadata,
-        )
+        if knobs.runtime.use_prism:
+            _flagprism.emit_compiler_event(
+                phase="pre_backend_serialize",
+                ir_kind="ttadapter",
+                module=mod,
+                metadata=metadata,
+            )
 
         if opt.debug:
             dump_manager = get_dump_manager(metadata["hash"])

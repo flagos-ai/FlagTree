@@ -450,6 +450,7 @@ class JITHook(Protocol):
 
 class runtime_knobs(base_knobs):
     interpret: env_bool = env_bool("TRITON_INTERPRET")
+    use_prism: env_bool = env_bool("USE_PRISM")
     # debug is on critical path for kernel launches
     # avoid repeated reads from env-var by calling get directly
     debug: bool = env_bool("TRITON_DEBUG").get()

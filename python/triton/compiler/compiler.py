@@ -96,7 +96,8 @@ class IRSource:
         ir.load_dialects(context)
         backend.load_dialects(context)
         # FlagPrism: register optional dialects in every fresh context.
-        _flagprism.load_dialects(context)
+        if knobs.runtime.use_prism:
+            _flagprism.load_dialects(context)
 
         # We don't have a easy-to-use PTX parser that we can use, so keep that regex for now.
         # TODO - replace with a proper parser
@@ -297,7 +298,8 @@ def compile(src, target=None, options=None, _env_vars=None):
         ir.load_dialects(context)
         backend.load_dialects(context)
         # FlagPrism: register optional dialects in every fresh context.
-        _flagprism.load_dialects(context)
+        if knobs.runtime.use_prism:
+            _flagprism.load_dialects(context)
 
     codegen_fns = backend.get_codegen_implementation(options)
     module_map = backend.get_module_map()
@@ -333,12 +335,13 @@ def compile(src, target=None, options=None, _env_vars=None):
             print(f"\nOverriding kernel with file {full_name}")
             next_module = parse(full_name, ext, context)
         # FlagPrism: publish the final stage output after any IR override.
-        _flagprism.emit_compiler_event(
-            phase="post_override",
-            ir_kind=ext,
-            module=next_module,
-            metadata=metadata,
-        )
+        if knobs.runtime.use_prism:
+            _flagprism.emit_compiler_event(
+                phase="post_override",
+                ir_kind=ext,
+                module=next_module,
+                metadata=metadata,
+            )
         # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
         if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
