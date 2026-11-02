@@ -13,8 +13,14 @@ before it publishes the stage. Covered here:
 * a pipe whose writer and readers are the same warps (software pipelining
   without warp specialization);
 * more pipe barriers than the hardware has: the later pipes fall back to
-  software barriers in shared memory.
+  software barriers in shared memory;
+* the remarks that name the schedule a pipe fell back to.
 """
+
+import os
+import subprocess
+import sys
+import textwrap
 
 import pytest
 import torch
@@ -179,6 +185,36 @@ def test_pipe_fifo_specialization_preserves_overflow_fallback(capacity, depth, b
     torch.cuda.synchronize()
     torch.testing.assert_close(local_out, 2 * x)
     torch.testing.assert_close(remote_out, 3 * x)
+
+
+# The lowering reports the schedule it falls back to as remarks. The context
+# only prints them with MLIR_ENABLE_DIAGNOSTICS=remarks read at start-up, so
+# the kernels compile in their own process.
+_REMARK_SCRIPT = textwrap.dedent("""
+    import sys
+    sys.path.insert(0, sys.argv[1])
+    import torch
+    from test_tle_pipe import _mixed_copy_kernel
+
+    x = torch.randn(7 * 256, device="cuda")
+    out = torch.zeros_like(x)
+    # Four stages of 256 floats per thread: the stage queue stays.
+    _mixed_copy_kernel.warmup(x, out, out, 7, 4, 3, 256, grid=(1, ), num_warps=4)
+    # The writer waits on a user barrier inside its loop: the queue drains there.
+    _mixed_copy_kernel.warmup(x, out, out, 7, 3, 2, 512, MODE=1, grid=(1, ), num_warps=4)
+""")
+
+
+def test_pipe_schedule_remarks(tmp_path):
+    script = tmp_path / "pipe_remarks.py"
+    script.write_text(_REMARK_SCRIPT)
+    env = dict(os.environ, MLIR_ENABLE_DIAGNOSTICS="remarks", TRITON_CACHE_DIR=str(tmp_path / "cache"))
+    result = subprocess.run(
+        [sys.executable, str(script), os.path.dirname(os.path.abspath(__file__))], capture_output=True, text=True,
+        timeout=600, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "tracks its pending stages in a queue: four-stage transfers" in result.stderr
+    assert "completes the pending cp.async copies of pipe '<unnamed>' before this operation" in result.stderr
 
 
 # ---------------------------------------------------------------- ring: register-store payload
