@@ -518,10 +518,12 @@ class AutoTilingTuner(Autotuner):
                     triton.AsyncCompileMode(executor),
             ):
                 for config in pruned_configs:
-                    ret.append(self.fn.warmup(*args, **kwargs, **config.all_kwargs()))
+                    final_kwargs = dict(config.all_kwargs(), **kwargs)
+                    ret.append(self.fn.warmup(*args, **final_kwargs))
         else:
             for config in pruned_configs:
-                ret.append(self.fn.warmup(*args, **kwargs, **config.all_kwargs()))
+                final_kwargs = dict(config.all_kwargs(), **kwargs)
+                ret.append(self.fn.warmup(*args, **final_kwargs))
         self.nargs = None
         return ret
 
