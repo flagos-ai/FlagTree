@@ -98,14 +98,15 @@ def _wide_source(tmp_path, name, build, target, rows=4096):
     return (gemv._artifact(tmp_path, name, module, target) / "generated_kernels.py").read_text()
 
 
-@pytest.mark.parametrize("build", ("projection", "glu"))
-def test_installed_gfx1201_native_gemvs_start_at_a_block_rotated_tile(tmp_path, installed, monkeypatch, build):
+@pytest.mark.parametrize(("build", "rows"), (("projection", 8), ("glu", 16)))
+def test_installed_gfx1201_native_gemvs_start_at_a_block_rotated_tile(tmp_path, installed, monkeypatch, build, rows):
     # The gate+up tile queue replaces the rotation; this checks the static fallback.
     monkeypatch.setenv("FLAGMEGA_AMD_TILE_QUEUE", "0")
     source = _wide_source(tmp_path, "rotated", build, "amd-gfx1201")
-    assert "for local_n_tile in tl.range(0, 2):" in source
-    assert "local_n_start = (((local_n_tile + shard_index) % 2) * 16).to(tl.int32)" in source
-    assert "for local_n_start in tl.range(0, 32, 16):" not in source
+    tiles = 32 // rows
+    assert f"for local_n_tile in tl.range(0, {tiles}):" in source
+    assert f"local_n_start = (((local_n_tile + shard_index) % {tiles}) * {rows}).to(tl.int32)" in source
+    assert f"for local_n_start in tl.range(0, 32, {rows}):" not in source
 
 
 @pytest.mark.parametrize("build", ("projection", "glu"))
@@ -200,7 +201,7 @@ def test_disabled_tile_queue_restores_the_rotated_loop(tmp_path, installed, monk
 def test_installed_queue_skips_projections(tmp_path, installed):
     # No GLU call uses the counter, so none is allocated or threaded.
     projection, artifact = _artifact_codegen(tmp_path, "projection", "projection", "amd-gfx1201")
-    assert "_flagmega_counters" not in projection and "for local_n_tile in tl.range(0, 2):" in projection
+    assert "_flagmega_counters" not in projection and "for local_n_tile in tl.range(0, 4):" in projection
     assert not {"counter_slots", "counter_slot_argument"} & _codegen_keys(artifact)
 
 
@@ -398,21 +399,20 @@ def test_gfx1100_pins_the_q8_source_pointer_to_sgprs(tmp_path, installed, build)
     assert "uniform_parameter" not in quantize(_source(tmp_path, "r9700", build, "IQ4_XS", "amd-gfx1201"))
 
 
-def test_gfx1100_projections_dot_8_row_tiles(tmp_path, installed):
-    source = _wide_source(tmp_path, "rows8", "projection", "amd-gfx1100")
-    assert "for local_n_start in tl.range(0, 32, 8):" in source
+@pytest.mark.parametrize("target", ("amd-gfx1100", "amd-gfx1201"))
+def test_rdna_projections_dot_8_row_tiles(tmp_path, installed, target):
+    source = _wide_source(tmp_path, "rows8", "projection", target)
     assert "local_n_offsets = local_n_start + tl.arange(0, 8)" in source
-    r9700 = _wide_source(tmp_path, "r9700", "projection", "amd-gfx1201")
-    assert "local_n_start + tl.arange(0, 16)" in r9700 and "Q8_MAIN_GROUPS, 16)" in r9700
+    assert "local_n_start + tl.arange(0, 16)" not in source
 
 
-def test_gfx1100_projections_sum_rows_within_a_wave(tmp_path, installed):
-    source = _wide_source(tmp_path, "wave", "projection", "amd-gfx1100")
+@pytest.mark.parametrize("target", ("amd-gfx1100", "amd-gfx1201"))
+def test_rdna_projections_sum_rows_within_a_wave(tmp_path, installed, target):
+    source = _wide_source(tmp_path, "wave", "projection", target)
     # The [32 groups, 8 rows] tile puts a row's groups on one wave; the sum keeps rows8's pairwise order.
     assert "result = _flagmega_amd_iq4_xs_q8_rows8_wave(q8_words, q8_scales" in source
     assert "tree = tl.reshape(accumulator, (2, 2, 2, 2, 2, 8))" in source
-    assert "destination = _flagmega_amd_uniform_parameter(destination)" in source
-    for target in ("amd-gfx1201", ):
-        assert "_rows8_wave" not in _wide_source(tmp_path, "r9700", "projection", target)
+    # Only gfx1100 (buffer ops) reads the destination pointer back into SGPRs.
+    assert ("destination = _flagmega_amd_uniform_parameter(destination)" in source) == (target == "amd-gfx1100")
     # gate+up keeps rows8.
-    assert "rows8_wave" not in _wide_source(tmp_path, "glu", "glu", "amd-gfx1100")
+    assert "rows8_wave" not in _wide_source(tmp_path, "glu", "glu", target)

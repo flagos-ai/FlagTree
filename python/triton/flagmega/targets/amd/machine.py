@@ -123,6 +123,16 @@ class _AmdRdnaMachine:
     # mean fewer serialized per-tile load/update chains).
     _RDNA_PARAMETERS = {"tir.gdn_recurrent.persistent": {"tile_state": (128, 16)}}
 
+    def distributed_reshard_realization_policy(self):
+        # Restoring a function's distributed parameter otherwise copies it into
+        # every block before each use; a same-chip view reads it in place.
+        return SameChipParameterViewReshardRealizationPolicy()
+
+    def pre_vectorization_rewrite(self, module):
+        # Lets each RMSNorm's statistics fuse with its residual add and be
+        # threaded to the next layer instead of running as cast + stats calls.
+        return fold_widening_norm_stats_casts(module)
+
     def triton_implementation_model(self, supplied=None):
         # The cooperative warp cap is a correctness invariant for the grid-wide
         # launch, so it must apply to ANY implementation model -- including one
@@ -249,16 +259,6 @@ class _AmdRdnaMachine:
 class AmdGfx1100Machine(_AmdRdnaMachine):
     def __init__(self, capability: AmdCapability | None = None, *, implementation_model=None) -> None:
         super().__init__(capability or Gfx1100Capability(), implementation_model=implementation_model)
-
-    def distributed_reshard_realization_policy(self):
-        # Restoring a function's distributed parameter otherwise copies it into
-        # every block before each use; a same-chip view reads it in place.
-        return SameChipParameterViewReshardRealizationPolicy()
-
-    def pre_vectorization_rewrite(self, module):
-        # Lets each RMSNorm's statistics fuse with its residual add and be
-        # threaded to the next layer instead of running as cast + stats calls.
-        return fold_widening_norm_stats_casts(module)
 
 
 class AmdGfx1201Machine(_AmdRdnaMachine):

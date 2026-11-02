@@ -5,4 +5,8 @@
     so the blocks stream different offsets of their row slabs at any moment. Every
     row is still dotted by one tile in the same order, so results are bitwise. #}
 {% set native_gguf_rotate_tiles = true %}
+{#- The projections dot 8-row tiles on a [32 groups, 8 rows] tile whose per-row sum stays in one
+    wave, as on gfx1100; each row keeps its additions, so results are bitwise. #}
+{% set native_gguf_tile_rows = 8 %}
+{% set q8_wave_rows = true %}
 {% include "kernels/block_fp8/platforms/amd/simt.py.jinja" %}

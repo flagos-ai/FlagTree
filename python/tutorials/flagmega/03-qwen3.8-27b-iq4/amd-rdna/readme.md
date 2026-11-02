@@ -153,7 +153,10 @@ tiles instead.
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + gate+up tile queue (default) | **26.8** | **37.3** |
+| FlagMega, as below + 8-row wave-reduced projection tiles + viewed layer parameters + fused residual/norm statistics (default) | **26.3** | **38.1** |
+| FlagMega, as below + 8-row wave-reduced projection tiles + viewed layer parameters | 26.5 | 37.8 |
+| FlagMega, as below + 8-row wave-reduced projection tiles | 26.6 | 37.6 |
+| FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + gate+up tile queue | 26.9 | 37.2 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + write-through GDN stores + rotated row tiles | 27.1 | 36.9 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores + rotated row tiles | 27.2 | 36.8 |
 | FlagMega, q8_1 activations + `v_dot4` + 64 KB weight prefetch + GDN stores | 27.3 | 36.6 |
@@ -180,6 +183,18 @@ With the gfx1201 GDN stores (three interleaved rounds against the build without
 them, graph replay): Synthetic32 27.33/27.31/27.40 ms vs 27.48/27.53/27.45 ms;
 Chinese64 27.34 ms vs 27.45 ms, about 9% faster than llama.cpp; 64 tokens and
 logits bitwise equal.
+The W7900 projection tiles, parameter views and norm-statistics fusion (below)
+also apply to gfx1201 (same card .101 after a reboot, four interleaved rounds of
+Synthetic32 / Chinese64, graph replay): 26.91/26.87/26.95 ms before; 8-row
+wave-reduced tiles 26.59–26.66 ms; plus parameter views 26.44–26.47 ms (one
+outlier at 26.64); plus fused norm statistics 26.20–26.32 ms, about 13% faster
+than llama.cpp and ~518 GB/s (80% of 644.6 GB/s). The first two keep 64 tokens and
+logits bitwise equal to the build without them. The fused statistics sum in a
+different order, so logits are not bitwise: three processes agree bitwise with
+each other, and teacher-forced against llama.cpp on five prompts (32–128 steps)
+the max error, relative L2 error, KL divergence and top-1 disagreements (only at
+llama.cpp top-1/top-2 margins of 0.006 and 0.048) equal the build without it to
+the printed precision.
 Floating-point activations, before:
 Synthetic32: 29.90/30.09/30.04/30.11 ms (llama.cpp 29.93/29.87 ms);
 Chinese64: 30.08/30.20 ms (llama.cpp 29.62/29.60 ms). Model weight bandwidth
@@ -329,6 +344,8 @@ GPU tests pass, and with every step's input forced to llama.cpp's (five prompts,
 Chinese64, Synthetic32 and three 128-step prompts) the logits error against llama.cpp is at the
 same level as before (mean relative L2 0.0116-0.0178 vs 0.0124-0.0174, no growth over the
 sequence), and every top-1 difference from llama.cpp is a near-tie (top-2 margin <= 0.035).
+The 8-row wave-reduced projection tiles, the parameter views and the NormStats cast fold were
+later enabled on gfx1201 too (R9700 results above); only the SGPR pointer reads stay gfx1100-only.
 With these, the GEMV phases take 24.1 ms of the 26.7 ms token at about 565 GB/s (81% of ~700 GB/s);
 the rest is GDN recurrent (about 19 us per GDN layer), the chains of small residual/norm/reshard calls
 around each projection (6-7 us each, twice per layer) and the attention core (about 33 us per attention

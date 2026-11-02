@@ -9,8 +9,10 @@ def _flagmega_iq4_xs_linear_local_tile(
     safe = tl.where(n_mask, weight_row_offsets, tl.max(tl.where(n_mask, weight_row_offsets, 0), axis=0))
     result = _flagmega_amd_iq4_xs_q8_rows8_wave(q8_words, q8_scales, q8_tail_words, q8_tail_scales, weight, safe, K,
                                                 Q8_MAIN_GROUPS)
+{% if q8_pin_source is defined and q8_pin_source %}
     # The destination is a VGPR pointer parameter; in SGPRs the store needs no readfirstlane waterfall.
     destination = _flagmega_amd_uniform_parameter(destination)
+{% endif %}
 {% else %}
     result = _flagmega_amd_iq4_xs_q8_rows(q8_words, q8_scales, q8_tail_words, q8_tail_scales, weight,
                                           weight_row_offsets, n_mask, K, Q8_MAIN_GROUPS, {{ native_gguf_tile_rows | default(tn) }})

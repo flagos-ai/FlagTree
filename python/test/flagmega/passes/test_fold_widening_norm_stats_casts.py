@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""gfx1100 feeds NormStats its 16-bit residual instead of the exact f32 widening, so the residual
+"""RDNA feeds NormStats its 16-bit residual instead of the exact f32 widening, so the residual
 add + statistics formation applies; other targets keep the cast."""
 
 from triton.flagmega import ir as fm
@@ -43,8 +43,8 @@ def test_fold_keeps_a_cast_with_other_users():
     assert folded.node_map["widened"].op == "tensors.cast"
 
 
-def test_only_gfx1100_rewrites_before_vectorization():
-    assert getattr(get_target("amd-gfx1100").machine, "pre_vectorization_rewrite", None) is not None
-    for name in ("amd-gfx1201", "nvidia-sm120"):
-        machine = getattr(get_target(name), "machine", None)
-        assert getattr(machine, "pre_vectorization_rewrite", None) is None
+def test_only_rdna_rewrites_before_vectorization():
+    for name in ("amd-gfx1100", "amd-gfx1201"):
+        assert getattr(get_target(name).machine, "pre_vectorization_rewrite", None) is not None
+    machine = getattr(get_target("nvidia-sm120"), "machine", None)
+    assert getattr(machine, "pre_vectorization_rewrite", None) is None

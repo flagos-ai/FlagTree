@@ -22,7 +22,7 @@
     queue_rows = shard_index.to(tl.int64) * {{ q8_queue.rows }} + tl.arange(0, {{ q8_queue.rows }})
     q8_prefetch_row = tl.min({{ q8_queue.weight_row_offset }}, axis=0)
 {% else %}
-    local_n_offsets = tl.arange(0, {{ call.tile_n }})
+    local_n_offsets = tl.arange(0, {{ native_gguf_tile_rows | default(call.tile_n) }})
     q8_prefetch_row = tl.min({{ call.weight_row_offset }}, axis=0)
 {% endif %}
 {% for q8_prefetch_weight in ([call.gate_weight, call.up_weight] if call.gate_weight is defined else [call.weight]) %}

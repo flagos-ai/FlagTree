@@ -199,7 +199,7 @@ def test_legacy_policy_name_remains_a_pyntt_compatibility_alias():
     )
 
 
-def test_same_chip_parameter_views_only_on_gfx1100():
+def test_same_chip_parameter_views_only_on_rdna():
     from triton.flagmega.passes.auto_distributed.realization import SameChipParameterViewReshardRealizationPolicy
     from triton.flagmega.targets import get_target
 
@@ -229,7 +229,7 @@ def test_same_chip_parameter_views_only_on_gfx1100():
         chip_owned, chip_gathered, DistributedReshardSourceKind.FUNCTION_PARAMETER,
         DistributedReshardUsageKind.INTERNAL)) != DistributedReshardRealization.SHARDED_VIEW
 
-    assert isinstance(get_target("amd-gfx1100").distributed_reshard_realization_policy(),
-                      SameChipParameterViewReshardRealizationPolicy)
-    for name in ("amd-gfx1201", "nvidia-sm120"):
-        assert type(get_target(name).distributed_reshard_realization_policy()) is PyNttDistributedReshardRealizationPolicy
+    for name in ("amd-gfx1100", "amd-gfx1201"):
+        assert isinstance(get_target(name).distributed_reshard_realization_policy(),
+                          SameChipParameterViewReshardRealizationPolicy)
+    assert type(get_target("nvidia-sm120").distributed_reshard_realization_policy()) is PyNttDistributedReshardRealizationPolicy
