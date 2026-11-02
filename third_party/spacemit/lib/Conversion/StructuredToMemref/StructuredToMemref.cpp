@@ -13,6 +13,7 @@
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 #include "triton-shared/Utils/Utils.h"
 
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
@@ -198,18 +199,17 @@ static OpFoldResult accumulateTargetOffset(Location loc,
                                            ArrayRef<OpFoldResult> offsets,
                                            ArrayRef<OpFoldResult> strides,
                                            int gatherDim, OpBuilder &b) {
-  // For gather/scatter, the gather_scatter_offset already encodes the complete
-  // element offset from the base pointer (including contributions from all
-  // dimensions). Only accumulate the gather dimension's offset here; skip
-  // non-gather dimensions to avoid double-counting the base offset that is
-  // already baked into the gather_scatter_offset values.
+  // Non-gather dims: PtrAnalysis already incorporated the memory stride into
+  // the offset scalar (e.g. pid_m * N), so add them directly.
+  // Gather dim: the element value is a raw logical index; multiply by the
+  // memory stride to convert it to a flat element offset.
   OpFoldResult targetOffset = b.getIndexAttr(0);
   for (int i = 0; i < (int)offsets.size(); i++) {
     if (i == gatherDim) {
-      OpFoldResult offset = offsets[i];
-      OpFoldResult stride = strides[i];
-      offset = mulOFRs(offset, stride, loc, b);
+      OpFoldResult offset = mulOFRs(offsets[i], strides[i], loc, b);
       targetOffset = addOFRs(targetOffset, offset, loc, b);
+    } else {
+      targetOffset = addOFRs(targetOffset, offsets[i], loc, b);
     }
   }
   return targetOffset;
@@ -892,9 +892,13 @@ private:
 
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
 
-    auto alloc = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
+    auto alloc =
+        memref::AllocOp::create(rewriter, loc,
+                                MemRefType::get(tensorType.getShape(), elemType,
+                                                AffineMap(), memorySpace));
 
     // No mask
     assert(!other && "other value used in non-masked load");
@@ -1098,9 +1102,13 @@ private:
 
     auto tensorType = cast<RankedTensorType>(op.getType());
     auto elemType = tensorType.getElementType();
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
 
-    auto alloc = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
+    auto alloc =
+        memref::AllocOp::create(rewriter, loc,
+                                MemRefType::get(tensorType.getShape(), elemType,
+                                                AffineMap(), memorySpace));
 
     // Keep masked-load default semantics: masked-out lanes read as zero
     // when `other` is not provided. Place fill immediately after alloc.
@@ -1217,8 +1225,9 @@ private:
 
     // Create alloc to save the result.
     auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
-    auto allocType =
-        MemRefType::get(resultType.getShape(), resultType.getElementType());
+    auto allocType = MemRefType::get(
+        resultType.getShape(), resultType.getElementType(), AffineMap(),
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext()));
     auto alloc = memref::AllocOp::create(rewriter, loc, allocType);
 
     auto allocStrides = mlir::getMixedValues(
@@ -1814,22 +1823,19 @@ public:
       return failure();
     }
 
-    auto storageAttr = op->getAttr("storage");
-    if (!storageAttr) {
-      emitWarning(loc)
-          << "'storage' attribute not found on xsmt.alloc, using default";
-    }
-
-    MemRefType memrefType = MemRefType::get(shape, elementType);
+    auto scopeName = op.getScope();
+    Attribute memSpace =
+        mlir::triton::scopeToMemorySpace(scopeName, op->getContext());
+    MemRefType memrefType = MemRefType::get(
+        shape, elementType, MemRefLayoutAttrInterface{}, memSpace);
 
     auto allocOp = memref::AllocOp::create(rewriter, loc, memrefType,
                                            /*dynamicSizes=*/ValueRange{},
                                            /*symbolOperands=*/ValueRange{},
                                            /*alignment=*/nullptr);
 
-    if (storageAttr) {
-      allocOp->setAttr("storage", storageAttr);
-    }
+    // scope semantic is encoded in memref type memory space; no string
+    // passthrough.
 
     rewriter.replaceOp(op, allocOp.getResult());
     return success();
@@ -2135,17 +2141,17 @@ struct FoldAllocSubviewPackToAlloc final
     if (failed(newShapeAttr))
       return failure();
 
-    StringAttr storageAttr = oldAlloc.getStorageAttr();
+    StringAttr scopeAttr = oldAlloc.getScopeAttr();
 
     rewriter.setInsertionPoint(view);
 
     auto newAlloc = xsmt::AllocOp::create(rewriter, view.getLoc(), outTy,
-                                          *newShapeAttr, storageAttr);
+                                          *newShapeAttr, scopeAttr);
 
     {
       NamedAttrList extra(oldAlloc->getAttrs());
       extra.erase(StringAttr::get(rewriter.getContext(), "shape"));
-      extra.erase(StringAttr::get(rewriter.getContext(), "storage"));
+      extra.erase(StringAttr::get(rewriter.getContext(), "scope"));
       for (auto it : extra)
         newAlloc->setAttr(it.getName(), it.getValue());
     }

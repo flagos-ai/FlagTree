@@ -12,9 +12,11 @@ import re
 import sys
 import subprocess
 import functools
+import threading
 from pathlib import Path
 from triton.backends.tsingmicro import txda_tools
 from triton.backends.tsingmicro.logger_config import setup_logger
+from triton.backends.tsingmicro.precision import get_precision_mode
 
 logger = setup_logger("tsingmicro_launch")
 
@@ -33,18 +35,51 @@ def _get_libc_root() -> str:
     return path
 
 
-def _get_core_dialects_to_mk_pass_arg() -> str:
-    value = os.getenv("PRECISION_MODE", "0").strip()
-    if value not in ("0", "1", "2"):
-        raise ValueError("PRECISION_MODE must be 0, 1, or 2")
-    return f"--core-dialects-to-mk=precision-mode={value}"
+def _get_core_dialects_to_mk_pass_arg(precision_mode: str = None) -> str:
+    if precision_mode is None:
+        precision_mode = get_precision_mode()
+    return f"--core-dialects-to-mk=precision-mode={precision_mode}"
+
+
+_llvm_path_lock = threading.Lock()
+_llvm_path_initialized = False
+
+
+def _ensure_llvm_path():
+    # One-time prep of the external LLVM toolchain. add_stages runs per compile
+    # and can run on ThreadPoolExecutor workers once async compilation is
+    # enabled, so this must be idempotent and thread-safe instead of mutating
+    # sys.path/os.environ on every compile (repeated PATH appends would grow
+    # the process env without bound).
+    global _llvm_path_initialized
+    if _llvm_path_initialized:
+        return
+    with _llvm_path_lock:
+        if _llvm_path_initialized:
+            return
+        if os.getenv("USE_OUTSIDE_LLVM_TX81", "1").lower() in ("1", "true", "yes"):
+            llvm_path = txda_tools.get_llvm_system_path()
+            mlir_path = os.path.join(llvm_path, "python_packages", "mlir_core")
+            if mlir_path not in sys.path:
+                sys.path.insert(0, mlir_path)
+            bin_path = llvm_path + "/bin"
+            os.environ["PATH"] += os.pathsep + bin_path
+        _llvm_path_initialized = True
+
+
+# The external CoreIR API (third_party/tsingmicro/backend/core_ir.py) calls this
+# name. This tree already provides an idempotent, thread-safe equivalent as
+# _ensure_llvm_path(), so alias it instead of duplicating the setup logic.
+_ensure_tx81_llvm_environment = _ensure_llvm_path
 
 
 # Build a accelerator controller ELF
-def compile_accelerator(src, metadata, o_path):
+def compile_accelerator(src, metadata, o_path, precision_mode: str = "0"):
     # TODO : cache mechanism
     name = f"kernel"
-    key = hashlib.sha256(src.encode("utf-8")).hexdigest()
+    # The precision mode changes the lowered pass pipeline output for the same
+    # llir, so it must be part of the cache key.
+    key = hashlib.sha256(f"{precision_mode}|{src}".encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
     cache_path = cache.get_file(f"{name}.so")
 
@@ -122,7 +157,7 @@ def compile_accelerator(src, metadata, o_path):
                 #     gcc_args.append("-lprofiler_riscv")
 
                 txda_tools.dump_cmd_if_needed(gcc_args, "link_to_bin")
-                txda_tools.runLoweringCmd(o_path, dst_path, gcc_args)
+                txda_tools.runLoweringCmd(o_path, gcc_args)
 
             with open(dst_path, "rb") as f:
                 cache_path = cache.put(f.read(), f"{name}.so", binary=True)
@@ -136,8 +171,8 @@ def compile_accelerator(src, metadata, o_path):
         return so
 
 
-def _ttir_to_coreir(mod, num_stages=2):
-    global ir_index
+def _ttir_to_coreir(mod, num_stages=2, precision_mode: str = "0"):
+    global ir_index, GATHER_SCATTER_ASYNC_ENABLE
     ir_index = ir_index + 1
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -149,8 +184,8 @@ def _ttir_to_coreir(mod, num_stages=2):
         triton_opt_path = txda_tools.get_tsm_opt_path()
         txda_tools.dump_ir_if_needed([src_path])
 
-        coreir_to_mk_mode = _get_core_dialects_to_mk_pass_arg()
-        pipeline_flag = f"--mk-pipeline=num-stages={num_stages}"
+        coreir_to_mk_mode = _get_core_dialects_to_mk_pass_arg(precision_mode)
+        pipeline_flag = f"--mk-pipeline=num-stages={num_stages}" if num_stages > 1 else None
 
         args = [
             triton_opt_path, src_path, "--triton-to-core-dialects", "--tle-to-mk", "--dsa-memory-to-core",
@@ -159,13 +194,18 @@ def _ttir_to_coreir(mod, num_stages=2):
             "--canonicalize"
         ]
 
-        if os.getenv("TRITON_PIPELINE", "0") == "1":
+        # The pipeline feature bit is a module global that _txir_to_llir reads
+        # in a later call. Assign it on every compile: only ever setting it to
+        # True leaves a stale value behind, silently adding
+        # --tx81-to-llvm=gather-scatter-async=true to an unrelated kernel.
+        pipeline_enabled = pipeline_flag is not None and os.getenv("TRITON_PIPELINE", "0") == "1"
+        GATHER_SCATTER_ASYNC_ENABLE = pipeline_enabled
+
+        if pipeline_enabled:
             args.append(pipeline_flag)
             args.append("--mk-loop-bound-canonicalize")
             args.append("--cse")
             args.append("--canonicalize")
-            global GATHER_SCATTER_ASYNC_ENABLE
-            GATHER_SCATTER_ASYNC_ENABLE = True
 
         if os.getenv("TRITON_DEBUG", "0") == "1":
             args.append("--mlir-print-debuginfo")
@@ -175,13 +215,73 @@ def _ttir_to_coreir(mod, num_stages=2):
         args += ["-o", dst_path]
         txda_tools.dump_cmd_if_needed(args, "_ttir_to_coreir")
 
-        txda_tools.runLoweringCmd(src_path, dst_path, args)
+        txda_tools.runLoweringCmd(src_path, args)
         return Path(dst_path).read_text()
 
 
 def _optimize_coreir(coreir: str):
     # We don't apply any optimizations now, but we can add passes if needed.
     return coreir
+
+
+# ---------------------------------------------------------------------------
+# External CoreIR entry (used only by core_ir)
+# ---------------------------------------------------------------------------
+# Not on the Triton TTIR path. ``core_ir.compile_core_ir`` is the sole caller:
+# it feeds textual CoreIR from external producers (e.g. TileLang) into the
+# shared MK/TX81/LLVM pipeline below. Lives here because it must share
+# GATHER_SCATTER_ASYNC_ENABLE / ir_index with later stages in this module.
+
+
+def _prepare_external_coreir(mod, *, precision_mode="0", num_stages: int = 2):
+    """Normalize an external CoreIR module to the internal MK-compatible form.
+
+    Triton-originated programs run the Triton-specific passes at the head of
+    ``_ttir_to_coreir``. External producers enter after their own frontend
+    conversion, so this entry runs only the shared tail that
+    ``core-dialects-to-mk`` and everything below expect.
+    """
+    global GATHER_SCATTER_ASYNC_ENABLE
+    coreir_code = str(mod)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = os.path.join(tmpdir, f"external_core_{ir_index}.mlir")
+        dst_path = os.path.join(tmpdir, f"prepared_core_{ir_index}.mlir")
+        Path(src_path).write_text(coreir_code)
+        triton_opt_path = txda_tools.get_tsm_opt_path()
+        txda_tools.dump_ir_if_needed([src_path])
+
+        coreir_to_mk_mode = _get_core_dialects_to_mk_pass_arg(str(precision_mode))
+        pipeline_flag = f"--mk-pipeline=num-stages={num_stages}" if num_stages > 1 else None
+
+        args = [
+            triton_opt_path, src_path, f"{coreir_to_mk_mode}", "--linalg-fusion", "--legalize-tensor-form-loops",
+            "--one-shot-bufferize", "--convert-bufferization-to-memref", "--materialize-strided-linalg-inputs"
+        ]
+
+        pipeline_enabled = pipeline_flag is not None and os.getenv("TRITON_PIPELINE", "0") == "1"
+        GATHER_SCATTER_ASYNC_ENABLE = pipeline_enabled
+        if pipeline_enabled:
+            args.append(pipeline_flag)
+            args.append("--mk-loop-bound-canonicalize")
+
+        args.append("--cse")
+        args.append("--canonicalize")
+
+        if os.getenv("TRITON_DEBUG", "0") == "1":
+            args.append("--mlir-print-debuginfo")
+        if os.getenv("MLIR_ENABLE_DUMP", "0") == "1":
+            args.append("--mlir-print-ir-before-all")
+            args.append("--mlir-print-ir-after-all")
+        args += ["-o", dst_path]
+        txda_tools.dump_cmd_if_needed(args, "_prepare_external_coreir")
+
+        txda_tools.runLoweringCmd(src_path, args)
+        return Path(dst_path).read_text()
+
+
+# ---------------------------------------------------------------------------
+# Shared lowering stages (Triton pipeline + External CoreIR)
+# ---------------------------------------------------------------------------
 
 
 def _coreir_to_mkir(mod):
@@ -197,7 +297,7 @@ def _coreir_to_mkir(mod):
         if os.getenv("TRITON_DEBUG", "0") == "1":
             args.append("--mlir-print-debuginfo")
         args += ["-o", dst_path]
-        txda_tools.runLoweringCmd(src_path, dst_path, args)
+        txda_tools.runLoweringCmd(src_path, args)
         return Path(dst_path).read_text()
 
 
@@ -236,7 +336,7 @@ def _coreir_to_txir(mod):
             args.append("--mlir-print-ir-after-all")
         args += ["-o", dst_path]
         txda_tools.dump_cmd_if_needed(args, "_coreir_to_txir")
-        txda_tools.runLoweringCmd(src_path, dst_path, args)
+        txda_tools.runLoweringCmd(src_path, args)
         return Path(dst_path).read_text()
 
 
@@ -267,8 +367,6 @@ def _txir_to_llir(mod, metadata):
             "--convert-math-to-libm",
             "--convert-cf-to-llvm",  # need exec before "convert-func-to-llvm"
             "--convert-func-to-llvm",  # need exec before "kernel-arg-buffer", otherwise un-rank memref will translate to int(rank) + ptr
-            # FIXME: Move this pass into the pipeline from coreir to txir.
-            "--expand-strided-metadata",
             # Other unconverted memref ops, eg: memref.global from scan op conversion
             "--finalize-memref-to-llvm",
         ]
@@ -302,7 +400,7 @@ def _txir_to_llir(mod, metadata):
         ]
 
         txda_tools.dump_cmd_if_needed(args, "_txir_to_llir")
-        txda_tools.runLoweringCmd(src_path, llvmir_path, args)
+        txda_tools.runLoweringCmd(src_path, args)
         txda_tools.dump_ir_if_needed([llvmir_path])
 
         custom_ir = txda_tools.get_customized_ir()
@@ -335,7 +433,7 @@ def _txir_to_llir(mod, metadata):
         mlir_translate_path = txda_tools.get_llvm_bin_path("mlir-translate")
         args = [mlir_translate_path, llvmir_path, "--mlir-to-llvmir", "-o", llir_path]
         txda_tools.dump_cmd_if_needed(args, "mlir-to-llvmir")
-        txda_tools.runLoweringCmd(llvmir_path, llir_path, args)
+        txda_tools.runLoweringCmd(llvmir_path, args)
         txda_tools.dump_ir_if_needed([llir_path])
         dest_ir = llir_path
 
@@ -405,12 +503,12 @@ def _mkir_to_llir(mkir: str):
         if os.getenv("TRITON_DEBUG", "0") == "1":
             args.append("--mlir-print-debuginfo")
         args += ["-o", llvmir_path]
-        txda_tools.runLoweringCmd(mkir_path, llvmir_path, args)
+        txda_tools.runLoweringCmd(mkir_path, args)
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = txda_tools.get_llvm_bin_path("mlir-translate")
         args = [mlir_translate_path, llvmir_path, "--mlir-to-llvmir", "-o", llir_path]
-        txda_tools.runLoweringCmd(llvmir_path, llir_path, args)
+        txda_tools.runLoweringCmd(llvmir_path, args)
         txda_tools.dump_ir_if_needed([mkir_path, llvmir_path, llir_path])
         return Path(llir_path).read_text()
 
@@ -420,7 +518,7 @@ def _optimize_llir(llir: str):
     return llir
 
 
-def _llir_to_bin(llir: str, metadata):
+def _llir_to_bin(llir: str, metadata, precision_mode: str = "0"):
     global ir_index
     pattern = r"define void @(\w+)\(.+"
     matches = re.findall(pattern, llir)
@@ -447,13 +545,13 @@ def _llir_to_bin(llir: str, metadata):
         # if txda_tools.is_use_profile():
         #     compile_args.append("-DENABLE_PROFILING")
 
-        txda_tools.runLoweringCmd(src_path, dst_path, compile_args)
+        txda_tools.runLoweringCmd(src_path, compile_args)
 
         txda_tools.dump_ir_if_needed([dst_path])
         txda_tools.dump_cmd_if_needed(compile_args, "clang++")
 
         # compile kernel and intrinsic wrapper to shared library
-        return compile_accelerator(llir, metadata, dst_path)
+        return compile_accelerator(llir, metadata, dst_path, precision_mode)
 
 
 @dataclass(frozen=True)
@@ -474,10 +572,11 @@ class TXDAOptions:
     shared: bool = False
     allow_fp8e4nv: bool = False
     allowed_dot_input_precisions: Tuple[str] = ("ieee", )
-    sanitize_overflow: bool = True
+    sanitize_overflow: bool = False
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e4b15", "fp8e4nv")
     deprecated_fp8_dtypes: Tuple[str] = ()
     instrumentation_mode: str = ""
+    precision_mode: str = "0"
 
     def __post_init__(self):
         pass
@@ -488,6 +587,14 @@ class TXDAOptions:
 
 
 class TXDABackend(BaseBackend):
+    # Precision mode is resolved by parse_options in the launching thread and
+    # frozen into TXDAOptions, so the compile pipeline (cache key, coreir pass
+    # arg, accelerator cache) reads the same per-kernel value whether it runs
+    # here or on an async worker thread. add_stages must stay free of other
+    # caller-thread state (see _ensure_llvm_path).
+
+    # set supports_async_compile = True to allow async compiling
+    supports_async_compile = True
 
     @staticmethod
     def supports_target(target: GPUTarget):
@@ -500,6 +607,11 @@ class TXDABackend(BaseBackend):
     def parse_options(self, opts) -> Any:
         args = {"arch": self.target.arch}
         args.update({k: opts[k] for k in TXDAOptions.__dataclass_fields__.keys() if k in opts})
+        # Resolve the precision mode in the launching thread and freeze it into
+        # options so the cache key and the compile pipeline agree; an explicit
+        # kwarg wins over the contextvar/env override.
+        if "precision_mode" not in args:
+            args["precision_mode"] = get_precision_mode()
         return TXDAOptions(**args)
 
     def get_codegen_implementation(self, options):
@@ -540,16 +652,10 @@ class TXDABackend(BaseBackend):
         return mod
 
     def add_stages(self, stages, options, language):
-        if os.getenv("USE_OUTSIDE_LLVM_TX81", "1").lower() in ("1", "true", "yes"):
-            llvm_path = txda_tools.get_llvm_system_path()
-            # mlir_path = llvm_path + "python_packages/mlir_core/"
-            mlir_path = os.path.join(llvm_path, "python_packages", "mlir_core")
-            if mlir_path not in sys.path:
-                sys.path.insert(0, mlir_path)
-            bin_path = llvm_path + "/bin"
-            os.environ["PATH"] += os.pathsep + bin_path
+        _ensure_llvm_path()
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["coreir"] = lambda src, metadata: _optimize_coreir(_ttir_to_coreir(src, num_stages=options.num_stages))
+        stages["coreir"] = lambda src, metadata: _optimize_coreir(
+            _ttir_to_coreir(src, num_stages=options.num_stages, precision_mode=options.precision_mode))
         # stages["mkir"] = lambda src, metadata: _optimize_mkir(_coreir_to_mkir(src))
         stages["txir"] = lambda src, metadata: _optimize_txir(_coreir_to_txir(src))
         stages["llir"] = lambda src, metadata: _optimize_llir(_txir_to_llir(src, metadata))

@@ -4,10 +4,10 @@ Run once on each node from the repository root:
 
     # Node 0
     NNODES=2 NODE_RANK=0 MASTER_ADDR=10.0.0.1 NPROC_PER_NODE=4 \
-        bash python/tutorials/tle/08-inter-node-gemm-reduce-scatter.sh --M 2048 --N 4096 --K 16384 --dtype bf16
+        bash python/tutorials/tle/09-inter-node-gemm-reduce-scatter.sh --M 2048 --N 4096 --K 16384 --dtype bf16
     # Node 1
     NNODES=2 NODE_RANK=1 MASTER_ADDR=10.0.0.1 NPROC_PER_NODE=4 \
-        bash python/tutorials/tle/08-inter-node-gemm-reduce-scatter.sh --M 2048 --N 4096 --K 16384 --dtype bf16
+        bash python/tutorials/tle/09-inter-node-gemm-reduce-scatter.sh --M 2048 --N 4096 --K 16384 --dtype bf16
 
 Use matching topology, dimensions, dtype, and tuning settings on every node.
 MASTER_ADDR must be reachable from all nodes; MASTER_PORT defaults to 29501.

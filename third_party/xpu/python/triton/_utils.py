@@ -54,7 +54,7 @@ def validate_block_shape(shape: List[int]):
         if not isinstance(d, int):
             raise TypeError(f"Shape element {i} must have type `constexpr[int]`, got `constexpr[{type(d)}]")
         # ===-------------------- For Triton XPU -----------------------===
-        # [internal] Triton XPU does not require block-shape dims to be a power
+        # [sync source] Triton XPU does not require block-shape dims to be a power
         # of two (matches the 3.0 fork). Kept disabled so kernels using e.g.
         # BLOCK_SIZE=1536 / cluster=12 / block_size_candidates tiles compile.
         # if not is_power_of_two(d):

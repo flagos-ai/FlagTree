@@ -74,6 +74,47 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.targ
 
 // -----
 
+// Named barriers used by outlined helpers share the CTA's hardware id space
+// with warp-specialize control barriers. The allocator must therefore reserve
+// ids 0/1/2 from the kernel before it rewrites either helper, and distinct
+// frontend allocations (virtual ids 16 and 17) must remain distinct.
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func private @named_helper_a
+  tt.func private @named_helper_a() {
+    %virtual16 = arith.constant 16 : i32
+    %threads = arith.constant 64 : i32
+    // CHECK: %[[HELPER_A_ID:.+]] = arith.constant 3 : i32
+    // CHECK: ttng.wait_barrier_named %[[HELPER_A_ID]], {{.*}} : i32, i32
+    ttng.wait_barrier_named %virtual16, %threads : i32, i32
+    tt.return
+  }
+
+  // CHECK-LABEL: tt.func private @named_helper_b
+  tt.func private @named_helper_b() {
+    %virtual17 = arith.constant 17 : i32
+    %threads = arith.constant 64 : i32
+    // CHECK: %[[HELPER_B_ID:.+]] = arith.constant 4 : i32
+    // CHECK: ttng.arrive_barrier_named %[[HELPER_B_ID]], {{.*}} : i32, i32
+    ttng.arrive_barrier_named %virtual17, %threads : i32, i32
+    tt.return
+  }
+
+  tt.func @module_wide_helper_allocation() {
+    ttg.warp_specialize() attributes {requestedRegisters = array<i32: 128>}
+    default {
+      ttg.warp_yield
+    }
+    partition0() num_warps(2) {
+      tt.call @named_helper_a() : () -> ()
+      tt.call @named_helper_b() : () -> ()
+      ttg.warp_return
+    } : () -> ()
+    tt.return
+  }
+}
+
+// -----
+
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @preserve_existing_physical_ids_with_warpspec
   tt.func @preserve_existing_physical_ids_with_warpspec() {

@@ -41,7 +41,11 @@ namespace triton {
 namespace gpu {
 
 /// Lower the loops to prepare them for pipeline expansion.
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+void lowerLoops(ModuleOp moduleOp, bool enablePipelineEnhance = false);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
 void lowerLoops(ModuleOp moduleOp);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
 bool hasGpuBarriers(scf::ForOp forOp);
 bool isSafeToPipeline(scf::ForOp forOp);

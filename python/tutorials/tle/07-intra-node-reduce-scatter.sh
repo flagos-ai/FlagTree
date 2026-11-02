@@ -44,4 +44,4 @@ exec torchrun \
     --node-rank="$node_rank" \
     --master-addr="$master_addr" \
     --master-port="$master_port" \
-    "$script_dir/06-intra-node-reduce-scatter.py" "$@"
+    "$script_dir/07-intra-node-reduce-scatter.py" "$@"

@@ -188,4 +188,41 @@ emitOffsetForLayoutXPU(Attribute layout, RankedTensorType type) {
   return ::mlir::emitOffsetForLayout(layout, type);
 }
 
+Value getClusterLayoutAxisBase(RewriterBase &rewriter, Location loc,
+                               const triton::xpu::ClusterLayoutAttr &layout,
+                               unsigned axis, unsigned unitsPerCore) {
+  auto coresPerGroup = layout.getCoresPerGroup();
+  auto groupsPerCluster = layout.getGroupsPerCluster();
+  auto order = layout.getOrder();
+  assert(axis < coresPerGroup.size() && "axis out of range for ClusterLayout");
+  unsigned groupSize = product(coresPerGroup);
+
+  // core_id and every extent are non-negative, so the unsigned forms are the
+  // correct ones here.
+  Value coreId = getThreadId(rewriter, loc);
+  Value coreInGroupLin = urem(coreId, i32_val(groupSize));
+  Value groupLin = udiv(coreId, i32_val(groupSize));
+
+  // Delinearize a linear id into per-axis coordinates following `order`
+  // (order[0] is the fastest-changing axis).
+  auto delinearize = [&](Value lin,
+                         ArrayRef<unsigned> dims) -> SmallVector<Value> {
+    SmallVector<Value> coord(dims.size(), i32_val(0));
+    Value rem = lin;
+    for (unsigned o : order) {
+      Value d = i32_val(dims[o]);
+      coord[o] = urem(rem, d);
+      rem = udiv(rem, d);
+    }
+    return coord;
+  };
+
+  SmallVector<Value> coreInGroupCoord =
+      delinearize(coreInGroupLin, coresPerGroup);
+  SmallVector<Value> groupCoord = delinearize(groupLin, groupsPerCluster);
+  Value gCoord = add(mul(groupCoord[axis], i32_val(coresPerGroup[axis])),
+                     coreInGroupCoord[axis]);
+  return mul(gCoord, i32_val(unitsPerCore));
+}
+
 } // namespace mlir::LLVM::XPU

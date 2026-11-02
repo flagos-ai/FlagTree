@@ -15,6 +15,7 @@
 #include "triton-shared/Analysis/PtrAnalysis.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/ConversionTools.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -528,8 +529,12 @@ public:
 
     auto tensorType =
         RankedTensorType::get(type.getShape(), type.getElementType());
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
     auto alloc = memref::AllocOp::create(
-        rewriter, loc, MemRefType::get(type.getShape(), type.getElementType()));
+        rewriter, loc,
+        MemRefType::get(type.getShape(), type.getElementType(), AffineMap(),
+                        memorySpace));
 
     // Initialize masked-load temporary buffer eagerly when `other` is absent.
     // This preserves Triton semantics where masked-out lanes read as zero.
@@ -1489,16 +1494,11 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     bool integers = dstElemType.isInteger();
     bool skipC = isZeroTensor(opc, integers);
 
-    // When the dot op lives inside an scf.for loop with f16 inputs but an f32
-    // accumulator, perform the matmul in f16 and extend the result back to f32.
-    auto opaType = dyn_cast<RankedTensorType>(opa.getType());
-    auto opbType = dyn_cast<RankedTensorType>(opb.getType());
-    bool inputsAreF16 = opaType && opbType &&
-                        opaType.getElementType().isF16() &&
-                        opbType.getElementType().isF16();
-    bool useF16Matmul = (op->getParentOfType<scf::ForOp>() != nullptr) &&
-                        inputsAreF16 && dstElemType.isF32();
-    Type matmulElemType = useF16Matmul ? opaType.getElementType() : dstElemType;
+    // tt.dot must accumulate in the result element type: f16 inputs with an
+    // f32 result keep f32 accumulation via a mixed linalg.matmul (f16 ins,
+    // f32 outs), which spine-opt lowers to the matrix engine. Truncating the
+    // per-iteration result to f16 loses K-reduction precision.
+    Type matmulElemType = dstElemType;
 
     Value res;
 
@@ -1527,11 +1527,6 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
       }
 
       res = matmulOp.getResult(0);
-
-      // Extend the f16 accumulator result back to the f32 destination type.
-      if (useF16Matmul) {
-        res = arith::ExtFOp::create(rewriter, loc, dstType, res);
-      }
 
       if (!skipC) {
         if (integers) {
@@ -3098,6 +3093,55 @@ private:
     return buildFloatDivOp(b, loc, lhs, rhs, mode);
   }
 
+  static bool isUnaryMathSymbol(StringRef symbol) {
+    return symbol == "math.acos" || symbol == "math.asin" ||
+           symbol == "math.atan" || symbol == "math.acosh" ||
+           symbol == "math.asinh" || symbol == "math.atanh" ||
+           symbol == "math.cbrt" || symbol == "math.cosh" ||
+           symbol == "math.exp2" || symbol == "math.expm1" ||
+           symbol == "math.log2" || symbol == "math.log10" ||
+           symbol == "math.log1p" || symbol == "math.sinh" ||
+           symbol == "math.tan" || symbol == "linalg.rint";
+  }
+
+  static Value buildUnaryMathOp(OpBuilder &b, Location loc, StringRef symbol,
+                                Value input) {
+    if (symbol == "linalg.rint")
+      // rint is round-half-to-even: keep it distinct from math.round
+      // (half-away-from-zero), which differs on exact .5 ties.
+      return math::RoundEvenOp::create(b, loc, input);
+    if (symbol == "math.acos")
+      return math::AcosOp::create(b, loc, input);
+    if (symbol == "math.asin")
+      return math::AsinOp::create(b, loc, input);
+    if (symbol == "math.atan")
+      return math::AtanOp::create(b, loc, input);
+    if (symbol == "math.acosh")
+      return math::AcoshOp::create(b, loc, input);
+    if (symbol == "math.asinh")
+      return math::AsinhOp::create(b, loc, input);
+    if (symbol == "math.atanh")
+      return math::AtanhOp::create(b, loc, input);
+    if (symbol == "math.cbrt")
+      return math::CbrtOp::create(b, loc, input);
+    if (symbol == "math.cosh")
+      return math::CoshOp::create(b, loc, input);
+    if (symbol == "math.exp2")
+      return math::Exp2Op::create(b, loc, input);
+    if (symbol == "math.expm1")
+      return math::ExpM1Op::create(b, loc, input);
+    if (symbol == "math.log2")
+      return math::Log2Op::create(b, loc, input);
+    if (symbol == "math.log10")
+      return math::Log10Op::create(b, loc, input);
+    if (symbol == "math.log1p")
+      return math::Log1pOp::create(b, loc, input);
+    if (symbol == "math.sinh")
+      return math::SinhOp::create(b, loc, input);
+    assert(symbol == "math.tan" && "expected math.tan path");
+    return math::TanOp::create(b, loc, input);
+  }
+
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -3111,11 +3155,13 @@ private:
     bool isTrunc = (symbol == "math.trunc");
     bool isAtan2 = (symbol == "math.atan2");
     bool isFmod = (symbol == "linalg.fmod");
+    bool isUnaryMath = isUnaryMathSymbol(symbol);
+    bool isFfs = (symbol == "math.ffs");
     auto divRoundingMode = getDivRoundingMode(symbol);
     bool isDivLike = divRoundingMode.has_value();
 
     if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc &&
-        !isAtan2 && !isFmod && !isDivLike) {
+        !isAtan2 && !isFmod && !isDivLike && !isUnaryMath && !isFfs) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
@@ -3136,11 +3182,23 @@ private:
     auto inputElemType = inputType.getElementType();
     auto floatType = dyn_cast<FloatType>(inputElemType);
 
-    if (!isDivLike && !floatType) {
+    if (!isDivLike && !isFfs && !floatType) {
       return rewriter.notifyMatchFailure(op, "element type is not float");
     }
 
-    if ((isCos || isSin || isTrunc) &&
+    if (isFfs) {
+      if (!isa<IntegerType>(inputElemType)) {
+        return rewriter.notifyMatchFailure(
+            op, "math.ffs lowering requires integer element type");
+      }
+      if (outputElemType != inputElemType) {
+        return rewriter.notifyMatchFailure(
+            op, "math.ffs lowering requires output element type matching "
+                "input element type");
+      }
+    }
+
+    if ((isCos || isSin || isTrunc || isUnaryMath) &&
         (!isa<FloatType>(outputElemType) ||
          outputElemType != inputType.getElementType())) {
       return rewriter.notifyMatchFailure(
@@ -3245,6 +3303,22 @@ private:
             }
           } else if (isCos) {
             outputVal = math::CosOp::create(b, loc, inputVal);
+          } else if (isUnaryMath) {
+            outputVal = buildUnaryMathOp(b, loc, symbol, inputVal);
+          } else if (isFfs) {
+            // CUDA ffs semantics: 1-based index of the least significant set
+            // bit, 0 if the input is zero.
+            auto intTy = cast<IntegerType>(inputVal.getType());
+            Value zero = arith::ConstantOp::create(b, loc, intTy,
+                                                   b.getIntegerAttr(intTy, 0));
+            Value one = arith::ConstantOp::create(b, loc, intTy,
+                                                  b.getIntegerAttr(intTy, 1));
+            Value tz = math::CountTrailingZerosOp::create(b, loc, inputVal);
+            Value tzPlusOne = arith::AddIOp::create(b, loc, tz, one);
+            Value isZero = arith::CmpIOp::create(
+                b, loc, arith::CmpIPredicate::eq, inputVal, zero);
+            outputVal =
+                arith::SelectOp::create(b, loc, isZero, zero, tzPlusOne);
           } else if (isTrunc) {
             outputVal = math::TruncOp::create(b, loc, inputVal);
           } else if (isAtan2) {
@@ -3794,7 +3868,8 @@ private:
     auto ctx = rewriter.getContext();
     auto i32Type = IntegerType::get(ctx, 32);
     auto ptrType = LLVM::LLVMPointerType::get(ctx);
-    auto unrankedType = UnrankedMemRefType::get(elemType, /*memorySpace=*/0);
+    auto unrankedType = UnrankedMemRefType::get(
+        elemType, mlir::triton::getDefaultBridgeMemorySpace(ctx));
 
     SmallVector<Type> argsType = {
         i32Type,      i32Type, i32Type, // pid_x, pid_y, pid_z
@@ -3893,7 +3968,9 @@ private:
       elemType = IntegerType::get(ctx, 64);
 
     // 1. Allocate memref
-    auto memrefType = MemRefType::get(tensorType.getShape(), elemType);
+    auto memrefType =
+        MemRefType::get(tensorType.getShape(), elemType, AffineMap(),
+                        mlir::triton::getDefaultBridgeMemorySpace(ctx));
     Value alloc = memref::AllocOp::create(rewriter, loc, memrefType);
 
     // 2. Copy tensor → memref: materialize tensor to buffer first, then copy

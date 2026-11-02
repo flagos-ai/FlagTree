@@ -11,6 +11,7 @@ add_triton_library(TritonToLinalgExperimental
   TritonToPtrPass.cpp
   ScfbufferStandardizedPass.cpp
   ConvertScanOpPass.cpp
+  LoopPtrCarryToOffsetPass.cpp
   #CollapseShape.cpp
 
   DEPENDS

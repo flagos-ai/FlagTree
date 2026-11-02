@@ -46,6 +46,17 @@ struct TileContext {
   // getRegPressure/getBlockRegPressure.
   int64_t peakVRegs = 0;
   int64_t maxVecWidth = 1;
+  // Widest vector row *inside the tree being tiled*, in slots -- `maxVecWidth`
+  // restricted to this tree instead of maxed over the block. `widthPerCore` is
+  // read off the store value, which is a lower bound on the tree's row and not
+  // an upper one: a segment whose compute is f32 and whose store is f16 has a
+  // 16-slot row feeding an 8-slot store, and the pressure a tile loop has to
+  // shrink is made of the 16-slot values, not the 8-slot one. The width
+  // conversion therefore runs on `max(widthPerCore, treeVecWidth)`; see
+  // `vrfBudgetTargetFrom`. 0 means "not supplied", which reproduces the
+  // store-row-only conversion exactly, so a caller that cannot measure the tree
+  // keeps the target it had.
+  int64_t treeVecWidth = 0;
   int64_t scalarPeak = -1; // reported only, never drives a tier
   // Narrowest vector row in slots, or 0 when the segment holds no vector
   // value. A legality bound, so it is already folded into the candidate set;
@@ -88,9 +99,8 @@ struct Decision {
   std::string why;
   llvm::SmallVector<CriterionTrace> perTierTrace;
   // What the soft tier would pick if the tier-1 pressure budget only reported
-  // instead of filtering -- the counterfactual for the demotion §3.2.1 plans
-  // ("P4 之后这一层应当降级成 Tier 3 里的一个带价项"). Report-only: nothing in
-  // the pass reads it, it exists so the demotion's blast radius is measured
+  // instead of filtering -- the counterfactual for the demotion plan in §3.2.1.
+  // Report-only: nothing in the pass reads it; it measures the demotion's blast
   // before it is done rather than after. Report-only tier-3 costs *do* count
   // towards it (they do not count towards `iterNum`), because the demoted world
   // is the one where every priced term is trusted.

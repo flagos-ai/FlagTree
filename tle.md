@@ -1150,6 +1150,27 @@ Memory copy:
 tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 ```
 
+- Signature: `tle.gpu.copy(src, dst, shape, offsets=None, barrier=None, mask=None, cache_policy=None)`
+- `cache_policy`: optional backend-specific compile-time policy object; the common API does not prescribe its fields.
+- MThreads accepts `tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal")`. Each field accepts `"none"`, `"once"`, `"normal"`, or `"persist"`. This immutable object has value-based equality and hashing for JIT specialization.
+- Explicit policies are supported only by the MThreads backend for tensor-descriptor → shared-memory copies. Other backends, CommonIR, pointer copies, and shared-to-global copies reject a non-`None` policy.
+- Omitting the argument or passing Python `None` preserves the existing behavior (`normal/normal` for MUSA TME). Python `None` is different from the string `"none"`.
+- The two hints apply to the same copy operation. A and B copies can use different policy objects; hints do not change barrier completion or synchronization.
+
+Cache persistence is performance-sensitive. Start from the default and measure each non-default pair on the target kernel, shape, dtype, and layout. Streaming access alone does not justify `inner="none"`: it can severely degrade GEMM performance. A benefit from `outer="none"` does not imply a benefit from `inner="none"`. The names do not guarantee cache bypass, a fixed reuse count, or locked residency, and the physical L1/L2 mapping is not specified by this API.
+
+MUSA example using the default persistence explicitly:
+
+```python
+completion = tle.gpu.alloc_barrier(expect_bytes=BM * BK * 2)  # FP16/BF16
+tle.gpu.copy(a_desc, a_smem, [BM, BK], [m_offset, k_offset],
+             barrier=completion,
+             cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal"))
+tle.gpu.barrier_wait(completion, phaseIdx=0)
+```
+
+A `TMECachePolicy` can be constructed on the host or inside a JIT kernel and passed as a `tl.constexpr` argument to a `warp_specialize` producer worker. Bare tuples and strings are not MThreads cache-policy objects.
+
 ##### 3.3.1.2 Execution Orchestration
 
 ###### 3.3.1.2.1 `tle.gpu.warp_specialize`
@@ -1162,7 +1183,7 @@ tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
   - `worker_num_warps`: warp counts for worker partitions. Length must equal `len(functions_and_args) - 1`.
   - `worker_num_regs`: requested register counts for worker partitions. Length must equal `len(functions_and_args) - 1`.
 - Semantics:
-  - Each `args` value must be a tuple. Plain Python `int/float/bool/tl.dtype` values are passed as constexpr arguments.
+  - Each `args` value must be a tuple. Plain Python `int/float/bool/str/tuple/tl.dtype` values and objects exposing a `tl.constexpr_type` through `.type` are passed as constexpr arguments.
   - The default partition may return values; the return value of `tle.gpu.warp_specialize(...)` comes from the default partition. Worker partitions perform side effects and end with warp return.
   - Worker callees receive the corresponding `"ttg.num-warps"` attribute, and the region records `requestedRegisters`.
   - Captured worker arguments are deduplicated in IR, so multiple workers can share the same pipe endpoint or buffer handle.

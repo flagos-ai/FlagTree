@@ -85,6 +85,26 @@ inline Value getThreadId(RewriterBase &rewriter, Location loc) {
   return rewriter.create<arith::IndexCastOp>(loc, i32_ty, tid);
 }
 
+// Hierarchical per-core base index along one axis of a ClusterLayout.
+//
+// A ClusterLayout tiles axis i over nCore[i] = coresPerGroup[i] *
+// groupsPerCluster[i] cores (with prod_i nCore[i] == 64). The global core
+// coordinate along axis i is
+//   gCoord[i] = groupCoord[i] * coresPerGroup[i] + coreInGroupCoord[i]
+// where coreInGroupCoord = delinearize(coreId % groupSize, coresPerGroup)
+// and   groupCoord       = delinearize(coreId / groupSize, groupsPerCluster)
+// both following `order` (fastest-changing axis first). The base this core
+// owns is then `gCoord[axis] * unitsPerCore`.
+//
+// `unitsPerCore` is whatever the caller counts along the axis: elements for a
+// scalar iota (MakeRangeOp), 512-bit vectors for a vectorized cluster-shared
+// read (TLEVLoadOp). Wrapping the result into the axis extent is the CALLER's
+// job, because the two differ in where the wrap belongs (per element vs on the
+// base) and in the unit of the modulus.
+Value getClusterLayoutAxisBase(RewriterBase &rewriter, Location loc,
+                               const triton::xpu::ClusterLayoutAttr &layout,
+                               unsigned axis, unsigned unitsPerCore);
+
 } // namespace mlir::LLVM::XPU
 
 #endif // TRITON_CONVERSION_TRITONXPU_TO_LLVM_UTILITY_H

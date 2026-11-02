@@ -7,11 +7,6 @@ add_triton_library(TritonToTileIR
 
     DEPENDS
     TritonToTileIRConversionPassIncGen
-    TritonGPUTableGen
-    TritonGPUAttrDefsIncGen
-    TritonGPUCTAAttrIncGen
-    TritonGPUTypeInterfacesIncGen
-    TritonGPUOpInterfacesIncGen
 
     LINK_LIBS PUBLIC
     # order is important

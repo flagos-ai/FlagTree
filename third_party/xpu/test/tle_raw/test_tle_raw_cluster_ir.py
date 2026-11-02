@@ -2,20 +2,23 @@
 
 These only exercise the compiler, so they run without XPU hardware:
   - `tle.raw.call` must emit a `triton_xpu.raw` at the ttir level
-  - `convert-tritonxpu-to-llvm` must splice the payload into the module and
+  - `convert-tritonxpu-to-llvm` must declare the payload the op names and
     replace the raw op with an `always_inline` `llvm.call`
-  - `tritonxpu-materialize-deferred-raw` must fill a deferred payload in first
 
-The SDNN counterpart (`sdnn.raw`, `is_sdnn=True`) has no frontend in FlagTree --
-its builder needs TritonSDNN's IR headers, which this tree does not ship -- so
-only the cluster path is covered here.
+The payload body is deliberately NOT in the module: it is LLVM 19 IR text that
+the backend compiles for its own arch and merges in at the LLVM 19 stage (see
+`triton/experimental/tle/raw/merge.py`, and test_tle_raw_deferred.py for that
+half). All this pass produces is the declaration the call binds to, so the merge
+can check the payload against it.
+
+The SDNN counterpart lives only in the internal tree (not shipped in the public tree); the two paths never meet in one
+kernel (SDNN goes through the is_sdnn branch of make_llir, cluster through the
+TritonXPU one).
 
 Note on reading IR back: FlagTree's XPU build defines TRITON_CONCEAL_IR, which
 makes `str(module)` return an empty string. `_ir_text` falls back to
 `create_location_snapshot`, which writes the module to a file and is not gated.
 """
-
-import json
 
 import pytest
 
@@ -53,34 +56,9 @@ def _parse(ctx, tmp_path, src):
     return mod
 
 
-# `tt.ptr<f32>` converts to `!llvm.ptr<1>`, which is also what xpu-clang emits
-# for a `_global_ptr_` parameter -- the payload has to agree or the call is
-# rejected.
-MLIR_PAYLOAD = ("llvm.func @my_scale(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, "
-                "%arg2: i32) { llvm.return }")
-
-LL_PAYLOAD = ("define void @my_scale(ptr addrspace(1) %a, ptr addrspace(1) %b, i32 %n) {\\0A"
-              "  ret void\\0A"
-              "}\\0A")
-
-
-def _kernel_module(payload, extra_attrs=""):
-    return f'''
-module attributes {{"ttg.num-warps" = 1 : i32, "ttg.num-ctas" = 1 : i32, "ttg.threads-per-warp" = 1 : i32}} {{
-  tt.func public @raw_kernel(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %n: i32) {{
-    triton_xpu.raw "my_scale"(%out, %in, %n)
-      {{llvm_ir = "{payload}"{extra_attrs}}} : (!tt.ptr<f32>, !tt.ptr<f32>, i32) -> ()
-    tt.return
-  }}
-}}
-'''
-
-
-def _lower(ctx, tmp_path, src, sources=None):
+def _lower(ctx, tmp_path, src):
     mod = _parse(ctx, tmp_path, src)
     pm = ir.pass_manager(ctx)
-    if sources is not None:
-        xpu.passes.ttxpuir.add_tritonxpu_materialize_deferred_raw_pass(pm, sources)
     xpu.passes.ttxpuir.add_convert_tritonxpu_to_llvm_pass(pm, XPU_ARCH, BUFFER_LEN, False)
     pm.run(mod, "to-llvm")
     return _ir_text(mod, tmp_path, "lowered.mlir")
@@ -96,62 +74,38 @@ def test_builder_emits_raw_op_at_ttir_level(ctx, tmp_path):
                                         False)
     mod.push_back(fn)
     builder.set_insertion_point_to_start(fn.add_entry_block())
-    builder.create_xpu_raw("my_scale", MLIR_PAYLOAD, [fn.args(0), fn.args(1), fn.args(2)])
+    builder.create_xpu_raw("my_scale", "deadbeef", [fn.args(0), fn.args(1), fn.args(2)])
     builder.ret([])
 
     out = _ir_text(mod, tmp_path)
     assert 'triton_xpu.raw "my_scale"(%arg0, %arg1, %arg2)' in out
-    assert "llvm_ir" in out
+    assert 'source_id = "deadbeef"' in out
 
 
-def test_builder_emits_a_deferred_raw_op(ctx, tmp_path):
-    builder = gluon_ir.GluonOpBuilder(ctx)
-    mod = builder.create_module()
-    ptr_ty = builder.get_ptr_ty(builder.get_float_ty(), 1)
-    fn = builder.get_or_insert_function(mod, "kernel", builder.get_function_ty([ptr_ty], []), "public", False)
-    mod.push_back(fn)
-    builder.set_insertion_point_to_start(fn.add_entry_block())
-    builder.create_xpu_raw_deferred("my_scale", "deadbeef", [fn.args(0)])
-    builder.ret([])
+def test_lowering_declares_the_payload_and_calls_it(ctx, tmp_path):
+    # `tt.ptr<f32>` converts to `!llvm.ptr<1>`, which is also what xpu-clang emits
+    # for a `_global_ptr_` parameter -- the payload has to agree or the merge
+    # rejects it.
+    src = '''
+module attributes {"ttg.num-warps" = 1 : i32, "ttg.num-ctas" = 1 : i32, "ttg.threads-per-warp" = 1 : i32} {
+  tt.func public @raw_kernel(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %n: i32) {
+    triton_xpu.raw "my_scale"(%out, %in, %n)
+      {source_id = "deadbeef"} : (!tt.ptr<f32>, !tt.ptr<f32>, i32) -> ()
+    tt.return
+  }
+}
+'''
+    out = _lower(ctx, tmp_path, src)
 
-    out = _ir_text(mod, tmp_path)
-    assert 'triton_xpu.raw "my_scale"(%arg0)' in out
-    assert 'triton_xpu.raw_source_id = "deadbeef"' in out
-    assert 'llvm_ir = ""' in out
-
-
-@pytest.mark.parametrize("payload", [MLIR_PAYLOAD, LL_PAYLOAD], ids=["mlir", "llvmir"])
-def test_lowering_emits_always_inline_call(ctx, tmp_path, payload):
-    out = _lower(ctx, tmp_path, _kernel_module(payload))
-
-    # Payload spliced in as an internal definition, so the backend cannot mistake
-    # it for the kernel entry point when it looks for the external one.
-    assert "llvm.func internal @my_scale" in out
-    assert "triton_xpu.raw_payload" in out
+    # External declaration, no payload body: the backend merges the body in at
+    # the LLVM 19 stage and checks it against this signature.
+    assert "llvm.func @my_scale" in out
+    assert "internal @my_scale" not in out
     assert "always_inline" in out
     assert "llvm.call @my_scale" in out
     assert 'triton_xpu.raw "' not in out
-
-
-def test_deferred_then_lowering_emits_the_call(ctx, tmp_path):
-    src = _kernel_module("", extra_attrs=', triton_xpu.raw_source_id = "deadbeef"')
-    out = _lower(ctx, tmp_path, src, sources={"deadbeef": MLIR_PAYLOAD})
-
-    assert "raw_source_id" not in out
-    assert "llvm.call @my_scale" in out
-    assert "always_inline" in out
-
-
-def test_materialize_pass_reports_an_unknown_source_id(ctx, tmp_path):
-    src = _kernel_module("", extra_attrs=', triton_xpu.raw_source_id = "deadbeef"')
-    with pytest.raises(RuntimeError):
-        _lower(ctx, tmp_path, src, sources={"other": MLIR_PAYLOAD})
-
-
-def test_lowering_without_materialization_is_reported(ctx, tmp_path):
-    src = _kernel_module("", extra_attrs=', triton_xpu.raw_source_id = "deadbeef"')
-    with pytest.raises(RuntimeError):
-        _lower(ctx, tmp_path, src)
+    # The operands are passed through as they come.
+    assert "(!llvm.ptr<1>, !llvm.ptr<1>, i32) -> ()" in out
 
 
 CXX_PAYLOAD = '''
@@ -163,25 +117,45 @@ extern "C" __device__ void my_scale(_global_ptr_ float* out,
 '''
 
 
-def _cxx_payload():
-    """Compile a cluster C++ payload with the real clang, or skip if unavailable."""
+def test_cxx_payload_lowers_to_a_declared_call(ctx, tmp_path):
+    """The C++ path: .xpu source -> LLVM IR -> a call the backend binds later."""
     import triton.experimental.tle as tle
+    from triton.experimental.tle.raw.merge import record_raw_payloads
+    from triton.experimental.tle.raw.source_store import clear_pending_sources
 
     @tle.raw.dialect("xpu3", source=CXX_PAYLOAD, arch=XPU_ARCH)
     def my_scale(out, inp, n):
         ...
 
+    clear_pending_sources()
     try:
-        return my_scale.make_llvm()
-    except RuntimeError as e:
-        pytest.skip(f"no usable XPU clang for the C++ payload path: {e}")
+        try:
+            source_id = my_scale.register_payload()
+        except RuntimeError as e:
+            pytest.skip(f"no usable XPU clang for the C++ payload path: {e}")
 
+        src = f'''
+module attributes {{"ttg.num-warps" = 1 : i32, "ttg.num-ctas" = 1 : i32, "ttg.threads-per-warp" = 1 : i32}} {{
+  tt.func public @raw_kernel(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %n: i32) {{
+    triton_xpu.raw "my_scale"(%out, %in, %n)
+      {{source_id = "{source_id}"}} : (!tt.ptr<f32>, !tt.ptr<f32>, i32) -> ()
+    tt.return
+  }}
+}}
+'''
+        mod = _parse(ctx, tmp_path, src)
+        metadata = {}
+        record_raw_payloads(mod, metadata)
+        assert metadata["tle_raw_payloads"] == [("my_scale", source_id)]
 
-def test_cxx_payload_compiles_and_lowers(ctx, tmp_path):
-    """The whole C++ path: .xpu source -> LLVM IR -> imported -> llvm.call."""
-    out = _lower(ctx, tmp_path, _kernel_module(json.dumps(_cxx_payload())[1:-1]))
+        pm = ir.pass_manager(ctx)
+        xpu.passes.ttxpuir.add_convert_tritonxpu_to_llvm_pass(pm, XPU_ARCH, BUFFER_LEN, False)
+        pm.run(mod, "to-llvm")
 
-    # The payload body came along, not just its declaration.
-    assert "llvm.fmul" in out
-    assert "llvm.call @my_scale" in out
-    assert "always_inline" in out
+        out = _ir_text(mod, tmp_path)
+        assert "llvm.call @my_scale" in out
+        assert "always_inline" in out
+        # The payload's body is merged in later, not carried through MLIR.
+        assert "llvm.fmul" not in out
+    finally:
+        clear_pending_sources()

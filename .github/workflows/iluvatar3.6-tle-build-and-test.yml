@@ -135,7 +135,9 @@ jobs:
           pytest python/test/tle/unit/test_tle_distributed.py
           pytest python/test/tle/unit/test_tle_raw_cache_key.py --deselect python/test/tle/unit/test_tle_raw_cache_key.py::test_mlir_dialect_cache_key_changes_with_edsl_source
           pytest python/test/tle/unit/test_tle_gpu_slot.py
+          pytest python/test/tle/unit/test_tle_alloc_alias.py
           pytest python/test/tle/integration/test_tle_gemm.py
+          pytest python/test/tle/integration/test_tle_alias_e2e.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_gemm.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_alloc.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_copy.py

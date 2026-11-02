@@ -123,7 +123,7 @@ struct MaterializeStridedLinalgInputsPass
 
     SmallVector<Operation *> vsOps;
     func.walk([&](Operation *op) {
-      if (isa<mk::AddVS, mk::SubVS, mk::MulVS>(op))
+      if (isa<mk::AddVS, mk::SubVS, mk::MulVS, mk::MaxVS, mk::MinVS>(op))
         vsOps.push_back(op);
     });
 

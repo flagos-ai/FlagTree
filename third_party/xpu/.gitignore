@@ -13,3 +13,9 @@ libTritonSharedForXPU.a
 
 # Download cache from BOS (xpu-sdnn-objects_*.tar.gz)
 xpu-sdnn-objects
+
+# Compiled Python implementation (installed from xpu-python-impl-so tarball).
+# These are build artifacts: the `.py` they replace are absent from the tree on
+# purpose, so this download is the only source for them.
+*.abi3.so
+xpu-python-impl-so

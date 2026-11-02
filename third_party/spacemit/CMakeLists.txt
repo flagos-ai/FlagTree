@@ -12,16 +12,18 @@ add_subdirectory(lib)
 add_subdirectory(backend)
 add_subdirectory(tools/spine-triton-opt)
 
-add_triton_plugin(SpineTriton ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR XSMTIR TLEIR TLEToLinalg ProtonIR MLIRPtrDialect)
+add_triton_plugin(SpineTriton ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR XSMTIR TleIR TLEToLinalg ProtonIR MLIRPtrDialect MLIRParser MLIRLinalgDialect MLIRMemRefDialect MLIRVectorDialect MLIRSCFDialect MLIRMathDialect MLIRBufferizationDialect MLIRFuncDialect MLIRFuncInlinerExtension)
 target_link_libraries(SpineTriton PRIVATE Python3::Module pybind11::headers ${Python3_LIBRARIES})
 
-# Explicitly declare tablegen dependencies to prevent race conditions in parallel builds
+# Explicitly declare tablegen dependencies to prevent race conditions in parallel builds.
+# TleTableGen (generic third_party/tle dialect) is wired up from the root
+# CMakeLists late block: third_party/spacemit is configured BEFORE the tle
+# plugin defines its targets, so TleTableGen cannot be referenced here.
 add_dependencies(SpineTriton
   XSMTTableGen
   XSMTAsyncTableGen
   TritonStructuredTableGen
   TritonTilingExtOpsIncGen
   TritonTilingExtInterfacesIncGen
-  TLETableGen
   TLEToLinalgConversionPassIncGen
 )

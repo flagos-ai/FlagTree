@@ -56,7 +56,7 @@ RUN rm -rf ${TRITON_SRC_DIR}/build || true
 FROM base AS wheel
 
 ARG TRITON_SRC_DIR
-# Copy and install pre-built wheel (e.g. nvtriton-*-cp312-cp312-linux_x86_64.whl)
+# Copy and install pre-built wheel (e.g. triton_tileir-*-cp312-cp312-linux_x86_64.whl)
 COPY wheel/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
 

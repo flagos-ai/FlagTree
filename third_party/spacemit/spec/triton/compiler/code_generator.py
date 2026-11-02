@@ -1856,7 +1856,25 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     module = generator.module
     # module takes ownership of the context
     module.context = context
-    if not module.verify():
+    # smt_rvisa raw kernels embed tle.dsl_region (generic third_party/tle op)
+    # whose operands are the kernel's !tt.ptr/i32 arguments while its region
+    # block-args carry the raw fn's memref<*>/index parameters — a by-design
+    # violation of that op's verifier that survives until spine-triton-opt's
+    # TLEToLinalg pass consumes it. Skip the frontend verification only for
+    # such kernels, mirroring the two downstream gates (internal-PM
+    # enableVerifier(false) in TritonToLinalgExperimentalPass.cpp and the
+    # --mlir-very-unsafe-disable-verifier-on-parsing flag on spine-triton-opt
+    # in compiler.py); spine-triton-opt's top-level pass manager still
+    # verifies after the op has been rewritten away.
+    has_dsl_region = False
+
+    def _find_dsl_region(op):
+        nonlocal has_dsl_region
+        if op.get_name() == "tle.dsl_region":
+            has_dsl_region = True
+
+    module.walk(_find_dsl_region)
+    if not has_dsl_region and not module.verify():
         if not fn.is_gluon():
             print(module)
         raise RuntimeError("error encountered during parsing")

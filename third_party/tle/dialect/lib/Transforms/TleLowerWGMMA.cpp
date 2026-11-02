@@ -26,7 +26,9 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TleUtility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -45,6 +47,8 @@ namespace ttng = mlir::triton::nvidia_gpu;
 namespace {
 
 static constexpr unsigned kScfForControlOperands = 3;
+static constexpr llvm::StringLiteral kTleWgmmaActiveNAttr("tle.wgmma_active_n");
+static constexpr llvm::StringLiteral kTleWgmmaActiveKAttr("tle.wgmma_active_k");
 
 static std::optional<unsigned> getForInitArgIndex(OpOperand &use) {
   auto forOp = dyn_cast<scf::ForOp>(use.getOwner());
@@ -91,7 +95,7 @@ static LogicalResult verifyWGMMAUses(WGMMAOp op) {
   return success();
 }
 
-static RankedTensorType getMMAType(WGMMAOp op) {
+static RankedTensorType getMMAType(WGMMAOp op, Value encodedAcc) {
   auto context = op.getContext();
   auto accType = cast<RankedTensorType>(op.getC().getType());
   auto aElemType =
@@ -110,7 +114,25 @@ static RankedTensorType getMMAType(WGMMAOp op) {
                             : SmallVector<int64_t>(accType.getShape());
   SmallVector<unsigned, 3> instrShape =
       mmaVersionToInstrShape(3, retShapePerCTA, aElemType, numWarps);
-  SmallVector<unsigned, 2> warpsPerCTA = {numWarps, 1};
+  SmallVector<unsigned, 2> warpsPerCTA;
+  if (encodedAcc) {
+    auto carriedType = cast<RankedTensorType>(encodedAcc.getType());
+    auto carried = cast<ttg::NvidiaMmaEncodingAttr>(carriedType.getEncoding());
+    // Async C keeps its physical M/N layout; K still belongs to this dtype.
+    warpsPerCTA = llvm::to_vector(carried.getWarpsPerCTA());
+    instrShape[0] = carried.getInstrShape()[0];
+    instrShape[1] = carried.getInstrShape()[1];
+  } else {
+    warpsPerCTA =
+        getNvidiaMmaV3WarpsPerCTA(op.getD(), retShapePerCTA, numWarps);
+  }
+  if (auto activeN = op.getActiveNAttr();
+      activeN && activeN.getInt() > instrShape[1]) {
+    op.emitOpError() << "active_n=" << activeN.getInt()
+                     << " exceeds the selected WGMMA instruction N="
+                     << instrShape[1] << " for ttg.num-warps=" << numWarps;
+    return {};
+  }
   SmallVector<unsigned, 2> CTAsPerCGA = {1, 1};
   SmallVector<unsigned, 2> CTASplitNum = {1, 1};
   SmallVector<unsigned, 2> CTAOrder = {1, 0};
@@ -128,6 +150,19 @@ static bool isMMAEncoded(Value value) {
     return false;
   Attribute encoding = type.getEncoding();
   return encoding && isa<ttg::NvidiaMmaEncodingAttr>(encoding);
+}
+
+static bool isFullActiveN(WGMMAOp op, IntegerAttr activeN) {
+  auto accType = cast<RankedTensorType>(op.getC().getType());
+  SmallVector<int64_t> shapePerCTA =
+      accType.getEncoding() ? ttg::getShapePerCTA(accType)
+                            : SmallVector<int64_t>(accType.getShape());
+  return activeN.getInt() == shapePerCTA[1];
+}
+
+static bool isFullActiveK(WGMMAOp op, IntegerAttr activeK) {
+  auto aType = cast<ttg::TensorOrMemDesc>(op.getA().getType());
+  return activeK.getInt() == aType.getShape()[1];
 }
 
 static Value lookupEncodedAccumulator(Value value,
@@ -165,11 +200,11 @@ static void convertLoopCarriedAccumulator(OpOperand &use, Value encodedInit,
 // re-selected from the operand types at lowering (see WGMMA.cpp).
 static Value materializeMMAAccumulator(OpBuilder &builder, WGMMAOp op,
                                        RankedTensorType mmaType,
-                                       DenseMap<Value, Value> &encodedAccs) {
-  Value acc = op.getC();
-  if (Value mapped = lookupEncodedAccumulator(acc, encodedAccs))
-    return mapped;
+                                       Value encodedAcc) {
+  if (encodedAcc)
+    return encodedAcc;
 
+  Value acc = op.getC();
   auto accType = cast<RankedTensorType>(acc.getType());
   if (accType.getEncoding() == mmaType.getEncoding())
     return acc;
@@ -222,13 +257,15 @@ struct TritonTleLowerWGMMAPass
       for (Operation *op : worklist) {
         OpBuilder builder(op);
         if (auto wgmma = dyn_cast<WGMMAOp>(op)) {
-          RankedTensorType mmaType = getMMAType(wgmma);
+          Value encodedAcc =
+              lookupEncodedAccumulator(wgmma.getC(), encodedAccs);
+          RankedTensorType mmaType = getMMAType(wgmma, encodedAcc);
           if (!mmaType) {
             failed = true;
             return;
           }
           Value acc =
-              materializeMMAAccumulator(builder, wgmma, mmaType, encodedAccs);
+              materializeMMAAccumulator(builder, wgmma, mmaType, encodedAcc);
           Value a = materializeAOperand(builder, wgmma, mmaType);
           if (!acc) {
             failed = true;
@@ -238,6 +275,36 @@ struct TritonTleLowerWGMMAPass
               builder, wgmma.getLoc(), acc.getType(), a, wgmma.getB(), acc,
               Value(), wgmma.getInputPrecision(), wgmma.getMaxNumImpreciseAcc(),
               wgmma.getIsAsync());
+          IntegerAttr activeN = wgmma.getActiveNAttr();
+          IntegerAttr activeK = wgmma.getActiveKAttr();
+          if (activeN && !isFullActiveN(wgmma, activeN))
+            nativeDot->setDiscardableAttr(kTleWgmmaActiveNAttr, activeN);
+          if (activeK && !isFullActiveK(wgmma, activeK))
+            nativeDot->setDiscardableAttr(kTleWgmmaActiveKAttr, activeK);
+          if (ExactSMEMStage stage = getExactSMEMStage(wgmma.getB())) {
+            auto storage = SMEMLayoutPlan::fromAttr(
+                stage.root.alloc->getAttrOfType<DictionaryAttr>(kSMEMPlanAttr));
+            if (!storage)
+              storage.emplace(
+                  ArrayRef<int64_t>{stage.getRows(), stage.getCols()},
+                  ArrayRef<int64_t>{stage.getStorageTileRows(),
+                                    stage.getStorageTileCols()},
+                  cast<ttg::NVMMASharedEncodingAttr>(
+                      stage.atom.getType().getEncoding()));
+            auto mma = cast<ttg::NvidiaMmaEncodingAttr>(mmaType.getEncoding());
+            unsigned n = activeN ? activeN.getInt() : mma.getInstrShape()[1];
+            auto operandPlan = planWGMMAOperand(
+                *storage, stage.viewTransposed, mma.getInstrShape()[2], n,
+                storage->encoding.getElementBitWidth() == 8 &&
+                    stage.atom.getType().getElementType().isInteger(8));
+            if (!operandPlan) {
+              wgmma.emitOpError(
+                  "no WGMMA descriptor covers the planned shared layout");
+              failed = true;
+              return;
+            }
+            nativeDot->setAttr(kWGMMAOperandBPlanAttr, operandPlan->getAttr());
+          }
           encodedAccs[wgmma.getD()] = nativeDot.getD();
           for (OpOperand &use :
                llvm::make_early_inc_range(wgmma.getD().getUses()))

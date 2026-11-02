@@ -1,3 +1,5 @@
 add_subdirectory(TritonToTritonGPU)
 add_subdirectory(TritonGPUToLLVM)
-add_subdirectory(TritonInstrumentToLLVM)
+if(NOT FLAGTREE_BACKEND STREQUAL "iluvatar")
+  add_subdirectory(TritonInstrumentToLLVM)
+endif()

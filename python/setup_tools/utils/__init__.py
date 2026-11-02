@@ -66,7 +66,7 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
     },
     {
         "name": "cuda-tile", "url": "https://github.com/NVIDIA/cuda-tile.git", "relative_path":
-        "tileir/third_party/cuda-tile", "commit_id": "2e5ccba66fb3afdba34b26cf358418283027c248"
+        "tileir/third_party/cuda-tile", "commit_id": "7e8e2e68fa219716103824c01f7303367cf7df8d"
     },
 ))
 

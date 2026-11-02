@@ -1,4 +1,5 @@
 #include "triton/Analysis/Membar.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -187,6 +188,11 @@ void MembarOrFenceAnalysis::resolve(FunctionOpInterface funcOp,
     }
   }
 
+  // Some analyses attach provisional annotations while the worklist is
+  // running.  Publish them only after every predecessor/backedge contribution
+  // has been observed.
+  finalize(funcOp);
+
   // Update the final dangling buffers that haven't been synced
   BlockInfo &funcBlockInfo = (*funcBlockInfoMap)[funcOp];
   funcOp.walk<WalkOrder::PreOrder>([&](triton::ReturnOp returnOp) {
@@ -264,17 +270,23 @@ void MembarOrFenceAnalysis::visitTerminator(
   llvm_unreachable("Unknown terminator encountered in membar analysis");
 }
 
-void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
+Operation *MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   OpBuilder::InsertionGuard g(*builder);
-  triton::gpu::BarrierOp::create(*builder, op->getLoc(),
-                                 triton::gpu::AddrSpace::Local);
+  return triton::gpu::BarrierOp::create(*builder, op->getLoc(),
+                                        triton::gpu::AddrSpace::Local)
+      .getOperation();
 }
 
 #ifdef __TLE__
+static constexpr StringLiteral kPipeTMEReuseCandidateAttr =
+    "musa_tle.pipe_tme_reuse_candidate";
+static constexpr StringLiteral kPipeTMEReuseDisqualifiedAttr =
+    "musa_tle.pipe_tme_reuse_disqualified";
+
 static bool syncPipeLocalStoreGroups(Operation *wait, BlockInfo *blockInfo,
                                      Allocation *allocation) {
   auto waitGroups = wait->getAttrOfType<DenseI64ArrayAttr>(
-      "musa_tle.pipe_local_store_wait_groups");
+      triton::musa_tle::kMUSATLEPipeLocalStoreWaitGroupsAttr);
   if (!waitGroups || waitGroups.empty())
     return false;
 
@@ -303,8 +315,8 @@ static bool syncPipeLocalStoreGroups(Operation *wait, BlockInfo *blockInfo,
 
   bool matchedAllocation = false;
   function->walk([&](triton::gpu::LocalAllocOp alloc) {
-    auto group =
-        alloc->getAttrOfType<IntegerAttr>("musa_tle.pipe_local_store_group");
+    auto group = alloc->getAttrOfType<IntegerAttr>(
+        triton::musa_tle::kMUSATLEPipeLocalStoreGroupAttr);
     if (!group || !selectedGroups.contains(group.getInt()))
       return;
     for (Value result : alloc->getResults()) {
@@ -319,7 +331,107 @@ static bool syncPipeLocalStoreGroups(Operation *wait, BlockInfo *blockInfo,
   });
   return matchedAllocation;
 }
+
+// A cyclic TME pipe intentionally writes the same ring slot again after every
+// reader has released that generation. Membar cannot recover the dynamic slot
+// index, so the loop-carried WAW looks like an ordinary overlap. Narrow only
+// that exact case: every active conflict must be WAW between pipe-managed TME
+// copies. Any read, alias, or non-pipe writer keeps the full CTA barrier.
+static bool hasOnlyPipeTMEReuseHazard(Operation *op, const BlockInfo &previous,
+                                      const BlockInfo &current,
+                                      MembarFilterFn filter,
+                                      Allocation *allocation) {
+  if (!op->hasAttr(triton::musa_tle::kMUSATLEPipePayloadCopyAttr))
+    return false;
+
+  auto hasActiveIntersection =
+      [&](const BlockInfo::SliceMapT &lhs, const BlockInfo::SliceMapT &rhs,
+          bool requirePipeCopies, bool &sawIntersection) {
+        for (const auto &[lhsSlice, lhsOps] : lhs) {
+          for (const auto &[rhsSlice, rhsOps] : rhs) {
+            if (!lhsSlice.intersects(rhsSlice))
+              continue;
+            for (Operation *lhsOp : lhsOps) {
+              for (Operation *rhsOp : rhsOps) {
+                if (filter && filter(lhsOp, rhsOp, allocation))
+                  continue;
+                sawIntersection = true;
+                if (requirePipeCopies &&
+                    (!lhsOp->hasAttr(
+                         triton::musa_tle::kMUSATLEPipePayloadCopyAttr) ||
+                     !rhsOp->hasAttr(
+                         triton::musa_tle::kMUSATLEPipePayloadCopyAttr)))
+                  return false;
+              }
+            }
+          }
+        }
+        return true;
+      };
+
+  bool sawReadHazard = false;
+  if (!hasActiveIntersection(previous.syncWriteSlices, current.syncReadSlices,
+                             false, sawReadHazard) ||
+      !hasActiveIntersection(previous.syncReadSlices, current.syncWriteSlices,
+                             false, sawReadHazard) ||
+      sawReadHazard)
+    return false;
+
+  bool sawPipeWAW = false;
+  if (!hasActiveIntersection(previous.syncWriteSlices, current.syncWriteSlices,
+                             true, sawPipeWAW))
+    return false;
+  return sawPipeWAW;
+}
+
+// Reconstruct the explicit shared-memory effects of the operation immediately
+// following a provisional barrier. Pipe payload copies are ordinary
+// MemoryEffectOpInterface writes; keeping this helper deliberately narrow
+// makes a malformed candidate fail closed.
+static BlockInfo getExplicitMemoryEffects(Operation *op,
+                                          Allocation *allocation) {
+  BlockInfo effects;
+  auto memoryEffects = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memoryEffects)
+    return effects;
+
+  auto scratchBufferId = allocation->getBufferId(op);
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>> instances;
+  memoryEffects.getEffects(instances);
+  for (auto effect : instances) {
+    Value value = effect.getValue();
+    if (!value)
+      continue;
+    for (auto bufferId : allocation->getBufferIds(value)) {
+      if (bufferId == Allocation::InvalidBufferId ||
+          bufferId == scratchBufferId)
+        continue;
+      auto interval = allocation->getAllocatedInterval(bufferId);
+      auto slice = AllocationSlice(value, interval);
+      if (isa<MemoryEffects::Write>(effect.getEffect()))
+        effects.syncWriteSlices[slice].insert(op);
+      else if (isa<MemoryEffects::Read>(effect.getEffect()))
+        effects.syncReadSlices[slice].insert(op);
+    }
+  }
+  return effects;
+}
 #endif
+
+void MembarAnalysis::finalize(FunctionOpInterface funcOp) {
+#ifdef __TLE__
+  funcOp.walk([&](triton::gpu::BarrierOp barrier) {
+    if (!barrier->hasAttr(kPipeTMEReuseCandidateAttr))
+      return;
+    bool disqualified = barrier->hasAttr(kPipeTMEReuseDisqualifiedAttr);
+    barrier->removeAttr(kPipeTMEReuseCandidateAttr);
+    barrier->removeAttr(kPipeTMEReuseDisqualifiedAttr);
+    if (!disqualified)
+      barrier->setAttr(triton::musa_tle::kMUSATLEPipeTMEReuseSyncAttr,
+                       UnitAttr::get(funcOp.getContext()));
+  });
+#endif
+}
 
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
@@ -335,6 +447,29 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   };
 
   if (containsLocalBarrier(op)) {
+#ifdef __TLE__
+    // A pipe-reuse barrier is first inserted as a provisional candidate. The
+    // transfer function is non-monotonic, so a later worklist visit can bring
+    // an additional RAW/WAR/non-pipe-WAW predecessor that was not visible at
+    // insertion time. Re-check before clearing the state and remember only a
+    // monotonic safe-to-unsafe transition. The final marker is published once
+    // the worklist reaches its fixed point.
+    if (op->hasAttr(kPipeTMEReuseCandidateAttr) &&
+        !op->hasAttr(kPipeTMEReuseDisqualifiedAttr)) {
+      Operation *target = op->getNextNode();
+      BlockInfo effects;
+      bool stillPipeOnly = false;
+      if (target &&
+          target->hasAttr(triton::musa_tle::kMUSATLEPipePayloadCopyAttr)) {
+        effects = getExplicitMemoryEffects(target, allocation);
+        stillPipeOnly = hasOnlyPipeTMEReuseHazard(target, *blockInfo, effects,
+                                                  filter, allocation);
+      }
+      if (!stillPipeOnly)
+        op->setAttr(kPipeTMEReuseDisqualifiedAttr,
+                    UnitAttr::get(op->getContext()));
+    }
+#endif
     // If the current op is a local barrier, we sync previous reads and writes
     blockInfo->sync();
     return;
@@ -345,7 +480,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   // before the writer's warp arrivals. The full/empty protocol supplies the
   // cross-warp edge; this thread-local wait must not clear other hazards.
   if (isa<triton::gpu::AsyncWaitOp>(op) &&
-      op->hasAttr("musa_tle.pipe_async_wait"))
+      op->hasAttr(triton::musa_tle::kMUSATLEPipeAsyncWaitAttr))
     return;
   if (syncPipeLocalStoreGroups(op, blockInfo, allocation)) {
     // The pipe hardware wait is the acquire edge for this local-store
@@ -466,7 +601,16 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     curBlockInfo.syncReadSlices[scratchSlice].insert(op);
   } else if (blockInfo->isIntersected(curBlockInfo, filter, allocation)) {
     builder->setInsertionPoint(op);
+#ifdef __TLE__
+    bool pipeTMEReuseSync = hasOnlyPipeTMEReuseHazard(
+        op, *blockInfo, curBlockInfo, filter, allocation);
+    Operation *barrier = insertBarrier(op, builder);
+    if (pipeTMEReuseSync) {
+      barrier->setAttr(kPipeTMEReuseCandidateAttr, builder->getUnitAttr());
+    }
+#else
     insertBarrier(op, builder);
+#endif
     blockInfo->sync();
   }
   // Update the region info, even if barrier is inserted, we have to maintain

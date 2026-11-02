@@ -7,7 +7,6 @@ import functools
 from typing import List
 from pathlib import Path
 
-# from third_party.xcn.backend.driver import library_dirs
 from triton.runtime.build import _build
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import GPUTarget
@@ -18,7 +17,8 @@ dirname = os.path.dirname(os.path.realpath(__file__))
 
 @functools.lru_cache(maxsize=None)
 def get_xpu_library_dirs(arch: int = -1):
-    # 因为这里是还没有进入到compile阶段的一个判定，然后xpu4及以上不走这个target，所以就暂时仍使用xpu3的头文件和链接库，之后会在compile阶段再次判定
+    # Runs before the compile stage pins the arch: xpu4+ never takes this target,
+    # so keep the xpu3 headers/libs here and re-check at compile time.
     if arch == -1:
         include_dir = [os.path.join(dirname, "xpu3", "include")]
         libdevice_dir = os.path.join(dirname, "xpu3", "lib")
@@ -586,11 +586,16 @@ def make_launcher(constants, signature, ids, metadata):
             rank = _tensordesc_rank(ty)
             expanded_signature[exp_idx] = ty  # base pointer (void*)
             exp_idx += 1
-            for _ in range(2 * rank):
-                expanded_signature[exp_idx] = "i64"  # handle shape, then strides
+            # Only SDNN keeps the tensor_descriptor_base_type handle group (no
+            # TensorDescType conversion in TritonSDNNToLLVM); the cluster path converts
+            # TensorDescType to a single ptr<1>, collapsing the handle group into the
+            # base pointer above -- unconditional expansion doubled the arg count (T-1).
+            if is_sdnn:
+                for _ in range(2 * rank):
+                    expanded_signature[exp_idx] = "i64"  # handle shape, then strides
+                    exp_idx += 1
+                expanded_signature[exp_idx] = "i1"  # padding == "nan"
                 exp_idx += 1
-            expanded_signature[exp_idx] = "i1"  # padding == "nan"
-            exp_idx += 1
             for _ in range(rank):
                 expanded_signature[exp_idx] = "i32"  # .shape
                 exp_idx += 1
@@ -768,6 +773,10 @@ typedef struct _DevicePtrInfo {{
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
+  // numel is only read for TE-scaled arguments (see generate_kernel_params),
+  // but both early returns below skip the tensor, so initialize it here rather
+  // than leaving the field indeterminate for them.
+  ptr_info.numel = 0;
   ptr_info.valid = true;
   if (PyLong_Check(obj)) {{
     ptr_info.dev_ptr = PyLong_AsVoidPtr(obj);
@@ -916,6 +925,11 @@ def _get_launcher_fn_name(src):
             or getattr(getattr(fn, 'fn', None), '__name__', None) or str(fn))
 
 
+# Read once: this sits on the launch path, where a `os.environ` lookup per call is
+# a measurable share of a small kernel's cost. Set it before the first launch.
+_PRINT_TRITON_FUNC = bool(int(os.environ.get("PRINT_TRITON_FUNC", 0)))
+
+
 def _print_triton_launcher_info(fn_name, signature, constants, args):
     """Print kernel launch info when PRINT_TRITON_FUNC env var is set.
     args layout: grid_0, grid_1, grid_2, stream, function, packed_metadata,
@@ -953,12 +967,17 @@ class XPULauncher(object):
 
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
+        # Must match make_launcher's descriptor expansion (T-1): the cluster (non-SDNN)
+        # path converts TensorDescType to a single ptr<1>, so only rank .shape (i32) +
+        # rank .strides (i64) follow the base pointer -- the old unconditional SDNN-style
+        # expansion doubled the args and zeroed the trailing grid params.
+        self._is_sdnn = bool(getattr(metadata, "is_sdnn", False))
         src = make_launcher(constants, signature, ids, metadata)
         mod = compile_module_from_src(src, "__triton_launcher_xpu", metadata.xpu_arch)
         self.launch = mod.launch
 
     def __call__(self, *args):
-        if int(os.environ.get("PRINT_TRITON_FUNC", 0)):
+        if _PRINT_TRITON_FUNC:
             _print_triton_launcher_info(self._fn_name, self._signature, self._constants, args)
         # args = (gridX, gridY, gridZ, stream, function, metadata,
         #         launch_metadata, enter_hook, exit_hook, *bound_args)
@@ -978,9 +997,13 @@ class XPULauncher(object):
         for arg in filtered:
             if isinstance(arg, TensorDescriptor):
                 expanded.append(arg.base)  # tensor with data_ptr/numel
-                expanded.extend(arg.shape)  # handle shape, i64
-                expanded.extend(arg.strides)  # handle strides, i64
-                expanded.append(arg.padding == "nan")
+                # Must match make_launcher's expansion: only SDNN adds the handle group
+                # (i64 shape/strides + padding flag); on the cluster path it is already
+                # folded into the base pointer.
+                if self._is_sdnn:
+                    expanded.extend(arg.shape)  # handle shape, i64
+                    expanded.extend(arg.strides)  # handle strides, i64
+                    expanded.append(arg.padding == "nan")
                 expanded.extend(arg.shape)  # .shape, i32
                 expanded.extend(arg.strides)  # .strides, i64
             else:
