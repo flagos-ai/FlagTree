@@ -137,37 +137,18 @@ LogicalResult DeviceIntraBarrierOp::verify() {
 
   // coop_kind
   if (coopKindAttr) {
-    auto coopKind = static_cast<CoopKind>(coopKindAttr.getInt());
-
-    switch (coopKind) {
-    case CoopKind::Thread:
-    case CoopKind::Warp:
-    case CoopKind::Block:
-    case CoopKind::TileSpan:
-    case CoopKind::Lanes:
-      break;
-    default:
+    if (coopKindAttr.getInt() < 0 || coopKindAttr.getInt() > 4)
       return emitInvalidIntAttr(
           "coop_kind", coopKindAttr.getInt(),
           "Thread(0), Warp(1), Block(2), TileSpan(3), Lanes(4)");
-    }
   }
 
   // order
   if (orderAttr) {
-    auto order = static_cast<MemoryOrder>(orderAttr.getInt());
-
-    switch (order) {
-    case MemoryOrder::Relaxed:
-    case MemoryOrder::Acquire:
-    case MemoryOrder::Release:
-    case MemoryOrder::AcqRel:
-      break;
-    default:
+    if (orderAttr.getInt() < 0 || orderAttr.getInt() > 3)
       return emitInvalidIntAttr(
           "order", orderAttr.getInt(),
           "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
-    }
   }
 
   return success();

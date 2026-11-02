@@ -46,6 +46,20 @@ def test_indexed_barrier_compiles_without_cuda_context():
     assert "flagcxIntraBarrierSyncS" in compiled.asm["llir"]
 
 
+@triton.jit
+def _static_single_channel(mem: tl.int64, comm: tl.int64):
+    tle.distributed_barrier(device_dptr=(mem, comm), space="device")
+
+
+def test_meshless_single_channel_retains_the_local_communicator_abi():
+    compiled = triton.compile(ASTSource(_static_single_channel,
+                                        signature={"mem": "i64", "comm": "i64"}),
+                              target=GPUTarget("cuda", 90, 32), options={"num_warps": 4})
+    assert '"tle.device intra barrier"' in compiled.asm["ttir"]
+    assert 'barrier_count = 1' in compiled.asm["ttir"]
+    assert 'flagcxIntraBarrierSyncS' in compiled.asm["llir"]
+
+
 @pytest.mark.parametrize("kind,match", [(0,"scalar int32"),(1,"scalar int32")])
 def test_reject_wrong_index_representation_or_bounds(kind,match):
     with pytest.raises(triton.CompilationError,match=match):

@@ -74,14 +74,14 @@ llvm.func internal @producer_collective() attributes {noinline} {
 // scope: 256 threads for the default group and 128 for partition 0.  Leaving
 // either helper as barrier0 waits for all 384 physical threads and deadlocks.
 // CHECK-LABEL: llvm.func internal @default_collective__tle_ws_barrier_0_256
+// CHECK: [[DEFAULT_BARRIER:%.*]] = llvm.mlir.constant(0 : i32) : i32
 // CHECK: [[DEFAULT_THREADS:%.*]] = llvm.mlir.constant(256 : i32)
-// CHECK: [[DEFAULT_BARRIER:%.*]] = llvm.mlir.constant(0 : i32)
 // CHECK: nvvm.barrier id = [[DEFAULT_BARRIER]] number_of_threads = [[DEFAULT_THREADS]]
 // CHECK-NEXT: llvm.return
 
 // CHECK-LABEL: llvm.func internal @producer_collective__tle_ws_barrier_2_128
+// CHECK: [[PRODUCER_BARRIER:%.*]] = llvm.mlir.constant(2 : i32) : i32
 // CHECK: [[PRODUCER_THREADS:%.*]] = llvm.mlir.constant(128 : i32)
-// CHECK: [[PRODUCER_BARRIER:%.*]] = llvm.mlir.constant(2 : i32)
 // CHECK: nvvm.barrier id = [[PRODUCER_BARRIER]] number_of_threads = [[PRODUCER_THREADS]]
 // CHECK-NEXT: llvm.return
 

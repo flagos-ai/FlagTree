@@ -4,8 +4,10 @@
 @triton.jit(noinline=True)
 def {{ call.symbol }}__partials({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
-    for gather_row in range({{ call.local_rows }}):
-{% filter indent(4, true) %}
+{% if call.local_m != 1 %}
+    for gather_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
     gather_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
     if {{ call.participant_active }}:
         for gather_start in tl.range(
@@ -71,7 +73,7 @@ def {{ call.symbol }}__partials({{ call.signature }}):
                 gather_mask, gather_value_fp32 * gather_value_fp32, 0.0,
             )
     tl.store(
-        {{ call.stats_partials }} + shard_index{% if call.global_rows > 1 %} * {{ call.global_rows }} + ({{ call.global_row }}){% endif %},
+        {{ call.stats_partials }} + ({{ call.stats_partials_store_offset }}),
         tl.sum(gather_square_sum, axis=0),
     )
 {% endfilter %}
@@ -102,8 +104,6 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
             mask=gather_result_mask,
         )
 {% endif %}
-    for gather_stats_row in range({{ call.stats_rows }}):
-{% filter indent(4, true) %}
     if {{ call.stats_store_active }}:
 {% if call.stats_local_m != 1 %}
         for gather_stats_row in tl.range(0, {{ call.stats_local_m }}):
@@ -123,7 +123,7 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
             gather_stats_owner = {{ call.stats_partial_owner }}
             gather_stats += tl.sum(
                 tl.load(
-                    {{ call.stats_partials }} + gather_stats_owner{% if call.global_rows > 1 %} * {{ call.global_rows }} + ({{ call.stats_global_row }}){% endif %},
+                    {{ call.stats_partials }} + gather_stats_owner{% if call.local_m != 1 %} * {{ call.stats_partials_owner_stride }} + ({{ call.stats_partial_token }}){% endif %},
                     mask=gather_stats_mask,
                     other=0.0,
                 ),

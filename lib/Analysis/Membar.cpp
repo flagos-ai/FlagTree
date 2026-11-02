@@ -825,12 +825,22 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   }
 
 #ifdef __TLE__
-  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
-  // atomics on overlapping shared intervals do not require an extra CTA
-  // barrier here.
+  // Atomicity orders the addressed memory, not the shared scratch used to
+  // broadcast returned values. Exempt only atomic chains without return
+  // scratch; overlapping broadcasts still need their write-after-read barrier.
   auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
+    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(rhs)) {
+      // Participant publication proves that every payload writer performs its
+      // own release fence and arrive. A synchronous store needs no additional
+      // CTA rendezvous, even when the barrier parameter may alias its buffer.
+      if (arrive.getParticipantArrive() && arrive.getReleaseFence() &&
+          isa<triton::StoreOp, triton::gpu::LocalStoreOp>(lhs))
+        return true;
+    }
     if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
+        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs) &&
+        allocation->getBufferId(lhs) == Allocation::InvalidBufferId &&
+        allocation->getBufferId(rhs) == Allocation::InvalidBufferId)
       return true;
     return filter ? filter(lhs, rhs) : false;
   };
@@ -916,28 +926,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
 #endif
     scratchBufferId = allocation->getBufferId(op);
   }
-
-#ifdef __TLE__
-  // Atomicity orders the addressed memory, not the shared scratch used to
-  // broadcast returned values. Exempt only atomic chains without return
-  // scratch; overlapping broadcasts still need their write-after-read barrier.
-  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
-    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(rhs)) {
-      // Participant publication proves that every payload writer performs its
-      // own release fence and arrive. A synchronous store needs no additional
-      // CTA rendezvous, even when the barrier parameter may alias its buffer.
-      if (arrive.getParticipantArrive() && arrive.getReleaseFence() &&
-          isa<triton::StoreOp, triton::gpu::LocalStoreOp>(lhs))
-        return true;
-    }
-    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs) &&
-        allocation->getBufferId(lhs) == Allocation::InvalidBufferId &&
-        allocation->getBufferId(rhs) == Allocation::InvalidBufferId)
-      return true;
-    return filter ? filter(lhs, rhs) : false;
-  };
-#endif
 
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory

@@ -38,9 +38,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %false = arith.constant false
     %buf = ttg.local_alloc {alignment = 1024 : i32, tle.exact_smem_shape = array<i64: 1, 80, 256>, tle.smem_plan = {encoding = #nvmma, shape = array<i64: 80, 256>, tile = array<i64: 16, 64>, version = 1 : i32}} : () -> !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
     // CHECK: %[[ZERO_TOKEN:.*]] = nvws.create_token {{.*}}loadType = 2 : i32, numBuffers = 1 : i32
-    tle.pipe.create %buf {capacity = 1 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
+    %pipe_identity_0 = tle.pipe.create %buf {capacity = 1 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
     // CHECK: nvws.producer_acquire %[[ZERO_TOKEN]], %[[ZERO_STAGE]]
-    tle.pipe.writer_acquire %buf[%c0, %false] {capacity = 1 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_0, %buf[%c0, %false] {capacity = 1 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
     %tile0 = ttg.memdesc_index %buf[%c0] {tle.exact_smem_tile = 0 : i32} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // CHECK: ttg.tma_copy
     ttg.tma_copy %desc, %tile0, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
@@ -48,7 +48,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     // CHECK: ttg.tma_copy
     ttg.tma_copy %desc, %tile5, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // CHECK: nvws.producer_commit %[[ZERO_TOKEN]], %[[ZERO_STAGE]] {{.*}}commitKind = 2 : i32
-    tle.pipe.writer_commit %buf[%c0] {capacity = 1 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_0, %buf[%c0] {capacity = 1 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<20x16x64xf16, #storage, #smem, mutable>
     // CHECK-NOT: tle.pipe.
     tt.return
   }
@@ -65,9 +65,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %false = arith.constant false
     %buf = ttg.local_alloc {alignment = 1024 : i32, tle.exact_smem_shape = array<i64: 2, 80, 256>, tle.smem_plan = {encoding = #nvmma, shape = array<i64: 80, 256>, tile = array<i64: 16, 64>, version = 1 : i32}} : () -> !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     // CHECK: %[[FOLDED_TOKEN:.*]] = nvws.create_token {{.*}}loadType = 2 : i32, numBuffers = 2 : i32
-    tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    %pipe_identity_1 = tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     // CHECK: nvws.producer_acquire %[[FOLDED_TOKEN]], %[[FOLDED_STAGE]]
-    tle.pipe.writer_acquire %buf[%c1, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_1, %buf[%c1, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     %tile0 = ttg.memdesc_index %buf[%c20] {tle.exact_smem_tile = 0 : i32} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // CHECK: ttg.tma_copy
     ttg.tma_copy %desc, %tile0, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
@@ -75,7 +75,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     // CHECK: ttg.tma_copy
     ttg.tma_copy %desc, %tile5, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // CHECK: nvws.producer_commit %[[FOLDED_TOKEN]], %[[FOLDED_STAGE]] {{.*}}commitKind = 2 : i32
-    tle.pipe.writer_commit %buf[%c1] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_1, %buf[%c1] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     // CHECK-NOT: tle.pipe.
     tt.return
   }
@@ -89,9 +89,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %false = arith.constant false
     %buf = ttg.local_alloc {alignment = 1024 : i32, tle.exact_smem_shape = array<i64: 2, 80, 256>, tle.smem_plan = {encoding = #nvmma, shape = array<i64: 80, 256>, tile = array<i64: 16, 64>, version = 1 : i32}} : () -> !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     // CHECK: %[[DYNAMIC_TOKEN:.*]] = nvws.create_token {{.*}}loadType = 2 : i32, numBuffers = 2 : i32
-    tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    %pipe_identity_2 = tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     // CHECK: nvws.producer_acquire %[[DYNAMIC_TOKEN]], %[[DYNAMIC_STAGE]]
-    tle.pipe.writer_acquire %buf[%stage, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_2, %buf[%stage, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     %base = arith.muli %stage, %c20 : i32
     %offset = arith.addi %base, %c5 : i32
     %tile0 = ttg.memdesc_index %buf[%base] {tle.exact_smem_tile = 0 : i32} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
@@ -101,7 +101,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     // CHECK: ttg.tma_copy
     ttg.tma_copy %desc, %tile5, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // CHECK: nvws.producer_commit %[[DYNAMIC_TOKEN]], %[[DYNAMIC_STAGE]] {{.*}}commitKind = 2 : i32
-    tle.pipe.writer_commit %buf[%stage] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_2, %buf[%stage] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     // CHECK-NOT: tle.pipe.
     tt.return
   }
@@ -119,14 +119,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %c25 = arith.constant 25 : i32
     %false = arith.constant false
     %buf = ttg.local_alloc {alignment = 1024 : i32, tle.exact_smem_shape = array<i64: 2, 80, 256>, tle.smem_plan = {encoding = #nvmma, shape = array<i64: 80, 256>, tile = array<i64: 16, 64>, version = 1 : i32}} : () -> !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
-    tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
-    tle.pipe.writer_acquire %buf[%c0, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    %pipe_identity_3 = tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_3, %buf[%c0, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     %tile0 = ttg.memdesc_index %buf[%c0] {tle.exact_smem_tile = 0 : i32} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %tile0, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     %tile5 = ttg.memdesc_index %buf[%c25] {tle.exact_smem_tile = 5 : i32} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %tile5, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // expected-error @+1 {{has an unrelated ttg.tma_copy between pipe payload TMA copies and commit}}
-    tle.pipe.writer_commit %buf[%c0] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_3, %buf[%c0] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     tt.return
   }
 }
@@ -145,14 +145,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %false = arith.constant false
     %buf = ttg.local_alloc {alignment = 1024 : i32, tle.exact_smem_shape = array<i64: 2, 80, 256>, tle.smem_plan = {encoding = #nvmma, shape = array<i64: 80, 256>, tile = array<i64: 16, 64>, version = 1 : i32}} : () -> !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     %other = ttg.local_alloc {alignment = 1024 : i32, tle.exact_smem_shape = array<i64: 2, 80, 256>, tle.smem_plan = {encoding = #nvmma, shape = array<i64: 80, 256>, tile = array<i64: 16, 64>, version = 1 : i32}} : () -> !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
-    tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
-    tle.pipe.writer_acquire %buf[%c0, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    %pipe_identity_4 = tle.pipe.create %buf {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_4, %buf[%c0, %false] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     %tile0 = ttg.memdesc_index %buf[%c0] {tle.exact_smem_tile = 0 : i32} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %tile0, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     %tile5 = ttg.memdesc_index %other[%c5] {tle.exact_smem_tile = 5 : i32} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable> -> !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %tile5, [%c0, %c0] : !tt.tensordesc<tensor<16x64xf16, #nvmma>>, !ttg.memdesc<16x64xf16, #nvmma, #smem, mutable>
     // expected-error @+1 {{has an unrelated ttg.tma_copy between pipe payload TMA copies and commit}}
-    tle.pipe.writer_commit %buf[%c0] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_4, %buf[%c0] {capacity = 2 : i32, pipe_name = "k", field_names = ["k"], scope = "cta", tiled_smem_fields = array<i32: 0>} : !ttg.memdesc<40x16x64xf16, #storage, #smem, mutable>
     tt.return
   }
 }

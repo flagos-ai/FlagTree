@@ -101,3 +101,44 @@ Raw logs for these checks are under `.local/publish-20261028/`. Post-integration
 results are recorded below before pushing. Unfinished diagnostics and
 architecture-specific unsupported tests must not be represented as a green
 full-suite result.
+
+## Upstream integration and final validation
+
+The checkpoint `2a64aae18` is integrated with the seven upstream commits
+through `254312d22`. Conflict resolution preserves the BI-V150 reduction
+layouts and readonly device packing alongside AMD weight contiguity hints,
+prefetch planning and scoped compilation knobs. The strict floating-point
+contract remains active inside the new compilation scope. Four local test
+fixtures now provide the upstream prefill row count and attention/statistics
+owner-coordinate fields; the tested shapes and numerical expectations are
+unchanged.
+
+`./build-iluvator.sh` rebuilt and installed the editable Iluvatar extension
+successfully. Final validation with that extension reports:
+
+- Focused runtime, target, readonly ABI, GEMV, GLU, gather, attention,
+  function-pool, AMD planning and distributed checks on GPU 4:
+  **636 passed, 43 skipped, 7 failed**. One failure requires tensor maps that
+  the active driver does not support. Six source-backed CUDA cases fail
+  readonly host-page registration with driver status 1 in
+  `runtime/source_rdata.py::_RegisteredFile`; their CPU cases pass. The four
+  attention head-resharding cases pass after the upstream address repair.
+- The four updated fixture suites: **109 passed**, including numerical
+  comparisons between the original and aligned reduction layouts.
+- Native layout, FP32 and flat-SME/convergence checks on GPU 6:
+  **38 passed**.
+- The private-frame reproducer on GPU 5: **4 failed, 4 passed**, with the same
+  128-value and 32768-value corruption and intact guards as independent main.
+- The barrier codegen check with `-x`: **1 failed** at
+  `test_tle_barrier_codegen.py:46`. Generated LLIR lacks the expected warp
+  lane-mask expression; the generated completion loop also needs further
+  investigation. This attempt does not establish a passing pipe suite.
+- AMD split-K templates render and parse with K contiguity hints retained,
+  with prefetch enabled and disabled. AMD GPU execution was not tested here.
+- Conflict-marker, Python syntax and Git whitespace checks pass. No file
+  under `**/figures/data/` remains tracked; local raw files are preserved.
+
+Final logs and the fresh private-frame IR/binaries/results remain in the
+ignored `.local/publish-20261028/` directory. This push is a workspace
+checkpoint with explicit unresolved defects, not a completed compiler fix
+or a promotion of the newer renderer's performance.

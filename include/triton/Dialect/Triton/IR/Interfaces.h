@@ -63,6 +63,11 @@ struct TritonInlinerInterface : public DialectInlinerInterface {
   /// Handle the given inlined terminator by replacing it with a new operation
   /// as necessary.
   void handleTerminator(Operation *op, ValueRange valuesToRepl) const final;
+#ifdef __TLE__
+  Value handleArgument(OpBuilder &builder, Operation *call,
+                       Operation *callable, Value argument,
+                       DictionaryAttr argumentAttrs) const final;
+#endif
 };
 
 } // namespace mlir::triton

@@ -1194,7 +1194,13 @@ def _parse_barrier_enum_arg(arg) -> str:
     # Successor of the base _parse_device_barrier_args: normalize
     # BarrierKind/GroupKind/MemoryOrder enums or raw strings to lowercase str.
     arg = tl._unwrap_if_constexpr(arg)
-    if isinstance(arg, (BarrierKind, GroupKind, MemoryOrder)):
+    if isinstance(arg, attr.FlagCXCoopKind):
+        return ("thread", "warp", "block")[int(arg)]
+    if isinstance(arg, attr.MemoryOrder):
+        return ("relaxed", "acquire", "release", "acqrel")[int(arg)]
+    if isinstance(arg, attr.SyncScope):
+        return ("system", "device", "block", "thread")[int(arg)]
+    if isinstance(arg, (BarrierKind, GroupKind, MemoryOrder, MemoryScope)):
         return arg.value
     return str(arg).lower()
 
@@ -1394,6 +1400,21 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
+
+    # A mesh-less intra communicator is the single-channel local contract.
+    # Mesh-bearing calls retain the unified team/context/scope contract.
+    space = tl._unwrap_if_constexpr(space)
+    if space is not None and space != "chiplet":
+        space = _normalize_barrier_space(space)
+    if mesh is None and space == "device" and barrier_count is None and not isinstance(index, tl.tensor):
+        scope = tl._unwrap_if_constexpr(memory_scope)
+        system_scope = scope == attr.SyncScope.SYSTEM if isinstance(scope, attr.SyncScope) else _parse_barrier_enum_arg(scope) == "system"
+        if tl._unwrap_if_constexpr(context_id) != 0 or not system_scope:
+            raise ValueError("mesh-less device barriers use context_id=0 and system scope; provide a mesh otherwise")
+        barrier_count = 1
+    if barrier_count is not None:
+        if tl._unwrap_if_constexpr(context_id) != 0 or _parse_barrier_enum_arg(memory_scope) != "system":
+            raise ValueError("indexed device barriers use context_id=0 and system scope")
 
     if check_and_handle_indexed_device_barrier(space=space, device_dptr=device_dptr,
                                                barrier_kind=barrier_kind, group_kind=group_kind,

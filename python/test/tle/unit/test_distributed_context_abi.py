@@ -48,10 +48,21 @@ def test_context_lookup_before_communicator_creation_does_not_freeze_empty_handl
     assert empty.comm_ptr is None
     assert empty.mem_ptr is None
     bound = DistributedRtContext(33, 44)
-    assert bound is empty
+    assert bound is not empty
+    assert empty.comm_ptr is None and empty.mem_ptr is None
     assert bound.get_packed_data() == (44, 33)
     assert DistributedRtContext().get_packed_data() == (44, 33)
     assert bound._init_count == 1
+
+
+def test_explicit_contexts_remain_independent_and_reset_together(context):
+    other = DistributedRtContext(33, 44)
+    assert other is not context
+    assert context.get_packed_data() == (22, 11)
+    assert other.get_packed_data() == (44, 33)
+    assert not DistributedRtContext().is_lite_mode
+    DistributedRtContext._reset()
+    assert context.comm_ptr is None and other.comm_ptr is None
 
 
 def test_per_rank_launch_grid_excludes_device_rank():

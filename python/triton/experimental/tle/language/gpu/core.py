@@ -451,7 +451,9 @@ def alloc(
             NVIDIA SMEM supports one non-power-of-two matrix dimension (a
             multiple of 16) through the logical-domain storage planner.
         dtype: Data type
-        layout: Memory layout encoding (optional)
+        layout: Memory layout encoding (optional). An explicit shared encoding
+            describes a physical MemDesc and preserves its leading extent;
+            layout=None selects automatic logical-matrix storage planning.
         scope: Storage type (default to shared memory)
         init_value: Optional initial register tensor with the padded matrix shape.
             For a 3D allocation, a matrix initializes every slot with the same
@@ -564,7 +566,11 @@ def alloc(
             _semantic.builder, unwrapped_shape))
         if use_mthreads_buffer:
             mthreads_buffer.validate_shape(unwrapped_shape)
-        non_power_payload_axes = ([] if use_mthreads_buffer else
+        # A plain linear MemDesc describes a physical arena, not a logical
+        # matrix. Its byte extent need not fit a ranked register tensor.
+        physical_buffer = (len(unwrapped_shape) == 1 and not nv_mma_shared_layout) or (
+            isinstance(layout, tle.shared_layout) and all(dim & (dim - 1) == 0 for dim in unwrapped_shape[1:]))
+        non_power_payload_axes = ([] if use_mthreads_buffer or physical_buffer else
                                   [axis for axis, dim in enumerate(payload_shape, payload_offset) if dim & (dim - 1)])
         if len(non_power_payload_axes) > 1:
             raise ValueError("tle.gpu.alloc permits at most one non-power-of-two matrix dimension")
@@ -1243,7 +1249,6 @@ def copy(
     other=None,
     is_async: bool = False,
     eviction_policy: str = "",
-    mask=None,
     input_stride=None,
     _semantic: TLESemantic | None = None,
 ) -> None:
@@ -1311,11 +1316,6 @@ def copy(
             existing synchronous behavior is unchanged.
         eviction_policy: L2 eviction policy for global-memory reads. Supported
             values are ``""``, ``"evict_first"``, and ``"evict_last"``.
-        mask: Optional boolean tensor broadcastable to the global pointer
-            tensor, supported only with ``is_async=True``. Inactive elements
-            do not access global memory and fill the shared destination with
-            zero. This does not change the full payload shape or completion
-            protocol, including for a completely inactive tile.
         _semantic: Internal semantic analyzer for validation and compilation (user-provided)
 
     Raises:
@@ -1424,7 +1424,8 @@ def copy(
                     mask_handle = ir.value() if mask is None else mask.handle
                     other_handle = (
                         ir.value() if mask is None
-                        else _semantic.full(src.type.shape, 0, dst.dtype).handle
+                        else _semantic.broadcast_impl_shape(
+                            other.to(dst.dtype, _semantic=_semantic), list(src.type.shape)).handle
                     )
                     if sme_stride is not None:
                         if not hasattr(
@@ -1650,8 +1651,8 @@ def copy(
             if mask.dtype != tl.int1:
                 raise ValueError("copy mask must have boolean elements")
             mask = _semantic.broadcast_impl_shape(mask, list(src_shape))
-    elif mask is not None:
-        raise ValueError("copy mask requires is_async=True with a tensor of global pointers")
+    elif mask is not None and not is_normcopy:
+        raise ValueError("copy mask is only supported for standard pointer-tensor copies")
 
     if not isinstance(shape, (tuple, list)):
         # Try to handle Triton tuple-like objects

@@ -721,8 +721,10 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                     ),
                     device=self._device,
                 )
-                options = compilation_options(contract, self.manifest.get('target', ''),
-                                              floating_point_contract=self.ir_module.metadata.get('floating_point_contract'))
+                options = compilation_options(
+                    contract, target,
+                    floating_point_contract=self.ir_module.metadata.get("floating_point_contract"),
+                )
                 if 'maxnreg' in spec:
                     contract = replace(contract, registers_per_thread_limit=min(
                         contract.registers_per_thread_limit, spec['maxnreg']))

@@ -370,6 +370,17 @@ class swizzled_shared_layout(shared_layout):
         self.numCTASplit = numCTASplit
         self.numCTAOrder = numCTAOrder
 
+    def _structural_key(self):
+        return (self.vectorSize, self.perPhase, self.maxPhase, tuple(self.order),
+                tuple(self.numCTAs), tuple(self.numCTAsPerCGA),
+                tuple(self.numCTASplit), tuple(self.numCTAOrder))
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self._structural_key() == other._structural_key()
+
+    def __hash__(self):
+        return hash(self._structural_key())
+
     """
     Make a default non-swizzled shared layout encoding.
     """

@@ -194,7 +194,7 @@ def test_warp_owned_sme_preserves_original_glu_arithmetic(
         pytest.skip("requires an Iluvatar COREX GPU")
     call = dict(
         family="dense_matmul_glu", variant="packed_k_major_gemv", symbol="run",
-        signature="X, W, U, Y", local_m_capacity=1, local_n_capacity=n, local_k_capacity=k,
+        signature="X, W, U, Y", local_m=1, local_m_capacity=1, local_n_capacity=n, local_k_capacity=k,
         source="X", gate_weight="W", up_weight="U", result="Y",
         source_offset="dense_glu_local_k_offsets", result_offset="dense_glu_local_n_offsets",
         global_n="dense_glu_local_n_offsets", global_k="dense_glu_local_k_offsets",
@@ -278,7 +278,7 @@ def test_selected_transport_addresses_every_owner(tmp_path, typed, compact_gate,
     x, gate, up, result = [parameter["buffers"][0] for group in ("inputs", "outputs")
                            for parameter in call[group]]
     call.update(symbol="run", signature="VALUE, GATE_WEIGHT, UP_WEIGHT, RESULT",
-                local_m_capacity=1, source_active="True", result_active="True",
+                local_m=1, local_m_capacity=1, source_active="True", result_active="True",
                 global_n="dense_glu_local_n_offsets", global_k="dense_glu_local_k_offsets",
                 output_type="tl.bfloat16", round_activation=False, gate_clamp_max=None, up_clamp=None)
     for field, binding in (("source", x), ("gate_weight", gate), ("up_weight", up), ("result", result)):

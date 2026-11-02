@@ -610,8 +610,6 @@ def _embedding_call(raw) -> dict[str, object]:
     local_shape = _static_shape(result_abi, "local_capacity_shape")
     if len(local_shape) != 2:
         raise CodegenError("TIR embedding requires token and feature axes.")
-    local_m = local_shape[0]
-    row_coordinate = "embedding_row" if local_m != 1 else "0"
     lanes = int(result_abi.get("scalar_lane_count", 1))
     if (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
         raise CodegenError("Embedding weight and output must have identical vector element lanes.")
@@ -642,7 +640,6 @@ def _embedding_call(raw) -> dict[str, object]:
             "Embedding lookup requires a canonical or chip-local vocabulary "
             f"table, got coordinate space {weight_space!r}."
         )
-    indices_abi = indices["abi"]
     padding_idx = raw.get("semantic_attrs", {}).get("padding_idx")
     encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
     if encoding not in (None, "IQ4_XS", "Q4_K"):
@@ -659,11 +656,10 @@ def _embedding_call(raw) -> dict[str, object]:
         "indices": _pointer(indices),
         "indices_offset": _owner_local_operand_offset(indices["abi"], (global_token,)),
         "rows": local_shape[0],
+        "local_m": local_shape[0],
         "row_active": f"(embedding_row < ({emit_active_extent(result_abi, 0)}))",
         "weight": _pointer(weight),
         "result": _pointer(result),
-        "local_m": local_m,
-        "indices_offset": emit_local_scalar_offset(indices_abi, (row_coordinate,)),
         "local_capacity": local_shape[-1] * lanes,
         "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
         "weight_offset": weight_offset,
@@ -2442,7 +2438,6 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
     residual_abi = residual["abi"]
     result_abi = result["abi"]
     stats_abi = stats["abi"]
-    logical_shape = _static_shape(partial_abi, "logical_shape")
     # M==1 (decode) reduces one owner-local row; M>1 (prefill) iterates an
     # explicit row loop (gather_row), one RMS partial per (owner, row).
     partial_local_shape = _static_shape(partial_abi, "local_capacity_shape")
@@ -2495,25 +2490,17 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
         raise CodegenError(
             "GatherReduceAddNormStats statistics result must be scalar-valued."
         )
-    local_shape = _static_shape(partial_abi, "local_capacity_shape")
-    scalar_capacity = local_shape[-1] * lane_count
-    local_rows = prod(local_shape[:-1], start=1)
-    global_rows = prod(logical_shape[:-1], start=1)
-    flat = "gather_local_offsets"
-    physical_flat = flat if lane_count == 1 else f"(({flat}) // {lane_count})"
-    lane_coordinate = None if lane_count == 1 else f"(({flat}) % {lane_count})"
-    local_coordinates = (*_unflattened_coordinates(local_shape[:-1], "gather_row"), physical_flat)
-    logical_coordinates = tuple(
-        emit_logical_coordinate(partial_abi, axis, local_coordinates)
-        for axis in range(len(local_shape))
+    # With row_coordinate the domain's capacity is one owner-local row; the row
+    # loop (gather_row) supplies the leading coordinate. M==1 keeps the flat
+    # whole-tensor domain (scalar_capacity == the single row).
+    gather_domain = _scalar_local_domain(
+        partial_abi, "gather_local_offsets", row_coordinate=row_coordinate
     )
-    global_row = "0"
-    for coordinate, extent in zip(logical_coordinates[:-1], logical_shape[:-1]):
-        global_row = f"(({global_row}) * {extent} + ({coordinate}))"
-    active = " & ".join(
-        f"(({coordinate}) < ({emit_active_extent(partial_abi, axis)}))"
-        for axis, coordinate in enumerate(local_coordinates)
-    ) or "True"
+    scalar_capacity = int(gather_domain["capacity"])
+    lane_coordinate = gather_domain["lane_coordinate"]
+    local_coordinates = gather_domain["local_coordinates"]
+    logical_coordinates = gather_domain["logical_coordinates"]
+    active = gather_domain["active"]
     domain = {
         "local_coordinates": local_coordinates,
         "logical_coordinates": logical_coordinates,
@@ -2586,21 +2573,7 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
                 result_abi, result_domain["local_coordinates"], lane_coordinate=result_lane,
             ),
         }
-    stats_shape = _static_shape(stats_abi, "local_capacity_shape")
-    stats_coordinates = ("0", *_unflattened_coordinates(stats_shape[1:-1], "gather_stats_row"), "0")
-    stats_logical_coordinates = tuple(
-        emit_logical_coordinate(stats_abi, axis, stats_coordinates)
-        for axis in range(len(stats_shape))
-    )
-    stats_global_row = "0"
-    for coordinate, extent in zip(stats_logical_coordinates[1:-1], logical_shape[:-1]):
-        stats_global_row = f"(({stats_global_row}) * {extent} + ({coordinate}))"
     return {
-        "local_rows": local_rows,
-        "global_rows": global_rows,
-        "global_row": global_row,
-        "stats_rows": prod(stats_shape[1:-1], start=1),
-        "stats_global_row": stats_global_row,
         "private_result": private_result,
         **private_context,
         "partial": emit_storage_pointer(
@@ -2665,7 +2638,17 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
             logical_coordinates,
             lane_coordinate=lane_coordinate,
         ),
-        "stats_offset": emit_local_scalar_offset(stats_abi, stats_coordinates),
+        # Write each statistics row into the OUTPUT's own (token-sharded) local
+        # slot via its local-to-physical mapping. For stats_local_m==1 the single
+        # local row 0 still belongs to a different global token on each owner, so
+        # a global (0,0,0) destination would make every owner clobber stats[0]
+        # and leave the other tokens unwritten -- stats_finalize_domain already
+        # names local row 0 for that case (row_coordinate "0").
+        "stats_offset": emit_local_scalar_offset(
+            stats_abi,
+            stats_finalize_domain["local_coordinates"],
+            lane_coordinate=stats_finalize_domain["lane_coordinate"],
+        ),
         "tile": work_tile,
         "partial_reduction_width": _bounded_vector_tile(
             raw["parameters"].get("partial_reduction_width"),
@@ -5762,7 +5745,7 @@ def _encode_qkv_rope_with_cache(
         "layer_id": layer_expression,
         "advance_sequence": _scalar_expression(advance),
         "block_size": cache_shape[3],
-        "num_tokens": num_tokens,
+        "num_tokens": k_context["apply_domain"]["global_extents"]["seq"],
     }
 
 

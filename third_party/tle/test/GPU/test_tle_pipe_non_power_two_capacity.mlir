@@ -1,13 +1,15 @@
 // RUN: triton-opt --triton-tle-lower-pipe-to-nvws %s | FileCheck %s
 
 // Pipe capacity is a logical ring size, not a Triton tensor extent. Close-tag
-// and token storage must be padded without changing data-ring indices/phases.
+// storage stay exact; only the token tensor is padded for the helper ABI.
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: @capacity_three
-  // CHECK: tt.splat {{.*}} : i32 -> tensor<4x1xi32
-  // CHECK: ttg.local_alloc {{.*}} -> !ttg.memdesc<4x1xi32
+  // CHECK: ttg.local_alloc {{.*}} -> !ttg.memdesc<3x1xi32
+  // CHECK: ttg.local_store
+  // CHECK: ttg.local_store
+  // CHECK: ttg.local_store
   // CHECK: nvws.create_token {{.*}}numBuffers = 4 : i32
   tt.func @capacity_three(%a: !ttg.memdesc<3x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32

@@ -1831,20 +1831,20 @@ static PipeState createPipeState(PipeCreateOp op, bool multiTmaWriters,
   Value closeTags;
   ttg::MemDescType closeTagSlotType;
   if (!oneShot) {
-    // Logical ring capacity need not be a power of two. Initializing its
-    // close tags uses a ranked Triton tensor, whose element count must be.
-    // Use the private control extent, not the data ring's logical capacity.
+    // Keep close-tag storage at the exact logical stage count. Only the NVWS
+    // token tensor needs the padded control extent for its tt.call ABI.
     Attribute closeTagArrayEncoding = getCloseTagEncoding(context, 2);
     Attribute closeTagSlotEncoding = getCloseTagEncoding(context, 1);
     auto closeTagArrayType =
-        ttg::MemDescType::get({controlCapacity, 1}, builder.getI32Type(),
+        ttg::MemDescType::get({capacity, 1}, builder.getI32Type(),
                               closeTagArrayEncoding, sharedMemorySpace,
                               /*mutableMemory=*/true);
     closeTagSlotType =
         ttg::MemDescType::get({1}, builder.getI32Type(), closeTagSlotEncoding,
                               sharedMemorySpace, /*mutableMemory=*/true);
 
-    closeTagTensorType = getCloseTagTensorType(op, builder, {1});
+    RankedTensorType closeTagTensorType =
+        getCloseTagTensorType(op, builder, {1});
     if (llvm::isPowerOf2_64(capacity)) {
       RankedTensorType closeTagArrayTensorType =
           getCloseTagTensorType(op, builder, {capacity, 1});

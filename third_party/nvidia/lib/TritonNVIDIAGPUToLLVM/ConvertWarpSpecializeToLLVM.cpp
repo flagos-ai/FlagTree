@@ -645,7 +645,7 @@ static LogicalResult rewriteWarpGroupBarriers(ModuleOp module,
     });
     kernel.walk([&](WarpSpecializeOp ws) {
       for (auto [index, partition] : llvm::enumerate(ws.getPartitionRegions())) {
-        unsigned barrier = kBaseWarpGroupBarrierIdx + index;
+        unsigned barrier = kNumReservedBarriers + index;
         unsigned threads = ws.getPartitionNumWarps()[index] * threadsPerWarp;
         unsigned firstWarp = (*ws.getWarpGroupStartIds())[index];
         partition->walk([&](LLVM::CallOp call) {

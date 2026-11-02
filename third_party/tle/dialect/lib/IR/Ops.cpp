@@ -663,9 +663,6 @@ static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
       return op->emitOpError("expects valid public pipe reader_name");
   }
 
-  if (fields.empty())
-    return op->emitOpError("expects at least one pipe field");
-
   llvm::SmallBitVector tiledFields(fields.size());
   if (auto tiledAttr =
           op->getAttrOfType<DenseI32ArrayAttr>("tiled_smem_fields")) {

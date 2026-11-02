@@ -8,6 +8,8 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
+CONTROL_LAYOUT = tl.constexpr(tle.gpu.swizzled_shared_layout.make_default(rank=2))
+
 
 @triton.jit(noinline=True)
 def _produce(writer):
@@ -43,14 +45,14 @@ def _consume_empty(reader, closed):
 
 @triton.jit
 def _empty_ring(closed, CAPACITY: tl.constexpr):
-    storage = tle.gpu.alloc([CAPACITY, 16], dtype=tl.int32, scope=tle.gpu.smem)
+    storage = tle.gpu.alloc([CAPACITY, 16], dtype=tl.int32, scope=tle.gpu.smem, layout=CONTROL_LAYOUT)
     pipe = tle.pipe(capacity=CAPACITY, data=storage)
     tle.gpu.warp_specialize([(_consume_empty, (pipe.reader(), closed)), (_produce_empty, (pipe.writer(),))], [1], [24])
 
 
 @triton.jit
 def _ring(output, closed, CAPACITY: tl.constexpr):
-    storage = tle.gpu.alloc([CAPACITY, 16], dtype=tl.int32, scope=tle.gpu.smem)
+    storage = tle.gpu.alloc([CAPACITY, 16], dtype=tl.int32, scope=tle.gpu.smem, layout=CONTROL_LAYOUT)
     pipe = tle.pipe(capacity=CAPACITY, data=storage)
     tle.gpu.warp_specialize([(_consume, (pipe.reader(), output, closed)), (_produce, (pipe.writer(),))], [1], [24])
 

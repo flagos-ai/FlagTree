@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from triton.flagmega.diagnostics import Dumper
 
 
-RENDERER_VERSION = "flagmega-triton-renderer/v22"
+RENDERER_VERSION = "flagmega-triton-renderer/v23"
 
 
 renderer_registry = PackageRendererRegistry()

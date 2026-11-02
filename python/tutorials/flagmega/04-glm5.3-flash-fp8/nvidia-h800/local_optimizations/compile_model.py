@@ -32,11 +32,20 @@ def catalog(model):
 def measured_physical_tir(m,target):
  from triton.flagmega.ir.tir.kernel_definition import replace_kernel_dispatch
  from triton.flagmega.codegen.triton.microkernels.materialization import materialize_shared_workspace_buffers
+ # Dense FFN uses its original schedule; shared/routed FFN use the measured
+ # variants. Identify that semantic role at call sites, before interning a
+ # new kernel contract can change the definition's digest-derived name.
+ preserved=set()
+ for node in m.nodes:
+  if (node.op=='tir.call' and '_dense_mlp_' in node.id
+      and node.metadata.get('lowered_from') in {'nn.packed_matmul_glu','nn.partitioned_block_scaled_linear'}):
+   preserved.add(node.attrs['callee'])
+ if len(preserved)!=2:raise ValueError(('dense FFN semantic contracts',sorted(preserved)))
  definitions=[];changed=[]
  for definition in m.kernel_definitions:
   dispatch=definition.dispatch;old=dispatch.microkernel
   chosen=target.triton_implementation_model.implementation(old.implementation+'.decode_measured')
-  if chosen is None or definition.name in {'kernel_matmul_glu_cooperative_wgmma_97494b8867efabf6','kernel_partitioned_block_scaled_linear_local_953bd9fccf25b9fc'}:
+  if chosen is None or definition.name in preserved:
    definitions.append(definition);continue
   selected=replace(old,implementation=chosen.id,parameters={**old.parameters,**chosen.parameters},shared_workspaces=chosen.shared_workspaces)
   revised=replace(dispatch,microkernel=selected,shared_workspace_buffers=materialize_shared_workspace_buffers(definition,selected))

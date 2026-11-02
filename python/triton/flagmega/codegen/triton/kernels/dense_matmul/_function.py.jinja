@@ -3,7 +3,11 @@
 {% if call.family == "dense_matmul" and call.variant == dense_matmul_variant %}
 {% set dense_preserve_reduction = corex_preserve_k_reduction | default(false) and call.tile_n in [128, 256] and call.block_k == 64 and not dense_matmul_uses_descriptor %}
 {% set dense_source_pointer = call.source ~ " + (" ~ call.source_offset ~ ")" %}
-{% set dense_weight_pointer = call.weight ~ " + (" ~ call.weight_offset ~ ")" %}
+{% set dense_weight_offset = call.weight_offset %}
+{% if dense_matmul_weight_k_hint is defined and dense_matmul_weight_k_hint and call.weight_k_contiguity > 1 %}
+{% set dense_weight_offset = "tl.max_contiguous(tl.multiple_of(" ~ call.weight_offset ~ ", [1, " ~ call.weight_k_contiguity ~ "]), [1, " ~ call.weight_k_contiguity ~ "])" %}
+{% endif %}
+{% set dense_weight_pointer = call.weight ~ " + (" ~ dense_weight_offset ~ ")" %}
 {% if dense_preserve_reduction %}
 {# Anchor loads as well as the accumulator. Coalescing otherwise widens K
    and requires a shared exchange into the numerical reduction layout. #}
@@ -24,10 +28,6 @@
    template and dense_matmul_glu carry it. #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
-{% set dense_weight_offset = call.weight_offset %}
-{% if dense_matmul_weight_k_hint is defined and dense_matmul_weight_k_hint and call.weight_k_contiguity > 1 %}
-{% set dense_weight_offset = "tl.max_contiguous(tl.multiple_of(" ~ call.weight_offset ~ ", [1, " ~ call.weight_k_contiguity ~ "]), [1, " ~ call.weight_k_contiguity ~ "])" %}
-{% endif %}
 {% set dense_prefetch = call.weight_tile_prefetch if (dense_matmul_weight_prefetch is defined and dense_matmul_weight_prefetch and call.weight_tile_prefetch is defined and call.local_m_capacity == 1) else none %}
 {% if dense_prefetch %}
 {% for tile in range([dense_prefetch.distance, dense_prefetch.tiles] | min) %}

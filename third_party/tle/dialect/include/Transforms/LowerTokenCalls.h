@@ -230,10 +230,10 @@ static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
                                  ttnvws::TokenLoadType::TMALoadOp
                              ? 1
                              : THREADS_PER_TASK;
-    if (create.getLoadType() != ttnvws::TokenLoadType::TMALoadOp) {
-      if (auto count = getTokenCountOverride(create, "full_count"))
-        fullCount = *count;
-    }
+    // A multi-TMA pipe contributes once per writer. Its declared count must
+    // survive the helper-call lowering just as local-store counts do.
+    if (auto count = getTokenCountOverride(create, "full_count"))
+      fullCount = *count;
     if (auto offset =
             getTokenCountOverride(create, kTleInferFullCountOffsetAttr)) {
       std::optional<unsigned> inferred;

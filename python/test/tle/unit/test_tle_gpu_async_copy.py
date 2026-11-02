@@ -205,7 +205,7 @@ def _copy_mask_contract_kernel(source, result, MODE: tl.constexpr):
 
 
 @pytest.mark.parametrize("mode,match", [
-    ("integer", "mask must have boolean"), ("sync", "mask requires is_async=True"),
+    ("integer", "mask must have boolean"),
     ("reverse", "supports only a tl.tensor of global pointers"), ("bad_shape", "broadcast"),
 ])
 def test_copy_mask_rejects_invalid_contract(mode, match):
@@ -214,12 +214,12 @@ def test_copy_mask_rejects_invalid_contract(mode, match):
         _copy_mask_contract_kernel.warmup(source, torch.empty_like(source), mode, grid=(1,), num_warps=4)
 
 
-@pytest.mark.parametrize("mode", ["row", "scalar"])
+@pytest.mark.parametrize("mode", ["row", "scalar", "sync"])
 def test_copy_mask_broadcasts_boolean_scalar_and_row(mode):
     source = torch.arange(128, dtype=torch.float32, device="cuda").reshape(4, 32)
     output = torch.full_like(source, float("nan"))
     _copy_mask_contract_kernel[(1,)](source, output, mode, num_warps=4)
     expected = torch.zeros_like(source)
-    if mode == "row":
+    if mode in ("row", "sync"):
         expected[:2] = source[:2]
     torch.testing.assert_close(output, expected, atol=0, rtol=0)

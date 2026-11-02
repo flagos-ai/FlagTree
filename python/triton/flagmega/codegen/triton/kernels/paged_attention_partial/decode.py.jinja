@@ -145,17 +145,17 @@ def {{ paged_attention_partial_symbol | default("_flagmega_paged_attention_parti
 {% if paged_attention_partial_clamped_tiles or paged_attention_partial_next_block_ids %}
         token_last = tl.maximum(token_end - 1, 0)
 {% endif %}
+        step_width = softmax_block_size if online_bf16 else token_tile
+        steps = tl.cdiv(token_end - token_begin, step_width)
 {% if paged_attention_partial_next_block_ids %}
+        first_step = (steps - 1) if online_bf16 and reverse_softmax else 0
         next_physical_block = tl.load(
-            block_table + tl.minimum(token_begin + token_lane, token_last) // block_size
+            block_table + tl.minimum(token_begin + first_step * step_width + token_lane, token_last) // block_size
         )
 {% endif %}
-        steps = tl.cdiv(token_end - token_begin, softmax_block_size if online_bf16 else token_tile)
         for step in tl.range(0, steps):
-            if online_bf16:
-                token_start = token_begin + ((steps - 1 - step) if reverse_softmax else step) * softmax_block_size
-            else:
-                token_start = token_begin + step * token_tile
+            step_index = (steps - 1 - step) if online_bf16 and reverse_softmax else step
+            token_start = token_begin + step_index * step_width
             token = token_start + token_lane
             valid = (token < token_end) & ((token_lane < softmax_block_size) if online_bf16 else True)
 {% if paged_attention_partial_clamped_tiles %}
@@ -179,10 +179,7 @@ def {{ paged_attention_partial_symbol | default("_flagmega_paged_attention_parti
             # program spins forever). Clamp to the cache's real block count
             # so a stale entry can only select a physically valid line.
 {% if paged_attention_partial_next_block_ids %}
-            if online_bf16:
-                physical_block = tl.load(block_table + logical_block, mask=valid, other=0)
-            else:
-                physical_block = next_physical_block
+            physical_block = next_physical_block
 {% elif paged_attention_partial_clamped_tiles %}
             physical_block = tl.load(block_table + logical_block)
 {% else %}
@@ -214,15 +211,14 @@ def {{ paged_attention_partial_symbol | default("_flagmega_paged_attention_parti
                     key_value, _flagmega_paged_attention_partial_reduction_layout
                 )
 {% endif %}
-{% if paged_attention_partial_value_with_key %}
-{{ paged_attention_partial_value_load() | indent(4, true) }}
-{% endif %}
                 score = tl.sum(key_value * query_value[None, :], axis=1) * scale
+{% if paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() }}
+{% endif %}
 {% if paged_attention_partial_next_block_ids %}
-            if not online_bf16:
-                next_physical_block = tl.load(
-                    block_table + tl.minimum(token + token_tile, token_last) // block_size
-                )
+            next_physical_block = tl.load(
+                block_table + tl.minimum(tl.maximum(token_begin + (((steps - 2 - step) if online_bf16 and reverse_softmax else (step + 1)) * step_width) + token_lane, 0), token_last) // block_size
+            )
 {% endif %}
             score = tl.where(valid, score, -float("inf"))
 {% if paged_attention_partial_row_softmax %}

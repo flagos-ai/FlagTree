@@ -23,7 +23,7 @@ _GFX1201 = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", "amd",
     (256, 256, (128, 64, 64), 128, 64),
 ])
 @pytest.mark.parametrize("rows", [1, 3])
-def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, active_k, capacities, tile_n, block_k, rows, shard_index):
+def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, active_k, capacities, tile_n, block_k, shard_index, rows):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("requires a GPU")
@@ -34,12 +34,12 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, 
     for i, capacity in enumerate(capacities):
         outputs.append({"result": f"Y{i}", "local_n_capacity": capacity,
                         "active": f"qkv_local_n_offsets < {capacity - i}",
-                        "result_offset": f"qkv_local_m * {capacity} + qkv_local_n_offsets" if rows != 1 else "qkv_local_n_offsets", "weight_group_start": start})
+                        "result_offset": f"qkv_local_m * {capacity} + qkv_local_n_offsets", "weight_group_start": start})
         start += capacity // 8
     call = {"family": "qkv_parallel_linear", "variant": "packed_fused_gemv",
             "symbol": "run", "signature": "X, W, Y0, Y1, Y2",
-            "source": "X", "weight": "W", "source_offset": f"qkv_local_m * {k} + qkv_local_k_offsets" if rows != 1 else "qkv_local_k_offsets",
-            "rows": rows, "local_m": rows,
+            "source": "X", "weight": "W", "local_m": rows, "rows": rows,
+            "source_offset": f"qkv_local_m * {k} + qkv_local_k_offsets",
             "source_active": f"qkv_local_k_offsets < {active_k}", "local_k_capacity": k,
             "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8,
             "weight_owner_stride": k * total_n, "weight_k_group_stride": total_n * 16,
@@ -59,7 +59,7 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, 
     x = torch.randint(-3, 4, (rows, k), device="cuda").bfloat16()
     dense = torch.randint(-3, 4, (total_n, k), device="cuda").bfloat16()
     packed = dense.reshape(total_n // 8, 8, k // 16, 16).permute(2, 0, 1, 3).contiguous()
-    # The owner reads its own slab; earlier slabs hold NaN so a wrong base shows.
+    # Each owner reads its own slab; earlier slabs contain NaN.
     slabs = torch.full(((shard_index + 1) * packed.numel(),), float("nan"), device="cuda", dtype=torch.bfloat16)
     slabs[shard_index * packed.numel():] = packed.reshape(-1)
     results = [torch.full((rows, capacity), 777., device="cuda", dtype=torch.bfloat16) for capacity in capacities]
@@ -77,7 +77,7 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, 
     ("amd", "gfx1100", "kernels/qkv_parallel_linear/platforms/amd/packed_fused_gemv.py.jinja"),
     ("amd", "gfx1201", "kernels/qkv_parallel_linear/platforms/amd/gfx1201/packed_fused_gemv.py.jinja"),
     ("nvidia", "sm90", "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja"),
-    ("corex", "bi_v150", "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja"),
+    ("corex", "bi_v150", "kernels/qkv_parallel_linear/platforms/corex/bi_v150/packed_fused_gemv.py.jinja"),
     (None, None, "kernels/qkv_parallel_linear/packed_fused_gemv.py.jinja"),
 ])
 def test_packed_qkv_rdna_template_is_amd_only(platform, architecture, expected):

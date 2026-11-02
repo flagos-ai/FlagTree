@@ -13,7 +13,7 @@ def _call(partial_base=128, stats_base=0, norm_base=16640, active="True"):
     offset = "shard_y*512+gather_local_offsets"
     return dict(
         family="gather_reduce_add_norm_apply", variant="sum", symbol="run",
-        signature="P, R, W, Y, N, S", tile=16, local_capacity=512,
+        signature="P, R, W, Y, N, S", tile=16, local_m=1, local_capacity=512,
         work_partition_count=4, work_partition_index="shard_x",
         partial_owner_count=4, partial_reduction_width=4,
         stats_owner_count=16, reduction_width=16, normalization_size=2048,
@@ -24,6 +24,7 @@ def _call(partial_base=128, stats_base=0, norm_base=16640, active="True"):
         norm_offset=offset, scale="W", scale_offset=offset,
         bias="W", bias_offset=offset, stats_partials=f"S+{stats_base}",
         stats_square_base=0, stats_writer_index="shard_y*4+shard_x",
+        stats_partial_owner="norm_owner_offsets",
         participant_active="True", active=active, epsilon="1e-6",
         use_mean=False, has_bias=False, round_before_scale=False,
         output_type="tl.float32", norm_output_type="tl.bfloat16",

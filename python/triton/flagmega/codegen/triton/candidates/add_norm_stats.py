@@ -55,6 +55,9 @@ class AddNormStatsCandidateProvider:
             (dimension.fixed_value for dimension in value.shape[:-1]),
             start=1,
         )
+        # M==1 (decode) reduces a single row; M>1 (prefill) reduces each leading
+        # row independently with per-row RMS statistics (the local_partial_rms
+        # template iterates an explicit add_stats_row loop).
         placement = value_type.placement
         if isinstance(source_type, DistributedType) and source_type.partial is not None:
             if source_type.partial.reduce_op is not ReduceOp.SUM:

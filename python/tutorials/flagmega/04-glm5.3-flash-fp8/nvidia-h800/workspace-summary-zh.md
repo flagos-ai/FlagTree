@@ -44,3 +44,21 @@
 - 当前性能验收对应正常 API 载入的已生成 artifact；合并新的上游代码后不能沿用旧验收直接宣称新源码也已完成整模 GPU 验证。
 
 `reports/flagmega` 禁止保留。本次及上游同目录的任务记录统一归入教程 `.local/reports/`；`.local/` 的实验、原始回执、构建产物和临时张量文件不纳入提交，`third_party/triton_shared` 的 gitlink 不纳入提交。
+
+## 上游同步与合并验证
+
+在独立工作树合并原本落后的 42 个上游提交（`67ab9fa39`），逐处解决 18 个文件冲突。保留多行 prefill、readonly layout specialization、HIP host registration、严格浮点编译合同，以及本地的 program/DAG、每程序参数与资源、prepared rendering、共享 owner 生命周期。renderer 版本升至 v23，避免把合并后的生成合同误认为 v21/v22 缓存。
+
+合并检查检出并处理了两项因果问题：
+
+- `targets/nvidia/workspaces.py::attach_workspace_requirements` 的统计 workspace 不能按单行输出分配。输入有 4 行而输出仅 1 行时，错误大小 `(128,)` 的实际回归失败；保留上游按输入 local rows 分配 `(128,4)` 的合同，并保留 finalize 对输出 token 的寻址。没有改变该回归断言。
+- `targets/iluvatar_bi_v150.py::corex_triton_implementation_model` 原先仅检查是否能找到模板；通用模板可找到时，`mma_v3` 候选进入不支持 MMA3 的 COREX 目录，原默认候选与教程 CTA 两个回归实际失败。注册时同时检查候选声明的 instruction requirements，保持受支持的指针 pipeline 和 NVIDIA MMA3 实现；原两项测试及新增整个目录的要求验证通过。此修复针对能力匹配入口，没有增加候选 ID 白名单。
+
+最终合并检查：
+
+- GLM、program/DAG、函数入口、共享 owner：109 passed、18 skipped。
+- 目标、prefill/RMS、QKV、embedding、函数 ABI、source-rdata 与 launch 邻域：172 passed、72 skipped。当前 NVIDIA 安装不提供 HIP JIT，四项 AMD 乘法编译检查的实际失败保留，不计入这组可执行检查。
+- paged attention 的 online BF16、row softmax、提前 value load、clamped tiles、block-ID prefetch 组合：32 份生成源码通过 Python 编译；原正向/反向 softmax 的 step width、掩码与 MMA 路径保持。
+- 合并后 2673 份 Python 文件语法检查通过，原生编译器合并新增行的 TLE guard 检查通过。两个旧测试预期同步到实际 v11 distribution 合同及上游 COREX 专属 QKV 模板，未改变运行实现来迁就旧预期。
+
+这些检查没有重新运行合并后完整四卡性能，也没有重新构建全部后端编译器。前述全量测试和 fresh 重建限制仍保留；本次推送是包含已验证 decode 结果的开发状态提交。

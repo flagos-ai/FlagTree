@@ -24,11 +24,11 @@ def _call(family, variant):
             start += capacity // 8
         return dict(family=family, variant=variant, symbol="run", signature="X, W, Y0, Y1, Y2",
                     source="X", weight="W", source_offset="qkv_local_k_offsets",
-                    source_active="True", local_k_capacity=512, tile_n=512, block_k=64,
+                    source_active="True", local_m=1, local_k_capacity=512, tile_n=512, block_k=64,
                     k_lane=16, n_lane=8, weight_owner_stride=512 * 256,
                     weight_k_group_stride=256 * 16, weight_n_group_stride=128,
                     outputs=outputs, output_type="tl.float32")
-    call = dict(family=family, variant=variant, symbol="run", local_m_capacity=1,
+    call = dict(family=family, variant=variant, symbol="run", local_m=1, local_m_capacity=1,
                 local_n_capacity=128, local_k_capacity=512, source="X", weight="W",
                 source_active="True", result_active="True", result="Y",
                 global_n="dense_local_n_offsets", global_k="dense_local_k_offsets",

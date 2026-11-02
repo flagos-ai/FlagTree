@@ -70,6 +70,15 @@ def test_bi_v150_exposes_raw_pointer_async_qkv_pipeline_without_selecting_it():
     assert model.preferences["qkv_parallel_linear"][0] == "tir.qkv_parallel_linear.packed_fused_gemv_tn256"
 
 
+def test_bi_v150_catalog_only_admits_supported_instruction_requirements():
+    from triton.flagmega.targets.iluvatar_bi_v150 import corex_triton_implementation_model
+
+    capability = IluvatarBiV150Capability()
+    model = corex_triton_implementation_model()
+    assert all(capability.supports(value.requires) for value in model.implementations)
+    assert not any("mma_v3" in value.requires for value in model.implementations)
+
+
 def test_bi_v150_qkv_pipeline_stage_depth_updates_all_storage_contracts(monkeypatch):
     from triton.flagmega.targets.iluvatar_bi_v150 import corex_triton_implementation_model
 

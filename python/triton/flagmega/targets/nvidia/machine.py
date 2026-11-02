@@ -64,15 +64,7 @@ class NvidiaSm90Machine:
         )
 
     def triton_implementation_model(self, supplied=None):
-        # A caller-supplied model (e.g. passed directly to PyNttTarget) takes
-        # precedence over the machine's own, then the SM90 default. This
-        # machine imposes no extra invariants, so the chosen model is returned
-        # as-is -- preserving explicit injection.
-        return (
-            supplied
-            or self._implementation_model
-            or _sm90_implementation_model()
-        )
+        return supplied or self._implementation_model or _sm90_implementation_model()
 
     def bufferization_options(self):
         return sm90_bufferization_options(self.capability)
@@ -246,6 +238,10 @@ class NvidiaSm89Machine(NvidiaSm90Machine):
 
     def __init__(self, capability=None, *, implementation_model=None) -> None:
         super().__init__(capability or Sm89Capability(), implementation_model=implementation_model)
+
+
+    def triton_implementation_model(self, supplied=None):
+        return supplied or self._implementation_model or portable_triton_implementation_model()
 
 
 __all__ = ["NvidiaSm90Machine", "NvidiaSm89Machine"]

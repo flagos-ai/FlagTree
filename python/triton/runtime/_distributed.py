@@ -21,6 +21,7 @@
 # SOFTWARE.
 
 import functools
+import weakref
 
 
 class DistributedRtContext:
@@ -35,10 +36,20 @@ class DistributedRtContext:
     _instance = None
     _initialized = False
     _init_count = 0
+    _contexts = weakref.WeakSet()
+
+    def __new__(cls, _comm_ptr=None, _mem_ptr=None):
+        if _comm_ptr is None and _mem_ptr is None and cls._init_count == 1 and cls._instance is not None:
+            return cls._instance
+        return super().__new__(cls)
 
     def __init__(self, _comm_ptr=None, _mem_ptr=None):
+        if _comm_ptr is None and _mem_ptr is None and getattr(self, "_comm_ptr", None) is not None:
+            return
         if _comm_ptr is not None and _mem_ptr is not None:
             type(self)._init_count += 1
+            type(self)._instance = self
+            type(self)._contexts.add(self)
         self._comm_ptr = _comm_ptr
         self._mem_ptr = _mem_ptr
         self._registered_buffer = None
@@ -54,16 +65,16 @@ class DistributedRtContext:
     def _reset(cls) -> None:
         """Invalidate the process-local handle after FlagCX teardown.
 
-        TLE/FlagCX owns one context per process, but a service or test runner
-        may load more than one artifact sequentially.  Leaving the singleton
-        marked initialized after cleanup would make the next artifact reuse
-        device pointers that have already been destroyed.
+        Explicit contexts remain independent. Teardown invalidates every
+        process-local handle so a later artifact cannot reuse destroyed
+        pointers through the optional single-context lookup.
         """
-        instance = cls._instance
-        if instance is not None:
+        for instance in cls._contexts:
             instance._comm_ptr = None
             instance._mem_ptr = None
-            instance._initialized = False
+            instance._registered_buffer = None
+        cls._contexts.clear()
+        cls._instance = None
         cls._initialized = False
         cls._init_count = 0
 

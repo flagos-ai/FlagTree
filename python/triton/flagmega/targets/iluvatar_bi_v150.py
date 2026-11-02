@@ -73,7 +73,13 @@ def corex_triton_implementation_model():
         TIRTransferPipelineContract((TIRTransferPipelineChannel("weight", (1,), (0,), 16),),
                                      capacity=qkv_pipeline_stages))
     implementations = []
+    capability = IluvatarBiV150Capability()
     for implementation in model.implementations:
+        # A generic template can resolve even when its declared instructions
+        # are unavailable on this device. Keep registry admission consistent
+        # with normal capability-based implementation selection.
+        if not capability.supports(implementation.requires):
+            continue
         # Tensor-map descriptors and transfer pipelines use the CUDA TMA ABI;
         # COREX lowers these kernels through ordinary pointer loads instead.
         if implementation.facts.get("host_tensor_descriptor"):

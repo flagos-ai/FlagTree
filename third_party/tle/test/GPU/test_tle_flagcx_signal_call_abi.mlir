@@ -15,11 +15,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: llvm.call @flagcxDevWaitSignalMeetShadow({{.*}}) : (!llvm.ptr, i32, i32, i32, i32, i32) -> ()
   // CHECK: llvm.call @flagcxDevWaitCounter({{.*}}) : (!llvm.ptr, i32, i64, i32, i32, i32, i32) -> ()
   tt.func public @kernel(%comm: i64, %peer: i32, %slot: i32, %value: i64) {
-    "tle.flagcx signal"(%comm, %peer, %slot) {signal_op = 0 : i32, team_kind = 0 : i32, coop_kind = 2 : i32, context_idx = 0 : i32} : (i64, i32, i32) -> ()
-    "tle.flagcx signal"(%comm, %peer, %slot, %value) {signal_op = 1 : i32, team_kind = 2 : i32, coop_kind = 1 : i32, context_idx = 0 : i32} : (i64, i32, i32, i64) -> ()
-    "tle.flagcx signal_wait"(%comm, %slot, %value) {wait_kind = 0 : i32, coop_kind = 2 : i32, context_idx = 0 : i32} : (i64, i32, i64) -> ()
-    "tle.flagcx signal_wait"(%comm, %slot) {wait_kind = 1 : i32, coop_kind = 1 : i32, context_idx = 0 : i32} : (i64, i32) -> ()
-    "tle.flagcx signal_wait"(%comm, %slot, %value) {wait_kind = 2 : i32, coop_kind = 0 : i32, context_idx = 0 : i32} : (i64, i32, i64) -> ()
+    "tle.flagcx signal"(%comm, %peer, %slot) {signal_op = 0 : i32, team_kind = 0 : i32, coop_kind = 2 : i32, context_id = 0 : i32, scope = 0 : i32} : (i64, i32, i32) -> ()
+    "tle.flagcx signal"(%comm, %peer, %slot, %value) {signal_op = 1 : i32, team_kind = 2 : i32, coop_kind = 1 : i32, context_id = 0 : i32, scope = 0 : i32} : (i64, i32, i32, i64) -> ()
+    "tle.flagcx signal_wait"(%comm, %slot, %value) {wait_kind = 0 : i32, coop_kind = 2 : i32, context_id = 0 : i32, order = 1 : i32} : (i64, i32, i64) -> ()
+    "tle.flagcx signal_wait"(%comm, %slot) {wait_kind = 1 : i32, coop_kind = 1 : i32, context_id = 0 : i32, order = 1 : i32} : (i64, i32) -> ()
+    "tle.flagcx signal_wait"(%comm, %slot, %value) {wait_kind = 2 : i32, coop_kind = 0 : i32, context_id = 0 : i32, order = 1 : i32} : (i64, i32, i64) -> ()
     tt.return
   }
 }
