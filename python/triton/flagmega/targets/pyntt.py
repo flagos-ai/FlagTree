@@ -120,7 +120,10 @@ class PyNttTarget(NttTarget):
                 distribution_policy or NttDistributionPolicy(
                     options.placements,
                     split_candidate_provider,
-                    PyNttDistributedReshardRealizationPolicy(),
+                    realization_policy_factory()
+                    if (realization_policy_factory := getattr(
+                        machine, "distributed_reshard_realization_policy", None)) is not None
+                    else PyNttDistributedReshardRealizationPolicy(),
                 )
             ),
             reshard_cost_model=machine.distributed_reshard_cost_model(),

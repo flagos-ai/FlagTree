@@ -29,6 +29,9 @@ from triton.flagmega.targets.amd.capability import (
     Gfx1201Capability,
 )
 from triton.flagmega.targets.selection import CapabilitySelectionPolicy
+from triton.flagmega.passes.auto_distributed.realization import (
+    SameChipParameterViewReshardRealizationPolicy,
+)
 from triton.flagmega.passes.auto_distributed.operation_cost import (
     DistributedOperationCostModel,
 )
@@ -245,6 +248,11 @@ class _AmdRdnaMachine:
 class AmdGfx1100Machine(_AmdRdnaMachine):
     def __init__(self, capability: AmdCapability | None = None, *, implementation_model=None) -> None:
         super().__init__(capability or Gfx1100Capability(), implementation_model=implementation_model)
+
+    def distributed_reshard_realization_policy(self):
+        # Restoring a function's distributed parameter otherwise copies it into
+        # every block before each use; a same-chip view reads it in place.
+        return SameChipParameterViewReshardRealizationPolicy()
 
 
 class AmdGfx1201Machine(_AmdRdnaMachine):
