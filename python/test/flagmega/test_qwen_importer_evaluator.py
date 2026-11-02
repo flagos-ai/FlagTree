@@ -333,11 +333,13 @@ def test_qwen_executable_requires_explicit_checkpoint_for_rdata(tmp_path):
 
 def test_tir_renderer_rejects_an_unmaterialized_agent_override():
     module = Compiler().compile(Qwen35Layer0Importer(_memory_checkpoint()).import_module()).module
+    # The down projection's point is tir.mlp_down, or tir.mlp_down.packed when it produces packed lanes.
+    point = next(record.point_id for record in module.selections if record.point_id.startswith("tir.mlp_down"))
     overridden = replace(
         module,
         selections=tuple(
             replace(record, candidate_id="tir.block_fp8.simt", origin="agent", policy="agent")
-            if record.point_id == "tir.mlp_down"
+            if record.point_id == point
             else record
             for record in module.selections
         ),

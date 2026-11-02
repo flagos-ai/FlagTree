@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import IRModule, Node, TensorType, VectorType
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.ops.tensors.pack import Pack
+from triton.flagmega.ir.ops.tensors.pack import Pack, normalize_axes
 from triton.flagmega.rules import RewriteResult, RewriteRule
 from triton.flagmega.rules.ntt.vectorize.utility import (
     propagation_helper_metadata,
@@ -152,6 +152,8 @@ def binary_propagation_rules() -> tuple[RewriteRule, ...]:
                     root_ops=('math.vectorized_binary',)),
         RewriteRule('VectorizedBinaryOperandTail', _operand_pad_matches, _operand_pad,
                     root_ops=('math.vectorized_binary',)),
+        RewriteRule('VectorizedBinaryOperandRestoreCancel', _operand_restore_matches, _operand_restore,
+                    root_ops=('math.vectorized_binary',)),
         RewriteRule('VectorizedBinaryResultLaneAccess',
                     lambda node, _: node.op == 'tensors.slice_to_shape', _result_lanes,
                     root_ops=('tensors.slice_to_shape',)),
@@ -192,6 +194,55 @@ def _operand_pack(node, module):
                 packing = {'lanes': (*outer['lanes'], *packing['lanes']),
                            'axes': (*operand_pack_axes(outer, rank), *operand_pack_axes(packing, rank))}
             attrs[name] = packing
+    return RewriteResult(replace(node, inputs=tuple(inputs), attrs=attrs))
+
+
+def _restored_operand(module, value, packing):
+    """V when the operand is Unpack(V) or V's exact lane Bitcast and its pack rebuilds V."""
+    from triton.flagmega.ir.ops.math.vectorized_binary import operand_pack_axes
+    from triton.flagmega.ir.ops.tensors.unpack import Unpack
+    if packing is None or 'padding' in packing:
+        return None
+    view = module.node_map[value]
+    if view.op not in {'tensors.unpack', 'tensors.bitcast'}:
+        return None
+    source = module.node_map[view.inputs[0]]
+    tensor = tensor_of(source.type)
+    if not isinstance(tensor.dtype, VectorType):
+        return None
+    lanes = tuple(tensor.dtype.lanes)
+    if view.op == 'tensors.unpack':
+        axes = normalize_axes(_unpack_axes(view, len(lanes)), tensor.rank)
+    elif tensor_of(view.type).dtype == tensor.dtype.elem_type:
+        # As in VectorizedBinaryResultLaneAccess: a same-element Bitcast is the
+        # final-axis lane expansion, and only when its type proves it.
+        axes = (tensor.rank - 1,) * len(lanes)
+    else:
+        return None
+    try:
+        if Unpack.infer_type((source,), {'axes': axes}) != view.type:
+            return None
+        if tuple(packing['lanes']) != lanes or operand_pack_axes(packing, tensor.rank) != axes:
+            return None
+    except IRSchemaError:
+        return None
+    return source
+
+
+def _operand_restore_matches(node, module):
+    return node.op == 'math.vectorized_binary' and any(
+        _restored_operand(module, value, node.attrs.get(name)) is not None
+        for value, name in zip(node.inputs, ('lhs_pack', 'rhs_pack')))
+
+
+def _operand_restore(node, module):
+    """Read a packed value directly instead of re-packing its restored view."""
+    inputs, attrs = list(node.inputs), dict(node.attrs)
+    for index, name in enumerate(('lhs_pack', 'rhs_pack')):
+        source = _restored_operand(module, inputs[index], attrs.get(name))
+        if source is not None:
+            inputs[index] = source.id
+            del attrs[name]
     return RewriteResult(replace(node, inputs=tuple(inputs), attrs=attrs))
 
 
