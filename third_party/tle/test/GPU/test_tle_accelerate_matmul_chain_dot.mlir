@@ -46,14 +46,19 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.targ
 
 // -----
 
-// A later dot that only uses the current dot result as C must not trigger the
-// chained-dot heuristic. This should use the generic MMAv3 warp allocation.
+// The shared upstream MMAv3 heuristic includes C edges in its forward slice.
+// The producer uses a row split; the terminal dot uses the generic split and
+// converts the ready accumulator before consuming it.
 #blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [2, 16], warpsPerCTA = [8, 1], order = [1, 0]}>
 #dotOp0 = #ttg.dot_op<{opIdx = 0, parent = #blocked}>
 #dotOp1 = #ttg.dot_op<{opIdx = 1, parent = #blocked}>
-// CHECK: #mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 2], instrShape = [16, 32, 16]}>
+// CHECK: #mma = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [8, 1], instrShape = [16, 32, 16]}>
+// CHECK: #mma1 = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 2], instrShape = [16, 32, 16]}>
 // CHECK-LABEL: @dot_result_only_as_c
-// CHECK: %{{.*}} = ttng.warp_group_dot {{.*}} -> tensor<64x64xf32, #mma>
+// CHECK: %[[QK:.*]] = ttng.warp_group_dot {{.*}} -> tensor<64x64xf32, #mma>
+// CHECK: %[[PUBLIC:.*]] = ttg.convert_layout %[[QK]] : tensor<64x64xf32, #mma> -> tensor<64x64xf32, #blocked>
+// CHECK: %[[ACC:.*]] = ttg.convert_layout %[[PUBLIC]] : tensor<64x64xf32, #blocked> -> tensor<64x64xf32, #mma1>
+// CHECK: %{{.*}} = ttng.warp_group_dot {{.*}}, %[[ACC]] {{.*}} -> tensor<64x64xf32, #mma1>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
   tt.func public @dot_result_only_as_c(%q: tensor<64x128xf16, #dotOp0>,
                                        %k: tensor<128x64xf16, #dotOp1>,

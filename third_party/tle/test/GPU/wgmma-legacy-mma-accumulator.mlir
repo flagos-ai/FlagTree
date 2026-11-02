@@ -4,11 +4,12 @@
 // A ready MMA2 accumulator is ordinary input to WGMMA. Convert it to Hopper
 // MMA before issuing the async operation, and restore its consumer layout
 // only after the wait. MMA2 does not identify an already-lowered async value.
+// A terminal 64x64 WGMMA with eight warps uses the shared MMAv3 [4, 2] split.
 #legacy = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 8], instrShape = [16, 8]}>
 #shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 16}>
 #smem = #ttg.shared_memory
 // CHECK-DAG: #[[$LEGACY:.*]] = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 8], instrShape = [16, 8]}>
-// CHECK-DAG: #[[$HOPPER:.*]] = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [8, 1], instrShape = [16, 32, 16]}>
+// CHECK-DAG: #[[$HOPPER:.*]] = #ttg.nvidia_mma<{versionMajor = 3, versionMinor = 0, warpsPerCTA = [4, 2], instrShape = [16, 32, 16]}>
 
 module attributes {"ttg.num-warps" = 8 : i32} {
   // CHECK-LABEL: tt.func @pv_from_legacy_accumulator
