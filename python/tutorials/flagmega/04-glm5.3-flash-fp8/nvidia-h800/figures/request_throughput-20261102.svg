@@ -1476,16 +1476,16 @@ z
    </g>
    <g id="legend_1">
     <g id="patch_13">
-     <path d="M 59.092685 43.478437
-L 79.092685 43.478437
-L 79.092685 36.478437
-L 59.092685 36.478437
+     <path d="M 479.935937 43.478437
+L 499.935937 43.478437
+L 499.935937 36.478437
+L 479.935937 36.478437
 z
 " style="fill: #6750a4"/>
     </g>
     <g id="text_18">
      <!-- FlagMega -->
-     <g transform="translate(87.092685 43.478437) scale(0.1 -0.1)">
+     <g transform="translate(507.935937 43.478437) scale(0.1 -0.1)">
       <use xlink:href="#DejaVuSans-46"/>
       <use xlink:href="#DejaVuSans-6c" transform="translate(57.519531 0)"/>
       <use xlink:href="#DejaVuSans-61" transform="translate(85.302734 0)"/>
@@ -1497,16 +1497,16 @@ z
      </g>
     </g>
     <g id="patch_14">
-     <path d="M 59.092685 58.156562
-L 79.092685 58.156562
-L 79.092685 51.156562
-L 59.092685 51.156562
+     <path d="M 479.935937 58.156562
+L 499.935937 58.156562
+L 499.935937 51.156562
+L 479.935937 51.156562
 z
 " style="fill: #008577"/>
     </g>
     <g id="text_19">
      <!-- vLLM -->
-     <g transform="translate(87.092685 58.156562) scale(0.1 -0.1)">
+     <g transform="translate(507.935937 58.156562) scale(0.1 -0.1)">
       <defs>
        <path id="DejaVuSans-76" d="M 191 3500
 L 800 3500
