@@ -181,32 +181,44 @@ static LogicalResult lowerCopy(ttg::TMACopyOp op) {
 
 #ifdef __TLE__
 // `other` of a pointer load made from a descriptor load: select(padding, nan,
-// zero) for a float element type; the zero constant alone for other types.
+// zero) for a float element type; the zero constant alone for other types,
+// which have no NaN padding flag.
 struct PaddingSelect {
   Value padding;
   Value zero;
 };
 
-static std::optional<PaddingSelect> matchPaddingSelect(Value other) {
-  auto select = other.getDefiningOp<arith::SelectOp>();
-  if (!select || !select.getCondition().getType().isInteger(1))
-    return std::nullopt;
-  auto zero = select.getFalseValue().getDefiningOp<arith::ConstantOp>();
-  if (!zero)
-    return std::nullopt;
-  auto splat = dyn_cast<SplatElementsAttr>(zero.getValue());
+static bool isZeroSplat(Value other) {
+  auto constant = other.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return false;
+  auto splat = dyn_cast<SplatElementsAttr>(constant.getValue());
   if (!splat)
+    return false;
+  Attribute element = splat.getSplatValue<Attribute>();
+  if (auto value = dyn_cast<FloatAttr>(element))
+    return value.getValue().isZero();
+  if (auto value = dyn_cast<IntegerAttr>(element))
+    return value.getValue().isZero();
+  return false;
+}
+
+static std::optional<PaddingSelect> matchPaddingSelect(Value other) {
+  if (isZeroSplat(other))
+    return PaddingSelect{Value(), other};
+  auto select = other.getDefiningOp<arith::SelectOp>();
+  if (!select || !select.getCondition().getType().isInteger(1) ||
+      !isZeroSplat(select.getFalseValue()))
     return std::nullopt;
-  auto value = dyn_cast<FloatAttr>(splat.getSplatValue<Attribute>());
-  if (!value || !value.getValue().isZero())
-    return std::nullopt;
-  return PaddingSelect{select.getCondition(), zero.getResult()};
+  return PaddingSelect{select.getCondition(), select.getFalseValue()};
 }
 
 // The pointer of a rewritten descriptor load is
 //   addptr(..., broadcast(muli(offsets, splat(stride))))
 // per dimension, innermost last. Replaces the innermost product by its
-// offsets when the stride is not already a constant.
+// offsets when the stride is not already a constant: the innermost stride of
+// a descriptor is 1 (TensorDescriptor and make_tensor_descriptor require it),
+// and the constant lets the axis analysis see the contiguity.
 static void dropInnermostStride(tt::LoadOp load) {
   auto addptr = load.getPtr().getDefiningOp<tt::AddPtrOp>();
   if (!addptr)
@@ -309,10 +321,20 @@ static LogicalResult zeroPadCopyLoad(tt::LoadOp load,
   dropInnermostStride(load);
   if (auto bits = load->getAttrOfType<IntegerAttr>(kDescriptorDivisibilityAttr))
     hintDescriptorAlignment(load, bits.getInt());
+  if (!padding->padding)
+    return success();
+  // A descriptor made in the kernel has a constant flag: reject NaN padding
+  // at compile time.
+  if (auto constant = padding->padding.getDefiningOp<arith::ConstantIntOp>())
+    return constant.value() == 0
+               ? success()
+               : load.emitOpError("PPU descriptor copies to shared memory pad "
+                                  "with zero; the descriptor asks for NaN "
+                                  "padding");
   if (!asserted.insert(padding->padding).second)
     return success();
-  // The flag is a kernel argument or a constant: check it once, where it is
-  // defined, so that every copy of the descriptor is covered.
+  // The flag of a host descriptor is a kernel argument: check it once, where
+  // it is defined, so that every copy of the descriptor is covered.
   OpBuilder builder(load.getContext());
   if (Operation *def = padding->padding.getDefiningOp())
     builder.setInsertionPointAfter(def);
