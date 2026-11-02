@@ -626,10 +626,44 @@ std::string getAIUElemTypeSuffix(int elementSizeInBytes) {
   }
 }
 
+// Emits `if (condition) __assertfail(message)` in front of `op`, as the
+// tt.assert lowering does, and leaves the insertion point after it, before
+// `op`.
+static void emitDeviceAssert(Operation *op, Value condition, StringRef message,
+                             const ppu::TargetInfo &targetInfo,
+                             ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  StringRef file = "unknown";
+  StringRef func = "unknown";
+  int line = 0;
+  Location srcLoc = loc;
+  while (auto callLoc = dyn_cast<CallSiteLoc>(srcLoc))
+    srcLoc = callLoc.getCallee();
+  while (auto nameLoc = dyn_cast<NameLoc>(srcLoc))
+    srcLoc = nameLoc.getChildLoc();
+  if (auto fileLoc = dyn_cast<FileLineColLoc>(srcLoc)) {
+    file = fileLoc.getFilename();
+    line = fileLoc.getLine();
+  }
+  Block *prevBlock = op->getBlock();
+  Block *ifBlock = rewriter.splitBlock(prevBlock, op->getIterator());
+  rewriter.setInsertionPointToStart(ifBlock);
+  targetInfo.assertFail(rewriter, loc, message, file, func, line);
+  Block *thenBlock = rewriter.splitBlock(ifBlock, op->getIterator());
+  rewriter.setInsertionPointToEnd(ifBlock);
+  LLVM::BrOp::create(rewriter, loc, thenBlock);
+  rewriter.setInsertionPointToEnd(prevBlock);
+  LLVM::CondBrOp::create(rewriter, loc, condition, ifBlock, thenBlock);
+  rewriter.setInsertionPointToStart(thenBlock);
+}
+
 struct AsyncAIUCopyGlobalToLocalOpConversion
     : public ConvertOpToLLVMPattern<
           triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp> {
-  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+  AsyncAIUCopyGlobalToLocalOpConversion(LLVMTypeConverter &converter,
+                                        const ppu::TargetInfo &targetInfo,
+                                        PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(converter, benefit), targetInfo(targetInfo) {}
 
   LogicalResult
   PPUAIUV1Conversion(triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp op,
@@ -729,6 +763,22 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     Value tensorShapeZ2d = tensorShapeZ;
     if (rowLayout != LLVM::PPU::AIURowLayout::Dense)
       tensorShapeZ2d = b.trunc(i32_ty, rowStride);
+    Value tileBegin = b.sext(i64_ty, zCoord);
+    Value tileEnd = b.add(tileBegin, b.i64_val(tileC));
+    if (rowLayout == LLVM::PPU::AIURowLayout::Runtime) {
+      // Rows closer together than the row length overlap. The 2d copy takes
+      // the stride as the row length, so a tile column past the stride would
+      // read zeros instead of the next row; the compile-time gate rejects such
+      // a constant stride (isAIUStrideExpressible), a run-time one traps.
+      Value overlapping =
+          b.and_(b.icmp_slt(rowStride, adaptor.getShape()[colDim]),
+                 b.icmp_sgt(tileEnd, rowStride));
+      emitDeviceAssert(op, overlapping,
+                       "AIU load: the row stride is smaller than the row "
+                       "length, so the tile's columns past the stride cannot "
+                       "be read; use a plain load for overlapping rows",
+                       targetInfo, rewriter);
+    }
     Value src3d, tensorShapeY3d, tensorShapeX3d, tensorShapeZ3d, yOffset3d;
     Value use3d;
     if (emit3d) {
@@ -769,6 +819,21 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
                        b.icmp_eq(b.urem(stride32, length32), b.i32_val(0)));
         tensorShapeX3d = b.udiv(stride32, length32);
         tensorShapeZ3d = length32;
+        // Without an exact form, the tile's columns between the row length
+        // and the stride would read memory instead of zeros, which the
+        // compile-time gate rejects for a constant stride (isAIULoadLayout).
+        // A tile with such a column traps instead of returning them.
+        Value inexpressible = b.and_(b.and_(b.xor_(use3d, b.true_val()),
+                                            b.icmp_ne(rowStride, rowLength)),
+                                     b.and_(b.icmp_slt(tileBegin, rowStride),
+                                            b.icmp_sgt(tileEnd, rowLength)));
+        emitDeviceAssert(op, inexpressible,
+                         "AIU load: the row stride is not a multiple of the "
+                         "row length, or the rows do not fit the 3d "
+                         "descriptor, so the columns past the row length "
+                         "cannot be zero filled; pad the rows or drop the "
+                         "column boundary check",
+                         targetInfo, rewriter);
       }
     }
 
@@ -1036,6 +1101,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
     return failure();
   }
+
+private:
+  const ppu::TargetInfo &targetInfo;
 };
 
 void createBarrier(ConversionPatternRewriter &rewriter, Location loc,
@@ -1823,7 +1891,8 @@ void mlir::triton::ppu::populateLoadStoreOpToLLVMPatterns(
                                       axisInfoAnalysis, benefit);
   patterns.add<LoadOpConversion, StoreOpConversion>(
       typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
-  patterns.add<AsyncAIUCopyGlobalToLocalOpConversion>(typeConverter, benefit);
+  patterns.add<AsyncAIUCopyGlobalToLocalOpConversion>(typeConverter, targetInfo,
+                                                      benefit);
   patterns.add<AsyncCommitGroupOpConversion, AsyncWaitOpConversion>(
       typeConverter, benefit);
 }
