@@ -7,6 +7,7 @@
 #ifdef __TLE__
 #include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #endif
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -544,7 +545,7 @@ struct ConvertTritonMUSAGPUToLLVM
       auto ws = dyn_cast<triton::gpu::WarpSpecializeOp>(op);
       if (!ws)
         ws = op->getParentOfType<triton::gpu::WarpSpecializeOp>();
-      if (ws && ws->hasAttr("musa_tle.static_warp_specialize"))
+      if (ws && ws->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr))
         staticWarpSpecializeOps.push_back(op);
     });
     for (Operation *op : staticWarpSpecializeOps)

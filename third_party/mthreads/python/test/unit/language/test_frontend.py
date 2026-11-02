@@ -203,6 +203,29 @@ def test_call_in_loop():
         acc = accumulate(acc, i)
 
 
+@filecheck_test
+@triton.jit
+def test_static_range_constexpr_assignment_persists():
+    # CHECK-LABEL: test_static_range_constexpr_assignment_persists
+    # CHECK: [[TEN:%.*]] = arith.constant 10 : i32
+    acc: tl.constexpr = 10
+    for i in tl.static_range(3):
+        acc = acc + i
+    # CHECK: [[ACC1:%.*]] = arith.addi [[TEN]], %{{.*}} : i32
+    # CHECK: [[ACC2:%.*]] = arith.addi [[ACC1]], %{{.*}} : i32
+    # CHECK: call @{{.*}}anchor{{.*}}([[ACC2]])
+    anchor(acc)
+
+
+@filecheck_test
+@triton.jit
+def test_static_range_induction_variable_persists():
+    # CHECK-LABEL: test_static_range_induction_variable_persists
+    for i in tl.static_range(3):
+        pass
+    tl.static_assert(i == 2)
+
+
 @tl.core._aggregate
 class FunctionParent:
 

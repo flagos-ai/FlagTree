@@ -117,8 +117,8 @@ endmacro()
 # FlagPrism: configure the external profiler/debugger after base options exist.
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
-  # FlagPrism: enable the external tools for the supported mthreads backend.
-  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+  # FlagPrism: enable the external tools for supported backends.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -126,13 +126,12 @@ macro(flagtree_configure_flagprism)
          ${_flagprism_default})
 
   if(TRITON_BUILD_FLAGPRISM)
-    # FlagPrism: accept mthreads as a supported integration backend.
-    # FlagPrism: FLAGTREE_BACKEND is unset for the default NVIDIA build.
+    # FlagPrism: allow the default NVIDIA build and supported named backends.
     if(FLAGTREE_BACKEND AND
-       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, or enflame.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR

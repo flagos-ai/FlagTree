@@ -36,4 +36,4 @@ def test_set_layout_lowers_with_hard_layout():
     assert "gpu.set_layout" not in compiled.asm["ttgir"]
     assert "tle.explicit" in compiled.asm["ttgir"]
     assert "gpu.set_layout" not in compiled.asm["llir"]
-    assert "gpu.set_layout" in get_supported_primitives("hcu")
+    assert "gpu.set_layout" in get_supported_primitives()

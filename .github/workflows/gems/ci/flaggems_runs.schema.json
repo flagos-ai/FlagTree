@@ -1,0 +1,276 @@
+{
+  "_comment": [
+    "One row per FlagGems CI run, written by report-feishu.",
+    "",
+    "Field names are identical to the keys of record.json from",
+    "collect_gems_record.py, so reporting is a direct key-by-key mapping with",
+    "no translation table. Adding a field means editing BOTH files: a field",
+    "only here shows up as an empty column, and a key only there is silently",
+    "dropped, since report_feishu.py skips keys the table does not have.",
+    "",
+    "Types: 1=text 2=number 5=datetime(ms since epoch) 7=checkbox 15=url.",
+    "The records API reads Number fields back as strings; the field type is",
+    "still Number, so sorting and aggregation work in the table UI.",
+    "",
+    "-- identity: which run this was ---------------------------------------",
+    "record_id        dedup key, '<run_id>-<run_attempt>-<backend>'. Includes",
+    "                 run_attempt, so an auto-rerun is a new row rather than",
+    "                 overwriting the failed attempt.",
+    "kind             'test' (PR) or 'baseline' (push)",
+    "backend/runner   e.g. 'tsingmicro' / 'tsingmicro3.6'",
+    "flaggems_tag     FlagGems release tested, also the asset directory name",
+    "flagtree_sha     commit under test: PR head for test, github.sha for",
+    "                 baseline",
+    "flagtree_branch  base_ref for test, ref_name for baseline",
+    "pr_number        empty for baseline runs",
+    "pr_url/run_url   links back to GitHub",
+    "actor            GitHub login that triggered the run",
+    "job_status       ordered by how early the pipeline broke, so an upstream",
+    "                 failure is never masked by a missing later stage:",
+    "                 build_failed, test_failed, no_baseline, regression,",
+    "                 success. 'no_baseline' means no comparison ran at all",
+    "                 (the first baseline on a runner), which is not the same",
+    "                 as having compared and found no regression.",
+    "best_updated     baseline runs only: whether this run became the new",
+    "                 best baseline",
+    "collected_at     when the record was assembled",
+    "",
+    "-- this run, absolute: straight from summary.json ---------------------",
+    "tested_at           when the test run itself started",
+    "duration_s          wall clock across all test jobs",
+    "marks_collection_ok false means operator markers were not collected and",
+    "                    the counts below are unreliable",
+    "total_ops           operators attempted",
+    "total_cases         test cases attempted",
+    "passed/failed/skipped/errors",
+    "not_found           operators with no test case at all",
+    "pass_rate_all       passed / total_cases, matching the comparison report",
+    "pass_rate_run       passed / (passed + failed + errors), excluding",
+    "                    skipped. THE ONLY RATE COMPARABLE ACROSS BACKENDS:",
+    "                    each backend skips a different operator set, so a",
+    "                    denominator containing never-run cases is not",
+    "                    meaningful between backends.",
+    "",
+    "-- comparability metadata ---------------------------------------------",
+    "skip_operators_cnt  size of the skip list this run used",
+    "skip_operators      the list itself, comma separated. Lets a jump in",
+    "                    pass rate be attributed to a compiler change rather",
+    "                    than to an operator having been added to a skip list.",
+    "",
+    "-- delta vs baseline: from compare_report.json ------------------------",
+    "All of these stay empty when no comparison ran; the keys are always",
+    "present so every row has the same shape.",
+    "",
+    "compared         whether a comparison happened at all",
+    "baseline_ref     which baseline the deltas are against, read from the",
+    "                 baseline dir's commit_id.txt, '<date> : <commit>'.",
+    "                 Without it the deltas have no reference point.",
+    "verdict          ACCEPT or REJECT, plain token, 1:1 with the comparison",
+    "                 script's exit code. Only regressions block a merge;",
+    "                 warnings are visible in warnings_cnt instead.",
+    "regressions_cnt  test cases that got worse (passed -> failed/error/...)",
+    "improvements_cnt test cases that got better",
+    "warnings_cnt     changes worth attention but not blocking, e.g.",
+    "                 failed -> error",
+    "info_changes_cnt changes with no verdict impact, e.g. failed -> skipped",
+    "new_operators_cnt / removed_operators_cnt",
+    "                 operators present in only one of the two runs",
+    "delta_*          candidate minus baseline for cases/passed/failed/",
+    "                 skipped/errors",
+    "regressed_ops / improved_ops",
+    "                 operator names, comma separated",
+    "",
+    "Operator-level rows are deliberately NOT a table here: ~420 operators x",
+    "10 backends per run is thousands of rows a day. They stay in the local",
+    "Ledger/operators/<record_id>.jsonl instead, and carry per-operator",
+    "status, change_type and failed_cases for trend analysis."
+  ],
+  "table_name": "flaggems_runs",
+  "dedup_field": "record_id",
+  "fields": [
+    {
+      "field_name": "record_id",
+      "type": 1
+    },
+    {
+      "field_name": "kind",
+      "type": 1
+    },
+    {
+      "field_name": "backend",
+      "type": 1
+    },
+    {
+      "field_name": "runner",
+      "type": 1
+    },
+    {
+      "field_name": "flaggems_tag",
+      "type": 1
+    },
+    {
+      "field_name": "flagtree_sha",
+      "type": 1
+    },
+    {
+      "field_name": "flagtree_branch",
+      "type": 1
+    },
+    {
+      "field_name": "pr_number",
+      "type": 2
+    },
+    {
+      "field_name": "pr_url",
+      "type": 15
+    },
+    {
+      "field_name": "actor",
+      "type": 1
+    },
+    {
+      "field_name": "run_id",
+      "type": 1
+    },
+    {
+      "field_name": "run_attempt",
+      "type": 2
+    },
+    {
+      "field_name": "run_url",
+      "type": 15
+    },
+    {
+      "field_name": "job_status",
+      "type": 1
+    },
+    {
+      "field_name": "best_updated",
+      "type": 7
+    },
+    {
+      "field_name": "collected_at",
+      "type": 5
+    },
+    {
+      "field_name": "tested_at",
+      "type": 5
+    },
+    {
+      "field_name": "duration_s",
+      "type": 2
+    },
+    {
+      "field_name": "marks_collection_ok",
+      "type": 7
+    },
+    {
+      "field_name": "total_ops",
+      "type": 2
+    },
+    {
+      "field_name": "total_cases",
+      "type": 2
+    },
+    {
+      "field_name": "passed",
+      "type": 2
+    },
+    {
+      "field_name": "failed",
+      "type": 2
+    },
+    {
+      "field_name": "skipped",
+      "type": 2
+    },
+    {
+      "field_name": "errors",
+      "type": 2
+    },
+    {
+      "field_name": "not_found",
+      "type": 2
+    },
+    {
+      "field_name": "pass_rate_all",
+      "type": 2
+    },
+    {
+      "field_name": "pass_rate_run",
+      "type": 2
+    },
+    {
+      "field_name": "skip_operators_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "skip_operators",
+      "type": 1
+    },
+    {
+      "field_name": "compared",
+      "type": 7
+    },
+    {
+      "field_name": "baseline_ref",
+      "type": 1
+    },
+    {
+      "field_name": "verdict",
+      "type": 1
+    },
+    {
+      "field_name": "regressions_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "improvements_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "warnings_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "info_changes_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "new_operators_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "removed_operators_cnt",
+      "type": 2
+    },
+    {
+      "field_name": "delta_passed",
+      "type": 2
+    },
+    {
+      "field_name": "delta_failed",
+      "type": 2
+    },
+    {
+      "field_name": "delta_skipped",
+      "type": 2
+    },
+    {
+      "field_name": "delta_errors",
+      "type": 2
+    },
+    {
+      "field_name": "delta_cases",
+      "type": 2
+    },
+    {
+      "field_name": "regressed_ops",
+      "type": 1
+    },
+    {
+      "field_name": "improved_ops",
+      "type": 1
+    }
+  ]
+}

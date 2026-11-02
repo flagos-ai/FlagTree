@@ -6,6 +6,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #ifdef __TLE__
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PriorityWorklist.h"
@@ -676,6 +677,20 @@ static LogicalResult applyMusaTleEncodingHints(ModuleOp mod) {
 }
 #endif // __TLE__
 
+#ifdef __TLE__
+static LogicalResult convertValueTypes(const TypeConverter *converter,
+                                       ValueRange values,
+                                       SmallVectorImpl<Type> &convertedTypes) {
+  for (Value value : values) {
+    Type convertedType = converter->convertType(value);
+    if (!convertedType)
+      return failure();
+    convertedTypes.push_back(convertedType);
+  }
+  return success();
+}
+#endif
+
 template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   using OpConversionPattern<Op>::OpConversionPattern;
 
@@ -683,9 +698,15 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   matchAndRewrite(Op op, typename Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> retTypes;
+#ifdef __TLE__
+    if (failed(convertValueTypes(this->getTypeConverter(), op->getResults(),
+                                 retTypes)))
+      return failure();
+#else
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(),
                                                       retTypes)))
       return failure();
+#endif
     rewriter.replaceOpWithNewOp<Op>(op, retTypes, adaptor.getOperands(),
                                     op->getAttrs());
 
@@ -700,7 +721,12 @@ public:
   LogicalResult
   matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Type retType = getTypeConverter()->convertType(op.getType());
+    Type retType =
+#ifdef __TLE__
+        getTypeConverter()->convertType(op.getResult());
+#else
+        getTypeConverter()->convertType(op.getType());
+#endif
     auto retShapedType = cast<ShapedType>(retType);
     auto value = dyn_cast<DenseElementsAttr>(adaptor.getValue());
     if (isa<RankedTensorType>(retShapedType)) {
@@ -990,7 +1016,11 @@ struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
     // For now, this behaves like generic, but this
     // will evolve when we add support for `can_reorder=False`.
     auto retType = cast<RankedTensorType>(
+#ifdef __TLE__
+        this->getTypeConverter()->convertType(op.getResult()));
+#else
         this->getTypeConverter()->convertType(op.getType()));
+#endif
     auto retEncoding =
         cast<triton::gpu::BlockedEncodingAttr>(retType.getEncoding());
     auto lhsType = adaptor.getLhs().getType();
@@ -1182,7 +1212,11 @@ struct TritonMapElementwisePattern
                   ConversionPatternRewriter &rewriter) const override {
     auto converter = getTypeConverter();
     SmallVector<Type> resultTys;
+#ifdef __TLE__
+    auto err = convertValueTypes(converter, op.getResults(), resultTys);
+#else
     auto err = converter->convertTypes(op.getResults().getType(), resultTys);
+#endif
     if (failed(err)) {
       return err;
     }
@@ -1310,6 +1344,85 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
 //
 // SCF patterns
 //
+#ifdef __TLE__
+static Value unwrapInvalidPartitionMaterialization(
+    Value value, Operation *context,
+    SmallVectorImpl<triton::gpu::ConvertLayoutOp> &deadMaterializations) {
+  auto materialization = value.getDefiningOp<triton::gpu::ConvertLayoutOp>();
+  // Only dialect-conversion-created bridge casts are eligible.  Explicit
+  // convert_layout operations are part of the program and must be preserved.
+  if (!materialization ||
+      !materialization->hasAttr(
+          triton::musa_tle::kMUSATLEPartitionMaterializationAttr))
+    return value;
+  auto srcType = dyn_cast<RankedTensorType>(materialization.getSrc().getType());
+  auto dstType = dyn_cast<RankedTensorType>(materialization.getType());
+  if (!srcType || !dstType)
+    return value;
+  auto countWarps = [](RankedTensorType type) {
+    auto blockedEncoding =
+        dyn_cast<triton::gpu::BlockedEncodingAttr>(type.getEncoding());
+    if (!blockedEncoding)
+      return -1;
+    int count = 1;
+    for (unsigned value : blockedEncoding.getWarpsPerCTA())
+      count *= value;
+    return count;
+  };
+  int contextualNumWarps = triton::gpu::lookupNumWarps(context);
+  int sourceNumWarps = countWarps(srcType);
+  int targetNumWarps = countWarps(dstType);
+  if ((sourceNumWarps != -1 && sourceNumWarps != contextualNumWarps) ||
+      targetNumWarps == -1 || targetNumWarps == contextualNumWarps)
+    return value;
+  deadMaterializations.push_back(materialization);
+  return materialization.getSrc();
+}
+
+static void eraseDeadMaterializations(
+    SmallVectorImpl<triton::gpu::ConvertLayoutOp> &materializations,
+    ConversionPatternRewriter &rewriter) {
+  for (triton::gpu::ConvertLayoutOp materialization : materializations) {
+    if (materialization && materialization->use_empty())
+      rewriter.eraseOp(materialization);
+  }
+}
+
+static LogicalResult
+convertRegionTypesWithValueContext(Region *region,
+                                   const TypeConverter &converter,
+                                   ConversionPatternRewriter &rewriter) {
+  if (region->empty())
+    return success();
+  Block &entry = region->front();
+  TypeConverter::SignatureConversion signature(entry.getNumArguments());
+  for (BlockArgument argument : entry.getArguments()) {
+    Type converted = converter.convertType(argument);
+    if (!converted)
+      return failure();
+    signature.addInputs(argument.getArgNumber(), converted);
+  }
+  return rewriter.convertRegionTypes(region, converter, &signature);
+}
+
+struct SCFYieldPattern : public OpConversionPattern<scf::YieldOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<triton::gpu::ConvertLayoutOp> deadMaterializations;
+    SmallVector<Value> operands;
+    for (Value value : adaptor.getOperands())
+      operands.push_back(unwrapInvalidPartitionMaterialization(
+          value, op, deadMaterializations));
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, operands);
+    eraseDeadMaterializations(deadMaterializations, rewriter);
+    return success();
+  }
+};
+#endif
+
 // This is borrowed from ConvertForOpTypes in
 //    SCF/Transforms/StructuralTypeConversions.cpp
 struct SCFForPattern : public OpConversionPattern<scf::ForOp> {
@@ -1330,8 +1443,14 @@ struct SCFForPattern : public OpConversionPattern<scf::ForOp> {
     // The entry block may have a special conversion if `entryConversion` is
     // provided. On success, the new entry block to the region is returned for
     // convenience. Otherwise, failure is returned.
-    if (failed(rewriter.convertRegionTypes(&newOp.getRegion(),
-                                           *getTypeConverter()))) {
+    if (failed(
+#ifdef __TLE__
+            convertRegionTypesWithValueContext(&newOp.getRegion(),
+                                               *getTypeConverter(), rewriter)
+#else
+            rewriter.convertRegionTypes(&newOp.getRegion(), *getTypeConverter())
+#endif
+                )) {
       return rewriter.notifyMatchFailure(op, "could not convert body types");
     }
     // Change the clone to use the updated operands. We could have cloned with
@@ -1339,8 +1458,14 @@ struct SCFForPattern : public OpConversionPattern<scf::ForOp> {
     newOp->setOperands(adaptor.getOperands());
     // Update the result types to the new converted types.
     SmallVector<Type> newResultTypes;
-    for (Type type : op.getResultTypes()) {
+    for (
+#ifdef __TLE__
+        Value result : op.getResults()) {
+      Type newType = typeConverter->convertType(result);
+#else
+        Type type : op.getResultTypes()) {
       Type newType = typeConverter->convertType(type);
+#endif
       if (!newType)
         return rewriter.notifyMatchFailure(op, "not a 1:1 type conversion");
       newResultTypes.push_back(newType);
@@ -1373,8 +1498,14 @@ public:
     // wrong type on the SSA values! These edge cases are also why we cannot
     // safely use the TypeConverter::convertTypes helper here.
     SmallVector<Type> newResultTypes;
-    for (auto type : op.getResultTypes()) {
+    for (
+#ifdef __TLE__
+        Value result : op.getResults()) {
+      Type newType = typeConverter->convertType(result);
+#else
+        auto type : op.getResultTypes()) {
       Type newType = typeConverter->convertType(type);
+#endif
       if (!newType)
         return rewriter.notifyMatchFailure(op, "not a 1:1 type conversion");
       newResultTypes.push_back(newType);
@@ -1410,7 +1541,11 @@ public:
     auto *converter = getTypeConverter();
     assert(converter);
     SmallVector<Type> newResultTypes;
+#ifdef __TLE__
+    if (failed(convertValueTypes(converter, op.getResults(), newResultTypes)))
+#else
     if (failed(converter->convertTypes(op.getResultTypes(), newResultTypes)))
+#endif
       return failure();
 
     auto newOp = scf::WhileOp::create(rewriter, op.getLoc(), newResultTypes,
@@ -1418,7 +1553,14 @@ public:
     for (auto i : {0u, 1u}) {
       auto &dstRegion = newOp.getRegion(i);
       rewriter.inlineRegionBefore(op.getRegion(i), dstRegion, dstRegion.end());
-      if (failed(rewriter.convertRegionTypes(&dstRegion, *converter)))
+      if (failed(
+#ifdef __TLE__
+              convertRegionTypesWithValueContext(&dstRegion, *converter,
+                                                 rewriter)
+#else
+              rewriter.convertRegionTypes(&dstRegion, *converter)
+#endif
+                  ))
         return rewriter.notifyMatchFailure(op, "could not convert body types");
     }
     rewriter.replaceOp(op, newOp.getResults());
@@ -1441,8 +1583,14 @@ public:
 void populateSCFPatterns(TritonGPUTypeConverter &typeConverter,
                          RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns.add<GenericOpPattern<scf::YieldOp>, SCFForPattern, SCFIfPattern,
-               SCFWhilePattern, SCFConditionPattern>(typeConverter, context);
+  patterns.add<
+#ifdef __TLE__
+      SCFYieldPattern,
+#else
+      GenericOpPattern<scf::YieldOp>,
+#endif
+      SCFForPattern, SCFIfPattern, SCFWhilePattern, SCFConditionPattern>(
+      typeConverter, context);
 }
 
 // CF
@@ -1495,6 +1643,52 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
 }
 
 #ifdef __TLE__
+struct MUSATLESqmmaPattern
+    : public OpConversionPattern<mlir::triton::musa_tle::SqmmaOp> {
+  using OpConversionPattern::OpConversionPattern;
+  void initialize() { this->setHasBoundedRewriteRecursion(); }
+
+  LogicalResult
+  matchAndRewrite(mlir::triton::musa_tle::SqmmaOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Type> resultTypes;
+    if (failed(convertValueTypes(getTypeConverter(), op->getResults(),
+                                 resultTypes)))
+      return failure();
+    SmallVector<triton::gpu::ConvertLayoutOp> deadMaterializations;
+    SmallVector<Value> operands(adaptor.getOperands());
+    operands[2] = unwrapInvalidPartitionMaterialization(operands[2], op,
+                                                        deadMaterializations);
+    rewriter.replaceOpWithNewOp<mlir::triton::musa_tle::SqmmaOp>(
+        op, resultTypes, operands, op->getAttrs());
+    eraseDeadMaterializations(deadMaterializations, rewriter);
+    return success();
+  }
+};
+
+struct MUSATLESqmmaWaitPattern
+    : public OpConversionPattern<mlir::triton::musa_tle::SqmmaWaitOp> {
+  using OpConversionPattern::OpConversionPattern;
+  void initialize() { this->setHasBoundedRewriteRecursion(); }
+
+  LogicalResult
+  matchAndRewrite(mlir::triton::musa_tle::SqmmaWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Type> resultTypes;
+    if (failed(convertValueTypes(getTypeConverter(), op->getResults(),
+                                 resultTypes)))
+      return failure();
+    SmallVector<triton::gpu::ConvertLayoutOp> deadMaterializations;
+    SmallVector<Value> operands(adaptor.getOperands());
+    operands[0] = unwrapInvalidPartitionMaterialization(operands[0], op,
+                                                        deadMaterializations);
+    rewriter.replaceOpWithNewOp<mlir::triton::musa_tle::SqmmaWaitOp>(
+        op, resultTypes, operands, op->getAttrs());
+    eraseDeadMaterializations(deadMaterializations, rewriter);
+    return success();
+  }
+};
+
 struct MUSATLEExtractTilePattern
     : public OpConversionPattern<mlir::triton::musa_tle::ExtractTileOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -1575,11 +1769,10 @@ struct MUSATLESetLayoutPattern
 void populateMUSATlePatterns(TritonGPUTypeConverter &typeConverter,
                              RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns.add<MUSATLESetLayoutPattern,
+  patterns.add<MUSATLESetLayoutPattern, MUSATLESqmmaPattern,
+               MUSATLESqmmaWaitPattern,
                GenericOpPattern<mlir::triton::musa_tle::LocalPointersOp>,
                GenericOpPattern<mlir::triton::musa_tle::ExclusiveCumsumOp>,
-               GenericOpPattern<mlir::triton::musa_tle::SqmmaOp>,
-               GenericOpPattern<mlir::triton::musa_tle::SqmmaWaitOp>,
                MUSATLEExtractTilePattern, MUSATLEInsertTilePattern>(
       typeConverter, context);
 }
