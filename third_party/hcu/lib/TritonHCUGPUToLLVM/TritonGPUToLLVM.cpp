@@ -220,6 +220,9 @@ struct ConvertTritonHCUGPUToLLVM
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
           typeConverter, targetInfo, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
         return signalPassFailure();

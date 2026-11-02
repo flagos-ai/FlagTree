@@ -259,10 +259,12 @@ LogicalResult SqmmaWaitOp::canonicalize(SqmmaWaitOp op,
   if (liveResultIdxs.size() == op.getNumResults())
     return failure();
 
-  if (liveInputs.empty()) {
-    rewriter.eraseOp(op);
-    return success();
-  }
+  // A SQMMA wait is a global completion boundary, even when none of its SSA
+  // passthrough results are used.  Rewriting it to an operand-free wait would
+  // violate the verifier, while erasing it could let outstanding SQMMA escape
+  // the source synchronization point.  Leave the original operation intact.
+  if (liveInputs.empty())
+    return failure();
 
   rewriter.setInsertionPoint(op);
   auto newWait = SqmmaWaitOp::create(rewriter, op.getLoc(), liveInputs);

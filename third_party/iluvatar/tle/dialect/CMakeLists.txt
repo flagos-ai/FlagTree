@@ -20,6 +20,7 @@ set(ILUVATAR_TLE_TO_LLVM_SRC
   lib/Conversion/TleToLLVM/InsertTileToLLVM.cpp
   lib/Conversion/TleToLLVM/LocalPointersOpToLLVM.cpp
   lib/Conversion/TleToLLVM/PackOpToLLVM.cpp
+  lib/Conversion/TleToLLVM/ViewOpToLLVM.cpp
 )
 
 if(FLAGCX_ENABLED)

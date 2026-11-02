@@ -1,4 +1,5 @@
 from triton.backends.compiler import BaseBackend, GPUTarget
+from triton.backends import llvm19_toolchain
 from triton._C.libtriton import ir, passes, xpu, llvm
 from triton.runtime.cache import get_cache_manager
 import subprocess
@@ -15,41 +16,44 @@ from typing import Tuple, Optional
 import hashlib
 from pathlib import Path
 
+# The desensitized LLVM 19 package ships no `opt`; the read-in step is
+# `opt`-only, so disable it when the staged toolchain lacks it.  An explicit
+# TRITON_LLVM19_READIN from the environment wins over this default.
+try:
+    _llvm19_bin = llvm19_toolchain.get_llvm19_bin_dir("xpu")
+    if not os.path.exists(os.path.join(_llvm19_bin, "opt")):
+        os.environ.setdefault("TRITON_LLVM19_READIN", "0")
+except Exception:  # toolchain not staged yet -- leave the default alone
+    pass
 
-def run_cmd(cmd):
-    result = subprocess.run(cmd, capture_output=True)
+
+def run_cmd(cmd, env=None):
+    result = subprocess.run(cmd, capture_output=True, env=env)
 
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 
     if result.returncode != 0:
-        raise RuntimeError(f"Command failed ({result.returncode}): {cmd}")
+        raise RuntimeError(
+            f"Command failed ({result.returncode}): {cmd}\nstdout: {result.stdout}\nstderr: {result.stderr}")
 
     return result.stdout
 
 
 def parse_floating_range_string(range_str: str) -> Optional[Tuple[Optional[float], Optional[float]]]:
-    """
-    解析形如 "Start:End" 的浮点数范围字符串。
+    """Parse a "Start:End" floating-point range string such as "1.5:10.0".
 
-    参数:
-        range_str (str): 范围字符串，例如 "1.5:10.0" 或 ":-3.14" 或 "123.789"。
-
-    返回:
-        Optional[Tuple[Optional[float], Optional[float]]]:
-        (start, end) 的元组，如果解析失败则返回 None。
-        None 表示该部分缺失。
+    Returns:
+        (start, end) with None for an omitted side, or None if the string
+        is malformed.
     """
 
-    # 1. 分割字符串
     parts = range_str.split(':')
 
     if len(parts) > 2:
         print(f"错误: 范围字符串 '{range_str}' 格式不正确，包含太多冒号。")
         return None
 
-    # 确保 parts 包含两个元素，例如 ["50.5"] -> ["50.5", ""]
-    # 或 [":10"] -> ["", "10"]
     full_parts = parts + [""] * (2 - len(parts))
 
     start_str = full_parts[0]
@@ -58,7 +62,6 @@ def parse_floating_range_string(range_str: str) -> Optional[Tuple[Optional[float
     start_val: Optional[float] = None
     end_val: Optional[float] = None
 
-    # 2. 解析 Start 部分
     if start_str:
         try:
             start_val = float(start_str)
@@ -66,7 +69,6 @@ def parse_floating_range_string(range_str: str) -> Optional[Tuple[Optional[float
             print(f"错误: Start 部分 '{start_str}' 不是有效的浮点数。")
             return None
 
-    # 3. 解析 End 部分
     if end_str:
         try:
             end_val = float(end_str)
@@ -74,9 +76,7 @@ def parse_floating_range_string(range_str: str) -> Optional[Tuple[Optional[float
             print(f"错误: End 部分 '{end_str}' 不是有效的浮点数。")
             return None
 
-    # 4. 特殊处理：如果只有一个数字 (例如 "123.789")
-    # 此时 parts 长度为 1，start_val 有值，end_val 为 None。
-    # 我们将其视为 range(0.0, 123.789)，即 start 缺失，end 为该数字。
+    # A bare number ("123.789") is an upper bound only: (None, 123.789).
     if len(parts) == 1 and start_val is not None:
         end_val = start_val
         start_val = None
@@ -88,6 +88,48 @@ def parse_floating_range_string(range_str: str) -> Optional[Tuple[Optional[float
 def file_hash(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+
+
+# Flags handed to the staged LLVM 19 llc by this backend.  Single source of
+# truth for the codegen options: the call sites below build their `extra_args`
+# from it, and XPUBackend.hash() folds it (together with
+# llvm19_toolchain.LLC_ALWAYS_FLAGS) into the JIT cache key.  Without that the
+# key would keep serving objects compiled with the old flags from a warm cache
+# (KB E23).
+_LLC_EXTRA = ("-O2", )
+
+
+@functools.lru_cache(maxsize=None)
+def _xtdk_lld_version(tool_dir: str) -> str:
+    """`ld.lld --version` of the linker this backend's elfconv step drives.
+
+    Toolchain identity for XPUBackend.hash(), the same ingredient the other two
+    backends take from their own `path_to_xtdk_lld()`: the linker version moves
+    the object bytes, so a warm cache must not outlive a toolchain change.  The
+    tool dir is the one `path_to_xpu_compile_tool` resolves and that elfconv
+    takes as `CLANG_PATH` (see make_xpubin).  Memoised because hash() runs once
+    per compilation and an installed binary's version cannot change under a
+    running process -- the effect the other two backends get from the lru_cache
+    on hash() itself.
+
+    **This must never raise**: it runs inside `hash()`, i.e. inside a cache key,
+    the contract `llvm19_toolchain.codegen_key()` states for every ingredient it
+    folds in.  `tool_dir` is not guaranteed to hold a linker either -- it is
+    "the clang path" (`TRITON_XPU_CLANG_PATH`, a plain clang install has no
+    `ld.lld`) or a per-arch directory that need not be staged (`xpu2`).  A
+    missing tool is a fact about this toolchain, so it becomes the
+    `lld:absent(<cause>)` placeholder -- the same shape `_table_digests()` uses
+    for a package without a table -- which keeps the key honest: installing a
+    linker later changes it.
+    """
+    try:
+        return subprocess.check_output(
+            [os.path.join(tool_dir, "ld.lld"), "--version"],
+            encoding="utf-8",
+            env=llvm19_toolchain.llvm19_env("xpu"),
+        ).strip()
+    except Exception as e:  # noqa: BLE001 - cache-key ingredient: a missing ld.lld must degrade, not raise
+        return f"lld:absent({type(e).__name__})"
 
 
 # @dataclass   create __dataclass_fields__ specical attribute
@@ -113,6 +155,8 @@ class XPUOptions:
     # bufSz=2048 460.0->434.8us, softmax bufSz=512 2588.9->2385.4us.
     # Set TRITONXPU_BUDGET_TILING=0 to fall back to unroll_num.
     budget_tiling: bool = bool(int(os.environ.get("TRITONXPU_BUDGET_TILING", 1)))
+    # Enabled on demand after a TLE stack overflow; the initial compile is unchanged.
+    tle_relieve_pressure: bool = bool(int(os.environ.get("TRITONXPU_TLE_RELIEVE_PRESSURE", 0)))
     # The two pinned unroll constants in UnrollControl (bool-store-vectorize=4,
     # core-deal-multi-rows=1) short-circuit the tile decision before unroll_num
     # is read, so until this knob existed neither could be shown to be wrong:
@@ -153,14 +197,16 @@ class XPUOptions:
     isCloseOffsetAnalysis: bool = False
     isCloseCoreTiling: bool = False
     isCloseUnrollControl: bool = False
-    isCloseVectorization: bool = False
+    isCloseVectorization: bool = bool(int(os.environ.get("TRITONXPU_IS_CLOSE_VECTORIZATION", 0)))
     isCloseMemoryCache: bool = False
     isCloseClusterLoopGrid: bool = False
     isClusterOneCoreActOnly: bool = False
     isCLOSE_TTXPU_O_ATOMIC_SIM: bool = False
     isCloseDtypeConvert: bool = False
     isCloseInterleave: bool = False
-    isCloseMemoryAsync: bool = True
+    isCloseMemoryAsync: bool = bool(int(os.environ.get("TRITONXPU_IS_CLOSE_MEMORY_ASYNC", 0)))
+    isCloseTLESmemVec: bool = bool(int(os.environ.get("TRITONXPU_IS_CLOSE_TLE_SM_VEC", 0)))
+    isCloseTLEVec: bool = bool(int(os.environ.get("TRITONXPU_IS_CLOSE_TLE_VEC", 0)))
     isAutoCoreTiling: bool = bool(int(os.environ.get("TRITONXPU_AUTO_CORE_TILING", 0)))
 
     enable_fp_fusion: bool = False
@@ -288,6 +334,8 @@ class XPUBackend(BaseBackend):
         metadata["shared"] = (-1)  # TODO: invalid value, just to keep CompiledKernel _init_handles() success
 
         max_buffer_size = metadata["buffer_size_limit"]
+        tle_smem_vec = not metadata["isCloseTLESmemVec"]
+        tle_vec = not metadata["isCloseTLEVec"]
         elem_bytes = int(os.environ.get("TRITONXPU_ELEMBYTES", 0))
         groups_per_cluster = metadata["groups_per_cluster"]
         unroll_num = metadata["unroll_num"]
@@ -333,7 +381,30 @@ class XPUBackend(BaseBackend):
                 # reduce). Safe no-op otherwise.
                 xpu.passes.ttxpuir.add_tritonxpu_tle_core_tiling_pass(pm, 0, XPUBackend.buffer_len,
                                                                       core_num)  # dumpFlag=0
+            # Software-pipeline the GM->LM/SM fills. Must run BEFORE tle_legalize,
+            # which rewrites the loop body the rotation is built from. The budget
+            # checks inside run even when the rewrite is disabled, so this call is
+            # unconditional; only the rewrite is gated on TRITONXPU_TLE_PIPELINE.
+            # The LM budget is the stricter of the XTDK stack-size limit (which
+            # TRITON_TUNE_BUFFER_LM_SIZE moves, default 8000) and the 8KB physical
+            # LM, since exceeding either one fails the build. num_stages stays 1
+            # (= off) at module level: a loop opts in with tl.range(num_stages=2),
+            # which lands as tt.num_stages on the scf.for.
+            lm_bytes_limit = min(int(os.environ.get("TRITON_TUNE_BUFFER_LM_SIZE", 8000)), 8192)
+            xpu.passes.ttxpuir.add_tritonxpu_tle_pipeline_pass(pm, bool(int(os.environ.get("TRITONXPU_TLE_PIPELINE",
+                                                                                           0))), 1, 1, lm_bytes_limit)
             xpu.passes.ttxpuir.add_tritonxpu_tle_legalize_pass(pm)  # dumpFlag=0
+            # Assign static SM byte offsets to cluster-shared (scope=smem) TLE
+            # buffers before the LLVM lowering reads xpu.sm_offset in the
+            # alloc / copy_g2l / local_ptr SM branches. No-op when there are no
+            # smem buffers. Must run after tle_legalize (the smem local_alloc
+            # ops still exist) and before make_llir.
+            xpu.passes.ttxpuir.add_tritonxpu_tle_sm_alloc_pass(pm)
+            # Promote bf16 compute to f32 and leave the bf16 <-> f32 conversion on
+            # the LM boundary, where XPUTLETriton{Load,Store}OpConversion fuses it
+            # (XPU3 has no bf16 ALU and no bf16 convert instruction). Must run
+            # before normalize/vectorize so the chain is already f32 by then.
+            xpu.passes.ttxpuir.add_tritonxpu_tle_dtype_convert_pass(pm)
             if not metadata["isCloseVectorization"]:
                 compareFusion = int(os.environ.get("TRITONXPU_COMPARE_FUSION", 0))
                 # Pre-vectorization normalization, split out of vectorize's own
@@ -341,7 +412,15 @@ class XPUBackend(BaseBackend):
                 xpu.passes.ttxpuir.add_tritonxpu_normalize_pass(
                     pm, 0, compareFusion) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
                 xpu.passes.ttxpuir.add_tritonxpu_vectorize_pass(
-                    pm, 0, compareFusion, opt.per_op_decision) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                    pm, 0, compareFusion, opt.per_op_decision, tle_smem_vec,
+                    tle_vec) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                # Peak live-vector pressure is only defined after vectorization.
+                xpu.passes.ttxpuir.add_tritonxpu_tile_analysis_pass(pm, vrf_budget)
+            if not metadata["isCloseUnrollControl"] and metadata["tle_relieve_pressure"]:
+                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(
+                    pm, XPUBackend.buffer_len, core_num, is_use_mask_zero, unroll_num, vrf_budget,
+                    metadata["budget_tiling"], metadata["pin_unroll_num"],
+                    metadata["open_decision_entry"]) if not TTXPU_O_CLOSE_OPT else None
             if not metadata["isCloseClusterLoopGrid"]:
                 # LoopGrid: wraps kernel body in a cluster loop and appends gridX/Y/Z
                 # arguments that xpuLaunchKernel passes at the end of kernel_params.
@@ -375,7 +454,7 @@ class XPUBackend(BaseBackend):
             # core_specialize regions). Must run before bufferize (which lowers the
             # wrapped linalg to loops).
             # FlagTree: the prebuilt v0.3.6.7.1 SDNN objects do not export this
-            # binding yet (it ships with the internal d116bdf4 rebuild).
+            # binding yet (it ships with the sync source d116bdf4 rebuild).
             if hasattr(xpu.passes.ttsdnnir, "add_tritonsdnn_wrap_fallback_pass"):
                 xpu.passes.ttsdnnir.add_tritonsdnn_wrap_fallback_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_eliminate_mma_acc_zero_pass(pm, opt.arch)
@@ -424,7 +503,7 @@ class XPUBackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             if TTXPU_F_DTYPE_CONVERT:
                 xpu.passes.ttxpuir.add_tritonxpu_dtype_convert_pass(pm, opt.arch)
-            xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, True)
+            xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, tle_smem_vec, tle_vec, True)
             # M2/M3's decision half, taken here because the terminal states are
             # E-independent at this position. Tiers 1 and 2 need a fixed per-core
             # geometry, so they stay in unroll_control below and are recorded as
@@ -460,9 +539,10 @@ class XPUBackend(BaseBackend):
                 compareFusion = int(os.environ.get("TRITONXPU_COMPARE_FUSION", 0))
                 xpu.passes.ttxpuir.add_tritonxpu_normalize_pass(
                     pm, 0, compareFusion) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
-                xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, False)
+                xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, tle_smem_vec, tle_vec, False)
                 xpu.passes.ttxpuir.add_tritonxpu_vectorize_pass(
-                    pm, 0, compareFusion, opt.per_op_decision) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                    pm, 0, compareFusion, opt.per_op_decision, tle_smem_vec,
+                    tle_vec) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_alloca_pass(pm, XPUBackend.buffer_len, core_num)
             if not metadata["isCloseMemoryAsync"]:
@@ -570,6 +650,11 @@ class XPUBackend(BaseBackend):
     @staticmethod
     def make_llir(mod, metadata, opt):
         XPUBackend.make_ewtable(mod, metadata, opt)
+        # The emitters below (createIntrinsicCallByName / createCallIntrinsic)
+        # need this process's table before they run, or the fact is not born on
+        # the instruction -- landing B and B' can only patch up.  See
+        # llvm19_toolchain.install_intrinsic_attr_table.
+        llvm19_toolchain.install_intrinsic_attr_table()
         # Gate tensor_args on the same condition that selects the quantizing
         # ConvertType mode (see make_ttxir). Only TO_F16 (XMLIR_MATMUL_FAST_MODE=1)
         # or w4a8 kernels actually consume the launch-appended scale param; for
@@ -587,25 +672,22 @@ class XPUBackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)  # cf->llvm exist  choose scf->cf->llvm
         # passes.convert.add_index_to_llvmir(pm) // TODO[dyq]: necessary?
 
+        # Record this kernel's tle.raw payloads before the conversion replaces the
+        # raw ops (`triton_sdnn.raw` / `triton_xpu.raw`) with calls: the payload is
+        # compiled and merged into the kernel module at the LLVM 19 stage
+        # (make_elf), so it never goes through the public LLVM 22 MLIR.
+        #
+        # Imported lazily: importing any `tle.raw` submodule runs the package
+        # `__init__`, which pulls in `triton.language` -- and the backends are
+        # themselves imported from `triton.runtime.jit`, so a module-level import
+        # cycles.
+        from triton.experimental.tle.raw.merge import record_raw_extern_libs, record_raw_payloads
+        record_raw_payloads(mod, metadata)
+
         if metadata["is_sdnn"]:
-            # Deferred tle.raw payloads are compiled here, where the arch is known.
-            # Unconditional: the XPU python overlay always ships
-            # triton/experimental/tle/raw/deferred.py, and the hook is a no-op
-            # (adds no pass) when no payload was registered during tracing --
-            # which is also the case for every cache hit, since tracing is
-            # skipped then. Do NOT gate this on `is_tle`: that flag means the TLE
-            # copy/tiling IR pipeline (tle_copy_g2l & friends), which a plain
-            # `tle.raw` kernel does not use.
-            from triton.experimental.tle.raw.deferred import materialize_deferred_raw
-            materialize_deferred_raw(pm, xpu.passes.ttsdnnir.add_tritonsdnn_materialize_deferred_raw_pass,
-                                     arch=opt.arch, dialect="xpu")
             xpu.passes.ttsdnnir.add_convert_tritonsdnn_to_llvm_pass(pm, opt.arch)
         else:
             xpu.passes.ttxpuir.add_allocate_xpu_shared_memory(pm)
-            # Same hook on the cluster path, where the op is `triton_xpu.raw`.
-            from triton.experimental.tle.raw.deferred import materialize_deferred_raw
-            materialize_deferred_raw(pm, xpu.passes.ttxpuir.add_tritonxpu_materialize_deferred_raw_pass, arch=opt.arch,
-                                     dialect="xpu")
             xpu.passes.ttxpuir.add_convert_tritonxpu_to_llvm_pass(pm, opt.arch, XPUBackend.buffer_len,
                                                                   metadata["is_use_mask_zero"])
         passes.common.add_canonicalizer(pm)
@@ -637,6 +719,9 @@ class XPUBackend(BaseBackend):
                 ]
             assert (len(paths) <= 1), f"Expected 0/1 extern_lib path, but found {len(paths)}"
             llvm.link_extern_libs(llvm_mod, paths)
+            # A payload merged in at the LLVM 19 stage resolves its device
+            # library calls against the same library the kernel linked here.
+            record_raw_extern_libs(metadata, paths, [path for (_name, path) in opt.extern_libs])
 
         # The XPU LLVM target triple/datalayout must be attached before
         # optimize_module. attach_datalayout sets the full
@@ -672,6 +757,14 @@ class XPUBackend(BaseBackend):
         # returns nullptr and segfaults at target->createTargetMachine(...).
         llvm_mod.set_target_triple(f"xpu{opt.arch}-baidu-none-gnu")
         llvm.attach_datalayout(llvm_mod, f"xpu{opt.arch}-baidu-none-gnu", f"xpu{opt.arch}", "")
+        # Landing B': the same table, on the translated module.  It runs here --
+        # after the device libraries are linked in and after the SDNN target-feature
+        # fixup -- so every declaration the in-process O3 is about to see carries the
+        # facts the table states.  Landing B (the MLIR pass) could not reach the XPU
+        # dialect's declarations: `createIntrinsicCallByName` creates them inside
+        # `to_module`, after that pass had already run.
+        llvm19_toolchain.stamp_llvm_ir(llvm_mod)
+        llvm19_toolchain.dump_pre_o3(llvm_mod, metadata)
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, f"xpu{opt.arch}")
         xpu.llvm.amend_func(llvm_mod, mod, context, opt.arch, metadata["is_sdnn"])
 
@@ -680,22 +773,54 @@ class XPUBackend(BaseBackend):
 
     @staticmethod
     def make_elf(mod, metadata, opt):
+        # Imported lazily: importing any `tle.raw` submodule runs the package
+        # `__init__`, which pulls in `triton.language` -- and the backends are
+        # themselves imported from `triton.runtime.jit`, so a module-level import
+        # cycles.
+        from triton.experimental.tle.raw.merge import merge_raw_payloads
         # Find kernel names (there should only be one)
         # We get the name at the last possible step to accomodate `triton.compile`
         # on user-provided LLVM
         metadata["name"] = xpu.llvm.get_kernel_name(mod)
         # print(f'metadata[name] = {metadata["name"]}')
 
-        # llvm -> elf/asm
+        # Must go through the LLVM 22 -> 19 text-downgrade path; do NOT use the
+        # in-process `xpu.llvm.translate_to_asm`: it runs the public LLVM 22
+        # verifier, which rejects this kernel's cc 124 (AMDGPU_Gfx_WholeWave there
+        # requires the first argument to be i1). The text path below never runs
+        # the LLVM 22 verifier or backend.
         triple = f"xpu{opt.arch}-baidu-none-gnu"
         proc = f"xpu{opt.arch}"
-        flags = ["xpu-cmp-nan"] if metadata["isOpenCmpNan"] else []
-        ret_asm = xpu.llvm.translate_to_asm(mod, triple, proc, "", flags, False, False)
+        ir_text = llvm19_toolchain.downgrade_ir(mod._ir_for_lowering(), "xpu")
+        # Merge the payloads in after the downgrade (they are LLVM 19 text).
+        try:
+            ir_text = merge_raw_payloads(ir_text, metadata, "xpu", opt.arch)
+        except RuntimeError as e:
+            if "llvm-link missing" in str(e):
+                raise RuntimeError(f"{e}\n  tle.raw payload kernels need the LLVM 19 `llvm-link`, which "
+                                   f"this toolchain package does not ship.") from e
+            raise
+        llc_extra = llvm19_toolchain.llc_flags(_LLC_EXTRA, metadata)
+        ret_asm = llvm19_toolchain.llir_to_asm(ir_text, "xpu", triple, proc, extra_args=llc_extra)
+        # The llc only emits the XPU_KERNEL_PARAM_SIZE_<name> object when it
+        # recognised the function as an XPU kernel entry, which depends on
+        # the kernel calling convention having survived the LLVM 22 -> 19
+        # text downgrade (amdgpu_gfx_whole_wave -> xpu_kernel).  If that
+        # rewrite ever stops matching (e.g. a future LLVM prebuilt renames
+        # cc 124), llc silently emits a plain function: the ELF builds fine
+        # but the kernel has no entry point.  Assert the symbol here so a
+        # broken rewrite fails loudly at compile time instead of at launch.
+        if f"XPU_KERNEL_PARAM_SIZE_{metadata['name']}" not in ret_asm:
+            raise RuntimeError(f"llc did not emit XPU_KERNEL_PARAM_SIZE_{metadata['name']}: "
+                               f"the kernel entry convention was lost in the LLVM 22 -> 19 "
+                               f"downgrade. The kernel calling-convention rewrite in "
+                               f"llvm_ir_downgrade.py is likely stale for this LLVM "
+                               f"prebuilt.")
         fn_cache_manager = get_cache_manager(metadata["hash"])
         from triton.knobs import compilation as _compilation_knobs
         if not _compilation_knobs.store_binary_only:
             fn_cache_manager.put(ret_asm, f"{metadata['name']}.asm")
-        ret_elf = xpu.llvm.translate_to_asm(mod, triple, proc, "", [], False, True)
+        ret_elf = llvm19_toolchain.llir_to_object(ir_text, "xpu", triple, proc, extra_args=llc_extra)
 
         del mod
         return ret_elf
@@ -710,7 +835,13 @@ class XPUBackend(BaseBackend):
             with open(objfile, "wb") as f:
                 f.write(mod)
             cmd = [elfconv, objfile, binfile, clang_path]
-            out_bytes = run_cmd(cmd)
+            # The elfconv script drives the per-arch LLVM 19 tools (clang,
+            # ld.lld, llvm-readelf, llvm-objcopy, llvm-objdump, xpu-xxd) and the
+            # whole subtree inherits this: __lib gives them the shared
+            # libLLVM.so.19.1 / libclang-cpp.so.19.1.  Without it the tools fall
+            # back to an ambient libLLVM (the XPU runtime ships an older one on
+            # $XCUDA/lib64) and silently lower the private intrinsics wrong.
+            out_bytes = run_cmd(cmd, env=llvm19_toolchain.llvm19_env("xpu"))
             printf_buf_offset_res = re.search(rb"0x[0-9a-fA-F]+", out_bytes)
             if printf_buf_offset_res:
                 printf_buf_offset_hex = printf_buf_offset_res.group(0)
@@ -723,14 +854,22 @@ class XPUBackend(BaseBackend):
                 return f.read()
 
     @staticmethod
-    def is_elf_stack_size_oob(mod) -> bool:
-        stack_size_oob = llvm.is_elf_stack_size_oob(mod)
+    def is_elf_stack_size_oob(mod, margin: int = 0) -> bool:
+        stack_size_oob = llvm.is_elf_stack_size_oob(mod, margin)
         return stack_size_oob
 
     def hash(self) -> str:
         """Returns a unique identifier for this backend"""
-        # TODO:
-        return "1"
+        # Toolchain identity, the same ingredient the other backends' hashes take
+        # from their staged `ld.lld`: the linker moves the object bytes, so a
+        # warm cache must not outlive a toolchain change.  The llc flags do have
+        # to be in the key for the same reason as in the other backends -- a warm
+        # cache would otherwise keep objects built with the old flags -- and
+        # `codegen_key()` also carries the stamp's table tag, the table digests
+        # and the LLVM 19 bin dir the tools come from.
+        tool_dir = XPUBackend.path_to_xpu_compile_tool(self.target)
+        flags = " ".join(_LLC_EXTRA) + " " + llvm19_toolchain.codegen_key("xpu")
+        return f"{_xtdk_lld_version(tool_dir)}-{self.target}-{flags}"
 
     def parse_options(self, options: dict) -> object:
         args = {"arch": self.target.arch}

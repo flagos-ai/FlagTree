@@ -358,6 +358,29 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 
+#ifdef __FLAGTREE_RLC_ENHANCE__
+  let options = [
+    Option<"enableRlcEnhance", "enable-rlc-enhance",
+           "bool", /*default=*/"false",
+           "Master switch for the FlagTree phases (FLAGTREE_RLC_ENHANCE); the "
+           "other enable-* options only take effect when it is set">,
+    Option<"enableCostBasedResolution", "enable-cost-based-resolution",
+           "bool", /*default=*/"true",
+           "Use cost-based conflict resolution instead of heuristic rules; "
+           "required by the backward-propagation and small-component phases">,
+    Option<"enableBackwardPropagation", "enable-backward-propagation",
+           "bool", /*default=*/"true",
+           "Enable backward layout propagation from convert_layout ops">,
+    Option<"enableSmallComponentSolving", "enable-small-component-solving",
+           "bool", /*default=*/"true",
+           "Enable small local layout component solving">,
+    Option<"enableStoreLayoutRematerialization",
+           "enable-store-layout-rematerialization",
+           "bool", /*default=*/"true",
+           "Drop store/atomic writeback convert_layout ops by rematerializing "
+           "their address/mask chains in the value's layout">
+  ];
+#endif // __FLAGTREE_RLC_ENHANCE__
 }
 
 def TritonGPUOptimizeThreadLocality : Pass<"tritongpu-optimize-thread-locality", "mlir::ModuleOp"> {

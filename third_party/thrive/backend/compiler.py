@@ -61,6 +61,10 @@ def _get_dfcacc_path() -> str:
     return "/opt/thrive/bin/dfcacc"
 
 
+def _mod_uses_dshmem(mod_text) -> int:
+    return 1 if "tt_thrive.use_dshmem" in str(mod_text) else 0
+
+
 def _save_content_to_tmp(content, subdir, fname):
     tmp_root = os.path.join(os.getcwd(), "tmp")
     if not os.path.exists(tmp_root):
@@ -153,7 +157,8 @@ class ThriveBackend(BaseBackend):
         return codegen_fns
 
     def load_dialects(self, ctx):
-        pass
+        from triton._C.libtriton import thrive
+        thrive.load_dialects(ctx)
 
     def get_module_map(self) -> Dict[str, ModuleType]:
         from triton.language.extra.thrive import libdevice
@@ -180,67 +185,70 @@ class ThriveBackend(BaseBackend):
         return mod
 
     @staticmethod
-    def make_thrir(mod, metadata, options):
-        metadata["name"] = mod.get_entry_func_name()
-        metadata["num_cores"] = options.num_cores
+    def make_thvtileir(mod, metadata, options):
+        from triton._C.libtriton import thrive
+        pm = ir.pass_manager(mod.context)
+        thrive.passes.add_chiplet_to_thvtile(pm)
+        pm.run(mod, 'tle_to_thvtile')
+
         mod_text = str(mod)
-        passes = [
-            f"--triton-convert-to-triton-thrive=num-cores={options.num_cores}",
-            "--triton-thrive-convert-gemm-op",
-            "--triton-thrive-layout-propagate",
-            "--cse",
-            "--canonicalize",
-            "--symbol-dce",
-            "--triton-thrive-software-pipeline",
-            "--triton-thrive-op-to-linalg",
-            "--linalg-generalize-named-ops",
-            "--triton-thrive-linalg-fuse-elementwise-ops",
-            "--triton-thrive-convert-linalg-to-dsa",
-        ]
-        if options.enable_vectorization:
-            passes.append("--triton-thrive-wrap-vpu")
-            passes.append("--triton-thrive-trans-bf16-vpu")
-        passes.extend([
-            "--symbol-dce",
-            "--canonicalize",
-        ])
+        passes = ["--thvtile-pipeline"]
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "tt.mlir")
-            dst_path = os.path.join(tmpdir, "thr.mlir")
+            src_path = os.path.join(tmpdir, "ttir.mlir")
+            dst_path = os.path.join(tmpdir, "thvtile.mlir")
             Path(src_path).write_text(mod_text)
             thrive_opt = _get_thrive_opt_path()
             subprocess.check_call([thrive_opt, src_path, *passes, "-o", dst_path])
             result = Path(dst_path).read_text()
-            _save_content_to_tmp(result, metadata["name"], "output_thr.mlir")
+            _save_content_to_tmp(result, metadata["name"], "output_thvtileir.mlir")
             return result
 
     @staticmethod
-    def make_thrmir(mod, metadata, options):
+    def make_thvpeir(mod, metadata, options):
         mod_text = str(mod)
-        passes = [
-            "--triton-thrive-wrap-shareop",
-            "--triton-thrive-synchronize",
-            "--triton-thrive-op-to-memref",
-            "--triton-thrive-memref-alloc-hoist",
-            "--triton-thrive-memref-promote-sram",
-            "--triton-thrive-convert-simt-alloc",
-        ]
-        if options.enable_vectorization:
-            passes.append("--triton-thrive-outline-vector-pass")
-        passes.extend([
-            "--triton-thrive-lower-with-thread-id",
-            "--symbol-dce",
-            "--canonicalize",
-            "--cse",
-        ])
+        passes = [f"--thvpe-pipeline=num-cores={options.num_cores}"]
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "thr.mlir")
-            dst_path = os.path.join(tmpdir, "thrm.mlir")
+            src_path = os.path.join(tmpdir, "thvtile.mlir")
+            dst_path = os.path.join(tmpdir, "thvpe.mlir")
             Path(src_path).write_text(mod_text)
             thrive_opt = _get_thrive_opt_path()
             subprocess.check_call([thrive_opt, src_path, *passes, "-o", dst_path])
             result = Path(dst_path).read_text()
-            _save_content_to_tmp(result, metadata["name"], "output_thrm.mlir")
+            _save_content_to_tmp(result, metadata["name"], "output_thvpeir.mlir")
+            return result
+
+    @staticmethod
+    def make_tttir(mod, metadata, options):
+        metadata["num_cores"] = options.num_cores
+        mod_text = str(mod)
+        passes = [
+            f"--tttir-pipeline=num-cores={options.num_cores} "
+            f"enable-vectorization={'true' if options.enable_vectorization else 'false'}",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_path = os.path.join(tmpdir, "thvpe.mlir")
+            dst_path = os.path.join(tmpdir, "tttir.mlir")
+            Path(src_path).write_text(mod_text)
+            thrive_opt = _get_thrive_opt_path()
+            subprocess.check_call([thrive_opt, src_path, *passes, "-o", dst_path])
+            result = Path(dst_path).read_text()
+            _save_content_to_tmp(result, metadata["name"], "output_tttir.mlir")
+            return result
+
+    @staticmethod
+    def make_memref(mod, metadata, options):
+        mod_text = str(mod)
+        passes = [
+            f"--memref-pipeline=enable-vectorization={'true' if options.enable_vectorization else 'false'}",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_path = os.path.join(tmpdir, "tttir.mlir")
+            dst_path = os.path.join(tmpdir, "memref.mlir")
+            Path(src_path).write_text(mod_text)
+            thrive_opt = _get_thrive_opt_path()
+            subprocess.check_call([thrive_opt, src_path, *passes, "-o", dst_path])
+            result = Path(dst_path).read_text()
+            _save_content_to_tmp(result, metadata["name"], "output_memref.mlir")
             return result
 
     @staticmethod
@@ -248,48 +256,21 @@ class ThriveBackend(BaseBackend):
         mod_text = str(mod)
         metadata["fw_preempt"] = 0
         metadata["shared"] = 0
-        metadata["use_dshmem"] = 0
 
-        passes = []
-        if options.enable_vectorization:
-            passes.append("--triton-thrive-tiling-pass")
-            passes.append("--triton-thrive-rewrite-reduction-pass")
-        passes.append("--convert-linalg-to-loops")
-        if options.enable_vectorization:
-            passes.append("--triton-thrive-virtual-vector-pass")
-        passes.extend([
-            "--triton-thrive-memref-alloc-to-global",
-            "--triton-thrive-convert-memref-to-llvm",
-            "--triton-thrive-memory-op-to-llvm",
-            "--convert-scf-to-cf",
-            "--triton-thrive-func-op-to-llvm",
-            "--triton-thrive-dsa-op-to-libdevice",
-            "--triton-thrive-get-program-id-op-to-llvm",
-            "--triton-thrive-convert-fp-to-fp",
-            "--triton-thrive-mulextend-op-to-llvm",
-            "--convert-index-to-llvm",
-            "--memref-expand",
-            "--expand-strided-metadata",
-            "--finalize-memref-to-llvm",
-            "--convert-vector-to-llvm",
-            "--lower-affine",
-            "--convert-scf-to-cf",
-            "--convert-arith-to-llvm",
-            "--convert-math-to-llvm",
-            "--convert-cf-to-llvm",
-            "--convert-func-to-llvm",
-            "--canonicalize",
-            "--cse",
-            "--symbol-dce",
-        ])
+        passes = [
+            f"--llir-pipeline=enable-vectorization={'true' if options.enable_vectorization else 'false'}",
+        ]
         with tempfile.TemporaryDirectory() as tmpdir:
-            thrmir_path = os.path.join(tmpdir, "thrm.mlir")
-            tmp_llvmir_path = os.path.join(tmpdir, "tmp_llvm.mlir")
-            Path(thrmir_path).write_text(mod_text)
             thrive_opt = _get_thrive_opt_path()
-            subprocess.check_call([thrive_opt, thrmir_path, *passes, "-o", tmp_llvmir_path])
+            src_path = os.path.join(tmpdir, "memref.mlir")
+            tmp_llvmir_path = os.path.join(tmpdir, "dfcakernel.mlir")
+            Path(src_path).write_text(mod_text)
+            subprocess.check_call([thrive_opt, src_path, *passes, "-o", tmp_llvmir_path])
 
             tmp_llvm_mod_text = Path(tmp_llvmir_path).read_text()
+
+            metadata["use_dshmem"] = _mod_uses_dshmem(tmp_llvm_mod_text)
+
             _save_content_to_tmp(tmp_llvm_mod_text, metadata["name"], "output_tmp_llvm.mlir")
             tmp_llvm_mod_text = tmp_llvm_mod_text.replace("inbounds|nuw", "inbounds")
             tmp_llvm_mod_text = re.sub(r'llvm.intr.assume\s+(%\d+)\s*:\s*i1', r'"llvm.intr.assume"(\1) : (i1) -> ()',
@@ -299,7 +280,10 @@ class ThriveBackend(BaseBackend):
 
             llvmir_path = os.path.join(tmpdir, "llvm.mlir")
             dfca_mlir_opt = _get_dfca_mlir_opt_path()
-            subprocess.check_call([dfca_mlir_opt, tmp_llvmir_path, "--dfcakernel-to-llvm-pipeline", "-o", llvmir_path])
+            subprocess.check_call([
+                dfca_mlir_opt, tmp_llvmir_path, "--dfcakernel-to-llvm-pipeline=enable-sync-vpu-kernel=false", "-o",
+                llvmir_path
+            ])
             llvm_mod_text = Path(llvmir_path).read_text()
             _save_content_to_tmp(tmp_llvm_mod_text, metadata["name"], "output_llvm.mlir")
             return llvm_mod_text
@@ -339,7 +323,9 @@ class ThriveBackend(BaseBackend):
 
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["thrir"] = lambda src, metadata: self.make_thrir(src, metadata, options)
-        stages["thrmir"] = lambda src, metadata: self.make_thrmir(src, metadata, options)
+        stages["thvtileir"] = lambda src, metadata: self.make_thvtileir(src, metadata, options)
+        stages["thvpeir"] = lambda src, metadata: self.make_thvpeir(src, metadata, options)
+        stages["tttir"] = lambda src, metadata: self.make_tttir(src, metadata, options)
+        stages["memref"] = lambda src, metadata: self.make_memref(src, metadata, options)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options)
         stages["dfcafb"] = lambda src, metadata: self.make_fatbin(src, metadata, options)

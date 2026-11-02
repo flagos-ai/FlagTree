@@ -122,7 +122,7 @@ class IRSource:
         return self.module
 
     def parse_options(self):
-        # Backends that select a whole pipeline from is_sdnn (houyi) have
+        # Backends that select a whole pipeline from is_sdnn have
         # mutually exclusive intermediate extensions, so the entry extension
         # pins the pipeline by itself. Scanning the IR text cannot do that job:
         # a .ttxir has its dots lowered to sdnn/linalg ops already, and picking
@@ -359,7 +359,8 @@ def compile(src, target=None, options=None, _env_vars=None):
         # If TRITON_STORE_BINARY_ONLY is 1, only store binary/json
         if (not store_only_binary) or (ext in ("cubin", "hsaco", "xpubin", "elf", "json")):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
-        if fn_dump_manager is not None:
+        if fn_dump_manager is not None and (not store_only_binary
+                                            or ext in ("cubin", "hsaco", "xpubin", "elf", "json")):
             fn_dump_manager.put(next_module, ir_filename)
             if ext == "cubin":
                 sass = get_sass(next_module)
@@ -417,11 +418,44 @@ def compile(src, target=None, options=None, _env_vars=None):
             for ext, compile_ir in stage_items[first_stage:]:
                 module = run_stage(ext, compile_ir, module)
         else:
+            # Retuning may leave LLVM IR unchanged. Avoid re-running the expensive
+            # ELF codegen for identical input while preserving the last cache entry.
+            prev_llir_key, prev_elf = None, None
             while True:
                 cur_module = module
                 for ext, compile_ir in stage_items[first_stage:make_elf_stage_index + 1]:
-                    cur_module = run_stage(ext, compile_ir, cur_module)
-                if backend.is_elf_stack_size_oob(cur_module):
+                    if ext != "elf":
+                        cur_module = run_stage(ext, compile_ir, cur_module)
+                        continue
+                    llir_text = str(cur_module)
+                    llir_key = hashlib.sha256(llir_text.encode()).hexdigest() if llir_text else None
+                    if llir_key is not None and llir_key == prev_llir_key:
+                        cur_module = prev_elf
+                    else:
+                        cur_module = run_stage(ext, compile_ir, cur_module)
+                        prev_llir_key, prev_elf = llir_key, cur_module
+                # make_ttxir determines is_tle; TRITON_TLE_STACK_MARGIN is
+                # opt-in headroom and only applies to that path.
+                tle_margin = (int(os.environ.get("TRITON_TLE_STACK_MARGIN", 0)) if metadata.get("is_tle") else 0)
+                if backend.is_elf_stack_size_oob(cur_module, tle_margin):
+                    if metadata.get("is_tle") and not metadata.get("tle_relieve_pressure"):
+                        metadata["tle_relieve_pressure"] = True
+                        module = src.make_ir(target, options, codegen_fns, module_map, context)
+                        continue
+                    # A smaller vrf_budget asks unroll control to slice finer.
+                    if metadata.get("is_tle") and metadata["vrf_budget"] > 4:
+                        metadata["vrf_budget"] = max(4, metadata["vrf_budget"] // 2)
+                        module = src.make_ir(target, options, codegen_fns, module_map, context)
+                        continue
+                    if metadata.get("is_tle"):
+                        if not backend.is_elf_stack_size_oob(cur_module):
+                            # The card's bare budget fits, only opt-in margin fails.
+                            module = cur_module
+                            break
+                        raise RuntimeError("TLE kernel stack is over the local-memory budget "
+                                           "after pressure relief and vrf_budget escalation "
+                                           f"(vrf_budget={metadata['vrf_budget']}); "
+                                           "buffer_size_limit does not apply to tle.gpu.alloc.")
                     if metadata["buffer_size_limit"] == 16:
                         raise RuntimeError("Failed to tune buffer size.")
                     metadata["buffer_size_limit"] = metadata["buffer_size_limit"] // 2

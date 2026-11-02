@@ -1393,12 +1393,14 @@ public:
                                              selectOp.getCondition(),
                                              fatPtrTrue[1], fatPtrFalse[1]);
 
-    assert((fatPtrs.at({fatPtrTrue[0], fatPtrTrue[1]}) ==
-            fatPtrs.at({fatPtrFalse[0], fatPtrFalse[1]})) &&
-           "expected can narrow to be the same for both fatPtrT and fatPtrF");
+    // The two arms may legitimately differ (e.g. canNarrow), as for scf.if:
+    // merge them conservatively instead of requiring them to be equal.
+    FatPointers::FatPtrAttrs mergedAttrs = FatPointers::FatPtrAttrs::intersect(
+        fatPtrs.at({fatPtrTrue[0], fatPtrTrue[1]}),
+        fatPtrs.at({fatPtrFalse[0], fatPtrFalse[1]}));
 
     rewriter.replaceOpWithMultiple(selectOp, {{newBase, newOffset}});
-    fatPtrs[{newBase, newOffset}] = fatPtrs.at({fatPtrTrue[0], fatPtrTrue[1]});
+    fatPtrs[{newBase, newOffset}] = mergedAttrs;
 
     return success();
   }

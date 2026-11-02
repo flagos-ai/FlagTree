@@ -7,6 +7,4 @@ TLE_SUPPORTED_PRIMITIVES = [
     "make_tensor_view",
     "make_partition_view",
     "make_view",
-    "gpu.alloc",
-    "gpu.local_ptr",
 ]

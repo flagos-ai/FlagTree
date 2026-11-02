@@ -27,6 +27,7 @@
 #include "triton-shared/AnalysisStructured/PtrAnalysis.h"
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -46,10 +47,6 @@ namespace mlir::triton {
 
 namespace {
 
-static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
-  return ptr::GenericSpaceAttr::get(ctx);
-}
-
 class TritonFunctionSignatureConverter : public TypeConverter {
 public:
   TritonFunctionSignatureConverter() {
@@ -57,15 +54,17 @@ public:
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
       auto *ctx = ptrType.getContext();
-      return UnrankedMemRefType::get(ptrType.getPointeeType(),
-                                     getPtrBridgeMemorySpace(ctx));
+      return UnrankedMemRefType::get(
+          ptrType.getPointeeType(),
+          mlir::triton::getDefaultBridgeMemorySpace(ctx));
     });
     addConversion([](RankedTensorType tensorType) -> std::optional<Type> {
       if (auto ptrType =
               dyn_cast<triton::PointerType>(tensorType.getElementType())) {
         auto *ctx = tensorType.getContext();
         return MemRefType::get(tensorType.getShape(), ptrType.getPointeeType(),
-                               AffineMap(), getPtrBridgeMemorySpace(ctx));
+                               AffineMap(),
+                               mlir::triton::getDefaultBridgeMemorySpace(ctx));
       }
       return std::nullopt;
     });

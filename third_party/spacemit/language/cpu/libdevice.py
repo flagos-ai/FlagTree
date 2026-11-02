@@ -108,6 +108,16 @@ def erf(arg0, _semantic=None):
 
 @core.extern
 def pow(arg0, arg1, _semantic=None):
+    if _semantic is not None:
+        # binary_op_type_checking_impl only routes numbers.Number through
+        # to_tensor; constexpr-wrapped constants must be unwrapped first or
+        # its `.type.scalar` access raises on constexpr_type (e.g. pow(x, 2)
+        # inside @triton.jit, where 2 arrives as constexpr[2]).
+        if isinstance(arg0, core.constexpr):
+            arg0 = arg0.value
+        if isinstance(arg1, core.constexpr):
+            arg1 = arg1.value
+        arg0, arg1 = _semantic.binary_op_type_checking_impl(arg0, arg1)
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("linalg.powf", core.dtype("fp32")),
@@ -167,35 +177,64 @@ def sin(arg0, _semantic=None):
         }, is_pure=True, _semantic=_semantic)
 
 
-# TODO: the following lower implementation
 @core.extern
 def acos(arg0, _semantic=None):
-    return core.tensor(_semantic.create_acos(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.acos", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.acos", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.acos", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def acosh(arg0, _semantic=None):
-    return core.tensor(_semantic.create_acosh(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.acosh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.acosh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.acosh", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def asin(arg0, _semantic=None):
-    return core.tensor(_semantic.create_asin(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.asin", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.asin", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.asin", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def asinh(arg0, _semantic=None):
-    return core.tensor(_semantic.create_asinh(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.asinh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.asinh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.asinh", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def atan(arg0, _semantic=None):
-    return core.tensor(_semantic.create_atan(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.atan", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.atan", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.atan", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def atanh(arg0, _semantic=None):
-    return core.tensor(_semantic.create_atanh(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.atanh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.atanh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.atanh", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -210,7 +249,12 @@ def atan2(arg0, arg1, _semantic=None):
 
 @core.extern
 def cbrt(arg0, _semantic=None):
-    return core.tensor(_semantic.create_cbrt(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.cbrt", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.cbrt", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.cbrt", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 # @core.extern
@@ -220,32 +264,62 @@ def cbrt(arg0, _semantic=None):
 
 @core.extern
 def cosh(arg0, _semantic=None):
-    return core.tensor(_semantic.create_cosh(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.cosh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.cosh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.cosh", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def exp2(arg0, _semantic=None):
-    return core.tensor(_semantic.builder.create_exp2(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.exp2", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.exp2", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.exp2", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def expm1(arg0, _semantic=None):
-    return core.tensor(_semantic.create_expm1(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.expm1", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.expm1", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.expm1", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def log2(arg0, _semantic=None):
-    return core.tensor(_semantic.create_log2(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.log2", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.log2", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.log2", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def log10(arg0, _semantic=None):
-    return core.tensor(_semantic.create_log10(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.log10", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.log10", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.log10", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def log1p(arg0, _semantic=None):
-    return core.tensor(_semantic.create_log1p(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.log1p", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.log1p", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.log1p", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 # @core.extern
@@ -255,12 +329,31 @@ def log1p(arg0, _semantic=None):
 
 @core.extern
 def sinh(arg0, _semantic=None):
-    return core.tensor(_semantic.create_sinh(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.sinh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.sinh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.sinh", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def tan(arg0, _semantic=None):
-    return core.tensor(_semantic.create_tan(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.tan", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.tan", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.tan", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+@core.extern
+def ffs(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("int32"), ): ("math.ffs", core.dtype("int32")),
+            (core.dtype("int64"), ): ("math.ffs", core.dtype("int64")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern

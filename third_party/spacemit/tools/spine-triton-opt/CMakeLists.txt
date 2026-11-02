@@ -9,6 +9,7 @@ llvm_update_compile_flags(spine-triton-opt)
 target_link_libraries(spine-triton-opt PRIVATE
   TritonTransforms
   TritonSharedAnalysis
+  TritonNVIDIAGPUToLLVM
   ProtonIR
   ${dialect_libs}
   ${conversion_libs}

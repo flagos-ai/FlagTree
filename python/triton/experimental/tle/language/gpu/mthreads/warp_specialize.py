@@ -61,6 +61,8 @@ def partition_function_caller(generator):
 def create_op(builder, result_types, worker_num_warps):
     # MUSA keeps explicit captures on the isolated partitions holder rather
     # than on the outer ttg.warp_specialize operation.
+    # Keep the established two-argument call for compatibility with an older
+    # libtriton paired with newer Python sources.
     return builder.create_warp_specialize(result_types, worker_num_warps)
 
 

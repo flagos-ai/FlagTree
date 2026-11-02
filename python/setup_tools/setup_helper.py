@@ -120,6 +120,11 @@ def get_generated_backend_packages(backend):
             "include.cooperative_groups.details",
             "include.crt",
             "lib.cupti",
+            "tileir_cuda",
+            "tileir_cuda.bin",
+            "tileir_cuda.nvvm",
+            "tileir_cuda.nvvm.lib64",
+            "tileir_cuda.nvvm.libdevice",
         ),
         "xpu": (
             "xpu3",
@@ -265,16 +270,16 @@ class FlagPrismSetup:
         self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
         # FlagPrism: register all supported integration backends together.
-        supported_backends = {"ascend", "iluvatar", "mthreads"}
+        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
-        if self.enabled and backend not in supported_backends:
-            # FlagPrism: report the newly supported mthreads backend.
+        # FlagPrism: allow the default NVIDIA build and supported named backends.
+        if self.enabled and backend and backend not in supported_backends:
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, or enflame.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
@@ -385,7 +390,11 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
         triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
     os.makedirs(triton_pkg_dir, exist_ok=True)
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
-    dest_file.write_text(flagtree_backend)
+    # FLAGTREE_BACKEND=tileir selects the multi-backend build configuration.
+    # An empty runtime marker lets FlagTree detect NVIDIA as the active hardware
+    # backend; eligible kernels are then routed to TileIR individually.
+    runtime_backend = "" if flagtree_backend == "tileir" else flagtree_backend
+    dest_file.write_text(runtime_backend)
 
 
 def write_backend_file_to_build_lib(build_lib):
@@ -455,6 +464,13 @@ class FlagTreeCache:
         empty = (not os.path.exists(_path)) or (origin_file_path and not os.path.exists(origin_file_path))
         if empty:
             return False
+        # A cache entry may be a **directory**: `store()` downloads to the same
+        # path it later unpacks into, so a staged package stays unpacked.  That
+        # is a cache hit -- but `_md5()` on a directory raises
+        # `IsADirectoryError`, which made every install *after the first one*
+        # fail.  Directory entries are version-checked by the caller, so report the hit.
+        if os.path.isdir(_path):
+            return True
         if md5_digest is None:
             return True
         else:
@@ -506,25 +522,29 @@ class FlagTreeCache:
         if is_url:
             cache_path = self.cache_files[file]
             need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
-            # Version check: re-download if cached version doesn't match expected
+            # Marker is a sibling dotfile: packages ship their own version.txt; a cache without one is staged -> adopt
+            marker_file = Path(path) / f".{file}.version"
             if not need_download and version is not None:
-                version_file = Path(cache_path) / "version.txt"
-                if version_file.exists():
-                    cached_ver = version_file.read_text().strip()
+                if marker_file.exists():
+                    cached_ver = marker_file.read_text().strip()
                     if cached_ver != version:
                         print(
                             f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
                         )
                         shutil.rmtree(cache_path)
                         need_download = True
-                # If no version.txt (legacy cache), keep using it
+                else:
+                    legacy_file = Path(cache_path) / "version.txt"
+                    legacy_ver = legacy_file.read_text().strip() if legacy_file.exists() else None
+                    if legacy_ver != version:
+                        note = f" (its version.txt says '{legacy_ver}')" if legacy_ver else ""
+                        print(f"[cache] no version marker for '{file}': adopting the cache as "
+                              f"'{version}'{note}; remove {cache_path} to force a re-download")
+                    marker_file.write_text(version)
             if need_download:
                 downloader.download(url=url, path=path, file_name=file)
                 if version is not None:
-                    cache_path = self.cache_files[file]
-                    version_file = Path(cache_path) / "version.txt"
-                    if os.path.isdir(cache_path):
-                        version_file.write_text(version)
+                    marker_file.write_text(version)
 
         if copy_dst_path is not None:
             file_lists = [file] if files is None else list(files)
@@ -676,6 +696,12 @@ def get_spec_packages():
 
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
+
+
+def generate_backend_intrinsic_tables():
+    hook_call = get_hook_instance("generate_intrinsic_tables")
+    if hook_call:
+        hook_call()
 
 
 def get_package_data(backends):

@@ -1,5 +1,6 @@
 #include "triton/Conversion/TritonXPUToLLVM/TypeConverter.h" // TritonXPUToLLVMTypeConverter
 #include "triton/Dialect/TritonGPU/IR/Types.h"               // MemDescType
+#include "triton/Dialect/TritonXPU/IR/Dialect.h" // getMemDescAddrSpace
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -23,9 +24,12 @@ TritonXPUToLLVMTypeConverter::TritonXPUToLLVMTypeConverter(
   addConversion([ctx](triton::TensorDescType type) -> std::optional<Type> {
     return LLVM::LLVMPointerType::get(ctx, 1);
   });
-  // TLE: MemDescType → opaque pointer (LM base pointer)
+  // TLE: MemDescType → opaque pointer into the buffer's own memory space.
+  // `#ttg.shared_memory` means per-core LM (0) on XPU; only the out-of-tree
+  // `#triton_xpu.smem` is the cluster-shared block (2).
   addConversion([ctx](triton::gpu::MemDescType type) -> std::optional<Type> {
-    return LLVM::LLVMPointerType::get(ctx, 0);
+    return LLVM::LLVMPointerType::get(ctx,
+                                      triton::xpu::getMemDescAddrSpace(type));
   });
   addConversion([&](mlir::Float8E4M3FNUZType type) -> std::optional<Type> {
     return IntegerType::get(type.getContext(), 8);

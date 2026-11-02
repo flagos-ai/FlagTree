@@ -59,7 +59,7 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --max-model-len 32768 \
     --trust-remote-code \
     --limit-mm-per-prompt '{"image": 1}' \
-    --gpu-memory-utilization 0.8 \
+    --gpu-memory-utilization 0.65 \
     --dtype bfloat16 2>&1 >vllm.log &
 echo "$!" >pid.txt
 

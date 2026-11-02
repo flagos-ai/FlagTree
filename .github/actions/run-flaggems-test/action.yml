@@ -43,19 +43,34 @@ inputs:
     required: false
     default: ''
   run-script:
-    description: 'Path to the test runner script (relative to flaggems-path)'
-    required: true
-    default: 'tools/ci/ci_run_tests.py'
-  skip-file:
-    description: 'Path to the skip list YAML (relative to flaggems-path)'
-    required: true
-    default: 'tools/ci/skip_list.yaml'
+    description: >-
+      Test runner script. Defaults to the copy in the FlagTree checkout, which
+      runs in place and is given --flaggems-path; the skip list is taken from
+      the asset directory, so neither needs copying into the clone.
+    required: false
+    default: ''
   first-parameter-only:
     description: 'Pass --first-parameter-only to test runner'
     required: true
     default: 'true'
   pre-command:
     description: 'Multiline script to run before FlagGems tests (e.g. source env, set LD_LIBRARY_PATH)'
+    required: false
+    default: ''
+  flaggems-tag:
+    description: >-
+      FlagGems release under test. Selects the asset directory
+      .github/workflows/gems/<flaggems-tag>/ for conftest.py and skip_list.
+    required: true
+  backend:
+    description: >-
+      Backend name, used to pick skip_list/<backend>.yaml when it exists.
+    required: true
+  assets-dir:
+    description: >-
+      Directory holding the FlagGems CI assets, normally the checked-out
+      .github/workflows/gems. Must be an absolute path: the test step runs
+      with the FlagGems clone as its working directory, not the workspace.
     required: false
     default: ''
 
@@ -103,6 +118,10 @@ runs:
       working-directory: ${{ inputs.flaggems-path }}
       env:
         PRE_COMMAND: ${{ inputs.pre-command }}
+        FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
+        BACKEND: ${{ inputs.backend }}
+        ASSETS_DIR: ${{ inputs.assets-dir }}
+        RUN_SCRIPT: ${{ inputs.run-script }}
       run: |
         set -x
 
@@ -115,22 +134,54 @@ runs:
         # Set PYTHONPATH to the FlagGems source directory so script can run without installing FlagGems
         export PYTHONPATH="${{ inputs.flaggems-path }}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-        cp /root/flaggems_ci/script/conftest.py tests/conftest.py
-        cp -raf /root/flaggems_ci/script/ci tools
+        # FlagTree-side CI assets. Absolute paths throughout: this step's
+        # working directory is the FlagGems clone, not the workspace.
+        ASSETS="${ASSETS_DIR:-${GITHUB_WORKSPACE}/.github/workflows/gems}"
+        VERSION_DIR="${ASSETS}/${FLAGGEMS_TAG}"
+
+        if [[ ! -d "${VERSION_DIR}" ]]; then
+          echo "::error::No CI assets for FlagGems tag '${FLAGGEMS_TAG}'."
+          echo "Expected ${VERSION_DIR} to exist."
+          echo "Add .github/workflows/gems/${FLAGGEMS_TAG}/ with conftest.py"
+          echo "and skip_list/default.yaml before testing against this tag."
+          exit 1
+        fi
+
+        # conftest.py must be installed into the clone: pytest only picks it up
+        # from the tests directory. It is version-specific, and without it no
+        # operator markers are collected, leaving a summary.json that looks
+        # plausible but is incomplete.
+        cp "${VERSION_DIR}/conftest.py" tests/conftest.py
 
         TEST_OUTPUT_DIR="${{ steps.vars.outputs.test-output-dir }}"
         rm -rf "$TEST_OUTPUT_DIR" || true
         mkdir -p "$TEST_OUTPUT_DIR"
 
-        # Build test runner command
-        CMD="python ${{ inputs.run-script }} --gpus ${{ inputs.gpus }} --output-dir $TEST_OUTPUT_DIR"
+        # skip_list: the default, then a backend override when one exists.
+        # Written into the output dir, after it is recreated above, so the list
+        # the run actually used is kept alongside its results.
+        SKIP_FILE="${TEST_OUTPUT_DIR}/skip_list.yaml"
+        cp "${VERSION_DIR}/skip_list/default.yaml" "${SKIP_FILE}"
+        BACKEND_SKIP="${VERSION_DIR}/skip_list/${BACKEND}.yaml"
+        if [[ -f "${BACKEND_SKIP}" ]]; then
+          cp "${BACKEND_SKIP}" "${SKIP_FILE}"
+          echo "Using backend skip list: ${BACKEND}.yaml"
+        else
+          echo "Using default skip list (no ${BACKEND}.yaml)"
+        fi
+
+        # Build test runner command. The script runs from the FlagTree
+        # checkout, so it is told where FlagGems lives.
+        RUN_SCRIPT="${RUN_SCRIPT:-${ASSETS}/ci/ci_run_tests.py}"
+        CMD="python ${RUN_SCRIPT} --gpus ${{ inputs.gpus }} --output-dir $TEST_OUTPUT_DIR"
+        CMD="$CMD --flaggems-path ${{ inputs.flaggems-path }}"
 
         if [ "${{ inputs.first-parameter-only }}" = "true" ]; then
           CMD="$CMD --first-parameter-only"
         fi
 
-        if [ -f "${{ inputs.skip-file }}" ]; then
-          CMD="$CMD --skip-file ${{ inputs.skip-file }}"
+        if [ -f "${SKIP_FILE}" ]; then
+          CMD="$CMD --skip-file ${SKIP_FILE}"
         fi
 
         echo "Running: $CMD"

@@ -12,8 +12,10 @@
 #include "triton/Dialect/TritonXPU/Transforms/TritonXPUConversion.h" // TritonXPUTypeConverter + TritonXPUConversionTarget
 #include "llvm/Support/ErrorHandling.h" // TODO[dyq]: Check All Pattern And Remove It
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DECL_CONVERTTRITONTOTRITONXPU
+#define GEN_PASS_DEF_CONVERTTRITONTOTRITONXPU
 #include "triton/Conversion/TritonToTritonXPU/Passes.h.inc"
+using ::impl::ConvertTritonToTritonXPUBase;
 // clang-format on
 
 namespace {

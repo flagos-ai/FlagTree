@@ -158,18 +158,20 @@ public:
     auto mod = op->getParentOfType<ModuleOp>();
     int numThreadsPerWarp =
         triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
-    assert(numThreadsPerWarp == 32 ||
-           numThreadsPerWarp == 64 &&
-               "Only supports 32 or 64 threads per warp");
+    // The QY2 wave is 128 lanes, while the MUSA ballot intrinsic exposes a
+    // 32-bit mask for one 32-lane subgroup.  Run the warp-local bit counting
+    // over 32-lane ballot groups and combine the four groups in shared memory.
+    // Other targets keep their native 32/64-lane behavior.
+    int ballotThreadsPerWarp = numThreadsPerWarp > 64 ? 32 : numThreadsPerWarp;
     int numWarps = triton::gpu::lookupNumWarps(op);
     // Pad out the bins so that we have at least one bin per thread within a
     // warp.
-    numBins = std::max(numBins, numThreadsPerWarp);
+    numBins = std::max(numBins, ballotThreadsPerWarp);
     Value threadId = getThreadId(rewriter, loc);
     auto srcType = op.getSrc().getType();
     // First compute a warp local histogram based on values owned by each warps.
     SmallVector<Value> warpLevelHistogram = computeWarpLevelHistogram(
-        loc, srcType, srcValues, maskValues, numBins, numThreadsPerWarp,
+        loc, srcType, srcValues, maskValues, numBins, ballotThreadsPerWarp,
         threadId, rewriter, targetInfo);
 
     // Then use atomic to update the histogram in shared memory.
@@ -187,7 +189,7 @@ public:
       innerDimIndices.push_back(indices[i][0]);
     SmallVector<Value> histogramValue = computeCrossWarpHistogram(
         loc, rewriter, srcType, baseSharedMemPtr, warpLevelHistogram, numBins,
-        numThreadsPerWarp, innerDimIndices, threadId, numWarps);
+        ballotThreadsPerWarp, innerDimIndices, threadId, numWarps);
 
     // Depending on the layout, some threads may have duplicate data. We can
     // account for this by calculating a "replication factor" and dividing the

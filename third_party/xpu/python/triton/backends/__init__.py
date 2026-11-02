@@ -35,6 +35,30 @@ class Backend:
     driver: Type[DriverBase]
 
 
+# ===-------------------- For Triton XPU -----------------------===
+# nvidia/xpu and the alternate cluster backends all report is_active()==True on
+# CUDA-available systems, so exactly one backend group must be selected
+# explicitly.
+# TRITON_XPU_ARCH: 3 (default) -> xpu (KL2 / sdnn); 4 and 5 -> the alternate
+#                  cluster backends.
+_XPU_ARCH_BACKEND = {4: "xcn", 5: "jupiter"}
+_SELECTABLE_BACKENDS = ("nvidia", "amd", "xpu", "xcn", "jupiter")
+
+
+def _select_xpu_backend(backends: dict[str, Backend]) -> dict[str, Backend]:
+    arch = int(os.environ.get("TRITON_XPU_ARCH", "3"))
+    if os.environ.get("TRITON_ENABLE_XCN_BACKEND", False) and arch < 4:
+        arch = 4
+    keep = _XPU_ARCH_BACKEND.get(arch, "xpu")
+    for name in _SELECTABLE_BACKENDS:
+        if name != keep:
+            backends.pop(name, None)
+    return backends
+
+
+# ===-----------------------------------------------------------===
+
+
 def _discover_backends() -> dict[str, Backend]:
     backends = dict()
     # Fast path: optionally skip entry point discovery (which can be slow) and
@@ -52,7 +76,8 @@ def _discover_backends() -> dict[str, Backend]:
             driver = importlib.import_module(f"triton.backends.{name}.driver")
             backends[name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),
                                      _find_concrete_subclasses(driver, DriverBase))
-        return backends
+
+        return _select_xpu_backend(backends)
 
     # Default path: discover via entry points for out-of-tree/downstream plugins.
     for ep in entry_points().select(group="triton.backends"):
@@ -60,7 +85,8 @@ def _discover_backends() -> dict[str, Backend]:
         driver = importlib.import_module(f"{ep.value}.driver")
         backends[ep.name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),  # type: ignore
                                     _find_concrete_subclasses(driver, DriverBase))  # type: ignore
-    return backends
+
+    return _select_xpu_backend(backends)
 
 
 backends: dict[str, Backend] = _discover_backends()

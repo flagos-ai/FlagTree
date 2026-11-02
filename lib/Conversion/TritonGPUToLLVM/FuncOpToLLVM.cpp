@@ -196,6 +196,21 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
       newFuncOp.setPassthroughAttr(
           ArrayAttr::get(ctx, rewriter.getStringAttr("noinline")));
       newFuncOp.setLinkage(LLVM::Linkage::Internal);
+      // Adapted from https://github.com/triton-lang/triton/pull/9366 and the
+      // follow-up https://github.com/triton-lang/triton/pull/11673.
+      // The #9366 implementation originally preserved only an explicit
+      // ttg.num-warps attribute:
+      //
+      // if (Attribute numWarps =
+      //         funcOp->getAttr(triton::gpu::AttrNumWarpsName))
+      //   newFuncOp->setAttr("ws_num_warps", numWarps);
+      //
+      // Following #11673, record the effective count for every non-kernel
+      // Triton function. Worker helpers retain their explicit count, while
+      // helpers called by the default group fall back to the module count.
+      newFuncOp->setAttr(
+          "ws_num_warps",
+          rewriter.getI32IntegerAttr(triton::gpu::lookupNumWarps(funcOp)));
     }
 
     // Determine the actual number of required warps.

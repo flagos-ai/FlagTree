@@ -23,7 +23,7 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union  # flagtree
 from types import ModuleType
 
 
@@ -88,6 +88,12 @@ class BaseBackend(metaclass=ABCMeta):
     def make_ir(self, src, options, codegen_fns, module_map, context):
         """Create the initial IR module for this backend."""
         return src.make_ir(self.target, options, codegen_fns, module_map, context)
+
+    # flagtree tileir: allow backend-specific TensorDescriptor cache specialization.
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        """Return backend-specific TensorDescriptor cache-key attributes."""
+        return None
 
     @staticmethod
     @abstractmethod
