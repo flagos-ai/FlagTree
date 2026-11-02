@@ -70,8 +70,8 @@ struct TritonHistogramToHFusionConversion
 
     auto numBinsAttr = rewriter.getI64IntegerAttr(numBins);
 
-    auto newOp = rewriter.create<hfusion::HistogramOp>(loc, resultType, input,
-                                                       numBinsAttr, Value());
+    auto newOp = rewriter.create<hfusion::HistogramOp>(
+        loc, resultType, input, numBinsAttr, op.getMask());
 
     rewriter.replaceOp(op, newOp.getResult());
     return success();

@@ -67,3 +67,48 @@ def test_histogram_uint(M, N, ncore, dtype):
     y_ref = torch.empty(N, dtype=eval(f'torch.{dtype}'), device="npu")
     histogram_kernel[(ncore, )](x, y_ref, M=M, N=N)
     test_common.validate_cmp(dtype, y_cal, y_ref)
+
+
+@triton.jit
+def masked_histogram_kernel(x_ptr, mask_ptr, out_ptr, NUMEL: tl.constexpr, NUM_BINS: tl.constexpr,
+                            BLOCK_SIZE: tl.constexpr, USE_MASK: tl.constexpr):
+    offsets = tl.arange(0, BLOCK_SIZE)
+    # Padding deliberately falls inside a valid bin so losing the histogram
+    # mask cannot be hidden by an out-of-range sentinel.
+    values = tl.load(x_ptr + offsets, mask=offsets < NUMEL, other=0)
+    if USE_MASK:
+        active = tl.load(mask_ptr + offsets, mask=offsets < NUMEL, other=0) != 0
+        result = tl.histogram(values, NUM_BINS, mask=active)
+    else:
+        result = tl.histogram(values, NUM_BINS)
+    tl.store(out_ptr + tl.arange(0, NUM_BINS), result)
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("num_bins", [16, 256])
+@pytest.mark.parametrize("mask_mode,numel", [
+    ("none", 256),
+    ("all_true", 256),
+    ("all_false", 256),
+    ("mixed", 256),
+    ("mixed", 200),
+    ("all_true", 1),
+    ("all_true", 0),
+])
+def test_histogram_mask(dtype, num_bins, mask_mode, numel):
+    block_size = 256
+    values = ((torch.arange(block_size) * 7) % num_bins).to(dtype)
+    active = torch.ones(block_size, dtype=torch.int32)
+    if mask_mode == "all_false":
+        active.zero_()
+    elif mask_mode == "mixed":
+        active = (torch.arange(block_size) % 3 == 0).to(torch.int32)
+    active[numel:] = 0
+    selected = values if mask_mode == "none" else values[active.bool()]
+    expected = torch.bincount(selected, minlength=num_bins).to(torch.int32)
+    output = torch.empty(num_bins, dtype=torch.int32, device="npu")
+
+    masked_histogram_kernel[(1, )](values.npu(), active.npu(), output, NUMEL=numel, NUM_BINS=num_bins,
+                                   BLOCK_SIZE=block_size, USE_MASK=mask_mode != "none")
+
+    torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
