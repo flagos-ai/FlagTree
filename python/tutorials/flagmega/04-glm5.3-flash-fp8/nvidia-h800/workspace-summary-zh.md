@@ -1,6 +1,6 @@
 # 工作区总结（2026-11-02）
 
-当前分支已 rebase 到 main `7f25177d`。首次 rebase 的完整四卡 Gold 和硬件检查通过，八段对照的性能门槛失败：FlagMega 在四上下文比 vLLM 慢 1.37%–6.87%。最终异步填充修复已通过 48 项回归、113 项 GPU 测试和 158 项 MLIR 测试；完整 Gold 和八段数值/硬件审计已通过，最终 TPOT 为 6.421/6.515/6.689/6.910 ms，比 vLLM 慢 1.08%/3.02%/4.24%/6.63%，性能门槛失败。原始输入 fresh 重建已真实退出 0，输出尚未作为性能候选。详见[main rebase 验收](main-rebase-acceptance-20261102-zh.md)。
+当前分支已 rebase 到 main `65df098bf`，完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
 
 下文保存 rebase 前的累计开发状态和历史验收，不代表最新源码已通过整模性能门槛，也不代表所有后端或全量测试通过。
 

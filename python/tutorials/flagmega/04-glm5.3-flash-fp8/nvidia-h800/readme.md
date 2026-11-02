@@ -2,10 +2,9 @@
 
 累计改动、验证结果及未完成项见[工作区总结](workspace-summary-zh.md)。
 
-最新源码已 rebase 到 main `7f25177d`，结果见[main rebase 验收](main-rebase-acceptance-20261102-zh.md)。
-首次 rebase 版本完整 Gold 和硬件验收通过，四上下文 TPOT 比 vLLM 慢 1.37%–6.87%，性能门槛失败。
-后续异步填充根因修复通过 48 项回归、113 项 GPU 测试和 158 项 MLIR 测试；最终完整四卡 Gold 和八段数值/硬件审计通过；四上下文 TPOT 为 6.421/6.515/6.689/6.910 ms，比 vLLM 慢 1.08%/3.02%/4.24%/6.63%，性能门槛失败。
-原始输入 fresh 重建的物理选型根因已修复，全量流水真实退出 0；fresh 输出尚未作为正式性能候选。
+最新源码已 rebase 到 main `65df098bf`，完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
+
+前一 main 7f/v18 的数值和硬件验收通过、性能失败，见[前轮记录](main-rebase-acceptance-20261102-zh.md)。原始输入 fresh 重建已因果修复并完成正常全量流水，fresh 输出未作正式性能候选。
 
 以下为 rebase 前历史结果。合并后 strict 数值失配已修复：当时源码在原四张 H800、实测1980MHz、CUDA Graph下，
 完整100请求、全状态及四上下文Gold通过独立核验；26入口/228调用零spill，strict与双流保持。

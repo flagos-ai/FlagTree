@@ -1,6 +1,8 @@
-# Main rebase 与 H800 重新验收
+# Main 7f/v18 的历史 H800 验收
 
-当前基底：main 7f25177d2af4eb49dd8193fec31e03070ea13c38；首次完整性能对照基底为 9cc00c5188bb711d1a6c409849c13062bef2ea5c，main 新增提交仅涉及 CI 记录格式。保留分支 merge commit 的最终修改，原生 TLE C++ 修改仍受 __TLE__ 保护；reports/flagmega 已删除。验收使用当前 Python 源码和正常 CMake 构建的独立 Core，不覆盖公开或历史 Core。
+本页保留前轮 main 7f/v18 的历史结果。最新源码已 rebase 到 main `65df098bf`，完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
+
+本页历史基底：main 7f25177d2af4eb49dd8193fec31e03070ea13c38；首次完整性能对照基底为 9cc00c5188bb711d1a6c409849c13062bef2ea5c，main 新增提交仅涉及 CI 记录格式。保留分支 merge commit 的最终修改，原生 TLE C++ 修改仍受 __TLE__ 保护；reports/flagmega 已删除。验收使用当前 Python 源码和正常 CMake 构建的独立 Core，不覆盖公开或历史 Core。
 
 ## 修复与最小复现
 

@@ -1,6 +1,6 @@
 # N8 / join4 完整 TP4 验收（2026-11-02）
 
-本页是 rebase 前的历史结果。最新 main 基底的首次八段对照性能失败；最终异步填充修复的完整 Gold、八段数值和硬件审计通过，性能门槛失败，见[main rebase 验收](main-rebase-acceptance-20261102-zh.md)。当时的原始输入 fresh 失败现已因果修复并完成全量重建，历史样本和限制原样保留。
+本页是 rebase 前的历史结果。最新源码已 rebase 到 main `65df098bf`，完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。 当时的原始输入 fresh 失败已因果修复并正常完成全量重建，历史样本及限制原样保留。
 
 **本轮解码性能门槛通过。** 原四张 H800、实际 1980 MHz，完整 45 层/E288/top8/H4096/cache4096/TP4/batch1，生成 8 token；strict、双 stream 和 CUDA Graph 保持。NFFN/FNNF 八段共 384 原始请求，预先规定 64 warmup，全部 320 正式请求保留。逐上下文，四个 Flag 段的中位数全部低于四个 Native 段的中位数。
 
