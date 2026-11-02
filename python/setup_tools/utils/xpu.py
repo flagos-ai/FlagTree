@@ -1066,6 +1066,27 @@ def _warn_external_llvm_syspath():
 
 def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     """Register all XPU cache artifacts and post-install hooks."""
+    # Cache layout produced below. The cache root defaults to ~/.flagtree
+    # (override with FLAGTREE_CACHE_DIR), and every XPU package lives under
+    # <root>/xpu/. Some packages stay in the cache and are referenced through
+    # env vars, while others are copied into the source tree under
+    # third_party/xpu/backend/.
+    #
+    #   <root>/xpu/llvm_trust         XTDK LLVM 22 (fallback frontend and the
+    #                                 source of xpu3-elfconv-triton, copied to
+    #                                 third_party/xpu/backend/xpu3/bin).
+    #   <root>/xpu/llvm-pub22         Public LLVM 22 frontend, referenced by
+    #                                 LLVM_SYSPATH; not copied into the tree.
+    #   <root>/xpu/xtdk-llvm19        XTDK LLVM 19 device toolchain; its tools
+    #                                 (llc/clang/ld.lld/...) are copied to
+    #                                 third_party/xpu/backend/llvm19/bin, and
+    #                                 the shared runtime libraries go to
+    #                                 third_party/_xtdk_llvm19/lib.
+    #   <root>/xpu/xtdk-llvm19-printf XPU device printf runtime.
+    #   <root>/xpu/xre-Linux-x86_64   XPU runtime (xre).
+    #   <root>/xpu/xpu-device-libs    XPU device libraries.
+    #   <root>/xpu/xpu-sdnn-objects   Prebuilt SDNN objects.
+    #   <root>/xpu/xpu-python-impl-so Compiled Python implementation modules.
     is_xpu = "xpu" == flagtree_backend
     if is_xpu:
         _warn_external_llvm_syspath()
