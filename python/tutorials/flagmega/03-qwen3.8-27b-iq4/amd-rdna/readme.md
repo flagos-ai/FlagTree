@@ -297,7 +297,12 @@ weight with plain loads during the quantization (27.4 / 27.55 / 28.1). Per-CTA s
 show gate+up (tile queue) ends within 4% across CTAs at about 620 GB/s, while 32-row
 owners of the 5120-row projections run 86 vs 73 us (down) and 47 vs 41 us (out_proj) longer
 than 16-row owners; their outputs feed the block's local residual add, so the queue
-cannot move rows between blocks without a grid barrier. The model streams 501 GB/s on the
+cannot move rows between blocks without a grid barrier. Packing the activation in 128-group pieces
+cuts the megakernel's LDS from 26,688 to 22,592 B (the 8 KB layout-conversion scratch of the
+256-group piece of the down projection), so five 4-wave blocks fit a WGP and 240-block meshes are
+admitted, bitwise on 8x24 and at 27.1 ms. None of them is faster, with q8 and the gate+up queue:
+10x24 28.15 ms, 8x30 29.6, 6x40 30.1, 5x48 31.9, 15x16 33.1 (8x24 27.1). It is not kept.
+The model streams 501 GB/s on the
 W7900 (58% of 864 GB/s nominal, 72% of the ~700 GB/s it sustains).
 
 Correctness against llama.cpp HIP built for gfx1100 from the same pinned commit:
