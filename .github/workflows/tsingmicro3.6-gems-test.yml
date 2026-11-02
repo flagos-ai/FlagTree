@@ -40,7 +40,7 @@ concurrency:
 jobs:
   tsingmicro36x:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-    uses: ./.github/workflows/template-gems-test.yml
+    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
     with:
       runner: tsingmicro3.6
       backend: tsingmicro
@@ -71,6 +71,3 @@ jobs:
         export PATH=${LLVM_BINARY_DIR}:${PATH}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
-      FLAGTREE_FEISHU_APP_ID: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
-      FLAGTREE_FEISHU_APP_SECRET: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
-      FLAGTREE_FEISHU_BITABLE_APP_TOKEN: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
