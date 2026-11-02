@@ -93,3 +93,6 @@ def activate():
 
     from .native_latent_probability_template import activate as probability_activate
     probability_activate()
+
+    from .down_n8 import activate as down_n8_activate
+    down_n8_activate()

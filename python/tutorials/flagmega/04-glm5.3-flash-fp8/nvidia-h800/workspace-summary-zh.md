@@ -1,8 +1,10 @@
-# 工作区总结（2026-11-01）
+# 工作区总结（2026-11-02）
 
 本次保存累计的 TLE/FlagMega 开发状态、回归用例及 H800 教程结果。完整 GLM decode 的性能结论已有四卡验证；这不代表所有后端、全量测试及原始 IR fresh 重建均已通过。
 
-更新：合并后 strict 数值失配已因果修复；原四张H800、实测1980MHz的100完整请求、全状态和四上下文Gold通过独立核验，26入口/228调用零spill、双stream/CUDA Graph及strict保持。根因是KDA原生FMA/归约布局和DSA指数/normalizer对隐式融合的依赖，现已显式实现。当前源码52fc40f2…；下文6.4–6.8ms仍为历史正式结果，本轮没有新的Native/Flag正式对照。局部KDA与DSA微测代价分别+0.8869%和+0.3226%，完整保留；mode0的1830MHz旧诊断没有计作1980MHz结果。见[严格浮点修复记录](strict-fp-fix-20261101-zh.md)。
+最新：N8 原生 FP8 累加能力与 scan explicit-result conversion 已因果修复，20 个 GPU 回归、6 个相关 lit 测试通过。已验收 recipe 接入 up N8/stage8、down N8、join 4 warps 和 DSA 单 writer 整数可见性发布；仓库入口正常重新生成的完整 manifest/26 个源码与验收候选相等，23 个 helper 测试通过、1 个跳过。原四卡 Gold100、792 次后续状态比较、228 调用零 spill、双 stream/CUDA Graph 均通过。本轮八段全部 320 正式请求的严格性能门槛通过：四上下文 TPOT 6.424/6.515/6.686/6.856 ms。2048 最小余量约 0.019 ms；历史更快的合法 Native 轮次继续保留，完整请求含 prefill 仍慢，原始输入 fresh 重建仍有已知失败。详细数据、因果说明及范围见[本轮验收](performance-acceptance-20261102-zh.md)。下文保留此前历史结果。
+
+合并后 strict 数值失配的 KDA 原生 FMA/归约布局和 DSA 指数/normalizer 修复仍保留，见[严格浮点修复记录](strict-fp-fix-20261101-zh.md)。mode0 的 1830 MHz 旧诊断没有计作 1980 MHz 结果。
 
 ## 主要改动
 

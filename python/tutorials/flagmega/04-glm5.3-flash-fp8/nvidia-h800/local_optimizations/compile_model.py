@@ -59,7 +59,7 @@ def partition(m):
    if not n.effect.is_pure and last_effect:deps.add(last_effect)
    symbol=f'program_{len(programs):03d}'
    row=dict(symbol=symbol,calls=(n.id,),num_warps=8,depends_on=tuple(p['symbol'] for p in programs if p['symbol'] in deps))
-   if n.attrs.get('callee','').endswith(('.routed_up','.routed_down','.shared_up','.shared_down')):
+   if n.attrs.get('callee','').endswith(('.routed_up','.routed_down','.shared_up','.shared_down','.join')):
     row['num_warps']=4
    if n.attrs.get('callee','').endswith('.routed_down'):row.update(grid=(512,1,1),tasks_per_owner=4)
    programs.append(row);front[n.id]={symbol}
