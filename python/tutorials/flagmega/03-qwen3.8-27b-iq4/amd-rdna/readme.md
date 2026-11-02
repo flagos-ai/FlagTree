@@ -224,7 +224,8 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles (default) | **26.7** | **37.4** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles + viewed layer parameters (default) | **26.1** | **38.3** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row wave-reduced projection tiles | 26.7 | 37.4 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles | 26.9 | 37.2 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue | 27.3 | 36.7 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` | 28.4 | 35.2 |
@@ -307,6 +308,17 @@ k 15.6 -> 14.6, v 14.8 -> 14.3, down 86.7 -> 86.1, q 60.3 -> 61.3; end to end 26
 interleaved runs; 26.83 -> 26.71 in a second check). The same layout in gate+up made it 2 us slower,
 so gate+up keeps its tile. Issuing all five K steps' loads at once for k/v (one 8-row tile each) was
 slower (k 15.6 -> 18.3 us).
+Before each norm a decode layer restored its distributed hidden parameter to a broadcast copy:
+every block copied all 5120 values into its own storage and then read its 640-value slice.
+On gfx1100 the compiler now realizes a same-chip reshard of a function parameter as a read-only
+view (`SameChipParameterViewReshardRealizationPolicy`): the parameter is canonical global
+storage and the hazard planner keeps the barrier before remote reads. The copies and the
+separate slice reshards disappear (17 -> 15 calls per GDN layer), logits stay bitwise (three
+processes, 64 steps), and decode goes from 26.73 to 26.12 ms (six interleaved runs), about 521
+GB/s (74% of ~700 GB/s); llama.cpp 29.34 ms, 1.12x. Removing the f32 casts in front of each
+NormStats (NormStats upcasts itself) lets the existing add+stats fusion and the cross-layer
+stats threading apply, as in tutorial 01: 25.70 ms, but the fused statistics sum in a different
+order and the logits are no longer bitwise (tokens equal), so it is not enabled.
 With these, the GEMV phases take 24.1 ms of the 26.7 ms token at about 565 GB/s (81% of ~700 GB/s);
 the rest is GDN recurrent (about 19 us per GDN layer), the chains of small residual/norm/reshard calls
 around each projection (6-7 us each, twice per layer) and the attention core (about 33 us per attention
