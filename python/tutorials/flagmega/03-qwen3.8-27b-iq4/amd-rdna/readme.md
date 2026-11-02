@@ -11,10 +11,12 @@ stay packed IQ4_XS from IR to GPU memory.
 | GPU | FlagMega | llama.cpp (HIP) | Speedup | Weight bandwidth | % of measured peak | % of nominal peak |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Radeon AI PRO R9700 (gfx1201) | **26.3 ms** (38.1 tok/s) | 29.8 ms (33.6 tok/s) | **1.13x** | 518 GB/s | 82% of 631 | 80% of 644.6 |
-| Radeon PRO W7900 (gfx1100) | **25.8 ms** (38.8 tok/s) | 29.7 ms (33.7 tok/s) | **1.15x** | 528 GB/s | 75% of ~700 | 61% of 864 |
+| Radeon PRO W7900 (gfx1100) | **25.5 ms** (39.2 tok/s) | 29.6 ms (33.8 tok/s) | **1.16x** | 533 GB/s | 76% of ~700 | 62% of 864 |
 
-- Measured at `bb0edd2a2`, `benchmark.py --measurement host-token` (graph replay, GPU sampling,
+- `benchmark.py --measurement host-token` (graph replay, GPU sampling,
   one token returned to the host per step, the same boundary as `llama_performance.py`).
+  The R9700 row was measured before the rebase onto the current `feature/flagmega`; on a second
+  R9700 the rebased build is within 0.2% of it, with bitwise-identical tokens and logits.
   Synthetic32 and Chinese64 workloads, three interleaved FlagMega / llama.cpp rounds of three repeats.
   FlagMega rounds vary by less than 0.1 ms; llama.cpp rounds by less than 0.4 ms.
 - Weight bandwidth = 13,611,666,080 bytes read per decode call / latency.
