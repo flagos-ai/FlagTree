@@ -41,7 +41,7 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 
 # Numbered tutorial filenames are loaded through importlib.
-_rs = importlib.import_module("07-inter-node-reduce-scatter")
+_rs = importlib.import_module("08-inter-node-reduce-scatter")
 TleReduceScatter2DContext = _rs.TleReduceScatter2DContext
 create_tle_reduce_scatter_2d_ctx = _rs.create_tle_reduce_scatter_2d_ctx
 reduce_scatter_2d_op = _rs.reduce_scatter_2d_op
