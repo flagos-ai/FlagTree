@@ -1,6 +1,9 @@
 // RUN: triton-opt %s -split-input-file --tritonppu-tle-lower-pipe | FileCheck %s
+// RUN: triton-opt %s -split-input-file --tritonppu-tle-lower-pipe -verify-diagnostics
 // REQUIRES: flagtree-backend-ppu
 
+// The FIFO schedule emits no remark; the pipes that keep the stage queue
+// say why (checked by the second run).
 // CHECK-LABEL: tt.func @signed_fifo
 // CHECK: arith.constant 2147483645 : i32
 // CHECK: arith.cmpi sle
@@ -81,6 +84,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     %c3 = arith.constant 3 : i32
     %phase = arith.constant false
     %ring = ttg.local_alloc : () -> !ttg.memdesc<3x128xf32, #shared, #smem, mutable>
+    // expected-remark @below {{pipe '<unnamed>' tracks its pending stages in a queue: the prefetch loop must run min(n, depth) signed iterations}}
     tle.pipe.create %ring {capacity = 3 : i32, field_names = ["data"], readers = ["local", "remote"], scope = "cta"} : !ttg.memdesc<3x128xf32, #shared, #smem, mutable>
     ttg.warp_specialize(%ring, %n)
     default {
@@ -143,6 +147,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     %c3 = arith.constant 3 : i32
     %phase = arith.constant false
     %ring = ttg.local_alloc : () -> !ttg.memdesc<3x128xf32, #shared, #smem, mutable>
+    // expected-remark @below {{pipe '<unnamed>' tracks its pending stages in a queue: the writer region contains ttg.async_copy_global_to_local outside the schedule's acquire..commit ranges}}
     tle.pipe.create %ring {capacity = 3 : i32, field_names = ["data"], readers = ["local", "remote"], scope = "cta"} : !ttg.memdesc<3x128xf32, #shared, #smem, mutable>
     ttg.warp_specialize(%ring, %n)
     default {

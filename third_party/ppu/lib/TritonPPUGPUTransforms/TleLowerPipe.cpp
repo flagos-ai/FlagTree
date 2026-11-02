@@ -321,6 +321,13 @@ struct Pipe {
 using PipeMap =
     llvm::MapVector<std::string, Pipe, std::map<std::string, unsigned>>;
 
+// The pipe's name in diagnostics.
+static std::string getPipeName(const Pipe &pipe) {
+  if (auto name = pipe.create->getAttrOfType<StringAttr>("pipe_name"))
+    return name.getValue().str();
+  return "<unnamed>";
+}
+
 static Attribute getCloseTagEncoding(MLIRContext *context, int64_t rank) {
   SmallVector<unsigned> order;
   for (int64_t dim = rank - 1; dim >= 0; --dim)
@@ -591,39 +598,76 @@ static int64_t findNextVirtualBarrierId(ModuleOp module) {
 // leaving the younger groups in flight. Keep the queue in SSA registers, and
 // drain it before blocking on another endpoint or reusing a pending slot. Limit
 // this to one pipe and structured control flow: unrelated copy groups and
-// arbitrary region control flow need a joint copy-group analysis.
-static Region *getDeferredWriterRegion(Pipe &pipe, size_t numPipes) {
-  if (numPipes != 1 || pipe.capacity < 2 || pipe.capacity > 4 || pipe.oneShot ||
-      pipe.hasClose || !pipe.hasCpAsyncCommit || !pipe.crossGroupReaders ||
-      !llvm::any_of(pipe.readers,
-                    [](const auto &item) { return item.second.inWriterGroup; }))
+// arbitrary region control flow need a joint copy-group analysis. `reason`
+// says why a pipe completes its copies at the commit instead.
+static Region *getDeferredWriterRegion(Pipe &pipe, size_t numPipes,
+                                       std::string &reason) {
+  if (!pipe.hasCpAsyncCommit || !pipe.crossGroupReaders) {
+    reason = "no commit publishes cp.async copies to another warp group";
     return nullptr;
+  }
+  if (numPipes != 1) {
+    reason = "the kernel has " + std::to_string(numPipes) +
+             " pipes; only the single pipe of a kernel defers its waits";
+    return nullptr;
+  }
+  if (pipe.capacity < 2 || pipe.capacity > 4) {
+    reason = "capacity " + std::to_string(pipe.capacity) + " is not 2 to 4";
+    return nullptr;
+  }
+  if (pipe.oneShot || pipe.hasClose) {
+    reason = "one_shot pipes and closed pipes complete their copies at the "
+             "commit";
+    return nullptr;
+  }
+  if (llvm::none_of(pipe.readers, [](const auto &item) {
+        return item.second.inWriterGroup;
+      })) {
+    reason = "no reader runs in the writer's warp group";
+    return nullptr;
+  }
   Region *region = nullptr;
   for (Operation *op : pipe.ops) {
     if (getPartition(op) != pipe.writer->partition)
       continue;
     if (isa<tle::PipeWriterCommitOp>(op) &&
-        !op->hasAttr(tle::kTlePipeCommitCpAsyncAttr))
+        !op->hasAttr(tle::kTlePipeCommitCpAsyncAttr)) {
+      reason = "a commit publishes no cp.async copies";
       return nullptr;
+    }
     Region *candidate = op->getParentRegion();
     while (isa<scf::ForOp, scf::IfOp>(candidate->getParentOp()))
       candidate = candidate->getParentOp()->getParentRegion();
-    if (region && candidate != region)
+    if (region && candidate != region) {
+      reason = "the writer's lifecycle ops span more than one structured "
+               "region";
       return nullptr;
+    }
     region = candidate;
   }
-  if (!region || !region->hasOneBlock())
+  if (!region || !region->hasOneBlock()) {
+    reason = "the writer region is not a single block";
     return nullptr;
-  bool supported = true;
+  }
+  Operation *unsupported = nullptr;
   region->walk([&](Operation *op) {
     if ((op->getNumRegions() && !isa<scf::ForOp, scf::IfOp>(op)) ||
         isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp, tt::CallOp,
             tt::ElementwiseInlineAsmOp>(op) ||
         op->getName().getStringRef().contains("aiu") ||
-        op->hasAttr("tt.load.async"))
-      supported = false;
+        op->hasAttr("tt.load.async")) {
+      unsupported = op;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
   });
-  return supported ? region : nullptr;
+  if (unsupported) {
+    reason =
+        ("the writer region contains " + unsupported->getName().getStringRef())
+            .str();
+    return nullptr;
+  }
+  return region;
 }
 
 class PipeLowering {
@@ -702,8 +746,12 @@ public:
   }
 
   void lowerDeferred(Region &region) {
-    if (lowerRegularSchedule(region))
+    std::string reason;
+    if (lowerRegularSchedule(region, reason))
       return;
+    pipe.create.emitRemark()
+        << "pipe '" << getPipeName(pipe)
+        << "' tracks its pending stages in a queue: " << reason;
     OpBuilder builder(&region.front(), region.front().begin());
     Location loc = pipe.create.getLoc();
     Pending pending{i32Const(builder, loc, 0), i32Const(builder, loc, 0)};
@@ -736,16 +784,26 @@ private:
   // Recognize a bounded prefetch followed by consume/refill in FIFO order.
   // The loop bounds prove every committed stage is consumed exactly once, so
   // its wait distance needs no dynamic queue or slot-membership checks.
-  bool lowerRegularSchedule(Region &region) {
-    if (!shouldSpecializeFifo())
+  // `reason` says what the writer region lacks when it keeps the queue.
+  bool lowerRegularSchedule(Region &region, std::string &reason) {
+    if (!shouldSpecializeFifo()) {
+      reason = "four-stage transfers of fewer than 16 payload bytes per "
+               "writer thread keep the queue";
       return false;
+    }
     SmallVector<scf::ForOp> loops;
     for (Operation &op : region.front())
       if (auto loop = dyn_cast<scf::ForOp>(op))
         loops.push_back(loop);
-    if (region.front().getTerminator()->getNumOperands() || loops.size() != 2)
+    if (region.front().getTerminator()->getNumOperands() || loops.size() != 2) {
+      reason = "the writer region must be a prefetch loop followed by a "
+               "consume loop";
       return false;
+    }
     auto prefetch = loops[0], consume = loops[1];
+    reason = "the prefetch loop must run min(n, depth) signed iterations "
+             "from 0 with a constant depth of 1 to the capacity, the consume "
+             "loop n";
     for (auto loop : loops)
       if (loop.getUnsignedCmp() || getConstantI32(loop.getLowerBound()) != 0 ||
           getConstantI32(loop.getStep()) != 1)
@@ -767,8 +825,11 @@ private:
     for (Operation *op : pipe.ops)
       if (getPartition(op) == pipe.writer->partition)
         endpoints.push_back(op);
-    if (endpoints.size() != 6)
+    if (endpoints.size() != 6) {
+      reason = "the writer must acquire and commit once in each loop and "
+               "wait and release once in the consume loop";
       return false;
+    }
     tle::PipeWriterAcquireOp initialAcquire, refillAcquire;
     tle::PipeWriterCommitOp initialCommit, refillCommit;
     tle::PipeReaderWaitOp readerWait;
@@ -789,6 +850,8 @@ private:
       else if (auto release = dyn_cast<tle::PipeReaderReleaseOp>(op))
         readerRelease = release;
     }
+    reason = "the consume loop body must wait, release, then refill under "
+             "if (position + depth < n) as its last statement";
     if (!initialAcquire || !initialCommit || !refillAcquire || !refillCommit ||
         !readerWait || !readerRelease ||
         readerWait->getBlock() != consume.getBody() ||
@@ -830,28 +893,41 @@ private:
         !matchesStage(readerWait.getStage(), consume.getInductionVar()) ||
         !matchesStage(readerRelease.getStage(), consume.getInductionVar()) ||
         !matchesStage(refillAcquire.getStage(), next) ||
-        !matchesStage(refillCommit.getStage(), next))
+        !matchesStage(refillCommit.getStage(), next)) {
+      reason = "the stage operands must be the position modulo the capacity";
       return false;
+    }
 
-    bool safe = true;
+    Operation *unsafe = nullptr;
     region.walk([&](Operation *op) {
       if ((op->getNumRegions() && op != prefetch && op != consume &&
            op != refill) ||
           isa<ttng::NamedBarrierWaitOp, tt::AtomicRMWOp, tt::AtomicCASOp>(op) ||
-          (isa<tt::LoadOp>(op) && cast<tt::LoadOp>(op).getIsVolatile()))
-        safe = false;
+          (isa<tt::LoadOp>(op) && cast<tt::LoadOp>(op).getIsVolatile())) {
+        unsafe = op;
+        return WalkResult::interrupt();
+      }
       if (isa<ttg::AsyncCopyGlobalToLocalOp>(op)) {
         auto acquire = op->getBlock() == prefetch.getBody() ? initialAcquire
                                                             : refillAcquire;
         auto commit =
             op->getBlock() == prefetch.getBody() ? initialCommit : refillCommit;
         if (op->getBlock() != acquire->getBlock() ||
-            !acquire->isBeforeInBlock(op) || !op->isBeforeInBlock(commit))
-          safe = false;
+            !acquire->isBeforeInBlock(op) || !op->isBeforeInBlock(commit)) {
+          unsafe = op;
+          return WalkResult::interrupt();
+        }
       }
+      return WalkResult::advance();
     });
-    if (!safe)
+    if (unsafe) {
+      reason =
+          ("the writer region contains " + unsafe->getName().getStringRef() +
+           " outside the schedule's acquire..commit ranges or control "
+           "flow")
+              .str();
       return false;
+    }
 
     // The refill expression is signed i32 addition. Above this bound it may
     // wrap, so preserve the general lowering instead of assuming small inputs.
@@ -1123,6 +1199,10 @@ private:
                      tt::AtomicCASOp>(op) ||
                  (isa<tt::LoadOp>(op) &&
                   cast<tt::LoadOp>(op).getIsVolatile())) {
+        // The op may block on another warp group, which may be waiting for a
+        // pending stage: complete and publish the queue first.
+        op->emitRemark() << "completes the pending cp.async copies of pipe '"
+                         << getPipeName(pipe) << "' before this operation";
         pending = drainIfPending(b, op, pending);
       }
     }
@@ -1361,6 +1441,11 @@ public:
       int64_t needed = fullBarriers + (pipe.oneShot ? 0 : pipe.capacity);
       if (needed > freeBarriers) {
         pipe.softwareBarriers = true;
+        pipe.create.emitRemark()
+            << "pipe '" << getPipeName(pipe)
+            << "' synchronizes through shared-memory counters: it needs "
+            << needed << " hardware barriers and " << freeBarriers
+            << " are free";
         continue;
       }
       freeBarriers -= needed;
@@ -1375,7 +1460,9 @@ public:
     for (auto &[key, pipe] : pipes) {
       PipeLowering lowering(pipe);
       lowering.lowerCreate();
-      if (Region *writer = getDeferredWriterRegion(pipe, pipes.size())) {
+      std::string reason;
+      if (Region *writer =
+              getDeferredWriterRegion(pipe, pipes.size(), reason)) {
         SmallVector<Operation *> remote;
         for (Operation *op : pipe.ops)
           if (!writer->isAncestor(op->getParentRegion()))
@@ -1384,6 +1471,12 @@ public:
         for (Operation *op : remote)
           lowering.lower(op);
       } else {
+        // The writer completes each stage's copies at its commit
+        // (commitCopies), so nothing of the next stage is in flight meanwhile.
+        if (pipe.hasCpAsyncCommit && pipe.crossGroupReaders)
+          pipe.create.emitRemark()
+              << "pipe '" << getPipeName(pipe)
+              << "' completes its cp.async copies at every commit: " << reason;
         for (Operation *op : pipe.ops)
           lowering.lower(op);
       }
