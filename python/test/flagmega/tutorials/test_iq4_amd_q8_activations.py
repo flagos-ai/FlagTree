@@ -115,11 +115,11 @@ def test_uninstalled_native_gemvs_keep_the_ordered_tile_loop(tmp_path, build):
     assert "local_n_tile" not in source
 
 
-@pytest.mark.parametrize("build", ("projection", "glu"))
-def test_installed_gfx1100_native_gemvs_keep_the_ordered_tile_loop(tmp_path, installed, monkeypatch, build):
+@pytest.mark.parametrize(("build", "rows"), (("projection", 8), ("glu", 16)))
+def test_installed_gfx1100_native_gemvs_keep_the_ordered_tile_loop(tmp_path, installed, monkeypatch, build, rows):
     monkeypatch.setenv("FLAGMEGA_AMD_TILE_QUEUE", "0")
     source = _wide_source(tmp_path, "gfx1100", build, "amd-gfx1100")
-    assert "for local_n_start in tl.range(0, 32, 16):" in source
+    assert f"for local_n_start in tl.range(0, 32, {rows}):" in source
     assert "local_n_tile" not in source
 
 
@@ -396,3 +396,12 @@ def test_gfx1100_pins_the_q8_source_pointer_to_sgprs(tmp_path, installed, build)
     assert "source = _flagmega_amd_uniform_parameter(source)" in quantize(
         _source(tmp_path, "pin", build, "IQ4_XS", "amd-gfx1100"))
     assert "uniform_parameter" not in quantize(_source(tmp_path, "r9700", build, "IQ4_XS", "amd-gfx1201"))
+
+
+def test_gfx1100_projections_dot_8_row_tiles(tmp_path, installed):
+    source = _wide_source(tmp_path, "rows8", "projection", "amd-gfx1100")
+    assert "for local_n_start in tl.range(0, 32, 8):" in source
+    assert "local_n_offsets = local_n_start + tl.arange(0, 8)" in source
+    assert "n_mask, K, Q8_MAIN_GROUPS, 8)" in source
+    r9700 = _wide_source(tmp_path, "r9700", "projection", "amd-gfx1201")
+    assert "local_n_start + tl.arange(0, 16)" in r9700 and "Q8_MAIN_GROUPS, 16)" in r9700

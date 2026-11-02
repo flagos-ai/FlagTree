@@ -224,7 +224,8 @@ commit on the same GGUF and GPU:
 
 | Backend | ms/decode call | tokens/s |
 | --- | ---: | ---: |
-| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue (default) | **27.3** | **36.7** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue + q8 source in SGPRs + 8-row projection tiles (default) | **26.9** | **37.2** |
+| FlagMega, 8x24, q8_1 activations + `v_dot4` + gate+up tile queue | 27.3 | 36.7 |
 | FlagMega, 8x24, q8_1 activations + `v_dot4` | 28.4 | 35.2 |
 | FlagMega, 8x24 block mesh, floating-point activations | 34.3 | 29.2 |
 | FlagMega, 8x16 block mesh (`--mesh 8x16`) | 37.2 | 26.9 |
@@ -288,12 +289,25 @@ parameter too) is read back into SGPRs once per call on gfx1100
 (`platforms/amd/gfx1100/`): `s_cbranch_execnz` loops 114 -> 28, 27.33 -> 27.13 ms
 (six interleaved runs each; llama.cpp 29.34 / 29.36 ms, 1.08x), 248 VGPRs and 44 B of
 scratch unchanged; three processes reproduce the 64-step tokens and logits bitwise.
+On gfx1100 the projections also dot 8-row tiles directly instead of 16-row tiles split into
+two 8-row halves (`native_gguf_tile_rows`): the split, permute and join of every 16-row tile
+went through LDS with barriers. Per-CTA stamps put the projections' K loops at 2.3-2.8 GB/s
+per block against 3.5 GB/s for the gate+up queue, which already used 8-row tiles. Each row is
+dotted as before: three processes reproduce the 64-step tokens and logits bitwise, 248 VGPRs,
+44 B of scratch. Six interleaved runs each: 27.19 -> 26.90 ms (llama.cpp 29.34 ms, 1.09x),
+about 506 GB/s (72% of the ~700 GB/s this card streams). The core template only gains a
+default-off `native_gguf_tile_rows`; other targets render unchanged.
+Per phase (stamps, before the 8-row tiles; GB/s and share of ~700): gate+up 624-631 (89-90%),
+down 533 (76%), q_proj 535 (76%), in_proj_qkv / z 468 / 474 (67-68%), out_proj / o_proj
+319 / 336 (46-48%), k / v 172 / 192 (25-27%); the per-CTA q8 quantization takes 1.5-8 us of
+each call. Tutorial 01's "80%" is the same measure (574 of ~700 GB/s); its bf16 GEMVs move
+four times the bytes per K step, and gate+up and down stream at 90-100% there.
 Tried on the W7900 and not kept (all bitwise, ms/token against 27.33): skipping row
 tiles whose rows are all inactive (27.2-27.3, no gain), 4/8-row block-cyclic owners for the
 5120/10240-row projections (27.15, the same as the pin: a half tile costs the same with
 4 live rows as with 8), two K steps of weights in flight in the projections (27.05, same
 as the pin; in gate+up it spills, 27.95), and touching the first 16 / 32 / 48 KB of each
-weight with plain loads during the quantization (27.4 / 27.55 / 28.1). Per-CTA stamps
+weight with plain loads during the quantization (27.4 / 27.55 / 28.1; issued after the activation loads and unmasked, so the quantization does not wait for them: 16 / 32 KB 27.22 / 27.47 against 27.18). With 8-row tiles, two K steps of weights in flight is also level (26.86 vs 26.87). Per-CTA stamps
 show gate+up (tile queue) ends within 4% across CTAs at about 620 GB/s, while 32-row
 owners of the 5120-row projections run 86 vs 73 us (down) and 47 vs 41 us (out_proj) longer
 than 16-row owners; their outputs feed the block's local residual add, so the queue

@@ -2,4 +2,8 @@
     quantization loads became readfirstlane waterfall loops (114 in the megakernel). Reading the source
     back into SGPRs once per call removes them; the arithmetic is unchanged, so results are bitwise. #}
 {% set q8_pin_source = true %}
+{#- The projections dot 8-row tiles directly instead of 16-row tiles split into two 8-row halves
+    (whose split/permute/join went through LDS with barriers on every tile). Each row is dotted
+    exactly as before, so results are bitwise. #}
+{% set native_gguf_tile_rows = 8 %}
 {% include "kernels/block_fp8/platforms/amd/simt.py.jinja" %}
