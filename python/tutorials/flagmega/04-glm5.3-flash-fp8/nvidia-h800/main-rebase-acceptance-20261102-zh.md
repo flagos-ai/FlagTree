@@ -1,6 +1,6 @@
 # Main rebase 与 H800 重新验收
 
-基底：main 9cc00c5188bb711d1a6c409849c13062bef2ea5c。保留分支 merge commit 的最终修改，原生 TLE C++ 修改仍受 __TLE__ 保护；reports/flagmega 已删除。验收使用当前 Python 源码和正常 CMake 构建的独立 Core，不覆盖公开或历史 Core。
+当前基底：main 7f25177d2af4eb49dd8193fec31e03070ea13c38；首次完整性能对照基底为 9cc00c5188bb711d1a6c409849c13062bef2ea5c，main 新增提交仅涉及 CI 记录格式。保留分支 merge commit 的最终修改，原生 TLE C++ 修改仍受 __TLE__ 保护；reports/flagmega 已删除。验收使用当前 Python 源码和正常 CMake 构建的独立 Core，不覆盖公开或历史 Core。
 
 ## 修复与最小复现
 
@@ -43,7 +43,9 @@ TLEFrontendSemantic::scalar_constant 的继承路径在 value == 0 时生成 nul
 
 NVIDIA LoadStoreOpToLLVM.cpp::AsyncCopyGlobalToLocalOpConversion::matchAndRewrite 原先忽略 other，显式异步 copy 的负零、1、负无穷在四种浮点类型上全部被写成零（12 failed / 20 passed）。修复保留有效位置的异步 copy，仅在无效位置使用 st.shared 写入 other，两类操作不会覆盖对方。所有原生新增行受 __TLE__ 保护。冗余线程谓词的空值表示全体线程参与，谓词组合统一使用 maybeAnd；直接对空值做 AND 的诊断版本产生 6 项编译失败，最终实现消除该缺陷。
 
-最小复现与回归：third_party/tle/test/GPU/local-pointer-async-copy-fill.mlir 使用 triton-opt --triton-tle-optimize-local-pointer-async-stores | FileCheck；python/test/tle/unit/test_async_copy_fill_bits.py 使用 pytest -q，覆盖 FP16/BF16/FP32/FP64 的 ±0/1/-inf，8/16/32/64 位整数的逐元素运行时填充，以及混合、全开、全关 mask。最终独立 Core（v15）44 项填充 GPU 回归通过，同时断言有效位置仍有 cp.async；包含原有 pipe/TMA、FP8 N8、scan 的扩展套件 109 项 GPU 全部通过，CPU 130 passed / 51 skipped。当前整模 Source、全部调度和计时循环不变，最终 Core 的完整 Gold 与正式性能对照待完成。
+最小复现与回归：third_party/tle/test/GPU/local-pointer-async-copy-fill.mlir 使用 triton-opt --triton-tle-optimize-local-pointer-async-stores | FileCheck；python/test/tle/unit/test_async_copy_fill_bits.py 使用 pytest -q，覆盖 FP16/BF16/FP32/FP64 的 ±0/1/-inf，8/16/32/64 位整数的逐元素运行时填充，以及混合、全开、全关 mask。最终独立 Core（v15）44 项填充 GPU 回归通过，同时断言有效位置仍有 cp.async；包含原有 pipe/TMA、FP8 N8、scan 的扩展套件 109 项 GPU 全部通过，CPU 130 passed / 51 skipped。整模 Source、全部调度和计时循环不变。进一步检查发现，将非零填充直接放在 opaque PTX 的谓词之后，会保留 LLVM 范围分析已经证明永远不执行的 shared store。原实现使专家 program_012/018 各增加约 20 行 PTX 和 4 个谓词寄存器；最小全真 mask 回归四项失败，包含只有 LLVM 才能证明全真的表达式后共八项失败。最终将填充置于 LLVM 条件分支，使无效分支可被优化删除；转换后的 LLVM 标量位模式负责区分零字节与负零，并识别全真常量 mask。v18 的 48 项回归全部通过，涵盖 ±0/1/-inf、运行时逐元素整数填充、空/全/混合 mask 与后端才能证明全真的 mask，同时保持异步复制。
+
+最终 Core 为正常 CMake 构建的独立 v18；公开和历史 Core 未改变。正常候选生成及 fresh 原始输入重建分别实际用时 128.44/140.21 秒，fresh semantic hash 仍为 b0d11885153361af9c38246b9be979a65c0a21e5456a4686784f05a919779f97，输出未采用作性能候选。后续仅修改 NVIDIA 低层 copy lowering，1293 个生成相关 Python 源文件逐一核对不变，因此保留既有正常生成产物，通过正常缓存接口用当前 Core 重新预编译全部 program；没有复制 Core、cubin 或 checkpoint payload。最终四卡 Gold 与正式性能对照待完成。
 
 范围检查：TLE MLIR 158 项通过（比 v7 新增一项）。原生 SM100 TCGen5 邻接 membar 测试 wait_after_mma 出现额外 CTA barrier，根因是 lib/Analysis/Membar.cpp::addEffectIntervals 对无 allocation ID 的 borrowed shared 参数作保守 allShared 区间，产生与等待 barrier 的潜在 WAR；H800 不执行该 TCGen5 路径，未删断言或禁用 pass。本任务没有 SM100/Iluvatar 硬件结论；原生邻接三项通过、一项失败的事实保留。
 

@@ -58,13 +58,20 @@ def test_async_staging_preserves_fill_bits(fill_id, dtype, explicit):
     torch.testing.assert_close(output.view(bit_dtype), expected, rtol=0, atol=0)
     if dtype == torch.float32 and (fill_bits == 0 or explicit):
         assert "cp.async" in compiled.asm["ptx"]
+    if explicit and fill_bits == 0:
+        assert "st.shared" not in compiled.asm["ptx"]
 
 
 @triton.jit
-def _stage_runtime_fill(src, dst, VALID: tl.constexpr):
+def _stage_runtime_fill(src, dst, VALID: tl.constexpr,
+                        MASK_AFTER_LOWERING: tl.constexpr):
     indices = tl.arange(0, 128)
     arena = tle.gpu.alloc((128,), src.dtype.element_ty, nv_mma_shared_layout=False)
-    tle.gpu.copy(src + indices, arena, (128,), mask=indices < VALID,
+    if MASK_AFTER_LOWERING:
+        mask = (tl.program_id(0) & 15) * 128 + indices < 2048
+    else:
+        mask = indices < VALID
+    tle.gpu.copy(src + indices, arena, (128,), mask=mask,
                  other=indices.to(src.dtype.element_ty), is_async=True)
     tle.gpu.async_commit_group()
     tle.gpu.async_wait_group(0)
@@ -74,7 +81,7 @@ def _stage_runtime_fill(src, dst, VALID: tl.constexpr):
 
 
 @pytest.mark.parametrize("dtype", [torch.int8, torch.int16, torch.int32, torch.int64])
-@pytest.mark.parametrize("mask_case", ["mixed", "empty", "full"])
+@pytest.mark.parametrize("mask_case", ["mixed", "empty", "full", "full_after_lowering"])
 def test_async_staging_preserves_runtime_integer_fill(dtype, mask_case):
     alignment = 4 if dtype == torch.int8 else 2 if dtype == torch.int16 else 1
     valid = ((73 + alignment - 1) // alignment * alignment
@@ -83,7 +90,10 @@ def test_async_staging_preserves_runtime_integer_fill(dtype, mask_case):
     output = torch.empty_like(source)
     expected = torch.arange(128, device="cuda", dtype=dtype)
     expected[:valid] = 7
-    compiled = _stage_runtime_fill[(1,)](source, output, valid, num_warps=4)
+    compiled = _stage_runtime_fill[(1,)](source, output, valid,
+                                       mask_case == "full_after_lowering", num_warps=4)
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
     if mask_case == "mixed":
         assert "cp.async" in compiled.asm["ptx"]
+    if mask_case in ("full", "full_after_lowering"):
+        assert "st.shared" not in compiled.asm["ptx"]

@@ -14,7 +14,7 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
 #ifdef __TLE__
-#include "tle/dialect/include/IR/CopyFill.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/CopyFill.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/RemotePointerUtils.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
@@ -1398,17 +1398,6 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value llSrc = adaptor.getSrc();
     Value llMask = adaptor.getMask();
     Value llOther = adaptor.getOther();
-#ifdef __TLE__
-    // cp.async zero fill cannot represent arbitrary values or negative zero.
-    // Active lanes copy asynchronously; inactive lanes store other directly.
-    const bool materializeOther = llMask && llOther &&
-                                  !tte::hasZeroFillBits(other);
-    SmallVector<Value> otherElems;
-    if (materializeOther) {
-      otherElems = unpackLLElements(loc, llOther, rewriter);
-      assert(otherElems.size() == getTotalElemsPerThread(srcTy));
-    }
-#endif
 
     // %src
     auto srcElems = unpackLLElements(loc, llSrc, rewriter);
@@ -1421,6 +1410,19 @@ struct AsyncCopyGlobalToLocalOpConversion
     }
 
     // We assume other = 0, see XXX(Keren) below
+#ifdef __TLE__
+    // Operand conversion has already replaced tensor constants by LLVM
+    // aggregates. Check their actual scalar bits, including signed zero.
+    SmallVector<Value> otherElems;
+    if (llMask && llOther) {
+      otherElems = unpackLLElements(loc, llOther, rewriter);
+      assert(otherElems.size() == srcElems.size());
+    }
+    const bool materializeOther =
+        llMask && llOther &&
+        !llvm::all_of(maskElems, tte::hasLLVMTrueMask) &&
+        !llvm::all_of(otherElems, tte::hasLLVMZeroFillBits);
+#endif
     // %other
     // SmallVector<Value> otherElems;
     // if (llOther) {
@@ -1575,26 +1577,12 @@ struct AsyncCopyGlobalToLocalOpConversion
               ? copyAsyncOp(dstOperand, srcOperand, copySize, srcSize, evictOpr)
               : copyAsyncOp(dstOperand, srcOperand, copySize, srcSize);
 #ifdef __TLE__
+      Value fillPred;
       if (materializeOther) {
         // An absent redundancy predicate means every thread participates.
         copyExec.maybePredicate(maybeAnd(rewriter, loc, threadPred, maskElem));
-        auto fillPred = maybeAnd(rewriter, loc, threadPred,
-                                 b.xor_(maskElem, b.true_val()));
-        unsigned width = elemTy.getIntOrFloatBitWidth();
-        auto intTy = IntegerType::get(ctx, width);
-        for (unsigned i = 0; i < vecTy.getNumElements(); ++i) {
-          Value fill = b.extract_val(elemTy, vals[startIdx + i], 2);
-          fill = b.bitcast(fill, intTy);
-          if (width < 16)
-            fill = b.zext(i16_ty, fill);
-          auto *address = ptxBuilder.newAddrOperand(
-              shmemAddr, "r", i * width / 8);
-          auto *value = ptxBuilder.newOperand(
-              fill, width <= 16 ? "h" : width == 32 ? "r" : "l");
-          auto &store = *ptxBuilder.create<>("st");
-          store.shared().b(width);
-          store(address, value).maybePredicate(fillPred);
-        }
+        fillPred = maybeAnd(rewriter, loc, threadPred,
+                            b.xor_(maskElem, b.true_val()));
       } else {
 #endif
       copyExec.maybePredicate(threadPred);
@@ -1602,6 +1590,40 @@ struct AsyncCopyGlobalToLocalOpConversion
       }
 #endif
       ptxBuilder.launch(rewriter, loc, void_ty(ctx));
+#ifdef __TLE__
+      if (materializeOther) {
+        // Keep the fill condition visible to LLVM. A predicate inside opaque
+        // PTX would retain dead stores when mask range analysis proves true.
+        auto *currentBlock = rewriter.getInsertionBlock();
+        auto *endBlock = rewriter.splitBlock(currentBlock,
+                                             rewriter.getInsertionPoint());
+        auto *fillBlock = rewriter.createBlock(
+            currentBlock->getParent(), std::next(Region::iterator(currentBlock)));
+        rewriter.setInsertionPointToEnd(currentBlock);
+        LLVM::CondBrOp::create(rewriter, loc, fillPred, fillBlock, endBlock,
+                              ValueRange{});
+        rewriter.setInsertionPointToEnd(fillBlock);
+        PTXBuilder fillBuilder;
+        unsigned width = elemTy.getIntOrFloatBitWidth();
+        auto intTy = IntegerType::get(ctx, width);
+        for (unsigned i = 0; i < vecTy.getNumElements(); ++i) {
+          Value fill = b.extract_val(elemTy, vals[startIdx + i], 2);
+          fill = b.bitcast(fill, intTy);
+          if (width < 16)
+            fill = b.zext(i16_ty, fill);
+          auto *address = fillBuilder.newAddrOperand(
+              shmemAddr, "r", i * width / 8);
+          auto *value = fillBuilder.newOperand(
+              fill, width <= 16 ? "h" : width == 32 ? "r" : "l");
+          auto &store = *fillBuilder.create<>("st");
+          store.shared().b(width);
+          store(address, value);
+        }
+        fillBuilder.launch(rewriter, loc, void_ty(ctx));
+        LLVM::BrOp::create(rewriter, loc, ValueRange{}, endBlock);
+        rewriter.setInsertionPointToStart(endBlock);
+      }
+#endif
       return {};
     };
 
