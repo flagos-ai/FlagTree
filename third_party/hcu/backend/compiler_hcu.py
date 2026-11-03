@@ -106,94 +106,6 @@ def _priority_after_first_mmac(assembly, kernel_name):
     return ''.join(lines), len(changes)
 
 
-def _chunk_mmac_priority(assembly, kernel_name, chunk):
-    """Refine straight-line, explicitly bounded priority regions after allocation.
-
-    Only priority instructions change: a chunk starts at low priority, raises
-    after its first MMAC, and resets after its last MMAC. Register, memory and
-    wait instructions retain their exact order. Referenced labels, raw encodings
-    and control flow prevent a region from being rewritten.
-    """
-    if type(chunk) is not int or chunk < 2:
-        raise ValueError("MMAC priority chunk must be an integer >= 2")
-    lines = assembly.splitlines(keepends=True)
-    code = lambda s: s.split(';', 1)[0].split('//', 1)[0].strip()
-    text = [code(line) for line in lines]
-    starts = [i for i, line in enumerate(text) if line == kernel_name + ':']
-    if len(starts) != 1 or any(re.match(r'\.(?:pushsection|popsection|previous|subsection)\b', s)
-                               for s in text):
-        return assembly, 0
-    start = starts[0]
-    ends = [i for i in range(start + 1, len(text)) if re.fullmatch(r'\.Lfunc_end\d+:', text[i])]
-    if not ends:
-        return assembly, 0
-    end = ends[0]
-    # Debug label references do not transfer control. Only genuinely unallocated
-    # debug sections earn this exemption, as in _priority_after_first_mmac.
-    references = []
-    debug = False
-    for s in text:
-        section = re.match(r'\.section\s+(?:"([^"]+)"|([^,\s]+))', s)
-        if section:
-            flags = re.match(r'\s*,\s*"([^"]*)"', s[section.end():])
-            debug = (section.group(1) or section.group(2)).startswith('.debug_') and bool(flags) and flags.group(1) == ''
-        elif re.match(r'\.(?:text|data|bss)(?:\s|$)', s):
-            debug = False
-        if not debug:
-            references.append(s)
-    # Numeric branch displacements would change when instructions are inserted.
-    for s in text[start + 1:end]:
-        branch = re.match(r'(?:s_branch|s_cbranch_\w+)\s+(.+)$', s)
-        if branch and not re.fullmatch(r'[A-Za-z_.$][A-Za-z0-9_.$]*', branch.group(1)):
-            return assembly, 0
-        if re.match(r's_(?:setpc|swappc|rfe|call)(?:_\w+)?(?:\s|$)', s):
-            return assembly, 0
-    regions = []
-    opened = None
-    for i in range(start + 1, end):
-        s = text[i]
-        if not s.startswith('s_setprio'):
-            continue
-        priority = re.fullmatch(r's_setprio\s+([01])', s)
-        if priority and priority.group(1) == '1' and opened is None:
-            opened = i
-        elif priority and priority.group(1) == '0' and opened is not None:
-            regions.append((opened, i))
-            opened = None
-        else:
-            return assembly, 0
-    if opened is not None:
-        return assembly, 0
-    changes = []
-    for first, last in regions:
-        mmacs = []
-        valid = True
-        for i in range(first + 1, last):
-            s = text[i]
-            if not s or re.match(r'\.loc(?:\s|$)', s):
-                continue
-            label = re.fullmatch(r'(\.Ltmp\d+):', s)
-            if label:
-                token = label.group(1)
-                pattern = r'(?<![\w.$])' + re.escape(token) + r'(?![\w.$])'
-                if not any(t != s and re.search(pattern, t) for t in references):
-                    continue
-            if (s.startswith('.') or s.endswith(':') or
-                    re.match(r's_(?:branch|cbranch_\w+|setpc\w*|swappc\w*|rfe\w*|call\w*|endpgm\w*)(?:\s|$)', s)):
-                valid = False
-                break
-            if re.match(r'v_mmac_\w+\s+', s):
-                mmacs.append(i)
-        if valid and mmacs and len(mmacs) % chunk == 0:
-            changes.append((first, last, mmacs))
-    for first, last, mmacs in changes:
-        lines[first] = lines[last] = ''
-        for n, i in enumerate(mmacs):
-            if n % chunk == 0:
-                lines[i] += '\ts_setprio 1\n'
-            elif n % chunk == chunk - 1:
-                lines[i] += '\ts_setprio 0\n'
-    return ''.join(lines), sum(len(mmacs) // chunk for _, _, mmacs in changes)
 
 
 def get_min_dot_size(target: GPUTarget):
@@ -281,8 +193,6 @@ class HIPOptions:
     structured_register_prepack_address: bool = False
     structured_register_unclamped_column: bool = False
     priority_after_first_mmac: bool = False
-    # Refine existing explicit priority scopes; zero preserves allocated code.
-    mmac_priority_chunk: int = 0
     launch_cooperative_grid: bool = False
     matrix_instr_nonkdim: int = 0
     kpack: int = 1
@@ -432,12 +342,6 @@ class HIPOptions:
             raise ValueError("priority_after_first_mmac must be boolean")
         if self.priority_after_first_mmac and self.arch != "gfx936":
             raise ValueError("priority_after_first_mmac requires gfx936")
-        if type(self.mmac_priority_chunk) is not int or (self.mmac_priority_chunk != 0 and self.mmac_priority_chunk < 2):
-            raise ValueError("mmac_priority_chunk must be zero or an integer >= 2")
-        if self.mmac_priority_chunk and self.arch != "gfx936":
-            raise ValueError("mmac_priority_chunk requires gfx936")
-        if self.mmac_priority_chunk and self.priority_after_first_mmac:
-            raise ValueError("mmac_priority_chunk already places priority after the first MMAC")
         if type(self.packet_matrix_read_partition) is not bool:
             raise ValueError("packet_matrix_read_partition must be boolean")
         if self.packet_matrix_read_partition and self.arch != "gfx936":
@@ -1438,16 +1342,6 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_amdgcn(src, metadata, options, _skip_mma_phase=False):
         amdgcn=HIPBackend._make_amdgcn_with_schedules(src,metadata,options,_skip_mma_phase)
-        if options.mmac_priority_chunk:
-            original = amdgcn
-            try:
-                amdgcn, chunks = _chunk_mmac_priority(amdgcn, metadata["name"], options.mmac_priority_chunk)
-                metadata["hcu_mmac_priority_chunks"] = chunks
-                metadata["hcu_mmac_priority_chunk_result"] = "refined explicit priority scopes" if chunks else "no eligible bounded scopes"
-            except Exception as error:
-                amdgcn = original
-                metadata["hcu_mmac_priority_chunks"] = 0
-                metadata["hcu_mmac_priority_chunk_result"] = "fallback: " + str(error)
         if options.priority_after_first_mmac:
             original=amdgcn
             try:
