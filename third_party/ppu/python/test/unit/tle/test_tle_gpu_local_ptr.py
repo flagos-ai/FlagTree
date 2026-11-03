@@ -365,10 +365,6 @@ def test_local_pointer_looped_elementwise_compiles():
     _full_pipeline(compiled)
 
 
-@pytest.mark.xfail(
-    reason="fp16 + tle.gpu.copy compile-only path hits cp.async < 4B "
-    "constraint with default ASTSource options. The same kernel "
-    "passes when launched via JIT (which picks wider vectorization).", raises=RuntimeError, strict=False)
 def test_local_pointer_tiled_matmul_fp16_compiles():
     if not _ppu_sdk_available():
         pytest.skip("PPU SDK not available")
