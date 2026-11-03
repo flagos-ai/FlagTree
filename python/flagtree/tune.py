@@ -221,13 +221,14 @@ class AutoTuner:
             # temporary: The complete path of the temporary file.
             fd, temporary = tempfile.mkstemp(prefix=f".{key}.", suffix=".tmp", dir=path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({
-                    "schema": _CACHE_SCHEMA,
-                    "key": key,
-                    "best_config": best_config,
-                    "best_time_ms": best_time_ms,
-                    "identity": identity,
-                }, stream, indent=2, sort_keys=True, allow_nan=False)
+                json.dump(
+                    {
+                        "schema": _CACHE_SCHEMA,
+                        "key": key,
+                        "best_config": best_config,
+                        "best_time_ms": best_time_ms,
+                        "identity": identity,
+                    }, stream, indent=2, sort_keys=True, allow_nan=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
@@ -554,6 +555,8 @@ def autotune(config_space, key_fn, prune_fn=None, *, cache_dir=None, cache_versi
         def operation(x, block_size):
             ...  # Launch the kernel(s) using block_size.
     """
+
     def wrapper(func):
         return AutoTuner(func, config_space, key_fn, prune_fn, cache_dir=cache_dir, cache_version=cache_version)
+
     return wrapper

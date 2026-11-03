@@ -13,4 +13,3 @@ def get_local_world_size() -> int:
     if local_world_size <= 0:
         raise ValueError("LOCAL_WORLD_SIZE must be a positive integer")
     return local_world_size
-
