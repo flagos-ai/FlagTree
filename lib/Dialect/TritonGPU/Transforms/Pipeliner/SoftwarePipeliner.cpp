@@ -234,7 +234,11 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
     ModuleOp moduleOp = getOperation();
     // Transform the loop by introducing async operations to prepare it for
     // pipeline expansion.
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    lowerLoops(moduleOp, enablePipelineEnhance);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     lowerLoops(moduleOp);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
     if (dumpIntermediateSteps) {
       llvm::dbgs()
           << "// -----// SoftwarePipeliner internal IR Dump After: LowerLoops\n"
