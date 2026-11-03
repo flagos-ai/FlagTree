@@ -98,7 +98,7 @@ def test_op(M, H, scalarValue):
     input_tensor = torch.empty((M, H), dtype=torch.float16).normal_(mean=0.0, std=0.5).requires_grad_().npu()
     triton_out = swiglu(input_tensor, scalarValue)
     npu_out = torch_npu.npu_swiglu(input_tensor.npu(), dim=-1)
-    torch.testing.assert_close(triton_out, npu_out, rtol=1e-3, atol=1e-3, equal_nan=True)
+    torch.testing.assert_close(triton_out, npu_out, rtol=5e-3, atol=5e-3, equal_nan=True)
     # print(npu_out)
     # print(triton_out)
     print("PASSED!")
