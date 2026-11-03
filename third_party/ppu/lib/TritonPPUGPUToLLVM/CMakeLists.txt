@@ -28,6 +28,9 @@ add_triton_library(TritonPPUGPUToLLVM
     TargetInfo.cpp
     Allocation.cpp
     ConvertLibdeviceFuncToPPU.cpp
+    # Not gated on FLAGTREE_TLE: gluon creates ttg.warp_specialize without TLE,
+    # BarrierUtility is used by the shared-memory barrier in TargetInfo.cpp, and
+    # BarrierOpToLLVM.cpp also holds the plain LocalBarrierOp conversion.
     ConvertWarpSpecializeToLLVM.cpp
     BarrierUtility.cpp
     BarrierOpToLLVM.cpp

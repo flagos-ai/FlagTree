@@ -1,4 +1,4 @@
-// Copyright 2026 FlagOS Contributors
+// Copyright 2025-     FlagOS Contributors
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files
@@ -19,7 +19,6 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// REQUIRES: flagtree-backend-ppu
 // RUN: triton-opt %s -split-input-file --triton-tle-optimize-local-pointer-loads=keep-smem-read-order=true | FileCheck %s --check-prefixes=COMMON,ON
 // RUN: triton-opt %s -split-input-file --triton-tle-optimize-local-pointer-loads | FileCheck %s --check-prefixes=COMMON,OFF
 

@@ -59,12 +59,7 @@ inline constexpr llvm::StringLiteral kTleReorderLoopLoadsAttr("tt.reorder");
 
 // Marks an async_wait whose distance a pipe lowering already chose. Pipeline
 // and barrier analyses must not recompute or move it.
-inline constexpr llvm::StringLiteral kTlePipeWaitAttr("ppugpu.pipe_wait");
-
-// Named barrier ids the warp specialization lowering reserves: the default
-// warp group's barrier and the switch loop. Backends that allocate named
-// barriers must start above them, and share this value rather than repeat it.
-constexpr int64_t kTleWarpSpecializeReservedNamedBarriers = 2;
+inline constexpr llvm::StringLiteral kTlePipeWaitAttr("tle.pipe_wait");
 
 } // namespace mlir::triton::tle
 

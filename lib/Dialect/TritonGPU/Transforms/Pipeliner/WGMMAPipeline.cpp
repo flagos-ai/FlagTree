@@ -32,7 +32,9 @@
 #include "mlir/Support/LLVM.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#ifdef __PPU__
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
+#endif
 #endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
@@ -64,14 +66,15 @@ namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
 #ifdef __TLE__
-namespace tle = mlir::triton::tle;
-
 static constexpr llvm::StringLiteral
     kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
 
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
-  if (waitOp->hasAttr(tle::kTlePipeWaitAttr))
+#ifdef __PPU__
+  // The PPU pipe lowering sets the wait distance of its own copies.
+  if (waitOp->hasAttr(mlir::triton::tle::kTlePipeWaitAttr))
     return true;
+#endif
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))
