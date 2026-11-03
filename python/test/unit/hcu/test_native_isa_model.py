@@ -41,7 +41,8 @@ class TestNativeISAModel(unittest.TestCase):
                  'buffer_store_dword v0, v1, s[0:3], 0 offen': 'OTHER_VM',
                  's_barrier': 'CTA', 's_barrier junk': 'UNKNOWN',
                  's_branch .Lloop': 'CONTROL', 'ds_write_b32 v0, v1': 'UNKNOWN',
-                 'v_perm_b32 v0, v1, v2, v3': 'UNKNOWN', 's_waitcnt expcnt(0)': 'UNKNOWN'}
+                 'v_perm_b32 v0, v1, v2, v3': 'PURE',
+                 'v_perm_b32_fake v0, v1, v2, v3': 'UNKNOWN', 's_waitcnt expcnt(0)': 'UNKNOWN'}
         for text, expected in cases.items():
             op, args = model.parse_instruction(text)
             self.assertEqual(model.classify_instruction(dict(op=op, args=args)), expected)
@@ -63,12 +64,30 @@ class TestNativeISAModel(unittest.TestCase):
                       'buffer_load_dword v0, v1, s[0:3], 0 offen lds',
                       'buffer_store_dword v0, v1, s[0:3], 0 offen',
                       's_load_dword s0, s[2:3], 0', 'ds_read_b32 v0, v1',
-                      'ds_write_b32 v0, v1', 's_barrier', 'v_perm_b32 v0, v1, v2, v3',
+                      'ds_write_b32 v0, v1', 's_barrier', 'v_unknown_b32 v0, v1, v2, v3',
                       's_waitcnt vmcnt(0)', 's_waitcnt vmcnt(0) lgkmcnt(0)'):
             source = kernel(' s_waitcnt lgkmcnt(9)\n ' + event + '\n s_waitcnt lgkmcnt(6)')
             result, report = coalesce(source, 'kernel')
             self.assertTrue(report['accepted'], report)
             self.assertEqual(result, source, event)
+
+    def test_alt_matrix_read_is_an_lds_event(self):
+        for op in ('ds_read_m32x16_b16', 'ds_read_m32x16_b16_alt'):
+            inst = dict(op=op, args='v[4:7], v10 offset:128')
+            self.assertEqual(model.classify_instruction(inst), 'DS_READ')
+            source = kernel(' s_waitcnt lgkmcnt(9)\n ' + op +
+                            ' v[4:7], v10\n s_waitcnt lgkmcnt(6)')
+            self.assertEqual(coalesce(source, 'kernel')[0], source)
+        self.assertEqual(model.classify_instruction(dict(op='ds_read_m32x16_b16_alt_fake', args='')),
+                         'UNKNOWN')
+
+    def test_register_permute_allows_no_new_event_wait_proof(self):
+        source = kernel(' s_waitcnt lgkmcnt(9)\n v_perm_b32 v0, v1, v2, v3\n'
+                        ' s_waitcnt lgkmcnt(6)')
+        result, report = coalesce(source, 'kernel')
+        self.assertTrue(report['accepted'], report)
+        self.assertEqual(report['deleted_count'], 1)
+        self.assertEqual(result, kernel(' s_waitcnt lgkmcnt(6)\n v_perm_b32 v0, v1, v2, v3'))
 
     def test_incoming_edge_prevents_cross_block_coalescing(self):
         source = kernel(' s_cbranch_scc0 .Lside\n s_waitcnt lgkmcnt(9)\n'

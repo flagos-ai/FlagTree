@@ -21,7 +21,7 @@ _VECTOR = ('v_add', 'v_sub', 'v_mul', 'v_mad', 'v_fma', 'v_mmac', 'v_mov',
            'v_align', 'v_not')
 BRANCH_OPCODES = {'s_branch', 's_cbranch_scc0', 's_cbranch_scc1', 's_cbranch_vccz',
              's_cbranch_vccnz', 's_cbranch_execz', 's_cbranch_execnz'}
-_DS_READ = re.compile(r'ds_read(?:2(?:st64)?)?_b(?:32|64|96|128)$|ds_read_m32x16_b16$')
+_DS_READ = re.compile(r'ds_read(?:2(?:st64)?)?_b(?:32|64|96|128)$|ds_read_m32x16_b16(?:_alt)?$')
 
 
 def parse_instruction(line):
@@ -114,6 +114,10 @@ def classify_instruction(inst):
     if op.startswith(('buffer_load_', 'buffer_store_', 'global_load_',
                       'global_store_', 'flat_load_', 'flat_store_')):
         return 'OTHER_VM'
+    # Register permutation does not issue a memory event. Use its exact opcode,
+    # leaving unknown variants conservative rather than accepting a prefix.
+    if op == 'v_perm_b32':
+        return 'PURE'
     if op == 's_nop' or op.startswith(_SCALAR + _VECTOR):
         return 'PURE'
     return 'UNKNOWN'
