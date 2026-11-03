@@ -10,8 +10,8 @@ static bool packetBoundsFit(__int128 lo,__int128 hi,Type type) {
 }
 static std::optional<int64_t> packetCounterStep(Value next,Value phi) {
   auto add=next.getDefiningOp<arith::AddIOp>();if(!add)return std::nullopt;
-  if(add.getLhs()==phi)return legacyV0SafeInteger(add.getRhs());
-  if(add.getRhs()==phi)return legacyV0SafeInteger(add.getLhs());
+  if(add.getLhs()==phi)return getSignedI64Constant(add.getRhs());
+  if(add.getRhs()==phi)return getSignedI64Constant(add.getLhs());
   return std::nullopt;
 }
 static std::optional<PacketIndexBounds> packetCountedPhiBounds(
@@ -27,7 +27,7 @@ static std::optional<PacketIndexBounds> packetCountedPhiBounds(
   auto iv=cmp?dyn_cast<BlockArgument>(cmp.getLhs()):BlockArgument{};
   if(!iv || iv.getOwner()!=header || cmp->getBlock()!=header ||
       cmp.getPredicate()!=arith::CmpIPredicate::slt)return std::nullopt;
-  auto bound=legacyV0SafeInteger(cmp.getRhs());if(!bound)return std::nullopt;
+  auto bound=getSignedI64Constant(cmp.getRhs());if(!bound)return std::nullopt;
   auto back=dyn_cast<cf::BranchOp>(body->getTerminator());
   if(!back || back.getDest()!=header ||
       back.getDestOperands().size()!=header->getNumArguments())return std::nullopt;
@@ -43,9 +43,9 @@ static std::optional<PacketIndexBounds> packetCountedPhiBounds(
   if(!enter || enter.getDest()!=header ||
       enter.getDestOperands().size()!=header->getNumArguments())return std::nullopt;
   unsigned primary=iv.getArgNumber(),secondary=arg.getArgNumber();
-  auto initial=legacyV0SafeInteger(enter.getDestOperands()[primary]);
+  auto initial=getSignedI64Constant(enter.getDestOperands()[primary]);
   auto step=packetCounterStep(back.getDestOperands()[primary],iv);
-  auto seed=legacyV0SafeInteger(enter.getDestOperands()[secondary]);
+  auto seed=getSignedI64Constant(enter.getDestOperands()[secondary]);
   auto advance=packetCounterStep(back.getDestOperands()[secondary],arg);
   if(!initial || !step || *step<=0 || !seed || !advance || *initial>=*bound)
     return std::nullopt;
@@ -65,7 +65,7 @@ static std::optional<PacketIndexBounds> packetIndexBounds(
   if(!fuel)return std::nullopt;--fuel;
   auto integer=dyn_cast<IntegerType>(value.getType());
   if(!integer || integer.getWidth()<2 || integer.getWidth()>64)return std::nullopt;
-  if(auto c=legacyV0SafeInteger(value))return PacketIndexBounds{*c,*c};
+  if(auto c=getSignedI64Constant(value))return PacketIndexBounds{*c,*c};
   if(!active.insert(value.getAsOpaquePointer()).second)return std::nullopt;
   auto result=[&]()->std::optional<PacketIndexBounds> {
     if(auto arg=dyn_cast<BlockArgument>(value))return packetCountedPhiBounds(arg,anchor);

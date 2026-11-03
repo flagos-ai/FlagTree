@@ -68,10 +68,10 @@ static std::optional<PacketView> packetView(Value v) {
       shared.getOrder()!=ArrayRef<unsigned>({0}))return std::nullopt;
   unsigned slots=root.getType().getShape()[0];
   if(compact ? (!slots || uint64_t(slots)*8192>65536) : !wp::WholeFrame::get(slots,65536))return std::nullopt;
-  auto constant=legacyV0SafeInteger(index.getIndex());
+  auto constant=getSignedI64Constant(index.getIndex());
   bool slotProven=constant && *constant>=0 && *constant<slots;
   if(auto mask=index.getIndex().getDefiningOp<arith::AndIOp>()) {
-    auto bound=legacyV0SafeInteger(mask.getRhs());
+    auto bound=getSignedI64Constant(mask.getRhs());
     slotProven|=bound && *bound>=0 && uint64_t(*bound)<slots;
   }
   if(!slotProven)return std::nullopt;
@@ -84,10 +84,10 @@ static std::optional<PacketView> packetView(Value v) {
 // Only constants and the existing exact counted-body IV*tile proof qualify.
 static std::optional<std::pair<int64_t,int64_t>> packetIndexRange(
     Value v, Operation *anchor, int64_t tile, int64_t extent) {
-  if(auto c=legacyV0SafeInteger(v))return std::pair<int64_t,int64_t>{*c,*c};
+  if(auto c=getSignedI64Constant(v))return std::pair<int64_t,int64_t>{*c,*c};
   auto mul=v.getDefiningOp<arith::MulIOp>();
-  auto loop=getLegacyV0CountedBody(anchor,extent/tile,0);
-  if(!mul || !loop || mul.getLhs()!=loop->iv || legacyV0SafeInteger(mul.getRhs())!=tile)return std::nullopt;
+  auto loop=getCanonicalCountedLoopBody(anchor,extent/tile,0);
+  if(!mul || !loop || mul.getLhs()!=loop->iv || getSignedI64Constant(mul.getRhs())!=tile)return std::nullopt;
   return std::pair<int64_t,int64_t>{0,(loop->trips-1)*tile};
 }
 // CF queue values are accepted only when every incoming edge resolves to a
@@ -179,7 +179,7 @@ static bool packetUniform(Value v) {
 // not require nowrap assumptions. CF cycles must retain a divisible entry seed.
 static bool packetMultiple(Value v,unsigned n,llvm::SmallPtrSetImpl<void *> &active) {
   if(!v.getType().isInteger() || !n || (n&(n-1)))return false;
-  if(auto c=legacyV0SafeInteger(v))return uint64_t(*c)%n==0;
+  if(auto c=getSignedI64Constant(v))return uint64_t(*c)%n==0;
   if(!active.insert(v.getAsOpaquePointer()).second)return true;
   bool answer=[&]() {
     if(auto arg=dyn_cast<BlockArgument>(v)) {
@@ -206,11 +206,11 @@ static bool packetMultiple(Value v,unsigned n,llvm::SmallPtrSetImpl<void *> &act
       return multiple(op->getOperand(0)) && multiple(op->getOperand(1));
     if(auto mul=dyn_cast<arith::MulIOp>(op))return multiple(mul.getLhs()) || multiple(mul.getRhs());
     if(isa<arith::RemSIOp,arith::RemUIOp>(op)) {
-      auto c=legacyV0SafeInteger(op->getOperand(1));return c && *c>0 && uint64_t(*c)%n==0 && multiple(op->getOperand(0));
+      auto c=getSignedI64Constant(op->getOperand(1));return c && *c>0 && uint64_t(*c)%n==0 && multiple(op->getOperand(0));
     }
     if(auto select=dyn_cast<arith::SelectOp>(op))return multiple(select.getTrueValue()) && multiple(select.getFalseValue());
     if(auto bit=dyn_cast<arith::AndIOp>(op)) {
-      auto c=legacyV0SafeInteger(bit.getRhs());return (c && (uint64_t(*c)&(n-1))==0) || multiple(bit.getLhs()) || multiple(bit.getRhs());
+      auto c=getSignedI64Constant(bit.getRhs());return (c && (uint64_t(*c)&(n-1))==0) || multiple(bit.getLhs()) || multiple(bit.getRhs());
     }
     return false;
   }();
@@ -296,9 +296,9 @@ static LogicalResult verifyWholePackets(ModuleOp mod,StringRef arch) {
        !llvm::equal(producer.getTensorShape(),producer.getDest().getType().getShape())) {
       result=fail("rank/tensorShape mismatch");return;
     }
-    auto r=legacyV0SafeInteger(shape[0]),c=legacyV0SafeInteger(shape[1]);
+    auto r=getSignedI64Constant(shape[0]),c=getSignedI64Constant(shape[1]);
     if(!r || !c || *r<1 || *c<1 || uint64_t(*r)>0x7fffffffull/(2ull*uint64_t(*c)) ||
-       legacyV0SafeInteger(stride[0])!=*c || legacyV0SafeInteger(stride[1])!=1) {
+       getSignedI64Constant(stride[0])!=*c || getSignedI64Constant(stride[1])!=1) {
       result=fail("unknown/overflowing true source extent or non-dense stride");return;
     }
     auto enc=cast<HCUMlsSharedEncodingAttr>(producer.getDest().getType().getEncoding());
@@ -435,7 +435,7 @@ static LogicalResult lowerWholePacketProducer(triton::hcugpu::MatrixLoadToLocalO
   auto columnProof=op->getAttrOfType<BoolAttr>("hcu.packet.internal_verified_column");
   if(global && (!shapeProof || shapeProof.size()!=2 || !columnProof))
     return op.emitError("wholepacket: missing same-pass preflight source witness");
-  std::optional<int64_t> sourceCols=global?std::optional<int64_t>(shapeProof[1]):legacyV0SafeInteger(op.getShape()[1]);
+  std::optional<int64_t> sourceCols=global?std::optional<int64_t>(shapeProof[1]):getSignedI64Constant(op.getShape()[1]);
   bool wholeColumn=global && columnProof.getValue();
   auto columnBounds=op->getAttrOfType<BoolAttr>("hcu.packet.internal_verified_column_bounds");
   auto fullRows=op->getAttrOfType<BoolAttr>("hcu.packet.internal_verified_full_rows");
@@ -509,7 +509,7 @@ static LogicalResult lowerWholePacketProducer(triton::hcugpu::MatrixLoadToLocalO
     }
   }
   Value resource=rw.createOrFold<ROCDL::MakeBufferRsrcOp>(loc,ptr_ty(ctx,8),base,mode,records,b.i32_val(0x20000));
-  auto fn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rw,
+  auto fn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
       structured?"llvm.amdgcn.struct.ptr.buffer.load.lds":"llvm.amdgcn.raw.ptr.buffer.load.lds",
       LLVM::LLVMVoidType::get(ctx),structured?ArrayRef<Type>{ptr_ty(ctx,8),ptr_ty(ctx,3),i32_ty,i32_ty,i32_ty,i32_ty,i32_ty,i32_ty}:ArrayRef<Type>{ptr_ty(ctx,8),ptr_ty(ctx,3),i32_ty,i32_ty,i32_ty,i32_ty,i32_ty});
   for(unsigned copy=0;copy<p->copiesPerWave();++copy) {
@@ -593,7 +593,7 @@ static LogicalResult lowerWholePacketConsumer(LocalLoadOp op,LocalLoadOpAdaptor 
   const auto &deltas=plan->deltas;
   const auto &unique=plan->unique;
   LLVM::LLVMFuncOp matrixFn;
-  if(matrix)matrixFn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rw,
+  if(matrix)matrixFn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
       matrixAlt?"llvm.hcu.ds.read.m32x16.b16.alt.v4i32.p3":
           "llvm.hcu.ds.read.m32x16.b16.v4i32.p3",vec_ty(i32_ty,4),{ptr_ty(ctx,3),i32_ty});
   llvm::DenseMap<unsigned,Value> pointers;

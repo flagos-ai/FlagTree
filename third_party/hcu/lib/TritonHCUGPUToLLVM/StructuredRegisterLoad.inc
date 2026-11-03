@@ -110,9 +110,9 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
     for(Value v:op.getShape())if(!structuredRegisterDataUniform(v))return fail("shape must be CTA-uniform");
     for(Value v:op.getStrides())if(!structuredRegisterDataUniform(v))return fail("strides must be CTA-uniform");
     for(Value v:op.getIndices())if(!structuredRegisterDataUniform(v))return fail("origins/enable must be CTA-uniform");
-    auto K=legacyV0SafeInteger(op.getShape()[1]);
+    auto K=getSignedI64Constant(op.getShape()[1]);
     if(!K || *K<=0 || 2*uint64_t(*K)>=0x4000 ||
-       legacyV0SafeInteger(op.getStrides()[0])!=K || legacyV0SafeInteger(op.getStrides()[1])!=1)
+       getSignedI64Constant(op.getStrides()[0])!=K || getSignedI64Constant(op.getStrides()[1])!=1)
       return fail("requires proved positive K, rowstride=K, colstride=1 and 2*K<0x4000");
     if(t.getShape()[0]<1 || t.getShape()[0]>INT32_MAX || t.getShape()[1]<1 || t.getShape()[1]>*K)
       return fail("requires positive i32 tile and complete K window");
@@ -182,7 +182,7 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     Value records=b.select(enabled,remaining,b.i32_val(0));
     Value baseOffset=b.sub(b.add(b.mul(b.zext(i64_ty,rowBase),b.i64_val(K)),b.zext(i64_ty,colBase)),b.i64_val(8));
     Value base=b.gep(ptr_ty(ctx,1),elem,a.getBase(),baseOffset);
-    auto resourceFn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rw,
+    auto resourceFn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
         "llvm.amdgcn.make.buffer.rsrc.p8.p1",ptr_ty(ctx,8),{ptr_ty(ctx,1),i16_ty,i32_ty,i32_ty});
     // Flat byte addressing is legal from a per-tile bound, independently of
     // the total tensor size. rowBase is a 64-bit pointer displacement. Every
@@ -212,9 +212,9 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     Type payload;
     if(width==1)payload=i16_ty;else if(width==2)payload=i32_ty;else payload=vec_ty(i32_ty,width/2);
     std::string suffix=width==1?"i16":width==2?"i32":width==4?"v2i32":"v4i32";
-    auto loadFn=flat?getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rw,
+    auto loadFn=flat?getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
         "llvm.amdgcn.raw.ptr.buffer.load."+suffix,payload,{ptr_ty(ctx,8),i32_ty,i32_ty,i32_ty}):
-        getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rw,
+        getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
         "llvm.amdgcn.struct.ptr.buffer.load."+suffix,payload,{ptr_ty(ctx,8),i32_ty,i32_ty,i32_ty,i32_ty});
     auto reg=StringAttr::get(ctx,"register"),lane=StringAttr::get(ctx,"lane"),warp=StringAttr::get(ctx,"warp");
     auto ll=triton::gpu::toLinearLayout(op.getType());ll=ll.sublayout({reg,lane,warp},llvm::to_vector(ll.getOutDimNames()));

@@ -50,7 +50,7 @@ static bool rawOwner(Value value) {
   auto enc=dyn_cast<SwizzledSharedEncodingAttr>(owner.getType().getEncoding());
   if(!enc||enc.getVec()!=1||enc.getPerPhase()!=1||enc.getMaxPhase()!=1||
       enc.getOrder()!=ArrayRef<unsigned>{0}||ty.getEncoding()!=owner.getType().getEncoding())return false;
-  auto c=legacyV0SafeInteger(index.getIndex());
+  auto c=getSignedI64Constant(index.getIndex());
   return c&&*c>=0&&*c<owner.getType().getShape()[0];
 }
 static std::optional<rw::SourceLayout> rawChart(ArrayRef<int32_t> shape,ArrayRef<int32_t> basis) {
@@ -187,7 +187,7 @@ struct RawWindowCopyConversion : ConvertOpToLLVMPattern<rh::RawWindowCopyOp> {
     Value resource=b.undef(vec_ty(i32_ty,4));
     SmallVector<Value> words{b.trunc(i32_ty,base64),b.and_(b.trunc(i32_ty,b.lshr(base64,b.i64_val(32))),b.i32_val(0xffff)),nr,b.i32_val(0x20000)};
     for(unsigned i=0;i<4;++i)resource=b.insert_element(vec_ty(i32_ty,4),resource,words[i],b.i32_val(i));
-    auto fn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rewriter,"llvm.hcu.raw.buffer.load.lds",
+    auto fn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rewriter,"llvm.hcu.raw.buffer.load.lds",
       LLVM::LLVMVoidType::get(ctx),{vec_ty(i32_ty,4),ptr_ty(ctx,3),i32_ty,i32_ty,i32_ty,i32_ty,i32_ty});
     Value ordinal=b.or_(b.shl(wave,b.i32_val(9)),b.shl(lane,b.i32_val(3)));
     Value rawBase=b.add(b.ptrtoint(i32_ty,smem.getBase()),b.shl(wave,b.i32_val(10)));
@@ -216,7 +216,7 @@ struct RawWindowReadConversion : ConvertOpToLLVMPattern<rh::RawWindowReadOp> {
     // This is a local scheduling completion, never shared-DMA publication.
     // A vector prefetch from the preceding K tile is complete before this read.
     if(op->hasAttr("hcu.global_read_completion")) {
-      auto fn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rewriter,
+      auto fn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rewriter,
         "llvm.amdgcn.s.waitcnt",LLVM::LLVMVoidType::get(ctx),{i32_ty});
       LLVM::createLLVMCallOp(rewriter,loc,fn,{b.i32_val(0x0f70)});
     }
@@ -236,7 +236,7 @@ struct RawWindowReadConversion : ConvertOpToLLVMPattern<rh::RawWindowReadOp> {
       for(unsigned j=0;j<plan->width;++j)values.push_back(b.extract_element(elem,loaded,b.i32_val(j)));
     }
     if(op->hasAttr("hcu.full_read_completion")) {
-      auto fn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rewriter,
+      auto fn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rewriter,
         "llvm.amdgcn.s.waitcnt",LLVM::LLVMVoidType::get(ctx),{i32_ty});
       LLVM::createLLVMCallOp(rewriter,loc,fn,{b.i32_val(0xc07f)});
     }
@@ -256,7 +256,7 @@ struct RawWindowWaitConversion : ConvertOpToLLVMPattern<rh::RawWindowWaitOp> {
   using ConvertOpToLLVMPattern<rh::RawWindowWaitOp>::ConvertOpToLLVMPattern;
   LogicalResult matchAndRewrite(rh::RawWindowWaitOp op,OpAdaptor,ConversionPatternRewriter& rewriter) const override {
     auto loc=op.getLoc();auto b=TritonLLVMOpBuilder(loc,rewriter);
-    auto fn=getLegacyV0Function(op->getParentOfType<ModuleOp>(),loc,rewriter,"llvm.amdgcn.s.waitcnt",
+    auto fn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rewriter,"llvm.amdgcn.s.waitcnt",
       LLVM::LLVMVoidType::get(rewriter.getContext()),{i32_ty});
     // VM0, retain maximal EXP/LGKM fields. Source kernel owns CTA ordering.
     LLVM::createLLVMCallOp(rewriter,loc,fn,{b.i32_val(0x0f70)});

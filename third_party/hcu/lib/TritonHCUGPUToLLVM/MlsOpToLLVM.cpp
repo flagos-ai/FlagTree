@@ -1,4 +1,5 @@
 #include "BufferOpsEmitter.h"
+#include "PacketLoweringUtils.h"
 #include "Dialect/TritonHCUGPU/IR/WholePacketLayout.h"
 #include "triton/Analysis/Allocation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -40,6 +41,11 @@ using ::mlir::triton::gpu::HCUMlsSharedEncodingAttr;
 using ::mlir::triton::hcugpu::MlsEncodingAttr;
 using ::mlir::triton::hcugpu::LegacyV0Packet;
 using ::mlir::triton::hcugpu::getLegacyV0Packet;
+using ::mlir::triton::HCU::packet_lowering::getOrInsertHCUIntrinsic;
+using ::mlir::triton::HCU::packet_lowering::getSignedI64Constant;
+using ::mlir::triton::HCU::packet_lowering::CountedLoopBody;
+using ::mlir::triton::HCU::packet_lowering::getCanonicalCountedLoopBody;
+
 
 // Proposed closed gfx936 v0 experiment. This is not the v1 MLS instruction ABI.
 // v0: opIdx=1, mlsTile={K,N} is the whole logical B packet, 16-bit,
@@ -217,95 +223,6 @@ static bool isLegacyV0S25Kw8Dot(RankedTensorType dst,
          matches(warp, {{0, 32}, {0, 0}});
 }
 
-static LLVM::LLVMFuncOp getLegacyV0Function(ModuleOp module, Location loc,
-    ConversionPatternRewriter &rewriter, StringRef name, Type result,
-    ArrayRef<Type> args) {
-  if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name))
-    return fn;
-  OpBuilder::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPointToStart(module.getBody());
-  auto fn = LLVM::LLVMFuncOp::create(rewriter, loc, name,
-      LLVM::LLVMFunctionType::get(result, args, false));
-  fn.setConvergent(true);
-  fn.setPassthroughAttr(rewriter.getArrayAttr({rewriter.getStringAttr("nounwind")}));
-  return fn;
-}
-
-// Closed static-loop source-coordinate validation.
-// This validates coordinates only. The separate closed protocol verifier must
-// prove all memory effects, exact accumulator chain, view ownership and barriers.
-// No certificate attributes, new pass or generic range-analysis infrastructure.
-
-static std::optional<int64_t> legacyV0SafeInteger(Value v) {
-  auto c = v.getDefiningOp<arith::ConstantOp>();
-  auto a = c ? dyn_cast<IntegerAttr>(c.getValue()) : IntegerAttr{};
-  if (!a || !a.getValue().isSignedIntN(64))
-    return std::nullopt;
-  return a.getInt();
-}
-
-struct LegacyV0CountedBody {
-  Block *body;
-  Value iv;
-  int64_t trips;
-};
-
-// Actual compiler_hcu.make_llir converts SCF to CF before this preflight.
-// Reuse the existing MembarUtility exact-four-block counted-loop proof shape,
-// specialized to constant positive trip/step1. Default arity2 remains the
-// original stage1 contract; arity0 is used only by prefix2's local SSA queues.
-static std::optional<LegacyV0CountedBody>
-getLegacyV0CountedBody(Operation *anchor, int64_t maxTrips, unsigned arguments = 2) {
-  auto fn = anchor->getParentOfType<triton::FuncOp>();
-  if (!fn || fn.getBody().getBlocks().size() != 4)
-    return std::nullopt;
-  Block *entry = &fn.getBody().front();
-  auto enter = dyn_cast<cf::BranchOp>(entry->getTerminator());
-  if (!enter)
-    return std::nullopt;
-  Block *header = enter.getDest();
-  auto cond = dyn_cast<cf::CondBranchOp>(header->getTerminator());
-  unsigned arity = header->getNumArguments();
-  if (!cond || (arguments ? arity != arguments : arity < 2) ||
-      !header->getArgument(0).getType().isInteger(32) ||
-      enter.getDestOperands().size() != arity ||
-      legacyV0SafeInteger(enter.getDestOperands()[0]) != 0 ||
-      std::distance(header->begin(), header->end()) != 2)
-    return std::nullopt;
-  Block *body = cond.getTrueDest(), *exit = cond.getFalseDest();
-  llvm::SmallPtrSet<Block *, 4> blocks{entry, header, body, exit};
-  if (blocks.size() != 4 || anchor->getBlock() != body ||
-      body->getNumArguments() || exit->getNumArguments() != 0 ||
-      !cond.getTrueDestOperands().empty() ||
-      !cond.getFalseDestOperands().empty() ||
-      body->getSinglePredecessor() != header ||
-      exit->getSinglePredecessor() != header ||
-      !entry->hasNoPredecessors())
-    return std::nullopt;
-  auto predecessors = llvm::to_vector(header->getPredecessors());
-  if (predecessors.size() != 2 ||
-      !llvm::is_contained(predecessors, entry) ||
-      !llvm::is_contained(predecessors, body))
-    return std::nullopt;
-  auto cmp = cond.getCondition().getDefiningOp<arith::CmpIOp>();
-  auto trips = cmp ? legacyV0SafeInteger(cmp.getRhs()) : std::nullopt;
-  Value iv = header->getArgument(0);
-  if (!cmp || cmp->getBlock() != header ||
-      cmp.getPredicate() != arith::CmpIPredicate::slt || cmp.getLhs() != iv ||
-      !trips || *trips < 1 || *trips > maxTrips)
-    return std::nullopt;
-  auto back = dyn_cast<cf::BranchOp>(body->getTerminator());
-  if (!back || back.getDest() != header || back.getDestOperands().size() != arity)
-    return std::nullopt;
-  auto inc = back.getDestOperands()[0].getDefiningOp<arith::AddIOp>();
-  if (!inc || inc->getBlock() != body || inc.getLhs() != iv ||
-      legacyV0SafeInteger(inc.getRhs()) != 1)
-    return std::nullopt;
-  // Initial0, step1, sltTrip, unique entry/backedge prove 0<=IV<Trip.
-  // Caller bounds Trip by its validated source extent before using IV*BK.
-  return LegacyV0CountedBody{body, iv, *trips};
-}
-
 // Bound the entire full BN column tile without trusting launch metadata.
 // Only one uniform CTA program-id axis1, unsigned remainder (or exact power2
 // mask), then BN scale is accepted. It does not alter any pointer/descriptor.
@@ -360,13 +277,13 @@ static std::optional<LegacyV0SourceWindow> getLegacyV0SourceWindow(
   if (copy.getShape().size() != 2 || copy.getStrides().size() != 2 ||
       copy.getIndices().size() != 2)
     return std::nullopt;
-  auto totalK = legacyV0SafeInteger(copy.getShape()[0]);
-  auto totalN = legacyV0SafeInteger(copy.getShape()[1]);
+  auto totalK = getSignedI64Constant(copy.getShape()[0]);
+  auto totalN = getSignedI64Constant(copy.getShape()[1]);
   if (!totalK || !totalN || *totalK < p.k || *totalN < p.n ||
       *totalK > 0x7fffffffll || *totalN > 0x7fffffffll ||
       *totalK % p.k || *totalN % p.n ||
-      legacyV0SafeInteger(copy.getStrides()[0]) != *totalN ||
-      legacyV0SafeInteger(copy.getStrides()[1]) != 1)
+      getSignedI64Constant(copy.getStrides()[0]) != *totalN ||
+      getSignedI64Constant(copy.getStrides()[1]) != 1)
     return std::nullopt;
   // Check before multiplication, including the descriptor's signed-i32 bound.
   // totalN is a multiple of BN128/256, so every row is16B aligned.
@@ -375,27 +292,27 @@ static std::optional<LegacyV0SourceWindow> getLegacyV0SourceWindow(
   // Keep column0, or prove a bounded CTA tile column independently of grid.
   // Non-loop one-shot corners/col8 still use their unchanged old verifier.
   int64_t maxColumn = 0;
-  if (legacyV0SafeInteger(copy.getIndices()[1]) != 0) {
+  if (getSignedI64Constant(copy.getIndices()[1]) != 0) {
     if (!isLegacyV0BoundedPIDColumn(copy.getIndices()[1], *totalN, p.n))
       return std::nullopt;
     maxColumn = *totalN - p.n;
   }
   int64_t lo = 0, hi = 0;
-  if (auto row = legacyV0SafeInteger(copy.getIndices()[0])) {
+  if (auto row = getSignedI64Constant(copy.getIndices()[0])) {
     if (*row < 0 || *row % p.k || *row > *totalK - p.k)
       return std::nullopt;
     lo = hi = *row; // optional static-unrolled2/4 diagnostic
   } else {
-    auto loop = getLegacyV0CountedBody(copy, *totalK / p.k - int(prefix2), prefix2 ? 0 : 2);
+    auto loop = getCanonicalCountedLoopBody(copy, *totalK / p.k - int(prefix2), prefix2 ? 0 : 2);
     auto dynamicRow = copy.getIndices()[0].getDefiningOp<arith::MulIOp>();
     if (!loop || !dynamicRow || dynamicRow->getBlock() != loop->body ||
         (prefix2 ? !dynamicRow.getLhs().getDefiningOp<arith::AddIOp>()
                  : dynamicRow.getLhs() != loop->iv) ||
-        legacyV0SafeInteger(dynamicRow.getRhs()) != p.k)
+        getSignedI64Constant(dynamicRow.getRhs()) != p.k)
       return std::nullopt;
     if (prefix2) {
       auto next = dynamicRow.getLhs().getDefiningOp<arith::AddIOp>();
-      if (next.getLhs() != loop->iv || legacyV0SafeInteger(next.getRhs()) != 1)
+      if (next.getLhs() != loop->iv || getSignedI64Constant(next.getRhs()) != 1)
         return std::nullopt;
     }
     lo = prefix2 ? p.k : 0;
@@ -441,16 +358,16 @@ getLegacyV0LocalPrefetchSourceWindow(
         !llvm::equal(copy.getStrides(), first.getStrides()) ||
         copy.getIndices().size() != 2 || copy.getIndices()[1] != first.getIndices()[1])
       return std::nullopt;
-  auto loop = getLegacyV0CountedBody(future, initial->totalK / p.k - slots, 0);
+  auto loop = getCanonicalCountedLoopBody(future, initial->totalK / p.k - slots, 0);
   auto row = future.getIndices()[0].getDefiningOp<arith::MulIOp>();
   auto tile = row ? row.getLhs().getDefiningOp<arith::AddIOp>() : arith::AddIOp{};
   if (!loop || loop->trips != initial->totalK / p.k - slots ||
       !row || !tile || row->getBlock() != loop->body || tile->getBlock() != loop->body ||
-      tile.getLhs() != loop->iv || legacyV0SafeInteger(tile.getRhs()) != slots ||
-      legacyV0SafeInteger(row.getRhs()) != p.k)
+      tile.getLhs() != loop->iv || getSignedI64Constant(tile.getRhs()) != slots ||
+      getSignedI64Constant(row.getRhs()) != p.k)
     return std::nullopt;
   int64_t hi = (loop->trips + slots - 1) * int64_t(p.k);
-  auto totalN = legacyV0SafeInteger(first.getShape()[1]);
+  auto totalN = getSignedI64Constant(first.getShape()[1]);
   if (!totalN) return std::nullopt; // established by the prefix SourceWindows
   uint64_t lastVector = 2ull * ((uint64_t(hi) + p.k - 1) * uint64_t(*totalN) +
                                initial->column + p.n - 8);
@@ -555,7 +472,7 @@ static LogicalResult lowerLegacyV0IndexedAProducer(
   row = b.add(row, adaptor.getIndices()[0]);
   Value offset = b.add(b.shl(adaptor.getIndices()[1], b.i32_val(1)),
                       b.shl(b.and_(lane, b.i32_val(3)), b.i32_val(4)));
-  auto fn = getLegacyV0Function(op->getParentOfType<ModuleOp>(), loc, rewriter,
+  auto fn = getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(), loc, rewriter,
       "llvm.amdgcn.struct.ptr.buffer.load.lds", LLVM::LLVMVoidType::get(ctx),
       {ptr_ty(ctx, 8), ptr_ty(ctx, 3), i32_ty, i32_ty, i32_ty,
        i32_ty, i32_ty, i32_ty});
@@ -678,7 +595,7 @@ static LogicalResult lowerLegacyV0Producer(
   for (unsigned i = 0; i < 4; ++i)
     resource = b.insert_element(vec_ty(i32_ty, 4), resource, words[i], b.i32_val(i));
   auto module = op->getParentOfType<ModuleOp>();
-  auto fn = getLegacyV0Function(module, loc, rewriter, "llvm.hcu.raw.buffer.load.lds",
+  auto fn = getOrInsertHCUIntrinsic(module, loc, rewriter, "llvm.hcu.raw.buffer.load.lds",
       LLVM::LLVMVoidType::get(ctx), {vec_ty(i32_ty, 4), ptr_ty(ctx, 3),
                                    i32_ty, i32_ty, i32_ty, i32_ty, i32_ty});
   // Closed preflight proves the full 16-byte vector is within NUM_RECORDS;
@@ -736,7 +653,7 @@ static LogicalResult lowerLegacyV0Consumer(triton::gpu::LocalLoadOp op,
       b.shl(b.and_(b.lshr(laneId, b.i32_val(1)), b.i32_val(1)), b.i32_val(2)));
   Value producerLane = b.or_(b.and_(laneId, b.i32_val(48)),
                             b.shl(b.and_(laneId, b.i32_val(1)), b.i32_val(3)));
-  auto fn = getLegacyV0Function(op->getParentOfType<ModuleOp>(), loc, rewriter,
+  auto fn = getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(), loc, rewriter,
       "llvm.hcu.ds.read.m32x16.b16.v4i32.p3", vec_ty(i32_ty, 4),
       {ptr_ty(ctx, 3), i32_ty});
   SmallVector<Value> values;
@@ -849,7 +766,7 @@ static LogicalResult verifyLegacyV0IndexedAClosedModule(ModuleOp mod) {
       root.getAlignmentOrDefault() < 16 || root.getAlignmentOrDefault() % 16 ||
       !root.getResult().hasOneUse()) return fail("requires sole aligned mutable64KiB root");
   auto index = dyn_cast<MemDescIndexOp>(*root.getResult().getUsers().begin());
-  auto slot = index ? legacyV0SafeInteger(index.getIndex()) : std::optional<int64_t>{};
+  auto slot = index ? getSignedI64Constant(index.getIndex()) : std::optional<int64_t>{};
   if (!slot || *slot < 0 || *slot > 3)
     return fail("requires finite whole packet view0..3");
   auto view = index.getType();
@@ -898,11 +815,11 @@ static LogicalResult verifyLegacyV0IndexedAClosedModule(ModuleOp mod) {
       copy.getEvict() != triton::EvictionPolicy::NORMAL || copy.getIsVolatile())
     return fail("requires exact indexed-A metadata/default memory semantics");
   for (unsigned d = 0; d < 2; ++d)
-    if (legacyV0SafeInteger(copy.getShape()[d]) != 1024 ||
-        legacyV0SafeInteger(copy.getStrides()[d]) != (d == 0 ? 1024 : 1))
+    if (getSignedI64Constant(copy.getShape()[d]) != 1024 ||
+        getSignedI64Constant(copy.getStrides()[d]) != (d == 0 ? 1024 : 1))
       return fail("requires measured source shape/stride/index tuple");
-  auto sourceRow = legacyV0SafeInteger(copy.getIndices()[0]);
-  auto sourceColumn = legacyV0SafeInteger(copy.getIndices()[1]);
+  auto sourceRow = getSignedI64Constant(copy.getIndices()[0]);
+  auto sourceColumn = getSignedI64Constant(copy.getIndices()[1]);
   if (oldSourceABI) {
     if (sourceRow != 0 || sourceColumn != 8)
       return fail("requires measured source shape/stride/index tuple");
@@ -1016,7 +933,7 @@ struct LegacyV0StagedAProtocol {
 static std::optional<LegacyV0StagedAProtocol> matchLegacyV0StagedA(
     ModuleOp module, triton::FuncOp function, LocalAllocOp rootB,
     LocalLoadOp localB, const LegacyV0Packet &packet,
-    const LegacyV0CountedBody *loop = nullptr) {
+    const CountedLoopBody *loop = nullptr) {
   auto enabled = module->getAttrOfType<IntegerAttr>("ttg.hcu.v0_blockptr");
   if (!enabled || enabled.getInt() != 1 || (!loop && !function.getBody().hasOneBlock()) ||
       rootB.getType().getShape()[0] != 1)
@@ -1289,7 +1206,7 @@ static LogicalResult verifyLegacyV0StaticLoop(ModuleOp mod) {
       !rt.getMutableMemory() || !root.isSharedMemoryAlloc() || root.getSrc() ||
       root.getAlignmentOrDefault() < 16 || root.getAlignmentOrDefault() % 16 ||
       !root.getResult().hasOneUse() || view.getSrc() != root.getResult() ||
-      legacyV0SafeInteger(view.getIndex()) != 0)
+      getSignedI64Constant(view.getIndex()) != 0)
     return fail("legacy-v0 static loop requires the exact8KiB root and slot0");
   auto vt = view.getType();
   if (vt.getRank() != 2 || vt.getShape() != ArrayRef<int64_t>({packet->k, packet->n}) ||
@@ -1301,12 +1218,12 @@ static LogicalResult verifyLegacyV0StaticLoop(ModuleOp mod) {
       !isLegacyV0Dot(localB.getType(), *packet))
     return fail("legacy-v0 static loop requires exact paired opaque B ownership");
   auto source = getLegacyV0SourceWindow(copy, *packet);
-  auto loop = source ? getLegacyV0CountedBody(copy, source->totalK / packet->k)
+  auto loop = source ? getCanonicalCountedLoopBody(copy, source->totalK / packet->k)
                      : std::nullopt;
   if (!loop || !source)
     return fail("legacy-v0 static loop requires proved IV*BK rectangular bounds");
   auto row = copy.getIndices()[0].getDefiningOp<arith::MulIOp>();
-  if (!row || row.getLhs() != loop->iv || legacyV0SafeInteger(row.getRhs()) != packet->k)
+  if (!row || row.getLhs() != loop->iv || getSignedI64Constant(row.getRhs()) != packet->k)
     return fail("legacy-v0 static loop requires exact IV*BK source row");
   Block *body = loop->body;
   auto back = cast<cf::BranchOp>(body->getTerminator());
@@ -1468,13 +1385,13 @@ static LogicalResult verifyLegacyV0Prefix2(
   for (auto c : copies) (c->getBlock() == entry ? initial : future) = c;
   if (!initial || !future) return fail("copy block roles");
   auto source = getLegacyV0SourceWindow(future, *packet, true);
-  auto loop = source ? getLegacyV0CountedBody(future, source->totalK / packet->k - 1, 0)
+  auto loop = source ? getCanonicalCountedLoopBody(future, source->totalK / packet->k - 1, 0)
                      : std::nullopt;
   if (!loop) return fail("positive static source bounds and loop queues");
   auto row = future.getIndices()[0].getDefiningOp<arith::MulIOp>();
   auto next = row ? row.getLhs().getDefiningOp<arith::AddIOp>() : arith::AddIOp{};
   if (!row || !next || next.getLhs() != loop->iv ||
-      legacyV0SafeInteger(next.getRhs()) != 1 || legacyV0SafeInteger(row.getRhs()) != packet->k)
+      getSignedI64Constant(next.getRhs()) != 1 || getSignedI64Constant(row.getRhs()) != packet->k)
     return fail("positive static source bounds and loop queues");
   Block *body = loop->body;
   auto back = cast<cf::BranchOp>(body->getTerminator());
@@ -1486,7 +1403,7 @@ static LogicalResult verifyLegacyV0Prefix2(
   if (!initialView || !futureView || initialView->getBlock() != entry ||
       futureView->getBlock() != body || initialView.getSrc() != root.getResult() ||
       futureView.getSrc() != root.getResult() ||
-      legacyV0SafeInteger(initialView.getIndex()) != 0)
+      getSignedI64Constant(initialView.getIndex()) != 0)
     return fail("anchored prefix views and counter queue");
   auto select = futureView.getIndex().getDefiningOp<arith::SelectOp>();
   auto inc = select ? select.getTrueValue().getDefiningOp<arith::AddIOp>() : arith::AddIOp{};
@@ -1494,12 +1411,12 @@ static LogicalResult verifyLegacyV0Prefix2(
   auto counter = inc ? dyn_cast<BlockArgument>(inc.getLhs()) : BlockArgument{};
   if (!select || !inc || !cmp || !counter || counter.getOwner() != header ||
       !counter.getType().isInteger(32) || select->getBlock() != body ||
-      legacyV0SafeInteger(enter.getDestOperands()[counter.getArgNumber()]) != 0 ||
+      getSignedI64Constant(enter.getDestOperands()[counter.getArgNumber()]) != 0 ||
       back.getDestOperands()[counter.getArgNumber()] != futureView.getIndex() ||
-      legacyV0SafeInteger(inc.getRhs()) != 1 ||
-      cmp.getLhs() != inc.getResult() || legacyV0SafeInteger(cmp.getRhs()) != 2 ||
+      getSignedI64Constant(inc.getRhs()) != 1 ||
+      cmp.getLhs() != inc.getResult() || getSignedI64Constant(cmp.getRhs()) != 2 ||
       cmp.getPredicate() != arith::CmpIPredicate::slt ||
-      legacyV0SafeInteger(select.getFalseValue()) != 0)
+      getSignedI64Constant(select.getFalseValue()) != 0)
     return fail("uniform modulo2 prefix index required");
   auto vt = initialView.getType();
   if (vt.getShape() != ArrayRef<int64_t>({packet->k, packet->n}) ||
@@ -1510,7 +1427,7 @@ static LogicalResult verifyLegacyV0Prefix2(
     return fail("whole identical physical packet views required");
   if (initial.getIndices().size() != 2 || initial.getShape().size() != 2 ||
       initial.getStrides().size() != 2 ||
-      legacyV0SafeInteger(initial.getIndices()[0]) != 0 ||
+      getSignedI64Constant(initial.getIndices()[0]) != 0 ||
       initial.getBase() != future.getBase() || !llvm::equal(initial.getShape(), future.getShape()) ||
       !llvm::equal(initial.getStrides(), future.getStrides()) ||
       initial.getIndices()[1] != future.getIndices()[1])
@@ -1573,7 +1490,7 @@ static LogicalResult verifyLegacyV0Prefix2(
              : optional && value == 0;
   };
   bool s25Kw8Readers = !oldReaders && source->totalK == 1024 && loop->trips == 31 &&
-      legacyV0SafeInteger(future.getShape()[1]) == 1024 &&
+      getSignedI64Constant(future.getShape()[1]) == 1024 &&
       kw8Hint("ttg.hcu.v0_blockptr", 1) && kw8Hint("ttg.hcu.mmac_tpw_n", 2) &&
       kw8Hint("ttg.hcu.mmac_transposed", 1) && kw8Hint("ttg.hcu.canonical_matrix", 0) &&
       kw8Hint("ttg.hcu.async_slot_war", 0, true) &&
@@ -1751,7 +1668,7 @@ static LogicalResult verifyLegacyV0LocalPrefetch(
   });
   auto first = prologue.front();
   auto source = getLegacyV0LocalPrefetchSourceWindow(prologue, future, *packet);
-  auto loop = source ? getLegacyV0CountedBody(future, source->totalK / 32 - slots, 0)
+  auto loop = source ? getCanonicalCountedLoopBody(future, source->totalK / 32 - slots, 0)
                      : std::nullopt;
   if (!loop) return fail(slots == 2 ? "bounded full static T>=4 lookahead2 source required"
                             : "bounded full static T>=slots+2 lookahead source required");
@@ -1791,7 +1708,7 @@ static LogicalResult verifyLegacyV0LocalPrefetch(
     return fail("identical full packet view type required");
   for (unsigned j = 0; j <= slots; ++j)
     if (views[j].getType() != vt ||
-        (j < slots && legacyV0SafeInteger(views[j].getIndex()) != j))
+        (j < slots && getSignedI64Constant(views[j].getIndex()) != j))
       return fail("identical full packet views with ordered prefix slots required");
   auto select = views.back().getIndex().getDefiningOp<arith::SelectOp>();
   auto inc = select ? select.getTrueValue().getDefiningOp<arith::AddIOp>() : arith::AddIOp{};
@@ -1800,12 +1717,12 @@ static LogicalResult verifyLegacyV0LocalPrefetch(
   if (!select || !inc || !cmp || !counter || counter.getOwner() != header ||
       !counter.getType().isInteger(32) || select->getBlock() != body ||
       inc->getBlock() != body || cmp->getBlock() != body ||
-      legacyV0SafeInteger(enter.getDestOperands()[counter.getArgNumber()]) != slots - 1 ||
+      getSignedI64Constant(enter.getDestOperands()[counter.getArgNumber()]) != slots - 1 ||
       back.getDestOperands()[counter.getArgNumber()] != select.getResult() ||
-      legacyV0SafeInteger(inc.getRhs()) != 1 || cmp.getLhs() != inc.getResult() ||
-      legacyV0SafeInteger(cmp.getRhs()) != slots ||
+      getSignedI64Constant(inc.getRhs()) != 1 || cmp.getLhs() != inc.getResult() ||
+      getSignedI64Constant(cmp.getRhs()) != slots ||
       cmp.getPredicate() != arith::CmpIPredicate::slt ||
-      legacyV0SafeInteger(select.getFalseValue()) != 0)
+      getSignedI64Constant(select.getFalseValue()) != 0)
     return fail(slots == 2 ? "current slot counter must be anchored at1 and advance modulo2"
                           : "slot counter must start at slots-1 and advance modulo slots");
   // Match only exact entry seeds and backedge shifts, independently of
@@ -2062,7 +1979,7 @@ prepareLegacyV0LocalPrefetchAWAR(ModuleOp mod, ModuleAllocation &allocation,
           t.getEncoding() != rt.getEncoding() || t.getElementType() != rt.getElementType() ||
           t.getMemorySpace() != rt.getMemorySpace() || t.getMutableMemory() != rt.getMutableMemory()) return {};
       if (user->getBlock() == entry) {
-        auto index = legacyV0SafeInteger(view.getIndex());
+        auto index = getSignedI64Constant(view.getIndex());
         if (!index || *index < 0 || *index > 3 || prefix[*index]) return {};
         prefix[*index] = view;
       } else if (user->getBlock() == body && !futureView && view.getIndex() == bView.getIndex())
@@ -2321,12 +2238,12 @@ static LogicalResult verifyLegacyV0PairedPrimitives(ModuleOp mod) {
           align.getInt() < 16 || align.getInt() % 16) {
         result = fail("source argument needs explicit 16B alignment"); return;
       }
-      auto extent = legacyV0SafeInteger(copy.getShape()[i]);
+      auto extent = getSignedI64Constant(copy.getShape()[i]);
       if (!extent || *extent < 128 || *extent % 128 ||
           *extent >= (int64_t(1) << 20) ||
-          legacyV0SafeInteger(copy.getShape()[1 - i]) != 1024 ||
-          legacyV0SafeInteger(copy.getStrides()[0]) != (i == 0 ? 1024 : *extent) ||
-          legacyV0SafeInteger(copy.getStrides()[1]) != 1) {
+          getSignedI64Constant(copy.getShape()[1 - i]) != 1024 ||
+          getSignedI64Constant(copy.getStrides()[0]) != (i == 0 ? 1024 : *extent) ||
+          getSignedI64Constant(copy.getStrides()[1]) != 1) {
         result = fail("source requires contiguous fixed-K1024 full-128 tiles and I32 byte extent"); return;
       }
       for (unsigned d = 0; d < 2; ++d)
@@ -2401,7 +2318,7 @@ prepareLegacyV0IndexedABWAR(ModuleOp mod, ModuleAllocation &allocation) {
           view.getType().getAllocShape() != view.getType().getShape() ||
           view.getType().getEncoding() != rt.getEncoding()) return {};
       if (view->getBlock() == entry) {
-        auto slot = legacyV0SafeInteger(view.getIndex());
+        auto slot = getSignedI64Constant(view.getIndex());
         if (!slot || *slot < 0 || *slot > 3 || prefix[i][*slot]) return {};
         prefix[i][*slot] = view;
       } else {
@@ -2416,7 +2333,7 @@ prepareLegacyV0IndexedABWAR(ModuleOp mod, ModuleAllocation &allocation) {
     }
     if (!future[i] || llvm::any_of(prefix[i], [](auto v) { return !v; })) return {};
   }
-  auto loop = getLegacyV0CountedBody(future[0], 28, 0);
+  auto loop = getCanonicalCountedLoopBody(future[0], 28, 0);
   if (!loop || future[1]->getBlock() != loop->body) return {};
   Block *body = loop->body;
   auto back = cast<cf::BranchOp>(body->getTerminator());
@@ -2435,12 +2352,12 @@ prepareLegacyV0IndexedABWAR(ModuleOp mod, ModuleAllocation &allocation) {
   if (!select || !inc || !cmp || !counter || counter.getOwner() != header ||
       !counter.getType().isInteger(32) || select->getBlock() != body ||
       inc->getBlock() != body || cmp->getBlock() != body ||
-      legacyV0SafeInteger(enter.getDestOperands()[counter.getArgNumber()]) != 3 ||
+      getSignedI64Constant(enter.getDestOperands()[counter.getArgNumber()]) != 3 ||
       back.getDestOperands()[counter.getArgNumber()] != index ||
-      legacyV0SafeInteger(inc.getRhs()) != 1 || cmp.getLhs() != inc.getResult() ||
-      legacyV0SafeInteger(cmp.getRhs()) != 4 ||
+      getSignedI64Constant(inc.getRhs()) != 1 || cmp.getLhs() != inc.getResult() ||
+      getSignedI64Constant(cmp.getRhs()) != 4 ||
       cmp.getPredicate() != arith::CmpIPredicate::slt ||
-      legacyV0SafeInteger(select.getFalseValue()) != 0) return {};
+      getSignedI64Constant(select.getFalseValue()) != 0) return {};
   auto *data = allocation.getFuncData(cast<FunctionOpInterface>(fn.getOperation()));
   if (!data || allocation.getSharedMemorySize() != 65536 || !is("ttg.shared", 65536)) return {};
   uint64_t bases[2];
