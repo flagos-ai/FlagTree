@@ -133,3 +133,56 @@ def test_case_4d_5d(dtype, shape):
     fn_npu_multi_d[grid](output, x, y, *triton_shape, len(shape))
 
     test_common.validate_cmp(dtype, ans, output)
+
+
+@triton.jit
+def fn_npu_tensor_ptr_select(output_ptr, cond_ptr, x_ptr, y_ptr, NUMEL: tl.constexpr, BLOCK: tl.constexpr):
+    idx = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = idx < NUMEL
+    cond = tl.load(cond_ptr + idx, mask=mask)
+    ptr = tl.where(cond, x_ptr + idx, y_ptr + idx)
+    ret = tl.load(ptr, mask=mask, other=0)
+    tl.store(output_ptr + idx, ret, mask=mask)
+
+
+@pytest.mark.parametrize('shape', TestUtils.test_shape1d)
+@pytest.mark.parametrize('dtype', ['float32', 'float16', 'bfloat16', 'int8', 'int16', 'int32', 'int64'])
+def test_case_tensor_ptr_select(dtype, shape):
+    numel = shape[0]
+    cond = test_common.generate_tensor((numel, ), dtype='bool').npu()
+    x = test_common.generate_tensor((numel, ), dtype=dtype).npu()
+    y = test_common.generate_tensor((numel, ), dtype=dtype).npu()
+
+    ans = torch.where(cond, x, y)
+    output = torch.zeros_like(ans)
+
+    BLOCK = 256
+    fn_npu_tensor_ptr_select[triton.cdiv(numel, BLOCK), 1, 1](output, cond, x, y, numel, BLOCK)
+
+    test_common.validate_cmp(dtype, ans, output)
+
+
+@triton.jit
+def fn_npu_scalar_ptr_select(output_ptr, cond_ptr, x_ptr, y_ptr, NUMEL: tl.constexpr, BLOCK: tl.constexpr):
+    idx = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = idx < NUMEL
+    ptr = tl.where(tl.load(cond_ptr), x_ptr, y_ptr)
+    ret = tl.load(ptr + idx, mask=mask)
+    tl.store(output_ptr + idx, ret, mask=mask)
+
+
+@pytest.mark.parametrize('shape', TestUtils.test_shape1d)
+@pytest.mark.parametrize('dtype', ['float32', 'float16', 'bfloat16', 'int8', 'int16', 'int32', 'int64'])
+def test_case_scalar_ptr_select(dtype, shape):
+    numel = shape[0]
+    cond = test_common.generate_tensor((1, ), dtype='bool').npu()
+    x = test_common.generate_tensor((numel, ), dtype=dtype).npu()
+    y = test_common.generate_tensor((numel, ), dtype=dtype).npu()
+
+    ans = torch.where(cond[0], x, y)
+    output = torch.zeros_like(ans)
+
+    BLOCK = 256
+    fn_npu_scalar_ptr_select[triton.cdiv(numel, BLOCK), 1, 1](output, cond, x, y, numel, BLOCK)
+
+    test_common.validate_cmp(dtype, ans, output)
