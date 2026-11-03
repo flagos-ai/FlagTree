@@ -4,7 +4,6 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -148,9 +147,6 @@ inline unsigned coalesceTerminalReadonlyPublication(ModuleOp mod,
   if (!enabled || !enabled.getValue() || arch != "gfx936" || !ctas ||
       ctas.getInt() != 1)
     return 0;
-  auto preserveSchedule = mod->getAttrOfType<BoolAttr>(
-      "ttg.hcu.terminal_publication_preserve_schedule");
-  const bool keepScheduleFence = preserveSchedule && preserveSchedule.getValue();
   unsigned removedPairs = 0;
   mod.walk([&](triton::FuncOp func) {
     if (!triton::isKernel(func) || func.getFunctionType().getNumResults())
@@ -172,14 +168,6 @@ inline unsigned coalesceTerminalReadonlyPublication(ModuleOp mod,
       }
       // All proof decisions completed before IR mutation; erase no live SSA.
       for (Pair pair : erase) {
-        if (keepScheduleFence) {
-          // Keep the original scheduling boundary after the WHOLE readonly
-          // suffix proof, without reintroducing a hardware wait or CTA barrier.
-          // ROCDL lowers this to llvm.amdgcn.sched.barrier(0), a scheduler-only
-          // boundary. The initial full wait0 + original CTA barrier stay intact.
-          OpBuilder builder(pair.wait);
-          ROCDL::SchedBarrier::create(builder, pair.wait.getLoc(), 0);
-        }
         pair.barrier.erase();
         pair.wait.erase();
         ++removedPairs;

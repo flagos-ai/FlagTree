@@ -152,7 +152,6 @@ class HIPOptions:
     # Coalesce proved terminal read-only LDS publication; diagnostic opt-in.
     compact_packet_owner: bool = False
     terminal_readonly_publication: bool = False
-    terminal_publication_preserve_schedule: bool = False
     combine_shifted_disjoint_or: bool = False
     # Proved loop-carried readonly global refill after its matching LDS store.
     loop_carried_store_refill: bool = False
@@ -223,7 +222,6 @@ class HIPOptions:
     async_local_prefetch: bool = False
     prefer_wide_async_copy: bool = False
     prefetch_read_first_fence: bool = False
-    async_prefetch_publish_ahead: bool = False
 
     # The following option provides hints to the HCUGPU backend regarding instruction scheduling
     # for all `tt.dot` operations in a kernel. The "none" variant preserves the default
@@ -297,13 +295,6 @@ class HIPOptions:
             raise ValueError("prefetch_read_first_fence requires async_local_prefetch")
         if self.async_local_prefetch and (self.arch != "gfx936" or self.num_stages not in (3, 4, 5)):
             raise ValueError("async_local_prefetch experiment requires gfx936 and 3 to 5 stages")
-        if type(self.async_prefetch_publish_ahead) is not bool:
-            raise ValueError("async_prefetch_publish_ahead must be boolean")
-        if self.async_prefetch_publish_ahead and (
-            self.arch != "gfx936" or self.num_stages != 5 or
-            not self.async_local_prefetch or self.prefetch_read_first_fence or
-            self.use_block_pingpong):
-            raise ValueError("publication lookahead requires gfx936, five stages, async local prefetch, no fence/pingpong")
         if type(self.packet_operand_overlap_diagnostic) is not bool:
             raise ValueError("packet_operand_overlap_diagnostic must be boolean")
         if self.packet_operand_overlap_diagnostic and self.arch != "gfx936":
@@ -350,11 +341,6 @@ class HIPOptions:
             raise ValueError("combine_shifted_disjoint_or must be boolean")
         if self.combine_shifted_disjoint_or and self.arch != "gfx936":
             raise ValueError("combine_shifted_disjoint_or requires gfx936")
-        if type(self.terminal_publication_preserve_schedule) is not bool:
-            raise ValueError("terminal_publication_preserve_schedule must be boolean")
-        if self.terminal_publication_preserve_schedule and (
-                self.arch != "gfx936" or not self.terminal_readonly_publication):
-            raise ValueError("terminal_publication_preserve_schedule requires gfx936 terminal publication")
         if type(self.compact_packet_owner) is not bool:
             raise ValueError("compact_packet_owner must be boolean")
         if self.compact_packet_owner and self.arch != "gfx936":
@@ -765,7 +751,7 @@ class HIPBackend(BaseBackend):
             mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(1))
         if options.async_local_prefetch:
             # Existing path rechecks the actual two-load single-dot async loop.
-            mode = 8 if options.async_prefetch_publish_ahead else (7 if options.prefetch_read_first_fence else 6)
+            mode = 7 if options.prefetch_read_first_fence else 6
             mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(mode))
         if options.sync_lds_buffers == 2:
             mod.set_attr("ttg.hcu.sync_lds_buffers", ir.builder(mod.context).get_int32_attr(2))
@@ -947,9 +933,6 @@ class HIPBackend(BaseBackend):
                          ir.builder(mod.context).get_bool_attr(True))
         if options.terminal_readonly_publication:
             mod.set_attr("ttg.hcu.terminal_readonly_publication",
-                         ir.builder(mod.context).get_bool_attr(True))
-        if options.terminal_publication_preserve_schedule:
-            mod.set_attr("ttg.hcu.terminal_publication_preserve_schedule",
                          ir.builder(mod.context).get_bool_attr(True))
         # Gluon skips make_ttgir; apply this existing opt-in for both frontends.
         if options.wave_private_sync:
