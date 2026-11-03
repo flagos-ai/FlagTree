@@ -11,6 +11,18 @@ import sysconfig
 from triton import __version__, knobs
 
 
+def _is_complete_kernel_cache(group, metadata_filename, binary_filename):
+    """A filtered cache group may retain JSON after its binary was evicted."""
+    try:
+        for name in (metadata_filename, binary_filename):
+            path = group.get(name)
+            if not path or not os.path.isfile(path) or os.path.getsize(path) == 0:
+                return False
+    except OSError:
+        return False
+    return True
+
+
 class CacheManager(ABC):
 
     def __init__(self, key, override=False, dump=False):
