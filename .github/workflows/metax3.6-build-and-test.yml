@@ -177,5 +177,7 @@ jobs:
             third_party/metax/python/test/unit/language/test_tensor_descriptor.py \
             third_party/metax/python/test/unit/runtime/test_driver.py \
             third_party/metax/python/test/unit/runtime/test_cache.py \
+            -k metax_
+          python3 -m pytest -s \
             third_party/metax/python/test/gluon/test_fp4.py \
             -k metax_
