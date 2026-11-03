@@ -66,11 +66,10 @@ static bool willIncreaseRegisterPressure(Operation *op) {
 }
 
 // Return true if it has side effects that are either unknown or writes.
-static bool hasWriteSideEffect(Operation *op,
-                               bool unknownEffectsAreWrites = false) {
+static bool hasWriteSideEffect(Operation *op) {
   auto effects = getEffectsRecursively(op);
   if (!effects)
-    return unknownEffectsAreWrites;
+    return false;
   return llvm::any_of(*effects, [](MemoryEffects::EffectInstance effect) {
     return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
                 MemoryEffects::Free>(effect.getEffect());
@@ -79,15 +78,14 @@ static bool hasWriteSideEffect(Operation *op,
 
 // Return true if there is a write side effect on any path between start and end
 // ops. This assumes start dominates end.
-static bool crossWriteSideEffectingOp(Operation *start, Operation *end,
-                                      bool unknownEffectsAreWrites = false) {
+static bool crossWriteSideEffectingOp(Operation *start, Operation *end) {
   auto ancestor = start->getBlock()->findAncestorOpInBlock(*end);
   // Couldn't find an ancestor in the same block, conservatively assume true.
   if (!ancestor)
     return true;
   Operation *nextOp = start->getNextNode();
   while (nextOp) {
-    if (hasWriteSideEffect(nextOp, unknownEffectsAreWrites))
+    if ((hasWriteSideEffect(nextOp)))
       return true;
     if (nextOp == ancestor)
       return false;
@@ -96,6 +94,25 @@ static bool crossWriteSideEffectingOp(Operation *start, Operation *end,
   assert(false && "op doesn't dominate other");
   return true;
 }
+
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+// crossWriteSideEffectingOp with an op whose effects are unknown counted as a
+// write: a load of mutable shared memory must not move past anything that may
+// write the buffer it reads.
+static bool crossMayWriteSideEffectingOp(Operation *start, Operation *end) {
+  auto ancestor = start->getBlock()->findAncestorOpInBlock(*end);
+  if (!ancestor)
+    return true;
+  for (Operation *op = start->getNextNode(); op; op = op->getNextNode()) {
+    if (!getEffectsRecursively(op) || hasWriteSideEffect(op))
+      return true;
+    if (op == ancestor)
+      return false;
+  }
+  assert(false && "op doesn't dominate other");
+  return true;
+}
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
 
 class TritonGPUReorderInstructionsPass
     : public impl::TritonGPUReorderInstructionsBase<
@@ -151,13 +168,11 @@ public:
         return;
 #ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
       // A load of mutable shared memory must not move past a write that may
-      // change what it reads (e.g. a buffer refilled inside the loop). An op
-      // whose effects are unknown may write, so it counts here only.
+      // change what it reads (e.g. a buffer refilled inside the loop).
       if (keepSmemReadOrder)
         if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op))
           if (load.getSrc().getType().getMutableMemory() &&
-              crossWriteSideEffectingOp(op, *user_begin,
-                                        /*unknownEffectsAreWrites=*/true))
+              crossMayWriteSideEffectingOp(op, *user_begin))
             return;
 #endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
       opToMove.insert({op, *user_begin});

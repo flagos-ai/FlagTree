@@ -1,5 +1,25 @@
+// Copyright 2025-     FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files
+// (the "Software"), to deal in the Software without restriction,
+// including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software,
+// and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+// SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 // RUN: triton-opt %s -split-input-file --allocate-shared-memory -test-print-membar | FileCheck %s
-// REQUIRES: flagtree-backend-ppu
 
 #blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
@@ -88,7 +108,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     // CHECK-NEXT: {{.*}}arith.addi
     // CHECK-NEXT: ttg.local_barrier
     // CHECK-NEXT: {{.*}}ttg.local_load
-    ttg.async_wait {num = 1 : i32, ppugpu.pipe_wait}
+    ttg.async_wait {num = 1 : i32, tle.pipe_wait}
     %sum = arith.addi %a, %a : i32
     %data = ttg.local_load %buf : !ttg.memdesc<128xf32, #shared, #ttg.shared_memory, mutable> -> tensor<128xf32, #blocked>
     tt.return
@@ -107,7 +127,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     // CHECK-NEXT: {{.*}}arith.addi
     // CHECK-NEXT: ttg.local_barrier
     // CHECK-NEXT: {{.*}}ttg.local_load
-    ttg.async_wait {num = 1 : i32, ppugpu.pipe_wait}
+    ttg.async_wait {num = 1 : i32, tle.pipe_wait}
     %sum = arith.addi %a, %a : i32
     ttg.local_barrier
     %data = ttg.local_load %buf : !ttg.memdesc<128xf32, #shared, #ttg.shared_memory, mutable> -> tensor<128xf32, #blocked>
@@ -183,7 +203,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     // CHECK: ttg.async_wait
     // CHECK-NEXT: ttg.local_barrier
     // CHECK-NEXT: {{.*}}arith.addi
-    ttg.async_wait {num = 1 : i32, ppugpu.pipe_wait}
+    ttg.async_wait {num = 1 : i32, tle.pipe_wait}
     %sum = arith.addi %a, %a : i32
     tt.return
   }

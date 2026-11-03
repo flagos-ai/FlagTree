@@ -78,10 +78,10 @@ namespace tle = triton::tle;
 // maps them to physical ids at the end of the TTGIR pipeline.
 constexpr int64_t kFirstVirtualNamedBarrierId = 16;
 constexpr int64_t kNumHardwareBarriers = 16;
-// Ids the warp specialization lowering reserves: the default group's barrier,
-// the switch loop, and one per partition.
-constexpr int64_t kNumWarpSpecializeReservedBarriers =
-    tle::kTleWarpSpecializeReservedNamedBarriers;
+// Ids the warp specialization lowering reserves: the default warp group's
+// barrier and the switch loop. Keep in step with TleAllocateNamedBarriers,
+// which hands out virtual ids above them.
+constexpr int64_t kNumWarpSpecializeReservedBarriers = 2;
 
 // The threads that execute an op: a ttg.warp_specialize worker partition, or
 // the default warps (the default region and everything outside the op).

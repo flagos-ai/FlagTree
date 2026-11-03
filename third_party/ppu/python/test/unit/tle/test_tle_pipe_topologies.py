@@ -141,6 +141,6 @@ def test_pipe_three_group_topology(n):
     expected = torch.cat([acc0 + acc1, acc1 - acc0])
     torch.testing.assert_close(y, expected, rtol=1e-4, atol=1e-3)
     ttgir = ck.asm["ttgir"]
-    assert "tle.pipe" not in ttgir
+    assert "tle.pipe." not in ttgir
     assert "ttng.wait_barrier_named" in ttgir and "scf.while" in ttgir
     assert ck.metadata.num_warps == 12
