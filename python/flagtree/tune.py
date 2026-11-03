@@ -22,11 +22,19 @@
 
 from __future__ import annotations
 
-from functools import cached_property, partial, update_wrapper
-from inspect import signature
+from functools import cached_property, lru_cache, partial, update_wrapper
+from inspect import getsource, signature
+import hashlib
 import json
+import logging
+import marshal
 from math import isfinite
 from numbers import Real
+import os
+from pathlib import Path
+import platform
+import socket
+import tempfile
 from typing import TYPE_CHECKING, Callable
 import warnings
 
@@ -35,13 +43,17 @@ if TYPE_CHECKING:
 
 __all__ = ["AutoTuner", "autotune", "to_hashable"]
 
+_CACHE_SCHEMA = 1
+_DISTRIBUTED_PROTOCOL = {"timer": "backend_event", "warmup": 5, "repeat": 10, "reduce": "max", "version": 1}
+_logger = logging.getLogger(__name__)
+
 
 def to_hashable(tensor):
     """Return a tensor's shape, strides and dtype as a hashable workload feature."""
     return tuple(tensor.shape), tuple(tensor.stride()), tensor.dtype
 
 
-def _config_key(value):
+def _config_key(value, *, workload=False):
 
     def encode(value):
         value_type = type(value)
@@ -60,6 +72,15 @@ def _config_key(value):
                 raise TypeError("Distributed configuration dictionaries require string keys")
             return ["dict", [[key, encode(value[key])] for key in sorted(value)]]
 
+        # to_hashable() includes torch.dtype. Do not import torch for ordinary keys.
+        if workload and value_type.__module__ == "torch":
+            import torch
+
+            if value_type in (torch.dtype, torch.device):
+                return [value_type.__name__, str(value)]
+            if value_type is torch.Size:
+                return ["torch.Size", [encode(item) for item in value]]
+
         # Triton is only needed when a candidate actually contains a Config.
         try:
             from triton import Config
@@ -73,7 +94,7 @@ def _config_key(value):
             return ["triton.Config", encode(vars(value))]
         raise TypeError(f"Unsupported distributed configuration value: {value_type.__name__}")
 
-    return json.dumps(encode(value), indent=2, separators=(",", ":"), ensure_ascii=True)
+    return json.dumps(encode(value), separators=(",", ":"), ensure_ascii=True)
 
 
 def _get_distributed_device():
@@ -81,10 +102,74 @@ def _get_distributed_device():
 
     return driver.active.get_device_interface(), driver.active.get_active_torch_device()
 
+# 标记，需要修改
+def _get_node_id():
+    # A subgroup need not include LOCAL_RANK=0. Containers may require an explicit ID.
+    return os.environ.get("FLAGTREE_AUTOTUNE_NODE_ID") or socket.gethostname()
+
+
+@lru_cache(maxsize=256)
+def _code_identity(code):
+    return {
+        "source": hashlib.sha256(getsource(code).encode("utf-8")).hexdigest(),
+        # Python version is part of the environment; paths/line changes may miss conservatively.
+        "bytecode": hashlib.sha256(marshal.dumps(code)).hexdigest(),
+    }
+
+
+def _function_identity(func):
+    try:
+        return {
+            "module": func.__module__,
+            "name": func.__qualname__,
+            "code": _code_identity(func.__code__),
+        }
+    except (AttributeError, OSError, TypeError, ValueError, RecursionError):
+        return None
+
+
+def _get_cache_environment():
+    import torch
+    import triton
+    from triton.runtime.cache import triton_key
+    from triton.runtime.driver import driver
+
+    active = driver.active
+    di = active.get_device_interface()
+    device = active.get_active_torch_device()
+    target = active.get_current_target()
+    hardware = {"device": str(device), "target": vars(target), "driver": type(active).__module__}
+    if hasattr(di, "get_device_name"):
+        hardware["name"] = di.get_device_name(device)
+    if hasattr(di, "device_count"):
+        hardware["visible_devices"] = di.device_count()
+    if hasattr(di, "get_device_properties"):
+        properties = di.get_device_properties(device)
+        for name in ("name", "major", "minor", "total_memory", "multi_processor_count", "uuid"):
+            value = getattr(properties, name, None)
+            if value is not None:
+                hardware[name] = value if type(value) in (str, int, bool) else str(value)
+    versions = {"python": platform.python_version(), "torch": str(torch.__version__),
+                "triton": str(triton.__version__),
+                "triton_build": hashlib.sha256(triton_key().encode("utf-8")).hexdigest()}
+    for name in ("cuda", "hip", "musa", "gcu"):
+        value = getattr(torch.version, name, None)
+        if value is not None:
+            versions[name] = str(value)
+    return {"hardware": hardware, "versions": versions}
+
+
+def _cache_digest(identity):
+    # Workload/configuration values are already type-tagged strings. The remaining
+    # metadata is ordinary JSON; re-encoding it as a configuration adds hot-path work.
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
 
 class AutoTuner:
 
-    def __init__(self, func, config_space, key_fn: Callable, prune_fn: Callable | None = None, *, do_bench=None):
+    def __init__(self, func, config_space, key_fn: Callable, prune_fn: Callable | None = None, *,
+                 cache_dir=None, cache_version: str | None = None):
         self.config_space = config_space
         if not self.config_space:
             raise ValueError("config_space must contain at least one configuration")
@@ -94,17 +179,94 @@ class AutoTuner:
         self.key_fn = key_fn
         self.prune_fn = prune_fn
         self.best_configs = {}
-        self._do_bench = do_bench
+        self.best_distributed_configs = {}
+        self._local_cache_keys = {}
+        self._persisted_distributed = {}
+        if cache_version is not None and not isinstance(cache_version, str):
+            raise TypeError("cache_version must be a string or None")
+        self.cache_version = cache_version
+        self.cache_dir = None if cache_dir is False else Path(
+            cache_dir if cache_dir is not None else os.environ.get(
+                "FLAGTREE_AUTOTUNE_CACHE_DIR", str(Path.home() / ".flagtree" / "autotune"))).expanduser()
         update_wrapper(self, func, updated=())
 
     @cached_property
     def do_bench(self):
-        if self._do_bench is not None:
-            return self._do_bench
         # Resolve the active backend only when benchmarking is actually needed.
         from triton.runtime.driver import driver
-
         return driver.active.get_benchmarker()
+
+    def _read_cache(self, mode, key, candidates):
+        if self.cache_dir is None:
+            return None
+        path = self.cache_dir / mode / f"{key}.json"
+        try:
+            with path.open(encoding="utf-8") as stream:
+                record = json.load(stream)
+            if (not isinstance(record, dict) or type(record.get("schema")) is not int
+                    or record["schema"] != _CACHE_SCHEMA or record.get("key") != key):
+                return None
+            best = record.get("best_config")
+            return best if isinstance(best, str) and best in candidates else None
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError, RecursionError) as exc:
+            _logger.warning("Ignoring unreadable autotune cache %s: %s", path, exc)
+            return None
+
+    # here, key is disk_key, best_config is _config_key(best_config)
+    def _write_cache(self, mode, key, best_config, identity):
+        if self.cache_dir is None:
+            return False
+        path = self.cache_dir / mode / f"{key}.json"
+        temporary = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # fd: File descriptor.
+            # temporary: The complete path of the temporary file.
+            fd, temporary = tempfile.mkstemp(prefix=f".{key}.", suffix=".tmp", dir=path.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump({"schema": _CACHE_SCHEMA, "key": key, "best_config": best_config,
+                           "identity": identity}, stream, indent=2, sort_keys=True, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            return True
+        except (OSError, ValueError, TypeError, RecursionError) as exc:
+            _logger.warning("Could not save autotune cache %s: %s", path, exc)
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+
+    def _local_cache_identity(self, key, kwargs):
+        try:
+            function = _function_identity(self.fn)
+            prune = _function_identity(self.prune_fn) if self.prune_fn is not None else "no_pruning"
+            persist = function is not None and prune is not None
+            try:
+                environment = _get_cache_environment()
+            except Exception as exc:
+                # Keep configuration/override invalidation even without a device probe.
+                _logger.debug("Autotune environment unavailable: %s", exc)
+                environment = None
+                persist = False
+            tuned_names = {name for name in self.config_space[0]}
+            identity = {
+                "schema": _CACHE_SCHEMA, "mode": "local", "function": function,
+                "workload": _config_key(key, workload=True), "cache_version": self.cache_version,
+                "configs": [_config_key(config) for config in self.config_space],
+                "overrides": _config_key({name: kwargs[name] for name in tuned_names if name in kwargs}),
+                "environment": environment, "prune": prune,
+            }
+            return identity, _cache_digest(identity), persist
+        except Exception as exc:
+            # Preserve memory-only caching for unsupported local keys/configurations.
+            _logger.debug("Persistent local autotune caching unavailable: %s", exc)
+            return None, None, False
 
     def get_pruned_config(self, *args, **kwargs):
         if self.prune_fn is None:
@@ -136,14 +298,32 @@ class AutoTuner:
         except TypeError as exc:
             raise TypeError("key_fn must return a hashable value") from exc
 
+        # Derive identity from workload/configuration/context metadata, cache_key from its SHA-256 digest,
+        # and persist from function/prune identity and environment availability.
+        identity, cache_key, persist = self._local_cache_identity(key, kwargs)
         best_config = self.best_configs.get(key)
+        if best_config is not None and not any(best_config is config for config in self.config_space):
+            best_config = None
+        if cache_key is not None and self._local_cache_keys.get(key) != cache_key:
+            best_config = None
         if best_config is None:
             config_space = self.get_pruned_config(*args, **kwargs)
             if not config_space:
                 raise ValueError("prune_fn removed all configurations")
-            timings = self.tune(config_space, *args, **kwargs)
-            best_config = timings[0][1]
+            candidates = {_config_key(config): config for config in config_space} if persist else {}
+            disk_identity = {**identity, "pruned_configs": list(candidates)} if persist else None
+            disk_key = _cache_digest(disk_identity) if persist else None
+            cached = self._read_cache("local", disk_key, candidates) if persist else None
+
+            if cached is not None:
+                best_config = candidates[cached]
+            else:
+                timings = self.tune(config_space, *args, **kwargs)
+                best_config = timings[0][1]
+                if persist:
+                    self._write_cache("local", disk_key, _config_key(best_config), disk_identity)
             self.best_configs[key] = best_config
+            self._local_cache_keys[key] = cache_key
 
         # Benchmark results are timings, so execute the winner to obtain the real result.
         return self.fn(*args, **{**best_config, **kwargs})
@@ -215,7 +395,7 @@ class AutoTuner:
             error = f"{type(exc).__name__}: {exc}"
 
         # Overriding is allowed, but ranks must still execute the same effective configs.
-        # Keep workload arguments out of the comparison: inputs may differ across ranks.
+        # inputs may differ across ranks.
         dist.all_gather_object(reports, (error, effective_keys), group=group)
         errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
         if errors:
@@ -230,7 +410,71 @@ class AutoTuner:
             config = local_configs[config_keys[0]]
             return self.fn(*args, **{**config, **kwargs})
 
-        # Distributed cache lookup and persistence are not implemented yet.
+        # Cache preparation is collective too: a failing key_fn on one rank must
+        # not leave peers waiting for a cache broadcast or entering a benchmark.
+        context = None
+        error = None
+        try:
+            key = self.key_fn(*args, **kwargs) if self.key_fn is not None else None
+            try:
+                hash(key)
+            except TypeError as exc:
+                raise TypeError("key_fn must return a hashable value") from exc
+            function = _function_identity(self.fn)
+            context = {
+                "workload": _config_key(key, workload=True), "environment": _get_cache_environment(),
+                "function": function, "node": _get_node_id(), "device": str(device),
+                "cache_version": self.cache_version, "disk_cacheable": function is not None,
+            }
+            if not isinstance(context["node"], str) or not context["node"]:
+                raise ValueError("The autotune node ID must be a nonempty string")
+            _config_key(context)  # Validate before peers move to the next collective.
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        dist.all_gather_object(reports, (error, context), group=group)
+        errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
+        if errors:
+            raise ValueError("Distributed autotune cache preparation failed: " + "; ".join(errors))
+        contexts = [report[1] for report in reports]
+
+        # Host names determine node membership and writers, not the persistent key.
+        # Preserve the group-rank order and normalize equivalent node partitions.
+        nodes = {}
+        layout = [nodes.setdefault(item["node"], len(nodes)) for item in contexts]
+        identity = {
+            "schema": _CACHE_SCHEMA, "mode": "distributed", "protocol": _DISTRIBUTED_PROTOCOL,
+            "backend": str(dist.get_backend(group)), "world_size": len(contexts), "node_layout": layout,
+            "ranks": [{name: value for name, value in item.items() if name not in ("node", "disk_cacheable")}
+                      for item in contexts],
+            "configs": config_keys, "effective_configs": effective_keys,
+        }
+        cache_key = _cache_digest(identity)
+        persist = all(item["disk_cacheable"] for item in contexts)
+        writer = next(i for i, item in enumerate(contexts) if item["node"] == context["node"])
+
+        def remember(winner, *, retuned=False):
+            self.best_distributed_configs[cache_key] = winner
+            if (persist and rank == writer
+                    and (retuned or self._persisted_distributed.get(cache_key) != winner)):
+                if self._write_cache("distributed", cache_key, winner, identity):
+                    self._persisted_distributed[cache_key] = winner
+
+        # Only group rank 0 makes the lookup decision. Other nodes' missing files
+        # or empty memory caches must not cause a different collective sequence.
+        proposal = [None]
+        if rank == 0:
+            candidate = self.best_distributed_configs.get(cache_key)
+            if not isinstance(candidate, str) or candidate not in common:
+                candidate = self._read_cache("distributed", cache_key, common) if persist else None
+            proposal[0] = candidate
+        dist.broadcast_object_list(proposal, src=dist.get_global_rank(group, 0), group=group)
+        cached = proposal[0]
+        valid = isinstance(cached, str) and cached in common and cached in local_configs
+        dist.all_gather_object(reports, (cached, valid), group=group)
+        if valid and all(item == (cached, True) for item in reports):
+            remember(cached)
+            return self.fn(*args, **{**local_configs[cached], **kwargs})
+
         timings = []
         for config_key in config_keys:
             config = local_configs[config_key]
@@ -250,8 +494,9 @@ class AutoTuner:
         best_index = selected.item()
         if best_index < 0:
             raise RuntimeError("No configuration produced a valid distributed benchmark result")
-        best_config = local_configs[config_keys[best_index]]
-        # Distributed stage one deliberately neither reads nor writes best_configs.
+        winner = config_keys[best_index]
+        best_config = local_configs[winner]
+        remember(winner, retuned=True)
         return self.fn(*args, **{**best_config, **kwargs})
 
     def _bench_distributed(self, call, device_interface, autotune_pg):
@@ -261,17 +506,17 @@ class AutoTuner:
         end_event = device_interface.Event(enable_timing=True)
 
         dist.barrier(group=autotune_pg)
-        for _ in range(5):
+        for _ in range(_DISTRIBUTED_PROTOCOL["warmup"]):
             call()
         device_interface.synchronize()
         dist.barrier(group=autotune_pg)
         # The callable must order side-stream work between these current-stream events.
         start_event.record()
-        for _ in range(10):
+        for _ in range(_DISTRIBUTED_PROTOCOL["repeat"]):
             call()
         end_event.record()
         device_interface.synchronize()
-        return start_event.elapsed_time(end_event) / 10
+        return start_event.elapsed_time(end_event) / _DISTRIBUTED_PROTOCOL["repeat"]
 
     def tune(self, config_space, *args, **kwargs):
         benchmark = self.do_bench
@@ -280,9 +525,7 @@ class AutoTuner:
         for config in config_space:
             bench_func = partial(self.fn, *args, **{**config, **kwargs})
             try:
-                # The backend benchmarker owns warmup, repetition and synchronization.
                 measurement = benchmark(bench_func, quantiles=[0.5])
-                # Triton's default benchmarker unwraps a single quantile to a scalar.
                 latency = float(measurement if isinstance(measurement, Real) else measurement[0])
             except Exception as exc:
                 if first_error is None:
@@ -298,7 +541,7 @@ class AutoTuner:
         return timings
 
 
-def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
+def autotune(config_space, key_fn, prune_fn=None, *, cache_dir=None, cache_version: str | None = None):
     """Tune a Python function over candidate keyword-argument dictionaries.
 
     ``config_space`` contains dictionaries such as ``{"config": triton.Config(...)}``.
@@ -308,9 +551,8 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     performance in this key. ``prune_fn(config, *args, **kwargs)`` returns True to
     keep a candidate and False to discard it. In local mode it runs on a cache miss.
 
-    ``do_bench(fn, quantiles=[0.5])`` returns a median latency in milliseconds, either
-    as a scalar or a one-element sequence. It defaults to the active FlagTree
-    backend's benchmarker. Tuning executes the function repeatedly; inputs must
+    Local tuning uses the active FlagTree backend's benchmarker to measure median
+    latency in milliseconds. Tuning executes the function repeatedly; inputs must
     tolerate these repeated calls.
 
     In local mode, call with ``autotune=False`` to use the first unpruned candidate
@@ -318,7 +560,18 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     ``autotune_allow_arg_overwrite=True``, in which case caller keywords take
     precedence. These control keywords and ``autotune_pg`` are reserved by the wrapper.
     ``decorated.fn`` exposes the original function, and
-    ``decorated.best_configs.clear()`` clears the in-memory cache.
+    ``decorated.best_configs.clear()`` clears the local in-memory cache.
+
+    Both modes query memory, then disk, and only benchmark on a miss. ``cache_dir``
+    defaults to ``FLAGTREE_AUTOTUNE_CACHE_DIR`` or ``~/.flagtree/autotune``;
+    ``cache_dir=False`` disables disk caching. Clear the corresponding disk files
+    as well as memory to force retuning. Keys include function source/code/defaults,
+    candidate configurations, effective overrides, workload and runtime/device
+    identity. Set ``cache_version`` to a new string when external dependencies,
+    closure/global state or network topology change: these are not automatically
+    fingerprinted. Unsupported local key/configuration/callable identities keep
+    memory caching but disable persistence. Disk errors are treated as misses or
+    failed optional saves; writes use atomic replacement.
 
     Pass an initialized ``torch.distributed`` group as ``autotune_pg`` for joint
     tuning. All members must enter this call in the same order, with their active
@@ -342,13 +595,24 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     The winner minimizes the maximum rank latency and is broadcast by group rank 0.
     Each rank then executes the winner once more and returns its local result.
 
-    Distributed calls with tuning enabled currently always retune, ignoring
-    ``key_fn``, ``best_configs`` and ``do_bench``; disk caching is not implemented.
+    Joint tuning supports both intra-node and inter-node groups. Its separate
+    ``best_distributed_configs`` cache includes all ranks' workload/environment,
+    the node partition, group size/backend and timing protocol. Group rank 0
+    queries memory then disk and broadcasts a candidate identity. Every member
+    confirms validity before the group reuses it or retunes together. Each node's
+    lowest group rank saves the same result to its local disk. Nodes are identified
+    by hostname; set ``FLAGTREE_AUTOTUNE_NODE_ID`` to a shared value within a node
+    and different values across nodes when containers obscure hostnames. Only the
+    leader's disk participates in lookup; peer-only copies do not prevent a miss.
+    Distributed memory entries can be cleared with ``best_distributed_configs.clear()``.
+
     Supported candidate values are None, bool, int, finite float, str, list, tuple, string-keyed dict,
     and ``triton.Config`` with supported field values. Config hooks and external
-    IR overrides are unsupported. Preparation failures are reported collectively;
+    IR overrides are unsupported in joint tuning and persistent caches. Workload
+    keys also support torch dtype/device values, including ``to_hashable`` results.
+    Preparation failures are reported collectively;
     operator failures abort tuning and may require the group's timeout to release
-    peers. No candidate recovery or distributed tuning cache is provided.
+    peers. No recovery from operator/communication failure is provided.
 
     Example::
 
@@ -362,6 +626,7 @@ def autotune(config_space, key_fn, prune_fn=None, *, do_bench=None):
     """
 
     def wrapper(func):
-        return AutoTuner(func, config_space, key_fn, prune_fn, do_bench=do_bench)
+        return AutoTuner(func, config_space, key_fn, prune_fn,
+                         cache_dir=cache_dir, cache_version=cache_version)
 
     return wrapper
