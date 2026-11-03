@@ -179,6 +179,21 @@ def test_when_rejects_wrong_variant_shape():
     assert not variant.matches({"M": 32, "N": 1, "K": 64})
 
 
+def test_config_sets_preserve_linked_candidates():
+    config = _config()
+    config["variants"]["general"]["config_sets"] = [
+        {"BLOCK_M": {"values": [16]}, "num_warps": {"values": [4]}},
+        {"BLOCK_M": {"values": [32]}, "num_warps": {"values": [8]}},
+    ]
+    variant = parse_operator_config(config).get_variant("general")
+    assert list(variant.iter_configs()) == [
+        {"BLOCK_M": 16, "num_warps": 4}, {"BLOCK_M": 32, "num_warps": 8},
+    ]
+    assert not variant.param_space.validate({"BLOCK_M": 16, "num_warps": 8})
+    exported = variant_to_model_config(variant, _identity(), DTYPES, GPU, MODEL_VERSION)
+    assert list(parse_model_config(exported).iter_configs()) == list(variant.iter_configs())
+
+
 @pytest.mark.parametrize(
     "disabled",
     ["*", "vendor/mm", "vendor/mm/general", f"{PLATFORM_KEY}/vendor/mm/general/{DTYPE_KEY}"],
@@ -338,7 +353,7 @@ def test_untrained_empty_xgboost_model_runs_the_candidate_pipeline(tmp_path, mon
     monkeypatch.setenv("FLAGTUNE_TOP_K", "2")
 
     proposer = predict.make_config_proposer("vendor/mm", "general", platform_key=PLATFORM_KEY, dtype_key=DTYPE_KEY)
-    result = proposer(None, {"M": 33, "N": 8, "K": 64}, [], {})
+    result = proposer(None, {"M": 33, "N": 8, "K": 64}, list(variant.iter_configs()), {})
     assert result == [
         {"BLOCK_M": 16, "num_warps": 4},
         {"BLOCK_M": 16, "num_warps": 8},

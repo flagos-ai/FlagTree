@@ -3,7 +3,7 @@ from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from types import ModuleType
 import hashlib
 import tempfile
@@ -15,13 +15,196 @@ import os
 from pathlib import Path
 
 
+_REGISTER_OWNER_DEFAULT_POLICY = "gfx936_optimize_epilogue_register_owner_shared_vector_v1"
+
+
+import re
+
+
+def _priority_after_first_mmac(assembly, kernel_name):
+    """Delay one priority raise past register/wait prefix and one MMAC."""
+    lines = assembly.splitlines(keepends=True)
+    code = lambda s: s.split(';', 1)[0].split('//', 1)[0].strip()
+    starts = [i for i, line in enumerate(lines) if code(line) == kernel_name + ':']
+    if len(starts) != 1:
+        return assembly, 0
+    # Unknown section stacks make a label-reference classification ambiguous.
+    if any(re.match(r'\.(?:pushsection|popsection|previous|subsection)\b', code(s)) for s in lines):
+        return assembly, 0
+    start = starts[0]
+    ends = [i for i in range(start + 1, len(lines))
+            if re.fullmatch(r'\.Lfunc_end\d+:', code(lines[i]))]
+    if not ends:
+        return assembly, 0
+    end = ends[0]
+    instructions = [code(s) for s in lines[start + 1:end]
+                    if code(s) and not code(s).startswith('.') and not code(s).endswith(':')]
+    if any(re.match(r's_(?:setpc|swappc|rfe|call)(?:_\w+)?(?:\s|$)', s) for s in instructions):
+        return assembly, 0
+
+    # Relative numeric branch displacements would not be reassembled against a
+    # moved instruction. Accept only a single symbolic direct target.
+    for instruction in instructions:
+        branch = re.match(r'(s_branch|s_cbranch_\w+)\s+(.+)$', instruction)
+        if branch and not re.fullmatch(r'[A-Za-z_.$][A-Za-z0-9_.$]*', branch.group(2)):
+            return assembly, 0
+
+    # A .Ltmp name alone does not prove that it is only a debug anchor. Reject
+    # every reference outside a .debug_* section, including literal jump tables.
+    non_debug = []
+    section = '.text'
+    debug_exempt = False
+    for line in lines:
+        text = code(line)
+        match = re.match(r'\.section\s+(?:"([^"]+)"|([^,\s]+))', text)
+        if match:
+            section = match.group(1) or match.group(2)
+            debug_exempt = False
+            if section.startswith('.debug_'):
+                # A section merely named debug may be executable/allocated.
+                # Only empty flags earn the reference exemption; nonalloc MS strings are scanned.
+                flags = re.match(r'\s*,\s*"([^"]*)"', text[match.end():])
+                if not flags or flags.group(1) not in ['', 'MS', 'SM']:
+                    return assembly, 0
+                debug_exempt = flags.group(1) == ''
+        elif re.match(r'\.(?:text|data|bss)(?:\s|$)', text):
+            section = text.split()[0]
+            debug_exempt = False
+        if not debug_exempt:
+            non_debug.append(text)
+
+    changes = []
+    for i in range(start + 1, end):
+        if not re.fullmatch(r's_setprio\s+1', code(lines[i])):
+            continue
+        for j in range(i + 1, end):
+            text = code(lines[j])
+            if not text or re.match(r'\.loc(?:\s|$)', text):
+                continue
+            # These waits and SGPR-only numeric ops retain their exact order.
+            # The priority raise neither reads nor writes their SCC/EXEC data.
+            if re.fullmatch(r's_waitcnt\s+(?:(?:vmcnt|lgkmcnt|expcnt)\(\d+\)(?:\s+|$))+', text):
+                continue
+            if re.fullmatch(r's_(?:add_u32|addc_u32|and_b32|or_b32|mov_b32|cselect_b32)\s+s\d+\s*,[^;]+', text):
+                continue
+            label = re.fullmatch(r'(\.Ltmp\d+):', text)
+            if label:
+                token = label.group(1)
+                pattern = r'(?<![\w.$])' + re.escape(token) + r'(?![\w.$])'
+                if any(s != token + ':' and re.search(pattern, s) for s in non_debug):
+                    break
+                continue
+            # Other labels, directives, loads/CTA/control and other MMAC types
+            # all stop the match. This pass never walks across another opcode.
+            if re.fullmatch(r'v_mmac_f32_16x16x16_bf16\s+[^\n]+', text):
+                changes.append((i, j))
+            break
+    for i, j in reversed(changes):
+        priority = lines[i]
+        lines[i] = ''
+        lines[j] += priority
+    return ''.join(lines), len(changes)
+
+
+def _chunk_mmac_priority(assembly, kernel_name, chunk):
+    """Refine straight-line, explicitly bounded priority regions after allocation.
+
+    Only priority instructions change: a chunk starts at low priority, raises
+    after its first MMAC, and resets after its last MMAC. Register, memory and
+    wait instructions retain their exact order. Referenced labels, raw encodings
+    and control flow prevent a region from being rewritten.
+    """
+    if type(chunk) is not int or chunk < 2:
+        raise ValueError("MMAC priority chunk must be an integer >= 2")
+    lines = assembly.splitlines(keepends=True)
+    code = lambda s: s.split(';', 1)[0].split('//', 1)[0].strip()
+    text = [code(line) for line in lines]
+    starts = [i for i, line in enumerate(text) if line == kernel_name + ':']
+    if len(starts) != 1 or any(re.match(r'\.(?:pushsection|popsection|previous|subsection)\b', s)
+                               for s in text):
+        return assembly, 0
+    start = starts[0]
+    ends = [i for i in range(start + 1, len(text)) if re.fullmatch(r'\.Lfunc_end\d+:', text[i])]
+    if not ends:
+        return assembly, 0
+    end = ends[0]
+    # Debug label references do not transfer control. Only genuinely unallocated
+    # debug sections earn this exemption, as in _priority_after_first_mmac.
+    references = []
+    debug = False
+    for s in text:
+        section = re.match(r'\.section\s+(?:"([^"]+)"|([^,\s]+))', s)
+        if section:
+            flags = re.match(r'\s*,\s*"([^"]*)"', s[section.end():])
+            debug = (section.group(1) or section.group(2)).startswith('.debug_') and bool(flags) and flags.group(1) == ''
+        elif re.match(r'\.(?:text|data|bss)(?:\s|$)', s):
+            debug = False
+        if not debug:
+            references.append(s)
+    # Numeric branch displacements would change when instructions are inserted.
+    for s in text[start + 1:end]:
+        branch = re.match(r'(?:s_branch|s_cbranch_\w+)\s+(.+)$', s)
+        if branch and not re.fullmatch(r'[A-Za-z_.$][A-Za-z0-9_.$]*', branch.group(1)):
+            return assembly, 0
+        if re.match(r's_(?:setpc|swappc|rfe|call)(?:_\w+)?(?:\s|$)', s):
+            return assembly, 0
+    regions = []
+    opened = None
+    for i in range(start + 1, end):
+        s = text[i]
+        if not s.startswith('s_setprio'):
+            continue
+        priority = re.fullmatch(r's_setprio\s+([01])', s)
+        if priority and priority.group(1) == '1' and opened is None:
+            opened = i
+        elif priority and priority.group(1) == '0' and opened is not None:
+            regions.append((opened, i))
+            opened = None
+        else:
+            return assembly, 0
+    if opened is not None:
+        return assembly, 0
+    changes = []
+    for first, last in regions:
+        mmacs = []
+        valid = True
+        for i in range(first + 1, last):
+            s = text[i]
+            if not s or re.match(r'\.loc(?:\s|$)', s):
+                continue
+            label = re.fullmatch(r'(\.Ltmp\d+):', s)
+            if label:
+                token = label.group(1)
+                pattern = r'(?<![\w.$])' + re.escape(token) + r'(?![\w.$])'
+                if not any(t != s and re.search(pattern, t) for t in references):
+                    continue
+            if (s.startswith('.') or s.endswith(':') or
+                    re.match(r's_(?:branch|cbranch_\w+|setpc\w*|swappc\w*|rfe\w*|call\w*|endpgm\w*)(?:\s|$)', s)):
+                valid = False
+                break
+            if re.match(r'v_mmac_\w+\s+', s):
+                mmacs.append(i)
+        if valid and mmacs and len(mmacs) % chunk == 0:
+            changes.append((first, last, mmacs))
+    for first, last, mmacs in changes:
+        lines[first] = lines[last] = ''
+        for n, i in enumerate(mmacs):
+            if n % chunk == 0:
+                lines[i] += '\ts_setprio 1\n'
+            elif n % chunk == chunk - 1:
+                lines[i] += '\ts_setprio 0\n'
+    return ''.join(lines), sum(len(mmacs) // chunk for _, _, mmacs in changes)
+
+
 def get_min_dot_size(target: GPUTarget):
     # We fallback to use FMA and cast arguments if certain configurations is
     # not supported natively by matrix core units.
     return lambda lhs_type, rhs_type: (1, 1, 1)
 
 
-def is_pingpong_schedule_enabled(arch, use_async_copy):
+def is_pingpong_schedule_enabled(arch, use_async_copy, override=None):
+    if override is not None:
+        return override
     return (arch == "gfx942" or (arch == "gfx950" and use_async_copy is True)
             ) if knobs.hcu.use_block_pingpong is None else knobs.hcu.use_block_pingpong
 
@@ -48,6 +231,58 @@ class HIPOptions:
     default_dot_input_precision: str = "ieee"
     allowed_dot_input_precisions: Tuple[str] = ("ieee", )
     enable_fp_fusion: bool = True
+    # Suppress automatic LLVM unrolling; explicit LLVM unroll hints prevail.
+    disable_llvm_loop_unroll: bool = False
+    # Experimental late resource-driven dot-K partitioning; opt in only.
+    fragment_dot_k: bool = False
+    # Keep wave-private synchronous staging in the operator tuning space.
+    wave_private_sync: bool = False
+    # Coalesce proved terminal read-only LDS publication; diagnostic opt-in.
+    compact_packet_owner: bool = False
+    terminal_readonly_publication: bool = False
+    terminal_publication_preserve_schedule: bool = False
+    combine_shifted_disjoint_or: bool = False
+    # Proved loop-carried readonly global refill after its matching LDS store.
+    loop_carried_store_refill: bool = False
+    # Experimental wave-group MMA motion; native completion check is required.
+    mma_phase_schedule: bool = False
+    # Experimental proved whole-packet FIFO/publication wait rotation.
+    packet_wait_rotation: bool = False
+    # Explicit diagnostic: native readiness is checked; cross-wave WAR is unproven.
+    packet_operand_overlap_diagnostic: bool = False
+    # Native diagnostic scheduling after fresh packet rotation; default unchanged.
+    packet_reuse_wait: str = "none"
+    # Eliminate LGKM waits only with a same-block no-new-event bound.
+    packet_redundant_lgkm_cleanup: bool = False
+    coalesce_lgkm_waits: bool = False
+    # Experimental full LDS wait after compute; proves cross-wave WAR release.
+    packet_post_mma_wait: bool = False
+    # Preserve proved LDS-DMA alias metadata through native lowering.
+    lds_dma_alias_workaround: bool = False
+    # Rebase proved uniform store offsets; dynamic guards may increase pressure.
+    rebase_buffer_store: bool = False
+    # Extract proved nonnegative constant byte displacements to raw store SOFFSET.
+    buffer_store_scalar_offset: bool = False
+    # Exact full padded MemDescIndex plane intervals, retaining CFG barriers.
+    padded_slot_intervals: bool = False
+    # Split proved constant bytes between MUBUF immediate and uniform SOFFSET.
+    buffer_store_split_immediate: bool = False
+    # Preserve the proved masked base with an exact tied i32 register identity.
+    buffer_store_preserve_masked_base: bool = False
+    # Post-O3 same-BB readonly GPR/LDS issue interleaving; no wait rewrite.
+    interleave_global_lds_reads: bool = False
+    interleave_global_lds_reads_fences: bool = False
+    # Keep register-preserving fences in four-float tuples for MMAC allocation.
+    tupled_register_fences: bool = False
+    # Finite legal matrix register-bit partitions; structural bank-pressure rank.
+    packet_matrix_read_partition: bool = False
+    # Explicit local-span byte addressing for proved structured register loads.
+    structured_register_flat_addressing: bool = False
+    structured_register_prepack_address: bool = False
+    structured_register_unclamped_column: bool = False
+    priority_after_first_mmac: bool = False
+    # Refine existing explicit priority scopes; zero preserves allocated code.
+    mmac_priority_chunk: int = 0
     launch_cooperative_grid: bool = False
     matrix_instr_nonkdim: int = 0
     kpack: int = 1
@@ -56,14 +291,33 @@ class HIPOptions:
     backend_name: str = 'hip'
     instrumentation_mode: str = ""
     optimize_epilogue: bool = True
+    # Dataclass defaults stay conservative; parse_options resolves target policy.
+    register_batch_owner: bool = False
+    register_batch_owner_shared_vector: bool = False
     # 0: mfma
     # 1: mmac legacy
     # 2: mmac interleave
     # 3: mmac transpose
     # 4: mmac interleave and transpose
     mmac_layout_force: int = -1
+    # 0 keeps the heuristic; otherwise split CTA waves as [M, num_warps/M].
+    mmac_warps_m: int = 0
+    # Permit native accumulator-tile transpose on eligible gfx936 dots.
+    mmac_transposed: bool = False
+
+    # Private compiler experiment; no new Triton language operation.
+    # Included in HIPOptions.hash(), default off.
+    hcu_v0_blockptr: bool = False
 
     async_copy_use_single_buffer: bool = True
+
+    # None preserves the existing environment/architecture policy.
+    use_block_pingpong: Optional[bool] = None
+    # Private experiment: select the existing guarded LowerLoops prefetch path.
+    async_local_prefetch: bool = False
+    prefer_wide_async_copy: bool = False
+    prefetch_read_first_fence: bool = False
+    async_prefetch_publish_ahead: bool = False
 
     # The following option provides hints to the HCUGPU backend regarding instruction scheduling
     # for all `tt.dot` operations in a kernel. The "none" variant preserves the default
@@ -77,6 +331,9 @@ class HIPOptions:
     #                 Kernel library. Note, this variant requires the use of buffer load/store ops
     #                 and a special software pipelining style - i.e., 1x LDS and 1x register
     #                 prefetch buffers for each GEMM tile.
+    #                 On gfx936 this also enables LDS-to-register prefetch for
+    #                 eligible synchronous two- or three-stage single-dot loops.
+    #                 Three stages additionally prefetch global loads in registers.
     # attention: enables a bunch of optimizations for attention kernels, including:
     #            - iglp 2 and sched.barrier around it
     #            - sink-insts-to-avoid-spills flag to avoid register spills
@@ -89,6 +346,14 @@ class HIPOptions:
     # Option allows to set multiple variants divided by commas:
     # schedule_hint="attention,memory-bound-attention"
     schedule_hint: str = 'none'
+
+    # Optional LDS ring depth for eligible gfx936 synchronous local-prefetch.
+    # Other loops retain their existing allocation and barrier analysis.
+    sync_lds_buffers: int = 1
+
+    # Consume standard loop-unroll hints at the selected stage.
+    loop_unroll_stage: str = "ttir"
+    peel_unroll_remainder: bool = False
 
     # Extend options for HCU(legacy), used for old arch like gfx928, gfx936
     # 1. set scheduling latency for mmac and ds:
@@ -106,11 +371,161 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        if type(self.register_batch_owner) is not bool:
+            raise ValueError("register_batch_owner must be boolean")
+        if self.register_batch_owner and self.arch != "gfx936":
+            raise ValueError("register_batch_owner requires gfx936")
+        if self.register_batch_owner and not self.optimize_epilogue:
+            raise ValueError("register_batch_owner requires optimize_epilogue")
+        if type(self.register_batch_owner_shared_vector) is not bool:
+            raise ValueError("register_batch_owner_shared_vector must be boolean")
+        if self.register_batch_owner_shared_vector and not self.register_batch_owner:
+            raise ValueError("register_batch_owner_shared_vector requires register_batch_owner")
+        if type(self.prefer_wide_async_copy) is not bool:
+            raise ValueError("prefer_wide_async_copy must be boolean")
+        if self.use_block_pingpong is not None and type(self.use_block_pingpong) is not bool:
+            raise ValueError("use_block_pingpong must be bool or None")
+        if type(self.async_local_prefetch) is not bool or type(self.prefetch_read_first_fence) is not bool:
+            raise ValueError("async prefetch policies must be boolean")
+        if self.prefetch_read_first_fence and not self.async_local_prefetch:
+            raise ValueError("prefetch_read_first_fence requires async_local_prefetch")
+        if self.async_local_prefetch and (self.arch != "gfx936" or self.num_stages not in (3, 4, 5)):
+            raise ValueError("async_local_prefetch experiment requires gfx936 and 3 to 5 stages")
+        if type(self.async_prefetch_publish_ahead) is not bool:
+            raise ValueError("async_prefetch_publish_ahead must be boolean")
+        if self.async_prefetch_publish_ahead and (
+            self.arch != "gfx936" or self.num_stages != 5 or
+            not self.async_local_prefetch or self.prefetch_read_first_fence or
+            self.use_block_pingpong):
+            raise ValueError("publication lookahead requires gfx936, five stages, async local prefetch, no fence/pingpong")
+        if type(self.packet_operand_overlap_diagnostic) is not bool:
+            raise ValueError("packet_operand_overlap_diagnostic must be boolean")
+        if self.packet_operand_overlap_diagnostic and self.arch != "gfx936":
+            raise ValueError("packet_operand_overlap_diagnostic requires gfx936")
+        if self.packet_operand_overlap_diagnostic and (self.packet_wait_rotation or self.packet_post_mma_wait):
+            raise ValueError("operand overlap performs its own fresh rotation; choose one packet strategy")
+        if self.packet_reuse_wait not in ("none", "precopy", "fenced") or type(self.packet_reuse_wait) is not str:
+            raise ValueError("packet_reuse_wait must be none, precopy or fenced")
+        if self.packet_reuse_wait != "none" and not self.packet_operand_overlap_diagnostic:
+            raise ValueError("packet_reuse_wait requires fresh packet_operand_overlap_diagnostic")
+        if type(self.coalesce_lgkm_waits) is not bool:
+            raise ValueError("coalesce_lgkm_waits must be boolean")
+        if self.coalesce_lgkm_waits and self.arch != "gfx936":
+            raise ValueError("coalesce_lgkm_waits requires gfx936")
+        if type(self.packet_redundant_lgkm_cleanup) is not bool:
+            raise ValueError("packet_redundant_lgkm_cleanup must be boolean")
+        if self.packet_redundant_lgkm_cleanup and self.arch != "gfx936":
+            raise ValueError("packet_redundant_lgkm_cleanup requires gfx936")
+        if type(self.structured_register_flat_addressing) is not bool:
+            raise ValueError("structured_register_flat_addressing must be boolean")
+        if self.structured_register_flat_addressing and self.arch != "gfx936":
+            raise ValueError("structured_register_flat_addressing requires gfx936")
+        if type(self.structured_register_prepack_address) is not bool:
+            raise ValueError("structured_register_prepack_address must be boolean")
+        if self.structured_register_prepack_address and self.arch != "gfx936":
+            raise ValueError("structured_register_prepack_address requires gfx936")
+        if type(self.structured_register_unclamped_column) is not bool:
+            raise ValueError("structured_register_unclamped_column must be boolean")
+        if self.structured_register_unclamped_column and self.arch != "gfx936":
+            raise ValueError("structured_register_unclamped_column requires gfx936")
+        if type(self.priority_after_first_mmac) is not bool:
+            raise ValueError("priority_after_first_mmac must be boolean")
+        if self.priority_after_first_mmac and self.arch != "gfx936":
+            raise ValueError("priority_after_first_mmac requires gfx936")
+        if type(self.mmac_priority_chunk) is not int or (self.mmac_priority_chunk != 0 and self.mmac_priority_chunk < 2):
+            raise ValueError("mmac_priority_chunk must be zero or an integer >= 2")
+        if self.mmac_priority_chunk and self.arch != "gfx936":
+            raise ValueError("mmac_priority_chunk requires gfx936")
+        if self.mmac_priority_chunk and self.priority_after_first_mmac:
+            raise ValueError("mmac_priority_chunk already places priority after the first MMAC")
+        if type(self.packet_matrix_read_partition) is not bool:
+            raise ValueError("packet_matrix_read_partition must be boolean")
+        if self.packet_matrix_read_partition and self.arch != "gfx936":
+            raise ValueError("packet_matrix_read_partition requires gfx936")
+        if type(self.loop_carried_store_refill) is not bool:
+            raise ValueError("loop_carried_store_refill must be boolean")
+        if self.loop_carried_store_refill and self.arch != "gfx936":
+            raise ValueError("loop_carried_store_refill requires gfx936")
+        if type(self.combine_shifted_disjoint_or) is not bool:
+            raise ValueError("combine_shifted_disjoint_or must be boolean")
+        if self.combine_shifted_disjoint_or and self.arch != "gfx936":
+            raise ValueError("combine_shifted_disjoint_or requires gfx936")
+        if type(self.terminal_publication_preserve_schedule) is not bool:
+            raise ValueError("terminal_publication_preserve_schedule must be boolean")
+        if self.terminal_publication_preserve_schedule and (
+                self.arch != "gfx936" or not self.terminal_readonly_publication):
+            raise ValueError("terminal_publication_preserve_schedule requires gfx936 terminal publication")
+        if type(self.compact_packet_owner) is not bool:
+            raise ValueError("compact_packet_owner must be boolean")
+        if self.compact_packet_owner and self.arch != "gfx936":
+            raise ValueError("compact_packet_owner requires gfx936")
+        if type(self.terminal_readonly_publication) is not bool:
+            raise ValueError("terminal_readonly_publication must be boolean")
+        if self.terminal_readonly_publication and self.arch != "gfx936":
+            raise ValueError("terminal_readonly_publication requires gfx936")
+        if type(self.wave_private_sync) is not bool:
+            raise ValueError("wave_private_sync must be boolean")
+        if self.wave_private_sync and self.arch != "gfx936":
+            raise ValueError("wave_private_sync requires gfx936")
+        if type(self.padded_slot_intervals) is not bool:
+            raise ValueError("padded_slot_intervals must be boolean")
+        if self.padded_slot_intervals and self.arch != "gfx936":
+            raise ValueError("padded_slot_intervals requires gfx936")
+        if type(self.buffer_store_scalar_offset) is not bool:
+            raise ValueError("buffer_store_scalar_offset must be boolean")
+        if self.buffer_store_scalar_offset and self.arch != "gfx936":
+            raise ValueError("buffer_store_scalar_offset requires gfx936")
+        if type(self.buffer_store_split_immediate) is not bool:
+            raise ValueError("buffer_store_split_immediate must be boolean")
+        if self.buffer_store_split_immediate and self.arch != "gfx936":
+            raise ValueError("buffer_store_split_immediate requires gfx936")
+        if type(self.buffer_store_preserve_masked_base) is not bool:
+            raise ValueError("buffer_store_preserve_masked_base must be boolean")
+        if self.buffer_store_preserve_masked_base and self.arch != "gfx936":
+            raise ValueError("buffer_store_preserve_masked_base requires gfx936")
+        if type(self.interleave_global_lds_reads) is not bool:
+            raise ValueError("interleave_global_lds_reads must be boolean")
+        if type(self.interleave_global_lds_reads_fences) is not bool:
+            raise ValueError("interleave_global_lds_reads_fences must be boolean")
+        if (self.interleave_global_lds_reads or self.interleave_global_lds_reads_fences) and self.arch != "gfx936":
+            raise ValueError("interleave_global_lds_reads requires gfx936")
+        if self.interleave_global_lds_reads_fences and not self.interleave_global_lds_reads:
+            raise ValueError("interleave_global_lds_reads_fences requires interleave_global_lds_reads")
+        if type(self.tupled_register_fences) is not bool:
+            raise ValueError("tupled_register_fences must be boolean")
+        if self.tupled_register_fences and self.arch != "gfx936":
+            raise ValueError("tupled_register_fences requires gfx936")
+        if type(self.rebase_buffer_store) is not bool:
+            raise ValueError("rebase_buffer_store must be boolean")
+        if self.rebase_buffer_store and self.arch != "gfx936":
+            raise ValueError("rebase_buffer_store requires gfx936")
+        if type(self.lds_dma_alias_workaround) is not bool:
+            raise ValueError("lds_dma_alias_workaround must be a bool")
+        if self.lds_dma_alias_workaround and self.arch != "gfx936":
+            raise ValueError("lds_dma_alias_workaround requires gfx936")
+        if type(self.fragment_dot_k) is not bool:
+            raise ValueError("fragment_dot_k must be boolean")
+        if self.loop_unroll_stage not in ("ttir", "post-pipeline"):
+            raise ValueError("loop_unroll_stage must be ttir or post-pipeline")
+        if self.loop_unroll_stage == "post-pipeline" and self.arch != "gfx936":
+            raise ValueError("post-pipeline loop unrolling requires gfx936")
+        if type(self.peel_unroll_remainder) is not bool:
+            raise ValueError("peel_unroll_remainder must be boolean")
+        if self.peel_unroll_remainder and (self.arch != "gfx936" or self.loop_unroll_stage != "post-pipeline"):
+            raise ValueError("peel_unroll_remainder requires gfx936 post-pipeline unrolling")
         gfx_major = int(self.arch[3:-2])  # Drop "gfx" prefix and minor/patch number
         warp_size = 32 if gfx_major >= 10 else 64
         object.__setattr__(self, 'warp_size', warp_size)
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
             "num_warps must be a power of 2"
+        if self.mmac_transposed and self.arch != "gfx936":
+            raise ValueError("mmac_transposed is supported only on gfx936")
+
+        if self.mmac_warps_m:
+            m = self.mmac_warps_m
+            if (self.arch != "gfx936" or m < 1 or m & (m - 1)
+                    or m > self.num_warps or self.num_warps % m):
+                raise ValueError("mmac_warps_m requires gfx936 and a power-of-two divisor of num_warps")
 
         if (self.arch == 'gfx950') and (self.kpack != 1):
             warnings.warn(
@@ -185,6 +600,29 @@ class HIPBackend(BaseBackend):
         args.update({k: opts[k] for k in HIPOptions.__dataclass_fields__.keys() \
                      if k in opts and opts[k] is not None})
 
+        # Use the effective arch after explicit overrides; explicit False remains an ablation.
+        if "terminal_readonly_publication" not in args:
+            args["terminal_readonly_publication"] = args["arch"] == "gfx936"
+
+        # Persistent Config caches may represent booleans as binary integers.
+        # Canonicalize only declared boolean options; retain strict validation
+        # for other integers/types and keep compiler hashes stable on reload.
+        for name, field in HIPOptions.__dataclass_fields__.items():
+            value = args.get(name)
+            if (field.type in (bool, Optional[bool]) and type(value) is int
+                    and value in (0, 1)):
+                args[name] = bool(value)
+
+        # Resolve defaults after effective arch/epilogue and bool normalization.
+        # Explicit False remains an ablation. No shape/config policy is used.
+        register_owner_default = (args["arch"] == "gfx936"
+                                  and args.get("optimize_epilogue", HIPOptions.optimize_epilogue) is True)
+        if "register_batch_owner" not in args:
+            args["register_batch_owner"] = register_owner_default
+        if "register_batch_owner_shared_vector" not in args:
+            args["register_batch_owner_shared_vector"] = (
+                register_owner_default and args["register_batch_owner"] is True)
+
         # Consume the legacy `instruction_sched_variant` option and map it to
         # `schedule_hint`. If both are present, keep the explicit schedule_hint.
         if args.get("schedule_hint", "none") == "none" and legacy_sched_variant is not None:
@@ -206,6 +644,10 @@ class HIPBackend(BaseBackend):
             args.pop("wdra_num_mma_regs_main", None)
             args.pop("wdra_num_mma_regs_tail", None)
 
+        if args.get("sync_lds_buffers", 1) not in (1, 2):
+            raise ValueError("sync_lds_buffers must be 1 or 2")
+        if args.get("sync_lds_buffers", 1) == 2 and self.target.arch != "gfx936":
+            raise ValueError("sync_lds_buffers=2 requires gfx936")
         return HIPOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -385,6 +827,69 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, options):
+        # The target/launch contract comes from backend options, not the TL
+        # program. Unsupported options retain the existing lowering.
+        # Capture-only experiment: this marker has no runtime lowering.
+        # The original one/two-stage v0 entry remains unchanged.
+        v0_local_prefetch_capture = (
+            mod.get_int_attr("ttg.hcu.v0_mls_local_prefetch_capture") == 1
+            and mod.get_int_attr("ttg.hcu.canonical_matrix") == 0
+            and options.num_stages in (3, 5) and not options.async_copy_use_single_buffer
+            and options.num_warps == 4 and options.mmac_warps_m == 2
+            and not knobs.hcu.use_buffer_ops and bool(knobs.hcu.use_async_copy)
+            and getattr(knobs.hcu, "global_prefetch", 0) == 0
+            and getattr(knobs.hcu, "local_prefetch", 0) == 0
+            and not is_pingpong_schedule_enabled(options.arch, knobs.hcu.use_async_copy, options.use_block_pingpong)
+            and not is_in_thread_transpose_enabled(options.arch))
+        # Capture-only paired indexed-A/raw-B route. No runtime lowering is
+        # enabled: make_llir retains its stage3/5 hard stop below. The pass
+        # independently checks the actual two MatrixLoad/dot encodings.
+        v0_indexed_ab_capture = (v0_local_prefetch_capture
+                and options.num_stages == 5 and options.kpack == 2
+                and mod.get_int_attr("ttg.hcu.v0_indexed_a_packet") == 1
+                and mod.get_int_attr("ttg.hcu.mmac_tpw_n") == 2
+                and mod.get_int_attr("ttg.hcu.mmac_transposed") == 1
+                and mod.get_int_attr("ttg.hcu.alt_matrix") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.local_prefetch") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.async_slot_war") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.v0_swizzled_a_vec8") in (None, 0))
+        # Existing private TPW request, now limited to the exact two-stage
+        # kpack2 experiment. This target-option gate is not a layout/source
+        # certificate: selection and the final prefix2 proof recheck real IR.
+        v0_kw8_stage2 = (options.kpack == 2 and options.num_stages == 2
+                and not options.async_copy_use_single_buffer
+                and options.num_warps == 4 and options.mmac_warps_m == 2
+                and mod.get_int_attr("ttg.hcu.mmac_tpw_n") == 2
+                and mod.get_int_attr("ttg.hcu.mmac_transposed") == 1
+                and mod.get_int_attr("ttg.hcu.canonical_matrix") == 0
+                and mod.get_int_attr("ttg.hcu.alt_matrix") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.local_prefetch") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.async_slot_war") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.v0_swizzled_a_vec8") in (None, 0)
+                and mod.get_int_attr("ttg.hcu.v0_mls_local_prefetch_capture") in (None, 0)
+                and knobs.hcu.use_buffer_ops
+                and getattr(knobs.hcu, "global_prefetch", 0) == 0
+                and getattr(knobs.hcu, "local_prefetch", 0) == 0
+                and not is_pingpong_schedule_enabled(options.arch, knobs.hcu.use_async_copy, options.use_block_pingpong)
+                and not is_in_thread_transpose_enabled(options.arch))
+        v0 = (options.hcu_v0_blockptr and options.arch == "gfx936"
+              and (options.num_stages == 1 or (options.num_stages == 2
+                   and not options.async_copy_use_single_buffer)
+                   or v0_local_prefetch_capture)
+              and options.num_ctas == 1
+              and options.warp_size == 64 and options.num_warps in (4, 8)
+              and (options.kpack == 1 or v0_kw8_stage2 or v0_indexed_ab_capture)
+              and options.mmac_layout_force in (-1, 1)
+              and not options.wasp_enabled and options.schedule_hint == "none"
+              and options.optimize_epilogue and (not knobs.hcu.use_buffer_ops or options.num_stages == 2))
+        if (options.hcu_v0_blockptr
+                or mod.get_int_attr("ttg.hcu.v0_blockptr") is not None):
+            b = ir.builder(mod.context)
+            mod.set_attr("ttg.hcu.v0_blockptr", b.get_int32_attr(int(v0)))
+            mod.set_attr("ttg.hcu.v0_target936", b.get_int32_attr(int(v0)))
+            mod.set_attr("ttg.hcu.v0_warps", b.get_int32_attr(options.num_warps))
+            mod.set_attr("ttg.hcu.v0_default_async",
+                         b.get_int32_attr(int(bool(knobs.hcu.use_async_copy))))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -396,12 +901,43 @@ class HIPBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.ttir.add_triton_licm(pm)
         passes.common.add_symbol_dce(pm)
-        passes.ttir.add_loop_unroll(pm)
+        if options.loop_unroll_stage == "ttir":
+            passes.ttir.add_loop_unroll(pm)
         pm.run(mod, 'make_ttir')
         return mod
 
     @staticmethod
     def make_ttgir(mod, metadata, options):
+        metadata["hcu_register_owner_default_policy"] = _REGISTER_OWNER_DEFAULT_POLICY
+        if options.register_batch_owner:
+            builder = ir.builder(mod.context)
+            mod.set_attr("ttg.hcu.register_batch_owner", builder.get_bool_attr(True))
+            mod.set_attr("ttg.hcu.register_batch_owner_count", builder.get_int32_attr(0))
+        if options.register_batch_owner_shared_vector:
+            builder = ir.builder(mod.context)
+            mod.set_attr("ttg.hcu.register_batch_owner_shared_vector", builder.get_bool_attr(True))
+            mod.set_attr("ttg.hcu.register_batch_owner_shared_vector_count", builder.get_int32_attr(0))
+        if options.prefer_wide_async_copy:
+            mod.set_attr("ttg.hcu.prefer_wide_async_copy",
+                         ir.builder(mod.context).get_int32_attr(1))
+        if options.wave_private_sync:
+            if options.arch != "gfx936":
+                raise ValueError("wave_private_sync requires gfx936")
+            mod.set_attr("ttg.hcu.wave_private_sync", ir.builder(mod.context).get_int32_attr(1))
+        if options.arch == "gfx936" and "local-prefetch" in options.schedule_hint.lower().split(","):
+            mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(1))
+        if options.async_local_prefetch:
+            # Existing path rechecks the actual two-load single-dot async loop.
+            mode = 8 if options.async_prefetch_publish_ahead else (7 if options.prefetch_read_first_fence else 6)
+            mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(mode))
+        if options.sync_lds_buffers == 2:
+            mod.set_attr("ttg.hcu.sync_lds_buffers", ir.builder(mod.context).get_int32_attr(2))
+        if options.mmac_transposed:
+            mod.set_attr("ttg.hcu.mmac_transposed",
+                         ir.builder(mod.context).get_int32_attr(1))
+        if options.mmac_warps_m:
+            mod.set_attr("ttg.hcu.mmac_warps_m",
+                         ir.builder(mod.context).get_int32_attr(options.mmac_warps_m))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
@@ -410,6 +946,9 @@ class HIPBackend(BaseBackend):
         tle.passes.add_lower_extract_tile(pm)
         # flagtree tle: lower tle.insert_tile
         tle.passes.add_lower_insert_tile(pm)
+        # Fuse global loads stored through local_ptr into the final shared
+        # buffer before local-pointer lowering obscures the copy pattern.
+        tle.passes.add_optimize_local_pointer_async_stores(pm)
         # TritonDistributed Extension
         # distributed.passes.ttir.add_convert_to_ttgpuir_ext(pm, f"hip:{options.arch}", options.num_warps,
         #                                                    options.warp_size, options.num_ctas)
@@ -457,7 +996,7 @@ class HIPBackend(BaseBackend):
                                                                              and not global_prefetch)
         hcu.passes.ttgpuir.add_mls_stream_pipeline(pm, options.num_stages, global_prefetch, async_copy_single_buffer)
 
-        use_block_pingpong = is_pingpong_schedule_enabled(options.arch, use_async_copy)
+        use_block_pingpong = is_pingpong_schedule_enabled(options.arch, use_async_copy, options.use_block_pingpong)
         hcu.passes.ttgpuir.add_schedule_loops(pm, options.num_stages)
 
         if not options.wasp_enabled:
@@ -466,8 +1005,44 @@ class HIPBackend(BaseBackend):
                                                        use_async_copy, use_block_pingpong)
             else:
                 hcu.passes.ttgpuir.add_pipeline(pm, use_async_copy, use_block_pingpong)
-        if use_async_copy:
-            hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
+        # Keep the legacy knob as the default policy, but allow
+        # tle.load(is_async=...) to override it per operation.  The HCU
+        # stream pipeline consumes eligible loads first; this pass handles
+        # explicit async loads that remain outside a pipelined loop.
+        # Pipelining leaves dead source tt.loads until canonicalization. Drop
+        # them before TLE lowering can turn them into side-effecting copies.
+        passes.common.add_canonicalizer(pm)
+        tle.passes.add_lower_async_load(pm)
+        # Private v0 experiment: form actual BUFFER ops before any GLOBAL width
+        # contraction. Failed conversion still uses unchanged GLOBAL legality.
+        early_buffer = (options.arch == "gfx936" and options.hcu_v0_blockptr
+                and options.num_stages == 2 and not options.async_copy_use_single_buffer
+                and not options.wasp_enabled and not use_block_pingpong
+                and not is_in_thread_transpose_enabled(options.arch)
+                and knobs.hcu.use_buffer_ops
+                and mod.get_int_attr("ttg.hcu.v0_blockptr_loop") == 1
+                and mod.get_int_attr("ttg.hcu.canonical_matrix") in (0, 2))
+        # Form actual BUFFER copies before GLOBAL-only width contraction.
+        # Failed conversions remain GLOBAL and retain their original limits.
+        early_buffer = early_buffer or (options.arch == "gfx936"
+                and knobs.hcu.use_buffer_ops and not options.hcu_v0_blockptr
+                and not options.wasp_enabled and not use_block_pingpong
+                and not is_in_thread_transpose_enabled(options.arch))
+        # Ping-pong must still see synchronous tt.loads, including explicit
+        # per-operation False overrides of the global async policy.
+        pp_async_buffer = (options.arch == "gfx936"
+                and knobs.hcu.use_buffer_ops and not options.hcu_v0_blockptr
+                and not options.wasp_enabled and use_block_pingpong
+                and not is_in_thread_transpose_enabled(options.arch))
+        early_buffer = early_buffer or pp_async_buffer
+        if early_buffer:
+            hcu.passes.ttgpuir.add_canonicalize_pointers(pm)
+            passes.common.add_canonicalizer(pm)
+            hcu.passes.ttgpuir.add_convert_to_buffer_ops(pm, options.arch,
+                knobs.hcu.use_buffer_atomics, knobs.hcu.buffer_ops_analyze_small_tensor_range,
+                async_only=pp_async_buffer)
+        hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
+        tle.passes.add_downgrade_invalid_async_copy(pm)
         passes.common.add_canonicalizer(pm)
         if options.schedule_hint.lower() != "none":
             for hint in options.schedule_hint.split(","):
@@ -496,7 +1071,11 @@ class HIPBackend(BaseBackend):
             hcu.passes.ttgpuir.add_hoist_layout_conversions(pm)
 
         if knobs.hcu.use_buffer_ops:
-            hcu.passes.ttgpuir.add_canonicalize_pointers(pm)
+            # Existing BUFFER operations already have canonical scalar bases.
+            # Rebuilding fat pointers would visit unsupported BUFFER users.
+            # Keep the late conversion for any register-fallback tt.loads.
+            if not early_buffer:
+                hcu.passes.ttgpuir.add_canonicalize_pointers(pm)
             passes.common.add_canonicalizer(pm)
             hcu.passes.ttgpuir.add_convert_to_buffer_ops(
                 pm,
@@ -535,6 +1114,76 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
+        if options.compact_packet_owner:
+            mod.set_attr("ttg.hcu.compact_packet_owner",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.terminal_readonly_publication:
+            mod.set_attr("ttg.hcu.terminal_readonly_publication",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.terminal_publication_preserve_schedule:
+            mod.set_attr("ttg.hcu.terminal_publication_preserve_schedule",
+                         ir.builder(mod.context).get_bool_attr(True))
+        # Gluon skips make_ttgir; apply this existing opt-in for both frontends.
+        if options.wave_private_sync:
+            mod.set_attr("ttg.hcu.wave_private_sync",
+                         ir.builder(mod.context).get_int32_attr(1))
+        raw_window_ws = (options.arch == "gfx936" and
+                         mod.get_int_attr("ttg.hcu.raw_window_ws") == 1)
+        raw_base_warps = mod.get_int_attr("ttg.num-warps") if raw_window_ws else 0
+        if raw_window_ws and (options.wasp_enabled or options.wdra_enabled):
+            raise ValueError("raw-window WS cannot mix with automatic WASP or WDRA")
+        if options.structured_register_flat_addressing:
+            mod.set_attr("ttg.hcu.structured_register_flat_addressing",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.structured_register_prepack_address:
+            mod.set_attr("ttg.hcu.structured_register_prepack_address",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.structured_register_unclamped_column:
+            mod.set_attr("ttg.hcu.structured_register_unclamped_column",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.rebase_buffer_store:
+            mod.set_attr("ttg.hcu.rebase_buffer_store",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.padded_slot_intervals:
+            mod.set_attr("ttg.hcu.padded_slot_intervals",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.buffer_store_scalar_offset:
+            mod.set_attr("ttg.hcu.buffer_store_scalar_offset",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.buffer_store_split_immediate:
+            mod.set_attr("ttg.hcu.buffer_store_split_immediate",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.buffer_store_preserve_masked_base:
+            mod.set_attr("ttg.hcu.buffer_store_preserve_masked_base",
+                         ir.builder(mod.context).get_bool_attr(True))
+        if options.packet_matrix_read_partition:
+            mod.set_attr("ttg.hcu.packet_matrix_read_partition",
+                         ir.builder(mod.context).get_int32_attr(1))
+        if (options.num_stages in (3, 5)
+                and mod.get_int_attr("ttg.hcu.v0_mls_local_prefetch_capture") == 1):
+            raise RuntimeError(f"Private v0 stage{options.num_stages} local-prefetch is capture-only; "
+                               "stop after make_ttgir, before SCF-to-CF/LLVM")
+        if options.fragment_dot_k:
+            # Independent late invocation through the existing binding. The TU
+            # consumes this private marker before any other optimization.
+            mod.set_attr("ttg.hcu.internal_fragment_dot_k",
+                         ir.builder(mod.context).get_int32_attr(256))
+            fragment_pm = ir.pass_manager(mod.context)
+            fragment_pm.enable_debug()
+            hcu.passes.ttgpuir.add_optimize_dot_operands(fragment_pm, options.arch)
+            fragment_pm.run(mod, "fragment_dot_k_late")
+        if options.peel_unroll_remainder:
+            builder = ir.builder(mod.context)
+            mod.set_attr("ttg.hcu.peel_unroll_remainder", builder.get_int32_attr(1))
+        if options.loop_unroll_stage == "post-pipeline":
+            late_pm = ir.pass_manager(mod.context)
+            late_pm.enable_debug()
+            passes.ttir.add_loop_unroll(late_pm)
+            passes.common.add_canonicalizer(late_pm)
+            passes.common.add_cse(late_pm)
+            late_pm.run(mod, "loop_unroll_post_pipeline")
+        if options.disable_llvm_loop_unroll:
+            hcu.disable_llvm_loop_unroll(mod)
         # TritonGPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -546,7 +1195,20 @@ class HIPBackend(BaseBackend):
         # LDS size is determined by provided arch name.
         custom_lds_size = 0
         hcu.passes.ttgpuir.add_optimize_lds_usage(pm, options.arch, custom_lds_size)
+        if raw_window_ws:
+            # Fresh SCF trace and producer start IDs precede type/thread lowering.
+            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
+                pm, options.arch, 4, raw_base_warps, False, 0, 0, 0)
         passes.convert.add_scf_to_cf(pm)
+        if options.arch == "gfx936" and (
+            options.loop_unroll_stage == "post-pipeline" or options.wave_private_sync
+        ):
+            # Normalize constant ring-buffer paths before allocation and the
+            # wave-private provenance proof, independently of unroll placement.
+            passes.common.add_sccp(pm)
+            passes.common.add_canonicalizer(pm)
+            passes.common.add_cse(pm)
+            passes.common.add_canonicalizer(pm)
         passes.gluon.add_inliner(pm)
         passes.convert.add_index_to_llvmir(pm)
 
@@ -575,6 +1237,13 @@ class HIPBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
 
+        if raw_window_ws:
+            # Consume the same-process pre-CF proof and flatten verified regions.
+            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
+                pm, options.arch, 4, raw_base_warps, False, 0, 0, 0)
+            passes.convert.add_arith_to_llvmir(pm)
+            passes.common.add_canonicalizer(pm)
+            passes.common.add_cse(pm)
         if options.wasp_enabled:
             hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch, options.wasp_num_load_warps,
                                                            options.wasp_num_mma_warps, options.wdra_enabled,
@@ -600,6 +1269,14 @@ class HIPBackend(BaseBackend):
         # TritonDistributed Extension: libdevice -> llvm
         distributed.passes.ttgpuir.hcu.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod, 'make_llir')
+        if options.register_batch_owner:
+            metadata["hcu_register_batch_owner_count"] = (
+                mod.get_int_attr("ttg.hcu.register_batch_owner_count") or 0)
+        if options.register_batch_owner_shared_vector:
+            metadata["hcu_register_batch_owner_shared_vector_count"] = (
+                mod.get_int_attr("ttg.hcu.register_batch_owner_shared_vector_count") or 0)
+        if options.compact_packet_owner:
+            metadata["hcu_compact_packet_owner_count"] = mod.get_int_attr("ttg.hcu.compact_packet_owner_count")
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it
@@ -641,6 +1318,10 @@ class HIPBackend(BaseBackend):
         # WarpSpecialize Passes would set this attribute
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         total_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
+        if raw_window_ws:
+            if total_num_warps != raw_base_warps + 4:
+                raise RuntimeError("raw-window WS total launch warp contract mismatch")
+            metadata["num_warps"] = total_num_warps
 
         # Set kernel attributes first given this may affect later optimizations.
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
@@ -649,7 +1330,8 @@ class HIPBackend(BaseBackend):
             fns[0].add_fn_attr("hcu-wdra-waves-per-tg", str(total_num_warps))
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(hcu.CALLING_CONV_AMDGPU_KERNEL)
-        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{options.num_warps*options.warp_size}")
+        launch_warps = total_num_warps if raw_window_ws else options.num_warps
+        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{launch_warps*options.warp_size}")
         if "memory-bound-attention" in options.schedule_hint.split(','):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
         fns[0].add_fn_attr("uniform-work-group-size", "true")
@@ -699,6 +1381,7 @@ class HIPBackend(BaseBackend):
             default_libdir = Path(__file__).parent / 'lib'
             llvm.link_extern_libs(llvm_mod, [str(default_libdir / "libnvshmem_device.bc")])
 
+        hcu.strip_synchronous_barrier_markers(llvm_mod, options.arch)
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, options.arch, '', [], options.enable_fp_fusion)
 
         # Architectures with architected SGPRs store the workgroup id in ttmp9 (X) and ttmp7 (Y[15:0], Z[31:16]).
@@ -722,11 +1405,193 @@ class HIPBackend(BaseBackend):
         # Disable inlining of print related functions,
         # because inlining of these function could slow down compilation significantly
         hcu.disable_print_inline(llvm_mod)
-        return str(llvm_mod)
+        if options.arch == "gfx936" and options.schedule_hint == "local-prefetch":
+            hcu.prefer_ready_shared_loads(llvm_mod, options.arch)
+        hcu.preserve_buffer_load_byte_offsets(llvm_mod, options.arch)
+        if options.arch == "gfx936":
+            native_version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding="utf-8")
+            if re.search(r"\bversion\s+18\.", native_version):
+                hcu.preserve_lds_barrier_order(llvm_mod, options.arch)
+        if options.loop_unroll_stage == "post-pipeline":
+            hcu.annotate_lds_object_scopes(llvm_mod, options.arch, options.warp_size)
+        hcu.lower_tagged_local_barriers(llvm_mod, options.arch)
+        if options.lds_dma_alias_workaround:
+            hcu.preserve_lds_dma_alias_scopes(llvm_mod, options.arch)
+        if options.interleave_global_lds_reads:
+            interleave = hcu.interleave_global_lds_reads(
+                llvm_mod, options.arch, options.interleave_global_lds_reads_fences)
+            for key, value in interleave.items():
+                metadata["hcu_global_lds_read_interleave_" + key] = int(value)
+        if options.tupled_register_fences:
+            fences = hcu.tuple_register_fences(llvm_mod, options.arch)
+            for key, value in fences.items():
+                metadata["hcu_tupled_register_fences_" + key] = int(value)
+        result = str(llvm_mod)
+        if options.loop_carried_store_refill:
+            result, pairs, report = llvm.interleave_hcu_loop_carried_store_refill(
+                result, options.arch)
+            metadata["hcu_loop_carried_store_refill"] = report
+            metadata["hcu_loop_carried_store_refill_pairs"] = pairs
+        return result
 
     ## TODO: [HCU] integrate with rocshmem
     @staticmethod
-    def make_amdgcn(src, metadata, options):
+    def make_amdgcn(src, metadata, options, _skip_mma_phase=False):
+        amdgcn=HIPBackend._make_amdgcn_with_schedules(src,metadata,options,_skip_mma_phase)
+        if options.mmac_priority_chunk:
+            original = amdgcn
+            try:
+                amdgcn, chunks = _chunk_mmac_priority(amdgcn, metadata["name"], options.mmac_priority_chunk)
+                metadata["hcu_mmac_priority_chunks"] = chunks
+                metadata["hcu_mmac_priority_chunk_result"] = "refined explicit priority scopes" if chunks else "no eligible bounded scopes"
+            except Exception as error:
+                amdgcn = original
+                metadata["hcu_mmac_priority_chunks"] = 0
+                metadata["hcu_mmac_priority_chunk_result"] = "fallback: " + str(error)
+        if options.priority_after_first_mmac:
+            original=amdgcn
+            try:
+                amdgcn,sites=_priority_after_first_mmac(amdgcn,metadata["name"])
+                metadata["hcu_priority_after_first_mmac_sites"]=sites
+                metadata["hcu_priority_after_first_mmac_result"]="delayed across one MMAC" if sites else "no eligible adjacent sites"
+            except Exception as error:
+                amdgcn=original
+                metadata["hcu_priority_after_first_mmac_sites"]=0
+                metadata["hcu_priority_after_first_mmac_result"]="fallback: "+str(error)
+        if options.coalesce_lgkm_waits:
+            original = amdgcn
+            try:
+                from .waitcnt_coalesce import coalesce_lgkm_waits
+                from .mma_phase import check_native_readiness
+                candidate, report = coalesce_lgkm_waits(amdgcn, metadata["name"])
+                metadata["hcu_lgkm_wait_coalesce_result"] = report["reason"]
+                metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
+                metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
+                if report["accepted"] and report["changed"]:
+                    audit = check_native_readiness(candidate, metadata["name"])
+                    metadata["hcu_lgkm_wait_coalesce_completion"] = audit
+                    if audit["accepted"]:
+                        amdgcn = candidate
+                        metadata["hcu_lgkm_wait_coalesce_deleted"] = report["deleted_count"]
+                        metadata["hcu_lgkm_wait_coalesce_strengthened"] = report["strengthened_count"]
+                    else:
+                        metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: completion: " + audit["reason"]
+            except Exception as error:
+                amdgcn = original
+                metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
+                metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
+                metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: " + str(error)
+        return amdgcn
+
+    @staticmethod
+    def _make_amdgcn_with_schedules(src, metadata, options, _skip_mma_phase=False):
+        # Scheduling preparations are late: cached LLIR stays exact, and all paths
+        # (including LLVM FileSource) use the same native completion check.
+        stage_original = src
+        schedule_original = None
+        imported_schedule = any(marker in src for marker in
+                                ("hcu.mma.phase.loop", "hcu.packet.wait.rotation",
+                                 "hcu.packet.post_mma_wait",
+                                 "hcu.packet.operand_overlap.experimental"))
+        validate_imported_schedule = imported_schedule
+        if options.packet_reuse_wait != "none" and imported_schedule:
+            raise HSACOError("packet_reuse_wait requires fresh unscheduled source, not imported schedule IR")
+        if (options.packet_operand_overlap_diagnostic or
+                "hcu.packet.operand_overlap.experimental" in src):
+            metadata["hcu_packet_operand_overlap_risk"] = "CROSS_WAVE_WAR_UNPROVEN_DIAGNOSTIC_ONLY"
+
+        def fallback_schedules(reason):
+            # Keep this private argument name compatible with the phase-only
+            # backend; True disables all scheduling preparations.
+            if options.packet_reuse_wait != "none":
+                metadata["hcu_packet_reuse_wait_result"] = "fallback: " + reason
+                metadata["hcu_packet_reuse_wait_groups"] = 0
+                metadata["hcu_packet_reuse_wait_loops"] = 0
+            if options.packet_redundant_lgkm_cleanup:
+                metadata["hcu_packet_redundant_lgkm_result"] = "fallback: " + reason
+                metadata["hcu_packet_redundant_lgkm_removed_waits"] = 0
+            if options.packet_operand_overlap_diagnostic:
+                metadata["hcu_packet_operand_overlap_result"] = "fallback: " + reason
+                metadata["hcu_packet_operand_overlap_loops"] = 0
+                metadata["hcu_packet_operand_overlap_removed_waits"] = 0
+                metadata["hcu_packet_operand_overlap_rotation_loops"] = 0
+                metadata["hcu_packet_operand_overlap_groups"] = 0
+            if options.packet_wait_rotation:
+                metadata["hcu_packet_wait_rotation_result"] = "fallback: " + reason
+                metadata["hcu_packet_wait_rotation_loops"] = 0
+            if options.packet_post_mma_wait:
+                metadata["hcu_packet_post_mma_wait_result"] = "fallback: " + reason
+                metadata["hcu_packet_post_mma_wait_loops"] = 0
+            if options.mma_phase_schedule:
+                metadata["hcu_mma_phase_result"] = "fallback: " + reason
+                metadata["hcu_mma_phase_loops"] = 0
+            result = HIPBackend._make_amdgcn_with_schedules(stage_original, metadata, options,
+                                           _skip_mma_phase=True)
+            # An imported already-scheduled FileSource has no earlier source
+            # to recover. Never let recursive fallback bypass its native guard.
+            if imported_schedule:
+                from .mma_phase import check_native_readiness
+                audit = check_native_readiness(result, metadata["name"])
+                if not audit["accepted"]:
+                    raise HSACOError("Imported schedule IR failed native completion: " + audit["reason"])
+            return result
+
+        if options.arch == "gfx936" and not _skip_mma_phase:
+            try:
+                if options.packet_wait_rotation and options.packet_post_mma_wait:
+                    raise ValueError("Choose one packet wait strategy")
+                if options.packet_operand_overlap_diagnostic:
+                    candidate, loops, removed, reason = llvm.prepare_hcu_packet_operand_overlap_diagnostic(
+                        src, options.arch, options.num_warps * 64,
+                        int(metadata.get("shared", 0)))
+                    metadata["hcu_packet_operand_overlap_result"] = reason
+                    metadata["hcu_packet_operand_overlap_loops"] = loops
+                    metadata["hcu_packet_operand_overlap_removed_waits"] = removed
+                    metadata["hcu_packet_operand_overlap_rotation_loops"] = loops
+                    # Helper proves one removed full wait for every fresh group.
+                    metadata["hcu_packet_operand_overlap_groups"] = removed
+                    if loops:
+                        schedule_original = stage_original
+                        src = candidate
+                if options.packet_post_mma_wait:
+                    candidate, loops, reason = llvm.prepare_hcu_packet_post_mma_wait(
+                        src, options.arch, options.num_warps * 64,
+                        int(metadata.get("shared", 0)))
+                    metadata["hcu_packet_post_mma_wait_result"] = reason
+                    metadata["hcu_packet_post_mma_wait_loops"] = loops
+                    if loops:
+                        schedule_original = stage_original
+                        src = candidate
+                    else:
+                        validate_imported_schedule |= imported_schedule
+                if options.packet_wait_rotation:
+                    candidate, loops, reason = llvm.prepare_hcu_packet_wait_rotation(
+                        src, options.arch, options.num_warps * 64,
+                        int(metadata.get("shared", 0)))
+                    metadata["hcu_packet_wait_rotation_result"] = reason
+                    metadata["hcu_packet_wait_rotation_loops"] = loops
+                    if loops:
+                        schedule_original = stage_original
+                        src = candidate
+                    else:
+                        validate_imported_schedule |= imported_schedule
+                if options.mma_phase_schedule:
+                    candidate, loops = llvm.prepare_hcu_mma_phase_loops(
+                        src, options.arch, options.num_warps)
+                    if loops:
+                        schedule_original = stage_original
+                        src = candidate
+                        metadata["hcu_mma_phase_loops"] = loops
+                    else:
+                        validate_imported_schedule |= imported_schedule
+            except (RuntimeError, ValueError) as error:
+                return fallback_schedules("preparation: " + str(error))
+        # Run after all late LLVM scheduling transforms, before native selection.
+        # Explicit off does not call the binding or alter the LLVM string.
+        if options.combine_shifted_disjoint_or:
+            src, sites, reason = llvm.combine_hcu_shifted_disjoint_or(src, options.arch)
+            metadata["hcu_shifted_disjoint_or_sites"] = sites
+            metadata["hcu_shifted_disjoint_or_result"] = reason
         # Find kernel names (there should only be one)
         # We get the name at the last possible step to accommodate `triton.compile`
         # on user-provided LLVM
@@ -744,6 +1609,7 @@ class HIPBackend(BaseBackend):
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
+        llir_file = asm_file = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
@@ -765,16 +1631,85 @@ class HIPBackend(BaseBackend):
                 amdgcn = fd_out.read()
 
         except subprocess.CalledProcessError as e:
+            if schedule_original is not None:
+                return fallback_schedules("target compilation")
             print(f"Compilation failed: {e.stderr}")
             raise HSACOError(f"Compilation failed: {e.stderr}") from e
         except IOError as e:
+            if schedule_original is not None:
+                return fallback_schedules("target I/O: " + str(e))
             print(f"File operation failed: {str(e)}")
             raise HSACOError(f"File operation failed: {str(e)}") from e
         finally:
             # Clean up temporary files
             for file in [llir_file, asm_file]:
-                if os.path.exists(file):
+                if file is not None and os.path.exists(file):
                     os.remove(file)
+        if schedule_original is not None or validate_imported_schedule:
+            from .mma_phase import check_native_readiness
+            try:
+                audit = check_native_readiness(amdgcn, metadata["name"])
+            except Exception as error:
+                if schedule_original is not None:
+                    return fallback_schedules("native checker: " + str(error))
+                raise HSACOError("Imported schedule native checker failed: " + str(error)) from error
+            if options.packet_operand_overlap_diagnostic:
+                metadata["hcu_packet_operand_overlap_result"] = audit["reason"]
+                metadata["hcu_packet_operand_overlap_risk"] = "CROSS_WAVE_WAR_UNPROVEN_DIAGNOSTIC_ONLY"
+            if options.packet_wait_rotation:
+                metadata["hcu_packet_wait_rotation_result"] = audit["reason"]
+            if options.packet_post_mma_wait:
+                metadata["hcu_packet_post_mma_wait_result"] = audit["reason"]
+            if options.mma_phase_schedule:
+                metadata["hcu_mma_phase_result"] = audit["reason"]
+            if not audit["accepted"]:
+                if schedule_original is None:
+                    raise HSACOError("Imported schedule IR failed native completion: " + audit["reason"])
+                return fallback_schedules("native completion: " + audit["reason"])
+        if not _skip_mma_phase and (options.packet_reuse_wait != "none" or
+                                   options.packet_redundant_lgkm_cleanup):
+            # Never use imported attributes as a proof for a fresh reuse schedule.
+            # Failed native preparation recovers the complete pre-schedule stage.
+            original_native = amdgcn
+
+            def native_fallback(reason):
+                if schedule_original is not None:
+                    return fallback_schedules("native reuse/cleanup: " + reason)
+                if options.packet_redundant_lgkm_cleanup:
+                    metadata["hcu_packet_redundant_lgkm_result"] = "fallback: " + reason
+                    metadata["hcu_packet_redundant_lgkm_removed_waits"] = 0
+                return original_native
+
+            try:
+                from .packet_reuse import prepare_packet_reuse, cleanup_redundant_lgkm
+                if options.packet_reuse_wait != "none":
+                    groups = int(metadata.get("hcu_packet_operand_overlap_groups", 0))
+                    if imported_schedule or schedule_original is None or groups <= 0:
+                        return fallback_schedules("native reuse requires freshly modeled packet groups")
+                    candidate, reuse = prepare_packet_reuse(
+                        amdgcn, metadata["name"], options.packet_reuse_wait, groups)
+                    if not reuse["accepted"]:
+                        return fallback_schedules("native reuse: " + reuse["reason"])
+                    amdgcn = candidate
+                    metadata["hcu_packet_reuse_wait_result"] = reuse["reason"]
+                    metadata["hcu_packet_reuse_wait_groups"] = reuse["native_total_groups"]
+                    metadata["hcu_packet_reuse_wait_loops"] = reuse["native_loops"]
+                    metadata["hcu_packet_reuse_wait_phase_changed_groups"] = reuse["phase_changed_groups"]
+                    metadata["hcu_packet_reuse_wait_risk"] = "CROSS_WAVE_WAR_UNPROVEN_DIAGNOSTIC_ONLY"
+                if options.packet_redundant_lgkm_cleanup:
+                    candidate, cleanup = cleanup_redundant_lgkm(amdgcn, metadata["name"])
+                    if not cleanup["accepted"]:
+                        return native_fallback("LGKM cleanup: " + cleanup["reason"])
+                    amdgcn = candidate
+                    metadata["hcu_packet_redundant_lgkm_result"] = cleanup["reason"]
+                    metadata["hcu_packet_redundant_lgkm_removed_waits"] = cleanup["deleted_count"]
+                if schedule_original is not None or validate_imported_schedule:
+                    from .mma_phase import check_native_readiness
+                    audit = check_native_readiness(amdgcn, metadata["name"])
+                    if not audit["accepted"]:
+                        return native_fallback("completion: " + audit["reason"])
+            except Exception as error:
+                return native_fallback(str(error))
         if knobs.hcu.dump_amdgcn:
             print("// -----// HCUGCN Dump //----- //")
             print(amdgcn)

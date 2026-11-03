@@ -275,11 +275,19 @@ py::object layoutToGluon(Attribute layout) {
     return layouts.CoalescedLayout();
   } else if (auto amdMfma = dyn_cast<ttg::AMDMfmaEncodingAttr>(layout)) {
     auto cgaBases = getCgaLayoutBases(amdMfma.getCTALayout());
+#ifdef __HCU__
+    return layouts.AMDMFMALayout(
+        amdMfma.getVersion(), toStdVector(amdMfma.getInstrShape()),
+        amdMfma.getIsTransposed(), toStdVector(amdMfma.getWarpsPerCTA()),
+        amdMfma.getElementBitWidth(), toStdVector(amdMfma.getTilesPerWarp()),
+        cgaBases, static_cast<unsigned>(amdMfma.getMmacLayout()));
+#else
     return layouts.AMDMFMALayout(
         amdMfma.getVersion(), toStdVector(amdMfma.getInstrShape()),
         amdMfma.getIsTransposed(), toStdVector(amdMfma.getWarpsPerCTA()),
         amdMfma.getElementBitWidth(), toStdVector(amdMfma.getTilesPerWarp()),
         cgaBases);
+#endif
   } else if (auto amdWmma = dyn_cast<ttg::AMDWmmaEncodingAttr>(layout)) {
     auto cgaBases = getCgaLayoutBases(amdWmma.getCTALayout());
     return layouts.AMDWMMALayout(
@@ -322,6 +330,13 @@ template <typename CondT> static void check(CondT &&cond, const char *msg) {
 }
 
 void init_gluon_ir(py::module &&m) {
+  m.def("get_amd_mfma_default_mmac_layout", []() {
+#ifdef __HCU__
+    return static_cast<int>(ttg::MmacLayout::LEGACY);
+#else
+    return 0;
+#endif
+  });
   using ret = py::return_value_policy;
 
   py::class_<GluonOpBuilder, TritonOpBuilder>(
@@ -427,14 +442,32 @@ void init_gluon_ir(py::module &&m) {
               std::vector<unsigned> &instrShape, bool transposed,
               std::vector<std::vector<int32_t>> &cgaBases,
               std::vector<unsigned> &tilesPerWarp,
-              unsigned elementBitWidth) -> Attribute {
+              unsigned elementBitWidth, int mmacLayout) -> Attribute {
              auto ctx = self.getContext();
              unsigned rank = warpsPerCta.size();
              auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
+#ifdef __HCU__
+             if (mmacLayout == -1)
+               return ttg::AMDMfmaEncodingAttr::get(
+                   ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
+                   tilesPerWarp, elementBitWidth);
+             if (mmacLayout < 0 || mmacLayout > 4)
+               throw std::invalid_argument("unknown HCU MMAC layout");
+             return ttg::AMDMfmaEncodingAttr::get(
+                 ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
+                 tilesPerWarp, elementBitWidth,
+                 static_cast<ttg::MmacLayout>(mmacLayout));
+#else
+             if (mmacLayout != -1 && mmacLayout != 0)
+               throw std::invalid_argument("nonzero MMAC layout requires the HCU backend");
              return ttg::AMDMfmaEncodingAttr::get(
                  ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
                  tilesPerWarp, elementBitWidth);
-           })
+#endif
+           }, py::arg("version"), py::arg("warps_per_cta"),
+              py::arg("instr_shape"), py::arg("transposed"),
+              py::arg("cga_bases"), py::arg("tiles_per_warp"),
+              py::arg("element_bit_width"), py::arg("mmac_layout") = -1)
       .def("get_amd_wmma_layout",
            [](GluonOpBuilder &self, unsigned version, bool transposed,
               std::vector<unsigned> &warpsPerCta,

@@ -2168,6 +2168,26 @@ void TritonHCUGPUCanonicalizePointersPass::runOnOperation() {
   if (failed(applyPartialConversion(func, target, std::move(patterns), config)))
     return signalPassFailure();
 
+  // Pointer decomposition is complete: no FatPointers lookups remain.
+  // Rematerialize exact scalar constant captures inside isolated partitions.
+  // Keep capture/argument ordering and do not infer facts for computed values.
+  func.walk([&](triton::gpu::WarpSpecializeOp ws) {
+    for (Region *region : ws.getPartitionRegions()) {
+      Block &entry = region->front();
+      OpBuilder builder(&getContext());
+      builder.setInsertionPointToStart(&entry);
+      for (auto [index, captured] : llvm::enumerate(ws.getOperands())) {
+        auto constant = captured.getDefiningOp<arith::ConstantOp>();
+        if (!constant ||
+            !isa<IntegerType, IndexType, FloatType>(captured.getType()) ||
+            entry.getArgument(index).getType() != captured.getType())
+          continue;
+        Operation *local = builder.clone(*constant);
+        entry.getArgument(index).replaceAllUsesWith(local->getResult(0));
+      }
+    }
+  });
+
   func->walk<WalkOrder::PreOrder>([](Operation *op) {
     for (auto attr : op->getDiscardableAttrs()) {
       if (attr.getName().strref().starts_with(kPtrCanonPrefix))

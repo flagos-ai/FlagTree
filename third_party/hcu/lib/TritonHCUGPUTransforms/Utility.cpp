@@ -4,6 +4,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 
 #include <deque>
 #include <limits>
@@ -354,4 +355,28 @@ composePaddedLayout(const tt::HCU::TargetInfo &targetInfo,
                                                 useAsyncCopy);
   }
   return {};
+}
+
+// Extracted unchanged from the private canonical_matrix=2 experiment.
+ttg::SharedLinearEncodingAttr
+getHCUCanonicalASharedEncoding(MLIRContext *ctx, ArrayRef<int64_t> aShape) {
+  if (aShape.size() != 2)
+    return {};
+  SmallVector<unsigned> mBases;
+  if (aShape[0] == 128 && aShape[1] == 32)
+    mBases = {1, 8, 16, 32, 2, 4, 64};
+  else if (aShape[0] == 256 && aShape[1] == 16)
+    mBases = {1, 2, 32, 64, 128, 4, 8, 16};
+  else
+    return {};
+  std::vector<std::vector<int32_t>> aBases;
+  for (int64_t k = 1; k < aShape[1]; k *= 2)
+    aBases.push_back({0, int32_t(k)});
+  for (unsigned m : mBases)
+    aBases.push_back({int32_t(m), 0});
+  tt::LinearLayout aCanonical(
+      {{StringAttr::get(ctx, "offset"), aBases},
+       {StringAttr::get(ctx, "block"), {}}},
+      {StringAttr::get(ctx, "dim0"), StringAttr::get(ctx, "dim1")});
+  return ttg::SharedLinearEncodingAttr::get(ctx, aCanonical, 16);
 }

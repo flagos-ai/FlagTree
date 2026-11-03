@@ -89,3 +89,95 @@ def do_bench_musa_graph(
     from triton.testing import _summarize_statistics
 
     return _summarize_statistics(times, quantiles, "mean")
+
+
+
+
+def _capture_hcu_graph_duration(fn, count, api):
+    """Return the graph and its median device replay duration in milliseconds."""
+    graph = api.CUDAGraph()
+    with api.graph(graph):
+        for _ in range(count):
+            fn()
+    api.synchronize()
+    graph.replay()
+    api.synchronize()
+    start, end = api.Event(enable_timing=True), api.Event(enable_timing=True)
+    durations = []
+    for _ in range(3):
+        start.record()
+        graph.replay()
+        end.record()
+        api.synchronize()
+        durations.append(start.elapsed_time(end))
+    return graph, sorted(durations)[1]
+
+
+def do_bench_hcu_graph(
+    fn: Callable[[], Any],
+    *,
+    rep: float = 20,
+    quantiles: Sequence[float] | None = None,
+    n_retries: int = 10,
+    warmup_ms: float = 0,
+    device_interface: Any = None,
+) -> Any:
+    """Size the measurement graph from device replays instead of host callbacks.
+
+    LibEntry and post-hooks can make ordinary event timing mostly measure host
+    submission gaps. Iteratively replay a pilot graph until its device duration
+    reaches the requested budget, then measure that graph without Python calls.
+    """
+    if not isinstance(n_retries, int) or isinstance(n_retries, bool) or n_retries <= 0:
+        raise ValueError("n_retries must be a positive integer")
+    if not math.isfinite(rep) or rep <= 0:
+        raise ValueError("rep must be finite and positive")
+    if not math.isfinite(warmup_ms) or warmup_ms < 0:
+        raise ValueError("warmup_ms must be finite and non-negative")
+    if device_interface is None:
+        import torch
+        device_interface = torch.cuda
+    api = device_interface
+    caller = api.current_stream()
+    stream = caller
+    with api.stream(stream):
+        fn()
+        _timed_warmup(fn, warmup_ms, api)
+        start = api.Event(enable_timing=True)
+        end = api.Event(enable_timing=True)
+        start.record()
+        for _ in range(5):
+            fn()
+        end.record()
+        api.synchronize()
+        ordinary_ms = start.elapsed_time(end) / 5
+        count = max(1, int(rep / ordinary_ms)) if math.isfinite(ordinary_ms) and ordinary_ms > 0 else 1000
+        # Short pilots include a fixed graph-launch/event cost. Recalibrate the
+        # longer graph rather than extrapolating that cost per kernel forever.
+        for attempt in range(3):
+            graph, duration_ms = _capture_hcu_graph_duration(fn, count, api)
+            if not math.isfinite(duration_ms) or duration_ms <= 0:
+                next_count = 1000
+            else:
+                next_count = max(1, int(rep * count / duration_ms))
+            if duration_ms >= 0.8 * rep or next_count == count:
+                break
+            count = next_count
+        else:
+            # Bound the calibration passes, then use the last extrapolation.
+            graph = api.CUDAGraph()
+            with api.graph(graph):
+                for _ in range(count):
+                    fn()
+            api.synchronize()
+        graph.replay()
+        api.synchronize()
+        times = []
+        for _ in range(n_retries):
+            start.record()
+            graph.replay()
+            end.record()
+            api.synchronize()
+            times.append(start.elapsed_time(end) / count)
+    from triton.testing import _summarize_statistics
+    return _summarize_statistics(times, quantiles, "mean")

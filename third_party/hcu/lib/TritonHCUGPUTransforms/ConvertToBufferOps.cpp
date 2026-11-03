@@ -722,13 +722,25 @@ struct TritonHCUGPUConvertToBufferOpsPass
         solver->load<HCU::TritonIntegerRangeAnalysis>(
             assumptions, &getAnalysis<DominanceInfo>());
     HCU::initializeFuncOps(mod, rangeAnalysis);
-    if (failed(solver->initializeAndRun(getOperation())))
+    // Analyze nested isolated regions too. Warp-specialize worker regions are
+    // not entered through the enclosing operation's RegionBranch interface.
+    // Follow ModuleAxisInfoAnalysis's pre-order initialization so outer facts
+    // are available before analyzing each nested isolated operation.
+    WalkResult result =
+        mod.walk<mlir::WalkOrder::PreOrder>([&](Operation *op) {
+          if (op->hasTrait<OpTrait::IsIsolatedFromAbove>() &&
+              failed(solver->initializeAndRun(op)))
+            return WalkResult::interrupt();
+          return WalkResult::advance();
+        });
+    if (result.wasInterrupted())
       return signalPassFailure();
 
     HCU::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
-    patterns.add<ConvertTritonLoadToBufferLoad<tt::LoadOp>,
-                 ConvertTritonStoreToBufferStore>(context, assumptions, solver,
-                                                  this->analyzeSmallTensorOfst);
+    if (!this->asyncOnly)
+      patterns.add<ConvertTritonLoadToBufferLoad<tt::LoadOp>,
+                   ConvertTritonStoreToBufferStore>(context, assumptions, solver,
+                                                    this->analyzeSmallTensorOfst);
     // BufferLoadToLds is only supported on CDNA3 and CDNA4
     if (llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
                            targetInfo.getISAFamily())) {
@@ -737,19 +749,21 @@ struct TritonHCUGPUConvertToBufferOpsPass
               context, assumptions, solver, this->analyzeSmallTensorOfst);
     }
 
-    // Gate buffer atomics behind CDNA3 for now
-    // GFX942-specific assumptions regarding cache coherence are made when
-    // lowering to LLVM
-    triton::HCU::ISAFamily isaFamily =
-        triton::HCU::deduceISAFamily(archGenerationName);
-    if (this->allowBufferAtomics &&
-        (ISAFamily::CDNA3 == isaFamily || ISAFamily::CDNA4 == isaFamily))
-      patterns.add<ConvertTritonAtomicRMWOpToBufferAtomicRMW>(
-          context, assumptions, axisInfoAnalysis, solver, isaFamily,
+    if (!this->asyncOnly) {
+      // Gate buffer atomics behind CDNA3 for now.
+      // GFX942-specific assumptions regarding cache coherence are made when
+      // lowering to LLVM.
+      triton::HCU::ISAFamily isaFamily =
+          triton::HCU::deduceISAFamily(archGenerationName);
+      if (this->allowBufferAtomics &&
+          (ISAFamily::CDNA3 == isaFamily || ISAFamily::CDNA4 == isaFamily))
+        patterns.add<ConvertTritonAtomicRMWOpToBufferAtomicRMW>(
+            context, assumptions, axisInfoAnalysis, solver, isaFamily,
+            this->analyzeSmallTensorOfst);
+      patterns.add<ConvertTritonAtomicCASOpToBufferAtomicCAS>(
+          context, assumptions, axisInfoAnalysis, solver,
           this->analyzeSmallTensorOfst);
-    patterns.add<ConvertTritonAtomicCASOpToBufferAtomicCAS>(
-        context, assumptions, axisInfoAnalysis, solver,
-        this->analyzeSmallTensorOfst);
+    }
 
     if (applyPatternsGreedily(mod, std::move(patterns)).failed())
       signalPassFailure();

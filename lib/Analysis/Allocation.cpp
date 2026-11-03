@@ -26,6 +26,7 @@
 #include "triton/Analysis/Allocation.h"
 
 #include <algorithm>
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include <limits>
 
 #include "mlir/Analysis/Liveness.h"
@@ -198,6 +199,47 @@ private:
       allocation->addBuffer<T>(op, bytes);
   }
 
+  // Match the verified direct-CTA lowering's capture-elision contract, without
+  // changing allocation for generic WS or any other target/protocol.
+  static bool isUniformCTACapture(Value value, Operation *function) {
+    Type type = value.getType();
+    bool scalar = isa<IntegerType, IndexType, FloatType, PointerType>(type);
+    if (auto arg = dyn_cast<BlockArgument>(value))
+      return scalar && arg.getOwner() == &function->getRegion(0).front();
+    Operation *op = value.getDefiningOp();
+    if (!op) return false;
+    if (auto alloc = dyn_cast<gpu::LocalAllocOp>(op))
+      return alloc->getNumOperands() == 0;
+    bool scalarPure = scalar &&
+        (op->getName().getStringRef().starts_with("arith.") ||
+         isa<AddPtrOp>(op)) && isPure(op);
+    bool descriptorIndex = isa<gpu::MemDescIndexOp>(op);
+    if (!scalarPure && !descriptorIndex) return false;
+    return llvm::all_of(op->getOperands(), [&](Value input) {
+      return isUniformCTACapture(input, function);
+    });
+  }
+
+  static bool hasNoGenericWSScratch(gpu::WarpSpecializeOp ws) {
+    auto mod = ws->getParentOfType<ModuleOp>();
+    auto target = mod->getAttrOfType<StringAttr>("ttg.target");
+    auto protocol = mod->getAttrOfType<IntegerAttr>("ttg.hcu.cta_ws_protocol");
+    auto ctas = mod->getAttrOfType<IntegerAttr>("ttg.num-ctas");
+    auto wave = mod->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
+    if (!target || target.getValue() != "hip:gfx936" || !protocol ||
+        protocol.getInt() != 1 || !mod->getAttrOfType<UnitAttr>("ttg.hcu.cta_ws_verified") ||
+        !ctas || ctas.getInt() != 1 || !wave || wave.getInt() != 64 ||
+        ws.getNumResults() || ws.getPartitionRegions().size() != 1)
+      return false;
+    unsigned count = 0;
+    mod.walk([&](gpu::WarpSpecializeOp) { ++count; });
+    if (count != 1) return false;
+    auto function = ws->getParentOfType<FunctionOpInterface>();
+    return function && llvm::all_of(ws.getExplicitCaptures(), [&](Value capture) {
+      return isUniformCTACapture(capture, function.getOperation());
+    });
+  }
+
   /// Initializes temporary shared memory for a given operation.
   void getScratchValueSize(Operation *op) {
     constexpr size_t scratchAlignment = 128;
@@ -211,6 +253,9 @@ private:
       return;
     }
     if (auto ws = dyn_cast<gpu::WarpSpecializeOp>(op)) {
+      // This verified lowering rematerializes all captures and never exchanges
+      // them through LDS. Its existing late guard rejects incomplete elision.
+      if (hasNoGenericWSScratch(ws)) return;
       // `ttg.warp_specialize` needs memory to pass its explicit captures. Pack
       // the captures like a struct.
       auto [captureSize, captureAlign] = ws.getCaptureSizeAlign();
@@ -223,7 +268,9 @@ private:
       // Warp specialization communicates states over shared memory to each
       // warp. Add space for an i8 for each warpgroup warp.
       func.walk([&](gpu::WarpSpecializeOp op) {
-        numWarpIndices = std::max(numWarpIndices, op.getTotalPartitionWarps());
+        // The direct CTA branch/JOIN protocol has no generic worker-state loop.
+        if (!hasNoGenericWSScratch(op))
+          numWarpIndices = std::max(numWarpIndices, op.getTotalPartitionWarps());
       });
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, numWarpIndices);
       return;

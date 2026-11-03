@@ -4,6 +4,7 @@
 #include "TritonHCUGPUTransforms/WmmaGroup.h"
 #include "Utility.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -16,6 +17,7 @@
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include <limits>
 
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
@@ -74,6 +76,11 @@ std::optional<MatrixLoadInfo> getDotOperandMatrixLoadInfo(DotOp dotOp,
 
   tt::MatrixLoadOp matrixOp = nullptr;
   for (tt::MatrixLoadOp mOp : allMatrixLoadOps) {
+    // Provisional ordinary block-pointer candidates must retain the ordinary
+    // MMAC ownership. Resolve their exact V0 selection after acceleration;
+    // final ownership mismatches reconstruct an ordinary load there.
+    if (mOp->hasAttr("ttg.hcu.v0_blockptr_candidate"))
+      continue;
     auto maybeDotOpIdxPair = getDotOpIdxFromMatrixLoad(mOp);
     if (succeeded(maybeDotOpIdxPair) &&
         maybeDotOpIdxPair.value().first == dotOp &&
@@ -938,6 +945,80 @@ public:
     }
 
     Type mfmaAccType;
+    auto module = dotOp->getParentOfType<ModuleOp>();
+    if (auto hint = module->getAttrOfType<IntegerAttr>("ttg.hcu.mmac_warps_m");
+        hint && hint.getInt() > 0) {
+      warpsPerTile = {static_cast<unsigned>(hint.getInt()),
+                      static_cast<unsigned>(numWarps / hint.getInt())};
+    }
+    auto tpwHint = module->getAttrOfType<IntegerAttr>("ttg.hcu.mmac_tpw_n");
+    auto tpwTarget = module->getAttrOfType<StringAttr>("ttg.target");
+    // Private gfx936 diagnostic: group logical N tiles within each warp using
+    // the existing MMAC layout parameter. Preserve actual matrix-load tiles.
+    if (tpwHint && (tpwHint.getInt() == 2 || tpwHint.getInt() == 4 ||
+                    tpwHint.getInt() == 8) &&
+        tpwTarget && tpwTarget.getValue() == "hip:gfx936" && !useMatrixLoad &&
+        rank == 2 && mmacLayout == MmacLayout::LEGACY && mDim == 16 &&
+        nDim == 16 && kDim == 16 && warpsPerTile[1] > 0 &&
+        oldAType.getElementType() == oldBType.getElementType() &&
+        (oldAType.getElementType().isF16() ||
+         oldAType.getElementType().isBF16())) {
+      int64_t tileN = 16 * warpsPerTile[1] * tpwHint.getInt();
+      if (retShape[1] >= tileN && retShape[1] % tileN == 0)
+        tilesPerWarp[1] = static_cast<unsigned>(tpwHint.getInt());
+    }
+    // Reuse the existing private v0/TPW request only for its actual
+    // provisional B candidate. Ordinary/v1 matrix-load ownership is unchanged.
+    auto i32Hint = [&](StringRef name, int32_t value) {
+      auto a = module->getAttrOfType<IntegerAttr>(name);
+      return a && a.getType().isInteger(32) && a.getInt() == value;
+    };
+    if (!useMatrixLoad && kPack == 2 && tpwTarget &&
+        tpwTarget.getValue() == "hip:gfx936" && rank == 2 &&
+        numWarps == 4 && llvm::equal(warpsPerTile, ArrayRef<unsigned>({2, 2})) &&
+        retShape == ArrayRef<int64_t>({128, 128}) &&
+        oldAType.getShape() == ArrayRef<int64_t>({128, 32}) &&
+        oldBType.getShape() == ArrayRef<int64_t>({32, 128}) &&
+        oldAType.getElementType() == oldBType.getElementType() &&
+        (oldAType.getElementType().isF16() || oldAType.getElementType().isBF16()) &&
+        oldRetType.getElementType().isF32() && mmacLayout == MmacLayout::LEGACY &&
+        mDim == 16 && nDim == 16 && kDim == 16 &&
+        i32Hint("ttg.hcu.v0_blockptr", 1) &&
+        i32Hint("ttg.hcu.v0_blockptr_loop", 1) &&
+        i32Hint("ttg.hcu.mmac_tpw_n", 2) &&
+        i32Hint("ttg.hcu.mmac_transposed", 1) &&
+        i32Hint("ttg.hcu.canonical_matrix", 0)) {
+      bool exactCandidate = false;
+      module.walk([&](tt::MatrixLoadOp candidate) {
+        if (!candidate->hasAttr("ttg.hcu.v0_blockptr_candidate") ||
+            candidate.getType().getShape() != ArrayRef<int64_t>({32, 128}) ||
+            candidate.getShape().size() != 2 || candidate.getStrides().size() != 2)
+          return;
+        auto constant = [](Value v, int64_t expected) {
+          auto op = v.getDefiningOp<arith::ConstantOp>();
+          auto a = op ? dyn_cast<IntegerAttr>(op.getValue()) : IntegerAttr{};
+          return a && a.getValue().isSignedIntN(64) && a.getInt() == expected;
+        };
+        auto widthOp = candidate.getShape()[1].getDefiningOp<arith::ConstantOp>();
+        auto width = widthOp ? dyn_cast<IntegerAttr>(widthOp.getValue()) : IntegerAttr{};
+        bool indexedSource = width && width.getValue().isSignedIntN(64) &&
+            width.getInt() >= 128 && width.getInt() % 128 == 0 &&
+            width.getInt() < (int64_t(1) << 20) &&
+            i32Hint("ttg.hcu.v0_indexed_a_packet", 1) &&
+            i32Hint("ttg.hcu.v0_mls_local_prefetch_capture", 1) &&
+            constant(candidate.getStrides()[0], width.getInt());
+        auto pair = getDotOpIdxFromMatrixLoad(candidate);
+        auto loop = candidate->getParentOfType<scf::ForOp>();
+        exactCandidate |= succeeded(pair) && pair->first == dotOp && pair->second == 1 &&
+            loop && constant(loop.getLowerBound(), 0) &&
+            constant(loop.getUpperBound(), 32) && constant(loop.getStep(), 1) &&
+            constant(candidate.getShape()[0], 1024) &&
+            ((constant(candidate.getShape()[1], 1024) &&
+              constant(candidate.getStrides()[0], 1024)) || indexedSource) &&
+            constant(candidate.getStrides()[1], 1);
+      });
+      if (exactCandidate) tilesPerWarp = {2, 2};
+    }
     if (oldRetType.getElementType().isIntOrIndex())
       mfmaAccType = rewriter.getIntegerType(32);
     else if (oldRetType.getElementType().isF64())
@@ -960,6 +1041,56 @@ public:
     // HCU: Transposed mfma layout is an HCU-specific feature which is NOT
     // avaiable on all HCUs.
     isTransposed = false;
+    auto transposeHint =
+        module->getAttrOfType<IntegerAttr>("ttg.hcu.mmac_transposed");
+    auto target = module->getAttrOfType<StringAttr>("ttg.target");
+    // Extend the existing operand-swapping chart only to complete, batch-owned
+    // rank3 tiles. The batch axis is never transposed. Keep rank2 unchanged.
+    auto isLinearDim = [](int64_t dim) {
+      return dim > 0 && dim <= std::numeric_limits<int32_t>::max() &&
+             llvm::isPowerOf2_64(static_cast<uint64_t>(dim));
+    };
+    auto moduleWarps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
+    bool rank3BatchTranspose =
+        transposeHint && transposeHint.getInt() == 1 && target &&
+        target.getValue() == "hip:gfx936" && rank == 3 && !useMatrixLoad &&
+        mfmaVersion == 3 &&
+        oldAType.getRank() == 3 && oldBType.getRank() == 3 &&
+        oldRetType.getElementType().isF32() && moduleWarps &&
+        isLinearDim(numWarps) && moduleWarps.getInt() == numWarps &&
+        ttg::lookupNumCTAs(dotOp) == 1 && llvm::all_of(CTALayout.getCTAsPerCGA(),
+                     [](unsigned n) { return n == 1; }) &&
+        llvm::all_of(CTALayout.getCTASplitNum(),
+                     [](unsigned n) { return n == 1; }) &&
+        ttg::TritonGPUDialect::getThreadsPerWarp(module) == 64 &&
+        warpsPerTile.size() == 3 && warpsPerTile[0] == numWarps &&
+        warpsPerTile[1] == 1 && warpsPerTile[2] == 1 &&
+        tilesPerWarp.size() == 3 && tilesPerWarp[0] == 1;
+    if (rank3BatchTranspose) {
+      auto aShape = oldAType.getShape();
+      auto bShape = oldBType.getShape();
+      rank3BatchTranspose =
+          llvm::all_of(retShape, isLinearDim) &&
+          llvm::all_of(aShape, isLinearDim) &&
+          llvm::all_of(bShape, isLinearDim) &&
+          retShape[0] >= numWarps && retShape[0] % numWarps == 0 &&
+          retShape[1] % 16 == 0 && retShape[2] % 16 == 0 &&
+          aShape[0] == retShape[0] && bShape[0] == retShape[0] &&
+          aShape[1] == retShape[1] && bShape[2] == retShape[2] &&
+          aShape[2] == bShape[1] && aShape[2] % 16 == 0 &&
+          retShape[1] <=
+              std::numeric_limits<int32_t>::max() / retShape[2];
+    }
+    // Private gfx936 diagnostic: compute C^T = B^T A^T with the same legacy
+    // opcode. The matching accumulator lane layout is defined in toLinearLayout.
+    if (transposeHint && transposeHint.getInt() == 1 && target &&
+        target.getValue() == "hip:gfx936" && mmacLayout == MmacLayout::LEGACY &&
+        (rank == 2 || rank3BatchTranspose) && mDim == 16 && nDim == 16 &&
+        kDim == 16 &&
+        oldAType.getElementType() == oldBType.getElementType() &&
+        (oldAType.getElementType().isF16() ||
+         oldAType.getElementType().isBF16()))
+      isTransposed = true;
     ttg::AMDMfmaEncodingAttr mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         oldRetType.getContext(), /*verison=*/mfmaVersion, warpsPerTile,
         {mDim, nDim, kDim}, /*isTransposed=*/isTransposed, CTALayout,
@@ -1004,6 +1135,17 @@ public:
     auto isDotChainTail = isChainDotTail(dotOp);
     if (!isDotChainTail)
       kWidth *= kPack;
+
+    // A packed operand tile must contain every K group consumed by MMAC.
+    // Otherwise the layout aliases K groups and lowering emits extra MMACs
+    // on an invalid operand layout (e.g. K16 with kpack=2).
+    auto kPackTarget = dotOp->getParentOfType<ModuleOp>()
+                           ->getAttrOfType<StringAttr>("ttg.target");
+    if (kPackTarget && kPackTarget.getValue() == "hip:gfx936" && !useMatrixLoad &&
+        mmacLayout == MmacLayout::LEGACY && is16BitElemTy && mDim == 16 &&
+        nDim == 16 && kDim == 16)
+      kWidth = std::min<unsigned>(
+          kWidth, oldAType.getShape().back() / kDim * kBase);
 
     // For FA fwd kernel with f16 elementTy, we limit the 2nd dot to have
     // kWidth = 4 so that the coversion from #mma (result of 1st dot)
@@ -1943,9 +2085,42 @@ struct TritonHCUGPUAccelerateMatmulPass
 
     RewritePatternSet mfmaPatterns(context);
     auto features = triton::HCU::deduceHCUISAFeature(archGenerationName);
+    if (mmacLayoutForce < -1 || mmacLayoutForce > 4) {
+      m.emitError("mmac-layout-force must be -1 or a layout in [0, 4]");
+      return signalPassFailure();
+    }
+    if (mmacLayoutForce >= 2 &&
+        !(features & HCUISAFeature::MMAC_LAYOUT)) {
+      m.emitError() << "MMAC layouts 2, 3 and 4 require lit/lts support, which "
+                      "is unavailable on "
+                   << archGenerationName;
+      return signalPassFailure();
+    }
     auto mmacLayout = mmacLayoutForce != -1
                           ? *ttg::symbolizeMmacLayout(mmacLayoutForce)
                           : getDefaultMmacLayout(archGenerationName);
+    if (auto hint = m->getAttrOfType<IntegerAttr>("ttg.hcu.mmac_warps_m");
+        hint && hint.getInt() != 0) {
+      int64_t warpM = hint.getInt();
+      if (archGenerationName != "gfx936" ||
+          mmacLayout != MmacLayout::LEGACY || warpM < 1 ||
+          !llvm::isPowerOf2_64(warpM)) {
+        m.emitError("mmac_warps_m requires gfx936 legacy MMAC and a positive power of two");
+        return signalPassFailure();
+      }
+      bool invalid = false;
+      m.walk([&](tt::DotOp dot) {
+        auto shape = dot.getType().getShape();
+        int warps = ttg::lookupNumWarps(dot);
+        if (shape.size() != 2 || warpM > warps || warps % warpM ||
+            shape[0] < 16 * warpM || shape[1] < 16 * (warps / warpM)) {
+          dot.emitError("mmac_warps_m does not fit the 16x16 MMAC output tile");
+          invalid = true;
+        }
+      });
+      if (invalid)
+        return signalPassFailure();
+    }
     switch (auto isaFamily = triton::HCU::deduceISAFamily(archGenerationName)) {
     case ISAFamily::CDNA4:
       mfmaPatterns.add<::ScaledBlockedToScaledMFMAF8F6F4>(

@@ -1,3 +1,5 @@
+#include "WholePacketFrontendBindings.inc"
+#include "RawWindowFrontendBindings.inc"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TritonHCUGPUToLLVM/Passes.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
@@ -6,12 +8,24 @@
 #include "hcu/include/hipblas_types.h"
 #include "lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "lld/Common/Driver.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "passes.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Operator.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -31,6 +45,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/TargetParser/TargetParser.h"
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <pybind11/pybind11.h>
@@ -40,6 +55,9 @@
 #include <stdexcept>
 
 namespace py = pybind11;
+
+#include "ReadOnlyLoadInterleave.inc"
+#include "TupledRegisterFences.inc"
 
 namespace {
 const char *const hcuTargetTriple = "amdgcn-amd-amdhsa";
@@ -84,9 +102,15 @@ void init_triton_hcu_passes_ttgpuir(py::module &&m) {
     pm.addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonHCUGPUCanonicalizePointers());
   });
-  ADD_PASS_OPTION_WRAPPER_3("add_convert_to_buffer_ops",
-                            mlir::createTritonHCUGPUConvertToBufferOps,
-                            const std::string &, bool, bool);
+  m.def(
+      "add_convert_to_buffer_ops",
+      [](mlir::PassManager &pm, const std::string &arch, bool allowAtomics,
+         bool analyzeSmallTensorOfst, bool asyncOnly) {
+        pm.addPass(mlir::createTritonHCUGPUConvertToBufferOps(
+            {arch, allowAtomics, analyzeSmallTensorOfst, asyncOnly}));
+      },
+      py::arg("pm"), py::arg("arch"), py::arg("allow_buffer_atomics"),
+      py::arg("analyze_small_tensor_ofst"), py::arg("async_only") = false);
   ADD_PASS_WRAPPER_0("add_reorder_instructions",
                      mlir::createTritonHCUGPUReorderInstructions);
   ADD_PASS_WRAPPER_0("add_fold_true_cmpi", mlir::createTritonHCUFoldTrueCmpI);
@@ -334,7 +358,733 @@ static std::optional<std::string> lldInvoke(const char *inPath,
   return {};
 }
 
+// DTK LLVM 18 MachineSink can move an LDS read past s.barrier into a
+// successor block. Reuse the empty memory-clobber fence from Triton's AMD
+// workaround (PRs 9624 and 11096; LLVM issue 181708). This emits no ISA.
+// Run after LLVM optimization and only for the affected native compiler.
+static unsigned preserveLdsBarrierOrder(llvm::Module *module,
+                                        const std::string &arch) {
+  if (arch != "gfx936")
+    return 0;
+  auto *type = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(module->getContext()), false);
+  auto *fence = llvm::InlineAsm::get(type, "", "~{memory}", true);
+  unsigned count = 0;
+  for (auto &fn : *module)
+    for (auto &block : fn)
+      for (auto &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee || callee->getName() != "llvm.amdgcn.s.barrier")
+          continue;
+        llvm::IRBuilder<> builder(call);
+        builder.SetCurrentDebugLocation(call->getDebugLoc());
+        builder.CreateCall(fence);
+        ++count;
+      }
+  return count;
+}
+
+// LocalBarrierOp synchronizes shared/register operations, not unrelated VMEM.
+// DTK LLVM 18 conservatively drains VMEM at the generic barrier intrinsic.
+// Preserve its provenance through optimization, then select the same hardware
+// barrier with explicit convergence and memory effects. Global/other barriers
+// keep their intrinsic. Explicit async waits and LDS waits are untouched.
+// Keep synchronous functions on the established native barrier path. This
+// optimization targets outstanding global-to-LDS copies, not GPR loads.
+static unsigned stripSynchronousBarrierMarkers(llvm::Module *module,
+                                               const std::string &arch) {
+  if (arch != "gfx936")
+    return 0;
+  auto *marker = module->getFunction("__triton_hcu_local_barrier_marker");
+  if (!marker)
+    return 0;
+  llvm::DenseMap<llvm::Function *, bool> hasAsyncCopy;
+  for (auto &fn : *module)
+    for (auto &block : fn)
+      for (auto &inst : block)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (auto *callee = call->getCalledFunction())
+            if (callee->getName().starts_with(
+                    "llvm.amdgcn.raw.ptr.buffer.load.lds") ||
+                callee->getName().starts_with(
+                    "llvm.amdgcn.struct.ptr.buffer.load.lds") ||
+                callee->getName().starts_with(
+                    "llvm.hcu.raw.buffer.load.lds"))
+              hasAsyncCopy[&fn] = true;
+  llvm::SmallVector<llvm::CallInst *, 8> remove;
+  for (auto *user : marker->users()) {
+    auto *call = llvm::dyn_cast<llvm::CallInst>(user);
+    if (!call || call->getCalledFunction() != marker || call->arg_size() != 0)
+      throw std::invalid_argument("invalid HCU local barrier marker use");
+    if (!hasAsyncCopy.lookup(call->getFunction()))
+      remove.push_back(call);
+  }
+  for (auto *call : remove)
+    call->eraseFromParent();
+  if (marker->use_empty())
+    marker->eraseFromParent();
+  return remove.size();
+}
+
+static unsigned lowerTaggedLocalBarriers(llvm::Module *module,
+                                         const std::string &arch) {
+  if (arch != "gfx936")
+    return 0;
+  auto *marker = module->getFunction("__triton_hcu_local_barrier_marker");
+  if (!marker)
+    return 0;
+  llvm::SmallVector<llvm::CallInst *, 8> tags;
+  for (auto *user : marker->users()) {
+    auto *call = llvm::dyn_cast<llvm::CallInst>(user);
+    if (!call || call->getCalledFunction() != marker || call->arg_size() != 0)
+      throw std::invalid_argument("invalid HCU local barrier marker use");
+    tags.push_back(call);
+  }
+  unsigned changed = 0;
+  for (auto *tag : tags) {
+    llvm::CallInst *barrier = nullptr;
+    for (auto *inst = tag->getPrevNode(); inst; inst = inst->getPrevNode()) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(inst)) {
+        auto *callee = call->getCalledFunction();
+        if (callee && callee->getName() == "llvm.amdgcn.s.barrier") {
+          barrier = call;
+          break;
+        }
+        if (callee && callee->getName() == "llvm.amdgcn.sched.barrier")
+          continue;
+      }
+      if (inst->mayReadOrWriteMemory() || inst->mayHaveSideEffects())
+        break;
+    }
+    if (barrier && barrier->getNumOperandBundles() == 0) {
+      auto isRange = [](llvm::Instruction *inst) {
+        auto *call = llvm::dyn_cast_or_null<llvm::CallInst>(inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        return callee && callee->getName() == "llvm.amdgcn.sched.barrier" &&
+               call->arg_size() == 1 &&
+               llvm::isa<llvm::ConstantInt>(call->getArgOperand(0));
+      };
+      bool iglp = false;
+      for (auto &inst : *barrier->getParent())
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (auto *callee = call->getCalledFunction()) {
+            auto name = callee->getName();
+            iglp |= name == "llvm.amdgcn.iglp.opt";
+          }
+      bool paired = isRange(barrier->getPrevNode()) &&
+                    isRange(barrier->getNextNode());
+      // IGroupLP rebuilds native instruction range edges. Opaque barriers
+      // require the existing AMD full-range contract; permissive MFMA masks
+      // can detach their memory dependencies. Unsupported contracts keep the
+      // conservative intrinsic, as do convergence/deoptimization bundles.
+      if (iglp) {
+        tag->eraseFromParent();
+        continue;
+      }
+      if (!paired) {
+        // Establish AMD's full-range contract even without prior scheduler
+        // hints. Otherwise native scheduling can move publication waits
+        // across preceding MMACs. Keep fences and IGroupLP fallback unchanged.
+        auto *boundary = llvm::Intrinsic::getOrInsertDeclaration(
+            module, llvm::Intrinsic::amdgcn_sched_barrier);
+        llvm::IRBuilder<> before(barrier), after(barrier->getNextNode());
+        before.SetCurrentDebugLocation(barrier->getDebugLoc());
+        after.SetCurrentDebugLocation(barrier->getDebugLoc());
+        before.CreateCall(boundary, {before.getInt32(0)});
+        after.CreateCall(boundary, {after.getInt32(0)});
+        paired = true;
+      }
+      if (paired) {
+        auto *zero = llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(module->getContext()), 0);
+        llvm::cast<llvm::CallInst>(barrier->getPrevNode())->setArgOperand(0, zero);
+        llvm::cast<llvm::CallInst>(barrier->getNextNode())->setArgOperand(0, zero);
+        // Match AMD BlockPingpong's boundary before async_wait. The emitted
+        // LocalBarrier DS0 wait belongs to this publication, not to preceding
+        // MMACs; keep it inside the native scheduling range as well.
+        auto *begin = llvm::cast<llvm::CallInst>(barrier->getPrevNode());
+        auto getWait = [](llvm::Instruction *inst) -> llvm::CallInst * {
+          auto *call = llvm::dyn_cast_or_null<llvm::CallInst>(inst);
+          auto *callee = call ? call->getCalledFunction() : nullptr;
+          if (!callee || callee->getName() != "llvm.amdgcn.s.waitcnt" ||
+              call->arg_size() != 1 || call->getNumOperandBundles() ||
+              !call->getArgOperand(0)->getType()->isIntegerTy(32) ||
+              !llvm::isa<llvm::ConstantInt>(call->getArgOperand(0)))
+            return nullptr;
+          return call;
+        };
+        auto *previous = begin->getPrevNode();
+        if (auto *fence = llvm::dyn_cast_or_null<llvm::CallInst>(previous))
+          if (auto *code = llvm::dyn_cast<llvm::InlineAsm>(
+                  fence->getCalledOperand()))
+            if (code->getAsmString().empty() &&
+                code->getConstraintString() == "~{memory}" &&
+                code->hasSideEffects() && fence->arg_empty() &&
+                !fence->getNumOperandBundles())
+              previous = previous->getPrevNode();
+        auto *wait = getWait(previous);
+        // Canonical gfx936 LocalBarrier wait: vmcnt(63), lgkmcnt(0).
+        if (wait && llvm::cast<llvm::ConstantInt>(wait->getArgOperand(0))
+                            ->getZExtValue() == 0xc07f) {
+          if (auto *asyncWait = getWait(wait->getPrevNode()))
+            wait = asyncWait;
+          begin->moveBefore(wait->getIterator());
+        }
+      }
+      llvm::IRBuilder<> builder(barrier);
+      builder.SetCurrentDebugLocation(barrier->getDebugLoc());
+      auto *code = llvm::InlineAsm::get(barrier->getFunctionType(),
+                                       "s_barrier", "~{memory}", true);
+      auto *call = builder.CreateCall(code);
+      call->setConvergent();
+      call->setDoesNotThrow();
+      barrier->eraseFromParent();
+      ++changed;
+    }
+    // An unrecognized ordering keeps the conservative intrinsic lowering.
+    tag->eraseFromParent();
+  }
+  if (marker->use_empty())
+    marker->eraseFromParent();
+  return changed;
+}
+
+
+// DTK DAG selection can discard the x2 byte scale of a prefetched buffer
+// load. Protect its element offset after LLVM optimization: earlier freezes
+// are propagated away by LLVM 22 before the module reaches DTK.
+static unsigned preserveBufferLoadByteOffsets(llvm::Module *module,
+                                             const std::string &arch) {
+  if (arch != "gfx936")
+    return 0;
+  llvm::SmallSetVector<llvm::BinaryOperator *, 16> shifts;
+  for (auto &fn : *module) {
+    if (fn.getCallingConv() != llvm::CallingConv::AMDGPU_KERNEL)
+      continue;
+    for (auto &block : fn)
+      for (auto &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee || !callee->getName().starts_with(
+                           "llvm.amdgcn.raw.ptr.buffer.load.") ||
+            callee->getName().starts_with(
+                "llvm.amdgcn.raw.ptr.buffer.load.lds"))
+          continue;
+        llvm::SmallVector<llvm::Value *, 4> offsets{call->getArgOperand(1)};
+        while (!offsets.empty()) {
+          auto *offset = offsets.pop_back_val();
+          if (auto *select = llvm::dyn_cast<llvm::SelectInst>(offset)) {
+            offsets.push_back(select->getTrueValue());
+            offsets.push_back(select->getFalseValue());
+          } else if (auto *shift = llvm::dyn_cast<llvm::BinaryOperator>(offset)) {
+            auto *amount = llvm::dyn_cast<llvm::ConstantInt>(shift->getOperand(1));
+            if (shift->getOpcode() == llvm::Instruction::Shl &&
+                shift->getType()->isIntegerTy(32) && amount && amount->isOne() &&
+                !llvm::isa<llvm::FreezeInst>(shift->getOperand(0)))
+              shifts.insert(shift);
+          }
+        }
+      }
+  }
+  for (auto *shift : shifts) {
+    llvm::IRBuilder<> builder(shift);
+    builder.SetCurrentDebugLocation(shift->getDebugLoc());
+    shift->setOperand(0, builder.CreateFreeze(shift->getOperand(0),
+                                             "buffer.element.offset"));
+  }
+  return shifts.size();
+}
+
+// Keep ready LDS reads ahead of future direct-to-LDS copies. Older gfx936
+// codegen otherwise schedules the copies first and drains them before the reads,
+// even when the existing pipeline alias scopes prove that their slots differ.
+// This runs after LLVM optimization, under the opt-in local-prefetch hint.
+static unsigned preferReadySharedLoads(llvm::Module *module,
+                                      const std::string &arch) {
+  if (arch != "gfx936")
+    return 0;
+
+  auto isCopy = [](llvm::Instruction &inst) {
+    auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+    auto *fn = call ? call->getCalledFunction() : nullptr;
+    return fn && fn->getName() == "llvm.amdgcn.raw.ptr.buffer.load.lds" &&
+           call->getType()->isVoidTy();
+  };
+  auto isNativeRead = [](llvm::Instruction &inst) {
+    auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+    auto *fn = call ? call->getCalledFunction() : nullptr;
+    return fn && fn->getName().starts_with("llvm.hcu.ds.read.m32x16.b16.");
+  };
+  auto isRead = [&](llvm::Instruction &inst) {
+    if (auto *load = llvm::dyn_cast<llvm::LoadInst>(&inst))
+      return load->getPointerAddressSpace() == 3 && !load->isVolatile() &&
+             !load->isAtomic();
+    return isNativeRead(inst);
+  };
+  auto disjoint = [](llvm::Instruction *copy, llvm::Instruction *read) {
+    auto *scopes = copy->getMetadata(llvm::LLVMContext::MD_alias_scope);
+    auto *noalias = read->getMetadata(llvm::LLVMContext::MD_noalias);
+    if (!scopes || !scopes->getNumOperands() || !noalias)
+      return false;
+    // Require every existing copy scope to be excluded by every ready read.
+    // Never manufacture alias information from pointer arithmetic or tile sizes.
+    for (const auto &scope : scopes->operands()) {
+      bool found = false;
+      for (const auto &excluded : noalias->operands())
+        found |= scope.get() == excluded.get();
+      if (!found)
+        return false;
+    }
+    return true;
+  };
+
+  unsigned changed = 0;
+  for (auto &fn : *module) {
+    if (fn.getCallingConv() != llvm::CallingConv::AMDGPU_KERNEL)
+      continue;
+    for (auto &block : fn) {
+      auto *branch = llvm::dyn_cast<llvm::BranchInst>(block.getTerminator());
+      if (!branch || !branch->isConditional() ||
+          (branch->getSuccessor(0) != &block &&
+           branch->getSuccessor(1) != &block))
+        continue;
+      llvm::SmallVector<llvm::Instruction *> copies, reads;
+      bool native = false;
+      for (auto &inst : block) {
+        if (isCopy(inst))
+          copies.push_back(&inst);
+        else if (isRead(inst)) {
+          reads.push_back(&inst);
+          native |= isNativeRead(inst);
+        }
+      }
+      if (copies.size() < 2 || reads.empty() || !native ||
+          !copies.back()->comesBefore(reads.back()))
+        continue;
+      bool legal = true;
+      for (auto *copy : copies)
+        for (auto *read : reads)
+          legal &= disjoint(copy, read);
+      if (!legal)
+        continue;
+      auto *lastRead = reads.back();
+      for (auto *inst = copies.front(); inst != lastRead;
+           inst = inst->getNextNode()) {
+        if (isCopy(*inst) || isRead(*inst))
+          continue;
+        // In particular, do not cross synchronization, unknown memory effects,
+        // inline assembly or calls which may throw. Keep all original waits.
+        if (inst->mayReadOrWriteMemory() || inst->mayHaveSideEffects()) {
+          legal = false;
+          break;
+        }
+      }
+      if (!legal)
+        continue;
+      llvm::IRBuilder<> builder(lastRead->getNextNode());
+      auto *fence = builder.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+          module, llvm::Intrinsic::amdgcn_sched_barrier),
+          {builder.getInt32(0)});
+      llvm::Instruction *after = fence;
+      for (auto *copy : copies) {
+        copy->moveAfter(after);
+        after = copy;
+      }
+      ++changed;
+    }
+  }
+  return changed;
+}
+
+namespace {
+// Use physical LDS objects rather than one scope for all DMA operations.
+// LLVM's AMDGPU wait pass tracks representative stores by complete AAInfo;
+// separate direct-G2L packets therefore need distinct scopes. This follows
+// AMDGPULowerModuleLDS's object-scope convention without changing any waits.
+struct LdsOffsetRange {
+  uint64_t low;
+  uint64_t high;
+};
+
+// Lane layouts build OR trees of masked bitfields. Recurse through a bounded
+// OR tree before querying LLVM so reassociation does not consume the generic
+// ValueTracking depth budget. Use standard KnownBits transfer/union operations;
+// incomplete walks retain the original conservative result.
+static llvm::KnownBits getLdsIndexKnownBits(llvm::Value *value,
+                                           const llvm::DataLayout &layout) {
+  auto known = llvm::computeKnownBits(value, layout);
+  if (known.Zero.isSignBitSet() && known.getMaxValue().getActiveBits() <= 16)
+    return known;
+  llvm::SmallVector<llvm::Value *, 8> pending{value};
+  llvm::KnownBits combined(known.getBitWidth());
+  combined.setAllZero();
+  unsigned visited = 0;
+  while (!pending.empty()) {
+    if (++visited > 31)
+      return known;
+    auto *next = pending.pop_back_val();
+    auto *op = llvm::dyn_cast<llvm::Operator>(next);
+    if (op && op->getOpcode() == llvm::Instruction::Or) {
+      pending.push_back(op->getOperand(0));
+      pending.push_back(op->getOperand(1));
+    } else {
+      combined |= llvm::computeKnownBits(next, layout);
+    }
+  }
+  return known.unionWith(combined);
+}
+
+static std::optional<LdsOffsetRange>
+getBoundedLdsOffset(llvm::Value *ptr, const llvm::DataLayout &layout,
+                    unsigned depth = 0) {
+  if (depth > 16 || !ptr->getType()->isPointerTy() ||
+      ptr->getType()->getPointerAddressSpace() != 3)
+    return std::nullopt;
+  if (auto *global = llvm::dyn_cast<llvm::GlobalVariable>(ptr)) {
+    if (global->getName() == "global_smem")
+      return LdsOffsetRange{0, 0};
+    return std::nullopt;
+  }
+  auto *gep = llvm::dyn_cast<llvm::GEPOperator>(ptr);
+  if (!gep)
+    return std::nullopt;
+  auto base = getBoundedLdsOffset(gep->getPointerOperand(), layout, depth + 1);
+  if (!base)
+    return std::nullopt;
+  llvm::SmallMapVector<llvm::Value *, llvm::APInt, 4> variables;
+  unsigned indexBits = layout.getIndexSizeInBits(3);
+  if (indexBits == 0 || indexBits > 64)
+    return std::nullopt;
+  llvm::APInt constant(indexBits, 0);
+  if (!gep->collectOffset(layout, indexBits, variables, constant))
+    return std::nullopt;
+  int64_t low = int64_t(base->low) + constant.getSExtValue();
+  int64_t high = int64_t(base->high) + constant.getSExtValue();
+  for (auto &[value, scale] : variables) {
+    if (!value->getType()->isIntegerTy() || scale.isNegative() ||
+        scale.getLimitedValue(65537) > 65536)
+      return std::nullopt;
+    llvm::KnownBits bits = getLdsIndexKnownBits(value, layout);
+    auto maximum = bits.getMaxValue();
+    // GEP indices are signed. Reject negative or wrapping index ranges.
+    if (!bits.Zero.isSignBitSet() || maximum.getActiveBits() > 16)
+      return std::nullopt;
+    low += bits.getMinValue().getZExtValue() * scale.getZExtValue();
+    high += maximum.getZExtValue() * scale.getZExtValue();
+    if (low < 0 || high >= 65536)
+      return std::nullopt;
+  }
+  if (low < 0 || high < low || high >= 65536)
+    return std::nullopt;
+  return LdsOffsetRange{uint64_t(low), uint64_t(high)};
+}
+
+static bool hasHcuAliasScope(llvm::MDNode *list, llvm::StringRef name) {
+  if (!list)
+    return false;
+  for (auto &operand : list->operands()) {
+    auto *scope = llvm::dyn_cast_or_null<llvm::MDNode>(operand.get());
+    if (!scope)
+      continue;
+    for (auto &field : scope->operands())
+      if (auto *text = llvm::dyn_cast_or_null<llvm::MDString>(field.get()))
+        if (text->getString() == name)
+          return true;
+  }
+  return false;
+}
+
+static unsigned annotateLdsObjectScopes(llvm::Module *module,
+                                        const std::string &arch,
+                                        unsigned waveSize) {
+  if (arch != "gfx936" || waveSize != 64)
+    return 0;
+  unsigned changed = 0;
+  for (auto &fn : *module) {
+    uint64_t objectBytes = 4096;
+    struct Access {
+      llvm::Instruction *inst;
+      LdsOffsetRange range;
+    };
+    llvm::SmallVector<Access, 32> copies, reads;
+    llvm::SmallSetVector<uint64_t, 8> objects;
+    for (auto &block : fn)
+      for (auto &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        llvm::Value *pointer = nullptr;
+        uint64_t bytes = 0;
+        bool copy = callee && callee->getName() ==
+                                  "llvm.amdgcn.raw.ptr.buffer.load.lds";
+        if (copy) {
+          if (!hasHcuAliasScope(inst.getMetadata(llvm::LLVMContext::MD_alias_scope),
+                                "hcug.AsyncCopies") ||
+              call->arg_size() != 7)
+            continue;
+          auto *size = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+          if (!size || (size->getZExtValue() != 8 && size->getZExtValue() != 16))
+            continue;
+          pointer = call->getArgOperand(1);
+          // Byte width is per lane, as in AMD BufferEmitter::emitLoadToLds.
+          // The scalar dst selects a complete wave packet.
+          bytes = waveSize * size->getZExtValue();
+        } else {
+          if (!hasHcuAliasScope(inst.getMetadata(llvm::LLVMContext::MD_alias_scope),
+                                "hcug.LocalLoads") ||
+              !hasHcuAliasScope(inst.getMetadata(llvm::LLVMContext::MD_noalias),
+                                "hcug.AsyncCopies"))
+            continue;
+          if (auto *load = llvm::dyn_cast<llvm::LoadInst>(&inst)) {
+            pointer = load->getPointerOperand();
+            auto size = module->getDataLayout().getTypeStoreSize(load->getType());
+            if (size.isScalable() || size.getFixedValue() > 16)
+              continue;
+            bytes = size.getFixedValue();
+          } else if (callee && callee->getName() ==
+                                    "llvm.hcu.ds.read.m32x16.b16.v4i32.p3") {
+            if (call->arg_size() != 2)
+              continue;
+            auto *mode = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(1));
+            if (!mode || !mode->isZero())
+              continue;
+            pointer = call->getArgOperand(0);
+            // Each returned half is from a lane's address plus [0,14].
+            // The range bounds all lanes, including native cross-lane reads.
+            bytes = 16;
+          }
+        }
+        if (!pointer || !bytes)
+          continue;
+        auto range = getBoundedLdsOffset(pointer, module->getDataLayout());
+        if (!range || range->high + bytes > 65536)
+          continue;
+        range->high += bytes; // high is now an exclusive access bound.
+        if (copy) {
+          bool fits4KiB = range->low / 4096 == (range->high - 1) / 4096;
+          bool full8KiB = range->low % 8192 == 0 &&
+                          range->high - range->low == 8192;
+          if (!fits4KiB && !full8KiB)
+            continue;
+          // Large tiles span a proven, aligned 8KiB region across all waves.
+          // Coarsening retains aliases; arbitrary crossing ranges still bail.
+          if (full8KiB)
+            objectBytes = 8192;
+          copies.push_back({&inst, *range});
+        } else {
+          reads.push_back({&inst, *range});
+        }
+      }
+    for (const auto &copy : copies)
+      objects.insert(copy.range.low / objectBytes);
+    // LLVM18 reserves eight object-score slots. Coarsen proven byte ranges
+    // when 4KiB partitions exceed that budget; merging regions only reduces
+    // alias precision. Unsupported dynamic addresses retain conservative scopes.
+    llvm::DenseMap<uint64_t, uint64_t> representatives;
+    unsigned scopeCount = objects.size();
+    if (objects.size() > 8) {
+      // Objects indistinguishable to every proven read can share a scoreboard
+      // slot without losing any of that read-disjointness information.
+      llvm::SmallVector<llvm::SmallVector<uint8_t, 32>, 8> patterns;
+      llvm::SmallVector<uint64_t, 8> leaders;
+      for (uint64_t object : objects) {
+        llvm::SmallVector<uint8_t, 32> pattern;
+        for (const auto &read : reads)
+          pattern.push_back((object + 1) * objectBytes <= read.range.low ||
+                            object * objectBytes >= read.range.high);
+        unsigned group = 0;
+        while (group < patterns.size() && patterns[group] != pattern)
+          ++group;
+        if (group == patterns.size()) {
+          patterns.push_back(std::move(pattern));
+          leaders.push_back(object);
+        }
+        representatives[object] = leaders[group];
+      }
+      scopeCount = leaders.size();
+    }
+    if (scopeCount > 8) {
+      representatives.clear();
+      objectBytes = 8192;
+      objects.clear();
+      for (const auto &copy : copies)
+        objects.insert(copy.range.low / objectBytes);
+      scopeCount = objects.size();
+    }
+    if (scopeCount < 2 || scopeCount > 8 || reads.empty())
+      continue;
+    bool useful = llvm::any_of(reads, [&](const Access &read) {
+      return llvm::any_of(objects, [&](uint64_t object) {
+        return (object + 1) * objectBytes <= read.range.low ||
+               object * objectBytes >= read.range.high;
+      });
+    });
+    if (!useful)
+      continue;
+    llvm::MDBuilder metadata(module->getContext());
+    auto *domain = metadata.createAnonymousAliasScopeDomain("gfx936 LDS objects");
+    llvm::DenseMap<uint64_t, llvm::MDNode *> scopes;
+    llvm::DenseMap<uint64_t, llvm::MDNode *> groupScopes;
+    for (auto object : objects) {
+      uint64_t leader = representatives.count(object)
+                            ? representatives.lookup(object) : object;
+      auto *&scope = groupScopes[leader];
+      if (!scope)
+        scope = metadata.createAnonymousAliasScope(
+            domain, "LDS group led by bytes " +
+                        std::to_string(leader * objectBytes));
+      scopes[object] = scope;
+    }
+    auto *localScope = metadata.createAnonymousAliasScope(domain, "LDS reads");
+    auto *localList = llvm::MDNode::get(module->getContext(), {localScope});
+    for (auto &copy : copies) {
+      auto *scope = scopes.lookup(copy.range.low / objectBytes);
+      copy.inst->setMetadata(llvm::LLVMContext::MD_alias_scope,
+                             llvm::MDNode::get(module->getContext(), {scope}));
+      ++changed;
+    }
+    for (auto &read : reads) {
+      llvm::SmallVector<llvm::Metadata *, 8> disjoint;
+      for (auto object : objects)
+        if ((object + 1) * objectBytes <= read.range.low ||
+            object * objectBytes >= read.range.high)
+          if (!llvm::is_contained(disjoint, scopes.lookup(object)))
+            disjoint.push_back(scopes.lookup(object));
+      if (disjoint.empty())
+        continue;
+      read.inst->setMetadata(llvm::LLVMContext::MD_alias_scope, localList);
+      read.inst->setMetadata(llvm::LLVMContext::MD_noalias,
+                             llvm::MDNode::get(module->getContext(), disjoint));
+      ++changed;
+    }
+  }
+  return changed;
+}
+
+} // namespace
+
+
+// DTK groups LDS DMA writes by AAMDNodes but keeps one pointer per group.
+// BasicAA can disambiguate a read from that representative even when it reads
+// another fragment of the same group. The wait pass then falls back to its
+// general LDS slot and unnecessarily drains future buffers. Forget only the
+// first DMA pointer's provenance, retaining the scoped-noalias contract and
+// BasicAA everywhere else. A tied empty asm preserves all 32 pointer bits;
+// it does not assert non-aliasing or remove any explicit synchronization.
+static unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
+                                          const std::string &arch) {
+  if (arch != "gfx936" || module->getDataLayout().getPointerSizeInBits(3) != 32)
+    return 0;
+  auto *i32 = llvm::Type::getInt32Ty(module->getContext());
+  auto *type = llvm::FunctionType::get(i32, {i32}, false);
+  auto *identity = llvm::InlineAsm::get(type, "", "=v,0", false);
+  unsigned changed = 0;
+  for (auto &fn : *module) {
+    llvm::SmallVector<llvm::AAMDNodes, 8> seen;
+    for (auto &block : fn)
+      for (auto &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee || call->getNumOperandBundles())
+          continue;
+        auto name = callee->getName();
+        bool raw = (name == "llvm.amdgcn.raw.ptr.buffer.load.lds" ||
+                    name.starts_with("llvm.amdgcn.raw.ptr.buffer.load.lds.")) &&
+                   call->arg_size() == 7;
+        bool structured =
+            (name == "llvm.amdgcn.struct.ptr.buffer.load.lds" ||
+             name.starts_with("llvm.amdgcn.struct.ptr.buffer.load.lds.")) &&
+            call->arg_size() == 8;
+        // Both typed DMA forms carry the exact same 32-bit LDS operand.
+        // Preserve the existing scope contract and all raw-path behavior.
+        if (!raw && !structured)
+          continue;
+        auto *ptr = call->getArgOperand(1);
+        auto *ptrType = llvm::dyn_cast<llvm::PointerType>(ptr->getType());
+        auto aa = call->getAAMetadata();
+        if (!ptrType || ptrType->getAddressSpace() != 3 || !aa.Scope ||
+            std::find(seen.begin(), seen.end(), aa) != seen.end())
+          continue;
+        seen.push_back(aa);
+        // Avoid adding another identity if this module is visited again.
+        if (auto *cast = llvm::dyn_cast<llvm::IntToPtrInst>(ptr))
+          if (auto *opaque = llvm::dyn_cast<llvm::CallInst>(cast->getOperand(0)))
+            if (auto *code = llvm::dyn_cast<llvm::InlineAsm>(opaque->getCalledOperand()))
+              if (code->getAsmString().empty() &&
+                  code->getConstraintString() == "=v,0" &&
+                  !code->hasSideEffects() && !opaque->getNumOperandBundles() &&
+                  opaque->arg_size() == 1 && opaque->getType() == i32 &&
+                  opaque->getArgOperand(0)->getType() == i32)
+                continue;
+        llvm::IRBuilder<> builder(call);
+        builder.SetCurrentDebugLocation(llvm::DebugLoc());
+        auto *address = builder.CreatePtrToInt(ptr, i32, "lds.dma.alias.address");
+        auto *opaque = builder.CreateCall(identity, {address}, "lds.dma.alias.opaque");
+        call->setArgOperand(1, builder.CreateIntToPtr(opaque, ptrType, "lds.dma.alias.ptr"));
+        ++changed;
+      }
+  }
+  return changed;
+}
+
 void init_triton_hcu(py::module &&m) {
+  initWholePacketFrontendBindings(m);
+  initRawWindowFrontendBindings(m);
+  // Reuse MLIR's standard LLVM loop metadata, as other backends do. Preserve
+  // other loop annotations; explicit LLVM unroll hints take precedence.
+  m.def("disable_llvm_loop_unroll", [](mlir::ModuleOp mod) {
+    auto *ctx = mod.getContext();
+    mod.walk([&](mlir::scf::ForOp loop) {
+      auto old = loop->getAttrOfType<mlir::LLVM::LoopAnnotationAttr>(
+          "llvm.loop_annotation");
+      if (old && old.getUnroll())
+        return;
+      if (!old)
+        old = mlir::LLVM::LoopAnnotationAttr::get(
+            ctx, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});
+      auto unroll = mlir::LLVM::LoopUnrollAttr::get(
+          ctx, mlir::BoolAttr::get(ctx, true), {}, {}, {}, {}, {}, {});
+      auto annotation = mlir::LLVM::LoopAnnotationAttr::get(
+          ctx, old.getDisableNonforced(), old.getVectorize(),
+          old.getInterleave(), unroll, old.getUnrollAndJam(), old.getLicm(),
+          old.getDistribute(), old.getPipeline(), old.getPeeled(),
+          old.getUnswitch(), old.getMustProgress(), old.getIsVectorized(),
+          old.getStartLoc(), old.getEndLoc(), old.getParallelAccesses());
+      loop->setAttr("llvm.loop_annotation", annotation);
+    });
+  });
+
+
+  m.def("preserve_buffer_load_byte_offsets", &preserveBufferLoadByteOffsets);
+  m.def("preserve_lds_barrier_order", &preserveLdsBarrierOrder);
+  m.def("strip_synchronous_barrier_markers", &stripSynchronousBarrierMarkers);
+  m.def("lower_tagged_local_barriers", &lowerTaggedLocalBarriers);
+  m.def("annotate_lds_object_scopes", &annotateLdsObjectScopes);
+  m.def("preserve_lds_dma_alias_scopes", &preserveLdsDmaAliasScopes);
+  m.def("prefer_ready_shared_loads", &preferReadySharedLoads);
+  m.def("interleave_global_lds_reads",
+        [](llvm::Module *module, const std::string &arch, bool addFences) {
+          auto s = interleaveGlobalLdsReads(module, arch, addFences);
+          py::dict d;
+          d["transformed_windows"] = s.windows;
+          d["moved_global_reads"] = s.globalReads;
+          d["moved_pure_dependents"] = s.pureDependents;
+          d["split_lds_reads"] = s.ldsReads;
+          d["sched_barriers_added"] = s.fences;
+          d["rejected_dependencies"] = s.rejectedDependencies;
+          d["invalid_functions"] = s.invalidFunctions;
+          d["iglp_functions"] = s.iglpFunctions;
+          return d;
+        });
+  m.def("tuple_register_fences",
+        [](llvm::Module *module, const std::string &arch) {
+          auto stats = tupleRegisterFences(module, arch);
+          py::dict result;
+          result["sites"] = stats.sites;
+          result["scalar_lanes"] = stats.scalarLanes;
+          result["rejected"] = stats.rejected;
+          return result;
+        });
   m.doc() = "Python bindings to the HCU Triton backend";
 
   auto passes = m.def_submodule("passes");

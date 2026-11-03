@@ -518,6 +518,45 @@ public:
   }
 };
 
+// Instruction shape is MNK, while tilesPerWarp is indexed by tensor rank.
+// Unit tiles are omitted by the printer, so compare attributes, not only text.
+TEST_F(AMDLayoutTest, MfmaUnitTilesPerWarpParseRoundTrip) {
+  for (const auto &warps :
+       SmallVector<SmallVector<unsigned>>{{2, 2}, {1, 2, 2}}) {
+    for (const auto &instr :
+         SmallVector<SmallVector<unsigned>>{{16, 16}, {16, 16, 16}}) {
+      SCOPED_TRACE(warps.size());
+      SCOPED_TRACE(instr.size());
+      auto cta = CTAEncodingAttr::getDefault(&ctx, warps.size());
+      auto original = AMDMfmaEncodingAttr::get(
+          &ctx, /*version=*/3, warps, instr, /*isTransposed=*/false, cta);
+      ASSERT_EQ(original.getTilesPerWarp().size(), warps.size());
+      auto printed = stringifyLLVMType(original);
+      EXPECT_EQ(printed.find("tilesPerWarp"), std::string::npos);
+      auto parsed = dyn_cast_or_null<AMDMfmaEncodingAttr>(
+          parseAttribute(printed, &ctx));
+      ASSERT_TRUE(parsed);
+      EXPECT_EQ(parsed.getTilesPerWarp(), original.getTilesPerWarp());
+      EXPECT_EQ(parsed, original);
+      EXPECT_EQ(stringifyLLVMType(parsed), printed);
+    }
+  }
+}
+
+TEST_F(AMDLayoutTest, MfmaExplicitTilesPerWarpParseRoundTrip) {
+  auto cta = CTAEncodingAttr::getDefault(&ctx, 2);
+  auto original = AMDMfmaEncodingAttr::get(
+      &ctx, /*version=*/3, /*warpsPerCTA=*/{2, 2},
+      /*instrShape=*/{16, 16, 16}, /*isTransposed=*/false, cta,
+      /*tilesPerWarp=*/{2, 1});
+  auto printed = stringifyLLVMType(original);
+  EXPECT_NE(printed.find("tilesPerWarp"), std::string::npos);
+  auto parsed = dyn_cast_or_null<AMDMfmaEncodingAttr>(
+      parseAttribute(printed, &ctx));
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed, original);
+}
+
 class LinearEncodingTest : public ::testing::Test {
 public:
   LinearEncodingTest() { ctx.getOrLoadDialect<TritonGPUDialect>(); }

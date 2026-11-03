@@ -1,4 +1,5 @@
 #include "triton/Analysis/Membar.h"
+#include "triton/Analysis/PaddedSlotGeometry.h"
 #ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
@@ -8,6 +9,7 @@
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/IR/Matchers.h"
 #include <deque>
 
 namespace mlir {
@@ -165,6 +167,164 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
 }
 
+
+namespace {
+// Use the forwarded-successor interface, as in TensorMemoryAllocation. Only
+// identical SSA values on every edge are accepted; unknown and cyclic paths
+// keep the original whole-allocation dependency.
+static Value resolveIdenticalIncoming(Value value) {
+  SmallVector<Value, 8> seen;
+  for (unsigned depth = 0; depth < 8; ++depth) {
+    auto arg = dyn_cast<BlockArgument>(value);
+    if (!arg)
+      return value;
+    if (llvm::is_contained(seen, value))
+      return {};
+    seen.push_back(value);
+    Block *block = arg.getOwner();
+    Value incoming;
+    for (Block *pred : block->getPredecessors()) {
+      auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
+      if (!branch)
+        return {};
+      for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
+        if (branch->getSuccessor(i) != block)
+          continue;
+        auto operands = branch.getSuccessorOperands(i);
+        unsigned produced = operands.getProducedOperandCount();
+        unsigned number = arg.getArgNumber();
+        if (number < produced ||
+            number - produced >= operands.getForwardedOperands().size())
+          return {};
+        Value next = operands.getForwardedOperands()[number - produced];
+        if (incoming && incoming != next)
+          return {};
+        incoming = next;
+      }
+    }
+    if (!incoming)
+      return {};
+    value = incoming;
+  }
+  return {};
+}
+
+// Narrow counterpart of common Membar's static-access intervals. The existing
+// MemDescIndex lowering advances by getAllocationShapePerCTA(result) elements.
+// A full swizzled plane stays inside this interval; arbitrary subviews or padded
+// layouts must not be linearized using their logical rectangular bounds.
+static Interval<size_t> getFullSlotInterval(const Allocation *allocation,
+                                           Value value,
+                                           Allocation::BufferId bufferId,
+                                           Operation *access) {
+  auto whole = allocation->getAllocatedInterval(bufferId);
+  // Independent default-off stage1. The option requests extra precision, not
+  // permission to skip any geometry/alias/CFG check. Legacy path stays intact.
+  auto mod = allocation->getOperation()->getParentOfType<ModuleOp>();
+  auto enabled = mod ? mod->getAttrOfType<BoolAttr>(
+                           "ttg.hcu.padded_slot_intervals") : BoolAttr{};
+  auto target = mod ? mod->getAttrOfType<StringAttr>("ttg.target") : StringAttr{};
+  auto ctas = mod ? mod->getAttrOfType<IntegerAttr>("ttg.num-ctas") : IntegerAttr{};
+  auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(access);
+  auto localStore = dyn_cast<triton::gpu::LocalStoreOp>(access);
+  bool ordinaryAccess =
+      (localLoad && !localLoad.getToken() && localLoad.getSrc() == value) ||
+      (localStore && localStore.getDst() == value);
+  if (ordinaryAccess && enabled && enabled.getValue() && target &&
+      target.getValue() == "hip:gfx936" && ctas && ctas.getInt() == 1) {
+    Value plane = resolveIdenticalIncoming(value);
+    // Only bijective full-plane transposes may precede the index. Arbitrary
+    // slices, reinterpretations and different root lifetimes stay whole.
+    for (unsigned depth = 0; plane && depth < 8; ++depth) {
+      auto trans = plane.getDefiningOp<triton::gpu::MemDescTransOp>();
+      if (!trans)
+        break;
+      if (!triton::gpu::isFullPaddedSlotTranspose(trans)) {
+        plane = {};
+        break;
+      }
+      plane = resolveIdenticalIncoming(trans.getSrc());
+    }
+    auto index = plane ? plane.getDefiningOp<triton::gpu::MemDescIndexOp>()
+                       : triton::gpu::MemDescIndexOp{};
+    Value root = index ? resolveIdenticalIncoming(index.getSrc()) : Value{};
+    auto alloc = root ? root.getDefiningOp<triton::gpu::LocalAllocOp>()
+                      : triton::gpu::LocalAllocOp{};
+    auto geometry = alloc && alloc.isSharedMemoryAlloc() &&
+                            allocation->getBufferId(root) == bufferId
+                        ? triton::gpu::getPaddedSlotGeometry(alloc.getType(),
+                                                            index.getType())
+                        : std::nullopt;
+    llvm::APInt slot;
+    if (geometry && matchPattern(index.getIndex(), m_ConstantInt(&slot)) &&
+        slot.getBitWidth() <= 32 && !slot.isNegative() &&
+        slot.getZExtValue() < geometry->slots &&
+        geometry->rootBytes <= allocation->getAllocatedSize(bufferId)) {
+      uint64_t relative, end, start;
+      if (triton::gpu::paddedSlotMul(slot.getZExtValue(), geometry->strideBytes,
+                                     relative) &&
+          triton::gpu::paddedSlotAdd(relative, geometry->footprintBytes, end) &&
+          end <= geometry->rootBytes &&
+          triton::gpu::paddedSlotAdd(whole.start(), relative, start) &&
+          start <= std::numeric_limits<size_t>::max() &&
+          triton::gpu::paddedSlotAdd(whole.start(), end, end) &&
+          end <= std::numeric_limits<size_t>::max())
+        return Interval<size_t>(static_cast<size_t>(start),
+                                static_cast<size_t>(end));
+    }
+  }
+  value = resolveIdenticalIncoming(value);
+  if (!value)
+    return whole;
+  auto index = value.getDefiningOp<triton::gpu::MemDescIndexOp>();
+  if (!index)
+    return whole;
+  Value root = resolveIdenticalIncoming(index.getSrc());
+  if (!root)
+    return whole;
+  auto alloc = root.getDefiningOp<triton::gpu::LocalAllocOp>();
+  if (!alloc || !alloc.isSharedMemoryAlloc() ||
+      allocation->getBufferId(root) != bufferId)
+    return whole;
+  auto srcTy = alloc.getType();
+  auto dstTy = index.getType();
+  if (srcTy.getRank() != 3 || dstTy.getRank() != 2 ||
+      !isa<triton::gpu::SwizzledSharedEncodingAttr>(srcTy.getEncoding()) ||
+      srcTy.getEncoding() != dstTy.getEncoding() ||
+      srcTy.getShape() != srcTy.getAllocShape() ||
+      dstTy.getShape() != dstTy.getAllocShape() ||
+      srcTy.getShape().drop_front() != dstTy.getShape() ||
+      ArrayRef<int64_t>(triton::gpu::getAllocationShapePerCTA(srcTy)) !=
+          srcTy.getShape() ||
+      ArrayRef<int64_t>(triton::gpu::getAllocationShapePerCTA(dstTy)) !=
+          dstTy.getShape())
+    return whole;
+  Type elemTy = srcTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return whole;
+  unsigned bits = elemTy.getIntOrFloatBitWidth();
+  llvm::APInt slot;
+  if (!bits || bits % 8 ||
+      !matchPattern(index.getIndex(), m_ConstantInt(&slot)) ||
+      slot.getBitWidth() > 64 || slot.isNegative() ||
+      slot.getZExtValue() >= static_cast<uint64_t>(srcTy.getShape()[0]))
+    return whole;
+  size_t total = allocation->getAllocatedSize(bufferId);
+  size_t stride = bits / 8;
+  for (int64_t dim : dstTy.getShape()) {
+    if (dim <= 0 || stride > total / static_cast<size_t>(dim))
+      return whole;
+    stride *= dim;
+  }
+  int64_t slots = srcTy.getShape()[0];
+  if (slots <= 0 || stride > total / static_cast<size_t>(slots) ||
+      stride * slots != total)
+    return whole;
+  size_t start = whole.start() + slot.getZExtValue() * stride;
+  return Interval<size_t>(start, start + stride);
+}
+} // namespace
+
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
@@ -203,15 +363,14 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
         if (auto value = effectInstance.getValue()) {
           for (auto bufferId : allocation->getBufferIds(value)) {
             if (bufferId != Allocation::InvalidBufferId) {
+              auto interval = getFullSlotInterval(allocation, value, bufferId, op);
               if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
                 curBlockInfo
-                    .syncWriteIntervals[allocation->getAllocatedInterval(
-                        bufferId)]
+                    .syncWriteIntervals[interval]
                     .insert(op);
               else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
                 curBlockInfo
-                    .syncReadIntervals[allocation->getAllocatedInterval(
-                        bufferId)]
+                    .syncReadIntervals[interval]
                     .insert(op);
             }
           }

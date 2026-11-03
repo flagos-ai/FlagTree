@@ -1,9 +1,11 @@
 #include <stack>
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -45,6 +47,12 @@ public:
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size());
   }
+
+  Value getBase() const { return base; }
+  ArrayRef<Value> getShape() const { return shape; }
+  ArrayRef<Value> getStrides() const { return strides; }
+  ArrayRef<int64_t> getTensorShape() const { return tensorShape; }
+  ArrayRef<Value> getStaticOffsets() const { return offsets; }
 
   unsigned int length() const { return shape.size(); }
 
@@ -278,6 +286,430 @@ public:
     return nullptr;
   }
 
+// Bound the entire full BN column tile without trusting launch metadata.
+// Only one uniform CTA program-id axis1, unsigned remainder (or exact power2
+// mask), then BN scale is accepted. It does not alter any pointer/descriptor.
+static bool isLegacyV0BoundedPIDColumn(Value value, int64_t totalN, unsigned bn) {
+  if (totalN < bn || totalN % bn)
+    return false;
+  auto constant = [](Value v) -> std::optional<int64_t> {
+    auto op = v.getDefiningOp<arith::ConstantOp>();
+    auto a = op ? dyn_cast<IntegerAttr>(op.getValue()) : IntegerAttr{};
+    if (!a || !a.getValue().isSignedIntN(64)) return std::nullopt;
+    return a.getValue().getSExtValue();
+  };
+  if (auto ext = value.getDefiningOp<arith::ExtSIOp>()) {
+    if (!ext.getIn().getType().isInteger(32) || !value.getType().isInteger(64)) return false;
+    value = ext.getIn();
+  } else if (auto ext = value.getDefiningOp<arith::ExtUIOp>()) {
+    if (!ext.getIn().getType().isInteger(32) || !value.getType().isInteger(64)) return false;
+    value = ext.getIn();
+  }
+  if (!value.getType().isInteger(32)) return false;
+  Value tile;
+  if (auto mul = value.getDefiningOp<arith::MulIOp>()) {
+    if (constant(mul.getRhs()) != bn) return false;
+    tile = mul.getLhs();
+  } else if (auto shift = value.getDefiningOp<arith::ShLIOp>()) {
+    unsigned log = bn == 128 ? 7 : bn == 256 ? 8 : 32;
+    if (log == 32 || constant(shift.getRhs()) != log) return false;
+    tile = shift.getLhs();
+  } else return false;
+  int64_t tiles = totalN / bn;
+  Value pid;
+  if (auto rem = tile.getDefiningOp<arith::RemUIOp>()) {
+    if (constant(rem.getRhs()) != tiles) return false;
+    pid = rem.getLhs();
+  } else if (auto mask = tile.getDefiningOp<arith::AndIOp>()) {
+    if (tiles < 1 || (uint64_t(tiles) & (uint64_t(tiles) - 1)) ||
+        constant(mask.getRhs()) != tiles - 1) return false;
+    pid = mask.getLhs();
+  } else return false;
+  auto op = pid.getDefiningOp<triton::GetProgramIdOp>();
+  return op && op.getAxisAsInt() == 1;
+}
+
+  // Capture-only paired A/B block pointers. The old B-only selector below is
+  // unchanged. This is source construction, not opaque runtime eligibility:
+  // make_llir must retain its capture hard stop for the stage5 request.
+  bool tryPromoteIndexedABCapture(OpBuilder &builder, triton::LoadOp load,
+                                  const RewritedInfo &info) {
+    auto mod = load->getParentOfType<ModuleOp>();
+    auto is = [&](StringRef key, int32_t value) {
+      auto a = mod->getAttrOfType<IntegerAttr>(key);
+      return a && a.getType().isInteger(32) && a.getInt() == value;
+    };
+    if (!is("ttg.hcu.v0_indexed_a_packet", 1) ||
+        !is("ttg.hcu.v0_blockptr", 1) || !is("ttg.hcu.v0_target936", 1) ||
+        !is("ttg.hcu.v0_mls_local_prefetch_capture", 1) ||
+        !is("ttg.hcu.v0_warps", 4) || !is("ttg.hcu.mmac_tpw_n", 2) ||
+        !is("ttg.hcu.mmac_transposed", 1) ||
+        !is("ttg.hcu.canonical_matrix", 0))
+      return false;
+    for (StringRef key : {"ttg.hcu.alt_matrix", "ttg.hcu.async_slot_war",
+                          "ttg.hcu.local_prefetch", "ttg.hcu.v0_swizzled_a_vec8"})
+      if (mod->hasAttr(key) && !is(key, 0)) return false;
+    auto constant = [](Value v) -> std::optional<int64_t> {
+      auto c = v.getDefiningOp<arith::ConstantOp>();
+      auto a = c ? dyn_cast<IntegerAttr>(c.getValue()) : IntegerAttr{};
+      if (!a || !a.getValue().isSignedIntN(64)) return std::nullopt;
+      return a.getInt();
+    };
+    auto i32 = [](Value v) -> Value {
+      if (auto ext = v.getDefiningOp<arith::ExtSIOp>()) {
+        if (!v.getType().isInteger(64)) return {};
+        v = ext.getIn();
+      }
+      return v.getType().isInteger(32) ? v : Value{};
+    };
+    auto f = load->getParentOfType<triton::FuncOp>();
+    auto loop = load->getParentOfType<scf::ForOp>();
+    auto ty = dyn_cast<RankedTensorType>(load.getType());
+    if (!f || !llvm::hasSingleElement(f.getBody()) || f.getNumArguments() != 3 ||
+        !loop || loop->getParentOp() != f.getOperation() ||
+        load->getBlock() != loop.getBody() || !load->hasOneUse() || !ty ||
+        ty.getRank() != 2 || !(ty.getElementType().isF16() || ty.getElementType().isBF16()) ||
+        info.length() != 2 || constant(loop.getLowerBound()) != 0 ||
+        constant(loop.getStep()) != 1 || constant(loop.getUpperBound()) != 32 ||
+        !loop.getInductionVar().getType().isInteger(32))
+      return false;
+    auto dot = dyn_cast<triton::DotOp>(*load->getUsers().begin());
+    if (!dot || dot->getBlock() != loop.getBody() ||
+        dot.getA().getType().getShape() != ArrayRef<int64_t>({128, 32}) ||
+        dot.getB().getType().getShape() != ArrayRef<int64_t>({32, 128}) ||
+        dot.getType().getShape() != ArrayRef<int64_t>({128, 128}) ||
+        !dot.getType().getElementType().isF32() ||
+        dot.getA().getType().getElementType() != ty.getElementType() ||
+        dot.getB().getType().getElementType() != ty.getElementType())
+      return false;
+    unsigned opIdx = dot.getA() == load.getResult() ? 0 : 1;
+    if ((opIdx == 1 && dot.getB() != load.getResult()) ||
+        ty.getShape() != (opIdx == 0 ? ArrayRef<int64_t>({128, 32})
+                                    : ArrayRef<int64_t>({32, 128})))
+      return false;
+    // A may be visited before B or after it. Count only live loads, including
+    // our exact provisional replacement; never treat arbitrary MatrixLoad as
+    // a second ordinary load or turn explicit per-op False into True.
+    unsigned loads = 0, dots = 0;
+    for (auto &op : *loop.getBody()) {
+      dots += isa<triton::DotOp>(op);
+      if (isa<triton::LoadOp, triton::MatrixLoadOp>(op) &&
+          !op.getResult(0).use_empty()) ++loads;
+    }
+    if (loads != 2 || dots != 1) return false;
+    for (Value operand : {dot.getA(), dot.getB()}) {
+      auto *producer = operand.getDefiningOp();
+      auto ld = dyn_cast_or_null<triton::LoadOp>(producer);
+      auto ml = dyn_cast_or_null<triton::MatrixLoadOp>(producer);
+      if (!producer || producer->getBlock() != loop.getBody() || !operand.hasOneUse() ||
+          (!ld && !(ml && ml->hasAttr("ttg.hcu.v0_blockptr_candidate"))))
+        return false;
+      auto policy = producer->getAttrOfType<BoolAttr>("tt.load.async");
+      if ((producer->hasAttr("tt.load.async") && !policy) ||
+          (policy && !policy.getValue()) || (!policy && !is("ttg.hcu.v0_default_async", 1)))
+        return false;
+      if (ld && (ld.getMask() || ld.getOther() || ld.getPadding() ||
+                 !ld.getBoundaryCheck().empty() || ld.getIsVolatile() ||
+                 ld.getCache() != triton::CacheModifier::NONE ||
+                 ld.getEvict() != triton::EvictionPolicy::NORMAL ||
+                 (ld.getFlagtreeHintsAttr() && !ld.getFlagtreeHintsAttr().getValue().empty())))
+        return false;
+    }
+    auto shape = info.getShape(), strides = info.getStrides(), offsets = info.getStaticOffsets();
+    auto extent = constant(shape[opIdx]);
+    // Fixed K and 16-bit elements: bound before multiplying/narrowing so
+    // the entire contiguous source fits the signed I32 byte-offset contract.
+    if (!extent || *extent < 128 || *extent % 128 ||
+        *extent >= (int64_t(1) << 20) ||
+        constant(shape[1 - opIdx]) != 1024 ||
+        constant(strides[0]) != (opIdx == 0 ? 1024 : *extent) ||
+        constant(strides[1]) != 1)
+      return false;
+    Value k = i32(offsets[1 - opIdx]);
+    auto kmul = k ? k.getDefiningOp<arith::MulIOp>() : arith::MulIOp{};
+    if (!kmul || kmul.getLhs() != loop.getInductionVar() || constant(kmul.getRhs()) != 32)
+      return false;
+    Value nonK = i32(offsets[opIdx]);
+    if (!nonK) return false;
+    if (opIdx == 0) {
+      // The unmasked TL launch contract is grid.x <= M/128.
+      // No prefix, negative base adjustment, or invented source padding.
+      auto mul = nonK.getDefiningOp<arith::MulIOp>();
+      auto pid = mul ? mul.getLhs().getDefiningOp<triton::GetProgramIdOp>()
+                     : triton::GetProgramIdOp{};
+      if (!mul || constant(mul.getRhs()) != 128 || !pid || pid.getAxisAsInt() != 0)
+        return false;
+    } else if (!isLegacyV0BoundedPIDColumn(nonK, *extent, 128) && constant(nonK) != 0) {
+      return false;
+    }
+    auto base = dyn_cast<BlockArgument>(info.getBase());
+    auto ptr = dyn_cast<triton::PointerType>(info.getBase().getType());
+    if (!base || base.getOwner() != &f.getBody().front() || base.getArgNumber() != opIdx ||
+        !ptr || ptr.getAddressSpace() != 1 || ptr.getPointeeType() != ty.getElementType())
+      return false;
+    auto align = f.getArgAttrOfType<IntegerAttr>(opIdx, "tt.divisibility");
+    if (!align || !align.getValue().isSignedIntN(64) || align.getInt() < 16 || align.getInt() % 16)
+      return false;
+    SmallVector<Value> shapeI32{
+        arith::ConstantIntOp::create(builder, load.getLoc(), *constant(shape[0]), 32),
+        arith::ConstantIntOp::create(builder, load.getLoc(), *constant(shape[1]), 32)};
+    SmallVector<Value> indices = opIdx == 0 ? SmallVector<Value>{nonK, k}
+                                           : SmallVector<Value>{k, nonK};
+    SmallVector<int32_t> tile{int32_t(ty.getShape()[0]), int32_t(ty.getShape()[1])};
+    auto ml = builder.create<triton::MatrixLoadOp>(load.getLoc(), ty, info.getBase(),
+        shapeI32, strides, tile, indices, ArrayRef<int32_t>{},
+        load.getCache(), load.getEvict(), load.getIsVolatile());
+    ml->setAttr("ttg.hcu.v0_blockptr_candidate", builder.getUnitAttr());
+    mod->setAttr("ttg.hcu.v0_blockptr_loop", builder.getI32IntegerAttr(1));
+    if (auto policy = load->getAttrOfType<BoolAttr>("tt.load.async"))
+      ml->setAttr("tt.load.async", policy);
+    load.getResult().replaceAllUsesWith(ml.getResult());
+    return true;
+  }
+
+  // A closed one-shot block-pointer experiment. No pointer-array provenance
+  // inference. Values narrowed below have been compared against small exact
+  // constants. The final DotOperand legality is checked after acceleration;
+  // that pass must lower rejected candidates back to an ordinary tt.load.
+  bool tryPromoteLegacyV0BlockPtr(OpBuilder &builder, triton::LoadOp load,
+                                  const RewritedInfo &info,
+                                  const std::stack<Operation *> &eraser) {
+    auto mod = load->getParentOfType<ModuleOp>();
+    auto capture = mod->getAttrOfType<IntegerAttr>("ttg.hcu.v0_mls_local_prefetch_capture");
+    if (capture && capture.getType().isInteger(32) && capture.getInt() == 1) {
+      if (auto hint = mod->getAttr("ttg.hcu.v0_indexed_a_packet")) {
+        auto value = dyn_cast<IntegerAttr>(hint);
+        if (!value || !value.getType().isInteger(32) || value.getInt() != 0)
+          return tryPromoteIndexedABCapture(builder, load, info);
+      }
+    }
+    auto intAttr = [&](StringRef name) -> int64_t {
+      auto a = mod->getAttrOfType<IntegerAttr>(name);
+      return a ? a.getInt() : 0;
+    };
+    if (intAttr("ttg.hcu.v0_blockptr") != 1 ||
+        intAttr("ttg.hcu.v0_target936") != 1)
+      return false;
+    auto f = load->getParentOfType<triton::FuncOp>();
+    auto loop = load->getParentOfType<scf::ForOp>();
+    if (!f || !llvm::hasSingleElement(f.getBody()) ||
+        (loop ? loop->getParentOp() != f.getOperation() || load->getBlock() != loop.getBody()
+              : load->getBlock() != &f.getBody().front()))
+      return false;
+    // RewriteFor clones the current loop before erasing its predecessor. Only
+    // ignore exact operations already owned by this pass's deferred eraser.
+    llvm::SmallPtrSet<Operation *, 8> pending;
+    auto pendingErase = eraser;
+    while (!pendingErase.empty()) {
+      pending.insert(pendingErase.top());
+      pendingErase.pop();
+    }
+    unsigned functions = 0;
+    bool simple = true;
+    mod.walk([&](triton::FuncOp fn) { ++functions; });
+    auto plain = [&](Operation &op) {
+      auto name = op.getName().getStringRef();
+      return op.getNumRegions() == 0 && op.getNumSuccessors() == 0 &&
+          ((loop && isa<triton::GetProgramIdOp>(&op)) || name.starts_with("arith.") || llvm::is_contained(ArrayRef<StringRef>({
+             "tt.return", "tt.make_range", "tt.expand_dims", "tt.broadcast",
+             "tt.splat", "tt.addptr", "tt.make_tensor_ptr", "tt.advance",
+             "tt.load", "tt.store", "tt.dot", "scf.yield"}), name));
+    };
+    for (auto &op : f.getBody().front()) {
+      if (pending.contains(&op))
+        continue;
+      if (loop && &op == loop.getOperation()) {
+        for (auto &bodyOp : *loop.getBody())
+          simple &= plain(bodyOp);
+      } else {
+        simple &= plain(op);
+      }
+    }
+    if (functions != 1 || !simple || !load->hasOneUse() ||
+        load.getIsVolatile() || !load.getBoundaryCheck().empty() ||
+        load.getPadding() || load.getMask() || load.getOther() ||
+        (load.getFlagtreeHintsAttr() && !load.getFlagtreeHintsAttr().getValue().empty()) ||
+        load.getCache() != triton::CacheModifier::NONE ||
+        load.getEvict() != triton::EvictionPolicy::NORMAL)
+      return false;
+    auto policy = load->getAttrOfType<BoolAttr>("tt.load.async");
+    if ((policy && !policy.getValue()) ||
+        (!policy && intAttr("ttg.hcu.v0_default_async") != 1))
+      return false;
+    auto dot = dyn_cast<triton::DotOp>(*load->getUsers().begin());
+    auto ty = dyn_cast<RankedTensorType>(load.getType());
+    if (!ty || !dot || dot.getB() != load.getResult() || ty.getRank() != 2 ||
+        !(ty.getElementType().isF16() || ty.getElementType().isBF16()) ||
+        dot.getA().getType().getElementType() != ty.getElementType() ||
+        !dot.getType().getElementType().isF32())
+      return false;
+    if (loop && (loop.getNumResults() != 1 || loop.getInitArgs().size() != 1 ||
+                 loop.getBody()->getNumArguments() != 2))
+      return false;
+    unsigned dots = 0, globalLoads = 0, globalStores = 0;
+    triton::StoreOp store;
+    auto count = [&](Operation *op) {
+      dots += isa<triton::DotOp>(op);
+      if (auto ld = dyn_cast<triton::LoadOp>(op))
+        globalLoads += !ld.getResult().use_empty();
+      if (auto st = dyn_cast<triton::StoreOp>(op)) { ++globalStores; store = st; }
+    };
+    for (auto &op : f.getBody().front()) {
+      if (pending.contains(&op))
+        continue;
+      if (loop && &op == loop.getOperation()) {
+        for (auto &bodyOp : *loop.getBody())
+          count(&bodyOp);
+      } else {
+        count(&op);
+      }
+    }
+    if (dots != 1 || globalLoads != 2 || globalStores != 1 ||
+        info.length() != 2 || f.getNumArguments() != 3 || !store ||
+        store.getMask() ||
+        !store.getBoundaryCheck().empty() ||
+        !dot.getA().getDefiningOp<triton::LoadOp>())
+      return false;
+    Value outputAccumulator = loop ? Value(loop.getResult(0)) : Value(dot.getD());
+    if (store.getValue() != outputAccumulator) {
+      // Only the loop exit gains one exact truncation to the input dtype.
+      // Final post-epilogue CF verification repeats this with actual layouts.
+      auto trunc = store.getValue().getDefiningOp<arith::TruncFOp>();
+      auto outTy = dyn_cast<RankedTensorType>(store.getValue().getType());
+      auto accTy = dyn_cast<RankedTensorType>(outputAccumulator.getType());
+      if (!loop || !trunc || trunc.getIn() != outputAccumulator ||
+          !trunc.getOut().hasOneUse() || trunc->getBlock() != store->getBlock() ||
+          store->getBlock() != &f.getBody().front() ||
+          !trunc->isBeforeInBlock(store.getOperation()) || !accTy || !outTy ||
+          !accTy.getElementType().isF32() || outTy.getElementType() != ty.getElementType() ||
+          outTy.getShape() != accTy.getShape() || outTy.getEncoding() != accTy.getEncoding())
+        return false;
+      unsigned truncCount = 0;
+      for (auto &op : f.getBody().front()) {
+        if (pending.contains(&op)) continue;
+        if (&op == loop.getOperation()) {
+          for (auto &bodyOp : *loop.getBody()) truncCount += isa<arith::TruncFOp>(&bodyOp);
+        } else truncCount += isa<arith::TruncFOp>(&op);
+      }
+      if (truncCount != 1) return false;
+    }
+    auto cst = [](Value v) -> std::optional<int64_t> {
+      while (auto ext = v.getDefiningOp<arith::ExtSIOp>())
+        v = ext.getIn();
+      APInt n;
+      if (!matchPattern(v, m_ConstantInt(&n)) || n.getBitWidth() > 64)
+        return std::nullopt;
+      return n.getSExtValue();
+    };
+    auto is = [&](Value v, int64_t x) { return cst(v) == x; };
+    int64_t warps = intAttr("ttg.hcu.v0_warps");
+    bool s25 = warps == 4 && ty.getShape() == ArrayRef<int64_t>({32, 128});
+    bool s26 = warps == 8 && ty.getShape() == ArrayRef<int64_t>({16, 256});
+    if (!s25 && !s26)
+      return false;
+    int64_t m = s25 ? 32 : 64;
+    auto aTy = dot.getA().getType(), cTy = dot.getType();
+    // Only the two fullM counted-loop packets; one-shot ownership is unchanged.
+    // The joint-phase attribute is injected later at make_llir, so its required
+    // mode and real16KiB allocation are checked by the final closed preflight.
+    if (loop && aTy.getShape() == ArrayRef<int64_t>({4 * m, ty.getShape()[0]}) &&
+        cTy.getShape() == ArrayRef<int64_t>({4 * m, ty.getShape()[1]}))
+      m *= 4;
+    if (aTy.getShape() != ArrayRef<int64_t>({m, ty.getShape()[0]}) ||
+        cTy.getShape() != ArrayRef<int64_t>({m, ty.getShape()[1]}))
+      return false;
+    int64_t g = s25 ? 1024 : 4096;
+    auto shape = info.getShape(), strides = info.getStrides();
+    auto offsets = info.getStaticOffsets();
+    int64_t sourceK = g, sourceN = g;
+    if (loop) {
+      auto kt = cst(shape[0]), nt = cst(shape[1]);
+      if (!kt || !nt || *kt < ty.getShape()[0] || *nt < ty.getShape()[1] ||
+          *kt > 0x7fffffffll || *nt > 0x7fffffffll ||
+          *kt % ty.getShape()[0] || *nt % ty.getShape()[1] ||
+          !is(strides[0], *nt) || !is(strides[1], 1) ||
+          uint64_t(*kt) > 0x7fffffffull / (2ull * uint64_t(*nt)))
+        return false;
+      // Same rectangular source bounds as the closed static-loop preflight.
+      // Check before narrowing shape to I32 or multiplying2*K*N in codegen.
+      sourceK = *kt; sourceN = *nt;
+    } else if (!is(shape[0], g) || !is(shape[1], g) ||
+               !is(strides[0], g) || !is(strides[1], 1)) {
+      return false;
+    }
+    Value loopRow, loopColumn;
+    if (loop) {
+      auto trips = cst(loop.getUpperBound());
+      auto yield = dyn_cast<scf::YieldOp>(loop.getBody()->getTerminator());
+      auto zero = loop.getInitArgs()[0].getDefiningOp<arith::ConstantOp>();
+      auto dense = zero ? dyn_cast<DenseFPElementsAttr>(zero.getValue()) : DenseFPElementsAttr{};
+      if (!loop.getInductionVar().getType().isInteger(32) ||
+          !is(loop.getLowerBound(), 0) || !is(loop.getStep(), 1) ||
+          !trips || *trips < 2 || *trips > sourceK / ty.getShape()[0] ||
+          !loop.getResult(0).hasOneUse() || !yield || yield.getNumOperands() != 1 ||
+          yield.getOperand(0) != dot.getD() || dot.getC() != loop.getRegionIterArg(0) ||
+          dot->getBlock() != loop.getBody() || !dot.getD().hasOneUse() ||
+          !dense || !dense.isSplat() || !dense.getSplatValue<llvm::APFloat>().isZero() ||
+          loop.getInitArgs()[0].getType() != cTy ||
+          (!is(offsets[1], 0) &&
+           !isLegacyV0BoundedPIDColumn(offsets[1], sourceN, ty.getShape()[1])))
+        return false;
+      loopColumn = offsets[1];
+      if (auto ext = loopColumn.getDefiningOp<arith::ExtSIOp>())
+        loopColumn = ext.getIn();
+      else if (auto ext = loopColumn.getDefiningOp<arith::ExtUIOp>())
+        loopColumn = ext.getIn();
+      if (!loopColumn.getType().isInteger(32)) {
+        if (!is(loopColumn, 0)) return false;
+        loopColumn = arith::ConstantIntOp::create(builder, load.getLoc(), 0, 32);
+      }
+      loopRow = offsets[0];
+      // Actual inliner+pointer-rewrite source is i32 IV*BK then sign-extended
+      // once to i64 by RewritedInfo. No truncation or general affine inference.
+      if (auto ext = loopRow.getDefiningOp<arith::ExtSIOp>()) {
+        if (!ext.getIn().getType().isInteger(32) || !loopRow.getType().isInteger(64))
+          return false;
+        loopRow = ext.getIn();
+      }
+      auto row = loopRow.getDefiningOp<arith::MulIOp>();
+      if (!row || row->getBlock() != loop.getBody() ||
+          row.getLhs() != loop.getInductionVar() ||
+          !is(row.getRhs(), ty.getShape()[0]) || !loopRow.getType().isInteger(32))
+        return false;
+    } else if (!is(offsets[0], 0) || (cst(offsets[1]) != 0 && cst(offsets[1]) != 8)) {
+      return false;
+    }
+    auto base = dyn_cast<BlockArgument>(info.getBase());
+    auto ptr = dyn_cast<triton::PointerType>(info.getBase().getType());
+    if (!base || base.getOwner() != &f.getBody().front() || base.getArgNumber() != 1 || !ptr ||
+        ptr.getAddressSpace() != 1 || ptr.getPointeeType() != ty.getElementType())
+      return false;
+    auto align = f.getArgAttrOfType<IntegerAttr>(base.getArgNumber(),
+                                                "tt.divisibility");
+    if (!align || align.getInt() < 16 || align.getInt() % 16)
+      return false;
+    SmallVector<Value> shapeI32, indices;
+    for (auto v : shape)
+      shapeI32.push_back(arith::ConstantIntOp::create(builder, load.getLoc(),
+                                                    *cst(v), 32));
+    indices.push_back(loop ? loopRow : Value(arith::ConstantIntOp::create(
+        builder, load.getLoc(), 0, 32)));
+    indices.push_back(loop ? loopColumn : Value(arith::ConstantIntOp::create(
+        builder, load.getLoc(), *cst(offsets[1]), 32)));
+    SmallVector<int32_t> tile{int32_t(ty.getShape()[0]), int32_t(ty.getShape()[1])};
+    auto ml = builder.create<triton::MatrixLoadOp>(
+        load.getLoc(), ty, info.getBase(), shapeI32, strides,
+        tile, indices, ArrayRef<int32_t>{},
+        load.getCache(), load.getEvict(), load.getIsVolatile());
+    ml->setAttr("ttg.hcu.v0_blockptr_candidate", builder.getUnitAttr());
+    if (loop)
+      mod->setAttr("ttg.hcu.v0_blockptr_loop", builder.getI32IntegerAttr(1));
+    if (policy)
+      ml->setAttr("tt.load.async", policy);
+    load.getResult().replaceAllUsesWith(ml.getResult());
+    return true;
+  }
+
   Operation *rewriteLoadStoreOp(OpBuilder &builder, Operation *op,
                                 std::stack<Operation *> &eraser) {
     assert(isa<triton::LoadOp>(op) || isa<triton::StoreOp>(op));
@@ -304,6 +736,13 @@ public:
       boundaryCheck = storeOp.getBoundaryCheck();
     }
 
+    if (auto load = dyn_cast<triton::LoadOp>(op)) {
+      if (tryPromoteLegacyV0BlockPtr(builder, load, info, eraser)) {
+        eraser.push(op);
+        return nullptr;
+      }
+    }
+
     // Generate new `ptr`, `mask` and `other`
     auto newPtr = info.generatePtr(builder, op->getLoc());
     auto newMask = info.generateMask(builder, op->getLoc(), boundaryCheck);
@@ -317,6 +756,8 @@ public:
           builder, loadOp.getLoc(), newPtr, newMask, newOther,
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
           loadOp.getFlagtreeHintsAttr()); // flagtree hints
+      if (auto asyncAttr = loadOp->getAttr("tt.load.async"))
+        newResult->setAttr("tt.load.async", asyncAttr);
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
       triton::StoreOp::create(builder, storeOp.getLoc(), newPtr,

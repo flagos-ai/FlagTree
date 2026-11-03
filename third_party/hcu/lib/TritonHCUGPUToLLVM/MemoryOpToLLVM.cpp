@@ -2,17 +2,492 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
 using ::mlir::triton::gpu::MemDescType;
 
 namespace {
+static bool hasAlignedMatrixReadAllocation(
+    Value source, const LLVMTypeConverter &converter);
+
+// The legacy gfx936 matrix read gathers eight 16-bit values per lane. Within
+// each 16-lane group, output registers select producer addresses in the order
+// [0, 4, 8, 12, 2, 6, 10, 14] plus ((outputLane >> 3) & 1). The
+// output lane selects element (outputLane & 7) at each producer address.
+// This implements an N-contiguous B operand without scalar LDS reads and
+// register packing.
+class LegacyMatrixLocalLoadOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
+public:
+  LegacyMatrixLocalLoadOpConversion(const LLVMTypeConverter &converter,
+                                   const HCU::TargetInfo &targetInfo,
+                                   PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(converter, benefit), targetInfo(targetInfo) {}
+
+  LogicalResult matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    if (targetInfo.getArch() != "gfx936")
+      return failure();
+    auto srcTy = op.getSrc().getType();
+    auto dstTy = op.getType();
+    auto dot = dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
+    auto mma = dot ? dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(dot.getParent())
+                   : triton::gpu::AMDMfmaEncodingAttr{};
+    bool normalDot = mma &&
+        mma.getMmacLayout() == triton::gpu::MmacLayout::LEGACY &&
+        dot.getOpIdx() == 1 && dstTy.getRank() == 2 &&
+        (dstTy.getElementType().isF16() || dstTy.getElementType().isBF16());
+    // OptimizeDotOperands may leave a distributed Linear local load followed
+    // by a transpose. Prove its physical register/lane mapping below instead
+    // of requiring a dot encoding on the load itself.
+    auto module = op->getParentOfType<ModuleOp>();
+    auto numCTAs = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
+    auto numWarps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
+    auto threads = module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
+    bool naturalResult = isa<triton::gpu::LinearEncodingAttr>(dstTy.getEncoding()) ||
+        (mma && mma.getMmacLayout() == triton::gpu::MmacLayout::LEGACY &&
+         dot.getOpIdx() == 1 && dstTy.getRank() == 3);
+    bool natural = naturalResult &&
+        isa<triton::gpu::SwizzledSharedEncodingAttr>(srcTy.getEncoding()) &&
+        (dstTy.getRank() == 2 || dstTy.getRank() == 3) &&
+        srcTy.getRank() == dstTy.getRank() &&
+        srcTy.getShape() == dstTy.getShape() &&
+        srcTy.getElementType() == dstTy.getElementType() &&
+        (dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) &&
+        numCTAs && numCTAs.getInt() == 1 &&
+        numWarps && (numWarps.getInt() == 4 || numWarps.getInt() == 8) &&
+        threads && threads.getInt() == 64 &&
+        !LLVM::SharedMemoryObject::isAffineSharedMemoryAccess(srcTy) &&
+        (!op.getToken() || HCU::isSyncedViaAsyncWait(op));
+    if ((!normalDot && !natural) ||
+        !isa<triton::gpu::SwizzledSharedEncodingAttr,
+             triton::gpu::SharedLinearEncodingAttr>(srcTy.getEncoding()))
+      return failure();
+    // Explicit allocation alignment overrides the encoding's default. Prove
+    // the actual root, including forwarded loop views, for either encoding.
+    if (!hasAlignedMatrixReadAllocation(op.getSrc(), *getTypeConverter()))
+      return failure();
+    if (auto shared = dyn_cast<triton::gpu::SharedLinearEncodingAttr>(
+            srcTy.getEncoding())) {
+      if (srcTy.getRank() != 2 || shared.getAlignment() < 16)
+        return failure();
+    }
+
+    auto *ctx = rewriter.getContext();
+    auto reg = StringAttr::get(ctx, "register");
+    auto lane = StringAttr::get(ctx, "lane");
+    auto warp = StringAttr::get(ctx, "warp");
+    auto block = StringAttr::get(ctx, "block");
+    auto offset = StringAttr::get(ctx, "offset");
+    auto cvt = triton::gpu::toLinearLayout(dstTy).invertAndCompose(
+        triton::gpu::toLinearLayout(srcTy));
+    if (!cvt.isTrivialOver({block}))
+      return failure();
+    cvt = cvt.sublayout({reg, lane, warp}, {offset});
+    unsigned count = cvt.getInDimSize(reg);
+    if (count < 8 || cvt.getInDimSize(lane) != 64)
+      return failure();
+    for (unsigned bit = 0; bit < 4; ++bit)
+      if (cvt.getBasis(lane, bit)[0] != (1 << bit))
+        return failure();
+    // Every producer must address an aligned eight-element row. Smaller swizzles
+    // or misaligned subviews cannot be represented by this instruction.
+    for (auto dim : {reg, warp})
+      for (unsigned bit = 0; bit < cvt.getInDimSizeLog2(dim); ++bit)
+        if (cvt.getBasis(dim, bit)[0] & 7)
+          return failure();
+    for (unsigned bit = 4; bit < 6; ++bit)
+      if (cvt.getBasis(lane, bit)[0] & 7)
+        return failure();
+    if (SharedMemoryObject::getMaskSpanOffsets(srcTy) & 7)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto elemTy = getTypeConverter()->convertType(dstTy.getElementType());
+    auto smem = LLVM::getSharedMemoryObjectFromStruct(
+        loc, adaptor.getSrc(), elemTy, rewriter);
+    auto affine = smem.getShmemOffset(loc, rewriter, srcTy);
+    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+    auto producerReg = b.or_(b.and_(b.lshr(laneId, b.i32_val(2)), b.i32_val(3)),
+                            b.shl(b.and_(b.lshr(laneId, b.i32_val(1)), b.i32_val(1)),
+                                  b.i32_val(2)));
+    auto producerLane = b.or_(b.and_(laneId, b.i32_val(48)),
+                              b.shl(b.and_(laneId, b.i32_val(1)), b.i32_val(3)));
+    constexpr llvm::StringLiteral readName =
+        "llvm.hcu.ds.read.m32x16.b16.v4i32.p3";
+    auto readFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(readName);
+    if (!readFunc) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto fnTy = LLVM::LLVMFunctionType::get(
+          vec_ty(i32_ty, 4), {ptr_ty(ctx, 3), i32_ty}, false);
+      readFunc = LLVM::LLVMFuncOp::create(rewriter, loc, readName, fnTy);
+      readFunc.setConvergent(true);
+      readFunc.setPassthroughAttr(rewriter.getArrayAttr({
+          rewriter.getStringAttr("nounwind"), rewriter.getStringAttr("willreturn"),
+          rewriter.getStringAttr("nocallback"), rewriter.getStringAttr("nofree")}));
+    }
+    // The instruction address uses register[0:2] and lane[3:5]; the
+    // remaining register bits select whole 16-byte rows. A constant row bit
+    // disjoint from every dynamic address/subview bit can be added rather
+    // than XORed, so it is an exact byte immediate with the same AS3 origin.
+    // This proof can simplify address registers, but the SDK currently adds
+    // extra VM waits for the resulting pointer aliases on some pipelines.
+    // Keep it opt-in until the complete packet lowering proves those aliases.
+    auto foldAttr = module->getAttrOfType<IntegerAttr>(
+        "ttg.hcu.matrix_read_immediate");
+    bool foldImmediate = foldAttr && foldAttr.getInt() == 1;
+    uint64_t dynamicBits = foldImmediate
+        ? SharedMemoryObject::getMaskSpanOffsets(srcTy) : ~uint64_t(0);
+    // A span mask alone does not prove arbitrary affine subview offsets.
+    // Keep those reads unchanged until their actual offset bits are known.
+    if (SharedMemoryObject::isAffineSharedMemoryAccess(srcTy))
+      dynamicBits = ~uint64_t(0);
+    for (unsigned bit = 0; bit < 3; ++bit) {
+      dynamicBits |= uint32_t(cvt.getBasis(reg, bit)[0]);
+      dynamicBits |= uint32_t(cvt.getBasis(lane, bit + 3)[0]);
+    }
+    for (unsigned bit = 0; bit < cvt.getInDimSizeLog2(warp); ++bit)
+      dynamicBits |= uint32_t(cvt.getBasis(warp, bit)[0]);
+    unsigned elemBytes = dstTy.getElementTypeBitWidth() / 8;
+    llvm::DenseMap<uint64_t, Value> rowPointers;
+    Value zeroRowAddress;
+    SmallVector<Value> values;
+    for (unsigned i = 0; i < count; i += 8) {
+      uint64_t row = uint32_t(cvt.apply(
+          {{reg, int32_t(i)}, {lane, 0}, {warp, 0}})[0].second);
+      uint64_t additive = row & ~dynamicBits;
+      uint64_t byteOffset = additive * elemBytes;
+      // Matrix reads require a 16-byte row. Unsupported immediate ranges
+      // keep the exact old pointer expression and counter-visible intrinsic.
+      if (row > INT32_MAX || byteOffset > UINT16_MAX || byteOffset % 16)
+        byteOffset = 0;
+      Value ptr;
+      if (byteOffset) {
+        uint64_t baseRow = row ^ additive;
+        auto &cached = rowPointers[baseRow];
+        if (!cached) {
+          Value addr = b.xor_(zeroRowAddress, b.i32_val(baseRow));
+          cached = b.gep(ptr_ty(ctx, 3), elemTy, smem.getBase(), addr);
+        }
+        ptr = cached;
+      } else {
+        auto regId = b.or_(producerReg, b.i32_val(i));
+        Value addr = applyLinearLayout(loc, rewriter, cvt,
+                                      {{reg, regId}, {lane, producerLane},
+                                       {warp, warpId}})[0].second;
+        addr = b.xor_(addr, affine);
+        if (i == 0)
+          zeroRowAddress = addr;
+        ptr = b.gep(ptr_ty(ctx, 3), elemTy, smem.getBase(), addr);
+        rowPointers.try_emplace(row, ptr);
+      }
+      // CallOp carries alias metadata, unlike CallIntrinsicOp. Preserve the
+      // existing async-wait contract so LLVM does not insert redundant waits.
+      auto read = LLVM::createLLVMCallOp(rewriter, loc, readFunc,
+                                        {ptr, b.i32_val(byteOffset)});
+      HCU::addLocalLoadNoAliasScope(
+          op, cast<LLVM::AliasAnalysisOpInterface>(read.getOperation()));
+      auto packed = b.bitcast(read.getResult(), vec_ty(elemTy, 8));
+      for (unsigned j = 0; j < 8; ++j)
+        values.push_back(b.extract_element(elemTy, packed, b.i32_val(j)));
+    }
+    rewriter.replaceOp(op, packLLElements(loc, getTypeConverter(), values,
+                                          rewriter, dstTy));
+    return success();
+  }
+
+private:
+  const HCU::TargetInfo &targetInfo;
+};
+
+// Follow the same forwarded-successor operand interface used by upstream's
+// TensorMemoryAllocation::getAlloc. Check every incoming edge, including both
+// edges of a conditional branch to the same block, and reject unknown roots.
+static bool hasAlignedMatrixReadAllocation(Value source,
+                                    const LLVMTypeConverter &converter) {
+  llvm::DenseSet<Value> seen;
+  llvm::DenseMap<Value, SmallVector<Value>> dependents;
+  SmallVector<Value> worklist{source}, anchors;
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    auto follow = [&](Value incoming) {
+      dependents[incoming].push_back(value);
+      worklist.push_back(incoming);
+    };
+    if (auto alloc = value.getDefiningOp<triton::gpu::LocalAllocOp>()) {
+      auto alignment = alloc.getAlignmentOrDefault();
+      if (!alloc.isSharedMemoryAlloc() || alignment < 16 || alignment % 16)
+        return false;
+      anchors.push_back(value);
+    } else if (auto index =
+                   value.getDefiningOp<triton::gpu::MemDescIndexOp>()) {
+      // A leading buffer index must preserve the root's 16-byte alignment.
+      int64_t strideModulo8 = 1;
+      for (int64_t size : triton::gpu::getAllocationShapePerCTA(index.getType()))
+        strideModulo8 = (strideModulo8 * (size % 8)) % 8;
+      if (strideModulo8)
+        return false;
+      follow(index.getSrc());
+    } else if (auto slice =
+                   value.getDefiningOp<triton::gpu::MemDescSubsliceOp>()) {
+      // Like the common ViewOp lowering, a subslice keeps the allocation base
+      // and only adds logical offsets. Native-read patterns separately prove
+      // the register/lane map and affine offset alignment via getMaskSpanOffsets.
+      auto srcTy = slice.getSrc().getType();
+      auto dstTy = slice.getType();
+      if (srcTy.getElementType() != dstTy.getElementType() ||
+          srcTy.getEncoding() != dstTy.getEncoding() ||
+          srcTy.getAllocShape() != dstTy.getAllocShape() ||
+          srcTy.getMemorySpace() != dstTy.getMemorySpace())
+        return false;
+      follow(slice.getSrc());
+    } else if (auto select = value.getDefiningOp<arith::SelectOp>()) {
+      // Match TensorMemoryAllocation::getAlloc: a descriptor may forward either
+      // select operand. Keep the existing alignment proof for every source.
+      if (!isa<triton::gpu::MemDescType>(value.getType()))
+        return false;
+      follow(select.getTrueValue());
+      follow(select.getFalseValue());
+    } else if (auto bridge =
+                   value.getDefiningOp<UnrealizedConversionCastOp>()) {
+      // Function/CF conversion precedes the memory patterns. Accept only the
+      // exact one-to-one memdesc materialization introduced by that conversion.
+      if (bridge->getNumOperands() != 1 || bridge->getNumResults() != 1)
+        return false;
+      Value input = bridge->getOperand(0);
+      Type from = input.getType(), to = value.getType();
+      auto fromMem = dyn_cast<triton::gpu::MemDescType>(from);
+      auto toMem = dyn_cast<triton::gpu::MemDescType>(to);
+      if (!((fromMem && converter.convertType(from) == to) ||
+            (toMem && converter.convertType(to) == from)))
+        return false;
+      follow(input);
+    } else if (auto arg = dyn_cast<BlockArgument>(value)) {
+      Block *block = arg.getOwner();
+      if (block->isEntryBlock())
+        return false;
+      bool hasIncoming = false;
+      for (Block *pred : block->getPredecessors()) {
+        auto terminator = pred->getTerminator();
+        auto branch = dyn_cast<BranchOpInterface>(terminator);
+        if (!branch ||
+            !isa<cf::BranchOp, cf::CondBranchOp, LLVM::BrOp, LLVM::CondBrOp>(
+                terminator))
+          return false;
+        for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
+          if (branch->getSuccessor(i) != block)
+            continue;
+          auto operands = branch.getSuccessorOperands(i);
+          unsigned produced = operands.getProducedOperandCount();
+          unsigned number = arg.getArgNumber();
+          if (number < produced ||
+              number - produced >= operands.getForwardedOperands().size())
+            return false;
+          follow(operands.getForwardedOperands()[number - produced]);
+          hasIncoming = true;
+        }
+      }
+      if (!hasIncoming)
+        return false;
+    } else {
+      return false;
+    }
+  }
+  // Visiting a cycle is not evidence of alignment. Every visited value must
+  // reach an actual aligned allocation; an unanchored SCC remains rejected.
+  llvm::DenseSet<Value> anchored;
+  while (!anchors.empty()) {
+    Value value = anchors.pop_back_val();
+    if (!anchored.insert(value).second)
+      continue;
+    for (Value dependent : dependents[value])
+      anchors.push_back(dependent);
+  }
+  return !seen.empty() && anchored.size() == seen.size();
+}
+
+// Private, default-off ALT experiment. Its continuous hardware tile is
+// reg[chosen] -> offset1, lane[0:2] -> offset[2,4]. All remaining coordinates
+// select aligned eight-element producer rows, checked before emitting IR.
+class LegacyAltMatrixLocalLoadOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
+public:
+  LegacyAltMatrixLocalLoadOpConversion(const LLVMTypeConverter &converter,
+                                      const HCU::TargetInfo &targetInfo,
+                                      PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(converter, benefit), targetInfo(targetInfo) {}
+
+  LogicalResult matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto module = op->getParentOfType<ModuleOp>();
+    auto attr = module->getAttrOfType<IntegerAttr>("ttg.hcu.alt_matrix");
+    if (targetInfo.getArch() != "gfx936")
+      return failure();
+    auto srcTy = op.getSrc().getType();
+    auto dstTy = op.getType();
+    auto swizzled = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
+        srcTy.getEncoding());
+    // A distributed Linear result can already encode the ALT read's exact
+    // value ownership, independently of any dot parent or scheduling hint.
+    // The conversion below proves the physical lane/register tile. A tokened
+    // read must satisfy the existing pre-conversion async-wait analysis used
+    // by generic local loads and the existing normal matrix-read lowering.
+    // Nonflat existing SwizzledShared is admitted only if the complete
+    // low-bit composition, allocation alignment and affine guards below pass.
+    bool natural = swizzled &&
+        isa<triton::gpu::LinearEncodingAttr>(dstTy.getEncoding()) &&
+        srcTy.getRank() == 2 && dstTy.getRank() == 2 &&
+        srcTy.getShape() == dstTy.getShape() &&
+        srcTy.getElementType() == dstTy.getElementType() &&
+        (dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) &&
+        swizzled.getOrder() == ArrayRef<unsigned>({1, 0}) &&
+        llvm::all_of(swizzled.getCTALayout().getCTAsPerCGA(),
+                     [](unsigned n) { return n == 1; }) &&
+        llvm::all_of(swizzled.getCTALayout().getCTASplitNum(),
+                     [](unsigned n) { return n == 1; }) &&
+        (!op.getToken() || HCU::isSyncedViaAsyncWait(op));
+    if (!natural && (!attr || (attr.getInt() != 2 && attr.getInt() != 3)))
+      return failure();
+    auto numCTAs = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
+    auto numWarps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
+    auto threadsPerWarp =
+        module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
+    auto prefetch = module->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
+    if (natural &&
+        (!numCTAs || !numCTAs.getType().isInteger(32) ||
+         !numWarps || !numWarps.getType().isInteger(32) ||
+         !threadsPerWarp || !threadsPerWarp.getType().isInteger(32)))
+      return failure();
+    if (!numCTAs || numCTAs.getInt() != 1 || !numWarps ||
+        !threadsPerWarp || threadsPerWarp.getInt() != 64 ||
+        (numWarps.getInt() != 4 && numWarps.getInt() != 8) ||
+        (!natural && prefetch && prefetch.getInt() != 0 &&
+         prefetch.getInt() != 2))
+      return failure();
+    auto shared = dyn_cast<triton::gpu::SharedLinearEncodingAttr>(
+        srcTy.getEncoding());
+    auto dot = dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
+    auto mma = dot ? dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(dot.getParent())
+                   : triton::gpu::AMDMfmaEncodingAttr{};
+    if (!natural && (!shared || shared.getAlignment() < 16 || !mma ||
+        mma.getMmacLayout() != triton::gpu::MmacLayout::LEGACY ||
+        mma.getIsTransposed() ||
+        dot.getOpIdx() != 1 || dstTy.getRank() != 2 || srcTy.getRank() != 2 ||
+        !(dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) ||
+        (dot.getKWidth() != 4 && dot.getKWidth() != 8) ||
+        mma.getInstrShape() != ArrayRef<unsigned>({16, 16, 16}) ||
+        llvm::any_of(mma.getTilesPerWarp(), [](unsigned n) { return n != 1; })))
+      return failure();
+    // Encoding alignment can be overridden by LocalAlloc's explicit alignment.
+    if (!hasAlignedMatrixReadAllocation(op.getSrc(), *getTypeConverter()))
+      return failure();
+
+    auto *ctx = rewriter.getContext();
+    auto reg = StringAttr::get(ctx, "register");
+    auto lane = StringAttr::get(ctx, "lane");
+    auto warp = StringAttr::get(ctx, "warp");
+    auto block = StringAttr::get(ctx, "block");
+    auto offset = StringAttr::get(ctx, "offset");
+    auto cvt = triton::gpu::toLinearLayout(dstTy).invertAndCompose(
+        triton::gpu::toLinearLayout(srcTy));
+    if (!cvt.isTrivialOver({block}))
+      return failure();
+    cvt = cvt.sublayout({reg, lane, warp}, {offset});
+    unsigned chosen = natural ? cvt.getInDimSizeLog2(reg) : attr.getInt();
+    if (natural) {
+      // Register bits 0/1 supply producerReg; select only the third ALT bit.
+      for (unsigned bit = 2; bit < cvt.getInDimSizeLog2(reg); ++bit) {
+        if (cvt.getBasis(reg, bit)[0] == 1) {
+          chosen = bit;
+          break;
+        }
+      }
+    }
+    unsigned count = cvt.getInDimSize(reg);
+    if (count < 8 || chosen >= cvt.getInDimSizeLog2(reg) ||
+        cvt.getInDimSize(lane) != 64 || cvt.getBasis(reg, chosen)[0] != 1 ||
+        cvt.getBasis(lane, 0)[0] != 2 || cvt.getBasis(lane, 1)[0] != 4)
+      return failure();
+    for (unsigned bit = 0; bit < cvt.getInDimSizeLog2(reg); ++bit)
+      if (bit != chosen && (cvt.getBasis(reg, bit)[0] & 7))
+        return failure();
+    for (unsigned bit = 2; bit < 6; ++bit)
+      if (cvt.getBasis(lane, bit)[0] & 7)
+        return failure();
+    for (unsigned bit = 0; bit < cvt.getInDimSizeLog2(warp); ++bit)
+      if (cvt.getBasis(warp, bit)[0] & 7)
+        return failure();
+    if (SharedMemoryObject::getMaskSpanOffsets(srcTy) & 7)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto elemTy = getTypeConverter()->convertType(dstTy.getElementType());
+    auto smem = LLVM::getSharedMemoryObjectFromStruct(
+        loc, adaptor.getSrc(), elemTy, rewriter);
+    auto affine = smem.getShmemOffset(loc, rewriter, srcTy);
+    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+    auto producerReg = b.and_(b.lshr(laneId, b.i32_val(2)), b.i32_val(3));
+    auto producerLane = b.or_(b.and_(laneId, b.i32_val(48)),
+                              b.shl(b.and_(laneId, b.i32_val(3)), b.i32_val(2)));
+    constexpr llvm::StringLiteral readName =
+        "llvm.hcu.ds.read.m32x16.b16.alt.v4i32.p3";
+    auto readFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(readName);
+    if (!readFunc) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto fnTy = LLVM::LLVMFunctionType::get(
+          vec_ty(i32_ty, 4), {ptr_ty(ctx, 3), i32_ty}, false);
+      readFunc = LLVM::LLVMFuncOp::create(rewriter, loc, readName, fnTy);
+      readFunc.setConvergent(true);
+      readFunc.setPassthroughAttr(rewriter.getArrayAttr({
+          rewriter.getStringAttr("nounwind"), rewriter.getStringAttr("willreturn"),
+          rewriter.getStringAttr("nocallback"), rewriter.getStringAttr("nofree")}));
+    }
+    SmallVector<Value> values(count);
+    unsigned selectedMask = 3u | (1u << chosen);
+    for (unsigned base = 0; base < count; ++base) {
+      if (base & selectedMask)
+        continue;
+      auto regId = b.or_(producerReg, b.i32_val(base));
+      auto addr = applyLinearLayout(loc, rewriter, cvt,
+                                    {{reg, regId}, {lane, producerLane},
+                                     {warp, warpId}})[0].second;
+      addr = b.xor_(addr, affine);
+      auto ptr = b.gep(ptr_ty(ctx, 3), elemTy, smem.getBase(), addr);
+      auto read = LLVM::createLLVMCallOp(rewriter, loc, readFunc,
+                                        {ptr, b.i32_val(0)});
+      HCU::addLocalLoadNoAliasScope(
+          op, cast<LLVM::AliasAnalysisOpInterface>(read.getOperation()));
+      auto packed = b.bitcast(read.getResult(), vec_ty(elemTy, 8));
+      for (unsigned j = 0; j < 8; ++j) {
+        unsigned original = base | (j & 3u) | ((j >> 2) << chosen);
+        values[original] = b.extract_element(elemTy, packed, b.i32_val(j));
+      }
+    }
+    rewriter.replaceOp(op, packLLElements(loc, getTypeConverter(), values,
+                                          rewriter, dstTy));
+    return success();
+  }
+
+private:
+  const HCU::TargetInfo &targetInfo;
+};
+
 class TransLocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
@@ -484,7 +959,31 @@ public:
     rewriter.create<hcugpu::MemoryCounterWaitOp>(
         op->getLoc(), /* load= */ nullptr, /* store= */ nullptr,
         /* ds= */ dsAttr);
-    rewriter.replaceOpWithNewOp<ROCDL::SBarrierOp>(op);
+    auto barrier = rewriter.replaceOpWithNewOp<ROCDL::SBarrierOp>(op);
+    if (targetInfo.getArch() == "gfx936") {
+      // Keep the intrinsic through LLVM optimization and the existing LDS
+      // ordering/scheduler workarounds. This marker identifies only local
+      // barriers, whose contract excludes global-memory synchronization.
+      auto module = barrier->getParentOfType<ModuleOp>();
+      constexpr llvm::StringLiteral name =
+          "__triton_hcu_local_barrier_marker";
+      auto marker = module.lookupSymbol<LLVM::LLVMFuncOp>(name);
+      if (!marker) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        auto type = LLVM::LLVMFunctionType::get(
+            LLVM::LLVMVoidType::get(rewriter.getContext()), {}, false);
+        marker = LLVM::LLVMFuncOp::create(rewriter, barrier.getLoc(), name, type);
+        marker.setConvergent(true);
+        marker.setPassthroughAttr(rewriter.getArrayAttr({
+            rewriter.getStringAttr("nounwind"),
+            rewriter.getStringAttr("willreturn"),
+            rewriter.getStringAttr("nocallback"),
+            rewriter.getStringAttr("nofree")}));
+      }
+      rewriter.setInsertionPointAfter(barrier);
+      LLVM::createLLVMCallOp(rewriter, barrier.getLoc(), marker, {});
+    }
 
     return success();
   }
@@ -620,6 +1119,10 @@ void mlir::triton::HCU::populateMemoryOpToLLVMPatterns(
 
   patterns.add<TransLocalLoadOpConversion>(typeConverter, targetInfo,
                                            transBenefit);
+  patterns.add<LegacyMatrixLocalLoadOpConversion>(typeConverter, targetInfo,
+                                                 transBenefit);
+  patterns.add<LegacyAltMatrixLocalLoadOpConversion>(typeConverter, targetInfo,
+                                                    transBenefit);
   patterns.add<LocalLoadPackedTransposedOpConversion>(typeConverter, targetInfo,
                                                       benefit);
   patterns.add<LocalBarrierOpConversion, MemoryCounterWaitOpConversion>(

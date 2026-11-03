@@ -115,7 +115,10 @@ _REPLAY_IMPLEMENTATIONS = {
     "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
     "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
     "triton.backends.mthreads.driver": "triton_musa_graph_replay_v1",
-    "triton.backends.hcu.driver": "triton_hcu_graph_replay_v1",
+    # Caller-stream replay has different selection/timing semantics from v2,
+    # which allocated a new side stream for every helper call. Namespace both
+    # persistent best-config and per-config benchmark caches through this key.
+    "triton.backends.hcu.driver": "triton_hcu_graph_calibrated_currentstream_v3",
 }
 _OFFICIAL_TRITON_REPLAY_COUNT = 10
 
@@ -181,6 +184,19 @@ def resolve_benchmarker(
 
                 def replay_benchmark(kernel_call, quantiles):
                     return do_bench_musa_graph(
+                        kernel_call,
+                        rep=per_replay_ms,
+                        quantiles=quantiles,
+                        n_retries=n_retries,
+                        warmup_ms=warmup_ms,
+                        device_interface=active.get_device_interface(),
+                    )
+
+            elif type(active).__module__ == "triton.backends.hcu.driver":
+                from triton.flagtune.runtime.graph_benchmark import do_bench_hcu_graph
+
+                def replay_benchmark(kernel_call, quantiles):
+                    return do_bench_hcu_graph(
                         kernel_call,
                         rep=per_replay_ms,
                         quantiles=quantiles,

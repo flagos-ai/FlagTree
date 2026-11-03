@@ -23,6 +23,14 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#ifdef __HCU__
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PacketWaitRotation.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PacketOperandOverlap.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PacketPostMmaWait.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/ShiftedDisjointOr.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/LoopCarriedStoreRefill.h"
+#endif
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
@@ -407,6 +415,151 @@ std::string translateLLVMIRToASM(llvm::Module &module,
 using ret = py::return_value_policy;
 
 void init_triton_llvm(py::module &&m) {
+#ifdef __HCU__
+  m.def("interleave_hcu_loop_carried_store_refill",
+        [](const std::string &source, const std::string &arch) -> py::tuple {
+          llvm::LLVMContext context;
+          llvm::SMDiagnostic diagnostic;
+          auto module = llvm::parseIR(
+              llvm::MemoryBufferRef(source, "hcu_loop_carried_store_refill"),
+              diagnostic, context);
+          if (!module)
+            throw std::invalid_argument("Invalid LLVM IR for loop-carried refill");
+          std::string errors;
+          llvm::raw_string_ostream errorStream(errors);
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::invalid_argument("Input LLVM verification failed: " + errors);
+          auto stats = flagtree::hcu::interleaveLoopCarriedStoreRefill(*module, arch);
+          errors.clear();
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::runtime_error("Loop-carried refill verification failed: " + errors);
+          py::dict report;
+          report["reason"] = stats.reason;
+          report["loops"] = stats.loops;
+          report["pairs"] = stats.pairs;
+          report["functions_visited"] = stats.functionsVisited;
+          report["functions_changed"] = stats.functionsChanged;
+          report["moved_loads"] = stats.movedLoads;
+          report["moved_pure_dependencies"] = stats.movedPureDependencies;
+          report["scheduler_barriers"] = stats.schedulerBarriers;
+          report["rejected_functions"] = stats.rejectedFunctions;
+          report["invalid_functions"] = stats.invalidFunctions;
+          report["LLVM_parse_verify_performed"] = true;
+          report["production_compiler_feature"] = true;
+          report["private_stage_hook"] = false;
+          if (!stats.functionsChanged)
+            return py::make_tuple(source, 0u, report);
+          std::string result;
+          llvm::raw_string_ostream stream(result);
+          module->print(stream, nullptr);
+          return py::make_tuple(result, stats.pairs, report);
+        });
+  m.def("combine_hcu_shifted_disjoint_or",
+        [](const std::string &source, const std::string &arch) -> py::tuple {
+          llvm::LLVMContext context;
+          llvm::SMDiagnostic diagnostic;
+          auto module = llvm::parseIR(
+              llvm::MemoryBufferRef(source, "hcu_shifted_disjoint_or"),
+              diagnostic, context);
+          if (!module)
+            throw std::invalid_argument("Invalid LLVM IR for shifted disjoint OR");
+          std::string errors;
+          llvm::raw_string_ostream errorStream(errors);
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::invalid_argument("Input LLVM verification failed: " + errors);
+          auto stats = flagtree::hcu::combineShiftedDisjointOr(*module, arch);
+          if (!stats.combined)
+            return py::make_tuple(source, 0u, stats.reason);
+          errors.clear();
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::runtime_error("Shifted disjoint OR verification failed: " + errors);
+          std::string result;
+          llvm::raw_string_ostream stream(result);
+          module->print(stream, nullptr);
+          return py::make_tuple(result, stats.combined, stats.reason);
+        });
+  m.def("prepare_hcu_packet_operand_overlap_diagnostic",
+        [](const std::string &source, const std::string &arch,
+           unsigned threads, unsigned sharedBytes) -> py::tuple {
+          flagtree::hcu::OperandOverlapOptions options;
+          options.threads = threads;
+          options.sharedBytes = sharedBytes;
+          auto result = flagtree::hcu::preparePacketOperandOverlapDiagnostic(
+              source, arch, options);
+          return py::make_tuple(result.source, result.transformed,
+                                result.removedWaits, result.reason);
+        });
+  m.def("prepare_hcu_packet_wait_rotation",
+        [](const std::string &source, const std::string &arch,
+           unsigned threads, unsigned sharedBytes) -> py::tuple {
+          llvm::LLVMContext context;
+          llvm::SMDiagnostic diagnostic;
+          auto module = llvm::parseIR(llvm::MemoryBufferRef(source, "packet_wait_rotation"),
+                                      diagnostic, context);
+          if (!module)
+            throw std::invalid_argument("Invalid LLVM IR for packet wait rotation");
+          flagtree::hcu::WaitRotationOptions options;
+          options.threads = threads;
+          options.sharedBytes = sharedBytes;
+          auto stats = flagtree::hcu::rotatePacketWaits(*module, arch, options);
+          if (!stats.rotated)
+            return py::make_tuple(source, 0u, stats.reason);
+          std::string errors;
+          llvm::raw_string_ostream errorStream(errors);
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::runtime_error("Packet wait SSA verification failed: " + errors);
+          std::string result;
+          llvm::raw_string_ostream stream(result);
+          module->print(stream, nullptr);
+          return py::make_tuple(result, stats.rotated, stats.reason);
+        });
+  m.def("prepare_hcu_packet_post_mma_wait",
+        [](const std::string &source, const std::string &arch,
+           unsigned threads, unsigned sharedBytes) -> py::tuple {
+          llvm::LLVMContext context;
+          llvm::SMDiagnostic diagnostic;
+          auto module = llvm::parseIR(
+              llvm::MemoryBufferRef(source, "packet_post_mma_wait"),
+              diagnostic, context);
+          if (!module)
+            throw std::invalid_argument("Invalid LLVM IR for packet post-MMA wait");
+          flagtree::hcu::PostMmaWaitOptions options;
+          options.threads = threads;
+          options.sharedBytes = sharedBytes;
+          auto stats = flagtree::hcu::rotatePacketPostMmaWaits(*module, arch, options);
+          if (!stats.rotated)
+            return py::make_tuple(source, 0u, stats.reason);
+          std::string errors;
+          llvm::raw_string_ostream errorStream(errors);
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::runtime_error("Post-MMA wait SSA verification failed: " + errors);
+          std::string result;
+          llvm::raw_string_ostream stream(result);
+          module->print(stream, nullptr);
+          return py::make_tuple(result, stats.rotated, stats.reason);
+        });
+  m.def("prepare_hcu_mma_phase_loops",
+        [](const std::string &source, const std::string &arch,
+           unsigned numWarps) -> py::tuple {
+          llvm::LLVMContext context;
+          llvm::SMDiagnostic diagnostic;
+          auto module = llvm::parseIR(llvm::MemoryBufferRef(source, "mma_phase"),
+                                      diagnostic, context);
+          if (!module)
+            throw std::invalid_argument("Invalid LLVM IR for MMA phase preparation");
+          auto stats = flagtree::hcu::prepareMmaPhaseLoops(*module, arch, numWarps);
+          if (!stats.versioned)
+            return py::make_tuple(source, 0u);
+          std::string errors;
+          llvm::raw_string_ostream errorStream(errors);
+          if (llvm::verifyModule(*module, &errorStream))
+            throw std::runtime_error("MMA phase SSA verification failed: " + errors);
+          std::string result;
+          llvm::raw_string_ostream stream(result);
+          module->print(stream, nullptr);
+          return py::make_tuple(result, stats.versioned);
+        });
+#endif
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())
       .def(py::init<>());

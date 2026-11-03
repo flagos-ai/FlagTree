@@ -1,5 +1,6 @@
 #include "triton/Analysis/Alias.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Support/LLVM.h"
 #ifdef __TLE__
@@ -48,6 +49,12 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
   // Only LocalAllocOp creates a new buffer.
   if (isa<triton::gpu::LocalAllocOp>(op)) {
     aliasInfo.insert(result);
+    pessimistic = false;
+  } else if (isa<arith::SelectOp>(op) &&
+             isa<triton::gpu::MemDescType>(result.getType())) {
+    // A descriptor select can refer to either source allocation. Retain both
+    // in the alias set so allocation and barrier analysis keep them live.
+    aliasInfo = AliasInfo::join(operands[1]->getValue(), operands[2]->getValue());
     pessimistic = false;
   } else if (op->hasTrait<OpTrait::MemDescViewTrait>()) {
     aliasInfo = AliasInfo(operands[0]->getValue());

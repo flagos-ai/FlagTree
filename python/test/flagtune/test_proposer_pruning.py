@@ -52,7 +52,7 @@ def test_candidate_pruner_filters_prediction_and_ga_benchmarks(monkeypatch):
     result = proposer(
         benchmark,
         {"M": 16, "N": 16, "K": 16},
-        [],
+        list(variant.iter_configs()),
         {"candidate_pruner": lambda configs: [config for config in configs if config["BLOCK_M"] == 32]},
     )
     assert result
@@ -65,7 +65,7 @@ def test_candidate_pruner_filters_prediction_and_ga_benchmarks(monkeypatch):
     other_platform_proposer(
         benchmark,
         {"M": 16, "N": 16, "K": 16},
-        [],
+        list(variant.iter_configs()),
         {"candidate_pruner": lambda _configs: 1 / 0},
     )
     assert any(config["BLOCK_M"] == 16 for config in measured)

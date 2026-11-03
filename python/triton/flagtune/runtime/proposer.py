@@ -272,10 +272,12 @@ def make_config_proposer(
             legal_configs=candidates,
         )
         generated = ga_searcher.generate(history) if history else []
+        legal_keys = {_config_key(config, fields) for config in candidates}
 
         for entry in generated:
             stripped = _strip_config(entry.get("config", entry), fields)
-            if len(stripped) != len(fields) or _in_history(history, stripped, fields):
+            if (len(stripped) != len(fields) or _config_key(stripped, fields) not in legal_keys
+                    or _in_history(history, stripped, fields)):
                 continue
             try:
                 latency = _benchmark_candidate(fn, stripped)

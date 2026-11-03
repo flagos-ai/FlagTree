@@ -266,7 +266,29 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
     bool hasChanged = false;
     for (auto encoding : info.encodings) {
       Attribute dstEncoding;
-      if (isa<ConvertLayoutOp>(op)) {
+      if (auto convert = dyn_cast<ConvertLayoutOp>(op)) {
+        // Preserve an explicitly warp-synchronous reduction input rather than
+        // blindly propagating an inter-warp layout through its conversion.
+        // Forward propagation has no reduction-communication cost model; this
+        // local heuristic retains the existing legal conversion/reduce path.
+        // Other candidates/users and backwards pointer/mask rematerialization
+        // are unaffected.
+        if (convert.getResult().hasOneUse()) {
+          auto reduce =
+              dyn_cast<ReduceOp>(*convert.getResult().getUsers().begin());
+          if (reduce && reduce->getNumOperands() == 1 &&
+              reduce->getNumResults() == 1 &&
+              reduce->getOperand(0) == convert.getResult()) {
+            auto srcType =
+                cast<RankedTensorType>(reduce->getOperand(0).getType());
+            auto shape = srcType.getShape();
+            auto axis = reduce.getAxis();
+            auto currentWarps = getWarpsPerCTA(srcType.getEncoding(), shape);
+            auto candidateWarps = getWarpsPerCTA(encoding, shape);
+            if (currentWarps[axis] == 1 && candidateWarps[axis] > 1)
+              continue;
+          }
+        }
         // Try to remove the convert by making the dst encoding match the source
         // encoding.
         dstEncoding = encoding;

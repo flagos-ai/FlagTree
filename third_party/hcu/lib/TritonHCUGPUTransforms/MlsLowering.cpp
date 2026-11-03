@@ -1,6 +1,7 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "Utility.h"
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
@@ -60,26 +61,49 @@ public:
         matrixOp.getContext(), mlsAttr.getOpIdx(), mlsAttr.getMlsTile(),
         mlsAttr.getElemBitWidth(), mlsAttr.getAlt2Kind(), mlsAttr.getVersion(),
         mlsAttr.getOrder(), ctaLayout);
+    const bool legacyV0 = mlsAttr.getVersion() == 0;
+    SmallVector<int64_t> rootShape(matrixTy.getShape().begin(), matrixTy.getShape().end());
+    if (legacyV0)
+      rootShape.insert(rootShape.begin(), 1);
     auto sharedMemDescType =
-        ttg::MemDescType::get(matrixTy.getShape(), matrixTy.getElementType(),
+        ttg::MemDescType::get(rootShape, matrixTy.getElementType(),
                               mlsSharedEncoding, sharedMemorySpace,
                               /*mutableMemory=*/true);
     auto localAllocOp =
         rewriter.create<ttg::LocalAllocOp>(loc, sharedMemDescType);
+    Value destination = localAllocOp.getResult();
+    if (legacyV0) {
+      localAllocOp->setAttr("alignment", rewriter.getI32IntegerAttr(16));
+      auto viewTy = ttg::MemDescType::get(
+          matrixTy.getShape(), matrixTy.getElementType(), mlsSharedEncoding,
+          sharedMemorySpace, /*mutableMemory=*/true);
+      auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+      destination = rewriter.create<ttg::MemDescIndexOp>(
+          loc, viewTy, localAllocOp.getResult(), zero);
+    }
 
     // 2. create matrix_load_to_local load op and insert synchronization
     // primitives
+    auto loopFlag = matrixOp->getParentOfType<ModuleOp>()->getAttrOfType<IntegerAttr>(
+        "ttg.hcu.v0_blockptr_loop");
+    if (legacyV0 && loopFlag && loopFlag.getInt() == 1 &&
+        matrixOp->getParentOfType<scf::ForOp>())
+      // Required before closed preflight; standard membar still protects all
+      // same-iteration A/B frame reuse after actual allocation.
+      rewriter.create<ttg::LocalBarrierOp>(loc);
     auto matrixLoadToLocalOp = rewriter.create<tta::MatrixLoadToLocalOp>(
         loc, matrixOp.getBase(), matrixOp.getShape(), matrixOp.getStrides(),
         matrixOp.getTensorShape(), matrixOp.getIndices(),
         matrixOp.getBoundaryCheck(), matrixOp.getCache(), matrixOp.getEvict(),
-        matrixOp.getIsVolatile(), localAllocOp);
+        matrixOp.getIsVolatile(), destination);
     matrixLoadToLocalOp->setAttr(tta::MlsEncodingAttr::getMnemonic(), mlsAttr);
 
     auto commitOp = rewriter.create<ttg::AsyncCommitGroupOp>(
         loc, matrixLoadToLocalOp->getResult(0));
     ttg::AsyncWaitOp waitOp =
         rewriter.create<ttg::AsyncWaitOp>(loc, commitOp->getResult(0), 0);
+    if (legacyV0)
+      rewriter.create<ttg::LocalBarrierOp>(loc);
 
     // 3. create local load op
     // note: if enter here, meaning num_stages = 1 and cur don't need local_load
@@ -90,7 +114,8 @@ public:
         matrixTy.getShape(), matrixTy.getElementType(), matrixTy.getEncoding());
 
     auto localLoadOp = rewriter.create<ttg::LocalLoadOp>(
-        matrixOp.getLoc(), localLoadResultType, localAllocOp /*, waitOp*/);
+        matrixOp.getLoc(), localLoadResultType, destination,
+        legacyV0 ? waitOp.getResult() : Value{});
 
     // 4. replace the original op
     rewriter.replaceOp(matrixOp, localLoadOp.getResult());

@@ -396,8 +396,23 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
 
   LinearLayout tileLayout = LinearLayout::empty();
   if (isHCUMmac()) {
-    tileLayout =
-        getLinearLayoutForMmacLayout(ctx, getMmacLayout(), {dimN, dimM});
+    // Operand swapping computes B^T A^T. Transpose only the native 16x16
+    // accumulator tile; the logical N-contiguous tile/warp repetition below
+    // must remain unchanged to match the MMAC lowering's fixed fcStrides.
+    // isTransposed defines the native tile chart, including singleton Slice
+    // and Broadcast queries. Shape only clips/repeats this chart below.
+    // AccelerateHCUMatmul checks target and real DotOp eligibility before
+    // constructing a rank3 transposed encoding; do not repeat shape gates here.
+    bool transposeLegacyTile =
+        isTransposed && (rank == 2 || rank == 3) &&
+        getMmacLayout() == MmacLayout::LEGACY &&
+        mDim == 16 && nDim == 16 && getInstrShape().size() == 3 &&
+        getInstrShape()[2] == 16;
+    tileLayout = transposeLegacyTile
+                     ? getLinearLayoutForMmacLayout(ctx, getMmacLayout(),
+                                                    {dimM, dimN})
+                     : getLinearLayoutForMmacLayout(ctx, getMmacLayout(),
+                                                    {dimN, dimM});
   } else {
     if (!isTransposed) {
       // Each lane holds 'height' elements along the M dimension.

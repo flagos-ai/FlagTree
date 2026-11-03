@@ -296,6 +296,12 @@ matchAsyncStoreCandidate(triton::StoreOp store) {
     return std::nullopt;
   if (load.getIsVolatile())
     return std::nullopt;
+  // An explicit synchronous load must keep its policy even when its only
+  // consumer is a store into shared memory. Unannotated copy idioms remain
+  // eligible for the existing automatic fusion.
+  if (auto asyncAttr = load->getAttrOfType<BoolAttr>("tt.load.async");
+      asyncAttr && !asyncAttr.getValue())
+    return std::nullopt;
   if (!isa<RankedTensorType>(load.getType()))
     return std::nullopt;
   if (!isGlobalPointerTensor(load.getPtr()))
