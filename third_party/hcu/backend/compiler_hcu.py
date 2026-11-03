@@ -215,10 +215,6 @@ class HIPOptions:
     # Permit native accumulator-tile transpose on eligible gfx936 dots.
     mmac_transposed: bool = False
 
-    # Private compiler experiment; no new Triton language operation.
-    # Included in HIPOptions.hash(), default off.
-    hcu_v0_blockptr: bool = False
-
     async_copy_use_single_buffer: bool = True
 
     # None preserves the existing environment/architecture policy.
@@ -731,69 +727,6 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, options):
-        # The target/launch contract comes from backend options, not the TL
-        # program. Unsupported options retain the existing lowering.
-        # Capture-only experiment: this marker has no runtime lowering.
-        # The original one/two-stage v0 entry remains unchanged.
-        v0_local_prefetch_capture = (
-            mod.get_int_attr("ttg.hcu.v0_mls_local_prefetch_capture") == 1
-            and mod.get_int_attr("ttg.hcu.canonical_matrix") == 0
-            and options.num_stages in (3, 5) and not options.async_copy_use_single_buffer
-            and options.num_warps == 4 and options.mmac_warps_m == 2
-            and not knobs.hcu.use_buffer_ops and bool(knobs.hcu.use_async_copy)
-            and getattr(knobs.hcu, "global_prefetch", 0) == 0
-            and getattr(knobs.hcu, "local_prefetch", 0) == 0
-            and not is_pingpong_schedule_enabled(options.arch, knobs.hcu.use_async_copy, options.use_block_pingpong)
-            and not is_in_thread_transpose_enabled(options.arch))
-        # Capture-only paired indexed-A/raw-B route. No runtime lowering is
-        # enabled: make_llir retains its stage3/5 hard stop below. The pass
-        # independently checks the actual two MatrixLoad/dot encodings.
-        v0_indexed_ab_capture = (v0_local_prefetch_capture
-                and options.num_stages == 5 and options.kpack == 2
-                and mod.get_int_attr("ttg.hcu.v0_indexed_a_packet") == 1
-                and mod.get_int_attr("ttg.hcu.mmac_tpw_n") == 2
-                and mod.get_int_attr("ttg.hcu.mmac_transposed") == 1
-                and mod.get_int_attr("ttg.hcu.alt_matrix") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.local_prefetch") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.async_slot_war") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.v0_swizzled_a_vec8") in (None, 0))
-        # Existing private TPW request, now limited to the exact two-stage
-        # kpack2 experiment. This target-option gate is not a layout/source
-        # certificate: selection and the final prefix2 proof recheck real IR.
-        v0_kw8_stage2 = (options.kpack == 2 and options.num_stages == 2
-                and not options.async_copy_use_single_buffer
-                and options.num_warps == 4 and options.mmac_warps_m == 2
-                and mod.get_int_attr("ttg.hcu.mmac_tpw_n") == 2
-                and mod.get_int_attr("ttg.hcu.mmac_transposed") == 1
-                and mod.get_int_attr("ttg.hcu.canonical_matrix") == 0
-                and mod.get_int_attr("ttg.hcu.alt_matrix") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.local_prefetch") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.async_slot_war") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.v0_swizzled_a_vec8") in (None, 0)
-                and mod.get_int_attr("ttg.hcu.v0_mls_local_prefetch_capture") in (None, 0)
-                and knobs.hcu.use_buffer_ops
-                and getattr(knobs.hcu, "global_prefetch", 0) == 0
-                and getattr(knobs.hcu, "local_prefetch", 0) == 0
-                and not is_pingpong_schedule_enabled(options.arch, knobs.hcu.use_async_copy, options.use_block_pingpong)
-                and not is_in_thread_transpose_enabled(options.arch))
-        v0 = (options.hcu_v0_blockptr and options.arch == "gfx936"
-              and (options.num_stages == 1 or (options.num_stages == 2
-                   and not options.async_copy_use_single_buffer)
-                   or v0_local_prefetch_capture)
-              and options.num_ctas == 1
-              and options.warp_size == 64 and options.num_warps in (4, 8)
-              and (options.kpack == 1 or v0_kw8_stage2 or v0_indexed_ab_capture)
-              and options.mmac_layout_force in (-1, 1)
-              and not options.wasp_enabled and options.schedule_hint == "none"
-              and options.optimize_epilogue and (not knobs.hcu.use_buffer_ops or options.num_stages == 2))
-        if (options.hcu_v0_blockptr
-                or mod.get_int_attr("ttg.hcu.v0_blockptr") is not None):
-            b = ir.builder(mod.context)
-            mod.set_attr("ttg.hcu.v0_blockptr", b.get_int32_attr(int(v0)))
-            mod.set_attr("ttg.hcu.v0_target936", b.get_int32_attr(int(v0)))
-            mod.set_attr("ttg.hcu.v0_warps", b.get_int32_attr(options.num_warps))
-            mod.set_attr("ttg.hcu.v0_default_async",
-                         b.get_int32_attr(int(bool(knobs.hcu.use_async_copy))))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -917,25 +850,16 @@ class HIPBackend(BaseBackend):
         # them before TLE lowering can turn them into side-effecting copies.
         passes.common.add_canonicalizer(pm)
         tle.passes.add_lower_async_load(pm)
-        # Private v0 experiment: form actual BUFFER ops before any GLOBAL width
-        # contraction. Failed conversion still uses unchanged GLOBAL legality.
-        early_buffer = (options.arch == "gfx936" and options.hcu_v0_blockptr
-                and options.num_stages == 2 and not options.async_copy_use_single_buffer
-                and not options.wasp_enabled and not use_block_pingpong
-                and not is_in_thread_transpose_enabled(options.arch)
-                and knobs.hcu.use_buffer_ops
-                and mod.get_int_attr("ttg.hcu.v0_blockptr_loop") == 1
-                and mod.get_int_attr("ttg.hcu.canonical_matrix") in (0, 2))
         # Form actual BUFFER copies before GLOBAL-only width contraction.
         # Failed conversions remain GLOBAL and retain their original limits.
-        early_buffer = early_buffer or (options.arch == "gfx936"
-                and knobs.hcu.use_buffer_ops and not options.hcu_v0_blockptr
+        early_buffer = (options.arch == "gfx936"
+                and knobs.hcu.use_buffer_ops
                 and not options.wasp_enabled and not use_block_pingpong
                 and not is_in_thread_transpose_enabled(options.arch))
         # Ping-pong must still see synchronous tt.loads, including explicit
         # per-operation False overrides of the global async policy.
         pp_async_buffer = (options.arch == "gfx936"
-                and knobs.hcu.use_buffer_ops and not options.hcu_v0_blockptr
+                and knobs.hcu.use_buffer_ops
                 and not options.wasp_enabled and use_block_pingpong
                 and not is_in_thread_transpose_enabled(options.arch))
         early_buffer = early_buffer or pp_async_buffer
@@ -1063,10 +987,6 @@ class HIPBackend(BaseBackend):
         if options.packet_matrix_read_partition:
             mod.set_attr("ttg.hcu.packet_matrix_read_partition",
                          ir.builder(mod.context).get_int32_attr(1))
-        if (options.num_stages in (3, 5)
-                and mod.get_int_attr("ttg.hcu.v0_mls_local_prefetch_capture") == 1):
-            raise RuntimeError(f"Private v0 stage{options.num_stages} local-prefetch is capture-only; "
-                               "stop after make_ttgir, before SCF-to-CF/LLVM")
         if options.fragment_dot_k:
             # Independent late invocation through the existing binding. The TU
             # consumes this private marker before any other optimization.

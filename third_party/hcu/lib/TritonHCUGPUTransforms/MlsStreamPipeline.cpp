@@ -141,7 +141,7 @@ struct StreamCopyChainOps {
 };
 
 struct AsyncCopyChainOps {
-  Operation *copyOp; // Ordinary A AsyncCopy or opaque B MatrixLoadToLocal.
+  Operation *copyOp; // MatrixLoadToLocal operation.
   ttg::AsyncCommitGroupOp commitOp;
   ttg::AsyncWaitOp waitOp;
   ttg::LocalLoadOp maybeLocalLoadOp;
@@ -150,36 +150,8 @@ struct AsyncCopyChainOps {
 using StreamOpVariant = std::variant<StreamCopyChainOps, AsyncCopyChainOps>;
 using LoadToStreamOpMap = llvm::MapVector<Operation *, StreamOpVariant>;
 
-// Same per-operation policy as HCU LowerLoops: explicit load policy wins.
-static bool shouldUseAsyncCopy(Operation *load, bool useAsyncCopy) {
-  if (auto attr = load->getAttrOfType<BoolAttr>("tt.load.async"))
-    return attr.getValue();
-  return useAsyncCopy;
-}
-
-// Existing HCU/AMD LowerLoops recipe. Keep the LocalLoad tokenless in this
-// first diagnostic so the ordinary conservative membar path remains active.
-AsyncCopyChainOps createAsyncCopy(tt::LoadOp loadOp, Value alloc,
-                                  Value extractIdx, int contiguity) {
-  OpBuilder builder(loadOp);
-  Location loc = loadOp.getLoc();
-  auto viewLoad = triton::createSingleBufferView(builder, alloc, extractIdx)
-                      .getDefiningOp<ttg::MemDescIndexOp>();
-  auto copyOp = ttg::AsyncCopyGlobalToLocalOp::create(
-      builder, loc, loadOp.getPtr(), viewLoad, loadOp.getMask(),
-      loadOp.getOther(), loadOp.getCache(), loadOp.getEvict(),
-      loadOp.getIsVolatile(), contiguity);
-  auto commitOp = ttg::AsyncCommitGroupOp::create(
-      builder, loc, copyOp->getResult(0));
-  auto waitOp = ttg::AsyncWaitOp::create(
-      builder, loc, commitOp->getResult(0), 0);
-  auto maybeSharedLoad = tt::replaceUsesWithLocalLoad(
-      builder, loadOp->getResult(0), viewLoad);
-  return {copyOp.getOperation(), commitOp, waitOp, maybeSharedLoad};
-}
-
 AsyncCopyChainOps createAsyncCopy(tt::MatrixLoadOp loadOp, Value alloc,
-                                  Value extractIdx, bool attachLocalLoadToken) {
+                                  Value extractIdx) {
   OpBuilder builder(loadOp);
   Location loc = loadOp.getLoc();
 
@@ -205,11 +177,6 @@ AsyncCopyChainOps createAsyncCopy(tt::MatrixLoadOp loadOp, Value alloc,
   // barrier for WAR and lead to incorrect result.
   auto maybeSharedLoad = tt::replaceUsesWithLocalLoad(
       builder, loadOp->getResult(0), viewLoad /*, waitOp */);
-  // Only the already validated indexed-A/B route reuses the ordinary wait
-  // dependency. HCU's filter is RAW-only; every legacy route stays tokenless.
-  if (attachLocalLoadToken && maybeSharedLoad)
-    maybeSharedLoad.getTokenMutable().assign(waitOp.getResult());
-
   return {copyOp.getOperation(), commitOp, waitOp, maybeSharedLoad};
 }
 
@@ -354,134 +321,11 @@ getMlsEncIfAllUsersAreDotEnc(Value val) {
   return attr;
 }
 
-bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
-                               ttg::MemDescType dstTy,
-                               tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                               const tt::HCU::TargetInfo &targetInfo) {
-  // If we have a single buffer we would require another barrier after the
-  // local_reads so instead we fall back to pipeline with registers
-  // Removing this check will create incorrect IR, see
-  // MembarUtility.h:membarFilter
-  if (numBuffers <= 1)
-    return false;
-
-  // Compute the final vecSize we can use for the combination of sourceEncoding
-  // and sharedEncoding. We can only use AsyncCopy if the target supports the
-  // requested or a smaller vecSize because we cannot stride when loading
-  // directly to lds
-  auto srcTy = cast<RankedTensorType>(loadOp.getPtr().getType());
-  auto regLayout = triton::gpu::toLinearLayout(srcTy);
-  // It's the allocation so we trim the multibuffer dimension
-  auto srcShape = dstTy.getShape().take_back(srcTy.getRank());
-  auto sharedLayout =
-      triton::gpu::toLinearLayout(srcShape, dstTy.getEncoding());
-  auto regToSharedLayout = regLayout.invertAndCompose(sharedLayout);
-
-  unsigned vecSize = regToSharedLayout.getNumConsecutiveInOut();
-  unsigned elemBitWidth = dstTy.getElementTypeBitWidth();
-
-  if (fitToValidDirectToLdsVecSize(vecSize, elemBitWidth, targetInfo) == 0)
-    return false;
-
-  // Checks whether the global pointer's contiguity and mask alignment allows
-  // for at least 32 bit wide loads
-  return triton::canBeConvertedToAsyncLoad(loadOp, axisInfoAnalysis);
-}
-
-
-// Keep the existing Value entry point and reuse exactly the same eligibility
-// for a prospective A chart, before creating any physical allocation.
-bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
-                               Value alloc,
-                               tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                               const tt::HCU::TargetInfo &targetInfo) {
-  return canBeConvertedToAsyncLoad(numBuffers, loadOp,
-      cast<ttg::MemDescType>(alloc.getType()), axisInfoAnalysis, targetInfo);
-}
-
-static ttg::SharedEncodingTrait getQualifiedLegacyV0AsyncAEncoding(
-    tt::LoadOp load, Operation *use, scf::ForOp loop, unsigned numBuffers,
-    tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
-  auto mod = loop->getParentOfType<ModuleOp>();
-  auto attr = [&](StringRef name) -> int64_t {
-    auto value = mod->getAttrOfType<IntegerAttr>(name);
-    return value ? value.getInt() : 0;
-  };
-  auto arch = getHCUArch(mod);
-  // Private diagnostic only: canonical2 retains its existing A2 chart.
-  // Explicit canonical0 + i32 hint1 may use an existing s25 swizzle instead.
-  auto canonical = mod->getAttrOfType<IntegerAttr>("ttg.hcu.canonical_matrix");
-  auto swizzleHint =
-      mod->getAttrOfType<IntegerAttr>("ttg.hcu.v0_swizzled_a_vec8");
-  bool useSwizzle8 = canonical && canonical.getInt() == 0 && swizzleHint &&
-                    swizzleHint.getType().isInteger(32) &&
-                    swizzleHint.getInt() == 1;
-  if (numBuffers != 2 || attr("ttg.hcu.v0_blockptr") != 1 ||
-      attr("ttg.hcu.v0_blockptr_loop") != 1 ||
-      (attr("ttg.hcu.canonical_matrix") != 2 && !useSwizzle8) ||
-      attr("ttg.hcu.alt_matrix") != 0 ||
-      attr("ttg.num-ctas") != 1 || attr("ttg.threads-per-warp") != 64 ||
-      !arch || *arch != "gfx936" ||
-      !shouldUseAsyncCopy(load, attr("ttg.hcu.v0_default_async") == 1))
-    return {};
-  auto dots = llvm::to_vector(loop.getBody()->getOps<tt::DotOp>());
-  auto dot = dyn_cast_or_null<tt::DotOp>(use);
-  auto cvt = dot ? dot.getA().getDefiningOp<ttg::ConvertLayoutOp>()
-                 : ttg::ConvertLayoutOp{};
-  if (dots.size() != 1 || dot != dots.front() || !cvt ||
-      cvt.getSrc() != load.getResult() || !load.getResult().hasOneUse() ||
-      !cvt.getResult().hasOneUse() ||
-      !isa<RankedTensorType>(load.getPtr().getType()))
-    return {};
-  auto aTy = cast<RankedTensorType>(dot.getA().getType());
-  auto bTy = cast<RankedTensorType>(dot.getB().getType());
-  auto a = dyn_cast<ttg::DotOperandEncodingAttr>(aTy.getEncoding());
-  auto b = dyn_cast<ttg::DotOperandEncodingAttr>(bTy.getEncoding());
-  auto mma = a ? dyn_cast<ttg::AMDMfmaEncodingAttr>(a.getParent())
-               : ttg::AMDMfmaEncodingAttr{};
-  auto w = attr("ttg.num-warps");
-  bool family25 = w == 4 && aTy.getShape() == ArrayRef<int64_t>({128, 32}) &&
-                          bTy.getShape() == ArrayRef<int64_t>({32, 128});
-  bool family26 = w == 8 && aTy.getShape() == ArrayRef<int64_t>({256, 16}) &&
-                          bTy.getShape() == ArrayRef<int64_t>({16, 256});
-  if (!mma || !a || !b || a.getOpIdx() != 0 || b.getOpIdx() != 1 ||
-      a.getParent() != b.getParent() || a.getKWidth() != 4 || b.getKWidth() != 4 ||
-      !(family25 || family26) || (useSwizzle8 && !family25) ||
-      aTy.getElementType() != bTy.getElementType() ||
-      !(aTy.getElementType().isF16() || aTy.getElementType().isBF16()) ||
-      mma.getMmacLayout() != ttg::MmacLayout::LEGACY ||
-      mma.getInstrShape() != ArrayRef<unsigned>({16, 16, 16}) ||
-      mma.getTilesPerWarp() != ArrayRef<unsigned>({1, 1}) ||
-      mma.getWarpsPerCTA() != ArrayRef<unsigned>({unsigned(w / 2), 2}) ||
-      llvm::any_of(ttg::getCTAsPerCGA(mma), [](unsigned n) { return n != 1; }) ||
-      ttg::getOrderForMemory(cast<RankedTensorType>(load.getType())).front() != 1)
-    return {};
-  ttg::SharedEncodingTrait shared;
-  if (useSwizzle8)
-    shared = ttg::SwizzledSharedEncodingAttr::get(
-        loop.getContext(), 8, 2, 4, {1, 0}, ttg::getCTALayout(mma));
-  else
-    shared = getHCUCanonicalASharedEncoding(loop.getContext(), aTy.getShape());
-  if (!shared)
-    return {};
-  // Match createAlloc's exact physical type, including the two-buffer axis.
-  SmallVector<int64_t> shape(aTy.getShape().begin(), aTy.getShape().end());
-  shape.insert(shape.begin(), numBuffers);
-  auto dst = ttg::MemDescType::get(shape, aTy.getElementType(), shared,
-      ttg::SharedMemorySpaceAttr::get(loop.getContext()), /*mutableMemory=*/true);
-  tt::HCU::TargetInfo targetInfo(arch->str());
-  return canBeConvertedToAsyncLoad(numBuffers, load, dst, axisInfoAnalysis,
-                                   targetInfo) ? shared
-                                               : ttg::SharedEncodingTrait{};
-}
-
 // Convert load ops into shared memory allocation loads and apply
 // multi-buffering based on the required number of buffers.
 LoadToStreamOpMap
 createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
-                const int &numBuffers, bool useAsyncCopy,
-                tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                bool legacyTwoBuffers, bool indexedABLocalLoadTokens) {
+                const int &numBuffers) {
   IRRewriter builder(forOp);
   Location loc = forOp.getLoc();
   Value minusOne = builder.create<arith::ConstantIntOp>(loc, -1, 32);
@@ -525,13 +369,6 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
     if (isLoadOp) {
       auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
       ttg::SharedEncodingTrait shared = info.sharedEncoding;
-      // No chart change for sync A, v1, default mode0 or failed eligibility.
-      // The prospective type is identical to createAlloc's final type; the
-      // existing asyncA check below repeats the same source/shared proof.
-      if (legacyTwoBuffers)
-        if (auto canonical = getQualifiedLegacyV0AsyncAEncoding(
-                loadOp, info.use, forOp, numBuffers, axisInfoAnalysis))
-          shared = canonical;
       alloc = triton::createAlloc(forOp, ty, loadOp->getLoc(), shared, numBuffers);
     } else if (matrixLoadOp) {
       auto ty = cast<RankedTensorType>(matrixLoadOp->getResultTypes()[0]);
@@ -539,35 +376,11 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
                                   info.mlsEncoding, numBuffers);
     }
     assert(alloc && "Failed to create alloc for the async load.");
-    // Only the existing private gfx936 v0 mixed two-buffer experiment may
-    // restore ordinary A async. v1 and every unrelated schedule keep staging A.
     if (isLoadOp) {
-      bool asyncA = false;
-      if (legacyTwoBuffers && numBuffers == 2) {
-        auto module = loadOp->getParentOfType<ModuleOp>();
-        auto mode = module->getAttrOfType<IntegerAttr>("ttg.hcu.v0_blockptr");
-        auto loop = module->getAttrOfType<IntegerAttr>("ttg.hcu.v0_blockptr_loop");
-        auto policy = module->getAttrOfType<IntegerAttr>("ttg.hcu.v0_default_async");
-        auto arch = getHCUArch(module);
-        if (mode && mode.getInt() == 1 && loop && loop.getInt() == 1 &&
-            arch && *arch == "gfx936") {
-          tt::HCU::TargetInfo targetInfo(arch->str());
-          asyncA = shouldUseAsyncCopy(loadOp, policy && policy.getInt() == 1) &&
-              canBeConvertedToAsyncLoad(numBuffers, loadOp, alloc,
-                                        axisInfoAnalysis, targetInfo);
-        }
-      }
-      if (asyncA) {
-        unsigned vec = axisInfoAnalysis.getContiguity(loadOp.getPtr());
-        if (auto mask = loadOp.getMask())
-          vec = std::min<unsigned>(vec, axisInfoAnalysis.getMaskAlignment(mask));
-        loadToStreamOp[loadOp] = createAsyncCopy(loadOp, alloc, extractIdx, vec);
-      } else {
-        loadToStreamOp[loadOp] = createStreamCopy(loadOp, alloc, extractIdx);
-      }
+      loadToStreamOp[loadOp] = createStreamCopy(loadOp, alloc, extractIdx);
     } else if (matrixLoadOp) {
       loadToStreamOp[matrixLoadOp] =
-          createAsyncCopy(matrixLoadOp, alloc, extractIdx, indexedABLocalLoadTokens);
+          createAsyncCopy(matrixLoadOp, alloc, extractIdx);
     }
   }
 
@@ -731,8 +544,7 @@ LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
                                     int localPrefetch, bool useAsyncCopy,
                                     bool waitAtTail, bool &forceSchedLocalLoad,
                                     Clusters &clusters,
-                                    tt::CoarseSchedule &schedule,
-                                    bool legacyTwoBuffers = false) {
+                                    tt::CoarseSchedule &schedule) {
   bool pairedGlobalLoadLocalStore = true;
   stages[SCHED_LOCAL_STORE] = stages[SCHED_GLOBAL_LOAD];
 
@@ -755,9 +567,6 @@ LogicalResult initScheduleSingleBuf(int maxDist, Stages &stages, int numStages,
   numBuffers =
       std::max(1, stages[SCHED_LOCAL_LOAD] - stages[SCHED_LOCAL_STORE]);
   assert(numBuffers == 1 && "single-stage read-first schedule required");
-  // Same existing read-first clusters, with a second physical prefix slot.
-  if (legacyTwoBuffers)
-    ++numBuffers;
 
   LDBG("deduced max shared memory buffer number = " << numBuffers);
 
@@ -824,7 +633,7 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
                            int localPrefetch, bool useAsyncCopy,
                            bool waitAtTail, bool asyncCopySingleBuffer,
                            bool &forceSchedLocalLoad, Clusters &clusters,
-                           tt::CoarseSchedule &schedule, bool legacyTwoBuffers) {
+                           tt::CoarseSchedule &schedule) {
   int lastStage = numStages - 1;
   stages[SCHED_GLOBAL_LOAD] = 0;
   stages[SCHED_LOCAL_STORE] = globalPrefetch;
@@ -833,11 +642,10 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
   stages[SCHED_ASYNC_WAIT] = stages[SCHED_LOCAL_LOAD];
 
   bool _asyncCopySingleBuffer = maxDist == 0 ? asyncCopySingleBuffer : false;
-  if (_asyncCopySingleBuffer || legacyTwoBuffers) {
+  if (_asyncCopySingleBuffer) {
     return initScheduleSingleBuf(
         maxDist, stages, numStages, numBuffers, globalPrefetch, localPrefetch,
-        useAsyncCopy, waitAtTail, forceSchedLocalLoad, clusters, schedule,
-        legacyTwoBuffers);
+        useAsyncCopy, waitAtTail, forceSchedLocalLoad, clusters, schedule);
   }
 
   bool pairedGlobalLoadLocalStore = stages[SCHED_LOCAL_STORE] == 0;
@@ -1137,140 +945,6 @@ void scheduleStreamOps(const LoadToStreamOpMap &loadToStreamOp,
   }
 }
 
-// Capture-only schedule selection. Stage5/four-slot queues are not lowered.
-// Fail closed before createStreamOps mutates IR; reuse the generic scheduler.
-static bool isLegacyV0LocalPrefetchCapture(
-    scf::ForOp loop, const LoadToInfoMap &loads, int numStages,
-    int globalPrefetch, int localPrefetch, bool useAsyncCopy,
-    bool waitAtTail, bool asyncCopySingleBuffer) {
-  auto mod = loop->getParentOfType<ModuleOp>();
-  auto is = [&](StringRef key, int64_t expected) {
-    auto a = mod->getAttrOfType<IntegerAttr>(key);
-    return a && a.getType().isInteger(32) && a.getInt() == expected;
-  };
-  // Exact second capture branch; absent/zero hint preserves the old KW4
-  // ordinary-A/raw-B route. No opaque A runtime/preflight is enabled here.
-  bool indexedAB = is("ttg.hcu.v0_indexed_a_packet", 1);
-  if (indexedAB && (numStages != 5 || !is("ttg.hcu.mmac_tpw_n", 2) ||
-                    !is("ttg.hcu.mmac_transposed", 1)))
-    return false;
-  auto arch = getHCUArch(mod);
-  if ((numStages != 3 && numStages != 5) ||
-      globalPrefetch != 0 || localPrefetch != 0 ||
-      !useAsyncCopy || waitAtTail || asyncCopySingleBuffer ||
-      !arch || *arch != "gfx936" ||
-      !is("ttg.hcu.v0_mls_local_prefetch_capture", 1) ||
-      !is("ttg.hcu.v0_blockptr", 1) || !is("ttg.hcu.v0_blockptr_loop", 1) ||
-      !is("ttg.hcu.v0_default_async", 1) ||
-      !is("ttg.hcu.canonical_matrix", 0) ||
-      !is("ttg.num-ctas", 1) || !is("ttg.threads-per-warp", 64) ||
-      !is("ttg.num-warps", 4) || loads.size() != 2)
-    return false;
-  for (StringRef key : {"ttg.hcu.alt_matrix", "ttg.hcu.async_slot_war",
-                        "ttg.hcu.local_prefetch",
-                        "ttg.hcu.v0_swizzled_a_vec8"}) {
-    if (mod->hasAttr(key) && !is(key, 0))
-      return false;
-  }
-  if (!indexedAB && mod->hasAttr("ttg.hcu.mmac_tpw_n") &&
-      !is("ttg.hcu.mmac_tpw_n", 0))
-    return false;
-  auto constant = [](Value v) -> std::optional<int64_t> {
-    auto c = v.getDefiningOp<arith::ConstantOp>();
-    auto a = c ? dyn_cast<IntegerAttr>(c.getValue()) : IntegerAttr{};
-    if (!a || a.getValue().getBitWidth() > 64)
-      return std::nullopt;
-    return a.getInt();
-  };
-  auto trips = constant(loop.getUpperBound());
-  if (constant(loop.getLowerBound()) != 0 || constant(loop.getStep()) != 1 ||
-      !trips || *trips < numStages || *trips > INT32_MAX ||
-      (indexedAB && *trips < 6))
-    return false;
-  auto dots = llvm::to_vector(loop.getBody()->getOps<tt::DotOp>());
-  if (dots.size() != 1)
-    return false;
-  auto dot = dots.front();
-  auto aTy = cast<RankedTensorType>(dot.getA().getType());
-  auto bTy = cast<RankedTensorType>(dot.getB().getType());
-  auto a = dyn_cast<ttg::DotOperandEncodingAttr>(aTy.getEncoding());
-  auto b = dyn_cast<ttg::DotOperandEncodingAttr>(bTy.getEncoding());
-  auto mma = a ? dyn_cast<ttg::AMDMfmaEncodingAttr>(a.getParent())
-               : ttg::AMDMfmaEncodingAttr{};
-  if (aTy.getShape() != ArrayRef<int64_t>({128, 32}) ||
-      bTy.getShape() != ArrayRef<int64_t>({32, 128}) ||
-      aTy.getElementType() != bTy.getElementType() ||
-      !(aTy.getElementType().isF16() || aTy.getElementType().isBF16()) ||
-      !a || !b || a.getOpIdx() != 0 || b.getOpIdx() != 1 ||
-      a.getParent() != b.getParent() ||
-      a.getKWidth() != (indexedAB ? 8 : 4) ||
-      b.getKWidth() != (indexedAB ? 8 : 4) ||
-      !mma || mma.getMmacLayout() != ttg::MmacLayout::LEGACY ||
-      mma.getInstrShape() != ArrayRef<unsigned>({16, 16, 16}) ||
-      mma.getTilesPerWarp() !=
-          (indexedAB ? ArrayRef<unsigned>({2, 2}) : ArrayRef<unsigned>({1, 1})) ||
-      mma.getWarpsPerCTA() != ArrayRef<unsigned>({2, 2}) ||
-      llvm::any_of(ttg::getCTAsPerCGA(mma), [](unsigned n) { return n != 1; }))
-    return false;
-  if (indexedAB && (mma.getVersion() != 3 || mma.getElementBitWidth() != 32 ||
-                    !mma.getIsTransposed() ||
-                    llvm::any_of(ttg::getCTASplitNum(mma),
-                                 [](unsigned n) { return n != 1; })))
-    return false;
-  unsigned ordinary = 0, legacy = 0, indexedA = 0;
-  for (const auto &[op, info] : loads) {
-    if (info.distToUse != 0 || info.use != dot.getOperation())
-      return false;
-    if (auto load = dyn_cast<tt::LoadOp>(op)) {
-      if (indexedAB)
-        return false;
-      auto policy = load->getAttrOfType<BoolAttr>("tt.load.async");
-      if (!policy || policy.getValue() || load.getMask() ||
-          !info.sharedEncoding ||
-          !isa<ttg::SwizzledSharedEncodingAttr>(info.sharedEncoding))
-        return false;
-      ++ordinary;
-    } else if (isa<tt::MatrixLoadOp>(op)) {
-      auto mls = info.mlsEncoding;
-      if (indexedAB && mls && mls.getOpIdx() == 0) {
-        auto matrix = cast<tt::MatrixLoadOp>(op);
-        auto policy = matrix->getAttrOfType<BoolAttr>("tt.load.async");
-        if ((matrix->hasAttr("tt.load.async") && !policy) ||
-            !shouldUseAsyncCopy(op, true) || mls.getVersion() != 0 ||
-            mls.getElemBitWidth() != 16 || mls.getAlt2Kind() != 0 ||
-            mls.getMlsTile() != ArrayRef<unsigned>({128, 32}) ||
-            mls.getOrder() != ArrayRef<unsigned>({1, 0}) ||
-            matrix.getType() != aTy || !matrix.getBoundaryCheck().empty() ||
-            matrix.getIsVolatile() || matrix.getCache() != tt::CacheModifier::NONE ||
-            matrix.getEvict() != tt::EvictionPolicy::NORMAL)
-          return false;
-        ++indexedA;
-        continue;
-      }
-      if (indexedAB) {
-        auto matrix = cast<tt::MatrixLoadOp>(op);
-        auto policy = matrix->getAttrOfType<BoolAttr>("tt.load.async");
-        if ((matrix->hasAttr("tt.load.async") && !policy) || !mls ||
-            mls.getElemBitWidth() != 16 || mls.getAlt2Kind() != 0 ||
-            mls.getOrder() != ArrayRef<unsigned>({1, 0}) ||
-            matrix.getType() != bTy || !matrix.getBoundaryCheck().empty() ||
-            matrix.getIsVolatile() || matrix.getCache() != tt::CacheModifier::NONE ||
-            matrix.getEvict() != tt::EvictionPolicy::NORMAL)
-          return false;
-      }
-      if (!mls || mls.getVersion() != 0 || mls.getOpIdx() != 1 ||
-          mls.getMlsTile() != ArrayRef<unsigned>({32, 128}) ||
-          !shouldUseAsyncCopy(op, true))
-        return false;
-      ++legacy;
-    } else {
-      return false;
-    }
-  }
-  return indexedAB ? ordinary == 0 && indexedA == 1 && legacy == 1
-                   : ordinary == 1 && legacy == 1;
-}
-
 tt::CoarseSchedule
 buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
               int globalPrefetch, int localPrefetch, bool useAsyncCopy,
@@ -1297,54 +971,13 @@ buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
       maxDistLoad = std::max(maxDistLoad, info.distToUse);
   }
 
-  bool indexedABLocalLoadTokens = false;
-  auto captureHint = forOp->getParentOfType<ModuleOp>()
-                         ->getAttrOfType<IntegerAttr>(
-                             "ttg.hcu.v0_mls_local_prefetch_capture");
-  if ((numStages == 3 || numStages == 5) && captureHint &&
-      captureHint.getType().isInteger(32) &&
-      captureHint.getInt() == 1) {
-    if (!isLegacyV0LocalPrefetchCapture(
-            forOp, loadToInfo, numStages, globalPrefetch, localPrefetch,
-            useAsyncCopy, waitAtTail, asyncCopySingleBuffer))
-      return {};
-    // The shared qualifier above has proved the complete private indexed-A/B
-    // route; do not infer token synchronization from a module hint alone.
-    auto indexedHint = forOp->getParentOfType<ModuleOp>()
-                           ->getAttrOfType<IntegerAttr>("ttg.hcu.v0_indexed_a_packet");
-    indexedABLocalLoadTokens = indexedHint && indexedHint.getType().isInteger(32) &&
-                              indexedHint.getInt() == 1;
-    localPrefetch = 1;
-  }
-
-  // Private v0 entry already fixes gfx936/two-stage/no-prefetch. Reuse
-  // the existing read-first schedule; do not enable this for v1 or other loads.
-  unsigned legacyLoads = 0, ordinaryLoads = 0;
-  for (auto &[load, info] : loadToInfo) {
-    legacyLoads += info.isMatrixLoad && info.mlsEncoding &&
-                   info.mlsEncoding.getVersion() == 0;
-    ordinaryLoads += isa<tt::LoadOp>(load) && !info.isMatrixLoad &&
-                     bool(info.sharedEncoding);
-  }
-  bool legacyTwoBuffers = legacyLoads == 1 && ordinaryLoads == 1 &&
-      loadToInfo.size() == 2 &&
-      numStages == 2 && maxDist == 0 && globalPrefetch == 0 && localPrefetch == 0 &&
-      useAsyncCopy && !waitAtTail && !asyncCopySingleBuffer;
   int numBuffers = 1;
   bool forceSchedLocalLoad = false;
   if (failed(initSchedule(maxDist, stages, numStages, numBuffers,
                           globalPrefetch, localPrefetch, useAsyncCopy,
                           waitAtTail, asyncCopySingleBuffer,
-                          forceSchedLocalLoad, clusters, schedule, legacyTwoBuffers)))
+                          forceSchedLocalLoad, clusters, schedule)))
     return {};
-
-  if (indexedABLocalLoadTokens) {
-    // Reuse existing cluster handles: wait0, local-read1, future-copy2,
-    // compute3. Both inputs are MatrixLoad, so no local-store is scheduled.
-    auto oldComputeCluster = clusters[SCHED_COMPUTE];
-    clusters[SCHED_COMPUTE] = clusters[SCHED_LOCAL_STORE];
-    clusters[SCHED_GLOBAL_LOAD] = oldComputeCluster;
-  }
 
   if (failed(scheduleLoads(loadToInfo, maxDist, maxDistLoad, numStages, stages,
                            clusters, schedule)))
@@ -1352,9 +985,7 @@ buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
   dumpSchedule("Coarse schedule loads only:");
 
   // Convert the loads into shared memory allocations and loads from them.
-  auto loadToStreamOp = createStreamOps(loadToInfo, forOp, numBuffers,
-                                        useAsyncCopy, axisInfoAnalysis, legacyTwoBuffers,
-                                        indexedABLocalLoadTokens);
+  auto loadToStreamOp = createStreamOps(loadToInfo, forOp, numBuffers);
   scheduleStreamOps(loadToStreamOp, schedule, stages, clusters,
                     forceSchedLocalLoad);
   dumpSchedule("Coarse schedule stream ops:");

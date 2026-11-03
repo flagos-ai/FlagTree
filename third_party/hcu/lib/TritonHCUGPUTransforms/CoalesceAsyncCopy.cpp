@@ -25,33 +25,6 @@ namespace mlir {
 
 namespace {
 
-// Ordinary gfx936 and the existing private prefix2 route coalesce actual
-// typed BUFFER operations. GLOBAL keeps its own opcode limits; a possible
-// later conversion never grants it wider instructions.
-static bool useLegacyBufferCoalescing(ModuleOp module,
-    const triton::HCU::TargetInfo &targetInfo) {
-  auto one = [&](StringRef key, int64_t value) {
-    auto a = module->getAttrOfType<IntegerAttr>(key);
-    return a && a.getInt() == value;
-  };
-  auto v0 = module->getAttrOfType<IntegerAttr>("ttg.hcu.v0_blockptr");
-  if (targetInfo.getArch() == "gfx936" && (!v0 || v0.getInt() == 0))
-    return true;
-  if (targetInfo.getArch() != "gfx936" ||
-      !one("ttg.hcu.v0_blockptr", 1) || !one("ttg.hcu.v0_blockptr_loop", 1) ||
-      !(one("ttg.hcu.canonical_matrix", 0) ||
-        one("ttg.hcu.canonical_matrix", 2)))
-    return false;
-  bool prefix2 = false;
-  module.walk([&](ttg::LocalAllocOp alloc) {
-    auto type = alloc.getType();
-    auto enc = dyn_cast<ttg::HCUMlsSharedEncodingAttr>(type.getEncoding());
-    prefix2 |= enc && enc.getVersion() == 0 && type.getRank() == 3 &&
-               type.getShape()[0] == 2;
-  });
-  return prefix2;
-}
-
 // Adapter changes only which distributed tensor is permuted. BUFFER's base
 // pointer and stride stay scalar and unchanged; all other layout logic is shared.
 template <typename CopyOp> struct CopyOperands {
@@ -114,11 +87,10 @@ struct PreferWavePrivateSyncStores : public OpRewritePattern<StoreOp> {
     if (async)
       return failure();
     auto ctas = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
-    auto v0 = module->getAttrOfType<IntegerAttr>("ttg.hcu.v0_blockptr");
     if (targetInfo.getArch() != "gfx936" || !blocked || !shared ||
         srcTy.getRank() != 3 || dstTy.getRank() != 3 ||
         !(dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) ||
-        !ctas || ctas.getInt() != 1 || (v0 && v0.getInt() != 0) ||
+        !ctas || ctas.getInt() != 1 ||
         shared.getOrder().back() != 0 ||
         blocked.getOrder().front() != shared.getOrder().front())
       return failure();
@@ -676,7 +648,7 @@ public:
     // after every IR change.
     HCU::ModuleAxisInfoAnalysis axisAnalysis(m);
     DenseMap<Operation *, unsigned> asyncCopyContiguity;
-    bool legacyBuffer = useLegacyBufferCoalescing(m, targetInfo);
+    bool coalesceBuffer = targetInfo.getArch() == "gfx936";
     m->walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
       unsigned contiguity =
           mlir::LLVM::HCU::getContiguity(copyOp.getSrc(), axisAnalysis);
@@ -686,7 +658,7 @@ public:
       }
       asyncCopyContiguity.insert({copyOp.getOperation(), contiguity});
     });
-    if (legacyBuffer)
+    if (coalesceBuffer)
       m.walk([&](tta::BufferLoadToLocalOp copy) {
         unsigned contiguity = LLVM::HCU::getContiguity(
             copy.getPtr(), copy.getOffsets(), axisAnalysis);
@@ -696,7 +668,7 @@ public:
       });
     patterns.add<CoalesceAsyncCopyWrites<ttg::AsyncCopyGlobalToLocalOp>>(
         targetInfo, asyncCopyContiguity, context);
-    if (legacyBuffer)
+    if (coalesceBuffer)
       patterns.add<CoalesceAsyncCopyWrites<tta::BufferLoadToLocalOp>>(
           targetInfo, asyncCopyContiguity, context);
 
@@ -712,7 +684,7 @@ public:
       fallbackInvalidGlobalCopies(m, targetInfo);
     else
       fallbackInvalidCopies<ttg::AsyncCopyGlobalToLocalOp>(m, targetInfo, asyncCopyContiguity);
-    if (legacyBuffer)
+    if (coalesceBuffer)
       fallbackInvalidCopies<tta::BufferLoadToLocalOp>(m, targetInfo, asyncCopyContiguity);
   }
 };

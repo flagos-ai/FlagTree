@@ -13,10 +13,6 @@ namespace mlir::triton {
 #include "TritonHCUGPUToLLVM/Passes.h.inc"
 } // namespace mlir::triton
 
-namespace mlir::triton::HCU {
-LogicalResult prepareLegacyMlsV0JointPhase(ModuleOp module);
-}
-
 namespace {
 
 struct AllocateHCUGPUSharedMemory
@@ -24,10 +20,6 @@ struct AllocateHCUGPUSharedMemory
           AllocateHCUGPUSharedMemory> {
   void runOnOperation() override {
     ModuleOp mod = getOperation();
-    // Final SCF-to-CF/inliner/index conversion have already run. Compute new
-    // allocation from the moved IR; never hand-install offsets or LDS size.
-    if (failed(HCU::prepareLegacyMlsV0JointPhase(mod)))
-      return signalPassFailure();
     ModuleAllocation allocation(mod, HCUAllocationAnalysisScratchSizeFn);
 
     mlir::triton::gpu::attachAllocationSizeAndOffsetAttr(mod, allocation);

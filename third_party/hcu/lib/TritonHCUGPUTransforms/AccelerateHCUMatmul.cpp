@@ -76,11 +76,6 @@ std::optional<MatrixLoadInfo> getDotOperandMatrixLoadInfo(DotOp dotOp,
 
   tt::MatrixLoadOp matrixOp = nullptr;
   for (tt::MatrixLoadOp mOp : allMatrixLoadOps) {
-    // Provisional ordinary block-pointer candidates must retain the ordinary
-    // MMAC ownership. Resolve their exact V0 selection after acceleration;
-    // final ownership mismatches reconstruct an ordinary load there.
-    if (mOp->hasAttr("ttg.hcu.v0_blockptr_candidate"))
-      continue;
     auto maybeDotOpIdxPair = getDotOpIdxFromMatrixLoad(mOp);
     if (succeeded(maybeDotOpIdxPair) &&
         maybeDotOpIdxPair.value().first == dotOp &&
@@ -966,58 +961,6 @@ public:
       int64_t tileN = 16 * warpsPerTile[1] * tpwHint.getInt();
       if (retShape[1] >= tileN && retShape[1] % tileN == 0)
         tilesPerWarp[1] = static_cast<unsigned>(tpwHint.getInt());
-    }
-    // Reuse the existing private v0/TPW request only for its actual
-    // provisional B candidate. Ordinary/v1 matrix-load ownership is unchanged.
-    auto i32Hint = [&](StringRef name, int32_t value) {
-      auto a = module->getAttrOfType<IntegerAttr>(name);
-      return a && a.getType().isInteger(32) && a.getInt() == value;
-    };
-    if (!useMatrixLoad && kPack == 2 && tpwTarget &&
-        tpwTarget.getValue() == "hip:gfx936" && rank == 2 &&
-        numWarps == 4 && llvm::equal(warpsPerTile, ArrayRef<unsigned>({2, 2})) &&
-        retShape == ArrayRef<int64_t>({128, 128}) &&
-        oldAType.getShape() == ArrayRef<int64_t>({128, 32}) &&
-        oldBType.getShape() == ArrayRef<int64_t>({32, 128}) &&
-        oldAType.getElementType() == oldBType.getElementType() &&
-        (oldAType.getElementType().isF16() || oldAType.getElementType().isBF16()) &&
-        oldRetType.getElementType().isF32() && mmacLayout == MmacLayout::LEGACY &&
-        mDim == 16 && nDim == 16 && kDim == 16 &&
-        i32Hint("ttg.hcu.v0_blockptr", 1) &&
-        i32Hint("ttg.hcu.v0_blockptr_loop", 1) &&
-        i32Hint("ttg.hcu.mmac_tpw_n", 2) &&
-        i32Hint("ttg.hcu.mmac_transposed", 1) &&
-        i32Hint("ttg.hcu.canonical_matrix", 0)) {
-      bool exactCandidate = false;
-      module.walk([&](tt::MatrixLoadOp candidate) {
-        if (!candidate->hasAttr("ttg.hcu.v0_blockptr_candidate") ||
-            candidate.getType().getShape() != ArrayRef<int64_t>({32, 128}) ||
-            candidate.getShape().size() != 2 || candidate.getStrides().size() != 2)
-          return;
-        auto constant = [](Value v, int64_t expected) {
-          auto op = v.getDefiningOp<arith::ConstantOp>();
-          auto a = op ? dyn_cast<IntegerAttr>(op.getValue()) : IntegerAttr{};
-          return a && a.getValue().isSignedIntN(64) && a.getInt() == expected;
-        };
-        auto widthOp = candidate.getShape()[1].getDefiningOp<arith::ConstantOp>();
-        auto width = widthOp ? dyn_cast<IntegerAttr>(widthOp.getValue()) : IntegerAttr{};
-        bool indexedSource = width && width.getValue().isSignedIntN(64) &&
-            width.getInt() >= 128 && width.getInt() % 128 == 0 &&
-            width.getInt() < (int64_t(1) << 20) &&
-            i32Hint("ttg.hcu.v0_indexed_a_packet", 1) &&
-            i32Hint("ttg.hcu.v0_mls_local_prefetch_capture", 1) &&
-            constant(candidate.getStrides()[0], width.getInt());
-        auto pair = getDotOpIdxFromMatrixLoad(candidate);
-        auto loop = candidate->getParentOfType<scf::ForOp>();
-        exactCandidate |= succeeded(pair) && pair->first == dotOp && pair->second == 1 &&
-            loop && constant(loop.getLowerBound(), 0) &&
-            constant(loop.getUpperBound(), 32) && constant(loop.getStep(), 1) &&
-            constant(candidate.getShape()[0], 1024) &&
-            ((constant(candidate.getShape()[1], 1024) &&
-              constant(candidate.getStrides()[0], 1024)) || indexedSource) &&
-            constant(candidate.getStrides()[1], 1);
-      });
-      if (exactCandidate) tilesPerWarp = {2, 2};
     }
     if (oldRetType.getElementType().isIntOrIndex())
       mfmaAccType = rewriter.getIntegerType(32);

@@ -1,6 +1,5 @@
 #include "Dialect/TritonHCUGPU/IR/WholePacketLayout.h"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "Dialect/TritonHCUGPU/IR/LegacyV0Packet.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/Utility.h"
 #include "hcu/lib/TritonHCUGPUTransforms/Utility.h"
@@ -79,49 +78,6 @@ int getNumberOfLoadInstructions(RankedTensorType srcTy, ttg::MemDescType dstTy,
   return loadInstructionCount;
 }
 
-// The native v0 emitters issue one 16B direct-to-LDS instruction per lane
-// for each packet fraction. Unrecognized MLS formats remain an undercount.
-int getLegacyV0LoadInstructionCount(hcugpu::MatrixLoadToLocalOp copy,
-                                   const HCU::TargetInfo &targetInfo) {
-  if (targetInfo.getArch() != "gfx936")
-    return 0;
-  auto dstTy = copy.getDest().getType();
-  auto packet = triton::hcugpu::getLegacyV0Packet(dstTy.getEncoding());
-  unsigned rows, cols, warps;
-  if (packet) {
-    rows = packet->k;
-    cols = packet->n;
-    warps = packet->warps;
-  } else if (triton::hcugpu::isLegacyV0IndexedAPacket(dstTy.getEncoding())) {
-    rows = 128;
-    cols = 32;
-    warps = 4;
-  } else {
-    return 0;
-  }
-  auto mod = copy->getParentOfType<ModuleOp>();
-  auto attrEquals = [&](StringRef name, int64_t expected) {
-    auto attr = mod ? mod->getAttrOfType<IntegerAttr>(name) : IntegerAttr{};
-    return attr && attr.getValue().isSignedIntN(64) && attr.getInt() == expected;
-  };
-  if (!attrEquals("ttg.num-warps", warps) ||
-      !attrEquals("ttg.threads-per-warp", 64) || !attrEquals("ttg.num-ctas", 1) ||
-      dstTy.getShape() != ArrayRef<int64_t>({rows, cols}) ||
-      dstTy.getAllocShape() != dstTy.getShape() || !dstTy.getMutableMemory() ||
-      !isa<ttg::SharedMemorySpaceAttr>(dstTy.getMemorySpace()) ||
-      !(dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) ||
-      copy.getTensorShape() !=
-          ArrayRef<int32_t>({int32_t(rows), int32_t(cols)}) ||
-      !copy.getBoundaryCheck().empty())
-    return 0;
-  // Shared exact contracts select the existing B raw and A structured emitters:
-  // B {32,128}/4 waves and A {128,32}/4 waves both issue 2 calls;
-  // B {16,256}/8 waves issues 1. Count per wave, not per workgroup.
-  uint64_t packetBytes = uint64_t(rows) * cols * 2;
-  uint64_t instructionBytes = uint64_t(warps) * 64 * 16;
-  return packetBytes % instructionBytes ? 0 : packetBytes / instructionBytes;
-}
-
 // The complete v256 producer emits exactly one 16B DMA for each 512-element
 // physical packet-wave. Predicate-false requests still zero-fill LDS. The
 // finite chart is checked here and again with ownership/extents in lowering.
@@ -167,8 +123,6 @@ int getOpNumberOfAsyncLoadInstructions(Operation *op,
                                        bool emitRemarkOnNonAsyncOp) {
   if (auto matrixOp = dyn_cast<hcugpu::MatrixLoadToLocalOp>(op)) {
     if (int count = getWholePacketLoadInstructionCount(matrixOp, targetInfo))
-      return count;
-    if (int count = getLegacyV0LoadInstructionCount(matrixOp, targetInfo))
       return count;
   }
   if (auto copyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
