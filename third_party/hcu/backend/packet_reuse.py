@@ -6,7 +6,6 @@ native readiness guard on the assembled result. No imported/stale proof is valid
 Standalone redundant-wait cleanup has an independent no-new-event upper-bound
 proof and does not require a packet/LLVM operand-model proof.
 """
-import collections
 import hashlib
 import re
 
@@ -40,16 +39,15 @@ def prepare_packet_reuse(asm, name, mode, expected_groups):
     sum across cloned loops. Report native_total_groups separately. No shape,
     tile, wave count, SSA name, MMAC count or fixed clone count is a selector.
 
-    precopy: add LGKM(actual group DS count) before first G2L.
-    fenced: add that LGKM, move old VM/CTA there, VM credit -= group G2L count.
-    fenced intentionally changes low-loop MMAC/CTA phase where applicable.
+    precopy adds LGKM(actual group DS count) before first G2L. All original
+    VM credits, CTA boundaries and instruction order are preserved.
     """
     report = _base_report(asm, 'packet_reuse')
     report.update(mode=mode, expected_groups_per_native_loop=expected_groups,
                   loops=[], native_total_groups=0)
     try:
-        if mode not in ('precopy', 'fenced'):
-            raise ValueError('unsupported mode')
+        if mode != 'precopy':
+            raise ValueError('only precopy mode is supported')
         if isinstance(expected_groups, bool) or not isinstance(expected_groups, int) or expected_groups <= 0:
             raise ValueError('positive fresh per-source-loop expected_groups required')
         parsed = _parse(asm, name)
@@ -70,7 +68,7 @@ def prepare_packet_reuse(asm, name, mode, expected_groups):
         for left, right in zip(ordered, ordered[1:]):
             if right[0] <= left[1]:
                 raise ValueError('nested, overlapping or multiple-latch loops')
-        insertions, removals, changed_vm, new_lgkm = {}, set(), [], []
+        insertions = {}
         for start, end, header in ordered:
             body = insts[start:end + 1]
             # Fail whole-function for any unmodeled backedge, not only a
@@ -115,31 +113,21 @@ def prepare_packet_reuse(asm, name, mode, expected_groups):
                 if set(fields) != {'vmcnt'} or not first < vm[0]['line'] < cta:
                     raise ValueError('publication is not copy -> VM-only wait -> CTA')
                 credit, copy_count, old_vm = len(ds), len(copies), fields['vmcnt']
-                if not 0 < credit < 15 or old_vm < copy_count:
+                if not 0 < credit < 15:
                     raise ValueError('unsupported or incomplete counter budget')
                 if first in insertions:
                     raise ValueError('group overlap')
                 tag = '; PACKET_REUSE_' + mode + '_' + header + '_' + str(q)
                 lgkm = '\ts_waitcnt lgkmcnt(' + str(credit) + ') ' + tag + '\n'
-                new_lgkm.append(lgkm)
-                moved = []
-                if mode == 'precopy':
-                    insertions[first] = lgkm
-                else:
-                    new_vm = '\ts_waitcnt vmcnt(' + str(old_vm - copy_count) + ') ' + tag + '\n'
-                    insertions[first] = lgkm + new_vm + lines[cta]
-                    removals.update((vm[0]['line'], cta))
-                    changed_vm.append((lines[vm[0]['line']], new_vm))
-                    moved = [x['line'] + 1 for x in segment
-                             if first <= x['line'] < cta and x['op'].startswith('v_mmac')]
+                insertions[first] = lgkm
                 groups.append(dict(group=q, DS_count=credit, G2L_count=copy_count,
                     first_G2L_line=first + 1, CTA_line=cta + 1,
                     old_VM_credit=old_vm,
-                    new_VM_credit=old_vm - copy_count if mode == 'fenced' else old_vm,
+                    new_VM_credit=old_vm,
                     DS_lines=[x['line'] + 1 for x in ds],
                     G2L_lines=[x['line'] + 1 for x in copies],
                     original_VM_line=vm[0]['line'] + 1,
-                    phase_changed=bool(moved), MMA_moved_across_CTA_lines=moved))
+                    phase_changed=False, MMA_moved_across_CTA_lines=[]))
             # Homogeneous packet groups are required for a meaningful common
             # queue budget; no shape/width special case supplies the value.
             if len(set(g['DS_count'] for g in groups)) != 1 or len(set(g['G2L_count'] for g in groups)) != 1:
@@ -148,24 +136,14 @@ def prepare_packet_reuse(asm, name, mode, expected_groups):
                 end_line=body[-1]['line'] + 1, groups=groups,
                 MMA_count=sum(x['op'].startswith('v_mmac') for x in body)))
         # Apply only AFTER every loop/group passed; no partial rewrite on fail.
-        result = ''.join(insertions.get(n, '') + ('' if n in removals else line)
-                         for n, line in enumerate(lines))
+        result = ''.join(insertions.get(n, '') + line for n, line in enumerate(lines))
         projected = result
         for new in insertions.values():
             if projected.count(new) != 1:
                 raise ValueError('nonunique inserted sequence')
             projected = projected.replace(new, '', 1)
-        if projected != ''.join(line for n, line in enumerate(lines) if n not in removals):
+        if projected != asm:
             raise ValueError('ordered byte projection mismatch')
-        oldops = [_operation(x) for x in lines if _operation(x)]
-        newops = [_operation(x) for x in result.splitlines() if _operation(x)]
-        expected = collections.Counter(oldops)
-        for old, new in changed_vm:
-            expected.subtract([_operation(old)])
-            expected.update([_operation(new)])
-        expected.update(_operation(x) for x in new_lgkm)
-        if +expected != collections.Counter(newops):
-            raise ValueError('instruction multiset mismatch')
         total = sum(len(loop['groups']) for loop in report['loops'])
         report.update(accepted=True, changed=result != asm, reason='all native steady loops/groups covered',
             native_total_groups=total, native_loops=len(report['loops']), loop_count=len(report['loops']), added_waits=total,

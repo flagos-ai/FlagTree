@@ -162,7 +162,7 @@ class HIPOptions:
     packet_wait_rotation: bool = False
     # Explicit diagnostic: native readiness is checked; cross-wave WAR is unproven.
     packet_operand_overlap_diagnostic: bool = False
-    # Native diagnostic scheduling after fresh packet rotation; default unchanged.
+    # Diagnostic precopy wait insertion after fresh packet rotation.
     packet_reuse_wait: str = "none"
     # Eliminate LGKM waits only with a same-block no-new-event bound.
     packet_redundant_lgkm_cleanup: bool = False
@@ -310,8 +310,8 @@ class HIPOptions:
             raise ValueError("packet_operand_overlap_diagnostic requires gfx936")
         if self.packet_operand_overlap_diagnostic and (self.packet_wait_rotation or self.packet_post_mma_wait):
             raise ValueError("operand overlap performs its own fresh rotation; choose one packet strategy")
-        if self.packet_reuse_wait not in ("none", "precopy", "fenced") or type(self.packet_reuse_wait) is not str:
-            raise ValueError("packet_reuse_wait must be none, precopy or fenced")
+        if self.packet_reuse_wait not in ("none", "precopy") or type(self.packet_reuse_wait) is not str:
+            raise ValueError("packet_reuse_wait must be none or precopy")
         if self.packet_reuse_wait != "none" and not self.packet_operand_overlap_diagnostic:
             raise ValueError("packet_reuse_wait requires fresh packet_operand_overlap_diagnostic")
         if type(self.coalesce_lgkm_waits) is not bool:

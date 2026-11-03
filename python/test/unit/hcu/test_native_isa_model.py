@@ -17,7 +17,8 @@ package.__path__ = [str(BACKEND)]
 sys.modules[PACKAGE] = package
 model = importlib.import_module(PACKAGE + '.native_isa_model')
 coalesce = importlib.import_module(PACKAGE + '.waitcnt_coalesce').coalesce_lgkm_waits
-cleanup = importlib.import_module(PACKAGE + '.packet_reuse').cleanup_redundant_lgkm
+packet = importlib.import_module(PACKAGE + '.packet_reuse')
+cleanup = packet.cleanup_redundant_lgkm
 
 
 def kernel(body, name='kernel'):
@@ -139,6 +140,32 @@ class TestNativeISAModel(unittest.TestCase):
         self.assertTrue(report['accepted'], report)
         self.assertEqual(report['deleted_count'], 1)
         self.assertEqual(result.count('s_waitcnt'), 1)
+
+    def test_precopy_preserves_vm_zero_and_all_original_instructions(self):
+        # A parser/projection fixture, not a hardware ordering certificate.
+        source = kernel('.Lloop:\n ds_read_b32 v4, v10\n'
+                        ' buffer_load_dword v0, v1, s[8:11], 0 offen lds\n'
+                        ' s_waitcnt vmcnt(0)\n s_barrier\n s_waitcnt lgkmcnt(0)\n'
+                        ' v_mmac_f32_16x16x16_bf16 v[8:11], v4, v2, v[8:11]\n'
+                        ' s_cbranch_scc1 .Lloop')
+        result, report = packet.prepare_packet_reuse(source, 'kernel', 'precopy', 1)
+        self.assertTrue(report['accepted'], report)
+        self.assertEqual(report['added_waits'], 1)
+        inserted = next(line for line in result.splitlines(keepends=True) if 'PACKET_REUSE_' in line)
+        self.assertEqual(result.replace(inserted, ''), source)
+        group = report['loops'][0]['groups'][0]
+        self.assertEqual(group['old_VM_credit'], group['new_VM_credit'])
+        self.assertFalse(report['phase_changed'])
+        ready = importlib.import_module(PACKAGE + '.mma_phase').check_native_readiness
+        self.assertTrue(ready(source, 'kernel')['accepted'])
+        self.assertTrue(ready(result, 'kernel')['accepted'])
+
+    def test_removed_fenced_mode_is_rejected_without_mutation(self):
+        source = kernel(' s_nop 0')
+        result, report = packet.prepare_packet_reuse(source, 'kernel', 'fenced', 1)
+        self.assertEqual(result, source)
+        self.assertFalse(report['accepted'])
+        self.assertIn('only precopy', report['reason'])
 
 
 if __name__ == '__main__':
