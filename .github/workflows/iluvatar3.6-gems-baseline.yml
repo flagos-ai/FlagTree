@@ -64,3 +64,6 @@ jobs:
         fi
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      FLAGTREE_FEISHU_APP_ID: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+      FLAGTREE_FEISHU_APP_SECRET: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+      FLAGTREE_FEISHU_BITABLE_APP_TOKEN: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
