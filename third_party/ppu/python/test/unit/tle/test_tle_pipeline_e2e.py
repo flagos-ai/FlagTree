@@ -135,19 +135,15 @@ def test_elementwise_add_different_sizes():
 
 
 def test_elementwise_add_different_dtypes():
-    """fp32 and fp16. The upstream test skips fp16 with a comment; we at
-    least exercise compile-time on PPU and downgrade to xfail if PPU's
-    fp16 pipeline path needs more wiring."""
+    """fp32 and fp16. The upstream test skips fp16 with a comment; on PPU both
+    dtypes compile, the fp16 copies downgrading to a load and a store where
+    cp.async cannot issue a 2-byte vector."""
     if not _ppu_sdk_available():
         pytest.skip("PPU SDK not available")
     compiled = _compile(dtype=tl.float32, xblock=64, yblock=64)
     assert len(compiled.asm["hgbin"]) > 0
-    try:
-        compiled_fp16 = _compile(dtype=tl.float16, xblock=64, yblock=64)
-    except Exception as e:
-        pytest.xfail(f"fp16 pipeline e2e compile not yet supported on PPU: {e}")
-    else:
-        assert len(compiled_fp16.asm["hgbin"]) > 0
+    compiled_fp16 = _compile(dtype=tl.float16, xblock=64, yblock=64)
+    assert len(compiled_fp16.asm["hgbin"]) > 0
 
 
 def test_elementwise_add_edge_cases():
