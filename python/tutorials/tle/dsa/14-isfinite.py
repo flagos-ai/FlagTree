@@ -38,8 +38,7 @@ def isfinite(x0):
     # triggers a bishengir "ub overflow", while too-small blocks leave per-
     # program overhead unamortized.
     ub_size = 125 * 1024 // 2
-    BLOCK = min(triton.next_power_of_2(ub_size // (x0.element_size() + 1)) // 2,
-                triton.next_power_of_2(N))
+    BLOCK = min(triton.next_power_of_2(ub_size // (x0.element_size() + 1)) // 2, triton.next_power_of_2(N))
 
     grid = ((N - 1) // BLOCK + 1, )
     isfinite_tle_kernel[grid](x0, out, N, BLOCK)
