@@ -5865,17 +5865,26 @@ def test_metax_fp8_dot_invalid_shape(lhs_dtype, rhs_dtype, m, n, arch):
         triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype, m, n), target=GPUTarget("maca", arch, 64))
 
 
-def test_metax_fp8_dot_diagnostic(metax_device, fresh_triton_cache, monkeypatch, capfd):
-    monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", "warnings")
-    triton.compile(_metax_fp8_dot_source(tl.float8e4nv, tl.float8e5),
-                   target=triton.runtime.driver.active.get_current_target(), options={"num_warps": 4, "num_stages": 2})
-    assert "using non-native FP8 dot on MetaX target" in capfd.readouterr().err
+@pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
+@pytest.mark.parametrize("diagnostics", ["", "warnings"])
+def test_metax_fp8_dot_diagnostic(lhs_dtype, rhs_dtype, diagnostics, metax_device, fresh_triton_cache, monkeypatch,
+                                  capfd, recwarn):
+    if diagnostics:
+        monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", diagnostics)
+    else:
+        monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
+    target = triton.runtime.driver.active.get_current_target()
+    triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=target,
+                   options={"num_warps": 4, "num_stages": 2})
+    non_native = not (86 <= target.arch < 90 and lhs_dtype == rhs_dtype)
+    assert any("MetaX FP8 dot on target" in str(w.message) for w in recwarn) == non_native
+    assert ("using non-native FP8 dot on MetaX target" in capfd.readouterr().err) == (non_native and bool(diagnostics))
 
 
 @pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
 @pytest.mark.parametrize("scenario", ["", "fullstage"])
 def test_metax_fp8_dot_xcore1600(lhs_dtype, rhs_dtype, scenario, metax_device, fresh_triton_cache, tmp_path,
-                                 monkeypatch):
+                                 monkeypatch, recwarn):
     import os
     from pathlib import Path
     import shlex
@@ -5889,8 +5898,10 @@ def test_metax_fp8_dot_xcore1600(lhs_dtype, rhs_dtype, scenario, metax_device, f
                        f'-mllvm -print-after=stack-frame-layout "$@" 2>{shlex.quote(str(machine_log))}\n')
     wrapper.chmod(0o755)
     monkeypatch.setenv("TRITON_COMPILER_OPT_PATH", str(tmp_path))
+    monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
     kernel = triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=GPUTarget("maca", 86, 64),
                             options={"num_warps": 4, "num_stages": 2, "scenario": scenario})
+    assert any("MetaX FP8 dot on target" in str(w.message) for w in recwarn) == (lhs_dtype != rhs_dtype)
     assert b"maca-mxc-metax-macahca--xcore1600" in kernel.asm["mcfatbin"]
     machine = machine_log.read_text()
     if lhs_dtype == rhs_dtype:

@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          export FLAGTREE_BACKEND=metax
+          export FLAGTREE_BACKEND=metax FLAGTREE_PLUGIN=ON
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
@@ -135,6 +135,17 @@ jobs:
                 not test_mma_remark and \
                 not test_remark_vectorization and \
                 not test_passing_tuple_to_make_tensor_descriptor"
+
+      - name: MetaX precision descriptor and shared-IR regressions
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          python3 -m pytest -s \
+            third_party/metax/python/test/unit/language/test_tensor_descriptor.py \
+            third_party/metax/python/test/gluon/test_fp4.py \
+            -k metax_
 
       - name: FlagTree TLE Tile Unit Test on Metax
         if: steps.check_backend.outputs.should_skip != 'true'

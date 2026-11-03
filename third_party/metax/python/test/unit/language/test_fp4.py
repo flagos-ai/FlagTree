@@ -473,13 +473,18 @@ def test_metax_fp4_dot_scaled_pipeline(block, k, scenario, fa, fb, metax_device)
     bound = (k + 2) * 2**-24 * (av.abs() @ bv.abs().T + acc.double().abs())
     x, y = a.to(metax_device), b.T.contiguous().to(metax_device)
     out = torch.full((m * n + 64, ), 11., dtype=torch.float32, device=metax_device)
-    _dot_scaled[(1, )](x, y, sa.view(torch.int8).to(metax_device), sb.to(metax_device), acc.to(metax_device),
-                       out[32:-32], *x.stride(), *y.stride(), m, n, k, step, fa, fb, num_warps=warps, num_stages=stages,
-                       scenario=scenario)
-    actual = out.cpu()
-    assert torch.equal(actual[:32], torch.full((32, ), 11.))
-    assert torch.equal(actual[-32:], torch.full((32, ), 11.))
-    assert torch.all((actual[32:-32].reshape(m, n).double() - expected).abs() <= bound)
+    args = (x, y, sa.view(torch.int8).to(metax_device), sb.to(metax_device), acc.to(metax_device), out[32:-32],
+            *x.stride(), *y.stride(), m, n, k, step, fa, fb)
+    # Reuse the same inputs and compiled kernel to expose intermittent races.
+    repeats = 500 if warps > 4 and stages == 2 and k > step else 3
+    for iteration in range(repeats):
+        out.fill_(11.)
+        kernel = _dot_scaled[(1, )](*args, num_warps=warps, num_stages=stages, scenario=scenario)
+        actual = out.cpu()
+        assert torch.equal(actual[:32], torch.full((32, ), 11.)), iteration
+        assert torch.equal(actual[-32:], torch.full((32, ), 11.)), iteration
+        assert torch.all((actual[32:-32].reshape(m, n).double() - expected).abs() <= bound), iteration
+    assert "llvm.mxc.mma.f32." in kernel.asm["llir"]
 
 
 @triton.jit
@@ -681,10 +686,16 @@ def test_metax_fp4_dot_scaled_invalid(options, error, arch):
 
 
 @pytest.mark.parametrize("arch", [80, 86])
-def test_metax_fp4_dot_scaled_diagnostic(arch, fresh_triton_cache, monkeypatch, capfd):
-    monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", "warnings")
-    kernel = triton.compile(_dot_scaled_source(), target=GPUTarget("maca", arch, 64))
-    assert "non-native FP4 dot_scaled on MetaX" in capfd.readouterr().err
+@pytest.mark.parametrize("diagnostics", ["", "warnings"])
+def test_metax_fp4_dot_scaled_diagnostic(arch, diagnostics, fresh_triton_cache, monkeypatch, capfd):
+    if diagnostics:
+        monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", diagnostics)
+    else:
+        monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
+    with pytest.warns(UserWarning, match="MetaX FP4 dot_scaled uses non-native GPU software decoding/scaling"):
+        kernel = triton.compile(_dot_scaled_source(), target=GPUTarget("maca", arch, 64))
+    stderr = capfd.readouterr().err
+    assert ("non-native FP4 dot_scaled on MetaX" in stderr) == bool(diagnostics)
     assert "tt.dot_scaled" not in kernel.asm["ttgir"]
     assert "llvm.mxc.mma.f32." in kernel.asm["llir"]
     assert "llvm.mxc.scmma" not in kernel.asm["llir"]

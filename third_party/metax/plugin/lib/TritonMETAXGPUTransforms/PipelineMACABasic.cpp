@@ -666,9 +666,9 @@ LogicalResult LoopPipeliner::collectFp4Graph(SetVector<Operation *> &ops) {
   auto dots = llvm::to_vector(forOp.getBody()->getOps<triton::DotOp>());
   if (dots.size() != 1 || isSingleShm)
     return failure();
-  // Larger warp groups can corrupt prefetched FP4 operand tiles above two
+  // Larger warp groups can corrupt prefetched FP4 operand tiles even with two
   // stages. Keep the original loop until their graph scheduling is corrected.
-  if (ttg::lookupNumWarps(dots.front()) > 4 && numStages > 2)
+  if (ttg::lookupNumWarps(dots.front()) > 4)
     return failure();
   for (Operation &op : forOp.getBody()->without_terminator()) {
     if (auto load = dyn_cast<triton::LoadOp>(&op)) {

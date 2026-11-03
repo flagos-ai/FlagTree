@@ -1635,6 +1635,12 @@ class TritonSemantic(Generic[TensorTy]):
                                         max_num_imprecise_acc), tl.block_type(ret_scalar_ty, padded_shape))
             return resize(result, [M, N])
 
+        if lhs.dtype in (tl.float8e4nv, tl.float8e5) and rhs.dtype in (tl.float8e4nv, tl.float8e5):
+            arch = int(self.builder.options.arch.removeprefix("sm"))
+            if not (86 <= arch < 90 and lhs.dtype == rhs.dtype):
+                warnings.warn(
+                    f"MetaX FP8 dot on target {arch} uses non-native GPU software decoding to FP16, "
+                    "followed by native FP16 MMA with FP32 accumulation.", UserWarning)
         return self.tensor(
             self.builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc), ret_ty)
 
@@ -1741,6 +1747,10 @@ class TritonSemantic(Generic[TensorTy]):
         lhs_scale_handle = None if lhs_scale_is_none else lhs_scale.handle
         self.verify_scaled_shape(M, N, K, None if lhs_scale_is_none else lhs_scale,
                                  None if rhs_scale_is_none else rhs_scale)
+        if "e2m1" in (lhs_format, rhs_format):
+            warnings.warn(
+                "MetaX FP4 dot_scaled uses non-native GPU software decoding/scaling, "
+                "followed by native BF16/FP16 MMA with FP32 accumulation.", UserWarning)
         return self.tensor(
             self.builder.create_dot_scaled(lhs.handle, lhs_scale_handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                            rhs_format_enum, fast_math, lhs_k_pack, rhs_k_pack, acc_handle), ret_ty)
