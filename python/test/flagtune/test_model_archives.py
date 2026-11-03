@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import tarfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,6 +206,13 @@ def _configure_platform_download(
             raising=False,
         )
     return requests
+
+
+def _mark_manifest_cache_fresh(manifest):
+    manifest.with_name("manifest.meta.json").write_text(json.dumps({
+        "source": "remote",
+        "fetched_at": time.time(),
+    }))
 
 
 def _configure_platform_manifest(monkeypatch, manifest, packages):
@@ -1020,6 +1028,9 @@ def test_download_latest_uses_default_cache_manifest(tmp_path, monkeypatch):
         cache_root / "manifest.json",
         {"1.0.0": first, "2.0.0": latest},
     )
+    _mark_manifest_cache_fresh(cache_root / "manifest.json")
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_REFRESH", "0")
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_TTL", "3600")
     monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
     monkeypatch.delenv("FLAGTUNE_LOCAL_MANIFEST", raising=False)
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
@@ -1210,6 +1221,9 @@ def test_default_cache_manifest_downloads_package_without_being_modified(tmp_pat
                     },
                 },
             }, sort_keys=True))
+    _mark_manifest_cache_fresh(manifest_path)
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_REFRESH", "0")
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_TTL", "3600")
     manifest_bytes = manifest_path.read_bytes()
     requests = []
 
@@ -1248,17 +1262,28 @@ def test_default_cache_manifest_downloads_package_without_being_modified(tmp_pat
     assert manifest_path.read_bytes() == manifest_bytes
 
 
-def test_remote_h20_package_requires_all_three_models_before_cache(tmp_path, monkeypatch, caplog):
+def test_remote_h20_package_loads_available_model_and_reports_missing_coverage(tmp_path, monkeypatch):
+    xgboost = pytest.importorskip("xgboost")
+    model = xgboost.XGBRanker(n_estimators=0)
+    model.fit(np.zeros((2, 1)), np.zeros(2), group=[2])
     children = tmp_path / "children"
     children.mkdir()
     identity, child = _platform_model_archive(children, "gemv")
+    members = read_model_archive(child)
+    config = yaml.safe_load(members["flagtune_config.yaml"])
+    booster = model.get_booster()
+    booster.feature_names = ["M"]
+    booster.set_attr(flagtune_config_sha256=model_config_sha256(config))
+    loose = children / "gemv.json"
+    model.save_model(str(loose))
+    write_model_archive(child, {**members, "xgboost_ranker.json": loose.read_bytes()})
     remote = write_platform_package(
         tmp_path / "remote" / "nvidia-h20_v1.0.0.tar.gz",
         platform_key="nvidia-h20",
         package_version="1.0.0",
         model_archives={identity: child},
     )
-    _configure_platform_download(
+    requests = _configure_platform_download(
         monkeypatch,
         tmp_path / "manifest.json",
         "1.0.0",
@@ -1267,18 +1292,20 @@ def test_remote_h20_package_requires_all_three_models_before_cache(tmp_path, mon
     )
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
+    monkeypatch.delenv("FLAGTUNE_MODEL_VERSION", raising=False)
+    monkeypatch.delenv("FLAGTUNE_MODEL_DOWNLOAD_LATEST", raising=False)
+    manager = FlagTuneModelManager()
 
-    with caplog.at_level("WARNING"), pytest.raises(IncompatibleModelError, match="missing required H20 models"):
-        FlagTuneModelManager()._download_package(
-            "nvidia-h20",
-            model_sources.RemotePackage(
-                "1.0.0",
-                "https://example.invalid/nvidia-h20_v1.0.0.tar.gz",
-                hashlib.sha256(remote.read_bytes()).hexdigest(),
-            ),
-        )
+    loaded = manager.load("flaggems/mm", "gemv", platform_key="nvidia-h20", dtype_key="bf16-bf16-bf16")
+    expected = cache_root / "packages" / "nvidia-h20" / "1.0.0" / "nvidia-h20_v1.0.0.tar.gz"
+    assert loaded.identity == identity
+    assert loaded.package_path == expected
+    assert expected.read_bytes() == remote.read_bytes()
 
-    assert not list(cache_root.rglob("nvidia-h20_v1.0.0.tar.gz"))
+    for variant in ("general_tma", "splitk"):
+        with pytest.raises(ModelBundleMissingError, match="has no model for"):
+            manager.load("flaggems/mm", variant, platform_key="nvidia-h20", dtype_key="bf16-bf16-bf16")
+    assert len(requests) == 1
 
 
 def test_remote_package_validates_unselected_child_before_cache(tmp_path, monkeypatch):
