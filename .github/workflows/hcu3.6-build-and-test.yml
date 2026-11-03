@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Hcu3.6-Build-And-Test
+name: Hcu3.6
 
 on:
   schedule:
@@ -38,7 +38,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hcu36x-unit-test:
+  hcu36x:
     strategy:
       fail-fast: false
       matrix:
