@@ -3,9 +3,9 @@
         tl.debug_barrier()
         tl.atomic_xchg(_oproj_ready, _oproj_epoch, sem='release', scope='sys')
         _oproj_ptrs = (_oproj_bases + {{ call.owner_matched_oproj.ready }} + _fm_task * 8).to(tl.pointer_type(tl.uint64))
-        _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+        _oproj_observed = _flagmega_oproj_acquire_poll(_oproj_ptrs)
         while tl.min(_oproj_observed, 0) < _oproj_epoch:
-            _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+            _oproj_observed = _flagmega_oproj_acquire_poll(_oproj_ptrs)
         tl.debug_barrier()
         _oproj_value = tl.full((64,), 0, tl.float32)
 {% for peer in range(4) %}

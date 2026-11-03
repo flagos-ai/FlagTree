@@ -77,7 +77,7 @@ def activate():
         if probability_selected(c):
             schedule=c.get('probability_schedule')
             if (not schedule or schedule['column_tile']!=64 or schedule['long_column_tile']!=32
-                    or schedule['group']['count']!=128 or schedule['internal_grid_barriers']!=3
+                    or schedule['group']['count']!=128 or schedule['internal_grid_barriers']!=2
                     or schedule['metadata_payload_bytes']!=8320):
                 raise CodegenError('Probability output-column selection requires normally propagated workspace and publishing contracts')
             return original(self,name,context)

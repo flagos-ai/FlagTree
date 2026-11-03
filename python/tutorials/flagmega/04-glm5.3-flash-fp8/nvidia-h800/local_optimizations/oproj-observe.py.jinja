@@ -1,0 +1,15 @@
+@triton.jit
+def _flagmega_oproj_acquire_poll(_oproj_pointer):
+    # Four unique readers; every warp receives the acquired counter snapshot.
+    _oproj_counter_buffer = tle.gpu.alloc([4], tl.uint64, nv_mma_shared_layout=False)
+    _oproj_counter_ptr = tle.gpu.local_ptr(_oproj_counter_buffer, (tl.arange(0, 4),))
+    # Keep CTA layout conversions outside physical thread divergence.
+    _oproj_counter = tl.inline_asm_elementwise('{ .reg .u32 tid; .reg .pred elected; mov.u32 tid, %tid.x; setp.lt.u32 elected, tid, 4; mov.u64 $0, 0; @elected ld.acquire.sys.global.u64 $0, [$1]; }', constraints='=l,l', args=[_oproj_pointer], dtype=tl.uint64, is_pure=False, pack=1)
+    # Physical election must cover the shared write too: a logical masked
+    # store assumes identical replicas and can emit unpredicated read/select/write.
+    tl.inline_asm_elementwise('{ .reg .u32 tid; .reg .pred elected; mov.u32 tid, %tid.x; setp.lt.u32 elected, tid, 4; @elected st.shared.b64 [$2], $1; mov.u32 $0, 0; }', constraints='=r,l,r,~{memory}', args=[_oproj_counter, _oproj_counter_ptr.to(tl.uint64).to(tl.uint32)], dtype=tl.int32, is_pure=False, pack=1)
+    tl.debug_barrier()
+    _oproj_counter = tl.load(_oproj_counter_ptr)
+    # Finish all shared reads before the next polling iteration can reuse it.
+    tl.debug_barrier()
+    return _oproj_counter

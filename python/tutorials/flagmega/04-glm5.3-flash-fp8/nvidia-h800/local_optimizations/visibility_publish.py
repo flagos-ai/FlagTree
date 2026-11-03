@@ -35,7 +35,9 @@ def configure(call):
     value=call['parameters'].get('visibility_publish_schedule')
     if value is None:
         return
-    if (value != SCHEDULE or call['internal_grid_barriers'] != 3
+    from .parallel_dsa_pool_sort import SCHEDULE as parallel_sort
+    phases = 4 if call['parameters'].get('pool_selection_schedule') == parallel_sort else 3
+    if (value != SCHEDULE or call['internal_grid_barriers'] != phases
             or call['pool_tile'] >= call['index_topk']
             or call['output_width'] < call['index_topk']+2
             or call['value_type'] != 'tl.bfloat16'):

@@ -19,7 +19,15 @@ def adaptive_helpers(short):
     if long.count(selector)!=1:raise CodegenError('Complete cooperative query template changed')
     long=long.replace(selector,selector+' and call.dsa_adaptive_long_score_ctas | default(none)')
     long=long.replace('import triton.experimental.tle.language as tle\n','')
-    return short+'{% if render_calls | selectattr("dsa_adaptive_long_score_ctas","defined") | list %}\n'+long+'\n{% endif %}'
+    # Keep the original complete K reduction. Each wide task owns a larger
+    # disjoint N interval of the same head, with the original BF16 boundary.
+    wide=long.replace('call.symbol }}__long96','call.symbol }}__long96__wide')
+    wide=wide.replace('call.tile_n','call.dsa_adaptive_query_tile_n')
+    wide=wide.replace(selector,selector+' and call.dsa_adaptive_query_tile_n | default(none)')
+    return (short+'{% if render_calls | selectattr("dsa_adaptive_long_score_ctas","defined") | list %}\n'
+            +long+'\n{% endif %}'
+            +'{% if render_calls | selectattr("dsa_adaptive_query_tile_n","defined") | list %}\n'
+            +wide+'\n{% endif %}')
 def activate():
     from triton.flagmega.codegen.triton import renderer,tir_package
     from triton.flagmega.codegen.triton.registry import PackageRendererSpec

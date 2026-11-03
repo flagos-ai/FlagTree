@@ -8,7 +8,20 @@
         _oproj_peer = tl.arange(0, 4)
         _oproj_bases = tl.where(_oproj_peer == 0, _oproj_p0, tl.where(_oproj_peer == 1, _oproj_p1, tl.where(_oproj_peer == 2, _oproj_p2, _oproj_p3)))
         _oproj_ptrs = (_oproj_bases + {{ call.owner_matched_oproj.consumed }} + _fm_task * 8).to(tl.pointer_type(tl.uint64))
-        _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+{% if call.oproj_prefetch_before_counter | default(false) %}
+        _fm_prefetched_sequence = _fm_sequence_base
+        _fm_prefetch_slot = _fm_prefetched_sequence % {{ call.oproj_slots }}
+        _fm_prefetch_w = _fm_weight.slot(_fm_prefetch_slot)
+        _fm_prefetch_x = _fm_activation.slot(_fm_prefetch_slot)
+        _fm_prefetch_wd = tle.gpu.reinterpret_tensor_map(weight_descriptor, _fm_prefetch_w)
+        _fm_prefetch_xd = tle.gpu.reinterpret_tensor_map(value_descriptor, _fm_prefetch_x)
+        tle.gpu.copy(_fm_prefetch_wd, _fm_prefetch_w, [64, {{ call.block_k }}],
+                     [tl.cast({{ call.weight_row_origin }} + _fm_task * 64, tl.int32), tl.cast({{ call.weight_k_origin }}, tl.int32)],
+                     barrier=_fm_weight_full[_fm_prefetch_slot])
+        tle.gpu.copy(_fm_prefetch_xd, _fm_prefetch_x, [8, {{ call.block_k }}],
+                     [0, tl.cast({{ call.source_k_origin }}, tl.int32)], barrier=_fm_activation_full[_fm_prefetch_slot])
+{% endif %}
+        _oproj_observed = _flagmega_oproj_acquire_poll(_oproj_ptrs)
         while tl.min(_oproj_observed, 0) < _oproj_epoch - 1:
-            _oproj_observed = tl.atomic_add(_oproj_ptrs, tl.full((4,), 0, tl.uint64), sem='acquire', scope='sys')
+            _oproj_observed = _flagmega_oproj_acquire_poll(_oproj_ptrs)
         tl.debug_barrier()

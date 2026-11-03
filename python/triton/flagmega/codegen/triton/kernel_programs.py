@@ -200,7 +200,8 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
     function_name = module.entry if function_name is None else function_name
     from triton.flagmega.codegen.triton.program_dependencies import verify_program_dependencies, elide_completed_device_barriers
     from triton.flagmega.ir.program_order import program_stream_indices, program_ancestors
-    streams = program_stream_indices(raw)
+    streams = program_stream_indices(raw, policy=module.metadata.get(
+        "kernel_program_stream_policy", "minimum_chains_v1"))
     if streams is not None:
         external_writes, device_completion, accesses = verify_program_dependencies(
             module, raw, descriptor["runtime_binding"], with_accesses=True)

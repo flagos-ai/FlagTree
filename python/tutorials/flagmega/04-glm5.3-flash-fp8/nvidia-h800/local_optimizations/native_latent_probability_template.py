@@ -10,6 +10,8 @@ from triton.flagmega.errors import CodegenError
 from .dsa_work import head_group
 from .native_latent_attention_schedule import _template, KEY
 from .native_latent_probability_model import SCHEDULE, SCORE_SHAPE, METADATA_SHAPE, METADATA_CHIP_STRIDE
+from .latent_segmented_compaction import transform as compact_scan, validate as validate_compact_scan
+from .paired_pv_loop import transform as pair_pv, validate as validate_paired_pv
 
 _active = False
 
@@ -51,6 +53,7 @@ def replace_expression(source, name, value, *, contains=None):
 
 def probability_template(source):
     source = _template(source, compact_pipeline=True).replace('call.native_latent_schedule', 'call.probability_schedule')
+    source = compact_scan(source)
     guard = '    if {{ call.writer_active }}:\n'
     if source.count(guard) != 1:
         raise CodegenError('Probability template requires one original complete owner')
@@ -114,6 +117,18 @@ def probability_template(source):
     if consumer.count('num_stages=2') != 1:
         raise CodegenError('Ordered long PV outer pipeline changed')
     consumer = consumer.replace('num_stages=2', 'num_stages=5')
+    consumer = pair_pv(consumer)
+    # The parallel consumer uses only stored probabilities and recurrence
+    # coefficients. Its old max variables had no observable use.
+    consumer = ''.join(line for line in consumer.splitlines(keepends=True)
+                       if not line.strip().startswith(('_fm_dsa_max =', '_fm_dsa_updated_max =')))
+    if re.search(r'\b(?:_fm_dsa_max|_fm_dsa_updated_max)\b', consumer):
+        raise CodegenError('Ordered consumer unexpectedly depends on prefix maxima')
+    # Retain each producer's QK result across publication of raw tile maxima.
+    # Define the accumulator for inactive CTAs as well, keeping SSA complete.
+    score_initializer = expression(producer, '_fm_dsa_score', contains='tl.zeros')
+    producer = ''.join(line for line in producer.splitlines(keepends=True)
+                       if not (line.strip().startswith('_fm_dsa_score =') and 'tl.zeros' in line))
     marker = '@triton.jit(noinline=True)'
     if header.count(marker) != 1:
         raise CodegenError('Probability template requires one original callable')
@@ -131,23 +146,18 @@ def {{ call.symbol }}__prefix_maximum(a, b):
         _fm_dsa_tokens = tl.arange(0, 64)
         _fm_dsa_qk_k = tl.arange(0, 256)
         _fm_dsa_head = tl.arange(0, 16)
+        _fm_dsa_score = ''' + score_initializer + '''
         _fm_dsa_producer_start = ({{ call.probability_schedule.group.index }}) * 64
         if _fm_dsa_producer_start < _fm_dsa_count:
-''' + shifted(producer, -4) + '''            tl.store(''' + score_pointer + ''' + _fm_dsa_producer_start // 64 * 1024 + _fm_dsa_head[:, None] * 64 + _fm_dsa_tokens[None, :], _fm_dsa_score)
-            tl.store(''' + meta_pointer + ''' + _fm_dsa_producer_start // 64 * 16 + _fm_dsa_head, tl.max(_fm_dsa_score, 1))
-        tle.distributed_barrier({{ call.symbol }}__score_mesh)
-        if tl.program_id(0) == 0:
-            _fm_prefix_tiles = tl.arange(0, 64)
-            _fm_prefix_heads = tl.arange(0, 16)
-            _fm_tile_maxima = tl.load(''' + meta_pointer + ''' + _fm_prefix_tiles[:, None] * 16 + _fm_prefix_heads[None, :], mask=_fm_prefix_tiles[:, None] * 64 < _fm_dsa_count, other=-float('inf'))
-            _fm_prefix_maxima = tl.associative_scan(_fm_tile_maxima, 0, {{ call.symbol }}__prefix_maximum)
-            tl.store(''' + meta_pointer + ''' + _fm_prefix_tiles[:, None] * 16 + _fm_prefix_heads[None, :], _fm_prefix_maxima)
+''' + shifted(producer, -4) + '''            tl.store(''' + meta_pointer + ''' + _fm_dsa_producer_start // 64 * 16 + _fm_dsa_head, tl.max(_fm_dsa_score, 1))
         tle.distributed_barrier({{ call.symbol }}__score_mesh)
         if _fm_dsa_producer_start < _fm_dsa_count:
             _fm_dsa_start = _fm_dsa_producer_start
-            _fm_dsa_score = ''' + producer_score_load + '''
-            _fm_dsa_updated_max = ''' + max_load + '''
-            _fm_dsa_max = tle.gpu.set_layout(tl.load(''' + meta_pointer + ''' + (_fm_dsa_start // 64 - 1) * 16 + _fm_dsa_head, mask=_fm_dsa_start > 0, other=-float('inf')), ''' + row + ''')
+            _fm_prefix_tiles = tl.arange(0, 64)
+            _fm_prefix_tile = _fm_dsa_producer_start // 64
+            _fm_prefix_values = tl.load(''' + meta_pointer + ''' + _fm_prefix_tiles[:, None] * 16 + _fm_dsa_head[None, :], (_fm_prefix_tiles[:, None] * 64 < _fm_dsa_count) & (_fm_prefix_tiles[:, None] <= _fm_prefix_tile), other=-float('inf'))
+            _fm_dsa_updated_max = tle.gpu.set_layout(tl.max(_fm_prefix_values, 0), ''' + row + ''')
+            _fm_dsa_max = tle.gpu.set_layout(tl.max(tl.where(_fm_prefix_tiles[:, None] < _fm_prefix_tile, _fm_prefix_values, -float('inf')), 0), ''' + row + ''')
             _fm_dsa_previous = ''' + expression(math, '_fm_dsa_previous') + '''
             _fm_dsa_p = ''' + expression(math, '_fm_dsa_p') + '''
             _fm_dsa_rounded_p = ''' + expression(math, '_fm_dsa_rounded_p') + '''
@@ -177,11 +187,13 @@ def activate():
             if call['parameters'].get('latent_work_schedule') != SCHEDULE:
                 continue
             p = call['parameters']
+            validate_compact_scan(call)
+            validate_paired_pv(call)
             if (call['family'] != 'dsa_paged_attention' or call['variant'] != 'decode'
                     or call['decode_schedule'] != 'bf16_mma' or not call['head_sharded']
                     or call['num_query_heads'] != 16 or call['head_dim'] != 512
                     or call['probability_rounding'] != 'online_bf16' or call['index_traversal'] != 'compact'
-                    or p['compute_num_warps'] != 8 or call['internal_grid_barriers'] != 3
+                    or p['compute_num_warps'] != 8 or call['internal_grid_barriers'] != 2
                     or p['latent_long_column_tile'] != 32
                     or tuple(descriptor['mesh_hierarchy']) != (4, 8, 16)
                     or ''.join(descriptor['mesh_levels']) != 'cbb'
@@ -210,7 +222,7 @@ def activate():
                 score_pointer=f'({pointers[0]} + shard_coord0 * 33792)',
                 metadata_pointer=f'({pointers[1]} + shard_coord0 * {METADATA_CHIP_STRIDE})',
                 normal_score_workspace_binding=score, normal_metadata_workspace_binding=meta,
-                internal_grid_barriers=3, metadata_payload_bytes=8320,
+                internal_grid_barriers=2, metadata_payload_bytes=8320,
                 metadata_allocated_bytes_per_chip=METADATA_CHIP_STRIDE * 4,
                 original_ordered_PV=True, original_short_math=True)
             call['probability_schedule'] = schedule

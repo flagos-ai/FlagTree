@@ -1,0 +1,41 @@
+    B: tl.constexpr = 8
+    batch_layout: tl.constexpr = tle.gpu.BlockEncoding([1, 1, 8], [1, 2, 16], [8, 1, 1], [2, 1, 0])
+    for start in tl.range(tl.program_id(0) * B, {{ call.pool_tile }}, {{ score_ctas }} * B):
+        pools = start + tl.arange(0, B)
+        if start < pool_count:
+            tokens = first + pools[:, None] * 4 + pool_offsets[None, :]
+            state_token = layer * {{ call.state_layer_stride }} + tokens * {{ call.state_token_stride }}
+            valid = tl.load({{ call.state }} + state_token + 2 * {{ call.index_dim }} * {{ call.state_value_stride }}, (tokens <= base) & (pools[:, None] < pool_count), other=0) != 0
+            keys = tl.load({{ call.state }} + state_token[:, :, None] + d_offsets[None, None, :] * {{ call.state_value_stride }}, valid[:, :, None], other=0).to(tl.float32)
+            gates = tl.load({{ call.state }} + state_token[:, :, None] + {{ call.index_dim }} * {{ call.state_value_stride }} + d_offsets[None, None, :] * {{ call.state_value_stride }}, valid[:, :, None], other=0).to(tl.float32)
+            keys = tle.gpu.set_layout(keys, batch_layout)
+            logits = tl.where(valid[:, :, None], gates + ape[None, :, :], -float('inf'))
+            logits = tle.gpu.set_layout(logits, batch_layout)
+            maximum = tl.max(logits, axis=1)
+            origin = tl.where(maximum == -float('inf'), 0.0, maximum)
+            exponentials = tl.where(valid[:, :, None], tl.exp(logits - origin[:, None, :]), 0.0)
+            denominator_pairs = tl.sum(exponentials.reshape((B, 2, 2, {{ call.index_dim }})), axis=2)
+            denominator = tl.sum(denominator_pairs, axis=1)
+            probabilities = (exponentials / tl.maximum(denominator[:, None, :], 1e-20)).to({{ call.value_type }})
+            products = (probabilities.to(tl.float32) * keys).to({{ call.value_type }}).to(tl.float32)
+            pooled_pairs = tl.sum(products.reshape((B, 2, 2, {{ call.index_dim }})), axis=2)
+            pooled = tl.sum(pooled_pairs, axis=1).to({{ call.value_type }}).to(tl.float32)
+            q0 = tl.load({{ call.q }} + (heads[:, None] * {{ call.index_dim }} + d_offsets[None, :]) * {{ call.q_stride }}).to(tl.float32)
+            w0 = tl.load({{ call.weights }} + heads * {{ call.weights_stride }}).to(tl.float32)
+            dot0 = tle.gpu.set_layout(q0[None, :, :] * pooled[:, None, :], batch_layout)
+            scores0 = tl.sum(dot0, axis=2)
+            hc0 = w0[None, :] * tl.maximum(scores0 * {{ call.scale }}, 0.0)
+            q16 = tl.load({{ call.q }} + ((heads + 16)[:, None] * {{ call.index_dim }} + d_offsets[None, :]) * {{ call.q_stride }}).to(tl.float32)
+            w16 = tl.load({{ call.weights }} + (heads + 16) * {{ call.weights_stride }}).to(tl.float32)
+            dot16 = tle.gpu.set_layout(q16[None, :, :] * pooled[:, None, :], batch_layout)
+            scores16 = tl.sum(dot16, axis=2)
+            hc16 = w16[None, :] * tl.maximum(scores16 * {{ call.scale }}, 0.0)
+            fold16 = hc0 + hc16
+            fold1 = tl.sum(fold16.reshape((B, 8, 2)), axis=2)
+            fold8 = tl.sum(fold1.reshape((B, 2, 4)), axis=1)
+            fold4 = tl.sum(fold8.reshape((B, 2, 2)), axis=1)
+            score = tl.sum(fold4, axis=1)
+            complete = tl.min(valid.to(tl.int32), axis=1) != 0
+            tl.store({{ call.result }}.to(tl.pointer_type(tl.float32)) + pools, tl.where(complete, score, -float('inf')), pools < {{ call.pool_tile }})
+        else:
+            tl.store({{ call.result }}.to(tl.pointer_type(tl.float32)) + pools, -float('inf'), pools < {{ call.pool_tile }})

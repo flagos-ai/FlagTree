@@ -63,7 +63,7 @@ def describe(module,previous):
             receipts.append(dict(function=definition['function'],numerical_region=original_region,implementation=fused,
                 intermediate_collapsed_elided=True,statistics_dtype='float32',norm_input_conversion='bfloat16',
                 intermediate_statistic_consumed_only_in_registers=True,
-                normalized_owner_mapping=dict(tile_width=32,cta0='mix-only',ctas1_to127='tile=cta-1',cta127_extra_tile=127,grid_ctas=128),
+                normalized_owner_mapping=dict(tile_width=512,cta0='mix-only',ctas120_to127='tile=cta-120',normalized_ctas=8,grid_ctas=128),
                 output_publication='existing-next-grid-barrier-or-whole-program-completion',
                 original_partials=original_partials,projection_window=resource))
     if len(receipts)!=5:raise CodegenError('All five supported complete regions must match')
@@ -90,7 +90,7 @@ def transform(source):
     wrapper='''    {{ call.symbol }}__collapse({{ call.signature }})'''
     if source.count(wrapper)!=1:raise CodegenError('Independent mHC wrapper changed')
     replacement='''{% if call.owner_fused_rms | default(none) %}
-    if tl.program_id(0) != 0:
+    if tl.program_id(0) >= 120:
         _flagmega_mhc_rms_fused_body({{ call.owner_fused_rms.streams }}, {{ call.owner_fused_rms.base }}, {{ call.owner_fused_rms.scale }}, {{ call.owner_fused_rms.partials }}, {{ call.owner_fused_rms.collapsed }}, {{ call.owner_fused_rms.stats }}, {{ call.owner_fused_rms.weight }}, {{ call.owner_fused_rms.bias }}, {{ call.owner_fused_rms.result }})
 {% else %}
 '''+wrapper+'''\n{% endif %}'''

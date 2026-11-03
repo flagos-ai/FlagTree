@@ -8,7 +8,10 @@ KEY='kernels/dense_matmul/platforms/nvidia/sm90/packed_k_major_mma_accumulator.p
 def transform(source):
  anchor='{% set load_warps_n = [num_warps, call.tile_n // 4] | min %}'
  if source.count(anchor)!=1:raise CodegenError('Original accumulator weight-layout decision differs')
- return source.replace(anchor,'{% if call.qb_n32_original_load_warps_n | default(none) %}\n{% set load_warps_n = call.qb_n32_original_load_warps_n %}\n{% else %}\n'+anchor+'\n{% endif %}')
+ source=source.replace(anchor,'{% if call.qb_n32_original_load_warps_n | default(none) %}\n{% set load_warps_n = call.qb_n32_original_load_warps_n %}\n{% else %}\n'+anchor+'\n{% endif %}')
+ loop='for dense_partition_k in tl.range(0, {{ call.partition_k }}, {{ call.block_k }}):'
+ if source.count(loop)!=1:raise CodegenError('Original complete Q_B K loop differs')
+ return source.replace(loop,'for dense_partition_k in tl.range(0, {{ call.partition_k }}, {{ call.block_k }}{% if call.qb_n32_original_load_warps_n | default(none) %}, num_stages=3, loop_unroll_factor=2{% endif %}):')
 def activate():
  from triton.flagmega.codegen.triton import renderer,tir_package
  from triton.flagmega.codegen.triton.registry import PackageRendererSpec
@@ -22,7 +25,7 @@ def activate():
   bad={k:(c.get(k),v) for k,v in expected.items() if c.get(k)!=v}
   if bad:raise CodegenError('Original complete Q_B contract differs: '+repr(bad))
   c['tile_n']=32;c['qb_n32_original_load_warps_n']=4
-  d['mla_qb_complete_n32']=dict(symbol=c['symbol'],tile_n=32,original_tile_n=16,weight_load_layout=[[1,2],[4,8],[4,2],[1,0]],original_complete_ordered_k1536=True,original128owners_and4096outputs=True)
+  d['mla_qb_complete_n32']=dict(symbol=c['symbol'],tile_n=32,original_tile_n=16,weight_load_layout=[[1,2],[4,8],[4,2],[1,0]],original_complete_ordered_k1536=True,original128owners_and4096outputs=True,pipeline_stages=3,loop_unroll_factor=2)
   d['implementation_override']['inputs']['qb_n32.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
   return d
  tir_package.describe_tir_package=describe

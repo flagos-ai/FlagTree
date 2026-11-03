@@ -4,12 +4,20 @@ from types import SimpleNamespace
 import sys
 import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from local_optimizations.base_recipe import activate
+from local_optimizations import concurrent_call_lifetimes
+from local_optimizations.concurrent_call_lifetimes import activate
 from triton.flagmega.passes.tir.bufferize import program_lifetimes
 from triton.flagmega.passes.tir.bufferize.allocation import BufferLifetime
 from triton.flagmega.passes.tir.bufferize.first_fit_allocator import FirstFitBufferAllocator
 from triton.flagmega.ir.bufferization import MemorySpace,AllocationStrategy
 from triton.flagmega.errors import IRVerificationError
+
+@pytest.fixture(autouse=True)
+def isolated_lifetime_hook(monkeypatch):
+    # Exercise the normal lifetime planner without leaving recipe-wide
+    # entry/fence/template overrides installed for neighboring SDK tests.
+    monkeypatch.setattr(program_lifetimes, 'program_use_ends', program_lifetimes.program_use_ends)
+    monkeypatch.setattr(concurrent_call_lifetimes, '_active', False)
 
 def inputs(groups):
     module=SimpleNamespace(entry='main',stage='selected_microkernels',metadata={'tle.concurrent_call_groups':{'body':groups}})

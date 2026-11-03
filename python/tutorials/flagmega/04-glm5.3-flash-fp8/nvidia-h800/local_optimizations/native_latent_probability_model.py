@@ -6,9 +6,12 @@ from triton.flagmega.codegen.triton.candidates.core import TritonCandidatePropos
 from triton.flagmega.codegen.triton.selection import TritonTirSelectionPolicy
 from triton.flagmega.ir import kernel_dispatch_of
 from triton.flagmega.selection import apply_plan, override_plan
+from .latent_segmented_compaction import SCHEDULE as COMPACTION_SCHEDULE
+from .paired_pv_loop import SCHEDULE as PV_LOOP_SCHEDULE, MIN_COUNT as PV_PAIR_MIN_COUNT
 
 IDENTITY = 'tir.dsa_paged_attention.decode.native_parallel_probability_long32'
-SCHEDULE = 'complete_heads_contiguous_k_parallel_probability_long32'
+LEGACY_SCHEDULE = 'complete_heads_contiguous_k_parallel_probability_long32'
+SCHEDULE = LEGACY_SCHEDULE + '_immutable_prefix_v4_compact_pair2'
 SCORE_SHAPE = (4, 33, 16, 64)
 METADATA_SHAPE = (4, 132, 16)
 METADATA_CHIP_STRIDE = 2112
@@ -31,12 +34,15 @@ def declared_model(model):
                     'latent_work_schedule': SCHEDULE, 'latent_qk_tile': 256,
                     'latent_pv_tile': 64, 'latent_column_tile': 64,
                     'latent_long_column_tile': 32, 'latent_compact_pipeline': True,
+                    'latent_compaction_schedule': COMPACTION_SCHEDULE,
+                    'latent_pv_loop_schedule': PV_LOOP_SCHEDULE,
+                    'latent_pv_pair_min_count': PV_PAIR_MIN_COUNT,
                     'latent_parallel_score_tile': 64, 'latent_parallel_score_threshold': 256,
                     'latent_parallel_score_chips': 4, 'latent_parallel_score_heads': 16,
                     'latent_parallel_score_max_slots': 2051,
                     'latent_probability_metadata_stride': METADATA_CHIP_STRIDE,
                     'latent_probability_metadata_payload': METADATA_PAYLOAD_FLOATS},
-        facts={**original.facts, 'internal_grid_barriers': 3},
+        facts={**original.facts, 'internal_grid_barriers': 2},
         requires=tuple(dict.fromkeys((*original.requires, 'grid_sync'))))
     return replace(model, implementations=(*model.implementations, selected))
 

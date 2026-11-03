@@ -1,0 +1,14 @@
+@triton.jit
+def _flagmega_sigmoid_unit_reciprocal(y):
+    # Power-of-two scaling is exact for finite y >= 1. It keeps both the
+    # approximate reciprocal and its RN32 residual corrections normal.
+    scaled = libdevice.mul_rn(y, 5.421010862427522e-20)
+    reciprocal = tl.inline_asm_elementwise(
+        '{ .reg .f32 r,e,ny; rcp.approx.ftz.f32 r,$1; neg.f32 ny,$1; '
+        'fma.rn.f32 e,ny,r,0f3f800000; fma.rn.f32 r,r,e,r; '
+        'fma.rn.f32 e,ny,r,0f3f800000; fma.rn.f32 $0,r,e,r; }',
+        constraints='=f,f', args=[scaled], dtype=tl.float32, is_pure=True, pack=1)
+    # A reciprocal below the smallest normal value has the original FTZ
+    # result. Scaling back is exact throughout the remaining normal domain.
+    return tl.where(y > 8.507059173023462e37, 0.0,
+                    libdevice.mul_rn(reciprocal, 5.421010862427522e-20))

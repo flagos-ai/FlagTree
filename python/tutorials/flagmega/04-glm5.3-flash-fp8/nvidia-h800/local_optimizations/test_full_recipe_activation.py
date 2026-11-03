@@ -14,6 +14,8 @@ import sys
 sys.path.insert(0, {str(tutorial)!r})
 from local_optimizations.{recipe} import activate
 activate()
+from triton.flagmega.passes.tir.bufferize import program_lifetimes
+assert program_lifetimes.program_use_ends.__module__ == 'local_optimizations.concurrent_call_lifetimes'
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 current = TritonTemplateRegistry.render
 modules, sources, seen = set(), [], set()

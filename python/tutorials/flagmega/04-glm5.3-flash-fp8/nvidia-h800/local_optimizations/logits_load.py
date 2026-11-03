@@ -13,7 +13,8 @@ def transform(source):
     end=source.index('                dense_activation_matrix =',start)
     original=source[start:end]
     load='                dense_weight_value = tle.gpu.set_layout(tl.load(tle.gpu.set_layout({{ call.weight }} + ({{ call.weight_offset }}), {{ call.symbol }}__physical_load_layout), mask=dense_n_mask[:,None] & dense_k_mask[None,:], other=0.), {{ call.symbol }}__physical_load_layout)\n'
-    return source[:start]+'{% if call.logits_coalesced_load | default(false) %}\n'+load+'{% else %}\n'+original+'{% endif %}\n'+source[end:]
+    from .lm_head_pipeline import transform as pipeline_transform
+    return pipeline_transform(source[:start]+'{% if call.logits_coalesced_load | default(false) %}\n'+load+'{% else %}\n'+original+'{% endif %}\n'+source[end:])
 def activate():
     from triton.flagmega.codegen.triton import renderer,tir_package
     from triton.flagmega.codegen.triton.registry import PackageRendererSpec

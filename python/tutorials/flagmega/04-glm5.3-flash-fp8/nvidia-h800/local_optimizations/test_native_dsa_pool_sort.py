@@ -11,8 +11,7 @@ from local_optimizations.native_dsa_pool_scores import KEY
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 
 
-@pytest.fixture(scope="module")
-def dispatch():
+def render_sorters(parallel=False):
     registry = TritonTemplateRegistry()
     raw = registry.environment.loader.get_source(registry.environment, KEY)[0]
     module_tree = ast.parse(Path(joint_dsa_absorbed_pool_scores.__file__).read_text())
@@ -44,6 +43,7 @@ def dispatch():
             long_min_base=joint_dsa_absorbed_pool_scores.LONG_MIN_BASE,
         ),
         joint_dsa_sort_tiles=tiles,
+        parallel_dsa_sort=parallel,
     )
     context = dict(
         render_calls=[call], distributed_entry=False, grid_mesh=False, mesh_rank=3,
@@ -53,8 +53,13 @@ def dispatch():
         '{% import "entrypoints/_common.py.jinja" as entry with context %}\n'
         + joint_dsa_absorbed_pool_scores.helpers(raw)
     ).render(context)
+    return ast.parse(source)
+
+
+@pytest.fixture(scope="module")
+def dispatch():
     select = next(
-        n for n in ast.parse(source).body
+        n for n in render_sorters().body
         if isinstance(n, ast.FunctionDef) and n.name == "dsa__select"
     )
     branch = next(
@@ -91,4 +96,30 @@ def dispatch():
 ])
 def test_sort_dispatch_preserves_every_pool_growth_boundary(dispatch, count, expected):
     assert dispatch(count) == expected
+
+
+def test_parallel_small_callee_excludes_unreachable_large_sorts():
+    select = next(n for n in render_sorters(parallel=True).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "dsa__select")
+    calls = [n for n in ast.walk(select) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id.startswith("dsa__sort")]
+    assert all(n.func.id == "dsa__sort_tile" for n in calls)
+    assert {ast.literal_eval(n.args[-1]) for n in calls} == {16, 64, 256, 512}
+
+
+@pytest.mark.parametrize('helper', ['dsa__sort_tile', 'dsa__sort_merge'])
+def test_destructive_sort_captures_scores_then_finishes_initialization(helper):
+    fn = next(n for n in render_sorters().body
+              if isinstance(n, ast.FunctionDef) and n.name == helper)
+    def call_sites(name):
+        return [i for i, stmt in enumerate(fn.body)
+                if any(isinstance(n, ast.Call) and ast.unparse(n.func) == name
+                       for n in ast.walk(stmt))]
+    loads = call_sites('tl.load')
+    stores = call_sites('tl.store')
+    barriers = call_sites('tl.debug_barrier')
+    # Global scores and output indices alias. Small tiles duplicate scores
+    # across warps; the initialization and final scatters also overlap.
+    assert len(barriers) == 2
+    assert max(loads) < barriers[0] < stores[0] < barriers[1] < min(stores[1:])
 

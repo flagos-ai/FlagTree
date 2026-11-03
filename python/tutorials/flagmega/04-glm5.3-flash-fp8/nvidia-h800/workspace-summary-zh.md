@@ -1,6 +1,8 @@
-# 工作区总结（2026-11-02）
+# 工作区总结（2026-11-03）
 
-当前分支已 rebase 到 main `65df098bf`，完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
+当前分支已 rebase 到 main `c8cc6023a`，84个feature补丁range-diff不变，新Core20正常构建。完整TP4 Gold100及NFFN/FNNF八段的数值、硬件、实际26编译key/228调用零spill审计通过；本轮严格decode门槛通过，四上下文TPOT为6.174/6.256/6.405/6.486 ms，比本轮vLLM低8.73%/7.61%/6.11%/6.09%，最小逐段余量366.811 μs。CPU邻域回归209 passed/12 skipped，新main相关5项MLIR检查通过。优化根因、正负结果、384条请求与范围见[main c8cc 验收](main-c8cc-optimization-20261103-zh.md)。历史最快Native仍保留，含prefill的完整请求仍慢；本轮使用显式完整final IR，未将旧公开fresh快照追认为本轮性能通过。
+
+此前 main `65df098bf` 的验收：完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
 
 下文保存 rebase 前的累计开发状态和历史验收，不代表最新源码已通过整模性能门槛，也不代表所有后端或全量测试通过。
 

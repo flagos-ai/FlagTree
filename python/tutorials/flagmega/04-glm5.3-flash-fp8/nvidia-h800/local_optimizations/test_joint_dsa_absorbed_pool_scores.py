@@ -21,7 +21,7 @@ def test_joint_publish_before_selection_and_advance():
     fn=ast.parse(source).body[0];body=[ast.unparse(n) for n in fn.body]
     assert '__write' in body[0] and 'distributed_barrier' in body[1]
     assert '__pool_scores' in body[2] and 'absorbed(' in body[2] and 'distributed_barrier' in body[3]
-    assert '__select' in body[4] and 'distributed_barrier' in body[5] and '__advance' in body[6]
+    assert '__select' in body[4] and '__advance' in body[5] and 'distributed_barrier' in body[6]
     assert 'tl.program_id(0) < 64' in body[2]
     assert 'tl.load(Sequence).to(tl.int32) >= 1024' in body[2] and 'tl.program_id(0) < 96' in body[2]
     raw=registry.environment.loader.get_source(registry.environment,KEY)[0]
@@ -37,7 +37,8 @@ def test_named_joint_implementation_keeps_original_and_semantics():
         new=selected.implementation(v.id+'.joint_pool_query')
         assert new.family==v.family and new.variant==v.variant and new.requires==v.requires and new.shared_workspaces==v.shared_workspaces
         assert new.parameters['pool_score_schedule']==SCHEDULE and new.parameters['pool_score_ctas']==64 and new.parameters['absorbed_query_ctas']==64
-        assert new.facts=={**v.facts,'internal_grid_barriers':3}
+        assert new.facts=={**v.facts,'internal_grid_barriers':4}
+        assert new.parameters['pool_selection_schedule']=='rank_complete_pool_sort_v3'
         assert (new.parameters['long_pool_score_ctas'],new.parameters['long_absorbed_query_ctas'],new.parameters['long_min_base'])==(96,32,1024)
         assert selected.preferences['dsa_indexer'][0]==new.id
 

@@ -12,6 +12,8 @@ def activate():
     norm_activate()
     from .oproj import activate as oproj_activate
     oproj_activate()
+    from .oproj_tma_pipeline import activate as oproj_pipeline_activate
+    oproj_pipeline_activate()
     from .fusion import activate as fusion_activate
     fusion_activate()
 
@@ -35,6 +37,8 @@ def activate():
 
     from .logits_load import activate as logits_load_activate
     logits_load_activate()
+    from .lm_head_pipeline import activate as logits_pipeline_activate
+    logits_pipeline_activate()
 
     from .recurrent_gb import activate as recurrent_gb_activate
     recurrent_gb_activate()
@@ -96,3 +100,12 @@ def activate():
 
     from .down_n8 import activate as down_n8_activate
     down_n8_activate()
+
+    from .sinkhorn_unroll import activate as sinkhorn_unroll_activate
+    sinkhorn_unroll_activate()
+
+    from .shared_mhc_mix import activate as shared_mhc_mix_activate
+    shared_mhc_mix_activate()
+
+    from .router_ordered_top8 import activate as router_top8_activate
+    router_top8_activate()

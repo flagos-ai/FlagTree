@@ -11,7 +11,7 @@ def fixture(monkeypatch,tmp_path,*,dense_width=16):
     monkeypatch.setattr(oproj,'OUT',tmp_path)
     (tmp_path/'plan.json').write_text(json.dumps({'semantic_hash':'fixture'}))
     # describe also records its owned source/template inputs.
-    for name in ('oproj.py','oproj-head.py.jinja','oproj-tail.py.jinja'):
+    for name in ('oproj.py','oproj-head.py.jinja','oproj-tail.py.jinja','oproj-observe.py.jinja'):
         (tmp_path/name).write_text('fixture')
     functions=[('decode_linear_attention_dense',3,dense_width),
                ('decode_linear_attention_sparse.prefix',31,16),

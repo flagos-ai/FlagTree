@@ -28,7 +28,8 @@ def test_real_catalog_preserves_complete_adaptive_selection(entry_context):
         assert impl.parameters['pool_score_schedule'] == 'joint_adaptive_complete_pools_absorbed_v1'
         assert impl.parameters['pool_score_ctas'] == impl.parameters['absorbed_query_ctas'] == 64
         assert (impl.parameters['long_pool_score_ctas'], impl.parameters['long_absorbed_query_ctas'], impl.parameters['long_min_base']) == (96, 32, 1024)
-        assert impl.facts['internal_grid_barriers'] == 3
+        assert impl.facts['internal_grid_barriers'] == 4
+        assert impl.parameters['pool_selection_schedule'] == 'rank_complete_pool_sort_v3'
     assert not torch.cuda.is_initialized()
 
 @pytest.mark.parametrize('entry_context', ['standalone_file', 'package_module'])

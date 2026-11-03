@@ -2,7 +2,9 @@
 
 累计改动、验证结果及未完成项见[工作区总结](workspace-summary-zh.md)。
 
-最新源码已 rebase 到 main `65df098bf`，完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[最新 main 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
+最新源码已 rebase 到 main `c8cc6023a`，新 Core20 的26实际GPU入口/228调用零spill，完整TP4 Gold100、全状态与四上下文重新验收通过。本轮NFFN/FNNF八段严格decode性能门槛通过：TPOT为6.174/6.256/6.405/6.486 ms，比本轮vLLM低8.73%/7.61%/6.11%/6.09%。历史更快Native样本保留，完整请求含prefill仍慢。当前优化、正负结果及验收范围见[main c8cc 优化与验收](main-c8cc-optimization-20261103-zh.md)。
+
+以下为 main `65df098bf` 的历史验收：完整 Gold、八段数值与硬件审计通过，性能门槛失败。四上下文 Flag TPOT 为 6.430/6.528/6.693/6.921 ms，相对 vLLM 为 -4.63%/-3.36%/-1.98%/+0.59%；159 项 TLE MLIR、153 项 GPU 和 CPU 130 passed/51 skipped 已重新执行。完整结果、逐段门槛和原始样本见[main 65df 验收](main-rebase-65df-acceptance-20261102-zh.md)，剖析见[完整模型窗口分析](main-rebase-65df-profile-20261102-zh.md)。
 
 前一 main 7f/v18 的数值和硬件验收通过、性能失败，见[前轮记录](main-rebase-acceptance-20261102-zh.md)。原始输入 fresh 重建已因果修复并完成正常全量流水，fresh 输出未作正式性能候选。
 
@@ -58,6 +60,7 @@ TPOT排除prefill和首个生成token；完整请求吞吐另行保留，包含p
 ```text
 nvidia-h800/
 ├── optimize.py              # 原始输入正常编译并发布完整artifact
+├── emit_verified_candidate.py # 本轮显式完整final IR的正常生成入口
 ├── accuracy.py              # 独立JIT与完整TP4数值验证
 ├── benchmark_gpu.py         # FlagMega完整请求CUDA Graph测量
 ├── benchmark_vllm.py        # 原生vLLM完整请求测量

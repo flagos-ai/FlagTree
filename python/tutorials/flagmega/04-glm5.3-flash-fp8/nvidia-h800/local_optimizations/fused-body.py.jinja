@@ -5,7 +5,7 @@ import triton.language.extra.cuda.libdevice as libdevice
 import triton.experimental.tle.language as tle
 
 FLAGMEGA_MHC_RMS_LANES=tl.constexpr(tle.gpu.BlockEncoding([1],[32],[8],[0]))
-FLAGMEGA_MHC_RMS_MATRIX=tl.constexpr(tle.gpu.BlockEncoding([1,4],[32,1],[2,4],[0,1]))
+FLAGMEGA_MHC_RMS_MATRIX=tl.constexpr(tle.gpu.BlockEncoding([1,4],[8,4],[8,1],[0,1]))
 
 @triton.jit
 def _flagmega_mhc_rms_fused_body(streams,base,scale,partials,collapsed,stats,weight,bias,normalized):
@@ -17,7 +17,7 @@ def _flagmega_mhc_rms_fused_body(streams,base,scale,partials,collapsed,stats,wei
         square_sum=libdevice.add_rn(square_sum,tl.load(partials+192+split))
     rms=tl.rsqrt(square_sum/16384+1.e-5)
     logits=tl.fma(mixes*rms,tl.load(scale),tl.load(base+i))
-    pre=libdevice.div_rn(1.,1.+libdevice.exp(-logits))+1.e-6
+    pre=_flagmega_sigmoid_unit_reciprocal(1.+libdevice.exp(-logits))+1.e-6
     p0=tl.reshape(tl.gather(pre,tl.full((1,),0,tl.int32),0),())
     p1=tl.reshape(tl.gather(pre,tl.full((1,),1,tl.int32),0),())
     p2=tl.reshape(tl.gather(pre,tl.full((1,),2,tl.int32),0),())
@@ -71,8 +71,8 @@ def _flagmega_mhc_rms_fused_body(streams,base,scale,partials,collapsed,stats,wei
     pair=tle.gpu.set_layout(pair,FLAGMEGA_MHC_RMS_LANES)
     square=tl.sum(pair,0)
     tl.store(stats,square)
-    own_hidden=(tl.program_id(0)-1)*32+tl.arange(0,32)
-    own_value=tl.full((32,),0.,tl.float32)
+    own_hidden=(tl.program_id(0)-120)*512+tl.arange(0,512)
+    own_value=tl.full((512,),0.,tl.float32)
     own_value=tl.fma(p0,tl.load(streams+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
     own_value=tl.fma(p1,tl.load(streams+4096+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
     own_value=tl.fma(p2,tl.load(streams+8192+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
@@ -81,14 +81,3 @@ def _flagmega_mhc_rms_fused_body(streams,base,scale,partials,collapsed,stats,wei
     norm=(own_value.to(tl.bfloat16).to(tl.float32)-0.)*inverse
     result=norm*tl.load(weight+own_hidden).to(tl.float32)+tl.load(bias+own_hidden).to(tl.float32)
     tl.store(normalized+own_hidden,result.to(tl.bfloat16))
-    if tl.program_id(0)==127:
-        own_hidden=127*32+tl.arange(0,32)
-        own_value=tl.full((32,),0.,tl.float32)
-        own_value=tl.fma(p0,tl.load(streams+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
-        own_value=tl.fma(p1,tl.load(streams+4096+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
-        own_value=tl.fma(p2,tl.load(streams+8192+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
-        own_value=tl.fma(p3,tl.load(streams+12288+own_hidden).to(tl.bfloat16).to(tl.float32),own_value)
-        inverse=tl.rsqrt(tl.maximum(square/4096.,0.)+1.e-5)
-        norm=(own_value.to(tl.bfloat16).to(tl.float32)-0.)*inverse
-        result=norm*tl.load(weight+own_hidden).to(tl.float32)+tl.load(bias+own_hidden).to(tl.float32)
-        tl.store(normalized+own_hidden,result.to(tl.bfloat16))

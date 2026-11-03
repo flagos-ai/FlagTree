@@ -105,7 +105,7 @@ def describe(module,previous):
                         alias_reason='Boxing destination overlaps projection source; owner fusion keeps its value in registers')
     if set(receipt)!=FUNCTIONS:raise CodegenError('All O-proj families must be replaced')
     d['implementation_override']['kind']='ordered-rms-qk64-and-oproj-tile-publication/v1'
-    d['implementation_override']['inputs'].update({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [OUT/'oproj.py',OUT/'oproj-head.py.jinja',OUT/'oproj-tail.py.jinja']})
+    d['implementation_override']['inputs'].update({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [OUT/'oproj.py',OUT/'oproj-head.py.jinja',OUT/'oproj-tail.py.jinja',OUT/'oproj-observe.py.jinja']})
     d['owner_matched_oproj']=receipt
     return d
 
@@ -115,7 +115,10 @@ def transform(source):
     source=source.replace(anchor,anchor+'\n{% if call.owner_matched_oproj | default(none) %}\n{% include "oproj-head.py.jinja" %}\n{% endif %}')
     tail='        tl.store({{ call.result }} + _fm_n, _fm_total.to(tl.bfloat16), _fm_n < {{ call.rows }})'
     if source.count(tail)!=1:raise CodegenError('Projection rounding/storage boundary changed')
-    return source.replace(tail,tail+'\n{% if call.owner_matched_oproj | default(none) %}\n{% include "oproj-tail.py.jinja" %}\n{% endif %}')
+    observe = ('{% if render_calls | selectattr("owner_matched_oproj", "defined") | list %}\n'
+               '{% include "oproj-observe.py.jinja" %}\n{% endif %}\n')
+    from .oproj_tma_pipeline import transform as pipeline_transform
+    return observe+pipeline_transform(source.replace(tail,tail+'\n{% if call.owner_matched_oproj | default(none) %}\n{% include "oproj-tail.py.jinja" %}\n{% endif %}'))
 
 def activate():
     from triton.flagmega.codegen.triton import renderer,tir_package
@@ -148,7 +151,7 @@ def activate():
     def render(self,name,context):
         if name!='module.py.jinja':return original(self,name,context)
         loader=self.environment.loader
-        overlays={n:(OUT/n).read_text() for n in ['oproj-head.py.jinja','oproj-tail.py.jinja']}
+        overlays={n:(OUT/n).read_text() for n in ['oproj-head.py.jinja','oproj-tail.py.jinja','oproj-observe.py.jinja']}
         self.environment.loader=ChoiceLoader([DictLoader(overlays),loader])
         try:return original(self,name,context)
         finally:self.environment.loader=loader

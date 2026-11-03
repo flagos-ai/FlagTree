@@ -84,7 +84,8 @@ def verified_kernel_programs(codegen, kernels, module):
                 or plain_package_value(expected['kernels']) != plain_package_value(raw)):
             raise ArtifactError('Execution mesh launch resources differ from the typed program plan.')
     from triton.flagmega.ir.program_order import program_stream_indices
-    streams = program_stream_indices(requests)
+    streams = program_stream_indices(requests, policy=module.metadata.get(
+        "kernel_program_stream_policy", "minimum_chains_v1"))
     if dag != (streams is not None):
         raise ArtifactError("Kernel program dependency schema differs from its TIR request.")
     if shared:

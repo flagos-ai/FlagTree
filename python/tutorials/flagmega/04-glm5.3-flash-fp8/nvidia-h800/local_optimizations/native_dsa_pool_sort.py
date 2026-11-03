@@ -2,7 +2,20 @@ MERGE_HELPER = "@triton.jit(noinline=True)\ndef {{ call.symbol }}__sort_merge(So
 
 """Bound the complete-pool sort while preserving score and tie semantics."""
 
+def _protect_destructive_sort_lifetime(source):
+    # Scores and integer selections alias. Every warp must capture scores
+    # before any initializes that storage, and initialization must finish
+    # before any warp publishes the sorted selections into the same slots.
+    capture = '\n    output_offsets ='
+    initializers = [line for line in source.splitlines()
+                    if line.startswith('    tl.store(SortResult + output_offsets,')]
+    if source.count(capture) != 1 or len(initializers) != 1:
+        raise ValueError('Original destructive sort initialization changed')
+    source = source.replace(capture, '\n    tl.debug_barrier()'+capture, 1)
+    return source.replace(initializers[0], initializers[0]+'\n    tl.debug_barrier()', 1)
+
 def template(parallel_source):
+    from .parallel_dsa_pool_sort import SHORT_SORT_DISPATCH
     anchor='@triton.jit(noinline=True)\ndef {{ call.symbol }}__select('
     start=parallel_source.index(anchor)
     end=parallel_source.index('\n{% else %}\n'+anchor,start)
@@ -19,8 +32,13 @@ def {{ call.symbol }}__sort_tile(SortResult, First, VisibleCount, Base, SortTile
     # Capture scores before the same scratch prefix becomes int selections.
     pool_scores = tl.load(SortResult.to(tl.pointer_type(tl.float32)) + pool_ids)
 '''+tail+sort
-    helper += '\n' + MERGE_HELPER + '\n'
-    select=prefix+'''{% if call.pool_sort_tiles | length == 1 %}
+    helper = _protect_destructive_sort_lifetime(helper)
+    helper += '\n' + _protect_destructive_sort_lifetime(MERGE_HELPER) + '\n'
+    # In the parallel schedule the wrapper invokes this callee only for
+    # pool_count < 512. Keep its entire reachable domain, including 257..511,
+    # while excluding large bitonic callees that cannot run in this schedule.
+    # Other schedules retain their original complete dispatch below.
+    select=prefix+'{% if call.parallel_dsa_sort | default(false) %}\n'+SHORT_SORT_DISPATCH+'{% else %}\n'+'''{% if call.pool_sort_tiles | length == 1 %}
     {{ call.symbol }}__sort_tile({{ call.result }}, first, visible_count, base, {{ call.pool_sort_tiles[0] }})
 {% else %}
 {% for tile in call.pool_sort_tiles %}
@@ -34,5 +52,5 @@ def {{ call.symbol }}__sort_tile(SortResult, First, VisibleCount, Base, SortTile
         {{ call.symbol }}__sort_tile({{ call.result }}, first, visible_count, base, {{ tile }})
 {% endfor %}
 {% endif %}
-'''
+'''+'{% endif %}\n'
     return parallel_source[:start]+'{% if call.pool_sort_tiles | default(none) %}\n'+helper+'\n\n'+select+'\n{% else %}\n'+old+'\n{% endif %}'+parallel_source[end:]

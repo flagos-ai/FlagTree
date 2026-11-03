@@ -28,7 +28,7 @@ def test_typed_workspace_capacity_alignment_and_original_implementation():
     model = declared_model(original)
     assert model.implementation('tir.dsa_paged_attention.decode') == original.implementation('tir.dsa_paged_attention.decode')
     selected = model.implementation(IDENTITY)
-    assert selected.facts['internal_grid_barriers'] == 3 and 'grid_sync' in selected.requires
+    assert selected.facts['internal_grid_barriers'] == 2 and 'grid_sync' in selected.requires
     assert selected.parameters['latent_long_column_tile'] == 32
     score, metadata = workspaces()
     assert score['name'] != metadata['name'] and score['alignment'] == metadata['alignment'] == 256
@@ -55,18 +55,18 @@ def test_probability_publish_order_and_original_bf16_sum_expressions():
     original, changed = sources()
     long = changed.split('    if _fm_dsa_count >= ', 1)[1].split('    else:\n', 1)[0]
     stages = long.split('tle.distributed_barrier')
-    assert len(stages) == 4
+    assert len(stages) == 3
     assert 'tl.max(_fm_dsa_score, 1)' in stages[0]
-    assert 'tl.associative_scan' in stages[1]
-    assert '_fm_dsa_rounded_p.to(tl.float32)' in stages[2] and 'tl.sum(_fm_dsa_p, 1)' in stages[2]
-    assert 'long_column_tile' in stages[3] and '_fm_dsa_acc = tl.dot(' in stages[3]
+    assert 'tl.max(_fm_prefix_values, 0)' in stages[1]
+    assert '_fm_dsa_rounded_p.to(tl.float32)' in stages[1] and 'tl.sum(_fm_dsa_p, 1)' in stages[1]
+    assert 'long_column_tile' in stages[2] and '_fm_dsa_acc = tl.dot(' in stages[2]
     for name in ('_fm_dsa_previous', '_fm_dsa_p', '_fm_dsa_rounded_p'):
         expression = next(line.strip() for line in original.splitlines() if line.strip().startswith(name + ' = '))
-        assert expression in stages[2]
-    assert stages[3].count('tl.exp2(') == 0
+        assert expression in stages[1]
+    assert stages[2].count('tl.exp2(') == 0
     # The ordered consumer retains the native fused recurrence even when its
     # tile probability sum is supplied by the parallel producer.
-    assert '_fm_dsa_sum = tl.fma(_fm_dsa_sum, _fm_dsa_previous, ' in stages[3]
+    assert '_fm_dsa_sum = tl.fma(_fm_dsa_sum, _fm_dsa_previous, ' in stages[2]
 
 
 def test_declared_column_owner_rejects_incompatible_geometry():
@@ -82,3 +82,20 @@ def test_declared_column_owner_rejects_incompatible_geometry():
     call['probability_rounding'] = 'fp32'
     with pytest.raises(CodegenError):
         probability_selected(call)
+
+
+def test_long_producers_reduce_immutable_prefix_maxima_with_two_phases():
+    _, changed = sources()
+    long = changed.split('    if _fm_dsa_count >= ', 1)[1].split('    else:\n', 1)[0]
+    stages = long.split('tle.distributed_barrier')
+    assert len(stages) == 3
+    assert 'tl.associative_scan' not in long
+    assert 'tl.max(_fm_prefix_values, 0)' in stages[1]
+    assert '_fm_prefix_tiles[:, None] < _fm_prefix_tile' in stages[1]
+    assert '_fm_dsa_rounded_p.to(tl.float32)' in stages[1]
+    # Each producer retains its own QK result across the first barrier. The
+    # raw maxima are read-only afterward; no other producer's score is read.
+    assert stages[0].count('tl.store(') == 1
+    assert '_fm_dsa_score = tle.gpu.set_layout(tl.load(' not in stages[1]
+    assert '_fm_dsa_updated_max =' not in stages[2]
+    assert '_fm_dsa_max =' not in stages[2]
