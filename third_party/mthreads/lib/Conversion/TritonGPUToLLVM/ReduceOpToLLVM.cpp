@@ -179,11 +179,26 @@ private:
     unsigned sizeIntraWarps = helper.getIntraWarpSizeWithUniqueData();
     unsigned threadOffsetOnReductionAxis =
         helper.getThreadOffsetOnReductionAxis();
+    auto laneMasks = helper.getReductionLaneMasks();
     for (auto it : accs) {
       const SmallVector<unsigned> &key = it.first;
       SmallVector<Value> &acc = accs[key];
-      warpReduce(rewriter, op.getLoc(), acc, op, sizeIntraWarps,
-                 threadOffsetOnReductionAxis);
+      if (!laneMasks.empty()) {
+        // Reduction-axis bits may be interleaved with non-axis bits.  A
+        // sequence of XOR shuffles over the actual masks is equivalent to a
+        // tree reduction over that logical axis.
+        for (auto maskIt = laneMasks.rbegin(); maskIt != laneMasks.rend();
+             ++maskIt) {
+          SmallVector<Value> shfl(acc.size());
+          for (unsigned i = 0; i < acc.size(); ++i)
+            shfl[i] =
+                targetInfo.shuffleXor(rewriter, op.getLoc(), acc[i], *maskIt);
+          accumulate(op.getLoc(), rewriter, op.getCombineOp(), acc, shfl);
+        }
+      } else {
+        warpReduce(rewriter, op.getLoc(), acc, op, sizeIntraWarps,
+                   threadOffsetOnReductionAxis);
+      }
     }
   }
 

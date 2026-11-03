@@ -1467,6 +1467,15 @@ LogicalResult MUSASqmmaEncodingAttr::verify(
     return emitError() << "SQMMA expects warpsPerCTA rank >= 2";
   if (warpsPerCTA[0] % 4 != 0)
     return emitError() << "SQMMA expects warpsPerCTA[0] to be a multiple of 4";
+  // MUSASqmmaEncodingAttr::toLinearLayout builds each warp-domain basis with
+  // LinearLayout::identity1D, which only accepts power-of-two output sizes.
+  // Reject unsupported manual encodings here instead of reaching an unchecked
+  // layout assertion later in the pipeline.
+  if (llvm::any_of(warpsPerCTA,
+                   [](unsigned count) { return !llvm::isPowerOf2_32(count); }))
+    return emitError()
+           << "SQMMA warpsPerCTA elements must be powers of two for the "
+              "LinearLayout-based PH1 lowering";
 
   if (instrShape[0] == 0 || (instrShape[0] % 8) != 0)
     return emitError()

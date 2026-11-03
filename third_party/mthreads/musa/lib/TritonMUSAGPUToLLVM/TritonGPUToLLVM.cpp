@@ -1,3 +1,4 @@
+#include "Dialect/MUSA/IR/Dialect.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSAGPUToLLVM/Allocation.h"
@@ -7,6 +8,7 @@
 #ifdef __TLE__
 #include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #endif
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -56,6 +58,15 @@ namespace triton {
 using namespace mlir;
 using mlir::triton::MUSA::TargetInfo;
 namespace {
+
+// Two asynchronous TME global-to-shared copies need no thread barrier between
+// them, even when they write the same allocation: a thread barrier does not
+// order the copy engine's writes; the mbarrier each copy completes on does.
+// NVIDIA::canSkipBarSync makes the same exception for TMA copies.
+bool canSkipMusaBarSync(Operation *before, Operation *after, Allocation *) {
+  return isa<triton::musa::AsyncTMECopyGlobalToLocalOp>(before) &&
+         isa<triton::musa::AsyncTMECopyGlobalToLocalOp>(after);
+}
 
 enum class InplaceLoadDataKind {
   Unsupported,
@@ -434,7 +445,7 @@ struct ConvertTritonMUSAGPUToLLVM
     ModuleAllocation allocation(
         mod, mlir::triton::musa_gpu::getMusaAllocationAnalysisScratchSizeFn(
                  targetInfo));
-    ModuleMembarAnalysis membarPass(&allocation);
+    ModuleMembarAnalysis membarPass(&allocation, canSkipMusaBarSync);
     membarPass.run();
 
     mlir::LowerToLLVMOptions option(context);
@@ -544,7 +555,7 @@ struct ConvertTritonMUSAGPUToLLVM
       auto ws = dyn_cast<triton::gpu::WarpSpecializeOp>(op);
       if (!ws)
         ws = op->getParentOfType<triton::gpu::WarpSpecializeOp>();
-      if (ws && ws->hasAttr("musa_tle.static_warp_specialize"))
+      if (ws && ws->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr))
         staticWarpSpecializeOps.push_back(op);
     });
     for (Operation *op : staticWarpSpecializeOps)

@@ -89,7 +89,17 @@ def run_positive():
 
 
 def run_expected_native_failure():
+    import triton.experimental.tle as tle_api
+
     os.environ.pop("FLAGTREE_USE_TILEIR", None)
+    assert not tle_api.is_tle_supported("make_view")
+    try:
+        tle_api.require_tle("make_view")
+    except tle_api.TLEUnsupportedPrimitiveError:
+        pass
+    else:
+        raise AssertionError("expected require_tle to reject TileIR-only APIs without FLAGTREE_USE_TILEIR")
+
     _require_cuda()
     n_elements = 1024
     block = 256
@@ -103,7 +113,7 @@ def run_expected_native_failure():
         expected_message = "backend 'nvidia' does not support TLE primitive" in text
         if not expected_message:
             raise
-        print("[OK] FLAGTREE_USE_TILEIR=0: native NVIDIA path reports the expected TileIR-only API error")
+        print("[OK] FLAGTREE_USE_TILEIR=0: is_tle_supported/require_tle and native path reject TileIR-only APIs")
         return
     raise AssertionError("expected native NVIDIA path to reject TKO view-token APIs")
 

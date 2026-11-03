@@ -4,8 +4,8 @@ import pytest
 
 import triton.experimental.tle as tle
 import triton.language as tl
-from triton import backends as backend_registry
 from triton import _flagtree_backend
+from triton import backends as backend_registry
 from triton.compiler.code_generator import CodeGenerator
 from triton.language import load as tl_load
 
@@ -55,26 +55,26 @@ def test_backend_extension_is_resolved_from_total(monkeypatch):
 
 def test_missing_or_empty_backend_config_is_strict(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: None)
-    assert tle.get_supported_primitives("missing") == frozenset()
-    assert not tle.is_primitive_supported("missing", "gpu.alloc")
+    assert tle.get_supported_primitives() == frozenset()
+    assert not tle.is_tle_supported("gpu.alloc")
 
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=[]))
-    assert not tle.is_primitive_supported("empty", "gpu.alloc")
+    assert not tle.is_tle_supported("gpu.alloc")
 
 
 def test_primitive_outside_total_is_not_checked(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: None)
     for primitive in ("gpu.pipe_value.reader", "ext.make_view"):
         assert primitive not in tle.TLE_PRIMITIVES
-        assert tle.is_primitive_supported("missing", primitive)
-        tle.require_tle("missing", primitive)
+        assert tle.is_tle_supported(primitive)
+        tle.require_tle(primitive)
 
 
 def test_backend_config_is_normalized(monkeypatch):
     config = SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=["tle.cumsum", "language.gpu.core.alloc"])
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: config)
-    assert tle.get_supported_primitives("test") == frozenset({"cumsum", "gpu.alloc"})
-    assert tle.is_primitive_supported("test", tle.language.gpu.alloc)
+    assert tle.get_supported_primitives() == frozenset({"cumsum", "gpu.alloc"})
+    assert tle.is_tle_supported(tle.language.gpu.alloc)
 
 
 def test_backend_config_is_loaded_from_dedicated_module(monkeypatch):
@@ -91,39 +91,58 @@ def test_invalid_backend_config_is_rejected(monkeypatch, configured):
     config = SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=configured)
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: config)
     with pytest.raises(TypeError, match="TLE_SUPPORTED_PRIMITIVES"):
-        tle.get_supported_primitives("invalid")
+        tle.get_supported_primitives()
 
 
 def test_unsupported_error_names_backend_and_primitive(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=[]))
+    monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "test")
     with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'test'.*'gpu\.alloc'"):
-        tle.require_tle("test", tle.language.gpu.alloc)
+        tle.require_tle(tle.language.gpu.alloc)
 
 
-def test_active_backend_name_prefers_flagtree_backend(monkeypatch):
-    monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "hcu")
-    assert _flagtree_backend.get_active_backend_name() == "hcu"
+def test_tileir_build_checks_whitelist_of_routed_backend(monkeypatch):
+    # TileIR builds leave FLAGTREE_BACKEND empty. Like the router, a primitive
+    # set goes to TileIR only with FLAGTREE_USE_TILEIR=1 and when TileIR's
+    # whitelist covers it; otherwise it is checked against NVIDIA's whitelist.
+    monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "")
+    whitelists = {
+        "nvidia": SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=["gpu.wgmma"]),
+        "tileir": SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=["make_view"]),
+    }
+    monkeypatch.setattr(tle, "_backend_config_module", whitelists.get)
+    monkeypatch.setattr(backend_registry, "backends", {"nvidia": object(), "tileir": object()})
+    t, n = ["make_view"], ["gpu.wgmma"]
+
+    monkeypatch.setenv("FLAGTREE_USE_TILEIR", "1")
+    assert tle.get_supported_primitives() == frozenset({"gpu.wgmma", "make_view"})
+    assert tle.is_tle_supported(t)
+    assert tle.is_tle_supported(n)
+    assert not tle.is_tle_supported(t + n)
+    tle.require_tle(t)
+    tle.require_tle(n)
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
+        tle.require_tle(t + n)
+
+    monkeypatch.delenv("FLAGTREE_USE_TILEIR")
+    assert tle.get_supported_primitives() == frozenset({"gpu.wgmma"})
+    assert not tle.is_tle_supported(t)
+    assert tle.is_tle_supported(n)
+    assert not tle.is_tle_supported(t + n)
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
+        tle.require_tle(t)
+    tle.require_tle(n)
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'nvidia'.*'make_view'"):
+        tle.require_tle(t + n)
 
 
 @pytest.mark.parametrize("backend_name", ["hcu", "amd", "mthreads", "iluvatar"])
 def test_tle_logical_descriptor_frontend_gate_rejects_other_backends(monkeypatch, backend_name):
     from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
 
-    monkeypatch.setattr(_flagtree_backend, "get_active_backend_name", lambda: backend_name)
+    monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", backend_name)
     semantic = object.__new__(TLEFrontendSemantic)
     with pytest.raises(ValueError, match=r"TLE logical descriptors.*NVIDIA backend"):
-        semantic.make_tensor_descriptor(None, [], [], [80, 256])
-
-
-def test_tle_logical_descriptor_frontend_gate_propagates_unknown_backend(monkeypatch):
-    from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
-
-    def unknown_backend():
-        raise RuntimeError("backend is not configured")
-
-    monkeypatch.setattr(_flagtree_backend, "get_active_backend_name", unknown_backend)
-    semantic = object.__new__(TLEFrontendSemantic)
-    with pytest.raises(ValueError, match=r"active backend could not be determined"):
         semantic.make_tensor_descriptor(None, [], [], [80, 256])
 
 
@@ -137,23 +156,9 @@ def test_tle_power_of_two_descriptor_is_forwarded(monkeypatch):
     assert semantic.make_tensor_descriptor(None, [], [], [128, 256]) is forwarded
 
 
-@pytest.mark.parametrize("backend_name", ["nvidia", "amd"])
-def test_active_backend_name_falls_back_for_default_backends(monkeypatch, backend_name):
-    monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "")
-    monkeypatch.setattr(
-        backend_registry,
-        "backends",
-        {
-            "nvidia": SimpleNamespace(driver=SimpleNamespace(is_active=lambda: backend_name == "nvidia")),
-            "amd": SimpleNamespace(driver=SimpleNamespace(is_active=lambda: backend_name == "amd")),
-        },
-    )
-    assert _flagtree_backend.get_active_backend_name() == backend_name
-
-
 def test_codegen_guard_only_rejects_unsupported_tle_primitives(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=[]))
-    monkeypatch.setattr(_flagtree_backend, "get_active_backend_name", lambda: "test")
+    monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "test")
     generator = object.__new__(CodeGenerator)
 
     generator._require_tle_primitive(tl_load)

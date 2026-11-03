@@ -63,6 +63,12 @@ def test_default_catalog_uses_published_urls_and_package_versions():
                         "sha256":
                         "78858b99a2b2252385f2a8624aff4391d0235bfc270beeb07a8cb7e0c7174942",
                     },
+                    "1.1.0": {
+                        "url": ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+                                "flagtune-xgb-thead-zw810e_v1.1.0.tar.gz"),
+                        "sha256":
+                        "0a089ab5cba39867a0ce57992a65e7991e33ca26549dcf893e736bcff3feb0cc",
+                    },
                 },
             },
         },
