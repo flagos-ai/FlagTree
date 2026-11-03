@@ -707,6 +707,14 @@ def _compiled_python_packages():
             yield prefix if str(rel) == "." else f"{prefix}.{str(rel).replace(os.sep, '.')}"
 
 
+def _add_compiled_python_package_data(package_data):
+    """Register compiled XPU modules after build_ext has staged them."""
+    for package in _compiled_python_packages():
+        package_data.setdefault(package, [])
+        if "*.so" not in package_data[package]:
+            package_data[package].append("*.so")
+
+
 def get_package_data(backends):
     package_data = {
         "triton": ["FLAGTREE_BACKEND"], "triton.backends": ["_tables/*.json"],
@@ -730,10 +738,7 @@ def get_package_data(backends):
             break
     # Compiled XPU Python implementation: `.so` files sit where the `.py`
     # modules used to, and only `package_data` copies them into the wheel.
-    for package in _compiled_python_packages():
-        package_data.setdefault(package, [])
-        if "*.so" not in package_data[package]:
-            package_data[package].append("*.so")
+    _add_compiled_python_package_data(package_data)
     return package_data
 
 
@@ -762,6 +767,7 @@ def overlay_runtime_so(cache, build_py_command=None, backends=None):
     if build_py_command is None or backends is None:
         return
     build_py_command.distribution.package_data = build_py_command.distribution.package_data or {}
+    _add_compiled_python_package_data(build_py_command.distribution.package_data)
     for backend in backends:
         if backend.name == "xpu":
             ensure_xpu_launch_static_lib(backend)
