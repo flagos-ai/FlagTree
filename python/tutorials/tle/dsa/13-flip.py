@@ -17,8 +17,7 @@ NUM_VEC_CORES = 48
 
 
 @triton.jit
-def flip_tle_kernel(in_ptr, out_ptr, N: tl.constexpr, M: tl.constexpr, BLOCK_M: tl.constexpr,
-                    BLOCK_N: tl.constexpr):
+def flip_tle_kernel(in_ptr, out_ptr, N: tl.constexpr, M: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     """tle.dsa.ascend.flip: plain load, in-UB flip, plain store."""
     pid = tl.program_id(0)
     rows = pid * BLOCK_M + tl.arange(0, BLOCK_M)
