@@ -34,10 +34,10 @@ def type_convert_triton(src, dst, rounding : tl.constexpr, BLOCK_SIZE : tl.const
     tl.store(dst + idxs, y)
 
 
-def launch_type_convert_triton(src, src_dtype, dst_dtype, device, rounding=None, BLOCK_SIZE=4096):
+def launch_type_convert_triton(src, src_dtype, dst_dtype, device, rounding=None, BLOCK_SIZE=4096, num_warps=4):
 
     dst = torch.empty(src.shape, dtype=matching_int(dst_dtype), device=device)
-    type_convert_triton[(src.shape[0] // BLOCK_SIZE,)](triton.reinterpret(src, src_dtype), triton.reinterpret(dst, dst_dtype), rounding, BLOCK_SIZE)
+    type_convert_triton[(src.shape[0] // BLOCK_SIZE,)](triton.reinterpret(src, src_dtype), triton.reinterpret(dst, dst_dtype), rounding, BLOCK_SIZE, num_warps=num_warps)
     return dst
 
 
@@ -106,12 +106,12 @@ def test_metax_fp8_nonzero_integer_rejected(dtype):
         triton.compile(source, target=GPUTarget("maca", 80, 64), options={"num_warps": 4})
 
 
-def _metax_cast_bits(bits, src_dtype, dst_dtype, device, rounding=None):
+def _metax_cast_bits(bits, src_dtype, dst_dtype, device, rounding=None, num_warps=4):
     # Transfer integer storage so signaling NaNs reach the kernel unchanged.
     src = torch.from_numpy(bits.view(getattr(np, f"int{bits.dtype.itemsize * 8}")))
     padded = torch.zeros((triton.cdiv(src.numel(), 4096) * 4096,), dtype=src.dtype)
     padded[:src.numel()] = src
-    result = launch_type_convert_triton(padded.to(device), src_dtype, dst_dtype, device, rounding)
+    result = launch_type_convert_triton(padded.to(device), src_dtype, dst_dtype, device, rounding, num_warps=num_warps)
     return result.cpu().numpy()[:src.numel()].view(getattr(np, f"uint{dst_dtype.primitive_bitwidth}"))
 
 
@@ -175,8 +175,8 @@ def _metax_fp8_boundary_values(dtype, np_type):
     return np.concatenate((values, random_bits))
 
 
-def _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, device, rounding):
-    result = _metax_cast_bits(bits, src_dtype, dst_dtype, device, rounding)
+def _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, device, rounding, num_warps=4):
+    result = _metax_cast_bits(bits, src_dtype, dst_dtype, device, rounding, num_warps)
     with np.errstate(invalid="ignore"):
         values = _decode_float_to_fp64(bits, src_dtype)
     # MetaX's existing FP8 conversions use satfinite for both formats.
@@ -186,6 +186,16 @@ def _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, device, rounding):
     is_nan = np.isnan(values)
     np.testing.assert_array_equal(result[~is_nan], expected[~is_nan])
     assert np.isnan(_decode_float_to_fp64(result[is_nan], dst_dtype)).all()
+
+
+@pytest.mark.parametrize("src_dtype", [tl.float16, tl.bfloat16, tl.float32])
+@pytest.mark.parametrize("rounding", [None, "rtne"])
+@pytest.mark.parametrize("num_warps", [1, 4])
+def test_metax_e4m3_rtne(src_dtype, rounding, num_warps, metax_device):
+    bits = (np.arange(65536, dtype=np.uint16) if src_dtype != tl.float32 else
+            np.concatenate((_metax_fp8_boundary_values(tl.float8e4nv, np.float32),
+                            np.array([0x7f800001, 0x7fbfffff, 0xff800001, 0xffbfffff], dtype=np.uint32))))
+    _metax_assert_fp8_conversion(bits, src_dtype, tl.float8e4nv, metax_device, rounding, num_warps)
 
 
 @pytest.mark.parametrize("src_dtype", [tl.float16, tl.bfloat16, tl.float32])

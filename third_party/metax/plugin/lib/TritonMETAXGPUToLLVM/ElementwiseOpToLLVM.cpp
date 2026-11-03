@@ -1321,10 +1321,37 @@ struct FpToFpOpConversion
   static SmallVector<Value>
   Fp32_to_Fp8E4M3FN_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
                             const SmallVector<Value> &v, triton::FpToFpOp op) {
-    SmallVector<Value> result(2);
-    for (size_t i = 0; i < 2; i++)
-      result[i] = downcastToFp8_RTNE_oneValue<Float32Type, Float8E4M3FNType>(
-          loc, rewriter, v[i]);
+    constexpr unsigned mantissaShift = 23 - 3;
+    constexpr unsigned exponentBias = (127 - 7) << 23;
+    constexpr unsigned maxFinite = 0x7e;
+    constexpr unsigned quietNaN = 0x7f;
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    SmallVector<Value> result;
+    for (Value value : v) {
+      Value bits = b.bitcast(value, i32_ty);
+      Value sign = b.and_(b.lshr(bits, b.i32_val(24)), b.i32_val(0x80));
+      Value magnitude = b.and_(bits, b.i32_val(0x7fffffff));
+
+      Value normal = b.sub(magnitude, b.i32_val(exponentBias));
+      Value odd =
+          b.and_(b.lshr(normal, b.i32_val(mantissaShift)), b.i32_val(1));
+      normal = b.lshr(
+          b.add(normal, b.add(b.i32_val((1U << (mantissaShift - 1)) - 1), odd)),
+          b.i32_val(mantissaShift));
+      normal = b.umin(normal, b.i32_val(maxFinite));
+
+      // At 2^14, an FP32 ULP is the E4M3FN subnormal step 2^-9.
+      // One RTNE add replaces the eight dependent midpoint selects; the
+      // constant's low byte is zero, so truncation extracts the rounded code.
+      Value subnormal = b.bitcast(
+          b.fadd(f32_ty, b.bitcast(magnitude, f32_ty), b.f32_val(0x1p+14)),
+          i32_ty);
+      Value code = b.select(b.icmp_ult(magnitude, b.i32_val((127 - 6) << 23)),
+                            subnormal, normal);
+      code = b.select(b.icmp_ugt(magnitude, b.i32_val(0x7f800000)),
+                      b.i32_val(quietNaN), code);
+      result.push_back(b.trunc(i8_ty, b.or_(code, sign)));
+    }
     return result;
   }
 
