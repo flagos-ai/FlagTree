@@ -223,11 +223,8 @@ private:
   static bool hasNoGenericWSScratch(gpu::WarpSpecializeOp ws) {
     auto mod = ws->getParentOfType<ModuleOp>();
     auto target = mod->getAttrOfType<StringAttr>("ttg.target");
-    auto protocol = mod->getAttrOfType<IntegerAttr>("ttg.hcu.cta_ws_protocol");
     auto ctas = mod->getAttrOfType<IntegerAttr>("ttg.num-ctas");
     auto wave = mod->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-    bool legacyVerified = protocol && protocol.getInt() == 1 &&
-        mod->getAttrOfType<UnitAttr>("ttg.hcu.cta_ws_verified");
     auto rawProtocol = mod->getAttrOfType<IntegerAttr>("ttg.hcu.raw_window_ws");
     // The raw-window backend runs its finite SCF proof before allocation.
     // Its same-process Distinct token remains live until late capture elision;
@@ -235,7 +232,7 @@ private:
     bool rawVerified = rawProtocol && rawProtocol.getInt() == 1 &&
         mod->getAttrOfType<DistinctAttr>("ttg.hcu.raw_window_ws.internal_witness");
     if (!target || target.getValue() != "hip:gfx936" ||
-        !(legacyVerified || rawVerified) ||
+        !rawVerified ||
         !ctas || ctas.getInt() != 1 || !wave || wave.getInt() != 64 ||
         ws.getNumResults() || ws.getPartitionRegions().size() != 1)
       return false;
