@@ -104,6 +104,32 @@ def _ready_barrier_array_phase_reuse(out, slot, first_phase):
         tle.gpu.barrier_arrive(ready[slot], phaseIdx=phase)
 
 
+@triton.jit
+def _back_to_back_copies(desc, out):
+    block: tl.constexpr = 128
+    smem = tle.gpu.alloc((2, block), dtype=tl.float16, nv_mma_shared_layout=False)
+    full = tle.gpu.alloc_barriers(2, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=block * 2)
+    # Two copies into one allocation with nothing in between.
+    tle.gpu.copy(desc, smem.slot(0), (block, ), (0, ), barrier=full[0])
+    tle.gpu.copy(desc, smem.slot(1), (block, ), (block, ), barrier=full[1])
+    offsets = tl.arange(0, block)
+    for slot in tl.static_range(0, 2):
+        tle.gpu.barrier_wait(full[slot], phaseIdx=0)
+        tl.store(out + slot * block + offsets, tl.load(tle.gpu.local_ptr(smem.slot(slot), (offsets, ))))
+
+
+@triton.jit
+def _copy_loop(desc, n):
+    block: tl.constexpr = 128
+    smem = tle.gpu.alloc((2, block), dtype=tl.float16, nv_mma_shared_layout=False)
+    full = tle.gpu.alloc_barriers(2, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=block * 2)
+    # A runtime slot index: the copies of consecutive iterations cannot be
+    # told apart statically, and every second one rewrites the same slot.
+    for i in range(0, n):
+        tle.gpu.barrier_wait(full[i % 2], phaseIdx=(i // 2) % 2 ^ 1)
+        tle.gpu.copy(desc, smem.slot(i % 2), (block, ), (i * block, ), barrier=full[i % 2])
+
+
 def _parse_fixture(tmp_path, body, name="barrier_operations"):
     fixture = f"""module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
     ttg.target = "musa:ph1", "ttg.threads-per-warp" = 32 : i32}} {{
@@ -330,3 +356,47 @@ def test_mthreads_tle_completion_copy_single_slot_runtime(stages, slot):
 
     expected = src[slot * block:slot * block + 1]
     torch.testing.assert_close(out.cpu(), expected.cpu(), rtol=0, atol=0)
+
+
+def _compile_back_to_back_copies():
+    source = ASTSource(
+        fn=_back_to_back_copies,
+        signature={"desc": "tensordesc<fp16[128]>", "out": "*fp16"},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]]},
+    )
+    return triton.compile(source, target=musa_target(), options={"num_warps": 4, "num_stages": 1})
+
+
+def test_mthreads_tle_tme_copies_need_no_thread_barrier():
+    # Async TME writes are ordered by the mbarrier each copy completes on, not
+    # by a thread barrier, so membar must not put one in front of a copy that
+    # follows another copy: neither between two slots of one allocation, nor
+    # across a loop iteration that rewrites a slot through a runtime index.
+    llir = _compile_back_to_back_copies().asm["llir"]
+    calls = re.findall(r"call [^@]*@(llvm\.musa\.[a-z0-9_.]+)", llir)
+    copies = [i for i, name in enumerate(calls) if name.startswith("llvm.musa.tme.ld")]
+    assert len(copies) == 2, calls
+    assert not any("syncthreads" in name for name in calls[copies[0] + 1:copies[1]])
+
+    source = ASTSource(
+        fn=_copy_loop,
+        signature={"desc": "tensordesc<fp16[128]>", "n": "i32"},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]]},
+    )
+    llir = triton.compile(source, target=musa_target(), options={"num_warps": 4, "num_stages": 1}).asm["llir"]
+    calls = re.findall(r"call [^@]*@(llvm\.musa\.[a-z0-9_.]+)", llir)
+    # The one barrier left publishes the barrier initialization, ahead of the loop.
+    loop_start = calls.index("llvm.musa.async.wait")
+    assert "llvm.musa.tme.ld.tile.1d" in calls[loop_start:], calls
+    assert not any("syncthreads" in name for name in calls[loop_start:]), calls
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_mthreads_tle_back_to_back_tme_copies_runtime():
+    block = 128
+    src = torch.arange(2 * block, device="musa", dtype=torch.float16)
+    out = torch.empty_like(src)
+    desc = TensorDescriptor.from_tensor(src, [block])
+    _back_to_back_copies[(1, )](desc, out, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+    torch.testing.assert_close(out.cpu(), src.cpu(), rtol=0, atol=0)
