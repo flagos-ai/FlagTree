@@ -102,6 +102,7 @@ def _get_distributed_device():
 
     return driver.active.get_device_interface(), driver.active.get_active_torch_device()
 
+
 # 标记，需要修改
 def _get_node_id():
     # A subgroup need not include LOCAL_RANK=0. Containers may require an explicit ID.
@@ -149,9 +150,10 @@ def _get_cache_environment():
             value = getattr(properties, name, None)
             if value is not None:
                 hardware[name] = value if type(value) in (str, int, bool) else str(value)
-    versions = {"python": platform.python_version(), "torch": str(torch.__version__),
-                "triton": str(triton.__version__),
-                "triton_build": hashlib.sha256(triton_key().encode("utf-8")).hexdigest()}
+    versions = {
+        "python": platform.python_version(), "torch": str(torch.__version__), "triton": str(triton.__version__),
+        "triton_build": hashlib.sha256(triton_key().encode("utf-8")).hexdigest()
+    }
     for name in ("cuda", "hip", "musa", "gcu"):
         value = getattr(torch.version, name, None)
         if value is not None:
@@ -168,8 +170,8 @@ def _cache_digest(identity):
 
 class AutoTuner:
 
-    def __init__(self, func, config_space, key_fn: Callable, prune_fn: Callable | None = None, *,
-                 cache_dir=None, cache_version: str | None = None):
+    def __init__(self, func, config_space, key_fn: Callable, prune_fn: Callable | None = None, *, cache_dir=None,
+                 cache_version: str | None = None):
         self.config_space = config_space
         if not self.config_space:
             raise ValueError("config_space must contain at least one configuration")
@@ -185,9 +187,8 @@ class AutoTuner:
         if cache_version is not None and not isinstance(cache_version, str):
             raise TypeError("cache_version must be a string or None")
         self.cache_version = cache_version
-        self.cache_dir = None if cache_dir is False else Path(
-            cache_dir if cache_dir is not None else os.environ.get(
-                "FLAGTREE_AUTOTUNE_CACHE_DIR", str(Path.home() / ".flagtree" / "autotune"))).expanduser()
+        self.cache_dir = None if cache_dir is False else Path(cache_dir if cache_dir is not None else os.environ.get(
+            "FLAGTREE_AUTOTUNE_CACHE_DIR", str(Path.home() / ".flagtree" / "autotune"))).expanduser()
         update_wrapper(self, func, updated=())
 
     @cached_property
@@ -226,8 +227,8 @@ class AutoTuner:
             # temporary: The complete path of the temporary file.
             fd, temporary = tempfile.mkstemp(prefix=f".{key}.", suffix=".tmp", dir=path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"schema": _CACHE_SCHEMA, "key": key, "best_config": best_config,
-                           "identity": identity}, stream, indent=2, sort_keys=True, allow_nan=False)
+                json.dump({"schema": _CACHE_SCHEMA, "key": key, "best_config": best_config, "identity": identity},
+                          stream, indent=2, sort_keys=True, allow_nan=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
@@ -256,11 +257,17 @@ class AutoTuner:
                 persist = False
             tuned_names = {name for name in self.config_space[0]}
             identity = {
-                "schema": _CACHE_SCHEMA, "mode": "local", "function": function,
-                "workload": _config_key(key, workload=True), "cache_version": self.cache_version,
+                "schema": _CACHE_SCHEMA,
+                "mode": "local",
+                "function": function,
+                "workload": _config_key(key, workload=True),
+                "cache_version": self.cache_version,
                 "configs": [_config_key(config) for config in self.config_space],
-                "overrides": _config_key({name: kwargs[name] for name in tuned_names if name in kwargs}),
-                "environment": environment, "prune": prune,
+                "overrides": _config_key({name: kwargs[name]
+                                          for name in tuned_names
+                                          if name in kwargs}),
+                "environment": environment,
+                "prune": prune,
             }
             return identity, _cache_digest(identity), persist
         except Exception as exc:
@@ -422,9 +429,13 @@ class AutoTuner:
                 raise TypeError("key_fn must return a hashable value") from exc
             function = _function_identity(self.fn)
             context = {
-                "workload": _config_key(key, workload=True), "environment": _get_cache_environment(),
-                "function": function, "node": _get_node_id(), "device": str(device),
-                "cache_version": self.cache_version, "disk_cacheable": function is not None,
+                "workload": _config_key(key, workload=True),
+                "environment": _get_cache_environment(),
+                "function": function,
+                "node": _get_node_id(),
+                "device": str(device),
+                "cache_version": self.cache_version,
+                "disk_cacheable": function is not None,
             }
             if not isinstance(context["node"], str) or not context["node"]:
                 raise ValueError("The autotune node ID must be a nonempty string")
@@ -442,11 +453,26 @@ class AutoTuner:
         nodes = {}
         layout = [nodes.setdefault(item["node"], len(nodes)) for item in contexts]
         identity = {
-            "schema": _CACHE_SCHEMA, "mode": "distributed", "protocol": _DISTRIBUTED_PROTOCOL,
-            "backend": str(dist.get_backend(group)), "world_size": len(contexts), "node_layout": layout,
-            "ranks": [{name: value for name, value in item.items() if name not in ("node", "disk_cacheable")}
+            "schema":
+            _CACHE_SCHEMA,
+            "mode":
+            "distributed",
+            "protocol":
+            _DISTRIBUTED_PROTOCOL,
+            "backend":
+            str(dist.get_backend(group)),
+            "world_size":
+            len(contexts),
+            "node_layout":
+            layout,
+            "ranks": [{name: value
+                       for name, value in item.items()
+                       if name not in ("node", "disk_cacheable")}
                       for item in contexts],
-            "configs": config_keys, "effective_configs": effective_keys,
+            "configs":
+            config_keys,
+            "effective_configs":
+            effective_keys,
         }
         cache_key = _cache_digest(identity)
         persist = all(item["disk_cacheable"] for item in contexts)
@@ -454,8 +480,7 @@ class AutoTuner:
 
         def remember(winner, *, retuned=False):
             self.best_distributed_configs[cache_key] = winner
-            if (persist and rank == writer
-                    and (retuned or self._persisted_distributed.get(cache_key) != winner)):
+            if (persist and rank == writer and (retuned or self._persisted_distributed.get(cache_key) != winner)):
                 if self._write_cache("distributed", cache_key, winner, identity):
                     self._persisted_distributed[cache_key] = winner
 
@@ -626,7 +651,6 @@ def autotune(config_space, key_fn, prune_fn=None, *, cache_dir=None, cache_versi
     """
 
     def wrapper(func):
-        return AutoTuner(func, config_space, key_fn, prune_fn,
-                         cache_dir=cache_dir, cache_version=cache_version)
+        return AutoTuner(func, config_space, key_fn, prune_fn, cache_dir=cache_dir, cache_version=cache_version)
 
     return wrapper
