@@ -47,6 +47,7 @@ jobs:
     uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
     with:
       runner: ${{ matrix.runner }}
+      variant: ${{ matrix.runner }}
       backend: hcu
       gpu-env-var: HIP_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
