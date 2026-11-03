@@ -44,7 +44,6 @@ jobs:
       matrix:
         runner: [hcu3.6, hcu3.6-bw1100]
     runs-on: $${{ matrix.runner }}
-    variant: $${{ matrix.runner }}
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
