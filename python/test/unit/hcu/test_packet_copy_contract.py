@@ -40,9 +40,14 @@ module attributes {ttg.hcu.whole_packet_global_bounds = 1 : i32, ttg.hcu.whole_p
 '''.replace("INDICES", indices)
 
 
-def lower_packet_copy(tmp_path, index_count):
+def lower_packet_copy(tmp_path, index_count, columns=256):
     source = tmp_path / f"packet-copy-{index_count}.mlir"
-    source.write_text(packet_copy_module(index_count))
+    text = packet_copy_module(index_count)
+    text = text.replace("%columns = arith.constant 256 : i32",
+                        f"%columns = arith.constant {columns} : i32")
+    text = text.replace("%stride = arith.constant 256 : i64",
+                        f"%stride = arith.constant {columns} : i64")
+    source.write_text(text)
     context = libtriton.ir.context()
     libtriton.ir.load_dialects(context)
     compiler.HIPBackend(GPUTarget("hip", "gfx936", 64)).load_dialects(context)
@@ -57,6 +62,18 @@ def lower_packet_copy(tmp_path, index_count):
 
 def test_packet_copy_three_indices(tmp_path):
     assert "llvm.func" in lower_packet_copy(tmp_path, 3)
+
+
+@pytest.mark.parametrize("columns", [272, 768, 1280, 3072, 4096, 6144, 7936, 8176])
+def test_packet_copy_structured_stride_field(tmp_path, columns):
+    assert "llvm.func" in lower_packet_copy(tmp_path, 3, columns)
+
+
+@pytest.mark.parametrize("columns", [0, 16, 255, 257, 8192, 8193, 1 << 31])
+def test_packet_copy_rejects_invalid_structured_stride(tmp_path, columns, capfd):
+    with pytest.raises(RuntimeError):
+        lower_packet_copy(tmp_path, 3, columns)
+    assert "wholepacket-v1" in capfd.readouterr().err
 
 
 @pytest.mark.parametrize("index_count", [1, 2, 4])

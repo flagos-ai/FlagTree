@@ -198,8 +198,10 @@ struct StructuredDomain {
   unsigned strideElements, remainingRows;
   static std::optional<StructuredDomain> get(unsigned strideElements,
                                              unsigned remainingRows) {
-    if (strideElements < 256 || strideElements > 4096 ||
-        (strideElements & (strideElements - 1)))
+    // The descriptor stores a byte stride in its low 14 bits. Keep the
+    // complete-vector row boundary; the pitch need not be a power of two.
+    if (strideElements < 256 || strideElements >= 8192 ||
+        strideElements % 16)
       return std::nullopt;
     return StructuredDomain{strideElements, remainingRows};
   }
