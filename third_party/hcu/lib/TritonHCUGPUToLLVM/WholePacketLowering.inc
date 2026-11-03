@@ -80,16 +80,6 @@ static std::optional<PacketView> packetView(Value v) {
   if(off!=(enc.getOpIdx()==0?halfElements:0))return std::nullopt;
   return PacketView{root,index.getIndex(),off};
 }
-// Prove a nonnegative source index before I32 multiply/address emission.
-// Only constants and the existing exact counted-body IV*tile proof qualify.
-static std::optional<std::pair<int64_t,int64_t>> packetIndexRange(
-    Value v, Operation *anchor, int64_t tile, int64_t extent) {
-  if(auto c=getSignedI64Constant(v))return std::pair<int64_t,int64_t>{*c,*c};
-  auto mul=v.getDefiningOp<arith::MulIOp>();
-  auto loop=getCanonicalCountedLoopBody(anchor,extent/tile,0);
-  if(!mul || !loop || mul.getLhs()!=loop->iv || getSignedI64Constant(mul.getRhs())!=tile)return std::nullopt;
-  return std::pair<int64_t,int64_t>{0,(loop->trips-1)*tile};
-}
 // CF queue values are accepted only when every incoming edge resolves to a
 // complete reinterpret of the same physical owner/role. Cycles contribute no
 // authority: at least one concrete seed must be reached and all edge kinds are
@@ -292,9 +282,9 @@ static LogicalResult verifyWholePackets(ModuleOp mod,StringRef arch) {
       result=fail("packet source requires matching AS1 element pointer");return;
     }
     auto shape=producer.getShape(),stride=producer.getStrides(),index=producer.getIndices();
-    if(shape.size()!=2 || stride.size()!=2 || (index.size()!=2 && index.size()!=3) ||
+    if(shape.size()!=2 || stride.size()!=2 || index.size()!=3 ||
        !llvm::equal(producer.getTensorShape(),producer.getDest().getType().getShape())) {
-      result=fail("rank/tensorShape mismatch");return;
+      result=fail("packet copy requires rank-two shape/strides and row, column, enable indices");return;
     }
     auto r=getSignedI64Constant(shape[0]),c=getSignedI64Constant(shape[1]);
     if(!r || !c || *r<1 || *c<1 || uint64_t(*r)>0x7fffffffull/(2ull*uint64_t(*c)) ||
@@ -306,14 +296,7 @@ static LogicalResult verifyWholePackets(ModuleOp mod,StringRef arch) {
     if(structured ? !wp::StructuredDomain::get(*c,*r) : *c%16) {
       result=fail("source indices/structured mode/vector boundary not proven");return;
     }
-    if(index.size()==2) {
-      auto rr=packetIndexRange(index[0],producer,p->rows,*r),cc=packetIndexRange(index[1],producer,p->columns,*c);
-      if(!rr || !cc || rr->first<0 || cc->first<0 || rr->second>=*r || cc->second>=*c ||
-          rr->first%p->rows || rr->second%p->rows || cc->first%p->columns || cc->second%p->columns ||
-          (structured ? cc->second+p->columns>*c : rr->second+p->rows>*r)) {
-        result=fail("source indices/structured mode/vector boundary not proven");return;
-      }
-    } else {
+    {
       // Explicit bounded producer API: index[2] is an I32 boolean predicate;
       // whole-resource descriptors and signed-I64 checks preserve OOB-zero
       // semantics for arbitrary I32 tile origins, without an extent assumption.
@@ -322,7 +305,7 @@ static LogicalResult verifyWholePackets(ModuleOp mod,StringRef arch) {
         result=fail("bounded producer requires explicit global-bounds API");return;
       }
     }
-    if(index.size()==3 && (!packetUniform(index[0]) || !packetUniform(index[1]) || !packetUniform(index[2]))) {
+    if(!packetUniform(index[0]) || !packetUniform(index[1]) || !packetUniform(index[2])) {
       result=fail("bounded producer indices/predicate require CTA-uniform SSA and control");return;
     }
     auto arg=dyn_cast<BlockArgument>(producer.getBase());auto f=producer->getParentOfType<triton::FuncOp>();
@@ -330,7 +313,7 @@ static LogicalResult verifyWholePackets(ModuleOp mod,StringRef arch) {
     if(!arg || arg.getOwner()!=&f.getBody().front() || !alignment || alignment.getInt()<16 || alignment.getInt()%16) {
       result=fail("global source base requires kernel argument alignment16 proof");return;
     }
-    if(index.size()==3) {
+    {
       producer->setAttr("hcu.packet.internal_verified_shape",DenseI64ArrayAttr::get(mod.getContext(),ArrayRef<int64_t>{*r,*c}));
       bool wholeColumn=*c%p->columns==0 && packetMultiple(index[1],p->columns);
       producer->setAttr("hcu.packet.internal_verified_column",BoolAttr::get(mod.getContext(),wholeColumn));

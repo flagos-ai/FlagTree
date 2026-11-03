@@ -40,8 +40,6 @@ using ::mlir::triton::gpu::HCUMlsSharedEncodingAttr;
 using ::mlir::triton::hcugpu::MlsEncodingAttr;
 using ::mlir::triton::HCU::packet_lowering::getOrInsertHCUIntrinsic;
 using ::mlir::triton::HCU::packet_lowering::getSignedI64Constant;
-using ::mlir::triton::HCU::packet_lowering::CountedLoopBody;
-using ::mlir::triton::HCU::packet_lowering::getCanonicalCountedLoopBody;
 
 
 #include "WholePacketLowering.inc"
