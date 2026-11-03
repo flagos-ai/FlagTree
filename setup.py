@@ -745,6 +745,7 @@ def get_package_dirs():
 
     # flagtree backend specialization
     yield from helper.SpecPackageHelper.get_spec_packages()
+    yield from helper.get_backend_python_packages()
 
     for backend in backends:
         # we use symlinks for external plugins

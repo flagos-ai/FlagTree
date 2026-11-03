@@ -6,8 +6,8 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from typing import Any, Dict, List
-from . import language as tl
-from . import runtime
+import triton.language as tl
+import triton.runtime as runtime
 
 
 def nvsmi(attrs):
@@ -426,7 +426,7 @@ def perf_report(benchmarks):
 def get_dram_gbps(device=None):
     ''' return DRAM bandwidth in GB/s '''
 
-    from .runtime import driver
+    from triton.runtime import driver
     if device is None:
         device = driver.active.get_device_interface().current_device()
     mem_clock_khz = driver.active.utils.get_device_properties(device)["mem_clock_rate"]  # in kHz
@@ -438,7 +438,7 @@ def get_dram_gbps(device=None):
 def get_max_tensorcore_tflops(dtype, clock_rate, device=None):
     import torch
 
-    from .runtime import driver
+    from triton.runtime import driver
     if not device:
         device = torch.cuda.current_device()
 
@@ -523,7 +523,7 @@ def set_gpu_clock(ref_sm_clock=1350, ref_mem_clock=1215):
 def get_max_simd_tflops(dtype, clock_rate, device=None):
     import torch
 
-    from .runtime import driver
+    from triton.runtime import driver
     if not device:
         device = torch.cuda.current_device()
 

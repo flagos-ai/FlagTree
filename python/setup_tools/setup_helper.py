@@ -685,11 +685,18 @@ class SpecPackageHelper:
 
 
 def get_spec_packages():
+    excluded_packages = SpecPackageHelper.get_excluded_packages()
+    exclude_hook = get_hook_instance("get_excluded_python_packages")
+    if exclude_hook:
+        excluded_packages += exclude_hook()
     yield from find_packages(
         where="python",
         include=["triton", "triton.*"],
-        exclude=SpecPackageHelper.get_excluded_packages(),
+        exclude=excluded_packages,
     )
+
+    for package, _source_dir in get_backend_python_packages():
+        yield package
 
     for package, _source_dir in SpecPackageHelper.get_spec_packages():
         yield package
@@ -700,7 +707,7 @@ def get_spec_packages():
     yield "triton.tools.triton_to_gluon_translater"
 
     tle_include_dir = Path("python/triton/experimental/tle/language/include")
-    if tle_include_dir.is_dir():
+    if tle_include_dir.is_dir() and "triton.experimental.tle" not in excluded_packages:
         # FlagCX headers are copied here while setup.py is running. The
         # directory intentionally has no __init__.py, so find_packages cannot
         # discover it even though setuptools includes it as package data.
@@ -708,6 +715,12 @@ def get_spec_packages():
 
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
+
+
+def get_backend_python_packages():
+    hook = get_hook_instance("get_python_packages")
+    if hook:
+        yield from hook()
 
 
 def generate_backend_intrinsic_tables():

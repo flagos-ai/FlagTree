@@ -39,6 +39,7 @@ BACKEND_ROOT = "third_party/xpu/backend"
 _TABLE_TAGS = ("l19", "l22")
 
 FLAGTREE_PYTHON_ROOT = "python"
+XPU_TLE_ROOT = "third_party/xpu/tle"
 # Package-level metadata that must **never** be staged into the tree.  It
 # travels *inside the tarball* (MIT: "shall be included in all copies") but it
 # describes the **package**, not the tree: the repository root already carries
@@ -111,6 +112,25 @@ def generate_intrinsic_tables():
 
 def get_package_data_tools():
     return ["compile_xpu.h", "compile_xpu.c"]
+
+
+def get_excluded_python_packages():
+    # XPU's typed-raw-op TLE is an independent extension, not the shared TLE.
+    return ["triton.experimental.tle", "triton.experimental.tle.*"]
+
+
+def get_python_packages():
+    # Select this one extension at build time. Do not redirect triton or
+    # experimental.__path__, or copy the main tree's TLE-only packages.
+    for root, dirs, files in os.walk(XPU_TLE_ROOT):
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
+        if "__init__.py" not in files:
+            continue
+        relative_dir = os.path.relpath(root, XPU_TLE_ROOT)
+        package = "triton.experimental.tle"
+        if relative_dir != ".":
+            package += "." + relative_dir.replace(os.sep, ".")
+        yield package, root
 
 
 def _patch_llvm_exports():
@@ -239,8 +259,9 @@ def install_python_impl(cached_path, flagtree_dir):
     """Stage the compiled XPU Python implementation into the tree.
 
     The package mirrors the installed layout under `python/`, so this is a
-    straight staging into the main `python/` tree. Two kinds of file travel
-    in it: the compiled modules, and the decoded intrinsic tables
+    staging into the main `python/` tree, except the independent XPU TLE
+    extension, whose sources and binaries must share `third_party/xpu/tle`.
+    Two kinds of file travel in it: the compiled modules, and the decoded intrinsic tables
     (`triton/backends/_tables/*.json`), which cannot be decoded at build time
     (see `_TABLE_TAGS`).
 
@@ -272,10 +293,25 @@ def install_python_impl(cached_path, flagtree_dir):
 
     _remove_restored_source_modules(dst_root)
     _sweep_stale_python_impl_modules(dst_root, package_modules)
+    tle_modules = {
+        Path(*rel.parts[3:])
+        for rel in package_modules
+        if rel.parts[:3] == ("triton", "experimental", "tle")
+    }
+    _sweep_stale_python_impl_modules(os.path.join(flagtree_dir, XPU_TLE_ROOT), tle_modules)
 
     modules = tables = 0
+    tle_prefix = os.path.join("triton", "experimental", "tle") + os.sep
     for source, rel, is_module, is_table in staged:
-        dst = os.path.join(dst_root, rel)
+        if rel.startswith(tle_prefix):
+            dst = os.path.join(flagtree_dir, XPU_TLE_ROOT, rel[len(tle_prefix):])
+        else:
+            dst = os.path.join(dst_root, rel)
+        # The artifact also contains compiled package initializers, named
+        # e.g. gpu.abi3.so. Keep the source package entry point instead.
+        module_name = os.path.basename(dst).split(".", 1)[0]
+        if is_module and os.path.isfile(os.path.join(os.path.dirname(dst), module_name, "__init__.py")):
+            continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(source, dst)
         modules += is_module
@@ -649,9 +685,13 @@ def _compiled_python_packages():
     matching those would name packages that hold no Python module at all.
     """
     suffixes = tuple(s for s in importlib.machinery.EXTENSION_SUFFIXES if s != ".so")
-    # Both roots are walked down to the package root itself, so `relative_to`
+    # Each root is walked down to the package root itself, so `relative_to`
     # yields a package-relative path that the prefix can be joined onto.
-    roots = ((Path(FLAGTREE_PYTHON_ROOT) / "triton", "triton"), (Path(BACKEND_ROOT), "triton.backends.xpu"))
+    roots = (
+        (Path(FLAGTREE_PYTHON_ROOT) / "triton", "triton"),
+        (Path(BACKEND_ROOT), "triton.backends.xpu"),
+        (Path(XPU_TLE_ROOT), "triton.experimental.tle"),
+    )
     for root, prefix in roots:
         if not root.is_dir():
             continue
