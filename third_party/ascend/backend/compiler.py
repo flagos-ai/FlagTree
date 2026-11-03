@@ -812,7 +812,10 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-tuning-mode={enable_tuning_mode}"]
 
-        if _is_auto_map_parallel_blocks_enabled():
+        enable_auto_blockify = metadata["enable_auto_blockify"]
+        if enable_auto_blockify is None:
+            enable_auto_blockify = _is_auto_map_parallel_blocks_enabled()
+        if enable_auto_blockify:
             _compile_option_list += ["--enable-auto-blockify-loop"]
         npu_compiler_path, env = _get_npucompiler_path()
         if npu_compiler_path.endswith("bishengir-compile"):
