@@ -106,7 +106,7 @@ jobs:
           python3 02-causal-conv1d-prefill.py
           python3 03-causal-conv1d-decode.py
           python3 04-tle-cv-mix-pipeline.py
-          # python3 05-lightning-indexer-v1.py  # TODO: target and source are not in the same block
+          python3 05-lightning-indexer-v1.py
           # python3 06-swiglu.py  # TODO: Mismatched elements: 1 / 15360000
           python3 07-kv-rmsnorm-rope-cache.py
           python3 -m pytest -k "accuracy" 08-add-rms-norm-bias.py
