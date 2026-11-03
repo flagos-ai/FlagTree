@@ -39,7 +39,12 @@ concurrency:
 
 jobs:
   hcu36x-unit-test:
-    runs-on: hcu3.6
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [hcu3.6, hcu3.6-bw1100]
+    runs-on: $${{ matrix.runner }}
+    variant: $${{ matrix.runner }}
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
