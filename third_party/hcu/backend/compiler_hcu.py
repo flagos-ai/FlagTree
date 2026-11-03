@@ -3,6 +3,7 @@ from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
+from .packet_schedule import PacketSchedulePolicy, prepare_packet_schedule
 from typing import Any, Dict, Optional, Tuple
 from types import ModuleType
 import hashlib
@@ -295,24 +296,7 @@ class HIPOptions:
             raise ValueError("prefetch_read_first_fence requires async_local_prefetch")
         if self.async_local_prefetch and (self.arch != "gfx936" or self.num_stages not in (3, 4, 5)):
             raise ValueError("async_local_prefetch experiment requires gfx936 and 3 to 5 stages")
-        if type(self.packet_operand_overlap_diagnostic) is not bool:
-            raise ValueError("packet_operand_overlap_diagnostic must be boolean")
-        if self.packet_operand_overlap_diagnostic and self.arch != "gfx936":
-            raise ValueError("packet_operand_overlap_diagnostic requires gfx936")
-        if self.packet_operand_overlap_diagnostic and (self.packet_wait_rotation or self.packet_post_mma_wait):
-            raise ValueError("operand overlap performs its own fresh rotation; choose one packet strategy")
-        if self.packet_reuse_wait not in ("none", "precopy") or type(self.packet_reuse_wait) is not str:
-            raise ValueError("packet_reuse_wait must be none or precopy")
-        if self.packet_reuse_wait != "none" and not self.packet_operand_overlap_diagnostic:
-            raise ValueError("packet_reuse_wait requires fresh packet_operand_overlap_diagnostic")
-        if type(self.coalesce_lgkm_waits) is not bool:
-            raise ValueError("coalesce_lgkm_waits must be boolean")
-        if self.coalesce_lgkm_waits and self.arch != "gfx936":
-            raise ValueError("coalesce_lgkm_waits requires gfx936")
-        if type(self.packet_redundant_lgkm_cleanup) is not bool:
-            raise ValueError("packet_redundant_lgkm_cleanup must be boolean")
-        if self.packet_redundant_lgkm_cleanup and self.arch != "gfx936":
-            raise ValueError("packet_redundant_lgkm_cleanup requires gfx936")
+        PacketSchedulePolicy.from_options(self)
         if type(self.structured_register_flat_addressing) is not bool:
             raise ValueError("structured_register_flat_addressing must be boolean")
         if self.structured_register_flat_addressing and self.arch != "gfx936":
@@ -1335,52 +1319,11 @@ class HIPBackend(BaseBackend):
 
         if options.arch == "gfx936" and not _skip_mma_phase:
             try:
-                if options.packet_wait_rotation and options.packet_post_mma_wait:
-                    raise ValueError("Choose one packet wait strategy")
-                if options.packet_operand_overlap_diagnostic:
-                    candidate, loops, removed, reason = llvm.prepare_hcu_packet_operand_overlap_diagnostic(
-                        src, options.arch, options.num_warps * 64,
-                        int(metadata.get("shared", 0)))
-                    metadata["hcu_packet_operand_overlap_result"] = reason
-                    metadata["hcu_packet_operand_overlap_loops"] = loops
-                    metadata["hcu_packet_operand_overlap_removed_waits"] = removed
-                    metadata["hcu_packet_operand_overlap_rotation_loops"] = loops
-                    # Helper proves one removed full wait for every fresh group.
-                    metadata["hcu_packet_operand_overlap_groups"] = removed
-                    if loops:
-                        schedule_original = stage_original
-                        src = candidate
-                if options.packet_post_mma_wait:
-                    candidate, loops, reason = llvm.prepare_hcu_packet_post_mma_wait(
-                        src, options.arch, options.num_warps * 64,
-                        int(metadata.get("shared", 0)))
-                    metadata["hcu_packet_post_mma_wait_result"] = reason
-                    metadata["hcu_packet_post_mma_wait_loops"] = loops
-                    if loops:
-                        schedule_original = stage_original
-                        src = candidate
-                    else:
-                        validate_imported_schedule |= imported_schedule
-                if options.packet_wait_rotation:
-                    candidate, loops, reason = llvm.prepare_hcu_packet_wait_rotation(
-                        src, options.arch, options.num_warps * 64,
-                        int(metadata.get("shared", 0)))
-                    metadata["hcu_packet_wait_rotation_result"] = reason
-                    metadata["hcu_packet_wait_rotation_loops"] = loops
-                    if loops:
-                        schedule_original = stage_original
-                        src = candidate
-                    else:
-                        validate_imported_schedule |= imported_schedule
-                if options.mma_phase_schedule:
-                    candidate, loops = llvm.prepare_hcu_mma_phase_loops(
-                        src, options.arch, options.num_warps)
-                    if loops:
-                        schedule_original = stage_original
-                        src = candidate
-                        metadata["hcu_mma_phase_loops"] = loops
-                    else:
-                        validate_imported_schedule |= imported_schedule
+                src, prepared = prepare_packet_schedule(
+                    src, metadata, PacketSchedulePolicy.from_options(options),
+                    llvm, options.arch, options.num_warps)
+                if prepared:
+                    schedule_original = stage_original
             except (RuntimeError, ValueError) as error:
                 return fallback_schedules("preparation: " + str(error))
         # Run after all late LLVM scheduling transforms, before native selection.
