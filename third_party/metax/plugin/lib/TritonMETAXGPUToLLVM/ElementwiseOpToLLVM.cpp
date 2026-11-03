@@ -689,83 +689,6 @@ struct FpToFpOpConversion
     }
   }
 
-  static SmallVector<Value>
-  Fp32_to_Fp8E5M2_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
-                          const SmallVector<Value> &v, triton::FpToFpOp op) {
-    assert(v.size() == 2);
-    // auto b = TritonLLVMOpBuilder(loc, rewriter);
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
-    SmallVector<Value> result(2);
-    for (size_t i = 0; i < 2; ++i) {
-      Value fp32 = v[i];
-      Value i32 = b.bitcast(fp32, i32_ty);
-
-      Value s = b.and_(i32_ty, i32, b.i32_val(0x80000000));
-      Value exp =
-          b.and_(i32_ty, b.lshr(i32_ty, i32, b.i32_val(23)), b.i32_val(0xFF));
-      Value man = b.and_(i32_ty, i32, b.i32_val(0x007FFFFF));
-
-      // Convert 8-bit exponent to 5-bit
-      Value exp5 = b.select(b.icmp_ult(exp, b.i32_val(0x71)), b.i32_val(0),
-                            b.sub(i32_ty, exp, b.i32_val(0x70)));
-
-      // Handle subnormal values (exp5 = 0)
-      // - exp <  0x6e: mantissa = 0x00000000 (0)
-      // - exp == 0x6e: mantissa = 0x00000000 (0),
-      //                           0x00200000 (1/4)
-      // - exp == 0x6f: mantissa = 0x00200000 (1/4),
-      //                           0x00400000 (1/2)
-      // - exp == 0x70: mantissa = 0x00400000 (1/2),
-      //                           0x00600000 (3/4),
-      //                           0x00800000 (1)
-      man = b.select(b.icmp_ult(exp, b.i32_val(0x6e)), b.i32_val(0), man);
-      man = b.select(b.icmp_eq(exp, b.i32_val(0x6e)),
-                     b.select(b.icmp_ne(man, b.i32_val(0)),
-                              b.i32_val(0x00200000), b.i32_val(0)),
-                     man);
-      man = b.select(b.icmp_eq(exp, b.i32_val(0x6f)),
-                     b.select(b.icmp_uge(man, b.i32_val(0x00400000)),
-                              b.i32_val(0x00400000), b.i32_val(0x00200000)),
-                     man);
-      man = b.select(
-          b.icmp_eq(exp, b.i32_val(0x70)),
-          b.select(b.icmp_ugt(man, b.i32_val(0x00200000)),
-                   b.select(b.icmp_uge(man, b.i32_val(0x00600000)),
-                            b.i32_val(0x00800000), b.i32_val(0x00600000)),
-                   b.i32_val(0x00400000)),
-          man);
-
-      // Round 23-bit mantissa to 2-bit nearest, ties to even
-      Value sig = b.or_(i32_ty, b.shl(i32_ty, exp5, b.i32_val(23)), man);
-      Value bias =
-          b.add(i32_ty,
-                b.lshr(i32_ty, b.and_(i32_ty, sig, b.i32_val(0x00200000)),
-                       b.i32_val(21)),
-                b.i32_val(0x000FFFFF));
-      i32 = b.add(i32_ty, sig, bias);
-
-      // Handle overflow using saturation mode, by setting sig to be the max.
-      // Overflow will happe for the following cases:
-      // - Any number equal or larger than 0x0F700000 after rounding
-      // - Exponent larged than 0x8E (including infinite 0xFF)
-      i32 = b.select(b.or_(b.icmp_ugt(exp, b.i32_val(0x8E)),
-                           b.icmp_uge(sig, b.i32_val(0x0F700000))),
-                     b.i32_val(0x0F7FFFFF), i32);
-
-      // Handle NaN value by keeping it Nan
-      i32 = b.select(b.and_(b.icmp_eq(exp, b.i32_val(0xFF)),
-                            b.icmp_ne(man, b.i32_val(0x0))),
-                     b.i32_val(0x0FC00000), i32);
-
-      // Add sign bit
-      i32 = b.or_(i32_ty, b.lshr(i32_ty, s, b.i32_val(3)), i32);
-
-      // Truncate to 8-bit
-      result[i] = b.trunc(i8_ty, b.lshr(i32_ty, i32, b.i32_val(21)));
-    }
-    return result;
-  }
-
   template <typename SrcFPType, typename DstFPType>
   static Value downcastToFp8_RTNE_oneValue(Location loc,
                                            ConversionPatternRewriter &rewriter,
@@ -938,72 +861,6 @@ struct FpToFpOpConversion
   }
 
   static Value
-  convertFp32DowncastCommon(Location loc, ConversionPatternRewriter &rewriter,
-                            const Value &v, const RoundingMode rounding,
-                            const int &exp_bits, const int &mantissa_bits,
-                            const int &exp_bias) {
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
-    Value as_int32 = b.bitcast(v, i32_ty);
-    int exp_bias_fp32 = 127;
-    int exp_shift = exp_bias_fp32 - exp_bias;
-    // extract sign, exp and mantissa
-    Value sign = b.and_(as_int32, b.i32_val(0x80000000));
-    Value mantissa = b.and_(as_int32, b.i32_val(0x007fffff));
-    Value exp = b.and_(b.lshr(as_int32, b.i32_val(23)), b.i32_val(0xff));
-
-    mantissa = b.select(b.icmp_eq(exp, b.int_val(32, 0)), mantissa,
-                        b.add(mantissa, b.int_val(32, 0x800000)));
-    exp = b.select(b.icmp_eq(exp, b.int_val(32, 0)), exp,
-                   b.sub(exp, b.int_val(32, 1)));
-
-    if (rounding == RoundingMode::RTNE) {
-      int shift_bits = 23 - mantissa_bits;
-      int rounding_bias = (1 << (shift_bits - 1)) - 1;
-      mantissa = b.add(i32_ty, mantissa, b.i32_val(rounding_bias));
-    }
-
-    // process denormal cases
-    Value new_mantissa = b.select(
-        b.icmp_ule(exp, b.int_val(32, exp_shift - 16)), b.int_val(32, 0),
-        b.lshr(mantissa, b.int_val(32, 23 - mantissa_bits)));
-    Value new_exp = b.select(b.icmp_ule(exp, b.int_val(32, exp_shift - 16)),
-                             b.int_val(32, exp_shift),
-                             exp); // too small for fp16 to express
-    new_mantissa =
-        b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 8)),
-                 new_mantissa, b.lshr(new_mantissa, b.int_val(32, 8)));
-    new_exp = b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 8)),
-                       new_exp, b.add(new_exp, b.int_val(32, 8)));
-    new_mantissa =
-        b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 4)),
-                 new_mantissa, b.lshr(new_mantissa, b.int_val(32, 4)));
-    new_exp = b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 4)),
-                       new_exp, b.add(new_exp, b.int_val(32, 4)));
-    new_mantissa =
-        b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 2)),
-                 new_mantissa, b.lshr(new_mantissa, b.int_val(32, 2)));
-    new_exp = b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 2)),
-                       new_exp, b.add(new_exp, b.int_val(32, 2)));
-    new_mantissa =
-        b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 1)),
-                 new_mantissa, b.lshr(new_mantissa, b.int_val(32, 1)));
-    new_exp = b.select(b.icmp_ugt(new_exp, b.int_val(32, exp_shift - 1)),
-                       new_exp, b.add(new_exp, b.int_val(32, 1)));
-    new_exp = b.sub(new_exp, b.i32_val(exp_shift));
-
-    // concat sign, exp and mantissa
-    int target_dtype_bits = 1 + exp_bits + mantissa_bits;
-    Value new_sign = b.lshr(sign, b.i32_val(32 - target_dtype_bits));
-    new_exp = b.shl(new_exp, b.i32_val(mantissa_bits));
-    Value new_value =
-        b.add(i32_ty, b.add(i32_ty, new_sign, new_exp), new_mantissa);
-    if (target_dtype_bits == 16) {
-      return b.trunc(i16_ty, new_value);
-    }
-    return b.trunc(i8_ty, new_value);
-  }
-
-  static Value
   convertFp32ToFp16(Location loc, ConversionPatternRewriter &rewriter,
                     const Value &v,
                     const RoundingMode rounding = RoundingMode::RTNE) {
@@ -1059,19 +916,6 @@ struct FpToFpOpConversion
       return b.bitcast(truncated, f16_ty);
     }
     return rewriter.create<LLVM::FPTruncOp>(loc, f16_ty, v);
-  }
-
-  // Fp32 -> OCP Fp8 (RTNZ)
-  static SmallVector<Value>
-  Fp32ToFp8E5M2RTZ(Location loc, ConversionPatternRewriter &rewriter,
-                   const SmallVector<Value> &v, triton::FpToFpOp op) {
-    assert(v.size() == 2);
-    SmallVector<Value> ret(2);
-    ret[0] = convertFp32DowncastCommon(loc, rewriter, v[0], RoundingMode::RTZ,
-                                       5, 2, 15);
-    ret[1] = convertFp32DowncastCommon(loc, rewriter, v[1], RoundingMode::RTZ,
-                                       5, 2, 15);
-    return ret;
   }
 
   template <typename DstFPType>
@@ -1153,10 +997,8 @@ struct FpToFpOpConversion
       narrowed.push_back(convertFp64ToFp32ForFp8(loc, rewriter, value));
     if constexpr (rounding == RoundingMode::RTZ) {
       return Fp32_to_Fp8_RTZ_SW<DstFPType>(loc, rewriter, narrowed, op);
-    } else if constexpr (std::is_same_v<DstFPType, Float8E4M3FNType>) {
-      return Fp32_to_Fp8E4M3FN_RTNE_SW(loc, rewriter, narrowed, op);
     } else {
-      return Fp32_to_Fp8E5M2_RTNE_SW(loc, rewriter, narrowed, op);
+      return Fp32_to_Fp8_RTNE_SW<DstFPType>(loc, rewriter, narrowed, op);
     }
   }
 
@@ -1318,13 +1160,18 @@ struct FpToFpOpConversion
                : std::make_pair(Fp32_to_Fp8E4M3FNUZ_RTNE_SW, 2);
   }
 
+  template <typename DstFPType>
   static SmallVector<Value>
-  Fp32_to_Fp8E4M3FN_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
-                            const SmallVector<Value> &v, triton::FpToFpOp op) {
-    constexpr unsigned mantissaShift = 23 - 3;
-    constexpr unsigned exponentBias = (127 - 7) << 23;
-    constexpr unsigned maxFinite = 0x7e;
-    constexpr unsigned quietNaN = 0x7f;
+  Fp32_to_Fp8_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
+                      const SmallVector<Value> &v, triton::FpToFpOp op) {
+    static_assert(std::is_same_v<DstFPType, Float8E4M3FNType> ||
+                  std::is_same_v<DstFPType, Float8E5M2Type>);
+    constexpr bool isE4M3 = std::is_same_v<DstFPType, Float8E4M3FNType>;
+    constexpr unsigned mantissaBits = isE4M3 ? 3 : 2;
+    constexpr unsigned exponentBias = isE4M3 ? 7 : 15;
+    constexpr unsigned mantissaShift = 23 - mantissaBits;
+    constexpr unsigned maxFinite = isE4M3 ? 0x7e : 0x7b;
+    constexpr unsigned quietNaN = isE4M3 ? 0x7f : 0x7e;
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     SmallVector<Value> result;
     for (Value value : v) {
@@ -1332,7 +1179,7 @@ struct FpToFpOpConversion
       Value sign = b.and_(b.lshr(bits, b.i32_val(24)), b.i32_val(0x80));
       Value magnitude = b.and_(bits, b.i32_val(0x7fffffff));
 
-      Value normal = b.sub(magnitude, b.i32_val(exponentBias));
+      Value normal = b.sub(magnitude, b.i32_val((127 - exponentBias) << 23));
       Value odd =
           b.and_(b.lshr(normal, b.i32_val(mantissaShift)), b.i32_val(1));
       normal = b.lshr(
@@ -1340,14 +1187,15 @@ struct FpToFpOpConversion
           b.i32_val(mantissaShift));
       normal = b.umin(normal, b.i32_val(maxFinite));
 
-      // At 2^14, an FP32 ULP is the E4M3FN subnormal step 2^-9.
-      // One RTNE add replaces the eight dependent midpoint selects; the
-      // constant's low byte is zero, so truncation extracts the rounded code.
-      Value subnormal = b.bitcast(
-          b.fadd(f32_ty, b.bitcast(magnitude, f32_ty), b.f32_val(0x1p+14)),
-          i32_ty);
-      Value code = b.select(b.icmp_ult(magnitude, b.i32_val((127 - 6) << 23)),
-                            subnormal, normal);
+      // The FP32 ULP at this power of two equals one FP8 subnormal step.
+      // One RTNE add replaces the dependent midpoint selects; the constant's
+      // low byte is zero, so truncation extracts the rounded code.
+      Value subnormal = b.bitcast(b.fadd(f32_ty, b.bitcast(magnitude, f32_ty),
+                                         b.f32_val(isE4M3 ? 0x1p+14 : 0x1p+7)),
+                                  i32_ty);
+      Value code =
+          b.select(b.icmp_ult(magnitude, b.i32_val((128 - exponentBias) << 23)),
+                   subnormal, normal);
       code = b.select(b.icmp_ugt(magnitude, b.i32_val(0x7f800000)),
                       b.i32_val(quietNaN), code);
       result.push_back(b.trunc(i8_ty, b.or_(code, sign)));
@@ -1378,7 +1226,7 @@ struct FpToFpOpConversion
         std::getenv("TRITON_DISABLE_FAST_F32_F8_CVT") == nullptr;
     return (computeCapability >= 89 && enableFastCvt)
                ? std::make_pair(Fp32_to_Fp8E4M3FN_RTNE_HW, 4)
-               : std::make_pair(Fp32_to_Fp8E4M3FN_RTNE_SW, 2);
+               : std::make_pair(Fp32_to_Fp8_RTNE_SW<Float8E4M3FNType>, 2);
   }
 
   static SmallVector<Value>
@@ -1476,7 +1324,7 @@ struct FpToFpOpConversion
     for (Value val : v) {
       buf.push_back(convertFp16ToFp32(loc, rewriter, val));
     }
-    return Fp32_to_Fp8E4M3FN_RTNE_SW(loc, rewriter, buf, op);
+    return Fp32_to_Fp8_RTNE_SW<Float8E4M3FNType>(loc, rewriter, buf, op);
   }
 
   static SmallVector<Value>
@@ -1486,7 +1334,7 @@ struct FpToFpOpConversion
     for (Value val : v) {
       buf.push_back(mlir::LLVM::METAX::convertBf16ToFp32(loc, rewriter, val));
     }
-    return Fp32_to_Fp8E4M3FN_RTNE_SW(loc, rewriter, buf, op);
+    return Fp32_to_Fp8_RTNE_SW<Float8E4M3FNType>(loc, rewriter, buf, op);
   }
 
   static SmallVector<Value>
@@ -1496,7 +1344,7 @@ struct FpToFpOpConversion
     for (Value val : v) {
       buf.push_back(convertFp16ToFp32(loc, rewriter, val));
     }
-    return Fp32_to_Fp8E5M2_RTNE_SW(loc, rewriter, buf, op);
+    return Fp32_to_Fp8_RTNE_SW<Float8E5M2Type>(loc, rewriter, buf, op);
   }
 
   static SmallVector<Value>
@@ -1529,7 +1377,7 @@ struct FpToFpOpConversion
         std::getenv("TRITON_DISABLE_FAST_F32_F8_CVT") == nullptr;
     return (computeCapability >= 89 && enableFastCvt)
                ? std::make_pair(Fp32_to_Fp8E5M2_RTNE_HW, 4)
-               : std::make_pair(Fp32_to_Fp8E5M2_RTNE_SW, 2);
+               : std::make_pair(Fp32_to_Fp8_RTNE_SW<Float8E5M2Type>, 2);
   }
 
   static std::pair<ConverterT, size_t>
@@ -1635,7 +1483,7 @@ struct FpToFpOpConversion
             {{F32TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
              Fp32_to_Fp8E5M2FNUZ_RTNE(computeCapability)},
             {{F32TyID, F8E5M2TyID, RoundingMode::RTZ},
-             std::make_pair(Fp32ToFp8E5M2RTZ, 2)},
+             std::make_pair(Fp32_to_Fp8_RTZ_SW<Float8E5M2Type>, 2)},
             {{F32TyID, F8E4M3FNTyID, RoundingMode::RTZ},
              std::make_pair(Fp32_to_Fp8_RTZ_SW<Float8E4M3FNType>, 2)},
             // FP64 -> FP8 uses a round-to-odd FP32 intermediate.

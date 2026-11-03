@@ -189,20 +189,14 @@ def _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, device, rounding, n
 
 
 @pytest.mark.parametrize("src_dtype", [tl.float16, tl.bfloat16, tl.float32])
-@pytest.mark.parametrize("rounding", [None, "rtne"])
+@pytest.mark.parametrize("dst_dtype", [tl.float8e4nv, tl.float8e5])
+@pytest.mark.parametrize("rounding", [None, "rtne", "rtz"])
 @pytest.mark.parametrize("num_warps", [1, 4])
-def test_metax_e4m3_rtne(src_dtype, rounding, num_warps, metax_device):
+def test_metax_fp8_downcast(src_dtype, dst_dtype, rounding, num_warps, metax_device):
     bits = (np.arange(65536, dtype=np.uint16) if src_dtype != tl.float32 else
-            np.concatenate((_metax_fp8_boundary_values(tl.float8e4nv, np.float32),
+            np.concatenate((_metax_fp8_boundary_values(dst_dtype, np.float32),
                             np.array([0x7f800001, 0x7fbfffff, 0xff800001, 0xffbfffff], dtype=np.uint32))))
-    _metax_assert_fp8_conversion(bits, src_dtype, tl.float8e4nv, metax_device, rounding, num_warps)
-
-
-@pytest.mark.parametrize("src_dtype", [tl.float16, tl.bfloat16, tl.float32])
-def test_metax_e4m3_rtz(src_dtype, metax_device):
-    bits = (np.arange(65536, dtype=np.uint16) if src_dtype != tl.float32 else
-            _metax_fp8_boundary_values(tl.float8e4nv, np.float32))
-    _metax_assert_fp8_conversion(bits, src_dtype, tl.float8e4nv, metax_device, "rtz")
+    _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, metax_device, rounding, num_warps)
 
 
 @pytest.mark.parametrize("src_dtype", [tl.float8e4nv, tl.float8e5])
