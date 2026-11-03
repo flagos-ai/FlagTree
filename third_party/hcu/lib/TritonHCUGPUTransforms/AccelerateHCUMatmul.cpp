@@ -946,22 +946,6 @@ public:
       warpsPerTile = {static_cast<unsigned>(hint.getInt()),
                       static_cast<unsigned>(numWarps / hint.getInt())};
     }
-    auto tpwHint = module->getAttrOfType<IntegerAttr>("ttg.hcu.mmac_tpw_n");
-    auto tpwTarget = module->getAttrOfType<StringAttr>("ttg.target");
-    // Private gfx936 diagnostic: group logical N tiles within each warp using
-    // the existing MMAC layout parameter. Preserve actual matrix-load tiles.
-    if (tpwHint && (tpwHint.getInt() == 2 || tpwHint.getInt() == 4 ||
-                    tpwHint.getInt() == 8) &&
-        tpwTarget && tpwTarget.getValue() == "hip:gfx936" && !useMatrixLoad &&
-        rank == 2 && mmacLayout == MmacLayout::LEGACY && mDim == 16 &&
-        nDim == 16 && kDim == 16 && warpsPerTile[1] > 0 &&
-        oldAType.getElementType() == oldBType.getElementType() &&
-        (oldAType.getElementType().isF16() ||
-         oldAType.getElementType().isBF16())) {
-      int64_t tileN = 16 * warpsPerTile[1] * tpwHint.getInt();
-      if (retShape[1] >= tileN && retShape[1] % tileN == 0)
-        tilesPerWarp[1] = static_cast<unsigned>(tpwHint.getInt());
-    }
     if (oldRetType.getElementType().isIntOrIndex())
       mfmaAccType = rewriter.getIntegerType(32);
     else if (oldRetType.getElementType().isF64())
