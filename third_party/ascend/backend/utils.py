@@ -534,6 +534,9 @@ def convert_sigtype_to_int(sigty: str):
         "fp8e4nv": 36,  # FLOAT8_E4M3FN
     }
     if sigty not in MAP_SIGTYPE_TO_INT:
+        # A custom struct/array pointer is a byte pointer in the IR.
+        if sigty.startswith("struct<") or sigty.startswith("array<"):
+            return 2  # INT8
         raise ValueError(f"Unsupported data type: {sigty}")
 
     return MAP_SIGTYPE_TO_INT[sigty]

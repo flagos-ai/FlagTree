@@ -13,6 +13,7 @@ add_triton_library(TritonTransforms
   RewriteTensorDescriptorToPointer.cpp
   ArithTypeConversion.cpp
   FunctionTypeConversion.cpp
+  LowerStructs.cpp
 
   DEPENDS
   TritonTransformsIncGen
@@ -23,5 +24,6 @@ add_triton_library(TritonTransforms
   MLIRTransformUtils
   MLIRTransforms
   MLIRSCFToControlFlow
+  MLIRArithDialect
   TritonIR
 )

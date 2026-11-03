@@ -374,6 +374,9 @@ def create_specialize_impl(specialize_extra):
                 return ("i64", key)
         elif isinstance(arg, float):
             return ("fp32", None)
+        elif hasattr(arg, "struct_type") and hasattr(arg, "data_ptr"):
+            # StructView: a device buffer plus a struct type (by reference).
+            return ("*" + arg.struct_type.signature(), None)
         elif hasattr(arg, "data_ptr"):
             # dtypes are hashable so we can memoize this mapping:
             dsk = (arg.dtype, is_const)
