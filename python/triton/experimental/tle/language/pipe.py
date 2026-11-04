@@ -107,8 +107,9 @@ def pipe(
     proven disjoint, are rejected. A single producer continues to use the
     ordinary SPSC lowering.
 
-    one_shot=True models a single ready/full edge. The writer still commits and
-    readers still wait, but acquire/release/close are not part of the contract.
+    A fieldless pipe is a pure control edge. Cyclic fieldless pipes support the
+    ordinary acquire/commit/wait/release protocol; one_shot=True models a
+    single ready/full edge without acquire/release/close.
     """
     # Ascend keeps the 3.5 workspace-backed pipe implementation. Dispatch before
     # the GPU field validation below, which only accepts gpu.buffered_tensor.
@@ -134,10 +135,8 @@ def pipe(
         raise ValueError(f"tle.pipe name must be a string or None, got {type(name).__name__}")
     if not isinstance(one_shot, bool):
         raise ValueError(f"tle.pipe one_shot must be a compile-time bool, got {type(one_shot).__name__}")
-    if not fields:
-        raise ValueError("tle.pipe requires at least one payload field")
-
-    if mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder):
+    musa_pipe = mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder)
+    if musa_pipe:
         mthreads_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
 
     for field_name, field in fields.items():
@@ -153,9 +152,12 @@ def pipe(
             raise ValueError(
                 f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
-    value = gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
-    _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
-                                         list(fields.keys()), list(reader_names or ()), one_shot)
+    value_type = mthreads_pipe.pipe_value if musa_pipe else gpu_types.pipe_value
+    value = value_type(capacity, scope, name, fields, reader_names, one_shot=one_shot)
+    identity = _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
+                                                    list(fields.keys()), list(reader_names or ()), one_shot)
+    if not musa_pipe:
+        value.identity = identity
     return value
 
 
