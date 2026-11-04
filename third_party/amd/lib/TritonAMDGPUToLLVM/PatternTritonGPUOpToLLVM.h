@@ -61,9 +61,27 @@ void populateTensorPtrOpsToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                         RewritePatternSet &patterns,
                                         PatternBenefit benefit);
 
+#ifdef __TLE__
+// Lowers the native amdg Init/Arrive/WaitBarrier ops (the Gluon gfx1250
+// mbarrier path; TLE reuses them for its tle.pipe mbarrier emulation).
+void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                     RewritePatternSet &patterns,
+                                     const TargetInfo &targetInfo,
+                                     PatternBenefit benefit);
+#else
 void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                      RewritePatternSet &patterns,
                                      PatternBenefit benefit);
+#endif
+
+
+#ifdef __TLE__
+// RDNA lowering of tle.distributed_barrier (group_kind grid / grid_axis).
+// Declared only when the TLE plugin is built (__TLE__).
+void populateDistributedBarrierOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    const TargetInfo &targetInfo, PatternBenefit benefit);
+#endif // __TLE__
 } // namespace mlir::triton::AMD
 
 #endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_PATTERNTRITONGPUOPTOLLVM_H_

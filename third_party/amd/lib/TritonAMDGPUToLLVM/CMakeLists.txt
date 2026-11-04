@@ -1,3 +1,8 @@
+set(TLE_AMD_BARRIER_SOURCE BarrierOpToLLVM.cpp)
+if(FLAGTREE_TLE)
+  set(TLE_AMD_BARRIER_SOURCE ../../tle/BarrierOpToLLVM.cpp)
+endif()
+
 if(FLAGTREE_TLE)
     set(_TLE_LIBS
         TritonTLEAnalysis
@@ -39,7 +44,8 @@ add_triton_library(TritonAMDGPUToLLVM
     MembarUtility.cpp
     ScalarizePackedFOps.cpp
     TDMUtility.cpp
-    BarrierOpToLLVM.cpp
+    ${TLE_AMD_BARRIER_SOURCE}
+    ../../tle/DistributedBarrierOpToLLVM.cpp
 
     DEPENDS
     TritonAMDGPUConversionPassIncGen
@@ -60,3 +66,10 @@ add_triton_library(TritonAMDGPUToLLVM
     LLVMSupport
     ${_TLE_LIBS}
 )
+
+if(FLAGTREE_TLE)
+# The TLE primitive lowering lives under third_party/amd/tle (kept out of the
+# upstream backend sources) but compiles into this library under __TLE__; add
+# this dir so its "PatternTritonGPUOpToLLVM.h" include resolves.
+target_include_directories(TritonAMDGPUToLLVM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endif()

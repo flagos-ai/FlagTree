@@ -183,6 +183,49 @@ def cos(arg0, _semantic=None):
         }, is_pure=True, _semantic=_semantic)
 
 
+# NVIDIA's libdevice exposes fast_cosf/fast_sinf (fp32 fast-math); RDNA has no
+# dedicated fast symbol, so map to the accurate OCML fp32 routine. The name
+# parity lets platform-neutral kernel templates resolve on both backends.
+@core.extern
+def fast_cosf(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ocml_cos_f32", core.dtype("fp32")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+@core.extern
+def fast_sinf(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ocml_sin_f32", core.dtype("fp32")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+# NVIDIA maps mul_rn to __nv_fmul_rn: a separately rounded product that a later
+# add cannot absorb. A plain fmul here rounds to nearest, but under
+# enable_fp_fusion it can contract into a following FMA, dropping the product's
+# rounding that RoPE relies on. An fma(a, b, 0) trick cannot both block that
+# fusion and keep the sign of a zero product. Emit the hardware multiply via
+# inline asm: it is round-to-nearest, preserves the sign of a zero product, and
+# is opaque to the contraction pass. `v` operands cover fp32 and the fp64 VGPR
+# pair; `is_pure` keeps it CSE-able.
+@core.extern
+def mul_rn(arg0, arg1, _semantic=None):
+    # inline_asm_elementwise does not type-check or promote its operands, so a
+    # mixed fp32/fp64 call would emit mismatched operand widths. Promote both to
+    # their common float type first (as _semantic.mul does) and pick the matching
+    # multiply from the promoted type.
+    arg0, arg1 = _semantic.binary_op_type_checking_impl(arg0, arg1)
+    if arg0.dtype == core.dtype("fp64"):
+        return core.inline_asm_elementwise("v_mul_f64 $0, $1, $2", "=v,v,v",
+                                           [arg0, arg1], dtype=core.dtype("fp64"),
+                                           is_pure=True, pack=1, _semantic=_semantic)
+    return core.inline_asm_elementwise("v_mul_f32_e64 $0, $1, $2", "=v,v,v",
+                                       [arg0, arg1], dtype=core.dtype("fp32"),
+                                       is_pure=True, pack=1, _semantic=_semantic)
+
+
 @core.extern
 def tan(arg0, _semantic=None):
     return core.extern_elementwise(
