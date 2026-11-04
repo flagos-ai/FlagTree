@@ -791,7 +791,7 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, std::vector<Value> fields,
               int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
-              std::vector<std::string> readerNames, bool oneShot) -> void {
+              std::vector<std::string> readerNames, bool oneShot) -> Value {
              auto &builder = self.getBuilder();
              SmallVector<Attribute> fieldNameAttrs;
              fieldNameAttrs.reserve(fieldNames.size());
@@ -810,14 +810,15 @@ void init_triton_tle_ir(py::module &&m) {
              BoolAttr oneShotAttr;
              if (oneShot)
                oneShotAttr = builder.getBoolAttr(true);
-             self.create<tle::PipeCreateOp>(
-                 fields, builder.getI32IntegerAttr(capacity),
+             return self.create<tle::PipeCreateOp>(
+                 builder.getI32Type(), fields, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNamesAttr,
                  oneShotAttr);
            })
       .def("create_pipe_writer_acquire",
-           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+           [](TritonOpBuilder &self, Value identity,
+              std::vector<Value> fields, Value stage,
               Value phase, int32_t capacity, const std::string &scope,
               const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
@@ -830,12 +831,13 @@ void init_triton_tle_ir(py::module &&m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<tle::PipeWriterAcquireOp>(
-                 fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_writer_commit",
-           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+           [](TritonOpBuilder &self, Value identity,
+              std::vector<Value> fields, Value stage,
               int32_t capacity, const std::string &scope,
               const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
@@ -848,12 +850,13 @@ void init_triton_tle_ir(py::module &&m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<tle::PipeWriterCommitOp>(
-                 fields, stage, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_writer_close",
-           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+           [](TritonOpBuilder &self, Value identity,
+              std::vector<Value> fields, Value stage,
               Value phase, int32_t capacity, const std::string &scope,
               const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
@@ -866,12 +869,13 @@ void init_triton_tle_ir(py::module &&m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<tle::PipeWriterCloseOp>(
-                 fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_reader_wait",
-           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+           [](TritonOpBuilder &self, Value identity,
+              std::vector<Value> fields, Value stage,
               Value phase, int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
               const std::string &readerName,
@@ -888,13 +892,14 @@ void init_triton_tle_ir(py::module &&m) {
              if (!readerName.empty())
                readerNameAttr = builder.getStringAttr(readerName);
              return self.create<tle::PipeReaderWaitOp>(
-                 builder.getI1Type(), fields, stage, phase,
+                 builder.getI1Type(), identity, fields, stage, phase,
                  builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
            })
       .def("create_pipe_reader_release",
-           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+           [](TritonOpBuilder &self, Value identity,
+              std::vector<Value> fields, Value stage,
               int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
               const std::string &readerName, std::vector<std::string>) -> void {
@@ -910,9 +915,27 @@ void init_triton_tle_ir(py::module &&m) {
              if (!readerName.empty())
                readerNameAttr = builder.getStringAttr(readerName);
              self.create<tle::PipeReaderReleaseOp>(
-                 fields, stage, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
+           })
+      .def("create_pipe_drain",
+           [](TritonOpBuilder &self, Value identity, std::vector<Value> fields,
+              int32_t capacity, const std::string &scope,
+              const std::string &pipeName,
+              std::vector<std::string> fieldNames) -> void {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             self.create<tle::PipeDrainOp>(
+                 identity, fields, builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, Type exclusiveTy, Type totalTy, Value src,
