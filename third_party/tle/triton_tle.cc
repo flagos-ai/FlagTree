@@ -928,7 +928,7 @@ void init_triton_tle_ir(py::module &&m) {
                  Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
                  StringAttr(), IntegerAttr(), IntegerAttr(),
                  tle::SyncScopeAttr(), IntegerAttr(), DenseI32ArrayAttr(),
-                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
       .def(
           "create_distributed_barrier",
@@ -957,7 +957,7 @@ void init_triton_tle_ir(py::module &&m) {
                 src.value_or(Value()), spaceAttr, barrierTypeAttr, orderAttr,
                 kindAttr, barrierIndexAttr, contextIdAttr, memoryScopeAttr,
                 IntegerAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr(),
-                DenseI32ArrayAttr());
+                DenseI32ArrayAttr(), DenseI32ArrayAttr());
           },
           py::arg("src") = py::none(), py::arg("barrier_index"),
           py::arg("space"), py::arg("group_kind"), py::arg("order"),
@@ -1013,7 +1013,8 @@ void init_triton_tle_ir(py::module &&m) {
           [](TritonOpBuilder &self, const std::string &groupKind,
              const std::vector<int32_t> &groupShape,
              const std::vector<int32_t> &groupAxes,
-             const std::vector<int32_t> &groupMask) -> void {
+             const std::vector<int32_t> &groupMask,
+             const std::vector<int32_t> &groupDomainShape) -> void {
             auto &builder = self.getBuilder();
             auto *ctx = builder.getContext();
             StringAttr kindAttr;
@@ -1021,6 +1022,7 @@ void init_triton_tle_ir(py::module &&m) {
             DenseI32ArrayAttr shapeAttr;
             DenseI32ArrayAttr axesAttr;
             DenseI32ArrayAttr maskAttr;
+            DenseI32ArrayAttr domainShapeAttr;
 
             if (!groupKind.empty()) {
               kindAttr = builder.getStringAttr(groupKind);
@@ -1028,7 +1030,7 @@ void init_triton_tle_ir(py::module &&m) {
             // Only materialize subgroup metadata when provided.
             // This allows kind-only barriers (e.g. group_kind="grid").
             if (!groupShape.empty() || !groupAxes.empty() ||
-                !groupMask.empty()) {
+                !groupMask.empty() || !groupDomainShape.empty()) {
               rankAttr = builder.getI32IntegerAttr(
                   static_cast<int32_t>(groupShape.size()));
               if (!groupShape.empty()) {
@@ -1040,15 +1042,19 @@ void init_triton_tle_ir(py::module &&m) {
               if (!groupMask.empty()) {
                 maskAttr = DenseI32ArrayAttr::get(ctx, groupMask);
               }
+              if (!groupDomainShape.empty()) {
+                domainShapeAttr =
+                    DenseI32ArrayAttr::get(ctx, groupDomainShape);
+              }
             }
 
             self.create<tle::DistributedBarrierOp>(
                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
                 kindAttr, IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
-                rankAttr, shapeAttr, axesAttr, maskAttr);
+                rankAttr, shapeAttr, axesAttr, maskAttr, domainShapeAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
-          py::arg("group_mask"))
+          py::arg("group_mask"), py::arg("group_domain_shape") = std::vector<int32_t>{})
       .def(
           "create_remote_pointers",
           [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
