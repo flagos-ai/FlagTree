@@ -406,6 +406,7 @@ void init_triton_iluvatar(py::module &&m) {
 #ifdef __ILUVATAR_TLE__
     registry.insert<mlir::DLTIDialect>();
     mlir::triton::iluvatar_tle::registerDialects(registry);
+    registry.insert<mlir::triton::tle::TleDialect>();
 #endif
     mlir::registerNVVMDialectTranslation(registry);
     context.appendDialectRegistry(registry);
