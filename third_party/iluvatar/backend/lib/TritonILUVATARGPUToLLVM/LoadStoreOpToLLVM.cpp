@@ -824,11 +824,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
 };
 
 static bool isExplicitSmeAsyncCopy(triton::gpu::AsyncCopyGlobalToLocalOp op) {
-  auto srcTy = mlir::dyn_cast<RankedTensorType>(op.getSrc().getType());
-  if (!srcTy)
-    return false;
-  auto srcEnc = mlir::dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
-  return srcEnc && srcEnc.getIsSme();
+  return op.isIluvatarSmeAsyncCopy();
 }
 
 static LogicalResult
@@ -906,7 +902,8 @@ emitStaticSmeAsyncCopy(triton::gpu::AsyncCopyGlobalToLocalOp op,
   if (!constantMask || *constantMask)
     result = emitIluvatarSmeTileLoads(loc, ctx, smeTy, elemTy,
                                       smemObj.getBase(), gPtr, llvmStride,
-                                      rewriter, validContiguousElems);
+                                      rewriter, targetInfo, srcTy.getEncoding(),
+                                      validContiguousElems);
   if (afterPredBlock)
     rewriter.setInsertionPointToStart(afterPredBlock);
   if (failed(result) || !op.getMask() || (constantMask && *constantMask))
@@ -1584,8 +1581,8 @@ struct AsyncCommitGroupOpConversion
   LogicalResult
   matchAndRewrite(AsyncCommitGroupOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Drop the result AsyncToken
     auto loc = op->getLoc();
+    // Drop the result AsyncToken.
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     rewriter.replaceOp(op, b.i32_val(0));
     return success();
