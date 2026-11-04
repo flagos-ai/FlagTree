@@ -28,13 +28,9 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         pre_hook=lambda: check_env("LLVM_SYSPATH"),
         post_hook=set_llvm_env,
     )
-    cache.store(
-        file="libdushmem_device_gfx936.bc",
-        condition=("hcu" == flagtree_backend),
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
-            "libdushmem_device_gfx936_bc.tar.gz",
-        copy_dst_path="/opt/dtk/dushmem/lib/",
-        md5_digest="f6260239")
+    cache.store(file="libdushmem_device_gfx936.bc", condition=("hcu" == flagtree_backend),
+                url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+                "libdushmem_device_gfx936_bc.tar.gz", copy_dst_path="/opt/dtk/dushmem/lib/", md5_digest="f6260239")
 
 
 def install_extension(*args, **kargs):
