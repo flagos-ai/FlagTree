@@ -8,7 +8,7 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 
@@ -16,16 +16,8 @@
 
 namespace mlir::triton::metax {
 
-struct DotLayoutPlan {
-  Attribute mma;
-  Attribute operandA;
-  Attribute operandB;
-};
-
-// Enumerate MACA MMA layout plans passing the per-dot geometry checks.
-// The first entry is the default chosen by ordering the same candidate domain.
-// Multi-dot coordination (picking compatible plans across chained dots) and
-// full-kernel lowering validation are separate steps.
+// Enumerate locally valid layouts, with the default first.
+// Full-kernel compilation may still reject a candidate.
 FailureOr<SmallVector<DotLayoutPlan>>
 generateDotLayoutPlans(triton::DotOp dot, int computeCapability, int numWarps);
 
@@ -36,28 +28,19 @@ struct DotLayoutDomain {
   SmallVector<DotLayoutPlan> plans;
 };
 
-struct DotLayoutChoice {
-  triton::DotOp dot;
-  DotLayoutPlan plan;
-};
-
-// Validate every choice before inserting A/B/result set_layout anchors in
-// unencoded TTIR. Tensor types and the original module's dot IDs are preserved.
+// Validate choices and insert A/B/result set_layout ops into unencoded TTIR.
 LogicalResult insertDotLayoutHints(
     ModuleOp module, int capability, int numWarps,
     const llvm::StringMap<DotLayoutPlan> &selection);
 
-// Read-only module query. Dots are visited in preorder, numbered separately
-// within each function. These coordinates identify the current IR snapshot,
-// not operations after inlining, unrolling, or other structural rewrites.
+// Number dots in preorder within each function. IDs are valid only until
+// the IR structure changes.
 FailureOr<SmallVector<DotLayoutDomain>>
 enumerateDotLayoutPlans(ModuleOp module, int computeCapability, int numWarps);
 
-// Layout identities are independent of MLIR contexts, source locations, SSA
-// names and enumeration order. They are not whole-kernel compilation keys.
+// Stable layout ID, independent of context and SSA names.
 std::string getDotLayoutPlanId(const DotLayoutPlan &plan);
-// Matches Gluon's haveSameC500AccumulatorProfile: MMA version, warp grid,
-// elementsMNK, colMajor and CTA layout, excluding operand transfer details.
+// Group plans by accumulator layout, ignoring operand transfer details.
 std::string getDotLayoutProfileId(const DotLayoutPlan &plan);
 
 } // namespace mlir::triton::metax

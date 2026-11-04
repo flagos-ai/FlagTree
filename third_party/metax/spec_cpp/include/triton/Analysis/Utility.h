@@ -10,7 +10,6 @@
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/LinearLayout.h"
-#include <optional>
 
 namespace mlir {
 
@@ -281,12 +280,6 @@ bool supportMMA(Value value, int version);
 bool supportMMA(triton::DotOp op, int major, int minor);
 
 bool supportMMA(Value value, int major, int minor);
-
-// Check a fixed layout before assigning tensor encodings. No diagnostics or IR
-// mutations; a nonempty result describes the unsupported layout.
-std::optional<StringRef> checkMacaDotLayout(triton::DotOp dot, Attribute mma,
-                                         Attribute operandA, Attribute operandB,
-                                         int computeCapability, int numWarps);
 #endif
 
 // Conversion from `srcTy` to `dstTy` involving the minimum amount of data

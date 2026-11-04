@@ -51,7 +51,7 @@ def _median_intervals(samples, candidate_count):
 
 
 def _specialization_key(bundle):
-    """Persist one winner per compiled specialization and physical device.
+    """Key the tuning result by JIT specialization and physical device.
 
     Ordinary JIT specialization already captures compilation assumptions.
     Runtime shapes, strides, scalar values and launch grids do not select

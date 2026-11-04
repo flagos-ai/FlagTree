@@ -12,11 +12,11 @@ from triton.runtime.cache import get_cache_key, get_cache_manager
 
 
 def compose_kernel_candidates(domains):
-    """Return dot_id -> plan mappings, with the first shared profile first.
+    """Compose candidates with matching accumulator profiles across dots.
 
     Shared profiles follow the first dot's order, using the first matching plan
     per dot. With no shared profile, use each dot's first plan. No dots produce
-    one empty assignment. Selected plans are reused; inputs are not modified.
+    one empty assignment.
     """
     fallback = {}
     profiles_by_dot = {}
@@ -61,11 +61,7 @@ class LayoutCandidates:
 
 
 def prepare_layout_candidates(src, backend, options, env_vars):
-    """Optimize TTIR once, then cache one anchored TTIR per layout assignment.
-
-    Every candidate enters the normal compiler at TTIR -> TTGIR. No candidate
-    needs to survive that conversion, LLVM or mxcc to publish the list.
-    """
+    """Cache candidate TTIR modules; compilation and benchmarking happen later."""
     from triton import knobs
     from triton._C.libtriton import ir
     from flagtree import _flagprism

@@ -1,3 +1,5 @@
+#include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
+#include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #include "triton/Conversion/CommonIRToTTGIR/TensorOps.h"
 
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
@@ -9,6 +11,9 @@
 #include <numeric>
 
 namespace mlir::triton::metax {
+#define GEN_PASS_DEF_COMMONIRCLEARLAYOUTHINTS
+#include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
+
 namespace ttg = mlir::triton::gpu;
 
 namespace {
@@ -246,6 +251,11 @@ LogicalResult markExplicitMemoryLayouts(ModuleOp module) {
   });
   return failure(result.wasInterrupted());
 }
+
+struct CommonIRClearLayoutHintsPass
+    : impl::CommonIRClearLayoutHintsBase<CommonIRClearLayoutHintsPass> {
+  void runOnOperation() override { tile::clearLayoutHints(getOperation()); }
+};
 
 } // namespace
 

@@ -280,7 +280,9 @@ class MACABackend(BaseBackend):
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         if COMMON_IR_ENABLED:
-            passes.commonir.add_plan_shared_layouts(pm)
+            # Assign layouts before lowering tensor tiles.
+            passes.commonir.add_resolve_bsm_layouts(pm, capability, opt.num_warps)
+            passes.commonir.add_optimize_shared_layouts(pm)
             passes.commonir.add_propagate_layouts(pm)
             passes.commonir.add_lower_tensor_tiles(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
@@ -298,8 +300,6 @@ class MACABackend(BaseBackend):
         if opt.pipeline == "cpasync" or opt.pipeline == "cpasync-mixed":
             disable_prefetch = True
             metax.passes.ttgpuir.add_tritonmetaxgpu_change_layout_for_int8_pass(pm, opt.num_stages, opt.pipeline)
-        if COMMON_IR_ENABLED:
-            passes.commonir.add_prepare_bsm_layouts(pm, capability, opt.num_warps)
         metax.passes.ttgpuir.add_accelerate_matmul(pm, opt.num_stages, disable_prefetch, store_coalesce, capability)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         if not os.getenv("TRITON_DISABLE_CONSTANCY_LOAD_LAYOUT_OPT"):
@@ -338,6 +338,9 @@ class MACABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_legalize_async_copy(pm)
+            passes.commonir.add_clear_layout_hints(pm)
         pm.run(mod, 'make_ttgir')
         return mod
 
@@ -359,10 +362,6 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_mlir(src, metadata, options, capability):
-        if COMMON_IR_ENABLED:
-            # Layouts now live in tensor types; planning attrs must not reach
-            # the external MACA LLVM translator.
-            passes.commonir.clear_layout_hints(src)
         # warp-specialization mutates num_warps
         num_warp_groups = src.get_int_attr("triton_gpu.num-warp-groups-per-cta")
         if num_warp_groups is not None:
@@ -374,8 +373,6 @@ class MACABackend(BaseBackend):
         pm.enable_debug()
         # metax.passes.ttgpuir.add_decompose_unsupported_conversions(pm)
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
-        if COMMON_IR_ENABLED:
-            passes.commonir.add_legalize_async_copy(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         passes.ttgpuir.add_allocate_shared_memory(pm)

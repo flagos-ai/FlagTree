@@ -47,10 +47,5 @@ void applyLayoutRequirements(ModuleOp module,
                              const TensorLayoutRequirements &requirements,
                              const TensorLayoutAdapter &adapter);
 
-// Plan shared storage from existing dot operand layouts without changing IR.
-FailureOr<tile::BufferLayoutPlan>
-planSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
-                  const TensorLayoutRequirements &writerPreferences);
-
 } // namespace mlir::triton::metax
 #endif
