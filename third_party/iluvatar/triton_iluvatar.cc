@@ -5,6 +5,8 @@
 #include "iluvatar/tle_raw/include/DeferredRawSourceRegistry.h"
 #include "iluvatar/tle_raw/include/Passes.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "Support/FPContract.h"
 #endif
 // #include "cublas_instance.h"
 #include "TritonILUVATARGPUTransforms/Passes.h"
@@ -96,6 +98,9 @@ std::string translateLLVMIRToILUVATAR(llvm::Module &module,
                                       const std::string &features,
                                       const std::vector<std::string> &flags,
                                       bool enable_fp_fusion, bool isObject) {
+#ifdef __ILUVATAR_TLE__
+  mlir::triton::iluvatar_tle::ScopedFPContract fpContract(triple, enable_fp_fusion);
+#endif
   using namespace mlir;
   // options
   auto options = llvm::cl::getRegisteredOptions();
