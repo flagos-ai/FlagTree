@@ -123,16 +123,55 @@ if enabled:
     """
 
 
+def _flagcx_allocator_build_identity():
+    """Bind the cached native wrapper to its SDK, source and Torch/CUDA ABI."""
+    import hashlib
+    import json
+    import sys
+    from pathlib import Path
+
+    library_dir = Path(FLAGCX_LIB_PATH).resolve()
+    include_dir = Path(FLAGCX_INCLUDE_PATH).resolve()
+
+    def digest(path):
+        result = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                result.update(chunk)
+        return result.hexdigest()
+
+    identity = {
+        "source": flagcx_allocator_source,
+        "host_library": digest(library_dir / "libflagcx.so"),
+        "header": digest(include_dir / "flagcx.h"),
+        "library_dir": str(library_dir),
+        "include_dir": str(include_dir),
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "torch_cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI),
+        "python_cache_tag": sys.implementation.cache_tag,
+        "cuda_home": os.environ.get("CUDA_HOME"),
+        "cxx": os.environ.get("CXX"),
+        "with_cuda": True,
+    }
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    return key, library_dir, include_dir
+
+
 def compile_flagcx_allocator():
     global _allocator, _allocator_wrapper, _flagcx_allocator_failed_to_compile
 
     try:
-        out_dir = tempfile.gettempdir()
-        lib_name = "flagcx_allocator"
+        identity, library_dir, include_dir = _flagcx_allocator_build_identity()
+        out_dir = os.path.join(tempfile.gettempdir(), "tle_flagcx_allocator", identity)
+        # A unique module name also prevents Torch's in-process extension
+        # versioner from renaming a different SDK build behind our loader.
+        lib_name = f"flagcx_allocator_{identity}"
         lib_path = os.path.join(out_dir, f"{lib_name}.so")
 
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         if local_rank == 0 and not os.path.isfile(lib_path):
+            os.makedirs(out_dir, exist_ok=True)
             print(
                 f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
                 flush=True,
@@ -143,14 +182,14 @@ def compile_flagcx_allocator():
                 cpp_sources=flagcx_allocator_source,
                 with_cuda=True,
                 extra_ldflags=[
-                    f"-L{FLAGCX_LIB_PATH}",
+                    f"-L{library_dir}",
                     "-lflagcx",
-                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                    f"-Wl,-rpath,{library_dir}",
                 ],
                 verbose=True,
                 is_python_module=False,
                 build_directory=out_dir,
-                extra_include_paths=[FLAGCX_INCLUDE_PATH],
+                extra_include_paths=[str(include_dir)],
             )
         else:
             print(
@@ -189,6 +228,29 @@ def get_mem_pool():
         if _allocator is not None:
             _mem_pool = torch.cuda.MemPool(_allocator)
     return _mem_pool
+
+
+def allocate_dist_tensor(shape, *, dtype, device):
+    """Allocate a CUDA-allocation-root tensor for a FlagCX symmetric window.
+
+    IPC imports the underlying CUDA allocation, including when the exported
+    pointer was a caching-allocator suballocation. An aligned view within a
+    cached block therefore gives remote peers a different byte origin from
+    the local tensor. A fresh private pool's first allocation starts at its
+    native CUDA allocation root; no other tensor can consume a prefix.
+    """
+    if not enabled:
+        raise RuntimeError("FlagCX/TLE is unavailable")
+    get_mem_pool()  # initialize and validate the communicator before allocation
+    shape = (shape,) if isinstance(shape, int) else tuple(int(value) for value in shape)
+    if not shape or any(value <= 0 for value in shape):
+        raise ValueError(f"symmetric tensor shape must be positive, got {shape}")
+    pool = torch.cuda.MemPool()
+    with torch.cuda.device(device), torch.cuda.use_mem_pool(pool):
+        tensor = torch.empty(shape, dtype=dtype, device=device)
+    # Retain the allocation domain as long as the registered tensor lives.
+    tensor._tle_window_pool = pool
+    return tensor
 
 
 def _cleanup_flagcx_mem_pool():
