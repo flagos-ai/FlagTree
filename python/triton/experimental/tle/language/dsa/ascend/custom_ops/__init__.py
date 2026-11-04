@@ -21,6 +21,9 @@ from .registry import (
     unpack_sort,
     compare_scalar,
     cast_int4_to_fp16,
+    dequant_e4m3_ue8m0_rows,
+    mma_m64_tile,
+    mma_m64_resident,
 )
 
 __all__ = [
@@ -40,4 +43,7 @@ __all__ = [
     "unpack_sort",
     "compare_scalar",
     "cast_int4_to_fp16",
+    "dequant_e4m3_ue8m0_rows",
+    "mma_m64_tile",
+    "mma_m64_resident",
 ]
