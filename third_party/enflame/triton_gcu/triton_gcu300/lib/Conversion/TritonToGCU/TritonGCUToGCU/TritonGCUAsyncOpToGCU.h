@@ -25,18 +25,18 @@
 
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
-#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MathExt/IR/MathExtTypes.h"
+#include "Dialect/MemrefExt/IR/MemrefExt.h"
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -384,8 +384,8 @@ struct TTMemDescSubsliceOpLowering
     auto opOffsets = op.getOffsets();
     SmallVector<Value> opOffsetVals;
     for (long int offset : opOffsets) {
-      opOffsetVals.push_back(rewriter.create<arith::ConstantIntOp>(
-          loc, offset, 32));
+      opOffsetVals.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, offset, 32));
     }
     assert((opOffsetVals.size() == strides.size()) &&
            "offset size is not equal to stride size !!!");

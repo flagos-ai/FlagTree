@@ -18,7 +18,7 @@
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Utility.h"
-#include "llvm/Support/Casting.h"
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -30,13 +30,13 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "llvm/Support/Casting.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_TRITONWGDOTTOGCU
 #include "Conversion/Passes.h.inc"
-}  // namespace mlir
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -49,7 +49,7 @@ struct TritonWGDotToGCUPass
 
   void runOnOperation() override;
 };
-}  // namespace
+} // namespace
 
 // ConvertLayoutOp changes the data distribution across threads/warps iff the
 // threads-per-warp decomposition differs between its source and its result.
@@ -62,8 +62,7 @@ static bool changesThreadsPerWarp(triton::gpu::ConvertLayoutOp cvtOp) {
          triton::gpu::getThreadsPerWarp(dstType);
 }
 
-static Attribute
-convertResultEncodingToBlocked(RankedTensorType tensorType) {
+static Attribute convertResultEncodingToBlocked(RankedTensorType tensorType) {
   auto enc = tensorType.getEncoding();
   if (auto blockedEnc = dyn_cast<BlockedEncodingAttr>(enc))
     return blockedEnc;
@@ -264,8 +263,8 @@ public:
           if (targetType == newRetType) {
             rewriter.replaceOp(cvtUser, dotResult);
           } else {
-            rewriter.replaceOpWithNewOp<ConvertLayoutOp>(
-                cvtUser, targetType, dotResult);
+            rewriter.replaceOpWithNewOp<ConvertLayoutOp>(cvtUser, targetType,
+                                                         dotResult);
           }
           continue;
         }

@@ -96,7 +96,7 @@ struct GCU64TypeVerifierPass
       // the ENABLE_I64_CHECK_INNER=1 environment variable
       const char *check_inner_i64 = std::getenv("ENABLE_I64_CHECK_INNER");
       if (check_inner_i64 && (std::string(check_inner_i64) == "1" ||
-          std::string(check_inner_i64) == "true")) {
+                              std::string(check_inner_i64) == "true")) {
         funcOp.walk([&](Operation *op) {
           if (op == funcOp.getOperation())
             return;

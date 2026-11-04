@@ -13,10 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "Utils.h"
+#include <algorithm>
 #include <functional>
 #include <string>
-#include <algorithm>
-#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -25,29 +25,29 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
-#include "llvm/Support/MathExtras.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/Support/MathExtras.h"
 #define DEBUG_TYPE "triton-ir-to-gcu-ir-util"
 namespace mlir {
 namespace triton {
 namespace gcu {
 
-bool get_bool_env(const char* name, const bool default_value) {
-    const char* value = std::getenv(name);
-    if (value == nullptr && default_value == false) {
-        return false;
-    } else if (value == nullptr && default_value == true) {
-        return true;
-    }
-    std::string str_value(value);
-    std::transform(str_value.begin(), str_value.end(), str_value.begin(),
-                   ::tolower);
-    return (str_value == "true" || str_value == "1" || str_value == "on" ||
-            str_value == "yes");
+bool get_bool_env(const char *name, const bool default_value) {
+  const char *value = std::getenv(name);
+  if (value == nullptr && default_value == false) {
+    return false;
+  } else if (value == nullptr && default_value == true) {
+    return true;
+  }
+  std::string str_value(value);
+  std::transform(str_value.begin(), str_value.end(), str_value.begin(),
+                 ::tolower);
+  return (str_value == "true" || str_value == "1" || str_value == "on" ||
+          str_value == "yes");
 }
 
 SmallVector<unsigned> getWarpsPerCTA(Attribute layout) {

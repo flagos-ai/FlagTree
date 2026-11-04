@@ -61,7 +61,7 @@ def test_unknown_annotation(device):
 @pytest.mark.parametrize(
     ("dtype", "test_val"),
     [(dtype, test_val)
-     for dtype in [tl.float16, tl.bfloat16, tl.float32] #, tl.float64] # TODO
+     for dtype in [tl.float16, tl.bfloat16, tl.float32]  #, tl.float64] # TODO
      for test_val in [0.0, 42.0, float("inf"), float("nan")]],
 )
 def test_float_annotation(device, dtype, test_val):

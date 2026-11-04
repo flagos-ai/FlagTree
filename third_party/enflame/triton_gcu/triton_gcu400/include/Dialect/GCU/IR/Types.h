@@ -23,10 +23,10 @@
 namespace mlir {
 namespace gcu {
 class AddressSpaceAttr;
-}  // namespace gcu
-}  // namespace mlir
+} // namespace gcu
+} // namespace mlir
 
 #define GET_TYPEDEF_CLASSES
 #include "Dialect/GCU/IR/Types.h.inc"
 
-#endif  // GCU_DIALECT_GCU_IR_TYPES_H
+#endif // GCU_DIALECT_GCU_IR_TYPES_H

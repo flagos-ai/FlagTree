@@ -30,7 +30,6 @@
 #include "Dialect/GCU/IR/Ops.cpp.inc"
 #include "Dialect/GCU/IR/OpsEnums.cpp.inc"
 
-
 using namespace mlir;
 using namespace mlir::gcu;
 
@@ -38,11 +37,11 @@ void GCUDialect::initialize() {
   registerTypes();
   addOperations<
 #define GET_OP_LIST
-#include "Dialect/GCU/IR/Ops.cpp.inc"  // NOLINT: This file generated situationally via different environment variables
+#include "Dialect/GCU/IR/Ops.cpp.inc" // NOLINT: This file generated situationally via different environment variables
       >();
   addAttributes<
 #define GET_ATTRDEF_LIST
-#include "Dialect/GCU/IR/OpsAttributes.cpp.inc"  // NOLINT: This file generated situationally via different environment variables
+#include "Dialect/GCU/IR/OpsAttributes.cpp.inc" // NOLINT: This file generated situationally via different environment variables
       >();
 
   // We can also add interface here.

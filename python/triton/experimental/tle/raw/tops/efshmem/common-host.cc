@@ -7,8 +7,8 @@
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
 //
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -56,8 +56,7 @@ extern "C" int efshmem_get_unique_id_bytes(void *uid_buffer,
 }
 
 extern "C" int efshmem_init_from_torch_distributed(int rank, int nranks,
-                                                   int device,
-                                                   void *uid_buffer,
+                                                   int device, void *uid_buffer,
                                                    size_t uid_buffer_size) {
   if (uid_buffer_size < sizeof(efshmemx_uniqueid_t)) {
     return -1;
@@ -78,8 +77,9 @@ extern "C" int efshmem_init_from_torch_distributed(int rank, int nranks,
   // `efshmemi_init_thread` -- and therefore does not have to link
   // libefshmem_device.a (whose object drags in the device fatbin reference).
   //
-  // It only bootstraps: the device half is completed by efshmemx_cumodule_init()
-  // on the loaded kernel, which the TLE-Raw kernel init hook performs.
+  // It only bootstraps: the device half is completed by
+  // efshmemx_cumodule_init() on the loaded kernel, which the TLE-Raw kernel
+  // init hook performs.
   return efshmemx_hostlib_init_attr(EFSHMEMX_INIT_WITH_UNIQUEID, &attr);
 }
 

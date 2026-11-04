@@ -20,15 +20,15 @@
 #include <utility>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "Utility.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
+#include "Dialect/GCUWS/IR/Dialect.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "Dialect/GCUWS/IR/Dialect.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Utility.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -255,9 +255,10 @@ struct TTSmemCopyGlobalToLocalOpLowering
       pTagPool.setMap(firstUse, tag);
     }
 
-    auto defaultValue = loadOp.getDefaultValue()
-        ? adaptor.getDefaultValue()
-        : triton::gcu::createConstantZero(rewriter, loc, elemType);
+    auto defaultValue =
+        loadOp.getDefaultValue()
+            ? adaptor.getDefaultValue()
+            : triton::gcu::createConstantZero(rewriter, loc, elemType);
 
     // Shape check: all shape dims > 0
     Value shapeCheck = rewriter.create<arith::CmpIOp>(
@@ -269,20 +270,22 @@ struct TTSmemCopyGlobalToLocalOpLowering
     }
 
     // ConfigGcuLoad with IsShareOutput = true
-    auto total_size = rewriter.create<scf::IfOp>(
-        loc, shapeCheck,
-        [&](OpBuilder builder, Location loc) {
-          Value load_size = ConfigGcuLoad(
-              builder, loc, *output,
-              loadOp, outputType, adaptor.getPtr(),
-              adaptor.getStrides(), adaptor.getShape(),
-              defaultValue, tag, /*IsShareOutput=*/true,
-              adaptor.getOffsets());
-          builder.create<scf::YieldOp>(loc, ValueRange{load_size});
-        },
-        [&](OpBuilder &builder, Location loc) {
-          builder.create<scf::YieldOp>(loc, ValueRange{zero});
-        }).getResult(0);
+    auto total_size =
+        rewriter
+            .create<scf::IfOp>(
+                loc, shapeCheck,
+                [&](OpBuilder builder, Location loc) {
+                  Value load_size = ConfigGcuLoad(
+                      builder, loc, *output, loadOp, outputType,
+                      adaptor.getPtr(), adaptor.getStrides(),
+                      adaptor.getShape(), defaultValue, tag,
+                      /*IsShareOutput=*/true, adaptor.getOffsets());
+                  builder.create<scf::YieldOp>(loc, ValueRange{load_size});
+                },
+                [&](OpBuilder &builder, Location loc) {
+                  builder.create<scf::YieldOp>(loc, ValueRange{zero});
+                })
+            .getResult(0);
 
     auto ip = rewriter.saveInsertionPoint();
     if (tag.isAsync()) {
@@ -378,30 +381,30 @@ private:
     Type elemType;
     unsigned bpe;
     unsigned VL;
-    unsigned K;              // inner dim per warp
-    unsigned M;              // outer dim per warp (1 for flat 1D)
+    unsigned K; // inner dim per warp
+    unsigned M; // outer dim per warp (1 for flat 1D)
     unsigned totalNumElems;
-    unsigned totalCols;      // full smem row width
+    unsigned totalCols; // full smem row width
     bool isColSplit;
 
     Value flatDst;
     Value warpFlatBase;
-    Value masksPtr;          // nullptr when no mask
-    Value vtOther;           // passthru vector
-    VectorType vtType;       // <VL x elemType>
-    VectorType maskVecType;  // <VL x i1>
+    Value masksPtr;         // nullptr when no mask
+    Value vtOther;          // passthru vector
+    VectorType vtType;      // <VL x elemType>
+    VectorType maskVecType; // <VL x i1>
     Value totalColsVal;
-    Value innerDimVal;       // ConstantIndexOp(K)
+    Value innerDimVal; // ConstantIndexOp(K)
 
     // For vector::GatherOp tail path
-    Value srcFlatI64;        // src ptrs as flat i64 memref
-    Value baseI64;           // first ptr value (i64 scalar)
-    Value baseMemref;        // base dynamic memref for GatherOp
-    Value baseI64Vec;        // broadcast of baseI64 to <VL x i64>
-    Value bpeVec;            // broadcast of bpe to <VL x i64>
-    VectorType i64VecType;   // <VL x i64>
-    VectorType i32VecType;   // <VL x i32>
-    Value zeroI64Passthru;   // <VL x 0_i64>
+    Value srcFlatI64;      // src ptrs as flat i64 memref
+    Value baseI64;         // first ptr value (i64 scalar)
+    Value baseMemref;      // base dynamic memref for GatherOp
+    Value baseI64Vec;      // broadcast of baseI64 to <VL x i64>
+    Value bpeVec;          // broadcast of bpe to <VL x i64>
+    VectorType i64VecType; // <VL x i64>
+    VectorType i32VecType; // <VL x i32>
+    Value zeroI64Passthru; // <VL x 0_i64>
   };
 
   LogicalResult buildContext(ConversionPatternRewriter &rewriter, Location loc,
@@ -760,9 +763,9 @@ private:
     // Pre-compute per-unroll-slot row and column offsets at compile time
     // to avoid DivSI/RemSI inside the loop.
     struct SlotInfo {
-      unsigned rowDelta;   // row offset from loop base row
-      unsigned colOffset;  // column offset within the row
-      bool isTail;         // whether this slot is a tail chunk
+      unsigned rowDelta;  // row offset from loop base row
+      unsigned colOffset; // column offset within the row
+      bool isTail;        // whether this slot is a tail chunk
     };
     SmallVector<SlotInfo> slots;
     slots.reserve(totalUnroll);
@@ -1037,11 +1040,11 @@ private:
 /// staged data. This lets the local_load lowering paths (alias view / DTE
 /// slice_start), which both assume a contiguous source, handle MemDesc view
 /// sources such as 2D sub-tiles and transposed views correctly.
-static FailureOr<Value> stageViewToContiguous(
-    PatternRewriter &rewriter, Location loc, Value src,
-    std::pair<Operation *, int> lastUser,
-    triton::gcu::FirstLastUserAnalysis &userAnalysis,
-    std::map<Operation *, Operation *> &replaced2Origin) {
+static FailureOr<Value>
+stageViewToContiguous(PatternRewriter &rewriter, Location loc, Value src,
+                      std::pair<Operation *, int> lastUser,
+                      triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                      std::map<Operation *, Operation *> &replaced2Origin) {
   auto srcTy = dyn_cast<MemRefType>(src.getType());
   if (!srcTy || !srcTy.hasStaticShape())
     return failure();
@@ -1053,9 +1056,8 @@ static FailureOr<Value> stageViewToContiguous(
     return failure();
 
   // Staged buffer: same shape, identity layout, same memory space.
-  auto stagedTy =
-      MemRefType::get(srcTy.getShape(), elemTy, AffineMap{},
-                      srcTy.getMemorySpace());
+  auto stagedTy = MemRefType::get(srcTy.getShape(), elemTy, AffineMap{},
+                                  srcTy.getMemorySpace());
   Value staged = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                              replaced2Origin, stagedTy);
 
@@ -1069,36 +1071,30 @@ static FailureOr<Value> stageViewToContiguous(
   auto totalIdx = rewriter.create<arith::ConstantIndexOp>(loc, total);
   auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-  rewriter.create<scf::IfOp>(loc, isMasterThread,
-                             [&](OpBuilder &b, Location l) {
-                               auto loop = b.create<scf::ForOp>(
-                                   l, zero, totalIdx, one);
-                               {
-                                 OpBuilder::InsertionGuard guard(b);
-                                 b.setInsertionPointToStart(loop.getBody());
-                                 Value flat = loop.getInductionVar();
-                                 // Delinearize flat into per-dim coordinates.
-                                 SmallVector<Value> coords;
-                                 Value rem = flat;
-                                 for (int64_t d = rank - 1; d >= 0; --d) {
-                                   auto dimCst =
-                                       b.create<arith::ConstantIndexOp>(
-                                           l, srcTy.getShape()[d]);
-                                   coords.push_back(b.create<arith::RemSIOp>(
-                                       l, rem, dimCst));
-                                   rem = b.create<arith::DivSIOp>(l, rem,
-                                                                  dimCst);
-                                 }
-                                 std::reverse(coords.begin(), coords.end());
-                                 Value v = b.create<memref::LoadOp>(l, src,
-                                                                    coords);
-                                 b.create<memref::StoreOp>(l, v, staged,
-                                                           coords);
-                                 // scf::ForOp::build already inserted the
-                                 // body terminator; nothing else to add.
-                               }
-                               b.create<scf::YieldOp>(l);
-                             });
+  rewriter.create<scf::IfOp>(
+      loc, isMasterThread, [&](OpBuilder &b, Location l) {
+        auto loop = b.create<scf::ForOp>(l, zero, totalIdx, one);
+        {
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointToStart(loop.getBody());
+          Value flat = loop.getInductionVar();
+          // Delinearize flat into per-dim coordinates.
+          SmallVector<Value> coords;
+          Value rem = flat;
+          for (int64_t d = rank - 1; d >= 0; --d) {
+            auto dimCst =
+                b.create<arith::ConstantIndexOp>(l, srcTy.getShape()[d]);
+            coords.push_back(b.create<arith::RemSIOp>(l, rem, dimCst));
+            rem = b.create<arith::DivSIOp>(l, rem, dimCst);
+          }
+          std::reverse(coords.begin(), coords.end());
+          Value v = b.create<memref::LoadOp>(l, src, coords);
+          b.create<memref::StoreOp>(l, v, staged, coords);
+          // scf::ForOp::build already inserted the
+          // body terminator; nothing else to add.
+        }
+        b.create<scf::YieldOp>(l);
+      });
 
   // Make the staged data visible to all threads before the actual load.
   rewriter.create<gpu::BarrierOp>(loc);
@@ -1194,8 +1190,7 @@ struct TTLocalLoadOpLowering
       SmallVector<OpFoldResult> offsets, sizes, strides;
       for (unsigned i = 0; i < rank; ++i) {
         Value offset = rewriter.create<arith::MulIOp>(
-            loc,
-            rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
+            loc, rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
             warpIds[i]);
         offsets.push_back(offset);
         sizes.push_back(rewriter.getIndexAttr(numElems[i]));
@@ -1261,11 +1256,11 @@ struct TTLocalStoreOpLowering
       auto stagedType =
           MemRefType::get(dstTy.getShape(), dstTy.getElementType(), AffineMap{},
                           dstTy.getMemorySpace());
-      Value staged = syncAllocOp(rewriter, loc,
-                                 std::make_pair(op.getOperation(), 0),
-                                 userAnalysis, replaced2Origin, stagedType);
-      storeToSharedMem(rewriter, tag, srcTensorType, staged,
-                       adaptor.getSrc(), /*onlyThread0=*/false);
+      Value staged =
+          syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), 0),
+                      userAnalysis, replaced2Origin, stagedType);
+      storeToSharedMem(rewriter, tag, srcTensorType, staged, adaptor.getSrc(),
+                       /*onlyThread0=*/false);
       if (failed(storeContiguousToView(rewriter, loc, staged, dstVal)))
         return rewriter.notifyMatchFailure(
             op, "local_store: failed to write back into the non-contiguous "
@@ -1275,8 +1270,8 @@ struct TTLocalStoreOpLowering
       return success();
     }
 
-    storeToSharedMem(rewriter, tag, srcTensorType, dstVal,
-                     adaptor.getSrc(), /*onlyThread0=*/false);
+    storeToSharedMem(rewriter, tag, srcTensorType, dstVal, adaptor.getSrc(),
+                     /*onlyThread0=*/false);
 
     leaveTritionOp(rewriter, op.getOperation());
     rewriter.eraseOp(op);
@@ -1633,8 +1628,8 @@ struct TleInsertTileLowering : SharedGenericConversionPattern {
     auto srcShape = srcTensorTy.getShape();
 
     if (!triton::gcu::needsSmemRelay(srcTensorTy, tileShape)) {
-      auto outputType = dyn_cast<MemRefType>(
-          getTypeConverter()->convertType(resultTensorTy));
+      auto outputType =
+          dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
       auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
       auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                 replaced2Origin, outputType);
@@ -1799,9 +1794,9 @@ struct TTMemDescIndexOpLowering
     auto bpe = elemType.getIntOrFloatBitWidth() / 8;
 
     // Base pointer of the view's element 0: for a strided view source this
-    // folds the view offset into the root allocation pointer (getMemRefBasePtr);
-    // for an identity source it is the plain memref2ptr. The per-index
-    // byte offset is added below via the ViewOp offset.
+    // folds the view offset into the root allocation pointer
+    // (getMemRefBasePtr); for an identity source it is the plain memref2ptr.
+    // The per-index byte offset is added below via the ViewOp offset.
     Value ptr = getMemRefBasePtr(rewriter, src);
     MemRefType memType1D =
         MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type());
@@ -2084,22 +2079,16 @@ void mlir::triton::populateTTSmemOpToGCUPatterns(
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::DTETagPool &pTagPool) {
-  patterns.add<TTSmemLocalAllocOpLowering,
-               TTSmemCopyGlobalToLocalOpLowering,
-               TTSmemGatherGlobalToLocalOpLowering,
-               TTLocalLoadOpLowering,
-               TTLocalStoreOpLowering,
-               TTMemDescIndexOpLowering,
-               TTMemDescSubsliceOpLowering,
-               TTMemDescTransOpLowering,
-               TTMemDescReshapeOpLowering,
-               TTMemDescReinterpretOpLowering,
-               MemDescToPtrOpLowering,
-               SliceFromLocalOpLowering,
+  patterns.add<TTSmemLocalAllocOpLowering, TTSmemCopyGlobalToLocalOpLowering,
+               TTSmemGatherGlobalToLocalOpLowering, TTLocalLoadOpLowering,
+               TTLocalStoreOpLowering, TTMemDescIndexOpLowering,
+               TTMemDescSubsliceOpLowering, TTMemDescTransOpLowering,
+               TTMemDescReshapeOpLowering, TTMemDescReinterpretOpLowering,
+               MemDescToPtrOpLowering, SliceFromLocalOpLowering,
                DesliceToLocalOpLowering>(converter, patterns.getContext(),
-                                          userAnalysis, replaced2Origin,
-                                          pTagPool);
-  patterns.add<TleExtractTileLowering,
-               TleInsertTileLowering>(converter, patterns.getContext(),
-                                       userAnalysis, replaced2Origin, pTagPool);
+                                         userAnalysis, replaced2Origin,
+                                         pTagPool);
+  patterns.add<TleExtractTileLowering, TleInsertTileLowering>(
+      converter, patterns.getContext(), userAnalysis, replaced2Origin,
+      pTagPool);
 }

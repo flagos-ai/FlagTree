@@ -21,4 +21,4 @@
 #define GET_TYPEDEF_CLASSES
 #include "Dialect/GCU/IR/AttrInterfaces.h.inc"
 
-#endif  // GCU_DIALECT_GCU_IR_INTERFACES_H
+#endif // GCU_DIALECT_GCU_IR_INTERFACES_H
