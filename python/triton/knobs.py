@@ -564,6 +564,7 @@ class language_knobs(base_knobs):
     # flagtree low-precision float (fp8/fp4) support; 0 falls back to the upstream
     # interpreter float conversion and drops the backend opt-ins
     low_precision_float: env_bool = env_bool("FLAGTREE_LOW_PRECISION_FLOAT", True)
+    reorder_loop_loads: env_bool = env_bool("FLAGTREE_REORDER_LOOP_LOADS", True)  # flagtree reorder loop loads
 
 
 class nvidia_knobs(base_knobs):
