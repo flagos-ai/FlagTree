@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Analysis/CompatibleProposalMerge.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -2537,6 +2538,10 @@ bool LayoutPropagation::solveSmallComponents() {
                                    bool rejectReachableReductionOrScan = true,
                                    bool restrictWeakStoreProposals = false) {
     bool localChanged = false;
+#ifdef __TLE__
+    proposals = triton::tle::mergeCompatibleProposals(
+        std::move(proposals), proposalsOverlapAndCompatible, mergeProposalInto);
+#else
     bool merged = true;
     while (merged) {
       merged = false;
@@ -2551,6 +2556,7 @@ bool LayoutPropagation::solveSmallComponents() {
         }
       }
     }
+#endif
     for (Proposal &proposal : proposals)
       localChanged |= commitIfProfitable(proposal, /*requireBenefit=*/true,
                                          rejectReachableReductionOrScan,
