@@ -13,12 +13,32 @@ include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUAttrBase.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
+include "triton/Dialect/TritonGPU/IR/TritonGPUAttrBase.td"
 
 class IluvatarTle_Op<string mnemonic, list<Trait> traits = []>
     : Op<IluvatarTle_Dialect, mnemonic,
          !listconcat(traits, [VerifyTensorLayoutsTrait])> {}
 
 def IluvatarTle_SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
+
+// Explicit warp-owned flat transfers preserve byte order. They do not imply
+// a CTA rendezvous: callers own the transaction and shared-slot lifetimes.
+def IluvatarTle_SmeCopyOp : IluvatarTle_Op<"sme_copy",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins TT_PtrLike:$src,
+    Arg<TT_PtrLike, "", [MemWrite<IluvatarTle_SharedMemory>]>:$dst,
+    TT_IntLike:$byte_offset, TT_BoolLike:$active,
+    DefaultValuedAttr<I32Attr, "1024">:$nbytes);
+  let assemblyFormat = "$src `,` $dst `,` $byte_offset `,` $active attr-dict `:` type($src) `,` type($dst) `,` type($byte_offset) `,` type($active)";
+  let hasVerifier = 1;
+}
+
+def IluvatarTle_SmeWaitOp : IluvatarTle_Op<"sme_wait",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins I32Attr:$max_pending, BoolAttr:$drain_reads);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
 
 def IluvatarTle_ExtractTileOp : IluvatarTle_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
@@ -183,12 +203,14 @@ def IluvatarTle_PipeCreateOp : IluvatarTle_Op<"pipe.create"> {
     OptionalAttr<ArrayAttr>:$readers,
     OptionalAttr<BoolAttr>:$one_shot
   );
+  let results = (outs I32:$identity);
   let assemblyFormat = "$fields attr-dict `:` type($fields)";
   let hasVerifier = 1;
 }
 
 def IluvatarTle_PipeWriterAcquireOp : IluvatarTle_Op<"pipe.writer_acquire"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I1:$phase,
@@ -197,12 +219,13 @@ def IluvatarTle_PipeWriterAcquireOp : IluvatarTle_Op<"pipe.writer_acquire"> {
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
   let hasVerifier = 1;
 }
 
 def IluvatarTle_PipeWriterCommitOp : IluvatarTle_Op<"pipe.writer_commit"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I32Attr:$capacity,
@@ -210,12 +233,13 @@ def IluvatarTle_PipeWriterCommitOp : IluvatarTle_Op<"pipe.writer_commit"> {
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `]` attr-dict `:` type($fields)";
   let hasVerifier = 1;
 }
 
 def IluvatarTle_PipeWriterCloseOp : IluvatarTle_Op<"pipe.writer_close"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I1:$phase,
@@ -224,12 +248,13 @@ def IluvatarTle_PipeWriterCloseOp : IluvatarTle_Op<"pipe.writer_close"> {
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
   let hasVerifier = 1;
 }
 
 def IluvatarTle_PipeReaderWaitOp : IluvatarTle_Op<"pipe.reader_wait"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I1:$phase,
@@ -240,7 +265,7 @@ def IluvatarTle_PipeReaderWaitOp : IluvatarTle_Op<"pipe.reader_wait"> {
     OptionalAttr<StrAttr>:$reader_name
   );
   let results = (outs I1:$is_closed);
-  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
   let hasVerifier = 1;
 }
 
@@ -248,6 +273,7 @@ def IluvatarTle_PipeReaderReleaseOp : IluvatarTle_Op<"pipe.reader_release", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I32Attr:$capacity,
@@ -256,7 +282,14 @@ def IluvatarTle_PipeReaderReleaseOp : IluvatarTle_Op<"pipe.reader_release", [
     ArrayAttr:$field_names,
     OptionalAttr<StrAttr>:$reader_name
   );
-  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+def IluvatarTle_PipeDrainOp : IluvatarTle_Op<"pipe.drain"> {
+  let arguments = (ins I32:$identity, Variadic<TTG_MemDescType>:$fields,
+    I32Attr:$capacity, StrAttr:$scope, OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names);
+  let assemblyFormat = "$identity `,` $fields attr-dict `:` type($fields)";
   let hasVerifier = 1;
 }
 
