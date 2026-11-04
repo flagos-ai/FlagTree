@@ -76,6 +76,66 @@ def _masked_copy_zero_fill_kernel(src, dst):
     tl.store(dst + offsets, values)
 
 
+@triton.jit
+def _masked_copy_other_frontend_kernel(src):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+
+
+@triton.jit
+def _masked_copy_other_kernel(src, dst):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+    values = tl.load(tle.gpu.local_ptr(smem, (offsets, )))
+    tl.store(dst + offsets, values)
+
+
+@triton.jit
+def _masked_copy_other_f16_frontend_kernel(src):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+
+
+@triton.jit
+def _masked_copy_other_f16_kernel(src, dst):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask, other=float("-inf"))
+    values = tl.load(tle.gpu.local_ptr(smem, (offsets, )))
+    tl.store(dst + offsets, values)
+
+
 _HAS_TLE_EXPLICIT_LAYOUT = hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
 
 
@@ -109,7 +169,7 @@ class TestLayoutEncoding:
 
     @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
-    @pytest.mark.require_tle("gpu.set_layout")
+    @pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
     def test_explicit_distributed_encoding_frontend(self):
         """Test explicit BlockEncoding/SlicedEncoding frontend lowering."""
         parent = tle.gpu.BlockEncoding([1, 1], [1, 32], [8, 1], [1, 0])
@@ -127,7 +187,7 @@ class TestLayoutEncoding:
 
     @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
-    @pytest.mark.require_tle("gpu.set_layout")
+    @pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
     def test_explicit_dot_operand_encoding_frontend(self):
         """Test explicit MMA and dot-operand frontend lowering."""
         mma_layout = tle.gpu.MmaEncoding([2, 0], [4, 1], [16, 8])
@@ -155,16 +215,15 @@ class TestCopyFrontend:
     """Test validation of standard pointer-tensor copies."""
 
     def test_copy_signature(self):
-        assert list(inspect.signature(tle.gpu.copy).parameters) == [
-            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "_semantic"
+        parameters = inspect.signature(tle.gpu.copy).parameters
+        assert list(parameters) == [
+            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "_semantic"
         ]
-        assert inspect.signature(tle.gpu.copy).parameters["cache_policy"].default is None
-
-    def test_copy_does_not_expose_other(self):
-        assert "other" not in inspect.signature(tle.gpu.copy).parameters
+        assert parameters["cache_policy"].default is None
+        assert parameters["other"].default is None
 
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
     def test_masked_copy_uses_implicit_zero_fill(self):
         src = MockTensor(torch.float32)
         target = GPUTarget("cuda", 90, 32)
@@ -183,7 +242,7 @@ class TestCopyFrontend:
         not is_ampere_or_newer(),
         reason="cp.async regression guard requires NVIDIA Ampere or newer",
     )
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_masked_copy_implicitly_uses_other_zero_end_to_end(self):
         # All source values are non-zero, so zeros in masked lanes must come
         # from the global-to-shared copy's implicit other=0 contract.
@@ -196,6 +255,116 @@ class TestCopyFrontend:
         _masked_copy_zero_fill_kernel[(1, )](src, dst, num_warps=4)
         expected = torch.cat((src[:8], torch.zeros_like(src[8:])))
         torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+
+    @staticmethod
+    def _make_copy_buffer():
+        semantic = TestBufferedTensor._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(1)
+        buffer = tle.gpu.buffered_tensor("smem", tl.float32, [16], tle.gpu.smem, layout, semantic)
+        return buffer, semantic
+
+    @staticmethod
+    def _make_global_tensor():
+        return tl.tensor(None, tl.pointer_type(tl.float32))
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    def test_masked_copy_uses_explicit_other(self):
+        src = MockTensor(torch.float32)
+        target = GPUTarget("cuda", 90, 32)
+
+        module = run_parser(
+            _masked_copy_other_frontend_kernel,
+            args=(src, ),
+            kwargs={"num_warps": 4},
+            target=target,
+        )
+        ir = module.str_nodebug()
+        assert "arith.constant dense<0xFF800000> : tensor<16xf32>" in ir
+        assert "tt.load" in ir
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    def test_masked_copy_casts_explicit_other_to_destination_dtype(self):
+        src = MockTensor(torch.float16)
+        target = GPUTarget("cuda", 90, 32)
+
+        module = run_parser(
+            _masked_copy_other_f16_frontend_kernel,
+            args=(src, ),
+            kwargs={"num_warps": 4},
+            target=target,
+        )
+        ir = module.str_nodebug()
+        assert ("arith.constant dense<0xFC00> : tensor<16xf16>" in ir
+                or ("arith.constant dense<0xFF800000> : tensor<16xf32>" in ir and
+                    ("arith.truncf" in ir or "tt.fp_to_fp" in ir)))
+        assert "tt.load" in ir
+
+    @pytest.mark.skipif(
+        not is_ampere_or_newer(),
+        reason="cp.async regression guard requires NVIDIA Ampere or newer",
+    )
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_masked_copy_explicit_other_end_to_end(self):
+        src = torch.arange(1, 17, device="cuda", dtype=torch.float32)
+        dst = torch.full_like(src, -1)
+
+        # A non-zero fill value must fall back from cp.async (which only
+        # implements zero fill) to the regular load/store path.
+        _masked_copy_other_kernel[(1, )](src, dst, num_warps=4)
+        expected = torch.cat((src[:8], torch.full_like(src[8:], float("-inf"))))
+        torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+        assert torch.isneginf(dst[8:]).all()
+
+    @pytest.mark.skipif(
+        not is_ampere_or_newer(),
+        reason="cp.async regression guard requires NVIDIA Ampere or newer",
+    )
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_masked_copy_other_dtype_conversion_end_to_end(self):
+        src = torch.arange(1, 17, device="cuda", dtype=torch.float16)
+        dst = torch.full_like(src, -1)
+
+        _masked_copy_other_f16_kernel[(1, )](src, dst, num_warps=4)
+        expected = torch.cat((src[:8], torch.full_like(src[8:], float("-inf"))))
+        torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+        assert torch.isneginf(dst[8:]).all()
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_requires_mask(self):
+        src = self._make_global_tensor()
+        buffer, semantic = self._make_copy_buffer()
+
+        with pytest.raises(ValueError, match="copy other requires a mask"):
+            tle.gpu.copy(src, buffer, [16], other=float("-inf"), _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_rejects_local_to_global(self):
+        buffer, semantic = self._make_copy_buffer()
+        dst = self._make_global_tensor()
+
+        with pytest.raises(ValueError, match="only supported for standard pointer-tensor global-to-local"):
+            tle.gpu.copy(buffer, dst, [16], mask=True, other=float("-inf"), _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_rejects_tma_copy(self):
+        desc = object.__new__(tl.tensor_descriptor)
+        buffer, semantic = self._make_copy_buffer()
+
+        with pytest.raises(ValueError, match="only supported for standard pointer-tensor global-to-local"):
+            tle.gpu.copy(desc, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.copy")
+    def test_copy_other_rejects_common_ir(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
+        src = self._make_global_tensor()
+        buffer, semantic = self._make_copy_buffer()
+
+        with pytest.raises(ValueError, match="GPU CommonIR copy does not yet support other"):
+            tle.gpu.copy(src, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
 
 
 class TestPipeline:
@@ -465,7 +634,7 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
 
-    @pytest.mark.require_tle("gpu.buffered_tensor.slot")
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot")
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
         """slot(stage) returns a typed view with the leading stage dimension removed."""
         buffer, semantic = self._make_buffer([4, 16, 32])
@@ -510,7 +679,7 @@ class TestBufferedTensor:
         with pytest.raises(ValueError, match="int32"):
             buffer.slot(stage, _semantic=semantic)
 
-    @pytest.mark.require_tle("gpu.buffered_tensor.subslice")
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_preserves_rank_layout_and_alloc_shape(self):
         buffer, semantic = self._make_buffer([4, 16, 32])
 
@@ -527,7 +696,7 @@ class TestBufferedTensor:
             [0, 4, 0],
         )
 
-    @pytest.mark.require_tle("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self):
         buffer, semantic = self._make_buffer([4, 16, 32])
 
@@ -632,7 +801,7 @@ class TestTmaCopyBarrierFrontend:
             allocation_key="bar",
         )
 
-    @pytest.mark.require_tle("gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
     def test_copy_accepts_explicit_tma_completion_barrier(self):
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
@@ -727,7 +896,7 @@ class TestPipeFrontend:
                                          layout, semantic)
         return buffer, semantic
 
-    @pytest.mark.require_tle("pipe")
+    @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_validates_and_keeps_fields(self):
         a, semantic = self._make_buffer([4, 16, 32])
         b, _ = self._make_buffer([4, 32, 16])
@@ -794,7 +963,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="reserved"):
             tle.pipe(capacity=4, readers=("readers", ), a=a, _semantic=semantic)
 
-    @pytest.mark.require_tle("pipe")
+    @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_default_reader_is_spsc_and_rejects_named_endpoint(self):
         a, semantic = self._make_buffer([4, 16])
         pipe = tle.pipe(capacity=4, a=a, _semantic=semantic)
@@ -807,7 +976,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="requires pipe readers"):
             pipe.reader(name="left", _semantic=semantic)
 
-    @pytest.mark.require_tle("pipe")
+    @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_explicit_readers_require_named_endpoint(self):
         a, semantic = self._make_buffer([4, 16])
         pipe = tle.pipe(capacity=4, readers=("left", "right"), a=a, _semantic=semantic)
@@ -825,7 +994,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="not declared"):
             pipe.reader(name="missing", _semantic=semantic)
 
-    @pytest.mark.require_tle("pipe")
+    @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_reader_field_subset_is_endpoint_type_view_only(self):
         a, semantic = self._make_buffer([4, 16, 32])
         b, _ = self._make_buffer([4, 32, 16])
@@ -858,7 +1027,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="unique"):
             pipe.reader(name="left", fields=("a", "a"), _semantic=semantic)
 
-    @pytest.mark.require_tle(
+    @pytest.mark.skip_if_tle_unsupported(
         "pipe",
         "pipe_reader.release",
         "pipe_reader.wait",
@@ -900,7 +1069,7 @@ class TestPipeFrontend:
         assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
                                                 "", ["a"])
 
-    @pytest.mark.require_tle("pipe")
+    @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_one_shot_keeps_frontend_contract(self):
         a, semantic = self._make_buffer([1, 16])
         pipe = tle.pipe(capacity=1, readers=("left", "right"), one_shot=True, a=a, _semantic=semantic)
