@@ -341,6 +341,36 @@ void init_triton_iluvatar_tle_ir(py::module m) {
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self, const std::string &groupKind,
+              std::vector<int32_t> groupShape,
+              std::vector<int32_t> groupAxes,
+              std::vector<int32_t> groupMask,
+              std::vector<int32_t> groupDomainShape) {
+             auto &builder = self.getBuilder();
+             auto *ctx = builder.getContext();
+             StringAttr kindAttr = builder.getStringAttr(groupKind);
+             IntegerAttr rankAttr;
+             DenseI32ArrayAttr shapeAttr, axesAttr, maskAttr, domainAttr;
+             if (!groupShape.empty() || !groupAxes.empty() ||
+                 !groupMask.empty() || !groupDomainShape.empty()) {
+               rankAttr = builder.getI32IntegerAttr(
+                   static_cast<int32_t>(groupShape.size()));
+               if (!groupShape.empty()) shapeAttr = DenseI32ArrayAttr::get(ctx, groupShape);
+               if (!groupAxes.empty()) axesAttr = DenseI32ArrayAttr::get(ctx, groupAxes);
+               if (!groupMask.empty()) maskAttr = DenseI32ArrayAttr::get(ctx, groupMask);
+               if (!groupDomainShape.empty()) domainAttr = DenseI32ArrayAttr::get(ctx, groupDomainShape);
+             }
+             self.create<generic_tle::DistributedBarrierOp>(
+                 Value(), StringAttr(), StringAttr(), generic_tle::MemoryOrderAttr(), kindAttr,
+                 IntegerAttr(), IntegerAttr(), generic_tle::SyncScopeAttr(), rankAttr, shapeAttr, axesAttr, maskAttr,
+                 domainAttr);
+           },
+           py::arg("group_kind") = "block",
+           py::arg("group_shape") = std::vector<int32_t>{},
+           py::arg("group_axes") = std::vector<int32_t>{},
+           py::arg("group_mask") = std::vector<int32_t>{},
+           py::arg("group_domain_shape") = std::vector<int32_t>{})
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               int32_t capacity, const std::string &scope,

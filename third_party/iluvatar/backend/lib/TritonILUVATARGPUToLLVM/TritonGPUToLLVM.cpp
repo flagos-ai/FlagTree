@@ -3,6 +3,8 @@
 #ifdef __ILUVATAR_TLE__
 #include "Conversion/TleToLLVM.h"
 #include "Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #endif
 #include "Dialect/TritonILUVATARGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
@@ -68,6 +70,7 @@ public:
     addIllegalDialect<mlir::gpu::GPUDialect>();
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::addIllegalDialects(*this);
+    addIllegalDialect<triton::tle::TleDialect>();
 #endif
     addLegalOp<triton::gpu::WarpSpecializeOp>();
     addLegalOp<triton::gpu::WarpYieldOp>();
@@ -219,6 +222,7 @@ struct ConvertTritonILUVATARGPUToLLVM
                 mlir::triton::iluvatargpu::TritonILUVATARGPUDialect>();
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::registerDialects(registry);
+    registry.insert<mlir::triton::tle::TleDialect>();
 #endif
   }
 
@@ -318,6 +322,8 @@ struct ConvertTritonILUVATARGPUToLLVM
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::populateTleToLLVMPatterns(
         typeConverter, targetInfo, patterns, commonBenefit);
+    mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+        typeConverter, patterns, commonBenefit);
 #endif
     mlir::triton::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, commonBenefit);

@@ -1,6 +1,6 @@
 if(FLAGTREE_ILUVATAR_TLE)
     set(_ILUVATAR_TLE_LIBS IluvatarTleToLLVM TleIR)
-    set(_ILUVATAR_TLE_BARRIER_SOURCES "")
+    set(_ILUVATAR_TLE_BARRIER_SOURCES DistributedBarrierOpToLLVM.cpp)
 else()
     set(_ILUVATAR_TLE_LIBS "")
     set(_ILUVATAR_TLE_BARRIER_SOURCES "")
