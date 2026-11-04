@@ -4,6 +4,7 @@
 #include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
+#include "triton/Conversion/CommonIRToTTGIR/SharedLayoutUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 namespace mlir::triton::metax {
@@ -88,8 +89,7 @@ FailureOr<Attribute> inferSharedEncoding(ttg::LocalLoadOp load,
     return load.emitError("automatic shared layout requires a rank-2 FP16/BF16 "
                           "ordinary load for MACA MMA v2");
 
-  // The existing hardware constructor asserts exact MMA microtile coverage.
-  // Prove it before calling the constructor so a bad candidate is skippable.
+  // Check microtile divisibility before constructing the shared encoding.
   auto elems = mma.getElemsPerThreadOrTrans(dot);
   auto atom = mma.getThreadShape(false);
   unsigned first = dot.getOpIdx() == 0 ? atom[0] : atom[2];

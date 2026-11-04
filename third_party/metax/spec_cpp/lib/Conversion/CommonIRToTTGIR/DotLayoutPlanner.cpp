@@ -4,9 +4,7 @@
 
 #include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
-#include "triton/Conversion/CommonIRToTTGIR/BsmLayout.h"
 
-#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -17,8 +15,6 @@
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <limits>
-
 namespace mlir::triton::metax {
 
 namespace tt = mlir::triton;
@@ -26,48 +22,9 @@ namespace ttg = mlir::triton::gpu;
 
 namespace {
 
-// C500 MACA v2 instruction shape used to bound the search domain.
-constexpr unsigned kMmaTileM = 16;
-constexpr unsigned kMmaTileN = 16;
-constexpr unsigned kMmaTileK = 4;
-
 std::string hashDescription(StringRef description) {
   auto digest = llvm::SHA256::hash(llvm::arrayRefFromStringRef(description));
   return llvm::toHex(ArrayRef<uint8_t>(digest), /*LowerCase=*/true);
-}
-
-int getMmaVersionMajor(int computeCapability) {
-  if (computeCapability < 70)
-    return 0;
-  if (computeCapability < 80)
-    return 1;
-  if (computeCapability < 90)
-    return 2;
-  if (computeCapability < 100)
-    return 3;
-  return 4;
-}
-
-ttg::MACAMmaEncodingAttr buildMmaEncoding(MLIRContext *ctx,
-                                          int computeCapability,
-                                          ArrayRef<unsigned> warpsPerCTA,
-                                          ArrayRef<unsigned> elementsMNK,
-                                          unsigned colMajor) {
-  SmallVector<unsigned, 2> elementsStride = {1, 1};
-  return ttg::MACAMmaEncodingAttr::get(
-      ctx, getMmaVersionMajor(computeCapability), computeCapability % 10,
-      warpsPerCTA, elementsMNK, colMajor, /*isATrans=*/false,
-      /*isBTrans=*/false, elementsStride);
-}
-
-// Assemble the atomic {mma, operandA, operandB} contract for a dot.
-DotLayoutPlan makePlan(MLIRContext *ctx, ttg::MACAMmaEncodingAttr mma,
-                       Type aElementType, Type bElementType) {
-  DotLayoutPlan plan;
-  plan.mma = mma;
-  plan.operandA = ttg::DotOperandEncodingAttr::get(ctx, 0, mma, aElementType);
-  plan.operandB = ttg::DotOperandEncodingAttr::get(ctx, 1, mma, bElementType);
-  return plan;
 }
 
 struct DotLayoutConstraints {
@@ -76,10 +33,8 @@ struct DotLayoutConstraints {
   std::optional<BsmLayoutChain> bsmB;
 
   unsigned maxElements(unsigned dim, unsigned warps) const {
-    uint64_t atoms = llvm::divideCeil<uint64_t>(
-        dim == 0 ? m : n, dim == 0 ? kMmaTileM : kMmaTileN);
-    return llvm::PowerOf2Ceil(
-        std::max<uint64_t>(llvm::divideCeil(atoms, uint64_t(warps)), 1));
+    return getMmaRegisterGroupLimit(dim == 0 ? m : n,
+                                    ttg::getMmaThreadShape()[dim], warps);
   }
 };
 
@@ -106,33 +61,8 @@ getDotLayoutConstraints(tt::DotOp dot, int computeCapability, int numWarps) {
   auto aTy = cast<RankedTensorType>(dot.getA().getType());
   auto bTy = cast<RankedTensorType>(dot.getB().getType());
   auto dTy = cast<RankedTensorType>(dot.getD().getType());
-  // Reject unsupported queries before toLinearLayout's target/rank assertions.
-  if (getMmaVersionMajor(computeCapability) != 2) {
-    dot.emitError("dot layout enumeration requires MACA MMA version 2");
-    return failure();
-  }
-  if (numWarps <= 0 || !llvm::isPowerOf2_64(numWarps)) {
-    dot.emitError(
-        "dot layout enumeration requires a positive power-of-two warp count");
-    return failure();
-  }
-  if (aTy.getRank() != 2 || bTy.getRank() != 2 || dTy.getRank() != 2) {
-    dot.emitError("dot layout enumeration requires rank-2 tensors");
-    return failure();
-  }
-  for (RankedTensorType type : {aTy, bTy, dTy}) {
-    if (llvm::any_of(type.getShape(), [](int64_t dim) {
-          return dim <= 0 || dim > std::numeric_limits<int>::max() ||
-                 !llvm::isPowerOf2_64(dim);
-        })) {
-      dot.emitError("dot layout enumeration requires static power-of-two "
-                    "dimensions representable as i32");
-      return failure();
-    }
-  }
-  if (!mlir::supportMMA(dot, /*major=*/2, computeCapability % 10)) {
-    dot.emitError(
-        "dot dtype/precision is not supported by the target MMA instructions");
+  if (auto error = checkMacaDotPreconditions(dot, computeCapability, numWarps)) {
+    dot.emitError("cannot enumerate dot layouts: ") << *error;
     return failure();
   }
 
@@ -211,8 +141,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
   if (failed(constraints))
     return failure();
   MLIRContext *ctx = dot.getContext();
-  Type aElem = dot.getA().getType().getElementType();
-  Type bElem = dot.getB().getType().getElementType();
+  unsigned atomK = ttg::getMmaThreadShape()[2];
 
   SmallVector<DotLayoutPlan> plans;
   std::optional<std::string> bsmRejection;
@@ -223,7 +152,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
         buildMmaEncoding(ctx, computeCapability, warps, elements, colMajor);
     if (!seen.insert(mma).second)
       return;
-    DotLayoutPlan plan = makePlan(ctx, mma, aElem, bElem);
+    DotLayoutPlan plan = makeDotLayoutPlan(dot, mma);
     if (checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
                           computeCapability, numWarps))
       return;
@@ -244,9 +173,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
     const unsigned replicaDim = 1 - packedDim;
     for (unsigned replicaWarps = 1; replicaWarps <= unsigned(numWarps);
          replicaWarps <<= 1) {
-      // M/N coverage may exceed the tensor shape. Let the common legality
-      // check handle every warp grid, including the former [numWarps,1]
-      // fallback, instead of excluding it from the enumeration.
+      // M/N coverage may exceed the tensor shape; validate each warp grid below.
       if (numWarps % replicaWarps)
         continue;
       unsigned packedWarps = numWarps / replicaWarps;
@@ -258,7 +185,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
         for (unsigned packedElements : powerOfTwoGroupings(maxPackedElements)) {
           // Instruction packing limits are checked by checkMacaDotLayout.
           for (unsigned elementsK = 1;
-               static_cast<uint64_t>(elementsK) * kMmaTileK <=
+               static_cast<uint64_t>(elementsK) * atomK <=
                static_cast<uint64_t>(constraints->k);
                elementsK <<= 1) {
             SmallVector<unsigned, 2> warps(2);
@@ -284,9 +211,8 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
     return failure();
   }
 
-  // The default is the first enumerated plan after ordering. Keep row-major
-  // accumulators first and prefer balanced warp grids for square dots. Stable
-  // ties preserve the native-K-first grouping order without pruning candidates.
+  // The first plan is the default. Prefer row-major accumulators and balanced
+  // warp grids for square dots; preserve enumeration order for ties.
   llvm::stable_sort(
       plans, [&](const DotLayoutPlan &lhs, const DotLayoutPlan &rhs) {
         auto left = cast<ttg::MACAMmaEncodingAttr>(lhs.mma);

@@ -9,7 +9,6 @@
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
-#include "mlir-ext/Dialect/CommonIR/Transforms/LayoutHints.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #endif
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
@@ -135,19 +134,18 @@ void init_triton_passes_commonir(py::module &&m) {
           "CommonIR set_layout cannot yet be combined with MCTLE operations");
     return hasHints;
   });
-  m.def("clear_layout_hints", [](mlir::ModuleOp module) {
-    mlir::triton::tile::clearLayoutHints(module);
-  });
+  ADD_PASS_WRAPPER_0("add_clear_layout_hints",
+                     mlir::triton::metax::createCommonIRClearLayoutHints);
   ADD_PASS_WRAPPER_0("add_lower_tensor_tiles",
                      mlir::triton::metax::createCommonIRLowerTensorTiles);
   ADD_PASS_WRAPPER_0("add_propagate_layouts",
                      mlir::triton::metax::createCommonIRPropagateLayouts);
-  ADD_PASS_WRAPPER_0("add_plan_shared_layouts",
-                     mlir::triton::metax::createCommonIRPlanSharedLayouts);
+  ADD_PASS_WRAPPER_0("add_optimize_shared_layouts",
+                     mlir::triton::metax::createCommonIROptimizeSharedLayouts);
   ADD_PASS_WRAPPER_0("add_legalize_async_copy",
                      mlir::triton::metax::createCommonIRLegalizeAsyncCopy);
-  ADD_PASS_OPTION_WRAPPER_2("add_prepare_bsm_layouts",
-                            mlir::triton::metax::createCommonIRPrepareBsmLayouts,
+  ADD_PASS_OPTION_WRAPPER_2("add_resolve_bsm_layouts",
+                            mlir::triton::metax::createCommonIRResolveBsmLayouts,
                             int, int);
   ADD_PASS_WRAPPER_0("add_to_ttgir",
                      mlir::triton::metax::createCommonIRToTTGIR);

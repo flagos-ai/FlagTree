@@ -1,3 +1,14 @@
+add_triton_library(MetaxMmaLayout
+  MmaLayout.cpp
+
+  LINK_LIBS PUBLIC
+  CommonIRIR
+  TritonIR
+  TritonGPUIR
+  TritonAnalysis
+  TritonTools
+)
+
 add_triton_library(MetaxCommonIRToTTGIR
   CommonIRToTTGIR.cpp
   CommonIRLayoutHints.cpp
@@ -7,6 +18,7 @@ add_triton_library(MetaxCommonIRToTTGIR
   MetaxCommonIRToTTGIRPassIncGen
 
   LINK_LIBS PUBLIC
+  MetaxMmaLayout
   MLIRArithDialect
   MLIRSCFDialect
   MLIRTransforms
@@ -31,12 +43,11 @@ endif()
 add_triton_library(MetaxCommonIRLayouts
   AsyncCopyUtils.cpp
   BufferLayoutRules.cpp
-  CommonIRBsmLayout.cpp
   CommonIRLegalizeAsyncCopy.cpp
-  CommonIRPrepareBsmLayouts.cpp
-  CommonIRPlanSharedLayouts.cpp
+  ResolveBsmLayouts.cpp
+  CommonIROptimizeSharedLayouts.cpp
   CommonIRPropagateLayouts.cpp
-  CommonIRSharedLayouts.cpp
+  SharedLayoutUtils.cpp
   DotLayoutPlanner.cpp
   TensorLayoutRules.cpp
 
@@ -44,6 +55,7 @@ add_triton_library(MetaxCommonIRLayouts
   MetaxCommonIRToTTGIRPassIncGen
 
   LINK_LIBS PUBLIC
+  MetaxMmaLayout
   CommonIRAxisInfo
   CommonIRTransforms
   MLIRSCFDialect

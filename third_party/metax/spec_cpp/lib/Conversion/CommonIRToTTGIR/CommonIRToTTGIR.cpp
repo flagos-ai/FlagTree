@@ -218,8 +218,6 @@ static LogicalResult checkTensorType(Operation *op, Type type,
 
 static LogicalResult checkCopy(tile::CopyOp op, Value pointers,
                                ttg::MemDescType bufferType) {
-  // The frozen CommonIR interface carries more copy modes than this backend
-  // supports. Reject their semantics rather than silently doing a plain copy.
   if (op->hasAttr("engine") || op->hasAttr("transpose") ||
       op->hasAttr("dst_nz_layout") ||
       (op.getSrcLayout() && *op.getSrcLayout() != tile::Layout::ND))
