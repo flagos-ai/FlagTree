@@ -205,6 +205,7 @@ class Autotuner(KernelInterface):
 
         try:
             rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+        # except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
         # flagtree tileir: prune backend compiler failures during autotuning.
         except (OutOfResources, CompileTimeAssertionFailure, PTXASError, BackendCompilerError) as e:
             if verbose:

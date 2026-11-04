@@ -364,11 +364,12 @@ def TritonTleAllocateNamedBarriers
 
   let description = [{
     This pass rewrites TLE virtual named barrier ids into physical NVIDIA
-    hardware named barrier ids. TLE frontend ids start at 16 so each user
-    barrier remains distinguishable in IR before this late pass. The pass
-    reserves the barrier ids used by warp-specialization lowering, preserves
-    existing physical ids in the 0..15 range, and assigns virtual ids to free
-    physical ids.
+    hardware named barrier ids. TLE frontend ids start at 16 and are unique
+    within a codegen module, so each user barrier remains distinguishable
+    across outlined helper calls before this late pass. The pass reserves the
+    barrier ids used by warp-specialization lowering across the module,
+    preserves existing physical ids in the 0..15 range, and assigns virtual
+    ids to free physical ids with one module-wide map.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",

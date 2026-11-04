@@ -330,6 +330,8 @@ void mlir::mk::registerBufferizableOpInterfaceExternalModels(
         MKOpInterfaceHelper<mk::AddVS>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::SubVS>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::MulVS>::registerOpInterface(ctx);
+        MKOpInterfaceHelper<mk::MaxVS>::registerOpInterface(ctx);
+        MKOpInterfaceHelper<mk::MinVS>::registerOpInterface(ctx);
         mk::BitcastOp::attachInterface<BitCastOpInterface>(*ctx);
         mk::RemoteStoreOp::attachInterface<SendOpInterface>(*ctx);
       });

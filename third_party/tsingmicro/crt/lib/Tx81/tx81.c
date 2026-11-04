@@ -488,9 +488,80 @@ Tx81MemAddrRange compute_wdma_dst_addr_range(const void *dst, int *src_shape,
                                    src_shape_copy[rank - 1], elem_bytes_eff);
 }
 
+static Tx81MemAddrRange
+gatherscatter_addr_range_impl(uintptr_t base, uint32_t bytes, uint32_t strideN,
+                              uint32_t strideH, uint32_t strideW,
+                              uint32_t iterN, uint32_t iterH, uint32_t iterW) {
+  Tx81MemAddrRange empty = {base, base};
+
+  // Zero iterations: no data is moved.
+  if (iterW == 0 || iterH == 0 || iterN == 0) {
+    return empty;
+  }
+
+  // Compute the per-level offset coefficients using int64_t to avoid overflow.
+  //
+  // The hardware uses pitch semantics: each level's stride is the byte
+  // distance between the starts of consecutive iterations at that level,
+  // measured independently of the inner loops. The byte offset relative to
+  // base at iteration (n,h,w) is:
+  //   offset = n * strideN + h * strideH + w * strideW
+  int64_t coeff_W = (int64_t)strideW;
+  int64_t coeff_H = (int64_t)strideH;
+  int64_t coeff_N = (int64_t)strideN;
+
+  // Compute min and max offset by taking the extreme contribution of each
+  // loop variable independently.
+  int64_t min_off = 0;
+  int64_t max_off = 0;
+
+  // W dimension
+  if (coeff_W >= 0) {
+    max_off += coeff_W * ((int64_t)iterW - 1);
+  } else {
+    min_off += coeff_W * ((int64_t)iterW - 1);
+  }
+
+  // H dimension
+  if (coeff_H >= 0) {
+    max_off += coeff_H * ((int64_t)iterH - 1);
+  } else {
+    min_off += coeff_H * ((int64_t)iterH - 1);
+  }
+
+  // N dimension
+  if (coeff_N >= 0) {
+    max_off += coeff_N * ((int64_t)iterN - 1);
+  } else {
+    min_off += coeff_N * ((int64_t)iterN - 1);
+  }
+
+  Tx81MemAddrRange range;
+  range.min_addr = (uintptr_t)((int64_t)base + min_off);
+  range.max_addr = (uintptr_t)((int64_t)base + max_off + (int64_t)bytes);
+  return range;
+}
+
+Tx81MemAddrRange compute_gatherscatter_src_addr_range(
+    const void *src, uint32_t bytes, uint32_t strideN, uint32_t strideH,
+    uint32_t strideW, uint32_t iterN, uint32_t iterH, uint32_t iterW) {
+  return gatherscatter_addr_range_impl((uintptr_t)src, bytes, strideN, strideH,
+                                       strideW, iterN, iterH, iterW);
+}
+
+Tx81MemAddrRange compute_gatherscatter_dst_addr_range(
+    const void *dst, uint32_t bytes, uint32_t strideN, uint32_t strideH,
+    uint32_t strideW, uint32_t iterN, uint32_t iterH, uint32_t iterW) {
+  return gatherscatter_addr_range_impl((uintptr_t)dst, bytes, strideN, strideH,
+                                       strideW, iterN, iterH, iterW);
+}
+
 // --- DMA bounds check counters ---
 
+uint32_t max_dma_oob_count = 3;
+uint32_t dma_oob_log_count = 0;
 uint32_t dma_oob_count = 0;
+uint32_t dma_bad_crc_count = 0;
 uint32_t dma_bad_magic_count = 0;
 
 static bool dma_check_abort_enabled = false;
@@ -504,11 +575,17 @@ __attribute__((constructor)) static void dma_check_init(void) {
   }
 }
 
+uint32_t get_dma_oob_log_count(void) { return dma_oob_log_count; }
+
 uint32_t get_dma_oob_count(void) { return dma_oob_count; }
 
 uint32_t get_dma_bad_magic_count(void) { return dma_bad_magic_count; }
 
+void reset_dma_oob_log_count(void) { dma_oob_log_count = 0; }
+
 void reset_dma_oob_count(void) { dma_oob_count = 0; }
+
+void reset_dma_bad_crc_count(void) { dma_bad_crc_count = 0; }
 
 void reset_dma_bad_magic_count(void) { dma_bad_magic_count = 0; }
 

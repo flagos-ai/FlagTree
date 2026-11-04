@@ -180,8 +180,15 @@ struct MemrefLoadOrStoreOpLowering : public ConvertOpToLLVMPattern<MemrefOp> {
                                                newVal, Zero);
         rewriter.replaceOp(op, ValueRange{newVal});
       } else {
+        // llvm.load cannot produce builtin f8 (LLVM has no f8). Map f8 to
+        // i8 via the type converter; same bit width, same address.
+        Type resultType =
+            ConvertToLLVMPattern::getTypeConverter()->convertType(op.getType());
+        if (!resultType || !LLVM::isCompatibleType(resultType))
+          return rewriter.notifyMatchFailure(
+              op, "failed to convert memref.load result type to LLVM");
         rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
-            op, op.getType(), adjustedPtr, 0, false, op.getNontemporal());
+            op, resultType, adjustedPtr, 0, false, op.getNontemporal());
       }
     } else {
 

@@ -82,6 +82,10 @@ struct PipeCompletionSource {
   PipeCoveredRegion coveredRegion;
   int32_t transactionBytes = 0;
   PipeBarrierStorageOwner barrierStorageOwner = PipeBarrierStorageOwner::Pipe;
+  // Full-barrier ring selected by analysis.  A logical multi-field payload
+  // may require several rings because one MThreads transaction barrier can
+  // account for at most 64 KiB.
+  unsigned fullBarrierSegment = 0;
   // Canonical BarrierAllocOp base for an externally supplied completion
   // barrier.  It is null for pipe-owned completion storage.
   Value externalBarrierRoot;
@@ -94,6 +98,7 @@ struct PipeCommitGroup {
   int32_t tmeGroupArrivalCount = 0;
   int32_t localStoreArrivalCount = 0;
   int32_t fullArrivalCount = 0;
+  SmallVector<int32_t> segmentTransactionBytes;
   PipeWriterCommitOp commit;
   Value externalBarrierRoot;
 };
@@ -200,6 +205,7 @@ struct PipeBarrierParticipant {
 
 struct PipeBarrierPlan {
   PipeBarrierRingPlan full;
+  SmallVector<PipeBarrierRingPlan> additionalFull;
   std::optional<PipeBarrierRingPlan> empty;
   bool hasCloseState = false;
   std::optional<PipeCloseTagPlan> closeTagPlan;

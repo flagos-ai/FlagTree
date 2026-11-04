@@ -519,7 +519,8 @@ class CompiledKernel:
         self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = kernel_driver.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
         warp_size = self.metadata.target.warp_size
-        if self.metadata.num_warps * warp_size > self.n_max_threads:
+        if self.metadata.num_warps * warp_size > self.n_max_threads \
+            and self.metadata.target.backend != "maca":  # flagtree metax
             raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         if knobs.runtime.kernel_load_end_hook is not None:
             knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group, self.hash)

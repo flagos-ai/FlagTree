@@ -1050,6 +1050,8 @@ def test_abs_fp8(in_dtype, device):
     elif is_musa():
         if in_dtype == tl.float8e4b15 and is_musa_ph1():
             pytest.skip("float8e4nv not supported on PH arch")
+        if torch.musa.get_device_capability()[0] == 2:
+            pytest.skip("test_abs_fp8 not supported on QY arch")
 
     @triton.jit
     def abs_kernel(X, Z, SIZE: tl.constexpr):
@@ -3714,14 +3716,20 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
         np.testing.assert_allclose(z_ref, to_numpy(z_tri), rtol=0.01, atol=1e-3)
 
     if is_musa() and in_dtype == 'int8':
-        # native-path acceptance: the s8 matrix instruction (SQMMA smma or WMMA
-        # imma) is emitted and the operands are not silently promoted to
-        # f16/bf16 or lowered to the FMA software path
         llir = pgm.asm['llir']
-        assert re.search(r'llvm\.musa\.(sqmma\.smma|imma)\.m\d+n\d+k\d+\.mma', llir), \
-            'expected native s8 matrix instruction (sqmma.smma / imma)'
+        native_s8 = re.search(r'llvm\.musa\.(sqmma\.smma|imma)\.m\d+n\d+k\d+\.mma', llir)
+        # QY2 has no registered s8 WMMA intrinsic. PH1 requires an exact
+        # partition with at least an 8x16 output tile per warp.
+        is_qy2 = torch.musa.get_device_capability()[0] == 2
+        if is_qy2 or M * N < num_warps * 8 * 16:
+            assert native_s8 is None, 'unsupported int8 configurations must use the integer FMA fallback'
+            assert re.search(r'\bmul(?: (nsw|nuw))* (?:<\d+ x i32>|i32)', llir), \
+                'the FMA fallback must retain integer multiplication'
+            assert not re.search(r'\b[su]itofp\b', llir), 'the integer FMA fallback must not promote to float'
+        else:
+            assert native_s8, 'admissible int8 dot tiles must emit native s8 matrix instructions'
         assert not re.search(r'llvm\.musa\.(ffmma|bfmma)\.', llir), 'int8 dot must not promote to f16/bf16'
-        assert 'fmuladd' not in llir, 'int8 dot must not fall back to FMA'
+        assert 'fmuladd' not in llir, 'int8 dot must not use floating-point FMA'
 
     if not (is_cuda() or is_hip_cdna() or is_hip_gfx1250()):
         return
@@ -4130,7 +4138,6 @@ def test_masked_load_scalar(num_ctas, mask_val, other_val, device):
 @pytest.mark.interpreter
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 def test_masked_load_shared_memory(dtype, device):
-
     check_type_supported(dtype, device)  # bfloat16 on cc < 80 will not be tested
 
     M = 32
@@ -6636,7 +6643,6 @@ def test_tensor_member(device):
 @pytest.mark.parametrize("trans_a", [False, True])
 @pytest.mark.parametrize("trans_b", [False, True])
 def test_dot_multidim(rank, trans_a, trans_b, device):
-
     if is_interpreter():
         pytest.skip("bfloat16 is not supported in the interpreter")
 

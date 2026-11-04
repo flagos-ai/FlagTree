@@ -102,6 +102,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          python3 -m pytest python/test/tle/unit/test_tileir_router.py
           rm -rf /tmp/flagtree_tileir_ci_01_cache /tmp/flagtree_tileir_ci_02_cache
           TRITON_CACHE_DIR=/tmp/flagtree_tileir_ci_01_cache \
             python3 python/tutorials/tileir/01-load-view-token-ordering.py

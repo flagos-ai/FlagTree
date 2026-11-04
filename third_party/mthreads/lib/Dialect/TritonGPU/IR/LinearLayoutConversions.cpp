@@ -888,16 +888,27 @@ static LinearLayout musaQY2WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
   StringAttr dimN = outDimNames[nIndex];
 
   if (isA) {
+    // A operand: MxK, wave128.
+    //
+    // The QY2 ld_matrix_32_x2 ABI is not the same as the C fragment layout.
+    // For row-major A, the low lane bits address the two fp16 values in a
+    // dword first, then the row, while the first scalar register bit selects
+    // the fp16 within that dword.  In other words:
+    //
+    //   lane:     K2,K4,M1,M2,M4,M8,K8
+    //   register: K1,M16
+    //
+    // Keep these bases explicit instead of composing identity layouts.  The
+    // latter makes the register order look like K8,M16 and produces the
+    // wrong vector passed to ffmma.m32n32k16.
     LinearLayout ctaLayout(
-        {{S("register"), {}},
-         {S("lane"), {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}}},
+        {{S("register"), {{0, 1}, {16, 0}}},
+         {S("lane"), {{0, 2}, {0, 4}, {1, 0}, {2, 0}, {4, 0}, {8, 0}, {0, 8}}},
          {S("warp"), {}},
          {S("block"), {}}},
         {dimM, dimA_K});
-    ctaLayout *= LinearLayout::identity1D(2, S("lane"), dimM);
-    ctaLayout *= LinearLayout::identity1D(2, S("lane"), dimM);
-    ctaLayout *= LinearLayout::identity1D(2, S("register"), dimA_K);
-    ctaLayout *= LinearLayout::identity1D(2, S("register"), dimM);
+    // Cross-tile K recurrence stored in register so pseudoinverse
+    // produces distinct indices per K tile.
     ctaLayout *= LinearLayout::identity1D(
         std::max<int64_t>(1, shape[kIndexA] / static_cast<int64_t>(instK)),
         S("register"), dimA_K);
@@ -914,14 +925,18 @@ static LinearLayout musaQY2WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
     return combineCtaCgaWithShape(ctaLayout, mma.getCGALayout(), shape);
   }
 
-  LinearLayout ctaLayout({{S("register"), {}},
-                          {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {0, 1}, {0, 2}}},
-                          {S("warp"), {}},
-                          {S("block"), {}}},
-                         {dimB_K, dimN});
-  ctaLayout *= LinearLayout::identity1D(4, S("lane"), dimN);
-  ctaLayout *= LinearLayout::identity1D(2, S("register"), dimB_K);
-  ctaLayout *= LinearLayout::identity1D(2, S("register"), dimN);
+  // B operand: KxN, wave128.  The default B=col fragment reuses the A
+  // row-major loader with the logical non-K axis renamed from M to N:
+  //
+  //   lane:     K2,K4,N1,N2,N4,N8,K8
+  //   register: K1,N16
+  LinearLayout ctaLayout(
+      {{S("register"), {{1, 0}, {0, 16}}},
+       {S("lane"), {{2, 0}, {4, 0}, {0, 1}, {0, 2}, {0, 4}, {0, 8}, {8, 0}}},
+       {S("warp"), {}},
+       {S("block"), {}}},
+      {dimB_K, dimN});
+  // Cross-tile K recurrence stored in register.
   ctaLayout *= LinearLayout::identity1D(
       std::max<int64_t>(1, shape[kIndexB] / static_cast<int64_t>(instK)),
       S("register"), dimB_K);
@@ -959,7 +974,10 @@ LinearLayout MUSAWmmaEncodingAttr::getInstrTileLayout() const {
 
   std::vector<std::vector<int32_t>> laneBases;
   if (isQY2()) {
-    laneBases = {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}};
+    // QY2 wave128 C fragment, as defined by
+    // mtgpu_qy2_store_matrix_d_32x32_s32_row:
+    // lane bits are N1,N2,N4,M1,M2,N8,M4.
+    laneBases = {{0, 1}, {0, 2}, {0, 4}, {1, 0}, {2, 0}};
   } else {
     assert(isPH1() && "unsupported MUSA WMMA encoding version");
     laneBases = {{0, 1}, {0, 2}, {0, 4}, {1, 0}, {2, 0}};

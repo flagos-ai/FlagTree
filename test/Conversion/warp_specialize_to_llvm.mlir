@@ -47,6 +47,117 @@ llvm.func @rewrite_barriers() attributes {allocation.offset = 32 : i32} {
 
 // -----
 
+// Adapted from https://github.com/triton-lang/triton/pull/9366 (commit
+// f1ece2c, "ws function calls"). The upstream regression checks propagation of
+// a hidden warp-group barrier through outlined helpers. FlagTree additionally
+// covers nested scf.for/scf.if calls, existing argument attributes, unchanged
+// TLE Raw helper ABI, external calls, and a non-specialized kernel that shares
+// the rewritten helper.
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 11 : i32} {
+
+llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+// CHECK-LABEL: llvm.func internal @inner_func_nw4_ws(%arg0: i32)
+llvm.func internal @inner_func_nw4() attributes {"ws_num_warps" = 4 : i32} {
+  // CHECK: [[C128:%.*]] = llvm.mlir.constant(128 : i32)
+  // CHECK: nvvm.barrier id = %arg0 number_of_threads = [[C128]]
+  // CHECK: llvm.call @inner_func_nw4_ws(%arg0) : (i32) -> ()
+  nvvm.barrier0
+  llvm.call @inner_func_nw4() : () -> ()
+  llvm.return
+}
+
+// Preserve existing argument attributes when adding the barrier handle.
+// CHECK-LABEL: llvm.func internal @inner_func_nw2_ws(%arg0: f32 {some.attr = "some_value"}, %arg1: i32)
+llvm.func internal @inner_func_nw2(%arg0: f32 {some.attr = "some_value"}) attributes {"ws_num_warps" = 2 : i32} {
+  // CHECK: [[C64:%.*]] = llvm.mlir.constant(64 : i32)
+  // CHECK: nvvm.barrier id = %arg1 number_of_threads = [[C64]]
+  nvvm.barrier0
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func internal @inner_func_nw1_ws(%arg0: i32)
+llvm.func internal @inner_func_nw1() attributes {"ws_num_warps" = 1 : i32} {
+  // CHECK: nvvm.bar.warp.sync
+  nvvm.barrier0
+  llvm.return
+}
+
+// Raw-style internal LLVM helpers have no ws_num_warps attribute. Their name
+// and ABI must remain unchanged.
+// CHECK-LABEL: llvm.func internal @raw_helper()
+llvm.func internal @raw_helper() {
+  llvm.return
+}
+
+// External declarations must not be renamed or receive a barrier argument.
+llvm.func @__libdevice_function()
+
+// CHECK-LABEL: llvm.func @rewrite_barriers_through_calls()
+llvm.func @rewrite_barriers_through_calls() attributes {allocation.offset = 32 : i32} {
+  // CHECK-DAG: [[C0:%.*]] = llvm.mlir.constant(0 : i32)
+  // CHECK-DAG: [[C2:%.*]] = llvm.mlir.constant(2 : i32)
+  // CHECK-DAG: [[C3:%.*]] = llvm.mlir.constant(3 : i32)
+  // CHECK-DAG: [[C4:%.*]] = llvm.mlir.constant(4 : i32)
+  ttg.warp_specialize() attributes {allocation.offset = 0 : i32, warpGroupStartIds = array<i32: 4, 8, 10>}
+  default {
+    llvm.call @inner_func_nw4() : () -> ()
+    ttg.warp_yield
+  }
+  partition0() num_warps(4) {
+    // CHECK: llvm.call @inner_func_nw4_ws([[C2]]) : (i32) -> ()
+    llvm.call @inner_func_nw4() : () -> ()
+    // CHECK: llvm.call @__libdevice_function() : () -> ()
+    llvm.call @__libdevice_function() : () -> ()
+    // CHECK: llvm.call @raw_helper() : () -> ()
+    llvm.call @raw_helper() : () -> ()
+    ttg.warp_return
+  }
+  partition1() num_warps(2) {
+    %lb = arith.constant 0 : index
+    %ub = arith.constant 1 : index
+    %step = arith.constant 1 : index
+    %cond = arith.constant true
+    // Calls nested in a loop or conditional still inherit partition 1's
+    // barrier id 3.
+    scf.for %i = %lb to %ub step %step {
+      // CHECK: llvm.call @inner_func_nw2_ws({{.*}}, [[C3]]) : (f32, i32) -> ()
+      %cst = llvm.mlir.constant(4.200000e+00 : f32) : f32
+      llvm.call @inner_func_nw2(%cst) : (f32) -> ()
+      scf.if %cond {
+        // CHECK: llvm.call @inner_func_nw2_ws({{.*}}, [[C3]]) : (f32, i32) -> ()
+        llvm.call @inner_func_nw2(%cst) : (f32) -> ()
+      }
+    }
+    ttg.warp_return
+  }
+  partition2() num_warps(1) {
+    // CHECK: llvm.call @inner_func_nw1_ws([[C4]]) : (i32) -> ()
+    llvm.call @inner_func_nw1() : () -> ()
+    ttg.warp_return
+  } : () -> ()
+  // The default region and code following warp specialization both use id 0.
+  // CHECK: llvm.call @inner_func_nw4_ws([[C0]]) : (i32) -> ()
+  // CHECK: llvm.call @inner_func_nw4_ws([[C0]]) : (i32) -> ()
+  llvm.call @inner_func_nw4() : () -> ()
+  llvm.return
+}
+
+// A module may contain another kernel that calls the same Triton helper. Its
+// call must follow the renamed helper ABI even though this kernel has no
+// warp-specialize op of its own.
+// CHECK-LABEL: llvm.func @plain_kernel_calling_ws_helper()
+llvm.func @plain_kernel_calling_ws_helper() {
+  // CHECK: [[PLAIN_C0:%.*]] = llvm.mlir.constant(0 : i32) : i32
+  // CHECK: llvm.call @inner_func_nw4_ws([[PLAIN_C0]]) : (i32) -> ()
+  llvm.call @inner_func_nw4() : () -> ()
+  llvm.return
+}
+
+}
+
+// -----
+
 module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 11 : i32} {
 
 llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
