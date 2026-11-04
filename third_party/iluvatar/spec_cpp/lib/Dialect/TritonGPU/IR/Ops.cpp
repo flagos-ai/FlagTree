@@ -12,6 +12,9 @@
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LogicalResult.h"
+#ifdef __ILUVATAR_TLE__
+#include "Transforms/ExplicitEncoding.h"
+#endif
 
 // Provide custom directive handlers for declarative assemblyFormat.
 // They must be visible before including the generated op classes.
@@ -278,6 +281,13 @@ struct CanonicalizeConvertFromConvert
   mlir::LogicalResult
   matchAndRewrite(ConvertLayoutOp op,
                   PatternRewriter &rewriter) const override {
+#ifdef __ILUVATAR_TLE__
+    // Folding through a requested layout must retain that intermediate
+    // contract. Ordinary conversions can still use the canonical folds.
+    if (iluvatar_tle::isExplicitLayoutConversion(op) ||
+        iluvatar_tle::explicitEncoding(op.getSrc()))
+      return failure();
+#endif
     // Convert to the same layout is redundant.
     if (op->getResultTypes() == op->getOperandTypes()) {
       rewriter.replaceOp(op, op->getOperands());
