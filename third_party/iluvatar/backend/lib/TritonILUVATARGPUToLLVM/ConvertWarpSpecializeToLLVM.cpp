@@ -613,7 +613,8 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
           {call, {kDefaultWarpGroupBarrierIdx, defaultWarpGroupSize}});
 
     if (auto bar = dyn_cast<NVVM::Barrier0Op>(op)) {
-      defaultBars.push_back(bar);
+      if (!bar->hasAttr("sme_async_payload"))
+        defaultBars.push_back(bar);
       return WalkResult::skip();
     }
     return WalkResult::advance();
@@ -681,7 +682,11 @@ static LogicalResult rewriteWarpGroupBarriers(LLVM::LLVMFuncOp func,
         helperCalls.push_back({call, {barIdx, warpGroupSize}});
       });
       partition->walk([&](NVVM::Barrier0Op bar) {
-        bars.push_back(bar);
+        // SME global-to-shared publication uses a real CTA rendezvous.  It
+        // must not be rewritten to the partition-local software barrier,
+        // because the producer and consumer are different warp groups.
+        if (!bar->hasAttr("sme_async_payload"))
+          bars.push_back(bar);
       });
       for (NVVM::Barrier0Op bar : bars) {
         TritonLLVMIRRewriter b(bar.getLoc(), bar);
@@ -748,6 +753,303 @@ static void rewritePartitionRegions(WarpSpecializeOp ws, Block *switchLoop,
   }
 }
 
+// A CTA barrier cannot be placed at different program counters in two
+// divergent WS regions on ivcore11. The hardware accepts the instruction
+// there, but SME writes are not reliably published. Keep each region's CFG
+// intact and call one shared noinline/convergent helper instead; this gives the
+// barrier one program counter without invalidating loop-carried SSA values.
+static void annotateSmeBarrierMarkers(ArrayRef<WarpSpecializeOp> wsOps) {
+  Builder builder(wsOps.front()->getContext());
+  for (auto [wsId, wsOp] : llvm::enumerate(wsOps)) {
+    WarpSpecializeOp ws = wsOp;
+    auto startIds = ws.getWarpGroupStartIds();
+    SmallVector<unsigned> partitionGroups(ws.getPartitionRegions().size());
+    SmallVector<unsigned> groupStarts;
+    if (startIds && startIds->size() == partitionGroups.size()) {
+      SmallVector<unsigned> order(partitionGroups.size());
+      std::iota(order.begin(), order.end(), 0);
+      llvm::sort(order, [&](unsigned lhs, unsigned rhs) {
+        return (*startIds)[lhs] < (*startIds)[rhs];
+      });
+      unsigned group = 0;
+      for (unsigned index : order) {
+        unsigned start = (*startIds)[index];
+        if (groupStarts.empty() || start % 4 == 0) {
+          groupStarts.push_back(start);
+          ++group;
+        }
+        partitionGroups[index] = group;
+      }
+    } else {
+      groupStarts.resize(partitionGroups.size());
+      for (auto [index, start] : llvm::enumerate(groupStarts)) {
+        partitionGroups[index] = index + 1;
+        start = 0;
+      }
+    }
+    unsigned groupCount = groupStarts.size() + 1;
+    auto mark = [&](NVVM::Barrier0Op bar, unsigned group, unsigned startWarp,
+                    unsigned numWarps) {
+      bar->setAttr("sme_ws_id", builder.getI32IntegerAttr(wsId));
+      bar->setAttr("sme_ws_group", builder.getI32IntegerAttr(group));
+      bar->setAttr("sme_ws_group_count",
+                   builder.getI32IntegerAttr(groupCount));
+      bar->setAttr("sme_ws_group_start_warp",
+                   builder.getI32IntegerAttr(startWarp));
+      bar->setAttr("sme_ws_group_warps",
+                   builder.getI32IntegerAttr(numWarps));
+    };
+    ws.getDefaultRegion().walk([&](NVVM::Barrier0Op bar) {
+      if (bar->hasAttr("sme_async_payload"))
+        mark(bar, 0, 0, lookupNumWarps(ws));
+    });
+    for (auto [idx, partition] : llvm::enumerate(ws.getPartitionRegions()))
+      partition->walk([&](NVVM::Barrier0Op bar) {
+        if (bar->hasAttr("sme_async_payload"))
+          mark(bar, partitionGroups[idx], groupStarts[partitionGroups[idx] - 1],
+               ws.getPartitionNumWarps()[idx]);
+      });
+  }
+}
+
+// Introducing a common rendezvous changes dominance even when the warp-id
+// dispatch preserves each group's dynamic path. Rebuild the affected SSA uses
+// with block arguments, including loop headers reached through new backedges.
+static LogicalResult repairSmeRendezvousSSA(LLVM::LLVMFuncOp func) {
+  struct Use {
+    Operation *owner;
+    unsigned index;
+    std::optional<unsigned> successor;
+  };
+  auto getUseOperand = [](const Use &use) -> OpOperand & {
+    if (!use.successor)
+      return use.owner->getOpOperand(use.index);
+    auto branch = cast<BranchOpInterface>(use.owner);
+    return branch.getSuccessorOperands(*use.successor)
+        .getMutableForwardedOperands()[use.index];
+  };
+  DominanceInfo dominance(func);
+  DenseMap<Value, SmallVector<Use>> invalidUses;
+  func.walk([&](Operation *op) {
+    auto branch = dyn_cast<BranchOpInterface>(op);
+    for (OpOperand &operand : op->getOpOperands()) {
+      if (dominance.dominates(operand.get(), op))
+        continue;
+      unsigned operandNumber = operand.getOperandNumber();
+      std::optional<unsigned> successor;
+      unsigned successorIndex = 0;
+      if (branch) {
+        for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i) {
+          auto forwarded =
+              branch.getSuccessorOperands(i).getForwardedOperands();
+          if (forwarded.empty())
+            continue;
+          unsigned begin = forwarded.getBeginOperandIndex();
+          if (operandNumber >= begin &&
+              operandNumber < begin + forwarded.size()) {
+            successor = i;
+            successorIndex = operandNumber - begin;
+            break;
+          }
+        }
+      }
+      invalidUses[operand.get()].push_back(
+          {op, successor ? successorIndex : operandNumber, successor});
+    }
+  });
+
+  for (auto &[value, uses] : invalidUses) {
+    if (auto constant = value.getDefiningOp<LLVM::ConstantOp>()) {
+      // LLVM target intrinsics such as Iluvatar STP encode selected operands
+      // as immarg. Rematerialize constants at each use instead of threading
+      // them through a CFG phi, which would make the translation invalid.
+      for (const Use &record : uses) {
+        OpOperand &use = getUseOperand(record);
+        OpBuilder builder(record.owner);
+        builder.setInsertionPoint(record.owner);
+        Value replacement = LLVM::ConstantOp::create(
+            builder, value.getLoc(), value.getType(), constant.getValueAttr());
+        use.set(replacement);
+      }
+      continue;
+    }
+    Block *defBlock = value.getParentBlock();
+    DenseMap<Block *, Value> available;
+    available[defBlock] = value;
+    std::function<FailureOr<Value>(Block *)> getAvailable =
+        [&](Block *block) -> FailureOr<Value> {
+      if (auto it = available.find(block); it != available.end())
+        return it->second;
+      if (block->hasNoPredecessors()) {
+        // The warp-id dispatch makes this edge unreachable for the value's
+        // warp group, but MLIR's scalar CFG does not encode that predicate.
+        // Keep the impossible edge well-formed without changing the selected
+        // group's value flow; this is the same SSA convention used for a
+        // predicated LLVM branch whose inactive arm is never consumed.
+        OpBuilder builder = OpBuilder::atBlockBegin(block);
+        Value undef = LLVM::UndefOp::create(builder, value.getLoc(),
+                                           value.getType());
+        available[block] = undef;
+        return undef;
+      }
+
+      // Cache the block argument before visiting predecessors so cyclic CFGs
+      // terminate and transport loop-carried values through the rendezvous.
+      Value arg = block->addArgument(value.getType(), value.getLoc());
+      available[block] = arg;
+      SmallVector<Block *> predecessors(block->getPredecessors());
+      llvm::sort(predecessors);
+      predecessors.erase(std::unique(predecessors.begin(), predecessors.end()),
+                         predecessors.end());
+      for (Block *pred : predecessors) {
+        auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
+        if (!branch) {
+          func.emitError("cannot repair SSA across SME rendezvous: incoming "
+                         "block has no branch terminator")
+              << "value type=" << value.getType()
+              << ", terminator=" << pred->getTerminator()->getName();
+          return failure();
+        }
+        FailureOr<Value> incoming = getAvailable(pred);
+        if (failed(incoming)) {
+          func.emitError("cannot repair SSA across SME rendezvous: value "
+                         "has no incoming path")
+              << "type=" << value.getType();
+          return failure();
+        }
+        for (auto [index, successor] : llvm::enumerate(branch->getSuccessors()))
+          if (successor == block)
+            branch.getSuccessorOperands(index).append(ValueRange{*incoming});
+      }
+      return arg;
+    };
+
+    for (const Use &record : uses) {
+      OpOperand &use = getUseOperand(record);
+      FailureOr<Value> replacement = getAvailable(record.owner->getBlock());
+      if (failed(replacement))
+        return func.emitError("cannot repair SSA across SME rendezvous");
+      use.set(*replacement);
+    }
+  }
+  return success();
+}
+
+static LogicalResult convergeSmeBarrierSet(
+    LLVM::LLVMFuncOp func,
+    ArrayRef<std::pair<unsigned, NVVM::Barrier0Op>> markers,
+    unsigned threadsPerWarp, const TargetInfo &targetInfo) {
+  if (markers.size() < 2)
+    return func.emitError("SME publication barrier needs at least two WS "
+                          "warp groups");
+
+  Location loc = markers.front().second->getLoc();
+  SmallVector<Block *> continuations;
+  SmallVector<unsigned> groupStarts;
+  Block *join = new Block;
+  func.getBody().push_back(join);
+
+  for (auto [groupId, marker] : markers) {
+    auto startAttr =
+        marker->getAttrOfType<IntegerAttr>("sme_ws_group_start_warp");
+    if (!startAttr)
+      return func.emitError("SME publication marker lacks warp-group geometry");
+    groupStarts.push_back(static_cast<unsigned>(startAttr.getInt()));
+    Block *block = marker->getBlock();
+    continuations.push_back(block->splitBlock(std::next(marker->getIterator())));
+    marker.erase();
+    OpBuilder predecessor(block, block->end());
+    LLVM::BrOp::create(predecessor, loc, join);
+  }
+
+  // All groups execute the same full CTA barrier before the warp-uniform
+  // dispatch resumes their original continuation.
+  TritonLLVMIRRewriter joinBuilder(loc, OpBuilder::atBlockBegin(join));
+  NVVM::Barrier0Op::create(joinBuilder, loc);
+  Value tid = NVVM::ThreadIdXOp::create(
+      joinBuilder, loc, joinBuilder.getIntegerType(32));
+  Value wid = joinBuilder.udiv(tid, joinBuilder.i32_val(threadsPerWarp));
+  // Match the warp-uniform value used by the normal WS dispatch header.  The
+  // join is reached from multiple divergent groups, so the raw thread-id
+  // quotient must be normalized before it controls the continuation branch.
+  wid = targetInfo.shuffleIdx(joinBuilder, loc, wid, 0);
+  Block *dispatch = join;
+  for (unsigned group = 0; group + 1 < continuations.size(); ++group) {
+    Block *next = new Block;
+    func.getBody().push_back(next);
+    TritonLLVMIRRewriter dispatchBuilder(
+        loc, OpBuilder::atBlockEnd(dispatch));
+    Value inGroup = dispatchBuilder.icmp_ult(
+        wid, dispatchBuilder.i32_val(groupStarts[group + 1]));
+    LLVM::CondBrOp::create(dispatchBuilder, loc, inGroup,
+                           continuations[group], next);
+    dispatch = next;
+  }
+  TritonLLVMIRRewriter tailBuilder(loc, OpBuilder::atBlockEnd(dispatch));
+  LLVM::BrOp::create(tailBuilder, loc, continuations.back());
+  return success();
+}
+
+static LogicalResult rewriteSmePublicationBarriers(LLVM::LLVMFuncOp func) {
+  using Marker = std::pair<unsigned, NVVM::Barrier0Op>;
+  DenseMap<unsigned, DenseMap<unsigned, SmallVector<NVVM::Barrier0Op>>>
+      grouped;
+  DenseMap<unsigned, unsigned> expectedGroups;
+  func.walk([&](NVVM::Barrier0Op bar) {
+    if (!bar->hasAttr("sme_async_payload"))
+      return;
+    auto wsId = bar->getAttrOfType<IntegerAttr>("sme_ws_id");
+    auto group = bar->getAttrOfType<IntegerAttr>("sme_ws_group");
+    auto count = bar->getAttrOfType<IntegerAttr>("sme_ws_group_count");
+    if (!wsId || !group || !count)
+      return;
+    grouped[wsId.getInt()][group.getInt()].push_back(bar);
+    expectedGroups[wsId.getInt()] = count.getInt();
+  });
+
+  ModuleOp module = func->getParentOfType<ModuleOp>();
+  for (auto &[wsId, groups] : grouped) {
+    unsigned groupCount = expectedGroups.lookup(wsId);
+    for (unsigned group = 0; group < groupCount; ++group) {
+      if (!groups.count(group))
+        return func.emitError()
+               << "SME publication barrier in WS " << wsId
+               << " is missing warp group " << group;
+    }
+
+    unsigned markerCount = groups.begin()->second.size();
+    for (auto &[group, markers] : groups)
+      if (markers.size() != markerCount) {
+        return func.emitError()
+               << "SME publication barriers in WS " << wsId
+               << " have inconsistent per-group counts: group " << group
+               << " has " << markers.size() << ", expected " << markerCount;
+      }
+
+    for (unsigned index = 0; index < markerCount; ++index)
+      for (unsigned group = 0; group < groupCount; ++group) {
+        NVVM::Barrier0Op marker = groups[group][index];
+        OpBuilder builder(marker);
+        // Keep the ALU publication primitive at the original WS-region
+        // program point.  A noinline helper has one call target but two
+        // divergent callers (default and partition); on ivcore11 that makes
+        // the convergent instruction participate in the wrong region-level
+        // rendezvous.  Direct emission preserves the hardware instruction
+        // while keeping its control-flow scope explicit.
+        // Keep the ALU publication primitive at the original WS-region
+        // program point.  A noinline helper has one call target but two
+        // divergent callers (default and partition); on ivcore11 that makes
+        // the convergent instruction participate in the wrong region-level
+        // rendezvous.  Direct emission preserves the hardware instruction
+        // while keeping its control-flow scope explicit.
+        LLVM::createLLVMIntrinsicCallOp(builder, marker.getLoc(),
+                                        "llvm.bi.sl.barrier.alu", {}, {});
+        marker.erase();
+      }
+  }
+  return success();
+}
+
 // LLVM's LICM will be tempted to hoist code out of the switch loop generated by
 // the `ttg.warp_specialize` lowering. However, neither NVPTX or `ptxas` will
 // rematerialize this code back in to the partition regions, resulting in long
@@ -803,6 +1105,8 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   // Nothing to do. This kernel is not warp specialized.
   if (wsOps.empty())
     return success();
+
+  annotateSmeBarrierMarkers(wsOps);
 
   // Before lowering away `ttg.warp_specialize`, lower warp group barriers.
   auto module = cast<ModuleOp>(func->getParentOp());
@@ -989,6 +1293,9 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
     ws.replaceAllUsesWith(outputs);
     ws.erase();
   }
+
+  if (failed(rewriteSmePublicationBarriers(func)))
+    return failure();
 
   // Signal all warp groups to exit.
   func.walk([&](LLVM::ReturnOp op) {
