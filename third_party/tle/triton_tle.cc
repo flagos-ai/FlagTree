@@ -152,6 +152,18 @@ void init_triton_tle_ir(py::module &&m) {
 
   // Add TLE extensions to the existing TritonOpBuilder class
   builder_cls
+      .def("create_tle_gpu_tensor_map_fenceproxy_acquire",
+           [](TritonOpBuilder &self, Value descriptor) {
+             self.create<ttng::TensormapFenceproxyAcquireOp>(descriptor);
+           })
+      .def("create_tle_gpu_reinterpret_tensor_map",
+           [](TritonOpBuilder &self, Value descriptor, Type blockType,
+              bool isSigned) -> Value {
+             auto descriptorType = tt::TensorDescType::get(
+                 self.getContext(), cast<RankedTensorType>(blockType), isSigned);
+             return self.create<ttng::ReinterpretTensorDescOp>(descriptorType,
+                                                             descriptor);
+           })
       // TLE-Lite
       .def(
           "create_extract_tile",
