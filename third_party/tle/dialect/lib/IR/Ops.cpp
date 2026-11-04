@@ -1127,9 +1127,11 @@ LogicalResult DistributedBarrierOp::verify() {
   auto shapeAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_shape");
   auto axesAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_axes");
   auto maskAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_mask");
+  auto domainShapeAttr =
+      op->getAttrOfType<DenseI32ArrayAttr>("group_domain_shape");
 
   const bool hasAnyGroupMeta =
-      rankAttr || shapeAttr || axesAttr || maskAttr || kindAttr;
+      rankAttr || shapeAttr || axesAttr || maskAttr || domainShapeAttr || kindAttr;
   if (!hasAnyGroupMeta)
     return success();
 
@@ -1140,25 +1142,30 @@ LogicalResult DistributedBarrierOp::verify() {
   }
 
   StringRef kind = kindAttr.getValue();
-  if (kind != "cluster" && kind != "submesh" && kind != "grid") {
+  if (kind != "cluster" && kind != "submesh" && kind != "grid" &&
+      kind != "grid_axis") {
     return emitOpError()
-           << "group_kind must be 'cluster', 'submesh', or 'grid', got '"
+           << "group_kind must be 'cluster', 'submesh', 'grid', or "
+              "'grid_axis', got '"
            << kind << "'";
   }
 
   if (kind == "cluster" || kind == "grid") {
-    if (rankAttr || shapeAttr || axesAttr || maskAttr) {
+    if (rankAttr || shapeAttr || axesAttr || maskAttr || domainShapeAttr) {
       return emitOpError()
              << kind
              << " group_kind does not accept "
-                "group_rank/group_shape/group_axes/group_mask attrs";
+                "group_rank/group_shape/group_axes/group_mask/"
+                "group_domain_shape attrs";
     }
     return success();
   }
 
-  if (!rankAttr || !shapeAttr || !axesAttr) {
+  if (!rankAttr || !shapeAttr || !axesAttr ||
+      (kind == "grid_axis" && !domainShapeAttr)) {
     return emitOpError()
-           << "submesh group_kind requires group_rank/group_shape/group_axes";
+           << kind << " group_kind requires group_rank/group_shape/group_axes"
+           << (kind == "grid_axis" ? "/group_domain_shape" : "");
   }
   if (!rankAttr.getType().isInteger(32)) {
     return emitOpError() << "group_rank must be i32";
@@ -1190,11 +1197,36 @@ LogicalResult DistributedBarrierOp::verify() {
     }
   }
   if (maskAttr) {
+    if (kind == "grid_axis")
+      return emitOpError() << "grid_axis group_kind does not accept group_mask";
     if (maskAttr.asArrayRef().empty())
       return emitOpError() << "group_mask cannot be empty";
     for (int32_t id : maskAttr.asArrayRef()) {
       if (id < 0)
         return emitOpError() << "group_mask entries must be >= 0";
+    }
+  }
+  if (domainShapeAttr) {
+    if (kind != "grid_axis")
+      return emitOpError()
+             << "group_domain_shape is only valid for grid_axis barriers";
+    if (domainShapeAttr.asArrayRef().empty())
+      return emitOpError() << "group_domain_shape cannot be empty";
+    for (int32_t dim : domainShapeAttr.asArrayRef()) {
+      if (dim <= 0)
+        return emitOpError() << "group_domain_shape entries must be > 0";
+    }
+    for (auto [axis, extent] : llvm::zip(axesAttr.asArrayRef(),
+                                         shapeAttr.asArrayRef())) {
+      if (axis >= static_cast<int32_t>(domainShapeAttr.size()))
+        return emitOpError() << "group axis " << axis
+                             << " is outside group_domain_shape rank "
+                             << domainShapeAttr.size();
+      int32_t domainExtent = domainShapeAttr.asArrayRef()[axis];
+      if (domainExtent % extent != 0)
+        return emitOpError() << "group extent " << extent
+                             << " must divide domain extent " << domainExtent
+                             << " on axis " << axis;
     }
   }
 

@@ -362,6 +362,10 @@ class device_mesh:
         _physical_ids: Sequence[int] | None = None,
         _launch_shape: Sequence[int] | None = None,
         _launch_dim_names: Sequence[str] | None = None,
+        _physical_shape: Sequence[int] | None = None,
+        _physical_dim_names: Sequence[str] | None = None,
+        _grid_group_axes: Sequence[int] | None = None,
+        _grid_group_shape: Sequence[int] | None = None,
     ):
         if topology is None:
             if _shape is None or _dim_names is None or _physical_ids is None:
@@ -371,6 +375,10 @@ class device_mesh:
             self._physical_ids = tuple(_physical_ids)
             self._launch_shape = tuple(_launch_shape if _launch_shape is not None else _shape)
             self._launch_dim_names = tuple(_launch_dim_names if _launch_dim_names is not None else _dim_names)
+            self._physical_shape = tuple(_physical_shape if _physical_shape is not None else self._launch_shape)
+            self._physical_dim_names = tuple(_physical_dim_names if _physical_dim_names is not None else self._launch_dim_names)
+            self._grid_group_axes = None if _grid_group_axes is None else tuple(_grid_group_axes)
+            self._grid_group_shape = None if _grid_group_shape is None else tuple(_grid_group_shape)
             return
 
         if not isinstance(topology, Mapping) and not isinstance(topology, MeshConfig):
@@ -381,12 +389,21 @@ class device_mesh:
             topology = topology.to_dict()
         shape = []
         dim_names = []
+        launch_shape = []
+        launch_dim_names = []
         for level_name, level_desc in topology.items():
             if not isinstance(level_name, str) or not level_name:
                 raise ValueError(f"invalid topology level name: {level_name!r}")
             level_shape, level_names = self._parse_level(level_name, level_desc)
             shape.extend(level_shape)
             dim_names.extend(level_names)
+            # Device and node coordinates identify the owning rank; they are
+            # supplied by FlagCX and therefore are not dimensions of the
+            # per-rank Triton launch grid.  Cluster and block coordinates are
+            # materialized by program_id(0) and remain launch dimensions.
+            if level_name not in {"node", "device"}:
+                launch_shape.extend(level_shape)
+                launch_dim_names.extend(level_names)
 
         if len(set(dim_names)) != len(dim_names):
             raise ValueError(f"dimension names must be unique, got {dim_names}")
@@ -394,8 +411,12 @@ class device_mesh:
         self._shape = tuple(shape)
         self._dim_names = tuple(dim_names)
         self._physical_ids = tuple(range(_prod(shape)))
-        self._launch_shape = self._shape
-        self._launch_dim_names = self._dim_names
+        self._physical_shape = self._shape
+        self._physical_dim_names = self._dim_names
+        self._launch_shape = tuple(launch_shape)
+        self._launch_dim_names = tuple(launch_dim_names)
+        self._grid_group_axes = None
+        self._grid_group_shape = None
 
     @staticmethod
     def _parse_level(level_name: str, level_desc: Any) -> tuple[list[int], list[str]]:
@@ -452,6 +473,69 @@ class device_mesh:
     def size(self) -> int:
         return len(self._physical_ids)
 
+    @property
+    def grid_group_axes(self) -> tuple[int, ...] | None:
+        return self._grid_group_axes
+
+    @property
+    def grid_group_shape(self) -> tuple[int, ...] | None:
+        return self._grid_group_shape
+
+    def axis_group(
+        self,
+        axes: str | Sequence[str],
+        *,
+        group_shape: Sequence[int] | None = None,
+    ) -> "device_mesh":
+        """Return dynamic per-coordinate groups spanning selected block axes."""
+
+        if isinstance(axes, str):
+            axes = (axes, )
+        elif isinstance(axes, (tuple, list)):
+            axes = tuple(axes)
+        else:
+            raise TypeError(f"axes must be a string or sequence, got {type(axes).__name__}")
+        if not axes:
+            raise ValueError("grid axis group must select at least one axis")
+        if len(set(axes)) != len(axes):
+            raise ValueError(f"grid axis group axes must be unique, got {axes}")
+        unknown = tuple(axis for axis in axes if axis not in self._launch_dim_names)
+        if unknown:
+            raise ValueError(
+                f"unknown grid axis group names {unknown}; launch axes are {self._launch_dim_names}")
+        axis_indices = tuple(self._launch_dim_names.index(axis) for axis in axes)
+        if any("block" not in self._launch_dim_names[index] for index in axis_indices):
+            raise ValueError("grid axis groups require block launch axes")
+        domain_extents = tuple(self._launch_shape[index] for index in axis_indices)
+        if group_shape is None:
+            extents = domain_extents
+        else:
+            if not isinstance(group_shape, (tuple, list)):
+                raise TypeError("group_shape must be a list or tuple")
+            extents = tuple(
+                _as_positive_int(value, "grid axis group extent")
+                for value in group_shape
+            )
+            if len(extents) != len(axis_indices):
+                raise ValueError(
+                    f"group_shape rank {len(extents)} must match axes rank {len(axis_indices)}")
+        for axis, extent, domain in zip(axes, extents, domain_extents):
+            if domain % extent:
+                raise ValueError(
+                    f"grid axis group extent {extent} must divide {axis!r} domain {domain}")
+        return device_mesh(
+            None,
+            _shape=extents,
+            _dim_names=axes,
+            _physical_ids=tuple(range(_prod(extents))),
+            _launch_shape=self._launch_shape,
+            _launch_dim_names=self._launch_dim_names,
+            _physical_shape=self._physical_shape,
+            _physical_dim_names=self._physical_dim_names,
+            _grid_group_axes=axis_indices,
+            _grid_group_shape=extents,
+        )
+
     def flatten(self) -> "device_mesh":
         return self.reshape(self.size)
 
@@ -478,6 +562,8 @@ class device_mesh:
             _physical_ids=self._physical_ids,
             _launch_shape=self._launch_shape,
             _launch_dim_names=self._launch_dim_names,
+            _physical_shape=self._physical_shape,
+            _physical_dim_names=self._physical_dim_names,
         )
 
     def _normalize_key(self, key: Any) -> tuple[Any, ...]:
@@ -539,10 +625,50 @@ class device_mesh:
             _physical_ids=tuple(new_physical_ids),
             _launch_shape=self._launch_shape,
             _launch_dim_names=self._launch_dim_names,
+            _physical_shape=self._physical_shape,
+            _physical_dim_names=self._physical_dim_names,
         )
 
     def __repr__(self):
         return f"DeviceMesh(shape={self._shape}, names={self._dim_names})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, device_mesh):
+            return NotImplemented
+        return (
+            self._shape,
+            self._dim_names,
+            self._physical_ids,
+            self._physical_shape,
+            self._physical_dim_names,
+            self._launch_shape,
+            self._launch_dim_names,
+            self._grid_group_axes,
+            self._grid_group_shape,
+        ) == (
+            other._shape,
+            other._dim_names,
+            other._physical_ids,
+            other._physical_shape,
+            other._physical_dim_names,
+            other._launch_shape,
+            other._launch_dim_names,
+            other._grid_group_axes,
+            other._grid_group_shape,
+        )
+
+    def __hash__(self) -> int:
+        return hash((
+            self._shape,
+            self._dim_names,
+            self._physical_ids,
+            self._physical_shape,
+            self._physical_dim_names,
+            self._launch_shape,
+            self._launch_dim_names,
+            self._grid_group_axes,
+            self._grid_group_shape,
+        ))
 
 
 class _BroadcastSpec:
@@ -742,9 +868,15 @@ def _collect_cluster_members_by_outer_coord(
     if not cluster_axes:
         return cluster_axes, {}
 
-    cluster_axis_set = set(cluster_axes)
-    outer_axes = tuple(axis for axis in range(len(launch_shape)) if axis not in cluster_axis_set)
-    launch_size = _prod(launch_shape)
+    # Physical IDs retain the complete topology domain after slicing/reshape.
+    # Decode that domain first; node/device axes are outer coordinates, never
+    # per-rank program_id dimensions.
+    physical_shape = mesh._physical_shape
+    physical_cluster_axes = tuple(mesh._physical_dim_names.index(mesh.launch_dim_names[axis])
+                                  for axis in cluster_axes)
+    cluster_axis_set = set(physical_cluster_axes)
+    outer_axes = tuple(axis for axis in range(len(physical_shape)) if axis not in cluster_axis_set)
+    launch_size = _prod(physical_shape)
     cluster_members_by_outer_coord: dict[tuple[int, ...], set[tuple[int, ...]]] = {}
 
     # Inspect membership in the original launch domain so reshape()/flatten()
@@ -752,16 +884,16 @@ def _collect_cluster_members_by_outer_coord(
     for raw_physical_id in mesh.physical_ids:
         physical_id = int(raw_physical_id)
         if physical_id < 0 or physical_id >= launch_size:
-            raise ValueError(f"mesh physical id {physical_id} is out of range for launch shape {launch_shape}")
+            raise ValueError(f"mesh physical id {physical_id} is out of range for physical shape {physical_shape}")
 
-        coords = [0] * len(launch_shape)
+        coords = [0] * len(physical_shape)
         remainder = physical_id
-        for axis in range(len(launch_shape) - 1, -1, -1):
-            coords[axis] = remainder % launch_shape[axis]
-            remainder //= launch_shape[axis]
+        for axis in range(len(physical_shape) - 1, -1, -1):
+            coords[axis] = remainder % physical_shape[axis]
+            remainder //= physical_shape[axis]
 
         outer_coord = tuple(coords[axis] for axis in outer_axes)
-        cluster_coord = tuple(coords[axis] for axis in cluster_axes)
+        cluster_coord = tuple(coords[axis] for axis in physical_cluster_axes)
         cluster_members_by_outer_coord.setdefault(outer_coord, set()).add(cluster_coord)
 
     return cluster_axes, cluster_members_by_outer_coord
@@ -829,7 +961,7 @@ def _infer_submesh_barrier_group(
         cluster_members_by_outer_coord = analysis.cluster_members_by_outer_coord
 
     launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
-    if any(name not in launch_name_to_axis for name in mesh.dim_names):
+    if any(name not in mesh._physical_dim_names for name in mesh.dim_names):
         raise NotImplementedError("sub-mesh barrier currently supports slicing-derived meshes with "
                                   "axis names inherited from launch mesh")
 
@@ -837,14 +969,14 @@ def _infer_submesh_barrier_group(
     axes = tuple(
         int(cluster_axis_to_local[launch_name_to_axis[name]])
         for name in mesh.dim_names
-        if launch_name_to_axis[name] in cluster_axis_to_local)
+        if launch_name_to_axis.get(name) in cluster_axis_to_local)
     if len(set(axes)) != len(axes):
         raise ValueError(f"invalid subgroup axes (duplicate cluster axes): {axes}")
 
     shape = tuple(
         int(size)
         for name, size in zip(mesh.dim_names, mesh.shape)
-        if launch_name_to_axis[name] in cluster_axis_to_local)
+        if launch_name_to_axis.get(name) in cluster_axis_to_local)
     if not shape or any(v <= 0 for v in shape):
         raise NotImplementedError(
             "scalar sub-mesh barrier is not implemented yet; provide at least one sliced cluster axis")
@@ -923,7 +1055,11 @@ def _apply_mesh_grid_launch(mesh: device_mesh, _semantic: TLESemantic | None) ->
     cluster_dims = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
     if cluster_dims != (1, 1, 1):
         raise ValueError("mesh-driven grid distributed_barrier requires cluster_dims=(1, 1, 1)")
-    object.__setattr__(options, "launch_cooperative_grid", True)
+    # Atomic grid barriers can use a resident ordinary launch on backends
+    # without the CUDA cooperative-launch API. Honor the backend capability
+    # when deriving the mesh contract, before codegen creates launch metadata.
+    object.__setattr__(options, "launch_cooperative_grid",
+                       bool(getattr(options, "supports_cooperative_grid", True)))
 
 
 def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
@@ -977,7 +1113,12 @@ def shard_id(
     if launch_size <= 0:
         raise ValueError(f"invalid launch mesh shape: {launch_shape}")
 
-    _apply_mesh_cluster_launch(mesh, _semantic)
+    # A block-only launch mesh describes cooperative-grid coordinates.  Only
+    # explicit cluster axes are allowed to mutate the hardware cluster launch
+    # contract; treating block axes as cluster dimensions makes shard_id()
+    # incompatible with distributed_barrier() on the same grid mesh.
+    if any("cluster" in name for name in mesh.launch_dim_names):
+        _apply_mesh_cluster_launch(mesh, _semantic)
     linear = tl.program_id(0, _semantic=_semantic)
     if launch_size > 1:
         linear = _semantic.mod(linear, launch_size)
@@ -989,6 +1130,10 @@ def shard_id(
     dim = launch_shape[axis_idx]
     if dim > 1:
         coord = _semantic.mod(coord, dim)
+    else:
+        # A unit axis always has coordinate zero, independently of the
+        # program's coordinates on the other launch axes.
+        coord = tl.full((), 0, tl.int32, _semantic=_semantic)
     return coord
 
 
@@ -1041,7 +1186,7 @@ def _validate_barrier_space_mesh(mesh: device_mesh | None, space: str, device_dp
     if mesh is None:
         raise ValueError(f"space={space!r}: mesh is required")
     required_axis = "device" if space == "device" else "node"
-    if not _mesh_has_axis(mesh, required_axis, use_launch_dims=True):
+    if not _mesh_has_axis(mesh, required_axis):
         raise ValueError(f"space={space!r} requires mesh to define a '{required_axis}' topology axis")
     if device_dptr is None:
         raise ValueError(f"space={space!r}: device_dptr is required")
@@ -1225,13 +1370,25 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
         builder = _semantic.builder
         if not hasattr(builder, "create_distributed_barrier"):
             raise NotImplementedError("grid distributed_barrier requires TLE builder support")
+        group_axes = mesh.grid_group_axes if mesh is not None else None
+        group_shape = mesh.grid_group_shape if mesh is not None else None
         try:
-            builder.create_distributed_barrier("grid", [], [], [])
+            if group_axes is not None and group_shape is not None:
+                builder.create_distributed_barrier(
+                    "grid_axis",
+                    list(group_shape),
+                    list(group_axes),
+                    [],
+                    list(mesh.launch_shape),
+                )
+            else:
+                builder.create_distributed_barrier("grid", [], [], [], [])
             return None
         except TypeError as exc:
             raise NotImplementedError(
                 "grid distributed_barrier requires rebuilt TLE extension with "
-                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask)") from exc
+                "group-aware create_distributed_barrier(group_kind, group_shape, "
+                "group_axes, group_mask, group_domain_shape)") from exc
 
     if mesh is not None:
         _apply_mesh_cluster_launch(mesh, _semantic)
