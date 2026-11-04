@@ -357,6 +357,111 @@ static void createRegRealloc(TritonLLVMIRRewriter &b, int curRegs,
 // id through calls so barriers in outlined Triton helpers use the calling warp
 // group. This NVIDIA-only FlagTree backport rewrites only helpers marked with
 // ws_num_warps, preserving the ABI of internal functions emitted by TLE Raw.
+#ifdef __TLE__
+struct WarpGroupBarrierScope {
+  unsigned barrierIdx;
+  unsigned numThreads;
+  unsigned firstWarp;
+};
+
+struct ScopedHelperWorkItem {
+  LLVM::LLVMFuncOp func;
+  WarpGroupBarrierScope scope;
+};
+
+static std::string getScopedHelperName(LLVM::LLVMFuncOp callee,
+                                       WarpGroupBarrierScope scope) {
+  return (callee.getSymName() + "__tle_ws_barrier_" +
+          Twine(scope.barrierIdx) + "_" + Twine(scope.numThreads) + "_start_" +
+          Twine(scope.firstWarp))
+      .str();
+}
+
+static llvm::DenseSet<Operation *>
+collectBarrierDependentFunctions(ModuleOp module) {
+  DenseMap<Operation *, SmallVector<Operation *>> callers;
+  llvm::DenseSet<Operation *> dependent;
+  SmallVector<Operation *> worklist;
+  for (auto function : module.getOps<LLVM::LLVMFuncOp>()) {
+    function.walk([&](NVVM::Barrier0Op) {
+      if (dependent.insert(function).second)
+        worklist.push_back(function);
+    });
+    function.walk([&](LLVM::CallOp call) {
+      if (auto name = call.getCallee())
+        if (auto callee = module.lookupSymbol<LLVM::LLVMFuncOp>(*name))
+          callers[callee].push_back(function);
+    });
+  }
+  // Reverse reachability also handles cycles without recursively revisiting
+  // a call DAG for every root. Barrier-free callees remain shared unchanged.
+  for (unsigned i = 0; i < worklist.size(); ++i)
+    for (Operation *caller : callers[worklist[i]])
+      if (dependent.insert(caller).second)
+        worklist.push_back(caller);
+  return dependent;
+}
+
+// A noinline Triton helper is lowered to a sibling LLVM function.  Barriers
+// created by reductions in that helper are therefore outside the syntactic
+// ttg.warp_specialize region, even though only one warp group calls them. Clone
+// the helper call graph per execution scope so each barrier can use the
+// caller's hardware barrier ID and participant count.  Cloning also handles a
+// helper reused by the default and worker groups without conflating scopes.
+static void scopeWarpGroupHelperBarriers(
+    ModuleOp module,
+    ArrayRef<std::pair<LLVM::CallOp, WarpGroupBarrierScope>> rootCalls,
+    const llvm::DenseSet<Operation *> &barrierDependent) {
+  SmallVector<ScopedHelperWorkItem> worklist;
+  llvm::DenseSet<Operation *> visited;
+
+  auto retargetCall = [&](LLVM::CallOp call, WarpGroupBarrierScope scope) {
+    std::optional<StringRef> calleeName = call.getCallee();
+    if (!calleeName)
+      return;
+    auto callee = module.lookupSymbol<LLVM::LLVMFuncOp>(*calleeName);
+    if (!callee || callee.isExternal() || !barrierDependent.contains(callee))
+      return;
+
+    std::string scopedName = getScopedHelperName(callee, scope);
+    auto scoped = module.lookupSymbol<LLVM::LLVMFuncOp>(scopedName);
+    if (!scoped) {
+      scoped = callee.clone();
+      scoped.setSymName(scopedName);
+      OpBuilder builder(callee);
+      builder.setInsertionPointAfter(callee);
+      builder.insert(scoped);
+    }
+    call.setCalleeAttr(FlatSymbolRefAttr::get(module.getContext(), scopedName));
+    if (visited.insert(scoped).second)
+      worklist.push_back({scoped, scope});
+  };
+
+  for (auto [call, scope] : rootCalls)
+    retargetCall(call, scope);
+
+  for (unsigned i = 0; i < worklist.size(); ++i) {
+    LLVM::LLVMFuncOp scoped = worklist[i].func;
+    WarpGroupBarrierScope scope = worklist[i].scope;
+
+    SmallVector<LLVM::CallOp> nestedCalls;
+    scoped.walk([&](LLVM::CallOp call) { nestedCalls.push_back(call); });
+    for (LLVM::CallOp call : nestedCalls)
+      retargetCall(call, scope);
+
+    SmallVector<NVVM::Barrier0Op> barriers;
+    scoped.walk([&](NVVM::Barrier0Op barrier) {
+      barriers.push_back(barrier);
+    });
+    for (NVVM::Barrier0Op barrier : barriers) {
+      TritonLLVMIRRewriter b(barrier.getLoc(), barrier);
+      createBarrier(b, scope.barrierIdx, scope.numThreads);
+      barrier.erase();
+    }
+  }
+}
+#endif
+
 static std::string mangleWarpSpecializeFunctionName(StringRef name) {
   return (name + "_ws").str();
 }
@@ -518,6 +623,29 @@ static LogicalResult rewriteWarpGroupBarriers(ModuleOp module,
       internalFunctions.insert(func.getSymNameAttr());
   }
 
+#ifdef __TLE__
+  SmallVector<std::pair<LLVM::CallOp, WarpGroupBarrierScope>> tleHelperCalls;
+  for (LLVM::LLVMFuncOp kernel : kernels) {
+    unsigned defaultThreads = lookupNumWarps(kernel) * threadsPerWarp;
+    kernel.walk<mlir::WalkOrder::PreOrder>([&](Operation *operation) {
+      if (isa<WarpSpecializePartitionsOp>(operation))
+        return WalkResult::skip();
+      if (auto call = dyn_cast<LLVM::CallOp>(operation))
+        tleHelperCalls.push_back({call, {kDefaultWarpGroupBarrierIdx, defaultThreads, 0}});
+      return WalkResult::advance();
+    });
+    kernel.walk([&](WarpSpecializeOp ws) {
+      for (auto [index, partition] : llvm::enumerate(ws.getPartitionRegions())) {
+        unsigned barrier = kNumReservedBarriers + index;
+        unsigned threads = ws.getPartitionNumWarps()[index] * threadsPerWarp;
+        unsigned firstWarp = (*ws.getWarpGroupStartIds())[index];
+        partition->walk([&](LLVM::CallOp call) {
+          tleHelperCalls.push_back({call, {barrier, threads, firstWarp}});
+        });
+      }
+    });
+  }
+#endif
   // Internal Triton helpers are renamed and gain a hidden barrier argument
   // below. Rewrite calls from every kernel in the module so a non-specialized
   // kernel cannot retain a reference to the old helper ABI.
@@ -533,6 +661,11 @@ static LogicalResult rewriteWarpGroupBarriers(ModuleOp module,
                                                      threadsPerWarp)))
       return failure();
   }
+
+#ifdef __TLE__
+  auto barrierDependent = collectBarrierDependentFunctions(module);
+  scopeWarpGroupHelperBarriers(module, tleHelperCalls, barrierDependent);
+#endif
 
   return success();
 }

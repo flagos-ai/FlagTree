@@ -1299,6 +1299,8 @@ void init_triton_tle_passes(py::module &&m) {
 #endif // __TLE_TILED_SMEM__
   ADD_PASS_WRAPPER_0("add_lower_pipe_to_nvws",
                      tle::createTritonTleLowerPipeToNvws);
+  ADD_PASS_WRAPPER_0("add_restore_pipe_function_calls",
+                     tle::createTritonTleRestorePipeFunctionCalls);
   ADD_PASS_WRAPPER_0("add_lower_barriers", tle::createTritonTleLowerBarriers);
   ADD_PASS_WRAPPER_0("add_allocate_named_barriers",
                      tle::createTritonTleAllocateNamedBarriers);

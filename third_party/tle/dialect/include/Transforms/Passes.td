@@ -443,6 +443,25 @@ def TritonTlePlanLogicalDomains
                            "mlir::triton::tle::TleDialect"];
 }
 #endif // __TLE_TILED_SMEM__
+def TritonTleRestorePipeFunctionCalls
+    : Pass<"triton-tle-restore-pipe-function-calls", "mlir::ModuleOp"> {
+  let summary = "restore noinline pipe helper calls after NVWS state materialization";
+
+  let description = [{
+    Pipe analysis temporarily inlines private helpers so each pipe lifecycle
+    operation can be associated with its concrete NVWS control state. After
+    NVWS token lowering has materialized barriers and task metadata, this pass
+    outlines the marked call scopes again. Repeated calls to one specialized
+    helper share one private function and pass the concrete control state as
+    ordinary TTGIR operands.
+  }];
+
+  let dependentDialects = ["mlir::triton::tle::TleDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
+}
+
 
 def TritonTleLowerExtractTile
     : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
