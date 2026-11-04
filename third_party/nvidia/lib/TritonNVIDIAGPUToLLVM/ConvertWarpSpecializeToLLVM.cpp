@@ -14,6 +14,9 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Tools/FlagcxWarpGroupScope.h"
+#endif
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTWARPSPECIALIZETOLLVM
@@ -388,6 +391,9 @@ collectBarrierDependentFunctions(ModuleOp module) {
         worklist.push_back(function);
     });
     function.walk([&](LLVM::CallOp call) {
+      if (tle::isFlagcxBlockBarrierCall(call) &&
+          dependent.insert(function).second)
+        worklist.push_back(function);
       if (auto name = call.getCallee())
         if (auto callee = module.lookupSymbol<LLVM::LLVMFuncOp>(*name))
           callers[callee].push_back(function);
@@ -416,6 +422,9 @@ static void scopeWarpGroupHelperBarriers(
   llvm::DenseSet<Operation *> visited;
 
   auto retargetCall = [&](LLVM::CallOp call, WarpGroupBarrierScope scope) {
+    if (tle::scopeFlagcxBlockBarrierCall(call, scope.firstWarp, scope.numThreads,
+                                        scope.barrierIdx))
+      return;
     std::optional<StringRef> calleeName = call.getCallee();
     if (!calleeName)
       return;
