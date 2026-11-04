@@ -27,7 +27,9 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <numeric>
 
@@ -115,6 +117,54 @@ public:
            op->hasAttr(triton::tle::kPlannedTileAttr);
   }
 };
+// Largest universally aligned identity run of logical row-major elements in
+// the physical Shared mapping. Low swizzle bits can permute even a logically
+// contiguous range; both low-bit dependencies and outgoing carries matter.
+static int64_t sharedIdentityRun(triton::gpu::MemDescType type,
+                                 int64_t elemBytes) {
+  auto shared = cast<triton::gpu::SharedEncodingTrait>(type.getEncoding());
+  int64_t bound = std::min<int64_t>(16, shared.getAlignment()) / elemBytes;
+  bound = std::max<int64_t>(bound, 1);
+  if (type.getRank() == 0)
+    return 1;
+
+  if (auto padded = dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(shared)) {
+    // LocalPointersOpConversion linearizes by the declared order before
+    // inserting padding. Each padding interval and increment must preserve
+    // the candidate vector's low bits.
+    auto order = padded.getOrder();
+    for (unsigned i = 0; i < order.size(); ++i)
+      if (order[i] != order.size() - 1 - i)
+        return 1;
+    for (auto [interval, padding] :
+         llvm::zip_equal(padded.getIntervals(), padded.getPaddings()))
+      bound = std::gcd(bound, std::gcd<int64_t>(interval, padding));
+    return bound;
+  }
+
+  auto layout = triton::gpu::toLinearLayout(type);
+  auto dims = llvm::to_vector(layout.getOutDimNames());
+  auto offset = StringAttr::get(type.getContext(), "offset");
+  layout = layout.sublayout({offset}, dims);
+  std::reverse(dims.begin(), dims.end());
+  layout = layout.transposeOuts(dims).flattenOuts();
+  while (bound > 1) {
+    bool preserves = true;
+    for (int bit = 0; bit < layout.getInDimSizeLog2(offset); ++bit) {
+      int64_t input = int64_t{1} << bit;
+      int64_t output = layout.getBasis(offset, bit).front();
+      if ((input < bound && output != input) ||
+          (input >= bound && (output & (bound - 1)) != 0)) {
+        preserves = false;
+        break;
+      }
+    }
+    if (preserves)
+      return bound;
+    bound /= 2;
+  }
+  return 1;
+}
 
 class TleLocalPointersOpAxisInfoVisitor final : public AxisInfoVisitor {
 public:
@@ -269,15 +319,20 @@ public:
     if (ptrTy)
       elemBytes = std::max<int64_t>(1, getPointeeBitWidth(ptrTy) / 8);
     AxisInfo::DimVectorT byteDivisibility = offsetInfo.getDivisibility();
-    for (int d = 0; d < rank; ++d)
-      byteDivisibility[d] =
-          saturatingMultiplyDivisor(byteDivisibility[d], elemBytes);
+    AxisInfo::DimVectorT physicalContiguity = offsetInfo.getContiguity();
+    int64_t identityRun = sharedIdentityRun(memDescTy, elemBytes);
+    for (int d = 0; d < rank; ++d) {
+      physicalContiguity[d] = std::min(physicalContiguity[d], identityRun);
+      byteDivisibility[d] = std::gcd(
+          saturatingMultiplyDivisor(byteDivisibility[d], elemBytes),
+          identityRun * elemBytes);
+    }
 
     std::optional<int64_t> constantValue = std::nullopt;
     if (offsetInfo.getConstantValue().has_value())
       constantValue = offsetInfo.getConstantValue().value() * elemBytes;
 
-    return AxisInfo(offsetInfo.getContiguity(), byteDivisibility,
+    return AxisInfo(physicalContiguity, byteDivisibility,
                     offsetInfo.getConstancy(), constantValue);
   }
 

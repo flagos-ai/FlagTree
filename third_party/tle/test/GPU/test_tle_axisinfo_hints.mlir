@@ -21,15 +21,17 @@
 
 // RUN: triton-opt %s -test-print-alignment -split-input-file 2>&1 | FileCheck %s
 
+// Native MakeRange axis info uses gcd(start, span): gcd(0, 128) = 128.
+
 tt.func @ignore_rank_mismatched_axis_hints() {
-  // CHECK: tt.make_range {{.*}} => contiguity = [128], divisibility = [1073741824], constancy = [1], constant_value = <none>
+  // CHECK: tt.make_range {{.*}} => contiguity = [128], divisibility = [128], constancy = [1], constant_value = <none>
   %0 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>
-  // CHECK: tt.expand_dims {{.*}} => contiguity = [1, 128], divisibility = [1, 1073741824], constancy = [1, 1], constant_value = <none>
+  // CHECK: tt.expand_dims {{.*}} => contiguity = [1, 128], divisibility = [1, 128], constancy = [1, 1], constant_value = <none>
   %1 = tt.expand_dims %0 {axis = 0 : i32} : tensor<128xi32> -> tensor<1x128xi32>
   // Scalar tt.* hints on rank-2 tensor results are malformed and must be
   // ignored. Otherwise AxisInfo rank may be shrunk and later vectorization can
   // query out-of-bounds dimensions.
-  // CHECK: tt.broadcast {{.*}} => contiguity = [1, 128], divisibility = [1, 1073741824], constancy = [2, 1], constant_value = <none>
+  // CHECK: tt.broadcast {{.*}} => contiguity = [1, 128], divisibility = [1, 128], constancy = [2, 1], constant_value = <none>
   %2 = tt.broadcast %1 {tt.contiguity = 8 : i32, tt.divisibility = 16 : i32, tt.constancy = 4 : i32} : tensor<1x128xi32> -> tensor<2x128xi32>
   tt.return
 }
