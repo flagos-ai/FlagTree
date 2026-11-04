@@ -130,6 +130,12 @@ static int minNumInterleavedCommitOps(Operation *waitOp) {
 void mlir::triton::updateWaits(ModuleOp module) {
   llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
   module.walk([&](ttg::AsyncWaitOp waitOp) {
+#ifdef __ILUVATAR_TLE__
+    // Explicit TLE waits describe the hardware FIFO without SSA token
+    // dependencies. Only inferred waits can be recomputed from token history.
+    if (waitOp->hasAttr("tle.explicit_async_wait"))
+      return;
+#endif
     int minNumCommits = minNumInterleavedCommitOps(waitOp);
     waitOp.setNum(minNumCommits);
     waitOps.insert(waitOp);

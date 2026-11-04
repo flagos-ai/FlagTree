@@ -26,7 +26,8 @@ namespace mlir::triton {
 namespace mlir::triton {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz);
+createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz,
+                                        bool disableLoadVectorize = false);
 
 std::unique_ptr<OperationPass<ModuleOp>>
 createILUVATARWarpSpecializeToLLVMPass(StringRef targetArch);

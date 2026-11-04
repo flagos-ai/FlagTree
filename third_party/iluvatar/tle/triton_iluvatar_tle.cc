@@ -1,6 +1,8 @@
 #ifdef __ILUVATAR_TLE__
 
 #include "IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/Passes.h"
 #include "Transforms/Passes.h"
 #include "ir.h"
 #include "mlir/Pass/PassManager.h"
@@ -23,8 +25,10 @@
 #include <vector>
 
 namespace py = pybind11;
+using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace iluvatar_tle = mlir::triton::iluvatar_tle;
+namespace generic_tle = mlir::triton::tle;
 
 // Defined in triton_iluvatar_tle_raw.cc.
 extern std::vector<int64_t>
@@ -97,6 +101,26 @@ void init_triton_iluvatar_tle_ir(py::module m) {
           py::arg("vectorSize"), py::arg("perPhase"), py::arg("maxPhase"),
           py::arg("order"), py::arg("CTAsPerCGA"), py::arg("CTASplitNum"),
           py::arg("CTAOrder"), py::arg("use_tcu") = false)
+      .def("make_iluvatar_sme_shared_encoding_attr",
+           [](TritonOpBuilder &self, std::vector<int64_t> shape,
+              std::vector<unsigned> order, mlir::Type &elementType,
+              std::vector<unsigned> CTAsPerCGA,
+              std::vector<unsigned> CTASplitNum,
+              std::vector<unsigned> CTAOrder) -> mlir::Attribute {
+             if (shape.size() != order.size())
+               throw py::value_error("SME shared layout rank mismatch");
+             checkCtaRank(order, CTAsPerCGA, CTASplitNum, CTAOrder);
+             unsigned bitwidth = elementType.getIntOrFloatBitWidth();
+             if (bitwidth != 8 && bitwidth != 16 && bitwidth != 32)
+               throw py::value_error(
+                   "Iluvatar SME shared layout supports 8/16/32-bit elements");
+             auto *context = self.getBuilder().getContext();
+             auto ctaLayout = ttg::CTAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+             return ttg::SwizzledSharedEncodingAttr::get(
+                 context, 512 / bitwidth, /*perPhase=*/1, /*maxPhase=*/1,
+                 order, ctaLayout, /*useTcu=*/true);
+           })
       .def("make_nv_mma_shared_encoding_attr",
            [](TritonOpBuilder &, std::vector<int64_t>, std::vector<unsigned>,
               mlir::Type &, std::vector<unsigned>, std::vector<unsigned>,
@@ -317,11 +341,41 @@ void init_triton_iluvatar_tle_ir(py::module m) {
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self, const std::string &groupKind,
+              std::vector<int32_t> groupShape,
+              std::vector<int32_t> groupAxes,
+              std::vector<int32_t> groupMask,
+              std::vector<int32_t> groupDomainShape) {
+             auto &builder = self.getBuilder();
+             auto *ctx = builder.getContext();
+             StringAttr kindAttr = builder.getStringAttr(groupKind);
+             IntegerAttr rankAttr;
+             DenseI32ArrayAttr shapeAttr, axesAttr, maskAttr, domainAttr;
+             if (!groupShape.empty() || !groupAxes.empty() ||
+                 !groupMask.empty() || !groupDomainShape.empty()) {
+               rankAttr = builder.getI32IntegerAttr(
+                   static_cast<int32_t>(groupShape.size()));
+               if (!groupShape.empty()) shapeAttr = DenseI32ArrayAttr::get(ctx, groupShape);
+               if (!groupAxes.empty()) axesAttr = DenseI32ArrayAttr::get(ctx, groupAxes);
+               if (!groupMask.empty()) maskAttr = DenseI32ArrayAttr::get(ctx, groupMask);
+               if (!groupDomainShape.empty()) domainAttr = DenseI32ArrayAttr::get(ctx, groupDomainShape);
+             }
+             self.create<generic_tle::DistributedBarrierOp>(
+                 Value(), StringAttr(), StringAttr(), generic_tle::MemoryOrderAttr(), kindAttr,
+                 IntegerAttr(), IntegerAttr(), generic_tle::SyncScopeAttr(), rankAttr, shapeAttr, axesAttr, maskAttr,
+                 domainAttr);
+           },
+           py::arg("group_kind") = "block",
+           py::arg("group_shape") = std::vector<int32_t>{},
+           py::arg("group_axes") = std::vector<int32_t>{},
+           py::arg("group_mask") = std::vector<int32_t>{},
+           py::arg("group_domain_shape") = std::vector<int32_t>{})
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
-              std::vector<std::string> readerNames, bool oneShot) -> void {
+              std::vector<std::string> readerNames, bool oneShot) -> mlir::Value {
              auto &builder = self.getBuilder();
              llvm::SmallVector<mlir::Attribute> fieldNameAttrs;
              fieldNameAttrs.reserve(fieldNames.size());
@@ -340,14 +394,14 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              mlir::BoolAttr oneShotAttr;
              if (oneShot)
                oneShotAttr = builder.getBoolAttr(true);
-             self.create<iluvatar_tle::PipeCreateOp>(
-                 fields, builder.getI32IntegerAttr(capacity),
+             return self.create<iluvatar_tle::PipeCreateOp>(
+                 builder.getI32Type(), fields, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNamesAttr,
                  oneShotAttr);
            })
       .def("create_pipe_writer_acquire",
-           [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
+           [](TritonOpBuilder &self, mlir::Value identity, std::vector<mlir::Value> fields,
               mlir::Value stage, mlir::Value phase, int32_t capacity,
               const std::string &scope, const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
@@ -360,12 +414,12 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<iluvatar_tle::PipeWriterAcquireOp>(
-                 fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_writer_commit",
-           [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
+           [](TritonOpBuilder &self, mlir::Value identity, std::vector<mlir::Value> fields,
               mlir::Value stage, int32_t capacity, const std::string &scope,
               const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
@@ -378,12 +432,12 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<iluvatar_tle::PipeWriterCommitOp>(
-                 fields, stage, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_writer_close",
-           [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
+           [](TritonOpBuilder &self, mlir::Value identity, std::vector<mlir::Value> fields,
               mlir::Value stage, mlir::Value phase, int32_t capacity,
               const std::string &scope, const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
@@ -396,12 +450,12 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<iluvatar_tle::PipeWriterCloseOp>(
-                 fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_reader_wait",
-           [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
+           [](TritonOpBuilder &self, mlir::Value identity, std::vector<mlir::Value> fields,
               mlir::Value stage, mlir::Value phase, int32_t capacity,
               const std::string &scope, const std::string &pipeName,
               std::vector<std::string> fieldNames,
@@ -419,13 +473,13 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              if (!readerName.empty())
                readerNameAttr = builder.getStringAttr(readerName);
              return self.create<iluvatar_tle::PipeReaderWaitOp>(
-                 builder.getI1Type(), fields, stage, phase,
+                 builder.getI1Type(), identity, fields, stage, phase,
                  builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
            })
       .def("create_pipe_reader_release",
-           [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
+           [](TritonOpBuilder &self, mlir::Value identity, std::vector<mlir::Value> fields,
               mlir::Value stage, int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
               const std::string &readerName, std::vector<std::string>) -> void {
@@ -441,9 +495,43 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              if (!readerName.empty())
                readerNameAttr = builder.getStringAttr(readerName);
              self.create<iluvatar_tle::PipeReaderReleaseOp>(
-                 fields, stage, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
+           })
+      .def("create_pipe_drain",
+           [](TritonOpBuilder &self, mlir::Value identity,
+              std::vector<mlir::Value> fields, int32_t capacity,
+              const std::string &scope, const std::string &pipeName,
+              std::vector<std::string> fieldNames) {
+             auto &builder = self.getBuilder();
+             llvm::SmallVector<mlir::Attribute> names;
+             for (llvm::StringRef name : fieldNames)
+               names.push_back(builder.getStringAttr(name));
+             mlir::StringAttr name;
+             if (!pipeName.empty()) name = builder.getStringAttr(pipeName);
+             self.create<iluvatar_tle::PipeDrainOp>(identity, fields,
+                 builder.getI32IntegerAttr(capacity), builder.getStringAttr(scope),
+                 name, builder.getArrayAttr(names));
+           })
+      .def("create_memdesc_alias",
+           [](TritonOpBuilder &self, mlir::Type type, mlir::Value src,
+              int64_t offset) -> mlir::Value {
+             return self.create<iluvatar_tle::MemDescAliasOp>(type, src,
+                 self.getBuilder().getI64IntegerAttr(offset));
+           })
+      .def("create_iluvatar_sme_copy",
+           [](TritonOpBuilder &self, Value src, Value dst, Value byteOffset,
+              Value active, int nbytes) {
+             self.create<iluvatar_tle::SmeCopyOp>(src, dst, byteOffset, active,
+                 self.getBuilder().getI32IntegerAttr(nbytes));
+           })
+      .def("create_iluvatar_sme_wait",
+           [](TritonOpBuilder &self, int pending, bool drainReads) {
+             auto &builder = self.getBuilder();
+             self.create<iluvatar_tle::SmeWaitOp>(
+                 builder.getI32IntegerAttr(pending),
+                 builder.getBoolAttr(drainReads));
            })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
@@ -631,6 +719,9 @@ void init_triton_iluvatar_tle_passes(py::module m) {
       iluvatar_tle::createTritonIluvatarTleOptimizeLocalPointerStores);
   ADD_PASS_WRAPPER_0("add_lower_async_load",
                      iluvatar_tle::createTritonIluvatarTleLowerAsyncLoad);
+  ADD_PASS_WRAPPER_0(
+      "add_downgrade_invalid_async_copy",
+      generic_tle::createTritonTleDowngradeInvalidAsyncCopy);
   ADD_PASS_WRAPPER_0(
       "add_optimize_exclusive_cumsum_layouts",
       iluvatar_tle::createTritonIluvatarTleOptimizeExclusiveCumsumLayouts);

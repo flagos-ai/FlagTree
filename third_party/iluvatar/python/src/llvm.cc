@@ -1,3 +1,7 @@
+#ifdef __ILUVATAR_TLE__
+#include "Support/Convergence.h"
+#include "Support/FPContract.h"
+#endif
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
@@ -10,6 +14,9 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#ifdef __ILUVATAR_TLE__
+#include "llvm/IR/Instructions.h"
+#endif
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
@@ -295,6 +302,10 @@ std::string translateLLVMIRToASM(llvm::Module &module,
                                  const std::string &features,
                                  const std::vector<std::string> &flags,
                                  bool enable_fp_fusion, bool isObject) {
+#ifdef __ILUVATAR_TLE__
+  mlir::triton::iluvatar_tle::ScopedFPContract fpContract(triple, enable_fp_fusion);
+  mlir::triton::iluvatar_tle::propagateConvergence(module);
+#endif
   using namespace mlir;
   // options
   auto options = llvm::cl::getRegisteredOptions();
@@ -571,6 +582,9 @@ void init_triton_llvm(py::module &&m) {
       [](llvm::Module *mod, const llvm::OptimizationLevel &opt,
          std::string arch, std::string features, std::vector<std::string> flags,
          bool enable_fp_fusion) {
+#ifdef __ILUVATAR_TLE__
+        mlir::triton::iluvatar_tle::propagateConvergence(*mod);
+#endif
         mlir::triton::tools::installLLVMWarningFilter(mod->getContext());
         if (mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT"))
           return;
@@ -702,6 +716,71 @@ void init_triton_llvm(py::module &&m) {
       py::arg("flags") = std::vector<std::string>{},
       py::arg("enable_fp_fusion") = false,
       py::call_guard<py::gil_scoped_release>());
+
+#ifdef __ILUVATAR_TLE__
+  m.def(
+      "coalesce_adjacent_cta_membars",
+      [](llvm::Module *mod) {
+        unsigned removed = 0;
+        for (llvm::Function &function : *mod) {
+          for (llvm::BasicBlock &block : function) {
+            llvm::Instruction *previous = nullptr;
+            for (auto it = block.begin(); it != block.end();) {
+              llvm::Instruction *instruction = &*it++;
+              auto *call = llvm::dyn_cast<llvm::CallBase>(instruction);
+              auto *callee = call ? call->getCalledFunction() : nullptr;
+              bool isCtaMembar =
+                  callee && callee->getName() == "llvm.nvvm.membar.cta";
+              if (!isCtaMembar) {
+                previous = nullptr;
+                continue;
+              }
+              if (previous) {
+                instruction->eraseFromParent();
+                ++removed;
+                continue;
+              }
+              previous = instruction;
+            }
+          }
+        }
+        return removed;
+      },
+      py::arg("mod"), py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "coalesce_adjacent_cta_barriers",
+      [](llvm::Module *mod) {
+        unsigned removed = 0;
+        for (llvm::Function &function : *mod) {
+          for (llvm::BasicBlock &block : function) {
+            llvm::Instruction *previous = nullptr;
+            for (auto it = block.begin(); it != block.end();) {
+              llvm::Instruction *instruction = &*it++;
+              auto *call = llvm::dyn_cast<llvm::CallBase>(instruction);
+              auto *callee = call ? call->getCalledFunction() : nullptr;
+              bool isCtaBarrier =
+                  callee &&
+                  callee->getName() ==
+                      "llvm.nvvm.barrier.cta.sync.aligned.all";
+              if (!isCtaBarrier) {
+                previous = nullptr;
+                continue;
+              }
+              if (previous) {
+                instruction->eraseFromParent();
+                ++removed;
+                continue;
+              }
+              previous = instruction;
+            }
+          }
+        }
+        return removed;
+      },
+      py::arg("mod"), py::call_guard<py::gil_scoped_release>());
+
+#endif
 
   m.def(
       "translate_to_asm",

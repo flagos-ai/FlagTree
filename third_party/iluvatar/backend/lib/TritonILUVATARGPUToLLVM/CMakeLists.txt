@@ -1,12 +1,15 @@
 if(FLAGTREE_ILUVATAR_TLE)
-    set(_ILUVATAR_TLE_LIBS IluvatarTleToLLVM)
+    set(_ILUVATAR_TLE_LIBS IluvatarTleToLLVM TleIR)
+    set(_ILUVATAR_TLE_BARRIER_SOURCES DistributedBarrierOpToLLVM.cpp)
 else()
     set(_ILUVATAR_TLE_LIBS "")
+    set(_ILUVATAR_TLE_BARRIER_SOURCES "")
 endif()
 
 add_triton_library(TritonILUVATARGPUToLLVM
     AtomicRMWOpsEmitter.cpp
     BarrierOpToLLVM.cpp
+    ${_ILUVATAR_TLE_BARRIER_SOURCES}
     ConvertWarpSpecializeToLLVM.cpp
     MaskedOpsToLLVM.cpp
     DotOpToLLVM/FMA.cpp

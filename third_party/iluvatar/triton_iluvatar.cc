@@ -5,6 +5,8 @@
 #include "iluvatar/tle_raw/include/DeferredRawSourceRegistry.h"
 #include "iluvatar/tle_raw/include/Passes.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "Support/FPContract.h"
 #endif
 // #include "cublas_instance.h"
 #include "TritonILUVATARGPUTransforms/Passes.h"
@@ -96,6 +98,9 @@ std::string translateLLVMIRToILUVATAR(llvm::Module &module,
                                       const std::string &features,
                                       const std::vector<std::string> &flags,
                                       bool enable_fp_fusion, bool isObject) {
+#ifdef __ILUVATAR_TLE__
+  mlir::triton::iluvatar_tle::ScopedFPContract fpContract(triple, enable_fp_fusion);
+#endif
   using namespace mlir;
   // options
   auto options = llvm::cl::getRegisteredOptions();
@@ -128,7 +133,10 @@ std::string translateLLVMIRToILUVATAR(llvm::Module &module,
     }
   }
 
-  // inline everything
+  // inline everything. NOTE: device functions the frontend marked noinline
+  // stay out-of-line; on BI-V150 they require eager module loading
+  // (CUDA_MODULE_LOADING=0) — under lazy load the call fails (XID 22),
+  // confirmed by the vendor 2026-09-20.
   for (llvm::Function &f : module.functions())
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
       f.addFnAttr(llvm::Attribute::AlwaysInline);
@@ -313,10 +321,13 @@ createTritonGPUAccelerateMatmulWithSme(unsigned useSme) {
 void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
   using namespace mlir::triton;
   m.def("add_to_llvmir",
-        [](mlir::PassManager &pm, const std::string &arch, bool ftz) {
+        [](mlir::PassManager &pm, const std::string &arch, bool ftz,
+           bool disableLoadVectorize) {
           pm.addPass(mlir::triton::createConvertTritonILUVATARGPUToLLVMPass(
-              arch, ftz));
-        });
+              arch, ftz, disableLoadVectorize));
+        },
+        py::arg("pm"), py::arg("arch"), py::arg("ftz"),
+        py::arg("disable_load_vectorize") = false);
   // Lower ttg.warp_specialize to LLVM. On ivcore11 this uses a shared-memory
   // software-barrier workaround (no hardware named barrier / setmaxnreg).
   m.def("add_warp_specialize_to_llvm", [](mlir::PassManager &pm,
@@ -401,6 +412,7 @@ void init_triton_iluvatar(py::module &&m) {
 #ifdef __ILUVATAR_TLE__
     registry.insert<mlir::DLTIDialect>();
     mlir::triton::iluvatar_tle::registerDialects(registry);
+    registry.insert<mlir::triton::tle::TleDialect>();
 #endif
     mlir::registerNVVMDialectTranslation(registry);
     context.appendDialectRegistry(registry);

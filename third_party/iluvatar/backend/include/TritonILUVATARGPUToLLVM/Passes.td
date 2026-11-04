@@ -20,6 +20,13 @@ def ConvertTritonILUVATARGPUToLLVM : Pass<"convert-triton-iluvatargpu-to-llvm", 
                "target device architecture, e.g., ivcore11">,
         Option<"ftz", "ftz", "bool", /*default*/"true",
                "flush denorms for math functions">,
+        Option<"disableLoadVectorize", "disable-load-vectorize", "bool",
+               /*default*/"false",
+               "emit scalar global loads instead of vectorized ones; wide "
+               "loads are load-issue-rate bound on this target, so read-bound "
+               "kernels at high occupancy can be faster without them. Affects "
+               "tt.load lowering only, not contiguity analysis, stores, "
+               "atomics or SME async copies">,
     ];
 }
 
