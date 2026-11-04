@@ -26,8 +26,7 @@ bool isAsyncCopyLayoutCompatible(RankedTensorType source,
 
 // Keep a compatible source layout; otherwise fit it to the fixed destination.
 // Returns null when the supported blocked/shared combination cannot be formed.
-// Bounds constrain the actual vector width in elements, without changing how
-// LLVM determines that width. Defaults preserve scalar copies as well.
+// minVec/maxVec bound the copy width in elements; minVec=1 allows scalar copies.
 gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
     RankedTensorType source, gpu::MemDescType destination,
     const AxisInfo *sourceInfo, unsigned minVec = 1, unsigned maxVec = ~0u);

@@ -103,8 +103,6 @@ static Attr checkedLayout(TritonOpBuilder &builder, Args &&...args) {
   return attr;
 }
 
-// Lower-case textual form of an attribute, used to map a spelled memory space
-// (e.g. #ttg.shared / "shared") onto a CommonIR MemorySpace enum case.
 static std::string attrToLowerString(Attribute attr) {
   if (!attr)
     return "";
@@ -117,9 +115,7 @@ static std::string attrToLowerString(Attribute attr) {
   return text;
 }
 
-// Resolve an arbitrary attribute (string or dialect attr) to a CommonIR
-// MemorySpace. Kept string-based so the shared TLE Python layer can pass the
-// spelling produced by tile_get_string_attr without knowing enum values.
+// Accept memory-space names from Python and printed dialect attributes.
 static mlir::triton::tile::MemorySpace
 attrToCommonIRMemorySpace(Attribute attr) {
   auto text = attrToLowerString(attr);
@@ -2010,9 +2006,7 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                                                   paddingOption);
            })
 #ifdef __FLAGTREE_COMMON_IR__
-      // Builder methods mirror third_party/tle/triton_tle.cc so the shared TLE
-      // Python layer (semantic.py / types.py) drives the CommonIR path
-      // identically on the MetaX backend, which does not build the tle module.
+      // CommonIR builders used by the shared TLE frontend.
       .def("tile_get_string_attr",
            [](TritonOpBuilder &self, const std::string &name) -> Attribute {
              return self.getBuilder().getStringAttr(name);

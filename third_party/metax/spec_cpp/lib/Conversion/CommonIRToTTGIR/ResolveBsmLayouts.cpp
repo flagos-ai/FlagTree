@@ -1,88 +1,85 @@
 // MIT License
 // Copyright (c) 2026 The FlagOS Contributors
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "triton/Analysis/Utility.h"
-#include "triton/Conversion/CommonIRToTTGIR/BsmLayout.h"
-#include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
 #include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
+#include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "llvm/Support/MathExtras.h"
-#include <limits>
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace mlir::triton::metax {
 namespace ttg = mlir::triton::gpu;
-#define GEN_PASS_DEF_COMMONIRPREPAREBSMLAYOUTS
+#define GEN_PASS_DEF_COMMONIRRESOLVEBSMLAYOUTS
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 namespace {
-FailureOr<DotLayoutPlan> inferBsmDotLayout(triton::DotOp dot,
-                                         int computeCapability, int numWarps) {
-  auto a = dot.getA().getType();
-  auto b = dot.getB().getType();
-  auto d = dot.getType();
-  if (a.getRank() != 2 || b.getRank() != 2 || d.getRank() != 2 ||
-      computeCapability < 80 || computeCapability >= 90 || numWarps <= 0 ||
-      !llvm::isPowerOf2_64(numWarps)) {
-    dot.emitError("BSM layout preparation requires rank-2 MACA v2 dots and a "
-                  "power-of-two warp count");
+LogicalResult
+collectBsmLayoutRequirements(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
+                             TensorLayoutRequirements &requirements,
+                             const tile::BufferLayoutPlan *buffers) {
+  llvm::MapVector<Value, Attribute> assignments;
+  llvm::SetVector<OpOperand *> coveredUses;
+  for (auto [dot, plan] : choices) {
+    auto found = getBsmLayoutChain(dot.getB());
+    if (failed(found))
+      return failure();
+    if (!*found)
+      continue;
+    auto chain = **found;
+    Attribute encoding = plan.operandB;
+    // Both selected candidates and existing MMA layouts are validated here.
+    auto shared =
+        buffers ? cast<ttg::MemDescType>(buffers->getType(chain.load.getSrc()))
+                : ttg::MemDescType{};
+    if (auto error = checkBsmLayout(chain, encoding, shared))
+      return chain.perm.emitError(*error);
+    auto requireLayout = [&](Value value) -> LogicalResult {
+      auto [it, inserted] = assignments.insert({value, encoding});
+      if (inserted || it->second == encoding)
+        return success();
+      return dot.emitError(
+                 "shared split-load/BSM value requires conflicting layouts: ")
+             << it->second << " versus " << encoding;
+    };
+    for (Value value : {chain.load.getResult(), chain.perm.getResult()})
+      if (failed(requireLayout(value)))
+        return failure();
+    for (auto cvt : chain.conversions) {
+      if (failed(requireLayout(cvt.getResult())))
+        return failure();
+      coveredUses.insert(&cvt->getOpOperand(0));
+    }
+    coveredUses.insert(&chain.perm->getOpOperand(0));
+    coveredUses.insert(&dot->getOpOperand(1));
+  }
+  auto result = module.walk([&](Operation *op) {
+    auto load = dyn_cast<ttg::LocalLoadOp>(op);
+    if ((isa<ttg::BsmPermOp>(op) || (load && load.getMmaMode() == 2)) &&
+        !assignments.contains(op->getResult(0))) {
+      op->emitError(
+          "split load/BSM must feed dot B through layout conversions only");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted())
     return failure();
-  }
-  for (auto type : {a, b, d}) {
-    if (llvm::any_of(type.getShape(), [](int64_t dim) {
-          return dim <= 0 || dim > std::numeric_limits<int>::max() ||
-                 !llvm::isPowerOf2_64(dim);
-        })) {
-      dot.emitError("BSM layout preparation requires static power-of-two shapes");
-      return failure();
+  // Packed raw values cannot be handed to arbitrary users via an ordinary
+  // convert_layout. Validate all uses before publishing any requirements.
+  for (auto [value, encoding] : assignments) {
+    for (OpOperand &use : value.getUses()) {
+      if (!coveredUses.contains(&use))
+        return use.getOwner()->emitError(
+            "BSM layout assignment does not support this use outside "
+            "split load/BSM/dot B chains");
     }
   }
-
-  auto mma = dyn_cast_or_null<ttg::MACAMmaEncodingAttr>(d.getEncoding());
-  if (!mma) {
-    // Gluon's C500 BSM rule: one K fragment, 32 carrier slots, then allocate
-    // enough N warps to avoid repeating the B fragment. The remaining warps
-    // and elements cover M. The physical checker below validates the mapping.
-    constexpr unsigned atomM = 16, atomN = 16, atomK = 4, slots = 32;
-    int64_t k = a.getShape()[1];
-    if (k % atomK || k / atomK > slots || slots % (k / atomK)) {
-      dot.emitError("BSM K must fit one 32-slot MMA fragment");
-      return failure();
-    }
-    unsigned elementsK = k / atomK;
-    unsigned elementsN = slots / elementsK;
-    unsigned atomsN = llvm::divideCeil(b.getShape()[1], int64_t(atomN));
-    unsigned warpsN = llvm::PowerOf2Ceil(llvm::divideCeil(atomsN, elementsN));
-    if (warpsN > unsigned(numWarps) || numWarps % warpsN) {
-      dot.emitError("BSM N fragment needs more warp partitions than num-warps");
-      return failure();
-    }
-    unsigned warpsM = numWarps / warpsN;
-    unsigned atomsM = llvm::divideCeil(d.getShape()[0], int64_t(atomM));
-    unsigned elementsM = llvm::PowerOf2Ceil(llvm::divideCeil(atomsM, warpsM));
-    if (warpsM * elementsM > atomsM) {
-      dot.emitError("BSM warp grid cannot exactly cover the M fragment");
-      return failure();
-    }
-    mma = ttg::MACAMmaEncodingAttr::get(
-        dot.getContext(), 2, computeCapability % 10, {warpsM, warpsN},
-        {elementsM, elementsN, elementsK}, /*colMajor=*/0,
-        /*isATrans=*/false, /*isBTrans=*/false, {1, 1});
-  }
-  DotLayoutPlan plan{
-      mma, ttg::DotOperandEncodingAttr::get(dot.getContext(), 0, mma,
-                                          a.getElementType()),
-      ttg::DotOperandEncodingAttr::get(dot.getContext(), 1, mma,
-                                      b.getElementType())};
-  if (auto error = checkMacaDotLayout(dot, plan.mma, plan.operandA,
-                                     plan.operandB, computeCapability,
-                                     numWarps)) {
-    dot.emitError("MMA layout is not legal for this dot and target: ") << *error;
-    return failure();
-  }
-  return plan;
+  for (auto [value, encoding] : assignments)
+    requirements.assignments[value] = encoding;
+  for (OpOperand *use : coveredUses)
+    requirements.uses.push_back({use, assignments.lookup(use->get()), false});
+  return success();
 }
 
 FailureOr<tile::BufferLayoutPlan>
@@ -138,9 +135,9 @@ planBsmBuffers(ModuleOp module, ArrayRef<DotLayoutChoice> choices) {
   return buffers;
 }
 
-struct CommonIRPrepareBsmLayoutsPass
-    : impl::CommonIRPrepareBsmLayoutsBase<CommonIRPrepareBsmLayoutsPass> {
-  using CommonIRPrepareBsmLayoutsBase::CommonIRPrepareBsmLayoutsBase;
+struct CommonIRResolveBsmLayoutsPass
+    : impl::CommonIRResolveBsmLayoutsBase<CommonIRResolveBsmLayoutsPass> {
+  using CommonIRResolveBsmLayoutsBase::CommonIRResolveBsmLayoutsBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -193,8 +190,7 @@ struct CommonIRPrepareBsmLayoutsPass
         }
       }
     }
-    // Plan both storage and registers before changing any types. Async copies
-    // into the new shared layout are legalized by the normal pre-LLVM pass.
+    // Apply both plans after validation. Async copies are legalized at TTGIR exit.
     TTGIRLayoutAdapter adapter;
     buffers->apply();
     applyLayoutRequirements(module, requirements, adapter);

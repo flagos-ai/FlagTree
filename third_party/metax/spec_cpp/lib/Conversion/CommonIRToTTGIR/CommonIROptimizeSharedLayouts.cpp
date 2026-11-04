@@ -1,15 +1,16 @@
+#include "triton/Conversion/CommonIRToTTGIR/SharedLayoutUtils.h"
 #include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 namespace mlir::triton::metax {
-#define GEN_PASS_DEF_COMMONIRPLANSHAREDLAYOUTS
+#define GEN_PASS_DEF_COMMONIROPTIMIZESHAREDLAYOUTS
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 namespace {
 
-struct CommonIRPlanSharedLayoutsPass
-    : impl::CommonIRPlanSharedLayoutsBase<CommonIRPlanSharedLayoutsPass> {
+struct CommonIROptimizeSharedLayoutsPass
+    : impl::CommonIROptimizeSharedLayoutsBase<CommonIROptimizeSharedLayoutsPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
     SmallVector<triton::DotOp> dots;

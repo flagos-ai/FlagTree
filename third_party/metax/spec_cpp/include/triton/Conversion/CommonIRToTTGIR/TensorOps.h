@@ -5,8 +5,7 @@
 
 namespace mlir::triton::metax {
 
-// Read-only query sharing the physical planner used by tensor tile lowering.
-// True means both tensors can use encoding without boundary conversions.
+// Whether input and result can use encoding without layout conversions.
 bool canLowerTensorTileInEncoding(Operation *op, Attribute encoding);
 
 LogicalResult applyCommonIRLayoutHints(ModuleOp module);
