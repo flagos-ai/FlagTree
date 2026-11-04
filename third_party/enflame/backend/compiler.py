@@ -28,7 +28,8 @@ import functools
 from typing import Any, Tuple
 import hashlib
 from triton.runtime.cache import get_cache_manager
-from triton._C.libtriton import ir, passes, llvm
+from triton._C.libtriton import ir, passes, llvm, tle
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from triton.backends.enflame import passes as gcu_passes
 from triton.backends.enflame.gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
 from typing import Dict
@@ -153,6 +154,8 @@ def make_ttir(mod, metadata, options):
     pm.enable_debug()
 
     passes.common.add_inliner(pm)
+    if COMMON_IR_ENABLED:
+        tle.passes.commonir.add_to_ttgir(pm, False)
     # FlagPrism: debug collectors require element pointers for block-pointer kernels.
     if options.arch == "gcu500" or options.instrumentation_mode.startswith("debugger"):
         passes.ttir.add_rewrite_tensor_pointer(pm)
@@ -752,6 +755,8 @@ class _GCUBackend(BaseBackend):
 
     def load_dialects(self, ctx):
         self._backend.load_dialects(ctx)
+        if COMMON_IR_ENABLED:
+            tle.load_tile_dialects(ctx)
 
     @functools.lru_cache()
     def hash(self):

@@ -1,6 +1,7 @@
 if(FLAGTREE_ILUVATAR_TLE)
     set(_TLE_IR_LIBS IluvatarTleIR)
-elseif(FLAGTREE_TLE)
+elseif(FLAGTREE_TLE AND NOT (FLAGTREE_BACKEND STREQUAL "metax" AND FLAGTREE_COMMON_IR_ENABLED))
+    # Slim MetaX CommonIR does not build the generic TLE dialect.
     set(_TLE_IR_LIBS TleIR) # flagtree tle raw
 else()
     set(_TLE_IR_LIBS "")

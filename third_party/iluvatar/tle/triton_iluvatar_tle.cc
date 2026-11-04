@@ -9,12 +9,21 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#endif
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -25,6 +34,9 @@
 namespace py = pybind11;
 namespace ttg = mlir::triton::gpu;
 namespace iluvatar_tle = mlir::triton::iluvatar_tle;
+#ifdef __FLAGTREE_COMMON_IR__
+namespace tile = mlir::triton::tile;
+#endif
 
 // Defined in triton_iluvatar_tle_raw.cc.
 extern std::vector<int64_t>
@@ -67,6 +79,34 @@ mlir::Attribute getSharedMemorySpace(mlir::MLIRContext *context,
     throw py::value_error("iluvatar TLE alloc does not support tmem storage");
   throw py::value_error("iluvatar TLE alloc only supports smem storage");
 }
+
+#ifdef __FLAGTREE_COMMON_IR__
+std::string attrToLowerString(mlir::Attribute attr) {
+  if (!attr)
+    return "";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  attr.print(os);
+  os.flush();
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return text;
+}
+
+tile::MemorySpace attrToCommonIRMemorySpace(mlir::Attribute attr) {
+  auto text = attrToLowerString(attr);
+  if (text.find("register") != std::string::npos)
+    return tile::MemorySpace::Register;
+  if (text.find("shared") != std::string::npos ||
+      text.find("smem") != std::string::npos)
+    return tile::MemorySpace::Shared;
+  if (text.find("global") != std::string::npos)
+    return tile::MemorySpace::Global;
+  if (text.find("local") != std::string::npos)
+    return tile::MemorySpace::Local;
+  return tile::MemorySpace::Shared;
+}
+#endif
 
 } // namespace
 
@@ -126,6 +166,122 @@ void init_triton_iluvatar_tle_ir(py::module m) {
               mlir::Value value) -> mlir::Value {
              return self.create<ttg::LocalAllocOp>(resultTy, value);
            })
+#ifdef __FLAGTREE_COMMON_IR__
+      .def("tile_get_string_attr",
+           [](TritonOpBuilder &self,
+              const std::string &name) -> mlir::Attribute {
+             return self.getBuilder().getStringAttr(name);
+           })
+      .def("tile_get_buffer_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              mlir::Type &elementType,
+              const mlir::Attribute &memorySpace) -> mlir::Type {
+             auto memSpace = attrToCommonIRMemorySpace(memorySpace);
+             return tile::BufType::get(self.getBuilder().getContext(), shape,
+                                       elementType, memSpace);
+           })
+      .def("create_tile_alloc",
+           [](TritonOpBuilder &self, mlir::Type tileBufType,
+              mlir::Attribute targetLayout) -> mlir::Value {
+             auto bufType = mlir::cast<tile::BufType>(tileBufType);
+             auto op = self.create<tile::AllocOp>(
+                 tileBufType, bufType.getMemorySpace(),
+                 /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
+                 /*policy=*/tile::PolicyAttr(),
+                 /*layout=*/
+                 tile::LayoutAttr::get(self.getBuilder().getContext(),
+                                       tile::Layout::ND),
+                 /*lifetime=*/tile::LifetimeAttr(),
+                 /*comment=*/mlir::StringAttr());
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_copy",
+           [](TritonOpBuilder &self, mlir::Value &src, mlir::Value &dst,
+              bool interNoAlias) -> void {
+             auto op = self.create<tile::CopyOp>(
+                 src, dst, /*engine=*/tile::EngineAttr(),
+                 /*src_layout=*/
+                 tile::LayoutAttr::get(self.getBuilder().getContext(),
+                                       tile::Layout::ND),
+                 /*dst_nz_layout=*/tile::NZLayoutAttr(),
+                 /*transpose=*/mlir::UnitAttr(),
+                 /*comment=*/mlir::StringAttr());
+             if (interNoAlias)
+               op->setAttr("inter_no_alias",
+                           self.getBuilder().getBoolAttr(true));
+           })
+      .def("create_tile_get_memdesc",
+           [](TritonOpBuilder &self, mlir::Type resultTy,
+              mlir::Value source) -> mlir::Value {
+             return self
+                 .create<mlir::UnrealizedConversionCastOp>(
+                     mlir::TypeRange{resultTy}, mlir::ValueRange{source})
+                 .getResult(0);
+           })
+      .def("create_tile_subview",
+           [](TritonOpBuilder &self, mlir::Value source,
+              std::vector<mlir::Value> &offsets,
+              const std::vector<int64_t> &sizes,
+              const std::vector<int64_t> &strides,
+              mlir::Attribute targetLayout) -> mlir::Value {
+             llvm::SmallVector<mlir::Value> indexOffsets;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (mlir::Value offset : offsets) {
+               if (offset.getType() != indexType)
+                 offset = self.create<mlir::arith::IndexCastOp>(indexType,
+                                                               offset);
+               indexOffsets.push_back(offset);
+             }
+             auto srcBuf = mlir::cast<tile::BufType>(source.getType());
+             auto resTy = tile::BufType::get(builder.getContext(), sizes,
+                                             srcBuf.getElementType(),
+                                             srcBuf.getMemorySpace());
+             auto op = self.create<tile::SubViewOp>(
+                 resTy, source, indexOffsets, builder.getI64ArrayAttr(sizes),
+                 builder.getI64ArrayAttr(strides));
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_to_tensor",
+           [](TritonOpBuilder &self, mlir::Value &src,
+              bool /*writable*/) -> mlir::Value {
+             auto srcBuf = mlir::cast<tile::BufType>(src.getType());
+             auto resTy = mlir::RankedTensorType::get(srcBuf.getShape(),
+                                                      srcBuf.getElementType());
+             return self.create<tile::ToTensorOp>(resTy, src).getResult();
+           })
+      .def("create_tile_store_tensor",
+           [](TritonOpBuilder &self, mlir::Value &src,
+              mlir::Value &dst) -> void {
+             self.create<tile::StoreTensorOp>(src, dst);
+           })
+      .def("create_tile_gm_offset",
+           [](TritonOpBuilder &self, mlir::Value &base,
+              std::vector<mlir::Value> &indices,
+              std::vector<mlir::Value> &strides) -> mlir::Value {
+             llvm::SmallVector<mlir::Value> indexValues;
+             llvm::SmallVector<mlir::Value> strideValues;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (mlir::Value index : indices) {
+               if (index.getType() != indexType)
+                 index = self.create<mlir::arith::IndexCastOp>(indexType, index);
+               indexValues.push_back(index);
+             }
+             for (mlir::Value stride : strides) {
+               if (stride.getType() != indexType)
+                 stride =
+                     self.create<mlir::arith::IndexCastOp>(indexType, stride);
+               strideValues.push_back(stride);
+             }
+             return self
+                 .create<tile::GmOffsetOp>(base.getType(), base, indexValues,
+                                           strideValues)
+                 .getResult();
+           })
+#endif
       .def("create_tma_copy",
            [](TritonOpBuilder &, mlir::Value, mlir::Value,
               std::vector<mlir::Value>) -> void {

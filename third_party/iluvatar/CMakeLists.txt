@@ -35,6 +35,28 @@ if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_ILUVATAR_TLE)
     add_dependencies(TritonILUVATAR ${_ILUVATAR_TLE_PLUGIN_DEPS})
   endif()
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(NOT TARGET CommonIRIR)
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the FLIR CommonIR dialect")
+    endif()
+    if(NOT TARGET TleCommonIRToTTGIR)
+      add_subdirectory(
+        ${PROJECT_SOURCE_DIR}/third_party/tle/include/CommonIRToTTGIR
+        ${PROJECT_BINARY_DIR}/third_party/tle/include/CommonIRToTTGIR)
+      add_subdirectory(
+        ${PROJECT_SOURCE_DIR}/third_party/tle/lib/CommonIRToTTGIR
+        ${PROJECT_BINARY_DIR}/third_party/tle/lib/CommonIRToTTGIR)
+    endif()
+    target_link_libraries(TritonILUVATAR PRIVATE CommonIRIR TleCommonIRToTTGIR)
+    target_include_directories(TritonILUVATAR PRIVATE
+      ${PROJECT_SOURCE_DIR}/third_party
+      ${PROJECT_BINARY_DIR}/third_party)
+    add_dependencies(TritonILUVATAR
+      CommonIRTableGen
+      CommonIRAttrDefsIncGen
+      CommonIRTypesIncGen
+      TleCommonIRToTTGIRPassIncGen)
+  endif()
   target_link_libraries(TritonILUVATAR PRIVATE Python3::Module pybind11::headers lldCommon lldELF)
 endif()
 if(TRITON_BUILD_UT)

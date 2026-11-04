@@ -1,5 +1,6 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, iluvatar
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from triton import knobs
 from triton.runtime.errors import PTXASError
 from triton.runtime._distributed import DistributedRtContext
@@ -254,6 +255,11 @@ class CorexBackend(BaseBackend):
 
     def load_dialects(self, ctx):
         iluvatar.load_dialects(ctx)
+        if COMMON_IR_ENABLED:
+            load_tile_dialects = getattr(iluvatar, "load_tile_dialects", None)
+            if load_tile_dialects is None:
+                raise RuntimeError("FLAGTREE_COMMON_IR is enabled but iluvatar.load_tile_dialects is missing")
+            load_tile_dialects(ctx)
         if CorexBackend.instrumentation:
             CorexBackend.instrumentation.load_dialects(ctx)
 
@@ -262,6 +268,11 @@ class CorexBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        if COMMON_IR_ENABLED:
+            add_to_ttgir = getattr(getattr(getattr(iluvatar, "passes", None), "commonir", None), "add_to_ttgir", None)
+            if add_to_ttgir is None:
+                raise RuntimeError("FLAGTREE_COMMON_IR is enabled but iluvatar.passes.commonir.add_to_ttgir is missing")
+            add_to_ttgir(pm, False)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         if capability // 10 < 9:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)

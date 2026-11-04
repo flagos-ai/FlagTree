@@ -1,8 +1,13 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+# [metax+CommonIR] 剥掉全局 __TLE__：nvidia lowering 按 metax fork 的非-TLE 头编译（回到原可编状态）
+if(FLAGTREE_BACKEND STREQUAL "metax")
+  remove_definitions(-D__TLE__)
+  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+endif()
 add_subdirectory(include)
 add_subdirectory(lib)
-if(FLAGTREE_TLE)
+if(FLAGTREE_TLE AND NOT FLAGTREE_BACKEND STREQUAL "metax")
   add_subdirectory(tle_raw)
 endif()
 if(TRITON_BUILD_PYTHON_MODULE)
@@ -29,7 +34,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     target_link_libraries(TritonNVIDIA PRIVATE CommonIRToTTGIR)
   endif()
   target_link_libraries(TritonNVIDIA PRIVATE Python3::Module pybind11::headers)
-  if(FLAGTREE_TLE)
+  if(FLAGTREE_TLE AND NOT FLAGTREE_BACKEND STREQUAL "metax")
     target_link_libraries(TritonNVIDIA PRIVATE NvidiaTLERawTransforms)
     add_dependencies(TritonNVIDIA
       NvidiaTLERawTransformsIncGen

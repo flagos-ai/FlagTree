@@ -242,7 +242,7 @@ def subview(src, offsets, shape, strides, layout, _semantic, alloc_shape=None):
 def to_tensor(buffer, writable, result_type, _semantic):
     if COMMON_IR_ENABLED:
         if tuple(result_type.shape) != tuple(buffer.type.shape):
-            raise ValueError("GPU CommonIR buffered_tensor.load requires the full buffer shape")
+            raise ValueError("GPU CommonIR to_tensor requires the full buffer shape")
         result = _semantic.builder.create_tile_to_tensor(buffer.handle, writable)
         return tl.tensor(result, result_type)
     from .core import local_ptr
@@ -253,7 +253,7 @@ def to_tensor(buffer, writable, result_type, _semantic):
 def store_tensor(value, dst, _semantic):
     if COMMON_IR_ENABLED:
         if tuple(value.shape) != tuple(dst.type.shape) or value.dtype != dst.dtype:
-            raise ValueError("GPU CommonIR buffered_tensor.store requires the full buffer shape and element type")
+            raise ValueError("GPU CommonIR store_tensor requires the full buffer shape and element type")
         _semantic.builder.create_tile_store_tensor(value.handle, dst.handle)
         return
     from .core import local_ptr

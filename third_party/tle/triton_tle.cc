@@ -27,6 +27,7 @@
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "CommonIRToTTGIR/Passes.h"
 #endif
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -925,7 +926,7 @@ void init_triton_tle_ir(py::module &&m) {
           [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
              std::optional<Value> value, tle::SignalOpKind signalOp,
              tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
-             int32_t contextId, tle::SyncScope scope) -> void {
+             int32_t contextIdx, tle::SyncScope scope) -> void {
             auto &builder = self.getBuilder();
             if (auto err = tle::Signal::verifySignalOp(
                     signalOp, value.value_or(Value()), scope))
@@ -935,18 +936,18 @@ void init_triton_tle_ir(py::module &&m) {
                 builder.getAttr<tle::SignalOpKindAttr>(signalOp),
                 builder.getAttr<tle::FlagCXTeamKindAttr>(teamKind),
                 builder.getAttr<tle::FlagCXCoopKindAttr>(coopKind),
-                builder.getI32IntegerAttr(contextId),
+                builder.getI32IntegerAttr(contextIdx),
                 builder.getAttr<tle::SyncScopeAttr>(scope));
           },
           py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
           py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),
-          py::arg("coop_kind"), py::arg("context_id"), py::arg("scope"),
+          py::arg("coop_kind"), py::arg("context_idx"), py::arg("scope"),
           "Create a standalone remote signal operation")
       .def(
           "create_signal_wait",
           [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
              tle::SignalWaitKind wait_kind, std::optional<Value> target,
-             tle::FlagCXCoopKind coop_kind, int32_t contextId,
+             tle::FlagCXCoopKind coop_kind, int32_t context_idx,
              tle::MemoryOrder order) -> void {
             auto &builder = self.getBuilder();
             if (auto err = tle::Signal::verifySignalWaitOp(
@@ -956,14 +957,14 @@ void init_triton_tle_ir(py::module &&m) {
                 builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
             auto coop_kind_attr =
                 builder.getAttr<tle::FlagCXCoopKindAttr>(coop_kind);
-            auto contextIdAttr = builder.getI32IntegerAttr(contextId);
+            auto context_idx_attr = builder.getI32IntegerAttr(context_idx);
             auto order_attr = builder.getAttr<tle::MemoryOrderAttr>(order);
             self.create<tle::SignalWaitOp>(
                 comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
-                coop_kind_attr, contextIdAttr, order_attr);
+                coop_kind_attr, context_idx_attr, order_attr);
           },
           py::arg("comm"), py::arg("slot_id"), py::arg("wait_kind"),
-          py::arg("target"), py::arg("coop_kind"), py::arg("context_id"),
+          py::arg("target"), py::arg("coop_kind"), py::arg("context_idx"),
           py::arg("order"), "Create a standalone remote signal_wait operation")
       .def(
           "create_distributed_barrier",
@@ -1011,7 +1012,7 @@ void init_triton_tle_ir(py::module &&m) {
           [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
              Value shardId, const std::string &space,
              std::optional<Value> offset, std::optional<Value> comm,
-             std::optional<int32_t> contextId,
+             std::optional<int64_t> contextId,
              std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
@@ -1024,7 +1025,8 @@ void init_triton_tle_ir(py::module &&m) {
 
             auto spaceAttr = builder.getStringAttr(space);
             IntegerAttr contextIdAttr =
-                contextId ? builder.getI32IntegerAttr(*contextId)
+                contextId ? builder.getI32IntegerAttr(
+                                static_cast<int32_t>(*contextId))
                           : IntegerAttr();
             tle::FlagCXCoopKindAttr coopKindAttr =
                 coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
@@ -1241,6 +1243,13 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleLowerInsertTile);
 }
 
+#ifdef __FLAGTREE_COMMON_IR__
+void init_triton_tle_passes_commonir(py::module &&m) {
+  ADD_PASS_OPTION_WRAPPER_1("add_to_ttgir",
+                            mlir::triton::createTleCommonIRToTTGIR, bool);
+}
+#endif
+
 void init_tle_raw_ir(py::module &&m) {
   using ret = py::return_value_policy;
 
@@ -1335,6 +1344,9 @@ void init_triton_tle(py::module &&m) {
   init_triton_tle_utils(m.def_submodule("utils"));
   init_triton_tle_ir(m.def_submodule("ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
+#ifdef __FLAGTREE_COMMON_IR__
+  init_triton_tle_passes_commonir(m.def_submodule("passes").def_submodule("commonir"));
+#endif
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
   init_llvm(m.def_submodule("llvm"));

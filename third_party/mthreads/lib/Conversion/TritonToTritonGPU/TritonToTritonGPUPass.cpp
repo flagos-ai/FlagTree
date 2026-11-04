@@ -1314,6 +1314,8 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<triton::MakeRangeOp>,
 #ifdef __TLE__
       GenericOpPattern<triton::gpu::LocalAllocOp>,
+      GenericOpPattern<triton::gpu::LocalStoreOp>,
+      GenericOpPattern<triton::gpu::LocalLoadOp>,
 #endif
       TritonExpandDimsPattern,
       TritonTransPattern,
