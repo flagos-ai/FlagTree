@@ -18,7 +18,7 @@
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Utility.h"
-#include "Utils/TritonVersionCompat.h"
+#include "llvm/Support/Casting.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -30,13 +30,13 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-#include "llvm/Support/Casting.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_TRITONWGDOTTOGCU
 #include "Conversion/Passes.h.inc"
-} // namespace mlir
+}  // namespace mlir
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -49,9 +49,21 @@ struct TritonWGDotToGCUPass
 
   void runOnOperation() override;
 };
-} // namespace
+}  // namespace
 
-static Attribute convertResultEncodingToBlocked(RankedTensorType tensorType) {
+// ConvertLayoutOp changes the data distribution across threads/warps iff the
+// threads-per-warp decomposition differs between its source and its result.
+static bool changesThreadsPerWarp(triton::gpu::ConvertLayoutOp cvtOp) {
+  auto srcType = dyn_cast<RankedTensorType>(cvtOp.getSrc().getType());
+  auto dstType = dyn_cast<RankedTensorType>(cvtOp.getType());
+  if (!srcType || !dstType)
+    return false;
+  return triton::gpu::getThreadsPerWarp(srcType) !=
+         triton::gpu::getThreadsPerWarp(dstType);
+}
+
+static Attribute
+convertResultEncodingToBlocked(RankedTensorType tensorType) {
   auto enc = tensorType.getEncoding();
   if (auto blockedEnc = dyn_cast<BlockedEncodingAttr>(enc))
     return blockedEnc;
@@ -155,32 +167,84 @@ public:
     if (wgDotOp->hasAttr(kRhsColumnMajor))
       newDot->setAttr(kRhsColumnMajor, wgDotOp->getAttr(kRhsColumnMajor));
     if (!wgDotOp->getParentOfType<triton::gpu::WarpSpecializeOp>()) {
-      Block *block = wgDotOp->getBlock();
       Operation *insertPoint = nullptr;
       bool foundBarrier = false;
-      for (auto it = std::next(wgDotOp->getIterator()), end = block->end();
-           it != end; ++it) {
-        Operation *op = &*it;
-        if (isa<mlir::gpu::BarrierOp>(op)) {
-          foundBarrier = true;
-          break;
-        }
-        if (isa<DotOp, triton::gcu::WarpGroupDotOp>(op)) {
-          insertPoint = op;
-          break;
-        }
-        if (op->hasTrait<OpTrait::IsTerminator>()) {
-          insertPoint = op;
-          break;
+      Block *wgDotBlock = wgDotOp->getBlock();
+
+      // Walk the result's user chain (SSA def-use, across scf yield /
+      // enclosing region results). The sync must be placed before the first
+      // consumer that redistributes the data across threads, i.e. a
+      // convert_layout whose src and dst use a different threads-per-warp
+      // decomposition. A barrier already on the path means the sync exists,
+      // so stop and insert nothing.
+      SmallVector<Value> worklist;
+      SmallPtrSet<Value, 8> visited;
+      worklist.push_back(wgDotOp.getD());
+      while (!worklist.empty() && !insertPoint) {
+        Value cur = worklist.pop_back_val();
+        if (!visited.insert(cur).second)
+          continue;
+        for (Operation *user : cur.getUsers()) {
+          if (auto cvtUser = dyn_cast<triton::gpu::ConvertLayoutOp>(user)) {
+            if (changesThreadsPerWarp(cvtUser)) {
+              Operation *curOp = user;
+              while (curOp) {
+                Block *curBlock = curOp->getBlock();
+                if (curBlock == wgDotBlock) {
+                  insertPoint = curOp;
+                  break;
+                } else {
+                  curOp = curBlock->getParentOp();
+                }
+              }
+              assert(insertPoint && "cannot find insertPoint for DotOp");
+            }
+            // Same-thread redistribution: look through this convert.
+            worklist.push_back(cvtUser.getResult());
+            continue;
+          } else if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
+            // The yielded value becomes the enclosing region op's result:
+            // keep tracing from there.
+            Operation *parent = yieldOp->getParentOp();
+            if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent)) {
+              unsigned operandIdx = 0;
+              for (OpOperand &operand : yieldOp->getOpOperands()) {
+                if (operand.get() == cur)
+                  break;
+                ++operandIdx;
+              }
+              assert(operandIdx < yieldOp->getNumOperands());
+              worklist.push_back(parent->getResult(operandIdx));
+            } else {
+              insertPoint = yieldOp;
+            }
+            break;
+          }
+          // Follow the result of any other intermediate op on the data path.
+          for (Value res : user->getResults())
+            if (res.getType() == cur.getType())
+              worklist.push_back(res);
         }
       }
-      if (!foundBarrier) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        if (insertPoint)
+
+      if (insertPoint) {
+        // If a barrier already sits between the warp-group dot and the
+        // intended sync point in the same block, the sync exists -- do not
+        // insert another one.
+        for (auto it = std::next(wgDotOp->getIterator()),
+                  end = wgDotBlock->end();
+             it != end && &*it != insertPoint; ++it) {
+          if (isa<mlir::gpu::BarrierOp>(&*it)) {
+            foundBarrier = true;
+            break;
+          }
+        }
+
+        if (!foundBarrier) {
+          OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPoint(insertPoint);
-        else
-          rewriter.setInsertionPointAfter(&block->back());
-        rewriter.create<mlir::gpu::BarrierOp>(loc);
+          rewriter.create<mlir::gpu::BarrierOp>(loc);
+        }
       }
     }
 
@@ -200,8 +264,8 @@ public:
           if (targetType == newRetType) {
             rewriter.replaceOp(cvtUser, dotResult);
           } else {
-            rewriter.replaceOpWithNewOp<ConvertLayoutOp>(cvtUser, targetType,
-                                                         dotResult);
+            rewriter.replaceOpWithNewOp<ConvertLayoutOp>(
+                cvtUser, targetType, dotResult);
           }
           continue;
         }

@@ -397,10 +397,17 @@ def TritonGCU_MaskedLoadOp : TTGCU_Op<"maskedload", [
     }];
 
     let extraClassDeclaration = [{
+      // Triton 3.8 配套的 MLIR 把 OpaqueProperties 改名为 PropertyRef（见
+      // mlir/IR/OperationSupport.h）。这里用别名隔离，保持 3.5~3.7 构建不变。
+      #if TRITON_VERSION >= 38
+      using KuramaOpaqueProperties = ::mlir::PropertyRef;
+      #else
+      using KuramaOpaqueProperties = ::mlir::OpaqueProperties;
+      #endif
       static ::llvm::LogicalResult inferReturnTypes(
           ::mlir::MLIRContext * context, ::std::optional<::mlir::Location> location,
           ::mlir::ValueRange operands, ::mlir::DictionaryAttr attributes,
-          mlir::OpaqueProperties properties, ::mlir::RegionRange regions,
+          KuramaOpaqueProperties properties, ::mlir::RegionRange regions,
           ::llvm::SmallVectorImpl<::mlir::Type> & inferredReturnTypes) {
         inferredReturnTypes.resize(1);
         auto elementTy = cast<::mlir::triton::PointerType>(operands[0].getType())
@@ -452,3 +459,4 @@ def TritonGCU_MaskedStoreOp : TTGCU_Op<"maskedstore", [
     }];
 }
 #endif // TRITONGCU_OPS
+

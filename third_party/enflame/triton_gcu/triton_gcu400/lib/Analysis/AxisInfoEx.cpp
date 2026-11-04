@@ -13,14 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <vector>
+#include <string>
+#include <memory>
 #include "Analysis/AxisInfoEx.h"
 #include "Utils/TritonVersionCompat.h"
-#include <memory>
-#include <string>
-#include <vector>
 
-#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#if TRITON_VERSION >= 38
+#include "mlir/Support/TypeID.h" // MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID
+#endif
+#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -146,8 +149,8 @@ public:
       } else {
         divisibility.push_back(getDivisibility(op, lhsInfo, rhsInfo, i));
         continualSize.push_back(getContinualSize(op, lhsInfo, rhsInfo, i));
-        continualInterval.push_back(
-            getContinualInterval(op, lhsInfo, rhsInfo, i));
+        continualInterval.push_back(getContinualInterval(op,
+                                    lhsInfo, rhsInfo, i));
       }
     }
     return AxisInfoEx(divisibility, continualSize, continualInterval,
@@ -155,25 +158,24 @@ public:
   }
 
 protected:
-  virtual int64_t getDivisibility(OpTy /*op*/, const AxisInfoEx & /*lhs*/,
-                                  const AxisInfoEx & /*rhs*/, int /*dim*/) {
+  virtual int64_t getDivisibility(OpTy /*op*/, const AxisInfoEx &/*lhs*/,
+                                  const AxisInfoEx &/*rhs*/, int /*dim*/) {
     return 1;
   }
 
-  virtual int64_t getContinualSize(OpTy /*op*/, const AxisInfoEx & /*lhs*/,
-                                   const AxisInfoEx & /*rhs*/, int /*dim*/) {
+  virtual int64_t getContinualSize(OpTy /*op*/, const AxisInfoEx &/*lhs*/,
+                               const AxisInfoEx &/*rhs*/, int /*dim*/) {
     return 1;
   }
 
-  virtual int64_t getContinualInterval(OpTy /*op*/, const AxisInfoEx & /*lhs*/,
-                                       const AxisInfoEx & /*rhs*/,
-                                       int /*dim*/) {
+  virtual int64_t getContinualInterval(OpTy /*op*/, const AxisInfoEx &/*lhs*/,
+                                const AxisInfoEx &/*rhs*/, int /*dim*/) {
     return 1;
   }
 
-  virtual std::optional<int64_t> getConstantValue(OpTy /*op*/,
-                                                  const AxisInfoEx & /*lhs*/,
-                                                  const AxisInfoEx & /*rhs*/) {
+  virtual std::optional<int64_t>
+  getConstantValue(OpTy /*op*/, const AxisInfoEx &/*lhs*/,
+                   const AxisInfoEx &/*rhs*/) {
     return std::nullopt;
   }
 };
@@ -199,6 +201,15 @@ private:
 
 class AxisInfoExAnalysis : public dataflow::SparseForwardDataFlowAnalysis<
                                dataflow::Lattice<AxisInfoEx>> {
+public:
+#if TRITON_VERSION >= 38
+  // Triton 3.8 配套的 LLVM 23 起，匿名 namespace 内的类型不再允许隐式 TypeID：
+  // DataFlowSolver::load<T>() 内部走 TypeID::get<T>()，遇到匿名类型直接
+  // 以 "LLVM ERROR" 中止（旧版仅回退到字符串名，所以此前从未暴露）。
+  // 显式声明内部 TypeID，保证该类型即便在匿名 namespace 中也具备唯一 ID。
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AxisInfoExAnalysis)
+#endif
+
 private:
   AxisInfoExVisitorList visitors;
 
@@ -209,17 +220,15 @@ private:
   }
 
 #if TRITON_VERSION >= 37
-  void visitNonControlFlowArguments(Operation *op,
-                                    const RegionSuccessor &successor,
-                                    ValueRange nonSuccessorInputs,
-                                    ArrayRef<dataflow::Lattice<AxisInfoEx> *>
-                                        nonSuccessorInputLattices) override {
+  void visitNonControlFlowArguments(
+      Operation *op, const RegionSuccessor &successor,
+      ValueRange nonSuccessorInputs,
+      ArrayRef<dataflow::Lattice<AxisInfoEx> *> nonSuccessorInputLattices) override {
     if (auto forOp = dyn_cast<scf::ForOp>(op)) {
       visitForOpInductionVar(forOp, nonSuccessorInputLattices);
     } else if (auto ws =
                    dyn_cast<triton::gpu::WarpSpecializePartitionsOp>(op)) {
-      visitWarpSpecializeExplicitCaptures(ws, successor,
-                                          nonSuccessorInputLattices);
+      visitWarpSpecializeExplicitCaptures(ws, successor, nonSuccessorInputLattices);
     } else {
       setAllToEntryStates(nonSuccessorInputLattices);
     }
@@ -335,8 +344,8 @@ public:
   using BinaryOpVisitorImpl<OpTy>::BinaryOpVisitorImpl;
 
 private:
-  int64_t getDivisibility(OpTy /*op*/, const AxisInfoEx &lhs,
-                          const AxisInfoEx &rhs, int dim) override {
+  int64_t getDivisibility(OpTy /*op*/, const AxisInfoEx &lhs, const AxisInfoEx &rhs,
+                          int dim) override {
     // lhs = k * d_lhs = k * k' * gcd(d_lhs, d_rhs)
     // rhs = p * d_rhs = p * p' * gcd(d_lhs, d_rhs)
     // lhs + rhs = k * d_lhs + p * d_rhs = (k * d_lhs + p * d_rhs) *
@@ -353,8 +362,9 @@ private:
   int64_t getContinualInterval(OpTy /*op*/, const AxisInfoEx &lhs,
                                const AxisInfoEx &rhs, int dim) override {
     if (lhs.getContinualInterval(dim) ==
-            AxisInfoEx::kDefaultContinualInterval ||
-        rhs.getContinualInterval(dim) == AxisInfoEx::kDefaultContinualInterval)
+        AxisInfoEx::kDefaultContinualInterval ||
+        rhs.getContinualInterval(dim) ==
+        AxisInfoEx::kDefaultContinualInterval)
       return AxisInfoEx::kDefaultContinualInterval;
     // For AddPtrOp the stride sign determines the memory access direction
     // (negative = backwards), which must be preserved for DMA eligibility
@@ -371,7 +381,7 @@ private:
 
   std::optional<int64_t> getConstantValue(OpTy /*op*/, const AxisInfoEx &lhs,
                                           const AxisInfoEx &rhs) override {
-    if (!lhs.getConstantValue().has_value() ||
+     if (!lhs.getConstantValue().has_value() ||
         !rhs.getConstantValue().has_value()) {
       return std::nullopt;
     }
@@ -384,7 +394,7 @@ private:
   static int64_t applyOp(int64_t lhs, int64_t rhs) {
     static_assert(std::is_same_v<OpTy, arith::SubIOp> ||
                   std::is_same_v<OpTy, arith::AddIOp> ||
-                  std::is_same_v<OpTy, LLVM::AddOp> ||
+                  std::is_same_v<OpTy, LLVM::AddOp>   ||
                   std::is_same_v<OpTy, triton::AddPtrOp>);
     if constexpr (std::is_same_v<OpTy, arith::SubIOp>) {
       return lhs - rhs;
@@ -407,15 +417,19 @@ private:
   }
 
   int64_t getContinualSize(arith::MulIOp /*op*/, const AxisInfoEx &lhs,
-                           const AxisInfoEx &rhs, int dim) override {
+                        const AxisInfoEx &rhs, int dim) override {
     return std::max(gcd(lhs.getConstancy(dim), rhs.getContinualSize(dim)),
-                    gcd(lhs.getContinualSize(dim), rhs.getConstancy(dim)));
+                gcd(lhs.getContinualSize(dim), rhs.getConstancy(dim)));
   }
 
   int64_t getContinualInterval(arith::MulIOp /*op*/, const AxisInfoEx &lhs,
-                               const AxisInfoEx &rhs, int dim) override {
+                       const AxisInfoEx &rhs, int dim) override {
+    if (lhs.getContinualInterval(dim) == 0 &&
+        rhs.getContinualInterval(dim) == 0)
+      return 0;
+
     if (lhs.getContinualInterval(dim) ==
-            AxisInfoEx::kDefaultContinualInterval ||
+        AxisInfoEx::kDefaultContinualInterval ||
         rhs.getContinualInterval(dim) == AxisInfoEx::kDefaultContinualInterval)
       return AxisInfoEx::kDefaultContinualInterval;
 
@@ -487,7 +501,8 @@ public:
         constantValue = {lhs.getConstantValue().value() /
                          rhs.getConstantValue().value()};
         divisibility.push_back(highestPowOf2Divisor(constantValue.value()));
-      } else if (!lhs.isConstantDim(shape, i) && lhs.isContinualDim(shape, i) &&
+      } else if (!lhs.isConstantDim(shape, i) &&
+                 lhs.isContinualDim(shape, i) &&
                  rhs.isConstantDim(shape, i) &&
                  rhs.getConstantValue().has_value() &&
                  llvm::isPowerOf2_64(lhs.getContinualInterval(i))) {
@@ -506,20 +521,21 @@ public:
         bool isContinual =
             lhs.getContinualInterval(i) % rhs.getConstantValue().value() == 0;
         int64_t newContinualSize =
-            isContinual ? lhs.getContinualSize(i)
-                        : std::max<int64_t>(
-                              divisibilityGCD / lhs.getContinualInterval(i), 1);
+            isContinual
+                ? lhs.getContinualSize(i)
+                : std::max<int64_t>(
+                  divisibilityGCD / lhs.getContinualInterval(i), 1);
         continualSize.push_back(gcd(lhs.getContinualSize(i), newContinualSize));
         continualInterval.push_back(lhs.getContinualInterval(i) /
-                                    rhs.getConstantValue().value());
+                              rhs.getConstantValue().value());
         divisibility.push_back(std::max<int64_t>(
             lhs.getDivisibility(i) / rhs.getConstantValue().value(), 1));
       } else if (lhs.isStridedConstantDim(shape, i) &&
                  rhs.getConstantValue().has_value()) {
         divisibility.push_back(std::max<int64_t>(
             lhs.getDivisibility(i) / rhs.getConstantValue().value(), 1));
-        continualSize.push_back(
-            gcd(lhs.getContinualSize(i), rhs.getContinualSize(i)));
+        continualSize.push_back(gcd(lhs.getContinualSize(i),
+                                         rhs.getContinualSize(i)));
         continualInterval.push_back(0);
       } else {
         divisibility.push_back(AxisInfoEx::kInitDivisibility);
@@ -528,7 +544,7 @@ public:
       }
     }
     return AxisInfoEx(divisibility, continualSize, continualInterval,
-                      constantValue);
+                    constantValue);
   }
 };
 
@@ -576,7 +592,7 @@ public:
         // lhs = gcd(d_lhs, d_rhs) * k'' = gcd(d_lhs, d_rhs) * d + r
         // r must be divisible by gcd(d_lhs, d_rhs)
         divisibility.push_back(
-            gcd(lhs.getDivisibility(i), rhs.getDivisibility(i)));
+                      gcd(lhs.getDivisibility(i), rhs.getDivisibility(i)));
 
         // lhs: d_lhs * k, d_lhs * k + 1, ..., d_lhs * k + n
         // rhs: d_rhs * p, d_rhs * p, ..., d_rhs * p
@@ -586,20 +602,19 @@ public:
         // The minimal contiguity is gcd(d_lhs, d_rhs).
         // Since gcd(d_lhs, d_rhs) maybe > len(lhs),
         // we need to use another gcd to get the actual contiguity.
-        continualSize.push_back(
-            gcd(lhs.getContiguity(i),
-                gcd(lhs.getDivisibility(i), rhs.getDivisibility(i))));
+        continualSize.push_back(gcd(lhs.getContiguity(i),
+                     gcd(lhs.getDivisibility(i), rhs.getDivisibility(i))));
         continualInterval.push_back(1);
       } else if (lhs.isStridedContinualDim(shape, i) &&
                  rhs.getConstantValue().has_value()) {
         // Case4: lhs strided contiguous, rhs constant value.
         divisibility.push_back(
-            gcd(lhs.getDivisibility(i), rhs.getDivisibility(i)));
+           gcd(lhs.getDivisibility(i), rhs.getDivisibility(i)));
         continualSize.push_back(
-            gcd(lhs.getContiguity(i),
-                gcd(lhs.getDivisibility(i), rhs.getDivisibility(i))));
+           gcd(lhs.getContiguity(i),
+                     gcd(lhs.getDivisibility(i), rhs.getDivisibility(i))));
         continualInterval.push_back(lhs.getContinualInterval(i) %
-                                    rhs.getConstantValue().value());
+                              rhs.getConstantValue().value());
       } else if (lhs.isStridedConstantDim(shape, i) &&
                  rhs.getConstantValue().has_value()) {
         // Case5: lhs strided constant, rhs constant value.
@@ -615,7 +630,7 @@ public:
     }
 
     return AxisInfoEx(divisibility, continualSize, continualInterval,
-                      constantValue);
+                  constantValue);
   }
 };
 
@@ -682,14 +697,16 @@ public:
     AxisInfoEx::DimVectorT continualInterval = opInfo.getContinualInterval();
 
     ArrayRef<int64_t> srcShape = op.getSrc().getType().getShape();
-    int64_t expandedDim = std::max(static_cast<int32_t>(op.getAxis()) - 1, 0);
-    int64_t expandedDivisibility = opInfo.isConstantDim(srcShape, expandedDim)
-                                       ? divisibility[expandedDim]
-                                       : AxisInfoEx::kInitDivisibility;
+    int64_t expandedDim =
+        std::max(static_cast<int32_t>(op.getAxis()) - 1, 0);
+    int64_t expandedDivisibility =
+        opInfo.isConstantDim(srcShape, expandedDim)
+            ? divisibility[expandedDim]
+            : AxisInfoEx::kInitDivisibility;
     divisibility.insert(divisibility.begin() + op.getAxis(),
                         expandedDivisibility);
     continualSize.insert(continualSize.begin() + op.getAxis(),
-                         AxisInfoEx::kDefaultContinueSize);
+                  AxisInfoEx::kDefaultContinueSize);
     continualInterval.insert(continualInterval.begin() + op.getAxis(), 0);
     return AxisInfoEx(divisibility, continualSize, continualInterval,
                       opInfo.getConstantValue());
@@ -715,9 +732,9 @@ public:
     for (int i = 0; i < retTy.getRank(); ++i) {
       divisibility.push_back(opInfo.getDivisibility(i));
       continualSize.push_back(opShape[i] == 1 ? retShape[i]
-                                              : opInfo.getContinualSize(i));
-      continualInterval.push_back(
-          opShape[i] == 1 ? 0 : opInfo.getContinualInterval(i));
+                                        : opInfo.getContinualSize(i));
+      continualInterval.push_back(opShape[i] == 1 ? 0
+                                        : opInfo.getContinualInterval(i));
     }
     return AxisInfoEx(divisibility, continualSize, continualInterval,
                       opInfo.getConstantValue());
@@ -769,16 +786,15 @@ public:
       if (lhsInfo.getConstantValue().has_value() &&
           rhsInfo.getConstantValue().has_value()) {
         constancyHint = lhsInfo.getConstancy(d);
-        constantValue =
-            compare(getPredicate(op), lhsInfo.getConstantValue().value(),
-                    rhsInfo.getConstantValue().value())
-                ? 1
-                : 0;
+        constantValue = compare(getPredicate(op),
+                                lhsInfo.getConstantValue().value(),
+                                rhsInfo.getConstantValue().value()) ? 1 : 0;
         continualIntervalHint = 0;
       } else if (gtPredicate(getPredicate(op)) ||
-                 ltPredicate(getPredicate(op))) {
+                  ltPredicate(getPredicate(op))) {
         // Lhs and rhs are both partial constants.
-        constancyHint = gcd(lhsInfo.getConstancy(d), rhsInfo.getConstancy(d));
+        constancyHint =
+            gcd(lhsInfo.getConstancy(d), rhsInfo.getConstancy(d));
         auto commonDivisor =
             gcd(lhsInfo.getDivisibility(d), rhsInfo.getDivisibility(d));
         if (lhsInfo.isConstantDim(shape, d) &&
@@ -938,9 +954,8 @@ public:
       OpTy /*op*/,
       ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
     assert((std::is_same_v<OpTy, arith::AndIOp> ||
-            std::is_same_v<OpTy, arith::OrIOp> ||
-            std::is_same_v<OpTy, arith::XOrIOp>) &&
-           "LogicalOp not support");
+           std::is_same_v<OpTy, arith::OrIOp> ||
+           std::is_same_v<OpTy, arith::XOrIOp>) && "LogicalOp not support");
     auto lhsInfo = operands[0]->getValue();
     auto rhsInfo = operands[1]->getValue();
     auto rank = lhsInfo.getRank();
@@ -951,21 +966,21 @@ public:
           rhsInfo.getConstantValue().has_value()) {
         if constexpr (std::is_same_v<OpTy, arith::AndIOp>) {
           constantValue = {lhsInfo.getConstantValue().value() &
-                           rhsInfo.getConstantValue().value()};
+                            rhsInfo.getConstantValue().value()};
         } else if constexpr (std::is_same_v<OpTy, arith::OrIOp>) {
           constantValue = {lhsInfo.getConstantValue().value() |
-                           rhsInfo.getConstantValue().value()};
+                            rhsInfo.getConstantValue().value()};
         } else if constexpr (std::is_same_v<OpTy, arith::XOrIOp>) {
           constantValue = {lhsInfo.getConstantValue().value() ^
-                           rhsInfo.getConstantValue().value()};
+                            rhsInfo.getConstantValue().value()};
         }
       }
       if (lhsInfo.getContinualInterval(d) == 0 &&
           rhsInfo.getContinualInterval(d) == 0) {
         divisibility.push_back(
             gcd(lhsInfo.getDivisibility(d), rhsInfo.getDivisibility(d)));
-        continualSize.push_back(
-            gcd(lhsInfo.getContinualSize(d), rhsInfo.getContinualSize(d)));
+        continualSize.push_back(gcd(lhsInfo.getContinualSize(d),
+                                    rhsInfo.getContinualSize(d)));
         continualInterval.push_back(0);
         continue;
       }
@@ -1001,23 +1016,23 @@ private:
   }
 
   int64_t getContinualSize(arith::ShLIOp op, const AxisInfoEx &lhs,
-                           const AxisInfoEx &rhs, int dim) override {
+                        const AxisInfoEx &rhs, int dim) override {
     int64_t dimContinueSize = AxisInfoEx::kDefaultContinueSize;
-    if (rhs.getConstantValue().has_value())
-      dimContinueSize = lhs.getContiguity(dim);
+      if (rhs.getConstantValue().has_value())
+        dimContinueSize = lhs.getContiguity(dim);
     return dimContinueSize;
   }
 
   int64_t getContinualInterval(arith::ShLIOp op, const AxisInfoEx &lhs,
-                               const AxisInfoEx &rhs, int dim) override {
+                       const AxisInfoEx &rhs, int dim) override {
     int64_t dimContinualInterval = AxisInfoEx::kDefaultContinualInterval;
     if (rhs.getConstantValue().has_value()) {
       auto shift = rhs.getConstantValue().value();
       auto numBits = log2Int(shift);
       auto maxBits = log2Int(highestPowOf2Divisor<int64_t>(0));
       if (shift + numBits <= maxBits)
-        dimContinualInterval = lhs.getContinualInterval(dim)
-                               << rhs.getConstantValue().value();
+        dimContinualInterval =
+          lhs.getContinualInterval(dim) << rhs.getConstantValue().value();
     }
     return dimContinualInterval;
   }
@@ -1109,8 +1124,7 @@ public:
         }
       } else {
         assert((std::is_same_v<OpTy, arith::MinSIOp> ||
-                std::is_same_v<OpTy, arith::MinUIOp>) &&
-               "MaxMinOp not support");
+               std::is_same_v<OpTy, arith::MinUIOp>) && "MaxMinOp not support");
         if (lhsInfo.getConstantValue().has_value() &&
             rhsInfo.getConstantValue().has_value()) {
           constantValue = {std::min(lhsInfo.getConstantValue().value(),
@@ -1203,8 +1217,8 @@ AxisInfoExAnalysis::AxisInfoExAnalysis(DataFlowSolver &solver)
   visitors.append<LoadOpAxisInfoExVisitor>();
 
 #ifdef ENABLE_TRITON_DISTRIBUTED
-  visitors.append<
-      BarrierOpAxisInfoExVisitor<triton::distributed::ConsumeTokenOp>>();
+  visitors
+      .append<BarrierOpAxisInfoExVisitor<triton::distributed::ConsumeTokenOp>>();
   visitors.append<CastOpAxisInfoExVisitor<triton::distributed::SymmAtOp>>();
 #endif
 }
@@ -1270,8 +1284,8 @@ void AxisInfoExAnalysis::visitForOpInductionVar(
   AxisInfoEx::DimVectorT knownDivisibility(rank, divValue);
   AxisInfoEx::DimVectorT knowContinualSize(rank,
                                            AxisInfoEx::kDefaultContinueSize);
-  AxisInfoEx::DimVectorT knowContinualInterval(
-      rank, AxisInfoEx::kDefaultContinualInterval);
+  AxisInfoEx::DimVectorT knowContinualInterval(rank,
+                                      AxisInfoEx::kDefaultContinualInterval);
   auto inductionVar =
       AxisInfoEx(knownDivisibility, knowContinualSize, knowContinualInterval);
   (void)argLattices[0]->join(inductionVar);

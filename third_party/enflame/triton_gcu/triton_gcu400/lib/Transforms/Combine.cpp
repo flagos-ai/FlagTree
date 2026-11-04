@@ -419,10 +419,16 @@ public:
       return failure();
     }
     auto rhs = op.getRhs();
-    auto lhs = op.getLhs();
+    auto addOp = dyn_cast_or_null<arith::AddFOp>(rhs.getDefiningOp());
+    if (!addOp) {
+      return failure();
+    }
+
+    rhs = addOp.getRhs();
+    auto lhs = addOp.getLhs();
 
     Attribute attr;
-    if (!lhs.getDefiningOp() || !matchPattern(lhs, m_Constant(&attr))) {
+    if (!rhs.getDefiningOp() || !matchPattern(rhs, m_Constant(&attr))) {
       return failure();
     }
 
@@ -433,29 +439,10 @@ public:
       return failure();
     }
 
-    auto addOp = dyn_cast_or_null<arith::AddFOp>(rhs.getDefiningOp());
-    if (!addOp) {
-      return failure();
-    }
-
-    rhs = addOp.getRhs();
-    lhs = addOp.getLhs();
-
-    if (!rhs.getDefiningOp() || !matchPattern(rhs, m_Constant(&attr))) {
-      return failure();
-    }
-
-    elementAttr = dyn_cast<DenseElementsAttr>(attr);
-    if (!elementAttr || !elementAttr.isSplat() ||
-        !elementAttr.getElementType().isF32() ||
-        elementAttr.getSplatValue<float>() != 1.0) {
-      return failure();
-    }
-
     auto defOp = lhs.getDefiningOp();
     if (!defOp || !(isa<math::ExpOp>(defOp) || [](auto op) {
           auto o = dyn_cast<triton::ExternElementwiseOp>(op);
-          return o && o.getSymbol() == "__nv_expf";
+          return o && o.getSymbol() == "__ef_expf";
         }(defOp))) {
       return failure();
     }
@@ -486,7 +473,8 @@ public:
         /*libpath*/ rewriter.getStringAttr(""),
         /*symbol*/ rewriter.getStringAttr("__gcu_sigmoid"),
         /*pure*/ rewriter.getBoolAttr(true));
-    rewriter.replaceOp(op, sigmoidOp);
+    rewriter.replaceOpWithNewOp<arith::MulFOp>(op, op.getLhs(),
+                                               sigmoidOp.getResult());
     return success();
   }
 };
@@ -503,7 +491,7 @@ public:
   matchAndRewrite(Op op, mlir::PatternRewriter &rewriter) const override {
     if constexpr (std::is_same_v<Op, triton::ExternElementwiseOp>) {
       auto o = cast<triton::ExternElementwiseOp>(op);
-      if (o.getSymbol() != "__nv_logf") {
+      if (o.getSymbol() != "__ef_logf") {
         return failure();
       }
     }
@@ -524,7 +512,7 @@ public:
     auto defOp = lhs.getDefiningOp();
     if (!defOp || !(isa<math::ExpOp>(defOp) || [](auto op) {
           auto o = dyn_cast<triton::ExternElementwiseOp>(op);
-          return o && o.getSymbol() == "__nv_expf";
+          return o && o.getSymbol() == "__ef_expf";
         }(defOp))) {
       return failure();
     }

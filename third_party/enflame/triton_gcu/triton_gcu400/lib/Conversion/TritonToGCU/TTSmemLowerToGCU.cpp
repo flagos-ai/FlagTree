@@ -17,17 +17,18 @@
 #include <functional>
 #include <map>
 #include <numeric>
+#include <utility>
 
 #include "Analysis/FirstLastUserAnalysis.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "Utility.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
-#include "Dialect/GCUWS/IR/Dialect.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
-#include "Utility.h"
+#include "Dialect/GCUWS/IR/Dialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -71,15 +72,26 @@ struct TTSmemLocalAllocOpLowering
         IntegerAttr::get(IntegerType::get(alloc.getContext(), 64),
                          /*addressSpace=*/2));
 
-    auto output = rewriter.create<memref::AllocOp>(alloc.getLoc(), memrefType);
-
-    if (auto clusterAttr =
-            alloc->getAttrOfType<BoolAttr>("ttg.local_alloc.mesh_share")) {
-      output->setAttr("ttg.local_alloc.mesh_share", clusterAttr);
+    Value output;
+    auto waspAllocAttr = alloc->getAttrOfType<BoolAttr>("ttg.WASP_alloc");
+    if (waspAllocAttr && waspAllocAttr.getValue()) {
+      output = rewriter.create<memref::AllocOp>(alloc.getLoc(), memrefType);
+    } else {
+      auto loc = alloc.getLoc();
+      auto lastUser =
+          userAnalysis.getLastUser(alloc.getOperation()->getResults()[0]);
+      output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                           replaced2Origin, memrefType);
     }
-    if (auto axisAttr =
-            alloc->getAttrOfType<StringAttr>("ttg.local_alloc.mesh_axis")) {
-      output->setAttr("ttg.local_alloc.mesh_axis", axisAttr);
+    if (Operation *defOp = output.getDefiningOp()) {
+      if (auto meshShareAttr =
+              alloc->getAttrOfType<BoolAttr>("ttg.local_alloc.mesh_share")) {
+        defOp->setAttr("ttg.local_alloc.mesh_share", meshShareAttr);
+      }
+      if (auto meshAxisAttr =
+              alloc->getAttrOfType<StringAttr>("ttg.local_alloc.mesh_axis")) {
+        defOp->setAttr("ttg.local_alloc.mesh_axis", meshAxisAttr);
+      }
     }
 
     leaveTritionOp(rewriter, alloc.getOperation());
@@ -87,6 +99,89 @@ struct TTSmemLocalAllocOpLowering
     return success();
   }
 };
+
+/// Write-back counterpart of stageViewToContiguous: copy a contiguous
+/// buffer into a non-contiguous strided memref view (e.g. a 2D sub-tile or
+/// a transposed view) with plain strided memref.store by the master
+/// thread. Used by TTLocalStoreOpLowering when the store destination is a
+/// non-contiguous MemDesc view, which the DTE DesliceStart path cannot
+/// describe (DTE assumes a contiguous destination).
+/// TODO(haizhu.shao): optimize the implementation.
+static LogicalResult storeContiguousToView(PatternRewriter &rewriter,
+                                           Location loc, Value contiguous,
+                                           Value view) {
+  auto srcTy = dyn_cast<MemRefType>(contiguous.getType());
+  auto dstTy = dyn_cast<MemRefType>(view.getType());
+  if (!srcTy || !dstTy || !srcTy.hasStaticShape() ||
+      srcTy.getShape() != dstTy.getShape())
+    return failure();
+
+  int64_t rank = dstTy.getRank();
+  int64_t total = dstTy.getNumElements();
+  if (total <= 0)
+    return failure();
+
+  auto masterWarpId = getMasterThreadId(view.getParentRegion());
+  auto isMasterThread = rewriter.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::eq,
+      rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+      rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+
+  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto totalIdx = rewriter.create<arith::ConstantIndexOp>(loc, total);
+  auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+  rewriter.create<scf::IfOp>(
+      loc, isMasterThread, [&](OpBuilder &b, Location l) {
+        auto loop = b.create<scf::ForOp>(l, zero, totalIdx, one);
+        {
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointToStart(loop.getBody());
+          Value flat = loop.getInductionVar();
+          // Delinearize flat into per-dim coordinates.
+          SmallVector<Value> coords;
+          Value rem = flat;
+          for (int64_t d = rank - 1; d >= 0; --d) {
+            auto dimCst =
+                b.create<arith::ConstantIndexOp>(l, dstTy.getShape()[d]);
+            coords.push_back(b.create<arith::RemSIOp>(l, rem, dimCst));
+            rem = b.create<arith::DivSIOp>(l, rem, dimCst);
+          }
+          std::reverse(coords.begin(), coords.end());
+          Value v = b.create<memref::LoadOp>(l, contiguous, coords);
+          b.create<memref::StoreOp>(l, v, view, coords);
+          // scf::ForOp::build already inserted the
+          // body terminator; nothing else to add.
+        }
+        b.create<scf::YieldOp>(l);
+      });
+
+  // Make the stored data visible to all threads.
+  rewriter.create<gpu::BarrierOp>(loc);
+  return success();
+}
+
+/// Common handling for a MemDesc-typed operand whose (already lowered)
+/// value may be a strided view (from TTMemDescSubslice/TransOpLowering)
+/// wrapped in an UnrealizedConversionCastOp: look through the cast and
+/// return the real value. Returns failure for non-contiguous strided
+/// layouts, which the DTE paths cannot consume (they derive the pointer
+/// via bufferPtr(), honoring the view offset, but never pass strides to
+/// the engine).
+static FailureOr<Value>
+unwrapContiguousMemRef(Value v, ConversionPatternRewriter &rewriter,
+                       Operation *op, const char *what) {
+  Value real = stripUnrealizedConversionCastOp(v);
+  auto ty = dyn_cast<MemRefType>(real.getType());
+  if (!ty)
+    return failure();
+  if (!ty.getLayout().isIdentity() && !isContiguousRowMajor(ty))
+    return rewriter.notifyMatchFailure(
+        op, Twine(what) +
+                ": non-contiguous strided view is not supported on the "
+                "DTE path");
+  return real;
+}
 
 // Lower triton_gcu.copy_global_to_local following the IsShareOutput path
 // from GCULoadOpLowering. The output buffer comes from adaptor.getDstMem()
@@ -106,8 +201,17 @@ struct TTSmemCopyGlobalToLocalOpLowering
     auto loc = loadOp.getLoc();
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
 
-    auto output = adaptor.getDstMem();
-    auto outputType = dyn_cast<MemRefType>(output.getType());
+    // The dst memdesc may be a MemDesc view (subslice/trans) lowered to a
+    // strided memref wrapped in an UnrealizedConversionCastOp. Consume the
+    // real value. A contiguous strided view is passed through: the DTE
+    // destination pointer derives from bufferPtr(), which honors the view
+    // offset. A non-contiguous view cannot be a DTE destination.
+    auto output = unwrapContiguousMemRef(adaptor.getDstMem(), rewriter,
+                                         loadOp.getOperation(),
+                                         "copy_global_to_local dst");
+    if (failed(output))
+      return failure();
+    auto outputType = dyn_cast<MemRefType>(output->getType());
     if (!outputType)
       return failure();
 
@@ -151,10 +255,9 @@ struct TTSmemCopyGlobalToLocalOpLowering
       pTagPool.setMap(firstUse, tag);
     }
 
-    auto defaultValue =
-        loadOp.getDefaultValue()
-            ? adaptor.getDefaultValue()
-            : triton::gcu::createConstantZero(rewriter, loc, elemType);
+    auto defaultValue = loadOp.getDefaultValue()
+        ? adaptor.getDefaultValue()
+        : triton::gcu::createConstantZero(rewriter, loc, elemType);
 
     // Shape check: all shape dims > 0
     Value shapeCheck = rewriter.create<arith::CmpIOp>(
@@ -166,22 +269,20 @@ struct TTSmemCopyGlobalToLocalOpLowering
     }
 
     // ConfigGcuLoad with IsShareOutput = true
-    auto total_size =
-        rewriter
-            .create<scf::IfOp>(
-                loc, shapeCheck,
-                [&](OpBuilder builder, Location loc) {
-                  Value load_size =
-                      ConfigGcuLoad(builder, loc, output, loadOp, outputType,
-                                    adaptor.getPtr(), adaptor.getStrides(),
-                                    adaptor.getShape(), defaultValue, tag,
-                                    /*IsShareOutput=*/true);
-                  builder.create<scf::YieldOp>(loc, ValueRange{load_size});
-                },
-                [&](OpBuilder &builder, Location loc) {
-                  builder.create<scf::YieldOp>(loc, ValueRange{zero});
-                })
-            .getResult(0);
+    auto total_size = rewriter.create<scf::IfOp>(
+        loc, shapeCheck,
+        [&](OpBuilder builder, Location loc) {
+          Value load_size = ConfigGcuLoad(
+              builder, loc, *output,
+              loadOp, outputType, adaptor.getPtr(),
+              adaptor.getStrides(), adaptor.getShape(),
+              defaultValue, tag, /*IsShareOutput=*/true,
+              adaptor.getOffsets());
+          builder.create<scf::YieldOp>(loc, ValueRange{load_size});
+        },
+        [&](OpBuilder &builder, Location loc) {
+          builder.create<scf::YieldOp>(loc, ValueRange{zero});
+        }).getResult(0);
 
     auto ip = rewriter.saveInsertionPoint();
     if (tag.isAsync()) {
@@ -277,36 +378,46 @@ private:
     Type elemType;
     unsigned bpe;
     unsigned VL;
-    unsigned K; // inner dim per warp
-    unsigned M; // outer dim per warp (1 for flat 1D)
+    unsigned K;              // inner dim per warp
+    unsigned M;              // outer dim per warp (1 for flat 1D)
     unsigned totalNumElems;
-    unsigned totalCols; // full smem row width
+    unsigned totalCols;      // full smem row width
     bool isColSplit;
 
     Value flatDst;
     Value warpFlatBase;
-    Value masksPtr;         // nullptr when no mask
-    Value vtOther;          // passthru vector
-    VectorType vtType;      // <VL x elemType>
-    VectorType maskVecType; // <VL x i1>
+    Value masksPtr;          // nullptr when no mask
+    Value vtOther;           // passthru vector
+    VectorType vtType;       // <VL x elemType>
+    VectorType maskVecType;  // <VL x i1>
     Value totalColsVal;
-    Value innerDimVal; // ConstantIndexOp(K)
+    Value innerDimVal;       // ConstantIndexOp(K)
 
     // For vector::GatherOp tail path
-    Value srcFlatI64;      // src ptrs as flat i64 memref
-    Value baseI64;         // first ptr value (i64 scalar)
-    Value baseMemref;      // base dynamic memref for GatherOp
-    Value baseI64Vec;      // broadcast of baseI64 to <VL x i64>
-    Value bpeVec;          // broadcast of bpe to <VL x i64>
-    VectorType i64VecType; // <VL x i64>
-    VectorType i32VecType; // <VL x i32>
-    Value zeroI64Passthru; // <VL x 0_i64>
+    Value srcFlatI64;        // src ptrs as flat i64 memref
+    Value baseI64;           // first ptr value (i64 scalar)
+    Value baseMemref;        // base dynamic memref for GatherOp
+    Value baseI64Vec;        // broadcast of baseI64 to <VL x i64>
+    Value bpeVec;            // broadcast of bpe to <VL x i64>
+    VectorType i64VecType;   // <VL x i64>
+    VectorType i32VecType;   // <VL x i32>
+    Value zeroI64Passthru;   // <VL x 0_i64>
   };
 
   LogicalResult buildContext(ConversionPatternRewriter &rewriter, Location loc,
                              triton::gcu::GatherGlobalToLocalOp gatherOp,
                              OpAdaptor adaptor, G2LEmitContext &ctx) const {
-    auto dstMemref = dyn_cast<MemRefType>(adaptor.getDstMem().getType());
+    // The dst memdesc may be a strided view (MemDesc subslice/trans
+    // lowering) wrapped in an UnrealizedConversionCastOp. Consume the real
+    // value; only identity or contiguous strided destinations can be
+    // written by the gather lowering.
+    auto dst = unwrapContiguousMemRef(adaptor.getDstMem(), rewriter,
+                                      gatherOp.getOperation(),
+                                      "gather_global_to_local dst");
+    if (failed(dst))
+      return failure();
+    Value dstVal = *dst;
+    auto dstMemref = dyn_cast<MemRefType>(dstVal.getType());
     if (!dstMemref)
       return failure();
 
@@ -347,9 +458,21 @@ private:
 
     auto flatType = MemRefType::get({flatTotal}, ctx.elemType, AffineMap{},
                                     dstMemref.getMemorySpace());
+    // Fold the (possibly non-zero) view offset into the flat destination:
+    // reinterpret_cast replaces the source metadata, so passing offset 0
+    // on a strided view source would silently drop the view offset.
+    auto [dstStrides, dstOffset] = dstMemref.getStridesAndOffset();
+    (void)dstStrides;
+    Value flatOffsetVal;
+    if (ShapedType::isDynamic(dstOffset))
+      flatOffsetVal =
+          rewriter.create<gcu::GetMemRefOffsetOp>(loc, dstVal, ValueRange{});
+    else
+      flatOffsetVal = rewriter.create<arith::ConstantIndexOp>(loc, dstOffset);
     ctx.flatDst = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatType, adaptor.getDstMem(), static_cast<int64_t>(0),
-        ArrayRef<int64_t>{flatTotal}, ArrayRef<int64_t>{1LL});
+        loc, flatType, dstVal, flatOffsetVal,
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, flatTotal)},
+        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 1)});
 
     // Compute the base address in flattened local memory for each warp.
     //
@@ -637,9 +760,9 @@ private:
     // Pre-compute per-unroll-slot row and column offsets at compile time
     // to avoid DivSI/RemSI inside the loop.
     struct SlotInfo {
-      unsigned rowDelta;  // row offset from loop base row
-      unsigned colOffset; // column offset within the row
-      bool isTail;        // whether this slot is a tail chunk
+      unsigned rowDelta;   // row offset from loop base row
+      unsigned colOffset;  // column offset within the row
+      bool isTail;         // whether this slot is a tail chunk
     };
     SmallVector<SlotInfo> slots;
     slots.reserve(totalUnroll);
@@ -907,6 +1030,81 @@ private:
   }
 };
 
+/// Copy a non-contiguous strided memref view into a freshly allocated
+/// contiguous buffer of the same shape. The copy is performed by the master
+/// thread with plain strided memref.load / memref.store (which honor
+/// arbitrary strides), followed by a gpu.barrier so all threads observe the
+/// staged data. This lets the local_load lowering paths (alias view / DTE
+/// slice_start), which both assume a contiguous source, handle MemDesc view
+/// sources such as 2D sub-tiles and transposed views correctly.
+static FailureOr<Value> stageViewToContiguous(
+    PatternRewriter &rewriter, Location loc, Value src,
+    std::pair<Operation *, int> lastUser,
+    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin) {
+  auto srcTy = dyn_cast<MemRefType>(src.getType());
+  if (!srcTy || !srcTy.hasStaticShape())
+    return failure();
+
+  auto elemTy = srcTy.getElementType();
+  int64_t rank = srcTy.getRank();
+  int64_t total = srcTy.getNumElements();
+  if (total <= 0)
+    return failure();
+
+  // Staged buffer: same shape, identity layout, same memory space.
+  auto stagedTy =
+      MemRefType::get(srcTy.getShape(), elemTy, AffineMap{},
+                      srcTy.getMemorySpace());
+  Value staged = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                             replaced2Origin, stagedTy);
+
+  auto masterWarpId = getMasterThreadId(src.getParentRegion());
+  auto isMasterThread = rewriter.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::eq,
+      rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+      rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+
+  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto totalIdx = rewriter.create<arith::ConstantIndexOp>(loc, total);
+  auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+  rewriter.create<scf::IfOp>(loc, isMasterThread,
+                             [&](OpBuilder &b, Location l) {
+                               auto loop = b.create<scf::ForOp>(
+                                   l, zero, totalIdx, one);
+                               {
+                                 OpBuilder::InsertionGuard guard(b);
+                                 b.setInsertionPointToStart(loop.getBody());
+                                 Value flat = loop.getInductionVar();
+                                 // Delinearize flat into per-dim coordinates.
+                                 SmallVector<Value> coords;
+                                 Value rem = flat;
+                                 for (int64_t d = rank - 1; d >= 0; --d) {
+                                   auto dimCst =
+                                       b.create<arith::ConstantIndexOp>(
+                                           l, srcTy.getShape()[d]);
+                                   coords.push_back(b.create<arith::RemSIOp>(
+                                       l, rem, dimCst));
+                                   rem = b.create<arith::DivSIOp>(l, rem,
+                                                                  dimCst);
+                                 }
+                                 std::reverse(coords.begin(), coords.end());
+                                 Value v = b.create<memref::LoadOp>(l, src,
+                                                                    coords);
+                                 b.create<memref::StoreOp>(l, v, staged,
+                                                           coords);
+                                 // scf::ForOp::build already inserted the
+                                 // body terminator; nothing else to add.
+                               }
+                               b.create<scf::YieldOp>(l);
+                             });
+
+  // Make the staged data visible to all threads before the actual load.
+  rewriter.create<gpu::BarrierOp>(loc);
+  return staged;
+}
+
 struct TTLocalLoadOpLowering
     : SharedConversionPattern<triton::gpu::LocalLoadOp> {
   using SharedConversionPattern::SharedConversionPattern;
@@ -935,109 +1133,69 @@ struct TTLocalLoadOpLowering
       pTagPool.setMap(firstUser.first, tag);
     }
     // share to Distributed
-    if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
+    if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
         isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
       auto loc = op.getLoc();
-      auto srcMemRef = dyn_cast<MemRefType>(adaptor.getSrc().getType());
+      Value srcVal = stripUnrealizedConversionCastOp(adaptor.getSrc());
+      auto srcMemRef = dyn_cast<MemRefType>(srcVal.getType());
       if (!srcMemRef)
         return failure();
 
-      auto numElems = triton::gcu::getElemsPerThread(op.getType());
-      unsigned rank = srcMemRef.getRank();
-
-      bool onlyHighestDimSplit = true;
-      for (unsigned i = 1; i < rank; ++i) {
-        if (numElems[i] != srcMemRef.getShape()[i]) {
-          onlyHighestDimSplit = false;
-          break;
-        }
-      }
-      if (!onlyHighestDimSplit) {
-        // Strided per-warp data: fall back to DTE-based load.
-        auto output = loadFromSharedMem(
-            rewriter, tag, op.getResult().getType(), adaptor.getSrc(), false,
-            lastUser, firstUser, userAnalysis, replaced2Origin);
-        leaveTritionOp(rewriter, op.getOperation());
-        rewriter.replaceOp(op, output);
-        return success();
+      if (!srcMemRef.getLayout().isIdentity() &&
+          !isContiguousRowMajor(srcMemRef)) {
+        // Non-contiguous view source (e.g. a 2D sub-tile with a row stride
+        // larger than its width, or a transposed view). Neither the alias
+        // path (memref.view of a contiguous per-warp tile) nor the DTE
+        // fallback (slice_start assumes a contiguous source) can describe
+        // such a layout. Stage the view into a fresh contiguous buffer with
+        // plain strided memref.load/store (which handle arbitrary strides),
+        // then continue on the staged identity source.
+        auto staged = stageViewToContiguous(rewriter, loc, srcVal, lastUser,
+                                            userAnalysis, replaced2Origin);
+        if (failed(staged))
+          return rewriter.notifyMatchFailure(
+              op, "local_load: failed to stage non-contiguous view source");
+        srcVal = *staged;
+        srcMemRef = cast<MemRefType>(srcVal.getType());
       }
 
-      // Blocked layout: pure alias of SMEM, no DTE data movement.
-      // Fold the per-warp offset into the base address, keep offset = 0.
-      // Compute linear per-warp offset in elements:
-      //   offset_elems = sum_i(numElems[i] * warpIds[i] * srcStrides[i])
-      auto warpIds = getWarpIds(rewriter, loc, op.getType());
-      auto [srcStrides, srcOffset] = srcMemRef.getStridesAndOffset();
-      (void)srcOffset;
-      Value offsetElems = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      for (unsigned i = 0; i < rank; ++i) {
-        Value dimOffset = rewriter.create<arith::MulIOp>(
-            loc,
-            rewriter.create<arith::MulIOp>(
-                loc, rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
-                warpIds[i]),
-            rewriter.create<arith::ConstantIndexOp>(loc, srcStrides[i]));
-        offsetElems =
-            rewriter.create<arith::AddIOp>(loc, offsetElems, dimOffset);
-      }
-
-      // Convert element offset to byte offset
-      auto elemType = srcMemRef.getElementType();
-      auto bpe = elemType.getIntOrFloatBitWidth() / 8;
-      Value offsetBytes = rewriter.create<arith::MulIOp>(
-          loc, offsetElems, rewriter.create<arith::ConstantIndexOp>(loc, bpe));
-
-      // Get SMEM base pointer and fold the offset into the base address
-      auto ptrType = gcu::PtrType::get(op.getContext(), elemType);
-      Value basePtr =
-          rewriter.create<gcu::MemRefToPtrOp>(loc, ptrType, adaptor.getSrc());
-      Value baseAddr =
-          rewriter.create<gcu::PtrToIntOp>(loc, rewriter.getI64Type(), basePtr);
-      Value offsetBytesI64 = rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getI64Type(), offsetBytes);
-      Value adjustedAddr =
-          rewriter.create<arith::AddIOp>(loc, baseAddr, offsetBytesI64);
-      Value adjustedPtr =
-          rewriter.create<gcu::IntToPtrOp>(loc, ptrType, adjustedAddr);
-
-      // Wrap pointer into a 1D i8 memref
-      MemRefType memType1D =
-          MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type());
-      auto buffer1D =
-          rewriter.create<gcu::PtrToMemRefOp>(loc, memType1D, adjustedPtr);
-
-      // Change to the result memory space (metadata only, address preserved)
-      auto resultType =
-          cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
-      auto bufferWithSpace = rewriter.create<memref::MemorySpaceCastOp>(
-          loc,
-          MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type(),
-                          AffineMap{}, resultType.getMemorySpace()),
-          buffer1D);
-
-      // Final view with offset 0 (offset already folded into base address)
-      auto output = rewriter.create<memref::ViewOp>(
-          loc, resultType, bufferWithSpace,
-          rewriter.create<arith::ConstantIndexOp>(loc, 0), ValueRange{});
-
+      auto output = loadFromSharedMem(rewriter, tag, op.getResult().getType(),
+                                      srcVal, false, lastUser, firstUser,
+                                      userAnalysis, replaced2Origin, true);
       leaveTritionOp(rewriter, op.getOperation());
       rewriter.replaceOp(op, output);
       return success();
     } else if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
                isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
       auto loc = op.getLoc();
-      auto srcMemRef = dyn_cast<MemRefType>(adaptor.getSrc().getType());
+      Value srcVal = stripUnrealizedConversionCastOp(adaptor.getSrc());
+      auto srcMemRef = dyn_cast<MemRefType>(srcVal.getType());
       if (!srcMemRef)
         return failure();
 
+      // The subview below derives its result strides from the source type;
+      // a non-identity (MemDesc view) source would produce strides that do
+      // not match the converter-provided dot-operand result type. Stage the
+      // view into a contiguous buffer first, then slice as usual.
+      if (!srcMemRef.getLayout().isIdentity()) {
+        auto staged = stageViewToContiguous(rewriter, loc, srcVal, lastUser,
+                                            userAnalysis, replaced2Origin);
+        if (failed(staged))
+          return rewriter.notifyMatchFailure(
+              op, "local_load(dot_operand): failed to stage non-identity "
+                  "source layout");
+        srcVal = *staged;
+      }
+
       auto numElems = triton::gcu::getElemsPerThread(op.getType());
       auto warpIds = getWarpIds(rewriter, loc, op.getType());
-      unsigned rank = srcMemRef.getRank();
+      unsigned rank = cast<MemRefType>(srcVal.getType()).getRank();
 
       SmallVector<OpFoldResult> offsets, sizes, strides;
       for (unsigned i = 0; i < rank; ++i) {
         Value offset = rewriter.create<arith::MulIOp>(
-            loc, rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
+            loc,
+            rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
             warpIds[i]);
         offsets.push_back(offset);
         sizes.push_back(rewriter.getIndexAttr(numElems[i]));
@@ -1047,7 +1205,7 @@ struct TTLocalLoadOpLowering
       auto resultType =
           cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
       auto subview = rewriter.create<memref::SubViewOp>(
-          loc, resultType, adaptor.getSrc(), offsets, sizes, strides);
+          loc, resultType, srcVal, offsets, sizes, strides);
 
       leaveTritionOp(rewriter, op.getOperation());
       rewriter.replaceOp(op, subview.getResult());
@@ -1079,13 +1237,45 @@ struct TTLocalStoreOpLowering
     if (!srcTensorType)
       return failure();
 
-    if (!dyn_cast<MemRefType>(adaptor.getSrc().getType()) ||
-        !dyn_cast<MemRefType>(adaptor.getDst().getType()))
+    if (!dyn_cast<MemRefType>(adaptor.getSrc().getType()))
+      return failure();
+
+    // The dst memdesc may be a MemDesc view (subslice/trans) lowered to a
+    // strided memref wrapped in an UnrealizedConversionCastOp. Consume the
+    // real value: for a contiguous view (e.g. a 1D sub-slice with offset
+    // 0..N) DesliceStart is given the strided descriptor directly - the
+    // DTE destination pointer derives from bufferPtr(), which honors the
+    // view offset. A non-contiguous view (2D sub-tile, transpose) cannot
+    // be a DTE destination: store to a contiguous staging buffer first,
+    // then copy back into the view with strided memref.store.
+    Value dstVal = stripUnrealizedConversionCastOp(adaptor.getDst());
+    auto dstTy = dyn_cast<MemRefType>(dstVal.getType());
+    if (!dstTy)
       return failure();
 
     auto tag = pTagPool.getPrivateSyncTagInfo(op);
 
-    storeToSharedMem(rewriter, tag, srcTensorType, adaptor.getDst(),
+    if (!dstTy.getLayout().isIdentity() && !isContiguousRowMajor(dstTy)) {
+      // Non-contiguous view destination: stage through a contiguous buffer.
+      auto loc = op.getLoc();
+      auto stagedType =
+          MemRefType::get(dstTy.getShape(), dstTy.getElementType(), AffineMap{},
+                          dstTy.getMemorySpace());
+      Value staged = syncAllocOp(rewriter, loc,
+                                 std::make_pair(op.getOperation(), 0),
+                                 userAnalysis, replaced2Origin, stagedType);
+      storeToSharedMem(rewriter, tag, srcTensorType, staged,
+                       adaptor.getSrc(), /*onlyThread0=*/false);
+      if (failed(storeContiguousToView(rewriter, loc, staged, dstVal)))
+        return rewriter.notifyMatchFailure(
+            op, "local_store: failed to write back into the non-contiguous "
+                "view destination");
+      leaveTritionOp(rewriter, op.getOperation());
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    storeToSharedMem(rewriter, tag, srcTensorType, dstVal,
                      adaptor.getSrc(), /*onlyThread0=*/false);
 
     leaveTritionOp(rewriter, op.getOperation());
@@ -1105,17 +1295,14 @@ struct MemDescToPtrOpLowering
   LogicalResult
   matchAndRewrite(triton::gcu::MemDescToPtrOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto srcMemRef = dyn_cast<MemRefType>(adaptor.getSrc().getType());
+    Value srcVal = stripUnrealizedConversionCastOp(adaptor.getSrc());
+    auto srcMemRef = dyn_cast<MemRefType>(srcVal.getType());
     if (!srcMemRef)
       return failure();
 
-    auto elemType = srcMemRef.getElementType();
-    auto gcuPtrTy = mlir::gcu::PtrType::get(op.getContext(), elemType);
-    auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(loc, gcuPtrTy,
-                                                         adaptor.getSrc());
+    auto ptr = getMemRefBasePtr(rewriter, srcVal);
 
-    rewriter.replaceOp(op, ptr.getResult());
+    rewriter.replaceOp(op, ptr);
     return success();
   }
 };
@@ -1236,7 +1423,7 @@ emitSliceFromSmem(OpBuilder &rewriter, Location loc, Value smemBuf,
                   MemRefType outputType,
                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
                   std::map<Operation *, Operation *> &replaced2Origin,
-                  triton::gcu::PrivateTagPool &pTagPool, Operation *op) {
+                  triton::gcu::DTETagPool &pTagPool, Operation *op) {
   auto elemOffsets =
       computeElemOffsets(rewriter, loc, convertedIndex, srcShape, tileShape);
   auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
@@ -1268,7 +1455,7 @@ emitDesliceToSmem(OpBuilder &rewriter, Location loc, Value smemBuf,
                   RankedTensorType resultTensorTy,
                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
                   std::map<Operation *, Operation *> &replaced2Origin,
-                  triton::gcu::PrivateTagPool &pTagPool, Operation *op) {
+                  triton::gcu::DTETagPool &pTagPool, Operation *op) {
   auto elemOffsets =
       computeElemOffsets(rewriter, loc, convertedIndex, srcShape, tileShape);
   auto firstUser = userAnalysis.getFirstUser(op->getResults()[0]);
@@ -1311,7 +1498,7 @@ struct TleExtractTileLowering : SharedGenericConversionPattern {
   TleExtractTileLowering(const TypeConverter &converter, MLIRContext *ctx,
                          triton::gcu::FirstLastUserAnalysis &userAnalysis,
                          std::map<Operation *, Operation *> &replaced2Origin,
-                         triton::gcu::PrivateTagPool &pTagPool)
+                         triton::gcu::DTETagPool &pTagPool)
       : SharedGenericConversionPattern("tle.extract_tile", converter, ctx,
                                        userAnalysis, replaced2Origin,
                                        pTagPool) {}
@@ -1405,7 +1592,7 @@ struct TleInsertTileLowering : SharedGenericConversionPattern {
   TleInsertTileLowering(const TypeConverter &converter, MLIRContext *ctx,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
                         std::map<Operation *, Operation *> &replaced2Origin,
-                        triton::gcu::PrivateTagPool &pTagPool)
+                        triton::gcu::DTETagPool &pTagPool)
       : SharedGenericConversionPattern("tle.insert_tile", converter, ctx,
                                        userAnalysis, replaced2Origin,
                                        pTagPool) {}
@@ -1446,8 +1633,8 @@ struct TleInsertTileLowering : SharedGenericConversionPattern {
     auto srcShape = srcTensorTy.getShape();
 
     if (!triton::gcu::needsSmemRelay(srcTensorTy, tileShape)) {
-      auto outputType =
-          dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
+      auto outputType = dyn_cast<MemRefType>(
+          getTypeConverter()->convertType(resultTensorTy));
       auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
       auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                 replaced2Origin, outputType);
@@ -1532,7 +1719,8 @@ struct SliceFromLocalOpLowering
         dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
 
     auto output = emitSliceFromSmem(
-        rewriter, op.getLoc(), adaptor.getSrc(), adaptor.getIndex(),
+        rewriter, op.getLoc(),
+        stripUnrealizedConversionCastOp(adaptor.getSrc()), adaptor.getIndex(),
         op.getSrc().getType().getShape(), op.getTileShape(), resultTensorTy,
         outputType, userAnalysis, replaced2Origin, pTagPool, op);
 
@@ -1563,7 +1751,8 @@ struct DesliceToLocalOpLowering
     auto resultTensorTy = cast<RankedTensorType>(op.getResult().getType());
 
     auto output = emitDesliceToSmem(
-        rewriter, op.getLoc(), adaptor.getSrc(), adaptor.getTile(),
+        rewriter, op.getLoc(),
+        stripUnrealizedConversionCastOp(adaptor.getSrc()), adaptor.getTile(),
         adaptor.getIndex(), op.getSrc().getType().getShape(), op.getTileShape(),
         tileTensorTy, resultTensorTy, userAnalysis, replaced2Origin, pTagPool,
         op);
@@ -1587,9 +1776,15 @@ struct TTMemDescIndexOpLowering
     }
     auto resultType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
+    if (!resultType)
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert MemDescIndexOp result to MemRefType");
     auto loc = op.getLoc();
-    auto src = adaptor.getSrc();
+    auto src = stripUnrealizedConversionCastOp(adaptor.getSrc());
     auto sourceType = dyn_cast<MemRefType>(src.getType());
+    if (!sourceType)
+      return rewriter.notifyMatchFailure(
+          op, "MemDescIndexOp source is not a MemRefType");
     auto [strides, offset] = sourceType.getStridesAndOffset();
     (void)offset;
 
@@ -1602,23 +1797,12 @@ struct TTMemDescIndexOpLowering
 
     auto elemType = resultType.getElementType();
     auto bpe = elemType.getIntOrFloatBitWidth() / 8;
-    auto elementType = resultType.getElementType();
 
-    int64_t size = 1;
-    for (int i = 0; i < sourceType.getRank(); i++) {
-      size *= sourceType.getShape()[i];
-    }
-
-    MemRefType flatType = MemRefType::get({size}, elementType, AffineMap{},
-                                          resultType.getMemorySpace());
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value flatBuffer = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatType, src, zero,
-        ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, size)},
-        ValueRange{one});
-    auto ptrType = gcu::PtrType::get(getContext(), elementType);
-    Value ptr = rewriter.create<gcu::MemRefToPtrOp>(loc, ptrType, flatBuffer);
+    // Base pointer of the view's element 0: for a strided view source this
+    // folds the view offset into the root allocation pointer (getMemRefBasePtr);
+    // for an identity source it is the plain memref2ptr. The per-index
+    // byte offset is added below via the ViewOp offset.
+    Value ptr = getMemRefBasePtr(rewriter, src);
     MemRefType memType1D =
         MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type());
     auto buffer1D = rewriter.create<gcu::PtrToMemRefOp>(loc, memType1D, ptr);
@@ -1642,21 +1826,280 @@ struct TTMemDescIndexOpLowering
   }
 };
 
+/// Convert an operation's result type through the type converter, failing
+/// explicitly when the result is not a MemRefType (instead of
+/// dereferencing a null type further down).
+static FailureOr<MemRefType> convertResultToMemRef(const TypeConverter &tc,
+                                                   Operation *op) {
+  auto ty = dyn_cast<MemRefType>(tc.convertType(op->getResult(0).getType()));
+  if (!ty)
+    return failure();
+  return ty;
+}
+
+struct TTMemDescSubsliceOpLowering
+    : SharedConversionPattern<triton::gpu::MemDescSubsliceOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::MemDescSubsliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation())) {
+      pTagPool.releaseMap(op.getOperation());
+    }
+    auto resultType = convertResultToMemRef(*getTypeConverter(), op);
+    if (failed(resultType))
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert MemDescSubsliceOp result to MemRefType");
+    auto loc = op.getLoc();
+    auto src = stripUnrealizedConversionCastOp(adaptor.getSrc());
+
+    auto opOffsets = op.getOffsets();
+    auto rank = opOffsets.size();
+    auto resultShape = resultType->getShape();
+
+    auto sourceType = dyn_cast<MemRefType>(src.getType());
+    if (!sourceType)
+      return rewriter.notifyMatchFailure(
+          op, "MemDescSubsliceOp source is not a MemRefType");
+    auto [srcStrides, srcOffset] = sourceType.getStridesAndOffset();
+    if (ShapedType::isDynamic(srcOffset))
+      return rewriter.notifyMatchFailure(
+          op, "MemDescSubsliceOp source has a dynamic offset");
+    SmallVector<int64_t> srcStrideVec(srcStrides.begin(), srcStrides.end());
+    for (int64_t stride : srcStrideVec)
+      if (ShapedType::isDynamic(stride))
+        return rewriter.notifyMatchFailure(
+            op, "MemDescSubsliceOp source has a dynamic stride");
+    // Compute the flat element offset for the StridedLayoutAttr.
+    // SubViewOp verifier requires the result type's offset to match
+    // the actual offset derived from the offsets operand (relative to the
+    // source view's base, so the source view's own offset is included).
+    int64_t flatOffset = srcOffset;
+    for (unsigned i = 0; i < rank; ++i)
+      flatOffset += opOffsets[i] * srcStrides[i];
+    auto stridedLayout =
+        StridedLayoutAttr::get(rewriter.getContext(), flatOffset, srcStrideVec);
+    auto stridedResultTy =
+        MemRefType::get(resultShape, resultType->getElementType(),
+                        stridedLayout, resultType->getMemorySpace());
+
+    SmallVector<OpFoldResult> offsets, sizes, strides;
+    for (unsigned i = 0; i < rank; ++i) {
+      offsets.push_back(rewriter.getIndexAttr(opOffsets[i]));
+      sizes.push_back(rewriter.getIndexAttr(resultShape[i]));
+      strides.push_back(rewriter.getIndexAttr(1));
+    }
+
+    auto subview = rewriter.create<memref::SubViewOp>(loc, stridedResultTy, src,
+                                                      offsets, sizes, strides);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.replaceOp(op, subview.getResult());
+    return success();
+  }
+};
+
+struct TTMemDescTransOpLowering
+    : SharedConversionPattern<triton::gpu::MemDescTransOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::MemDescTransOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation())) {
+      pTagPool.releaseMap(op.getOperation());
+    }
+    auto resultType = convertResultToMemRef(*getTypeConverter(), op);
+    if (failed(resultType))
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert MemDescTransOp result to MemRefType");
+    auto loc = op.getLoc();
+    auto src = stripUnrealizedConversionCastOp(adaptor.getSrc());
+
+    auto resultShape = resultType->getShape();
+    auto rank = static_cast<int64_t>(resultType->getRank());
+    auto order = op.getOrder();
+
+    // Build a strided result MemRefType with permuted source strides.
+    // The type converter's identity AffineMap{} cannot hold non-row-major
+    // strides, so we construct StridedLayoutAttr manually with
+    // srcStrides[order[i]].
+    auto sourceType = dyn_cast<MemRefType>(src.getType());
+    if (!sourceType)
+      return rewriter.notifyMatchFailure(
+          op, "MemDescTransOp source is not a MemRefType");
+    auto [srcStrides, srcOffset] = sourceType.getStridesAndOffset();
+    if (ShapedType::isDynamic(srcOffset))
+      return rewriter.notifyMatchFailure(
+          op, "MemDescTransOp source has a dynamic offset");
+    SmallVector<int64_t> transStrides(rank);
+    for (int64_t i = 0; i < rank; ++i) {
+      if (ShapedType::isDynamic(srcStrides[order[i]]))
+        return rewriter.notifyMatchFailure(
+            op, "MemDescTransOp source has a dynamic stride");
+      transStrides[i] = srcStrides[order[i]];
+    }
+    // The transposed view addresses the same base buffer at the source
+    // view's offset (e.g. trans(subslice) keeps the subslice offset).
+    auto stridedLayout =
+        StridedLayoutAttr::get(rewriter.getContext(),
+                               /*offset=*/srcOffset, transStrides);
+    auto stridedResultTy =
+        MemRefType::get(resultShape, resultType->getElementType(),
+                        stridedLayout, resultType->getMemorySpace());
+
+    // Use ReinterpretCastOp (not SubViewOp) because trans permutes
+    // strides, which SubViewOp cannot do (it only slices, preserving
+    // source stride order).
+    auto offset = rewriter.create<arith::ConstantIndexOp>(loc, srcOffset);
+    SmallVector<Value> sizeVals, strideVals;
+    for (int64_t i = 0; i < rank; ++i) {
+      sizeVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, resultShape[i]));
+      strideVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, transStrides[i]));
+    }
+
+    auto output = rewriter.create<memref::ReinterpretCastOp>(
+        loc, stridedResultTy, src, offset, sizeVals, strideVals);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
+
+struct TTMemDescReshapeOpLowering
+    : SharedConversionPattern<triton::gpu::MemDescReshapeOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::MemDescReshapeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation())) {
+      pTagPool.releaseMap(op.getOperation());
+    }
+    auto resultType = convertResultToMemRef(*getTypeConverter(), op);
+    if (failed(resultType))
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert MemDesc view op result to MemRefType");
+    auto loc = op.getLoc();
+    auto src = stripUnrealizedConversionCastOp(adaptor.getSrc());
+
+    auto resultShape = resultType->getShape();
+    auto rank = static_cast<int64_t>(resultType->getRank());
+
+    auto [resultStrides, resultOffset] = resultType->getStridesAndOffset();
+    (void)resultOffset;
+
+    auto sourceType = dyn_cast<MemRefType>(src.getType());
+    if (!sourceType)
+      return rewriter.notifyMatchFailure(
+          op, "MemDescReshapeOp source is not a MemRefType");
+    auto [srcStrides, srcOffset] = sourceType.getStridesAndOffset();
+    (void)srcStrides;
+    if (ShapedType::isDynamic(srcOffset))
+      return rewriter.notifyMatchFailure(
+          op, "MemDescReshapeOp source has a dynamic offset");
+
+    // Carry a non-zero source view offset in a strided result layout: the
+    // identity AffineMap{} cannot express it. The common path (reshape of
+    // the root 1D allocation) has offset 0 and keeps the identity type.
+    MemRefType outputType = *resultType;
+    if (srcOffset != 0)
+      outputType =
+          MemRefType::get(resultShape, resultType->getElementType(),
+                          StridedLayoutAttr::get(rewriter.getContext(),
+                                                 srcOffset, resultStrides),
+                          resultType->getMemorySpace());
+
+    auto offset = rewriter.create<arith::ConstantIndexOp>(loc, srcOffset);
+    SmallVector<Value> sizeVals, strideVals;
+    for (int64_t i = 0; i < rank; i++) {
+      sizeVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, resultShape[i]));
+      strideVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, resultStrides[i]));
+    }
+
+    auto output = rewriter.create<memref::ReinterpretCastOp>(
+        loc, outputType, src, offset, sizeVals, strideVals);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
+
+struct TTMemDescReinterpretOpLowering
+    : SharedConversionPattern<triton::gpu::MemDescReinterpretOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::MemDescReinterpretOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation())) {
+      pTagPool.releaseMap(op.getOperation());
+    }
+    auto resultType = convertResultToMemRef(*getTypeConverter(), op);
+    if (failed(resultType))
+      return rewriter.notifyMatchFailure(
+          op, "failed to convert MemDesc view op result to MemRefType");
+    auto loc = op.getLoc();
+    auto src = adaptor.getSrc();
+
+    auto resultShape = resultType->getShape();
+    auto rank = static_cast<int64_t>(resultType->getRank());
+
+    auto [resultStrides, resultOffset] = resultType->getStridesAndOffset();
+    (void)resultOffset;
+
+    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    SmallVector<Value> sizeVals, strideVals;
+    for (int64_t i = 0; i < rank; i++) {
+      sizeVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, resultShape[i]));
+      strideVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, resultStrides[i]));
+    }
+
+    auto output = rewriter.create<memref::ReinterpretCastOp>(
+        loc, *resultType, src, zero, sizeVals, strideVals);
+
+    leaveTritionOp(rewriter, op.getOperation());
+    rewriter.replaceOp(op, output);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::populateTTSmemOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
-  patterns.add<TTSmemLocalAllocOpLowering, TTSmemCopyGlobalToLocalOpLowering,
-               TTSmemGatherGlobalToLocalOpLowering, TTLocalLoadOpLowering,
-               TTLocalStoreOpLowering, TTMemDescIndexOpLowering,
-               MemDescToPtrOpLowering, SliceFromLocalOpLowering,
+    triton::gcu::DTETagPool &pTagPool) {
+  patterns.add<TTSmemLocalAllocOpLowering,
+               TTSmemCopyGlobalToLocalOpLowering,
+               TTSmemGatherGlobalToLocalOpLowering,
+               TTLocalLoadOpLowering,
+               TTLocalStoreOpLowering,
+               TTMemDescIndexOpLowering,
+               TTMemDescSubsliceOpLowering,
+               TTMemDescTransOpLowering,
+               TTMemDescReshapeOpLowering,
+               TTMemDescReinterpretOpLowering,
+               MemDescToPtrOpLowering,
+               SliceFromLocalOpLowering,
                DesliceToLocalOpLowering>(converter, patterns.getContext(),
-                                         userAnalysis, replaced2Origin,
-                                         pTagPool);
-  patterns.add<TleExtractTileLowering, TleInsertTileLowering>(
-      converter, patterns.getContext(), userAnalysis, replaced2Origin,
-      pTagPool);
+                                          userAnalysis, replaced2Origin,
+                                          pTagPool);
+  patterns.add<TleExtractTileLowering,
+               TleInsertTileLowering>(converter, patterns.getContext(),
+                                       userAnalysis, replaced2Origin, pTagPool);
 }

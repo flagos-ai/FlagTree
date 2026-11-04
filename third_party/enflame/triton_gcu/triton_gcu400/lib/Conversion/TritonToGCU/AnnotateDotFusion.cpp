@@ -74,11 +74,9 @@ static Value traceSourceValue(Value val) {
     if (!defOp || defOp->getNumOperands() == 0)
       return nullptr;
 
-    // if (isa<arith::ConstantOp>(defOp))
-    //  return nullptr;
-
-    // Stop at broadcast: the result type has the full shape we care about.
-    if (isa<triton::BroadcastOp>(defOp))
+    // BroadcastOp: the result type has the full shape we care about.
+    // SelectOp: need to trace two operands at least
+    if (isa<triton::BroadcastOp, arith::SelectOp>(defOp))
       return val;
 
     // Stop at ExternElementwiseOp: recurse through its operands.
@@ -101,11 +99,11 @@ static void collectSourceValues(Value val, SetVector<Value> &sources) {
   // If the traced value is itself produced by another extern_elementwise op,
   // recurse into its operands to flatten the chain.
   if (auto *defOp = tracedVal.getDefiningOp()) {
-    if (isExtOpWithMultiOperandsSymbol(defOp)) {
+    if (isExtOpWithMultiOperandsSymbol(defOp) || isa<arith::SelectOp>(defOp)) {
       for (auto operand : defOp->getOperands()) {
         collectSourceValues(operand, sources);
       }
-      if (defOp->getNumOperands() == 3)
+      if (defOp->getNumOperands() == 3) // The third operand is the result
         return;
     }
   }
@@ -116,10 +114,18 @@ static void collectSourceValues(Value val, SetVector<Value> &sources) {
     sources.insert(tracedVal);
 }
 
+int64_t getOaccReuseMaxNum(Operation *op) {
+  // scalar register is insufficient, especially for movr2oa/movoa2r
+  // need to optimize BroadcastOp lower
+  // int numWarps = mlir::triton::gcu::getNumWarps(op);
+  // return numWarps == 1 ? OACC_MAX_NUM * 2 : OACC_MAX_NUM;
+  return OACC_MAX_NUM;
+}
+
 // Check whether an extern_elementwise op is a mac/mas/imas (multiply-accumulate
 // variant) whose distinct source tensor count is low enough for hardware OACC.
 // Sources are collected recursively through nested extern_elementwise ops.
-static bool exceedOaccLimit(triton::ExternElementwiseOp extOp) {
+static bool exceedOaccReuseLimit(triton::ExternElementwiseOp extOp) {
   if (!isExtOpWithMultiOperandsSymbol(extOp.getSymbol()))
     return false;
 
@@ -133,7 +139,114 @@ static bool exceedOaccLimit(triton::ExternElementwiseOp extOp) {
   auto tensorType = dyn_cast<RankedTensorType>(extOp.getType());
   auto rank = tensorType.getRank();
   auto numElems = triton::gcu::getElemsPerThread(tensorType);
-  return numElems[rank - 2] > OACC_MAX_NUM / numTensorValues;
+  return numElems[rank - 2] >
+         getOaccReuseMaxNum(extOp.getOperation()) / numTensorValues;
+}
+
+// Collect the element types of an elementwise fusion region before conversion
+// (tensor operands/results).  Mirrors FusionRegionInfo::analyze's rules: i1 is
+// only counted when some user is not a broadcast (otherwise it is handled by
+// the alloca path).
+static void collectFusionElementTypes(triton::gcu::ElementwiseFusionRegionOp op,
+                                      unsigned &minBpe, unsigned &maxBpe) {
+  // Keep this set identical to ElementwiseFusionAnalysis (the lowering) so the
+  // admission plan computed here and the plan used by the lowering agree:
+  //   - an i1 input is dropped only when every user is a *last-dim* broadcast;
+  //     dim0 broadcasts and any other i1 use request the vbool data-layout
+  //     conversion, which counts i1 towards the bpe set;
+  //   - i1 results are dropped only while that conversion is not needed.
+  DenseSet<Type> elementTypes;
+  Block *body = op.getBody();
+  bool needCvtVboolDataLayout = false;
+  for (BlockArgument arg : body->getArguments()) {
+    auto ty = dyn_cast<RankedTensorType>(arg.getType());
+    if (!ty)
+      continue;
+    Type elem = ty.getElementType();
+    if (elem.isInteger(1)) {
+      bool lastDimBroadcastOnly =
+          !arg.getUsers().empty() &&
+          llvm::all_of(arg.getUsers(), [](Operation *user) {
+            auto bcast = dyn_cast<triton::BroadcastOp>(user);
+            if (!bcast)
+              return false;
+            auto srcTy = bcast.getSrc().getType();
+            auto resTy = bcast.getType();
+            for (int i = 0; i < srcTy.getRank(); ++i)
+              if (srcTy.getDimSize(i) != resTy.getDimSize(i))
+                return i == srcTy.getRank() - 1;
+            return false;
+          });
+      if (lastDimBroadcastOnly)
+        continue;
+      needCvtVboolDataLayout = true;
+    }
+    elementTypes.insert(elem);
+  }
+  for (Value result : op.getResults()) {
+    if (auto ty = dyn_cast<RankedTensorType>(result.getType())) {
+      if (ty.getElementType().isInteger(1) && !needCvtVboolDataLayout)
+        continue;
+      elementTypes.insert(ty.getElementType());
+    }
+  }
+  for (Operation &o : body->without_terminator()) {
+    for (Value result : o.getResults()) {
+      auto ty = dyn_cast<RankedTensorType>(result.getType());
+      if (ty && !ty.getElementType().isInteger(1))
+        elementTypes.insert(ty.getElementType());
+    }
+  }
+  minBpe = 8;
+  maxBpe = 1;
+  for (Type elem : elementTypes) {
+    unsigned bpe = triton::gcu::getBpe(elem);
+    minBpe = std::min(minBpe, bpe);
+    maxBpe = std::max(maxBpe, bpe);
+  }
+}
+
+// Admission check for the dot -> elementwise-fusion annotation.
+//
+// This pass moves the dot's accumulator from local memory into OACC
+// (acc_store local -> none) and hands it to the fusion region.  The decision
+// therefore models the post-fusion OACC footprint with the shared plan: the
+// dot result is forced into the published-accumulator set (it is still
+// acc_store=local at this point), so reservedOacc charges the accumulator and
+// the plan picks the unroll from what is left.  The lowering runs the same plan
+// once the dot is annotated and sees the same reservation.
+static bool exceedOaccLimit(triton::gcu::ElementwiseFusionRegionOp fusionOp,
+                            Value dotResult) {
+  unsigned minBpe = 8;
+  unsigned maxBpe = 1;
+  collectFusionElementTypes(fusionOp, minBpe, maxBpe);
+  if (minBpe > maxBpe)
+    return false;
+
+  unsigned totalNumElems = triton::gcu::getTotalElemsPerThread(
+      fusionOp.getBody()->front().getResultTypes().front());
+  unsigned vectorLength = kOaccSizeInBytes / minBpe;
+  unsigned tripCount =
+      static_cast<unsigned>(triton::gcu::ceilDiv(totalNumElems, vectorLength));
+  auto plan = triton::gcu::computeFusionUnrollPlan(
+      fusionOp, vectorLength, maxBpe, tripCount, dotResult);
+
+  uint64_t demand = static_cast<uint64_t>(plan.loopCnt) *
+                        static_cast<uint64_t>(std::max(1u, plan.livePerStep)) *
+                        plan.oaccPerValue +
+                    static_cast<uint64_t>(plan.reservedOacc);
+  uint64_t limit = static_cast<uint64_t>(
+      mlir::triton::gcu::getOaccMaxNum(fusionOp.getOperation()));
+  // llvm::errs() << "aaaaaa exceedOaccLimit: "
+  //              << " loopCnt=" << plan.loopCnt
+  //              << " livePerStep=" << plan.livePerStep
+  //              << " oaccPerValue=" << plan.oaccPerValue
+  //              << " publishedAccs=" << plan.publishedAccs
+  //              << " reservedOacc=" << plan.reservedOacc
+  //              << " freeOacc=" << plan.freeOacc << " demand=" << demand
+  //              << " limit=" << limit << " exceeded=" << (demand > limit)
+  //              << "\n";
+  return demand > limit;
 }
 
 /*
@@ -235,9 +348,6 @@ struct AnnotateDotFusionPass
       if (dotOp.getType().getRank() != 2)
         return;
 
-      if (dotOp->hasAttr(kAccReuseCandidate))
-        return;
-
       if (!dotOp->hasAttr(kAccLoad))
         return;
 
@@ -249,9 +359,27 @@ struct AnnotateDotFusionPass
       // if (tryAnnotatePreFusionReuse(dotOp))
       //   return;
 
-      // Post-fusion accumulator (dot → elementwise on acc → yield).
+      // Search for ElementwiseFusionRegionOp
       Value result = dotOp.getResult();
+      if (result.hasOneUse() && dotOp->hasAttr(kAccReuseCandidate) &&
+          dotOp->getAttrOfType<StringAttr>(kAccReuseCandidate) ==
+              kAccReuseOacc) {
+        if (auto forOp = dyn_cast<scf::ForOp>(dotOp->getParentOp())) {
+          OpOperand &use = *result.use_begin();
+          if (isa<scf::YieldOp>(use.getOwner())) {
+            unsigned yieldIndex = use.getOperandNumber();
+            result = forOp.getResult(yieldIndex);
+          }
+        }
+      }
+
+      // Post-fusion accumulator (dot → elementwise on acc → yield).
       SmallVector<Operation *> users(result.user_begin(), result.user_end());
+      Block *resultBlock = result.getParentBlock();
+      if (llvm::any_of(users, [&](Operation *user) {
+            return user->getBlock() != resultBlock;
+          }))
+        return;
       llvm::sort(users, [](Operation *a, Operation *b) {
         return a->isBeforeInBlock(b);
       });
@@ -278,22 +406,25 @@ struct AnnotateDotFusionPass
       for (auto [userIdx, user] : llvm::enumerate(users)) {
         if (auto elemwFusionOp =
                 dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(user)) {
-          canFuseElementwise = mPerThread <= oaccM && nPerThread == oaccN;
-
-          // mac/mas/imas with all-vector (rank>1) inputs cannot reuse OACC
-          // because the extra operands would need separate OACC space.
-          elemwFusionOp.getBody()->walk([&](triton::ExternElementwiseOp extOp) {
-            if (exceedOaccLimit(extOp)) {
-              hasExceededOacc = true;
-              return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          });
-          if (hasExceededOacc)
-            return;
-          // hasExceededOacc = false;
-
+          // Admission: keep the accumulator in OACC (local -> none) only when
+          // it can coexist with the fusion's live set; see exceedOaccLimit.
+          canFuseElementwise = mPerThread <= oaccM && nPerThread == oaccN &&
+                               !exceedOaccLimit(elemwFusionOp, result);
           if (canFuseElementwise && canReuseOacc[userIdx]) {
+            // mac/mas/imas with all-vector (rank>1) inputs cannot reuse OACC
+            // because the extra operands would need separate OACC space.
+            elemwFusionOp.getBody()->walk(
+                [&](triton::ExternElementwiseOp extOp) {
+                  if (exceedOaccReuseLimit(extOp)) {
+                    hasExceededOacc = true;
+                    return WalkResult::interrupt();
+                  }
+                  return WalkResult::advance();
+                });
+            // hasExceededOacc = false;
+            if (hasExceededOacc)
+              continue;
+
             int64_t inplaceOperandIdx = -1;
             int64_t inplaceResultIdx = -1;
             Operation *truncOp = nullptr;
@@ -407,7 +538,7 @@ struct AnnotateDotFusionPass
       if (llvm::any_of(
               fusionOp.getBody()->getOps<triton::ExternElementwiseOp>(),
               [](triton::ExternElementwiseOp extOp) {
-                return exceedOaccLimit(extOp);
+                return exceedOaccReuseLimit(extOp);
               })) {
         return WalkResult::advance();
       }

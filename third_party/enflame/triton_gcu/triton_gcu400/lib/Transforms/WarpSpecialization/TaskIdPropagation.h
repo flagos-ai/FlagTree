@@ -107,9 +107,8 @@ public:
   void setToExitState(TaskIdLattice *lattice) override;
 
 #if TRITON_VERSION >= 37
-  void
-  visitNonControlFlowArguments(RegionSuccessor &successor,
-                               ArrayRef<BlockArgument> arguments) override {
+  void visitNonControlFlowArguments(RegionSuccessor &successor,
+                                    ArrayRef<BlockArgument> arguments) override {
     for (BlockArgument arg : arguments)
       setToExitState(getLatticeElement(arg));
   }
@@ -121,6 +120,21 @@ public:
                              ArrayRef<const TaskIdLattice *> &lattices);
 
   void propagateToParent(Operation *op, const TaskId &taskId);
+
+  /// Whether the analysis ran into control flow it cannot propagate through
+  /// (see `unsupportedControlFlow`). doTaskIdPropagate declines to warp
+  /// specialize the function in that case instead of publishing a task id
+  /// assignment that the code partition cannot realize.
+  bool hasUnsupportedControlFlow() const { return unsupportedControlFlow; }
+
+private:
+  /// Set when the analysis is asked to propagate an operand of an operation
+  /// that is neither a branch op nor a region terminator it understands. The
+  /// transfer functions must not crash on such an operation: an scf.while's
+  /// regions are also reachable from other dialects' ops, and aborting (or,
+  /// with a release build's `llvm_unreachable`, silently corrupting the
+  /// analysis) hides the construct instead of reporting it.
+  bool unsupportedControlFlow = false;
 };
 
 } // namespace mlir::triton::gcu

@@ -21,6 +21,7 @@ import hashlib
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
+
 #############################################################
 # Cache manager is a modified version from triton
 
@@ -140,6 +141,7 @@ class FileCacheManager(CacheManager):
         # use tempfile to be robust against program interruptions
         temp_path = f"{filepath}.tmp.pid_{pid}_{rnd_id}"
         mode = "wb" if binary else "w"
+        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
         with open(temp_path, mode) as f:
             f.write(data)
         # Replace is guaranteed to be atomic on POSIX systems if it succeeds

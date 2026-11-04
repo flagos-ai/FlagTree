@@ -87,9 +87,9 @@ ExternElementwiseVectorizeHandler::rewriteOp(const VectorizeContext &context,
       VectorType::get(ArrayRef<int64_t>{context.vectorLength},
                       getElementTypeOrSelf(externElementwiseOp.getResult()));
   Operation *rewriteOp;
-  if (mlir::triton::gcu::isNvLibDeviceSymbol(symbol)) {
+  if (symbol.starts_with("__ef_")) {
     std::string efSymbol = "__ef_v";
-    efSymbol += symbol.drop_front(strlen("__nv_"));
+    efSymbol += symbol.drop_front(strlen("__ef_"));
     rewriteOp = context.builder.create<mlir::gcu::ExternElementwiseOp>(
         context.loc, resultTy, operands, efSymbol);
   } else if (mlir::triton::gcu::isMixedPrecisionSymbol(symbol)) {

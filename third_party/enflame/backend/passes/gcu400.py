@@ -17,6 +17,7 @@ __all__ = [
     'add_triton_gcu_allocate_warp_groups',
     'add_triton_wgdot_to_gcu',
     'add_triton_gcu_remove_layout_conversions',
+    'add_tritongpu_remove_layout_conversions',
     'add_triton_gcu_data_layout_optimize',
     'add_gcu_combine_ops',
     'add_triton_gcu_optimize_dot_operands',
@@ -56,6 +57,7 @@ def add_tle_to_triton_gcu(pipeline, cluster_dims=(1, 1, 1)):
     pipeline.add_pass('tle-to-triton-gcu', options)
 
 
+
 def add_triton_gpu_to_triton_gcu(pipeline):
     """Convert TritonGPU dialect to TritonGCU dialect."""
     pipeline.add_pass('triton-gpu-to-triton-gcu')
@@ -82,16 +84,13 @@ def add_convert_triton_load_store_to_gcu_dma(pipeline, support_stride0: bool = F
     options = ' '.join(parts)
     pipeline.add_pass('convert-triton-load-store-to-gcu-dma', options)
 
-
 def add_gcu_tle_lower_async_load(pipeline):
     """Lower GCU TLE async load operations."""
     pipeline.add_pass('gcu-tle-lower-async-load')
 
-
 def add_tle_lower_pipe_to_gcuws(pipeline):
     """Lower TLE pipe ops to GCUWS ops."""
     pipeline.add_pass('tle-lower-pipe-to-gcuws')
-
 
 def add_tle_convert_arg_to_memdesc(pipeline):
     """Convert TLE arguments to memory descriptors."""
@@ -106,7 +105,6 @@ def add_tle_remove_redundant_copy(pipeline):
 def add_tle_dslregion_inline(pipeline):
     """Inline TLE DSL region operations."""
     pipeline.add_pass('tle-dslregion-inline')
-
 
 def add_tritongcu_accelerate_matmul(pipeline):
     """Accelerate matrix multiplication operations for GCU."""
@@ -139,6 +137,11 @@ def add_triton_wgdot_to_gcu(pipeline):
 def add_triton_gcu_remove_layout_conversions(pipeline):
     """Remove unnecessary layout conversions in TritonGPU (GCU)."""
     pipeline.add_pass('triton-gcu-remove-layout-conversions')
+
+
+def add_tritongpu_remove_layout_conversions(pipeline):
+    """使用 Triton 原生 remove-layout-conversions pass。"""
+    pipeline.add_pass('tritongpu-remove-layout-conversions')
 
 
 def add_triton_gcu_data_layout_optimize(pipeline):
@@ -197,6 +200,14 @@ def add_triton_gcu_insert_producer_fences(pipeline):
     pipeline.add_pass('triton-gcu-insert-producer-fences')
 
 
-def add_convert_triton_to_gcu(pipeline):
-    """Convert Triton operations to GCU operations."""
-    pipeline.add_pass('convert-triton-to-gcu')
+def add_convert_triton_to_gcu(pipeline, single_kernel_slot: bool = False):
+    """Convert Triton operations to GCU operations.
+
+    Args:
+        pipeline: MLIR pass pipeline
+        single_kernel_slot: Force the full private/shared tag pool so that a
+            kernel occupying a single hardware slot gets a deterministic tag
+            allocation
+    """
+    options = 'single_kernel_slot=true' if single_kernel_slot else ''
+    pipeline.add_pass('convert-triton-to-gcu', options)

@@ -22,6 +22,7 @@
 #include <string>
 
 #include "Analysis/FirstLastUserAnalysis.h"
+#include "Conversion/TritonToGCU/Constants.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
@@ -37,34 +38,12 @@
 #include "llvm/ADT/StringSet.h"
 
 using namespace mlir;
-
+#if TRITON_VERSION == 35
+using mlir::triton::gcu::AccPublishContext;
+#endif
 namespace {
 
-static int64_t getConstantSplatInt(Value val) {
-  if (auto constOp = dyn_cast_or_null<arith::ConstantOp>(val.getDefiningOp())) {
-    Attribute valueAttr = constOp.getValue();
-
-    if (auto denseAttr = dyn_cast<DenseElementsAttr>(valueAttr)) {
-      if (denseAttr.isSplat()) {
-        return denseAttr.getSplatValue<APInt>().getSExtValue();
-      }
-    }
-
-    if (auto intAttr = dyn_cast<IntegerAttr>(valueAttr)) {
-      return intAttr.getInt();
-    }
-  }
-
-  return -1;
-}
-
-// Walk the offset definition chain of a masked load/store op and require
-// every arith::RemSIOp's M to be a multiple of `granularity`.  When M %
-// granularity == 0, remsi never wraps inside any granularity-sized window,
-// so element 0 of the offset vector is a valid scalar base for a contiguous
-// load/store of `granularity` elements.  Returns false if the op lacks
-// IsContinual or any remsi in the chain violates the constraint.
-static bool checkRemSiNoWrap(Operation *op, int64_t granularity) {
+bool isOffsetContiguousWithin(Operation *op, int64_t granularity) {
   auto attr = op->getAttrOfType<BoolAttr>(kIsContinual);
   if (!attr || !attr.getValue())
     return false;
@@ -77,115 +56,222 @@ static bool checkRemSiNoWrap(Operation *op, int64_t granularity) {
   else
     return false;
 
-  std::queue<Value> workList;
-  DenseSet<Value> visited;
-  workList.push(offset);
-  while (!workList.empty()) {
-    auto val = workList.front();
-    workList.pop();
-    if (!visited.insert(val).second)
-      continue;
-    auto defOp = val.getDefiningOp();
+  SetVector<Value> worklist;
+  worklist.insert(offset);
+  auto isRemNoWrap = [granularity](auto remOp) {
+    int64_t divisor = getConstantIntValue(remOp.getRhs()).value_or(-1);
+    return divisor > 0 && divisor % granularity == 0;
+  };
+  for (size_t i = 0; i < worklist.size(); ++i) {
+    Value value = worklist[i];
+    auto defOp = value.getDefiningOp();
     if (!defOp)
       continue;
     if (auto remOp = dyn_cast<arith::RemSIOp>(defOp)) {
-      int64_t M = getConstantSplatInt(remOp.getRhs());
-      if (M <= 0 || M % granularity != 0)
+      if (!isRemNoWrap(remOp))
         return false;
-      workList.push(remOp.getLhs());
-    } else {
-      for (auto operand : defOp->getOperands())
-        workList.push(operand);
+      worklist.insert(remOp.getLhs());
+      continue;
     }
+    if (auto remOp = dyn_cast<arith::RemUIOp>(defOp)) {
+      if (!isRemNoWrap(remOp))
+        return false;
+      worklist.insert(remOp.getLhs());
+      continue;
+    }
+    for (Value operand : defOp->getOperands())
+      worklist.insert(operand);
   }
   return true;
 }
 
-// Per-warp contiguous: remsi never wraps inside the whole warp block
-// (totalNumElems elements).  Strongest guarantee - enables tar load/store
-// and the offset-scalarization fast path.
-static bool isOffsetContiguousInBlock(Operation *op) {
-  Value offset;
-  if (auto loadOp = dyn_cast<triton::gcu::MaskedLoadOp>(op))
-    offset = loadOp.getOffset();
-  else if (auto storeOp = dyn_cast<triton::gcu::MaskedStoreOp>(op))
-    offset = storeOp.getOffset();
-  else
-    return false;
-  int64_t totalNumElems = triton::gcu::getTotalElemsPerThread(offset.getType());
-  return checkRemSiNoWrap(op, totalNumElems);
+Value narrowToStoreVector(OpBuilder &builder, Location loc, Value v) {
+  auto vecTy = cast<VectorType>(v.getType());
+  auto elementTy = vecTy.getElementType();
+  unsigned maxVectorLength =
+      4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
+  unsigned numElems = vecTy.getNumElements();
+  if (numElems <= maxVectorLength)
+    return v;
+  unsigned numParts = numElems / maxVectorLength;
+  SmallVector<Type> partTypes(
+      numParts, VectorType::get(ArrayRef<int64_t>{maxVectorLength},
+                                vecTy.getElementType()));
+  return builder.create<gcu::VectorConvertOp>(loc, partTypes, v).getResult(0);
 }
 
-// Per-OACC-vector contiguous: remsi never wraps inside a single OACC vector
-// (vectorLength elements), but may wrap across vectors.  Weaker than
-// per-warp - the per-vector base (element 0 of the offset vector) is still a
-// valid contiguous load/store base, and the outer loop's args[] accumulation
-// advances the base across vectors.  Requires M % vectorLength == 0 for
-// every remsi in the offset chain.
-static bool isOffsetContiguousPerVector(Operation *op, unsigned vectorLength) {
-  return checkRemSiNoWrap(op, static_cast<int64_t>(vectorLength));
+// If |v| is an i1 vector, convert it to i8 (the element type expected by
+// vector store / tar store).  The conversion is inserted right after the
+// defining op of |v| to keep the def-use order valid.  Returns |v| unchanged
+// when no conversion is needed.
+Value convertI1ToI8VectorForStore(OpBuilder &builder, Location loc, Value v,
+                                  unsigned vectorLength) {
+  if (!cast<VectorType>(v.getType()).getElementType().isInteger(1))
+    return v;
+  OpBuilder::InsertionGuard guard(builder);
+  auto defOp = v.getDefiningOp();
+  assert(defOp);
+  builder.setInsertionPointAfter(defOp);
+  return builder
+      .create<gcu::VectorConvertOp>(
+          loc,
+          VectorType::get(ArrayRef<int64_t>{vectorLength},
+                          builder.getIntegerType(8)),
+          v)
+      .getResult(0);
 }
 
-static bool canUseAllocaForVboolValue(Value val) {
-  SetVector<Value> worklist;
-  worklist.insert(val);
-  for (unsigned i = 0; i < worklist.size(); ++i) {
-    Value cur = worklist[i];
-    for (auto *user : cur.getUsers()) {
-      if (auto elementwiseFusionRegionOp =
-              dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(user)) {
-        if (llvm::any_of(
-                elementwiseFusionRegionOp.getOperands(), [&](auto operand) {
-                  auto type = dyn_cast<TensorType>(operand.getType());
-                  if (type && type.getElementType().isInteger(1)) {
-                    auto defOp = operand.getDefiningOp();
-                    while (isa<triton::ExpandDimsOp>(defOp) &&
-                           !triton::gcu::isExpensiveView(
-                               cast<triton::ExpandDimsOp>(defOp))) {
-                      defOp = defOp->getOperand(0).getDefiningOp();
-                    }
-                    return !isa<triton::gcu::ElementwiseFusionRegionOp>(defOp);
-                  }
-                  return false;
-                })) {
-          return false;
-        }
-        if (llvm::any_of(*elementwiseFusionRegionOp.getBody(), [&](auto &op) {
-              auto resultTypes = op.getResultTypes();
-              if (llvm::any_of(resultTypes, [&](auto resultType) {
-                    return cast<TensorType>(resultType)
-                        .getElementType()
-                        .isInteger(1);
-                  })) {
-                return !isa<arith::AndIOp>(&op) && !isa<arith::OrIOp>(&op) &&
-                       !isa<arith::XOrIOp>(&op) && !isa<arith::CmpIOp>(&op) &&
-                       !isa<arith::CmpFOp>(&op) &&
-                       !isa<arith::ConstantOp>(&op) &&
-                       !isa<triton::BroadcastOp>(&op);
-              }
-              return false;
-            })) {
-          return false;
-        }
-        continue;
-      }
-      if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(user)) {
-        if (triton::gcu::isExpensiveView(expandDimsOp))
-          return false;
-        worklist.insert(expandDimsOp.getResult());
-        continue;
-      }
-      return false;
+enum class InputKind {
+  MemRef,
+  Ptr,
+  Scalar,
+};
+
+enum class BroadcastKind {
+  BroadcastOnDim0,
+  BroadcastOnLastDim,
+};
+
+struct BroadcastDesc {
+  BroadcastKind kind;
+  unsigned elementNumPerThread;
+};
+
+struct InputDesc {
+  InputKind kind;
+  bool isAllocaInput = false;
+  std::optional<unsigned> preferredVectorLength = std::nullopt;
+  std::optional<BroadcastDesc> broadcastDesc = std::nullopt;
+};
+
+struct OutputDesc {
+  bool useAlloca = false;
+  std::optional<unsigned> reuseInputIndex = std::nullopt;
+  bool useLocalStore = false;
+};
+
+struct ElementwiseFusionDesc {
+  SmallVector<InputDesc> inputDescs;
+  SmallVector<OutputDesc> outputDescs;
+
+  unsigned vectorLength;
+#if TRITON_VERSION >= 38
+  unsigned maxBpe = 1;
+#endif
+  bool needCvtVboolDataLayout = false;
+
+  unsigned loopDepth;
+  unsigned loopUnrollCount;
+  bool unrollFull = false;
+};
+
+class ElementwiseFusionAnalysis {
+public:
+  explicit ElementwiseFusionAnalysis(triton::gcu::ElementwiseFusionRegionOp op,
+                                     ConversionPatternRewriter &rewriter)
+      : op(op), rewriter(rewriter) {}
+  FailureOr<ElementwiseFusionDesc> run(ArrayRef<Value> remappedOperands);
+
+private:
+  __attribute__((unused)) bool isResultOnlyUsedBy2DStore();
+  Value getAllocaInputValue(Value val);
+  LogicalResult populateBroadcastDescs(ElementwiseFusionDesc &desc);
+  DenseSet<Type> analyzeInputs(ElementwiseFusionDesc &desc,
+                               ArrayRef<Value> remappedOperands);
+  void collectResultElementTypes(ElementwiseFusionDesc &desc,
+                                 DenseSet<Type> &elementTypeSet);
+  void analyzeOutputs(ElementwiseFusionDesc &desc,
+                      const DenseSet<Type> &elementTypeSet);
+  bool needsFullUnroll(const ElementwiseFusionDesc &desc) const;
+
+private:
+  triton::gcu::ElementwiseFusionRegionOp op;
+  ConversionPatternRewriter &rewriter;
+  bool useAllocaForVboolResult = true;
+};
+
+FailureOr<BroadcastKind> getBroadcastKind(triton::BroadcastOp op) {
+  auto srcType = op.getSrc().getType();
+  auto resultType = op.getType();
+  auto rank = srcType.getRank();
+  SmallVector<unsigned> broadcastAxes;
+  for (unsigned i = 0; i < rank; ++i) {
+    if (srcType.getDimSize(i) == 1 && resultType.getDimSize(i) != 1) {
+      broadcastAxes.push_back(i);
     }
   }
-  return true;
+  if (broadcastAxes.size() != 1) {
+    op->emitError() << "Only support one broadcast axis";
+    return failure();
+  }
+  if (broadcastAxes[0] == 0) {
+    return BroadcastKind::BroadcastOnDim0;
+  } else if (broadcastAxes[0] == rank - 1) {
+    return BroadcastKind::BroadcastOnLastDim;
+  } else {
+    op->emitError() << "Only support broadcast on dim0 or last dim";
+    return failure();
+  }
 }
 
-static bool canUseAllocaForValue(Value val) {
+std::optional<unsigned> inferPreferredVectorLength(Value value) {
+  for (auto user : value.getUsers()) {
+    if (auto storeOp = dyn_cast<vector::StoreOp>(user))
+      return storeOp.getVectorType().getDimSize(0);
+    if (isa<memref::ReinterpretCastOp>(user)) {
+      if (auto vectorLength = inferPreferredVectorLength(user->getResult(0)))
+        return vectorLength;
+    }
+  }
+  return std::nullopt;
+}
+
+unsigned getVectorLength(unsigned bpe) { return kOaccSizeInBytes / bpe; }
+
+#if TRITON_VERSION >= 38
+TensorType getFusionTensorType(triton::gcu::ElementwiseFusionRegionOp op) {
+  for (auto argument : op.getBody()->getArguments()) {
+    if (auto tensorType = dyn_cast<TensorType>(argument.getType()))
+      return tensorType;
+  }
+  for (auto &bodyOp : op.getBody()->without_terminator()) {
+    for (auto type : bodyOp.getResultTypes()) {
+      if (auto tensorType = dyn_cast<TensorType>(type))
+        return tensorType;
+    }
+  }
+  llvm_unreachable("elementwise fusion region must contain a tensor");
+}
+#endif
+
+unsigned computeVectorLength(const DenseSet<Type> &elementTypeSet,
+                             ArrayRef<InputDesc> inputDescs) {
+  unsigned minBpe = 8;
+  for (auto elementTy : elementTypeSet) {
+    auto bpe = mlir::triton::gcu::getBpe(elementTy);
+    minBpe = std::min(minBpe, bpe);
+  }
+  unsigned vectorLength = getVectorLength(minBpe);
+
+  for (const auto &inputDesc : inputDescs) {
+    if (inputDesc.broadcastDesc &&
+        inputDesc.broadcastDesc->elementNumPerThread >
+            kLoopUnrollTimes * vectorLength) {
+      vectorLength =
+          inputDesc.broadcastDesc->elementNumPerThread / kLoopUnrollTimes;
+    }
+    if (inputDesc.preferredVectorLength &&
+        *inputDesc.preferredVectorLength > vectorLength)
+      vectorLength = *inputDesc.preferredVectorLength;
+  }
+  return vectorLength;
+}
+
+bool canUseAllocaForValue(Value val) {
   SetVector<Value> worklist;
   worklist.insert(val);
-  for (unsigned i = 0; i < worklist.size(); ++i) {
-    Value cur = worklist[i];
+  for (unsigned idx = 0; idx < worklist.size(); ++idx) {
+    Value cur = worklist[idx];
     for (auto *user : cur.getUsers()) {
       if (isa<triton::gcu::ElementwiseFusionRegionOp>(user))
         continue;
@@ -209,23 +295,17 @@ static bool canUseAllocaForValue(Value val) {
         return false;
       }
       if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(user)) {
-        auto srcNumElems =
-            triton::gcu::getElemsPerThread(expandDimsOp.getSrc().getType());
-        auto dstNumElems =
-            triton::gcu::getElemsPerThread(expandDimsOp.getType());
-        srcNumElems.insert(srcNumElems.begin() + expandDimsOp.getAxis(), 1);
-        if (srcNumElems != dstNumElems)
+        if (triton::gcu::isExpensiveView(expandDimsOp))
           return false;
         worklist.insert(expandDimsOp.getResult());
         continue;
       }
       if (auto forOp = dyn_cast<scf::ForOp>(user)) {
-        auto initArgs = forOp.getInitArgs();
-        for (unsigned i = 0; i < initArgs.size(); ++i) {
-          if (initArgs[i] == cur) {
-            auto bodyArg = forOp.getRegionIterArg(i);
-            worklist.insert(bodyArg);
-            worklist.insert(forOp.getResult(i));
+        for (auto [initArgIdx, initArg] :
+             llvm::enumerate(forOp.getInitArgs())) {
+          if (initArg == cur) {
+            worklist.insert(forOp.getRegionIterArg(initArgIdx));
+            worklist.insert(forOp.getResult(initArgIdx));
           }
         }
         continue;
@@ -236,183 +316,320 @@ static bool canUseAllocaForValue(Value val) {
   return true;
 }
 
-struct FusionRegionInfo {
-  unsigned totalNumElems;
-  unsigned vectorLength;
-  bool needCvtDataLayout = false;
-  unsigned loopCnt;
-  bool unrollFull = false;
-  SmallVector<bool> useAlloca;
-  SmallVector<bool> useAllocaStore; // store stack data to local memory
-  static FusionRegionInfo analyze(
-      triton::gcu::ElementwiseFusionRegionOp op,
-      SharedConversionPattern<triton::gcu::ElementwiseFusionRegionOp>::OpAdaptor
-          adaptor) {
-    FusionRegionInfo info;
-    info.totalNumElems = triton::gcu::getTotalElemsPerThread(
-        op.getBody()->front().getResultTypes().front());
+bool hasVboolIncompatibleOperand(triton::gcu::ElementwiseFusionRegionOp op) {
+  return llvm::any_of(op.getOperands(), [&](Value operand) {
+    auto type = dyn_cast<TensorType>(operand.getType());
+    if (!type || !type.getElementType().isInteger(1))
+      return false;
+    Operation *producer = operand.getDefiningOp();
+    while (isa<triton::ExpandDimsOp>(producer) &&
+           !triton::gcu::isExpensiveView(cast<triton::ExpandDimsOp>(producer)))
+      producer = producer->getOperand(0).getDefiningOp();
+    return !isa<triton::gcu::ElementwiseFusionRegionOp>(producer);
+  });
+}
 
-    DenseSet<Type> elementTypeSet;
-    for (auto [idx, operand] : llvm::enumerate(adaptor.getOperands())) {
-      if (auto type = dyn_cast<MemRefType>(operand.getType())) {
-        auto elementTy = type.getElementType();
-        if (elementTy.isInteger(1)) {
-          auto defOp = operand.getDefiningOp();
-          while (isa_and_nonnull<memref::ReinterpretCastOp>(defOp)) {
-            defOp = defOp->getOperand(0).getDefiningOp();
-          }
-          if (isa_and_nonnull<memref::AllocaOp>(defOp)) {
-            continue;
-          }
-          if (llvm::all_of(op.getBody()->getArgument(idx).getUsers(),
-                           [](auto user) {
-                             return isa_and_nonnull<triton::BroadcastOp>(user);
-                           })) {
-            continue;
-          }
-          elementTypeSet.insert(elementTy);
-          info.needCvtDataLayout = true;
-        } else {
-          elementTypeSet.insert(elementTy);
-        }
+bool hasVboolIncompatibleOp(triton::gcu::ElementwiseFusionRegionOp op) {
+  return llvm::any_of(*op.getBody(), [&](Operation &innerOp) {
+    auto resultTypes = innerOp.getResultTypes();
+    if (!llvm::any_of(resultTypes, [&](Type resultType) {
+          return cast<TensorType>(resultType).getElementType().isInteger(1);
+        }))
+      return false;
+    return !isa<arith::AndIOp>(&innerOp) && !isa<arith::OrIOp>(&innerOp) &&
+           !isa<arith::XOrIOp>(&innerOp) && !isa<arith::CmpIOp>(&innerOp) &&
+           !isa<arith::CmpFOp>(&innerOp) && !isa<arith::ConstantOp>(&innerOp) &&
+           !isa<arith::SelectOp>(&innerOp) && !isa<triton::SplatOp>(&innerOp) &&
+           !isa<triton::BroadcastOp>(&innerOp);
+  });
+}
+
+bool canUseAllocaForVboolValue(Value val) {
+  SetVector<Value> worklist;
+  worklist.insert(val);
+  for (unsigned idx = 0; idx < worklist.size(); ++idx) {
+    Value cur = worklist[idx];
+    for (auto *user : cur.getUsers()) {
+      if (auto fusionOp =
+              dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(user)) {
+        if (hasVboolIncompatibleOperand(fusionOp) ||
+            hasVboolIncompatibleOp(fusionOp))
+          return false;
+        continue;
       }
+      if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(user)) {
+        if (triton::gcu::isExpensiveView(expandDimsOp))
+          return false;
+        worklist.insert(expandDimsOp.getResult());
+        continue;
+      }
+      return false;
     }
-    bool allI1TensorResultUseAlloca =
-        !info.needCvtDataLayout &&
-        llvm::any_of(op.getResults(), [](auto result) {
-          return cast<TensorType>(result.getType())
-              .getElementType()
-              .isInteger(1);
-        });
-    for (auto result : op.getResults()) {
-      auto elementTy = cast<TensorType>(result.getType()).getElementType();
-      if (elementTy.isInteger(1) && allI1TensorResultUseAlloca) {
-        if (!canUseAllocaForVboolValue(result)) {
-          allI1TensorResultUseAlloca = false;
-          elementTypeSet.insert(elementTy);
-        }
-      } else {
+  }
+  return true;
+}
+
+bool ElementwiseFusionAnalysis::isResultOnlyUsedBy2DStore() {
+  if (op.getNumResults() != 1)
+    return false;
+  if (!op->hasOneUse())
+    return false;
+  auto storeOp = dyn_cast<triton::gcu::StoreOp>(*op->getUsers().begin());
+  if (!storeOp)
+    return false;
+  auto tensorType = storeOp.getValue().getType();
+  return tensorType && tensorType.getRank() == 2;
+}
+
+Value ElementwiseFusionAnalysis::getAllocaInputValue(Value val) {
+  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+    auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+    if (!forOp)
+      return nullptr;
+    return getAllocaInputValue(
+        forOp.getInitArgs()[blockArg.getArgNumber() -
+                            forOp.getNumInductionVars()]);
+  }
+  auto defOp = val.getDefiningOp();
+  if (isa<memref::AllocaOp>(defOp)) {
+    return val;
+  } else if (isa<memref::ReinterpretCastOp>(defOp)) {
+    return getAllocaInputValue(defOp->getOperand(0));
+  } else if (auto forOp = dyn_cast<scf::ForOp>(defOp)) {
+    unsigned resultIdx = cast<OpResult>(val).getResultNumber();
+    auto initArg = forOp.getInitArgs()[resultIdx];
+    auto remappedValue = rewriter.getRemappedValue(initArg);
+    return getAllocaInputValue(remappedValue ? remappedValue : initArg);
+  }
+  return nullptr;
+}
+
+LogicalResult
+ElementwiseFusionAnalysis::populateBroadcastDescs(ElementwiseFusionDesc &desc) {
+  for (auto broadcastOp : op.getBody()->getOps<triton::BroadcastOp>()) {
+    auto broadcastKind = getBroadcastKind(broadcastOp);
+    if (failed(broadcastKind))
+      return failure();
+
+    auto blockArg = dyn_cast<BlockArgument>(broadcastOp.getSrc());
+    if (!blockArg) {
+      op->emitError() << "Only support broadcast on block argument";
+      return failure();
+    }
+
+    auto argNum = blockArg.getArgNumber();
+    if (desc.inputDescs[argNum].broadcastDesc) {
+      if (desc.inputDescs[argNum].broadcastDesc->kind != *broadcastKind) {
+        op->emitError()
+            << "Broadcast on both dim 0 and the last dim in elementwise "
+               "fusion is not supported";
+        return failure();
+      }
+      continue;
+    }
+
+    BroadcastDesc broadcastDesc;
+    broadcastDesc.kind = *broadcastKind;
+    switch (*broadcastKind) {
+    case BroadcastKind::BroadcastOnDim0:
+      broadcastDesc.elementNumPerThread =
+          triton::gcu::getTotalElemsPerThread(broadcastOp.getSrc().getType());
+      break;
+    case BroadcastKind::BroadcastOnLastDim:
+      broadcastDesc.elementNumPerThread =
+          triton::gcu::getElemsPerThread(broadcastOp.getType()).back();
+      break;
+    default:
+      llvm_unreachable("Unsupported broadcast kind");
+    }
+    desc.inputDescs[argNum].broadcastDesc = broadcastDesc;
+  }
+  return success();
+}
+
+DenseSet<Type>
+ElementwiseFusionAnalysis::analyzeInputs(ElementwiseFusionDesc &desc,
+                                         ArrayRef<Value> remappedOperands) {
+  DenseSet<Type> elementTypeSet;
+  for (auto [i, remappedValue] : llvm::enumerate(remappedOperands)) {
+    auto type = remappedValue.getType();
+    if (auto memrefType = dyn_cast<MemRefType>(type)) {
+      desc.inputDescs[i].kind = InputKind::MemRef;
+      auto allocaValue = getAllocaInputValue(remappedValue);
+      if (allocaValue) {
+        desc.inputDescs[i].isAllocaInput = true;
+        desc.inputDescs[i].preferredVectorLength =
+            inferPreferredVectorLength(allocaValue);
+      }
+      auto elementType = memrefType.getElementType();
+      if (elementType.isInteger(1)) {
+        if (desc.inputDescs[i].isAllocaInput)
+          continue;
+        if (desc.inputDescs[i].broadcastDesc &&
+            desc.inputDescs[i].broadcastDesc->kind ==
+                BroadcastKind::BroadcastOnLastDim)
+          continue;
+        desc.needCvtVboolDataLayout = true;
+      }
+      elementTypeSet.insert(elementType);
+    } else if (isa<gcu::PtrType>(type)) {
+      desc.inputDescs[i].kind = InputKind::Ptr;
+    } else {
+      desc.inputDescs[i].kind = InputKind::Scalar;
+    }
+  }
+  return elementTypeSet;
+}
+
+void ElementwiseFusionAnalysis::collectResultElementTypes(
+    ElementwiseFusionDesc &desc, DenseSet<Type> &elementTypeSet) {
+  for (auto &o : op.getBody()->without_terminator()) {
+    for (auto type : o.getResultTypes()) {
+#if TRITON_VERSION >= 38
+      auto tensorType = dyn_cast<TensorType>(type);
+      if (!tensorType)
+        continue;
+      auto elementTy = tensorType.getElementType();
+#else
+      auto elementTy = cast<TensorType>(type).getElementType();
+#endif
+      if (!elementTy.isInteger(1)) {
         elementTypeSet.insert(elementTy);
       }
     }
-    for (auto &o : op.getRegion().back().without_terminator()) {
-      for (auto type : o.getResultTypes()) {
-        auto elementTy = dyn_cast<TensorType>(type).getElementType();
-        if (!elementTy.isInteger(1)) {
-          elementTypeSet.insert(elementTy);
-        }
-      }
-    }
-    unsigned maxBpe = 1;
-    unsigned minBpe = 8;
-    for (auto elementTy : elementTypeSet) {
-      auto bpe = mlir::triton::gcu::getBpe(elementTy);
-      maxBpe = std::max(maxBpe, bpe);
-      minBpe = std::min(minBpe, bpe);
-    }
-    info.vectorLength = kOaccSizeInBytes / minBpe;
-
-    for (unsigned i = 0; i < op.getNumOperands(); ++i) {
-      auto *defOp = op.getOperand(i).getDefiningOp();
-      if (!defOp)
-        continue;
-      if (auto dotOp = dyn_cast<triton::DotOp>(defOp)) {
-        auto accStoreAttr = dotOp->getAttrOfType<StringAttr>(kAccStore);
-        if (accStoreAttr && accStoreAttr.getValue() == kAccStoreNone) {
-          info.unrollFull = true;
-        }
-      }
-    }
-
-    auto tripCount = ceil<unsigned>(info.totalNumElems, info.vectorLength);
-    info.useAllocaStore.assign(op.getNumResults(), false);
-    if (info.totalNumElems < info.vectorLength ||
-        tripCount > kLoopUnrollTimes) {
-      if (allI1TensorResultUseAlloca) {
-        minBpe = std::min(minBpe, 1u);
-        info.vectorLength = kOaccSizeInBytes / minBpe;
-      }
-      info.useAlloca.assign(op.getNumResults(), false);
-    } else {
-      for (auto result : op.getResults()) {
-        auto elementTy = cast<TensorType>(result.getType()).getElementType();
-        if (elementTy.isInteger(1)) {
-          if (!allI1TensorResultUseAlloca)
-            info.useAlloca.push_back(false);
-          else
-            info.useAlloca.push_back(true);
-          continue;
-        } else {
-          info.useAlloca.push_back(canUseAllocaForValue(result));
-        }
-      }
-    }
-    if (auto inplaceAttr =
-            op->getAttrOfType<IntegerAttr>(kAccReuseInplaceResult)) {
-      int64_t inplaceResultdx = inplaceAttr.getInt();
-      if (inplaceResultdx >= 0) {
-        info.useAlloca[inplaceResultdx] = true;
-        bool hasStoreLocal = true;
-        if (auto accStore = op->getAttr(kAccStore))
-          hasStoreLocal =
-              cast<StringAttr>(accStore).getValue() == kAccStoreLocal;
-        info.useAllocaStore[inplaceResultdx] =
-            hasStoreLocal &&
-            !canUseAllocaForValue(op.getResult(inplaceResultdx));
-      }
-    }
-
-    for (unsigned i = 0; i < op.getNumResults(); ++i) {
-      if (info.useAlloca[i]) {
-        info.unrollFull = true;
-        break;
-      }
-    }
-
-    info.loopCnt = std::min(tripCount, kLoopUnrollTimes);
-    return info;
   }
-};
-
-static Value narrowToStoreVector(OpBuilder &builder, Location loc, Value v) {
-  auto vecTy = cast<VectorType>(v.getType());
-  auto elementTy = vecTy.getElementType();
-  unsigned maxVectorLength =
-      4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
-  unsigned numElems = vecTy.getNumElements();
-  if (numElems <= maxVectorLength)
-    return v;
-  unsigned numParts = numElems / maxVectorLength;
-  SmallVector<Type> partTypes(
-      numParts, VectorType::get(ArrayRef<int64_t>{maxVectorLength},
-                                vecTy.getElementType()));
-  return builder.create<gcu::VectorConvertOp>(loc, partTypes, v).getResult(0);
+  useAllocaForVboolResult = !desc.needCvtVboolDataLayout;
+  for (auto result : op->getResults()) {
+    auto elementType =
+        cast<RankedTensorType>(result.getType()).getElementType();
+    if (elementType.isInteger(1)) {
+      if (!useAllocaForVboolResult || canUseAllocaForVboolValue(result))
+        continue;
+      useAllocaForVboolResult = false;
+    }
+    elementTypeSet.insert(elementType);
+  }
 }
 
-// If |v| is an i1 vector, convert it to i8 (the element type expected by
-// vector store / tar store).  The conversion is inserted right after the
-// defining op of |v| to keep the def-use order valid.  Returns |v| unchanged
-// when no conversion is needed.
-static Value convertI1ToI8VectorForStore(OpBuilder &builder, Location loc,
-                                         Value v, unsigned vectorLength) {
-  if (!cast<VectorType>(v.getType()).getElementType().isInteger(1))
-    return v;
-  OpBuilder::InsertionGuard guard(builder);
-  auto defOp = v.getDefiningOp();
-  assert(defOp);
-  builder.setInsertionPointAfter(defOp);
-  return builder
-      .create<gcu::VectorConvertOp>(
-          loc,
-          VectorType::get(ArrayRef<int64_t>{vectorLength},
-                          builder.getIntegerType(8)),
-          v)
-      .getResult(0);
+void ElementwiseFusionAnalysis::analyzeOutputs(
+    ElementwiseFusionDesc &desc, const DenseSet<Type> &elementTypeSet) {
+  unsigned maxBpe = 1;
+  for (auto elementTy : elementTypeSet)
+    maxBpe = std::max(maxBpe, mlir::triton::gcu::getBpe(elementTy));
+#if TRITON_VERSION >= 38
+  desc.maxBpe = maxBpe;
+  auto totalNumElems =
+      triton::gcu::getTotalElemsPerThread(getFusionTensorType(op));
+#else
+  auto totalNumElems = triton::gcu::getTotalElemsPerThread(
+      op.getBody()->front().getResultTypes().front());
+#endif
+  auto tripCount = ceil<unsigned>(totalNumElems, desc.vectorLength);
+  if (totalNumElems < desc.vectorLength || tripCount > kLoopUnrollTimes) {
+    if (!desc.needCvtVboolDataLayout &&
+        llvm::any_of(
+            op->getResultTypes(),
+            [](auto type) {
+              return cast<RankedTensorType>(type).getElementType().isInteger(1);
+            }) &&
+        desc.vectorLength < getVectorLength(1)) {
+      desc.vectorLength = getVectorLength(1);
+      tripCount = ceil<unsigned>(totalNumElems, desc.vectorLength);
+    }
+  } else {
+    for (auto [i, result] : llvm::enumerate(op->getResults())) {
+      auto elementType =
+          cast<RankedTensorType>(result.getType()).getElementType();
+      desc.outputDescs[i].useAlloca = elementType.isInteger(1)
+                                          ? useAllocaForVboolResult
+                                          : canUseAllocaForValue(result);
+    }
+  }
+  auto getInplaceIndex = [](IntegerAttr attr) -> std::optional<unsigned> {
+    if (!attr || attr.getInt() < 0)
+      return std::nullopt;
+    return static_cast<unsigned>(attr.getInt());
+  };
+  auto useLocalStore = [&]() {
+    auto accStoreAttr = op->getAttrOfType<StringAttr>(kAccStore);
+    return accStoreAttr && accStoreAttr.getValue() == kAccStoreLocal;
+  };
+  auto reuseInputIndex =
+      getInplaceIndex(op->getAttrOfType<IntegerAttr>(kAccReuseInplaceOperand));
+  auto reuseOutputIndex =
+      getInplaceIndex(op->getAttrOfType<IntegerAttr>(kAccReuseInplaceResult));
+  if (reuseInputIndex && reuseOutputIndex &&
+      *reuseInputIndex < desc.inputDescs.size() &&
+      *reuseOutputIndex < desc.outputDescs.size()) {
+    auto &outputDesc = desc.outputDescs[*reuseOutputIndex];
+    outputDesc.useAlloca = true;
+    outputDesc.reuseInputIndex = *reuseInputIndex;
+    if (useLocalStore() &&
+        !canUseAllocaForValue(op->getResult(*reuseOutputIndex))) {
+      outputDesc.useLocalStore = true;
+    }
+  }
+  // The per-region unroll is decided by the shared OACC-pressure plan so the
+  // annotator's admission check (AnnotateDotFusion::exceedOaccLimit) uses the
+  // same numbers.
+  desc.loopUnrollCount = triton::gcu::computeFusionUnrollPlan(
+                             op, desc.vectorLength, maxBpe, tripCount)
+                             .loopCnt;
+}
+
+bool ElementwiseFusionAnalysis::needsFullUnroll(
+    const ElementwiseFusionDesc &desc) const {
+  auto isNoneAccStoreOperand = [](Value operand) {
+    auto dotOp = operand.getDefiningOp<triton::DotOp>();
+    if (!dotOp)
+      return false;
+    auto accStoreAttr = dotOp->getAttrOfType<StringAttr>(kAccStore);
+    return accStoreAttr && accStoreAttr.getValue() == kAccStoreNone;
+  };
+  return llvm::any_of(op->getOperands(), isNoneAccStoreOperand) ||
+         llvm::any_of(
+             desc.inputDescs,
+             [](const InputDesc &input) { return input.isAllocaInput; }) ||
+         llvm::any_of(desc.outputDescs, [](const OutputDesc &output) {
+           return output.useAlloca;
+         });
+}
+
+FailureOr<ElementwiseFusionDesc>
+ElementwiseFusionAnalysis::run(ArrayRef<Value> remappedOperands) {
+  ElementwiseFusionDesc desc;
+  desc.loopDepth = 1;
+  desc.inputDescs.resize(op->getNumOperands());
+  desc.outputDescs.resize(op->getNumResults());
+  if (failed(populateBroadcastDescs(desc)))
+    return failure();
+  auto elementTypeSet = analyzeInputs(desc, remappedOperands);
+  collectResultElementTypes(desc, elementTypeSet);
+  desc.vectorLength = computeVectorLength(elementTypeSet, desc.inputDescs);
+  analyzeOutputs(desc, elementTypeSet);
+  desc.unrollFull = needsFullUnroll(desc);
+  return desc;
 }
 
 struct GCUElementwiseFusionOpLowering
     : SharedConversionPattern<triton::gcu::ElementwiseFusionRegionOp> {
+  // Published OACC accumulator buffers, keyed by original loop result. Used
+  // on Triton 3.5 so accumulator reads target the local buffer
+  // TTDotOpLowering published, which the conversion mapping cannot deliver to
+  // later consumers.
+#if TRITON_VERSION == 35
+  AccPublishContext &accPublishContext;
+  GCUElementwiseFusionOpLowering(
+      const TypeConverter &converter, MLIRContext *ctx,
+      triton::gcu::FirstLastUserAnalysis &userAnalysis,
+      std::map<Operation *, Operation *> &replaced2Origin,
+      triton::gcu::DTETagPool &pTagPool, AccPublishContext &accPublishContext)
+      : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
+                                pTagPool),
+        accPublishContext(accPublishContext) {}
+#else
   using SharedConversionPattern::SharedConversionPattern;
+#endif
 
   LogicalResult
   matchAndRewrite(triton::gcu::ElementwiseFusionRegionOp op,
@@ -423,6 +640,25 @@ struct GCUElementwiseFusionOpLowering
       pTagPool.releaseMap(op.getOperation());
     }
     auto loc = op.getLoc();
+
+    SmallVector<Value> remappedOperands;
+#if TRITON_VERSION == 35
+    for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
+      Value remappedValue =
+          stripUnrealizedConversionCastOp(adaptor.getOperands()[i]);
+      if (failed(mlir::triton::gcu::resolveAccumulatorOperand(
+              operand, remappedValue, accPublishContext)))
+        return rewriter.notifyMatchFailure(
+            op,
+            "expected OACC publish buffer is not yet available for operand " +
+                std::to_string(i));
+      remappedOperands.push_back(remappedValue);
+    }
+#else
+    for (auto remappedValue : adaptor.getOperands())
+      remappedOperands.push_back(
+          stripUnrealizedConversionCastOp(remappedValue));
+#endif
 
     Block::iterator reduceOpIter = op.getBody()->begin();
     while (reduceOpIter != op.getBody()->end()) {
@@ -445,339 +681,277 @@ struct GCUElementwiseFusionOpLowering
                                replaced2Origin, memrefType);
           }));
       auto inputs =
-          reduceGenerator.normalizeInputs(rewriter, loc, adaptor.getOperands());
+          reduceGenerator.normalizeInputs(rewriter, loc, remappedOperands);
       auto outputs = reduceGenerator.normalizeOutputs(rewriter, loc, results);
       reduceGenerator.applyReduce(rewriter, loc, outputs, inputs);
       rewriter.replaceOp(op, results);
       return success();
     }
 
-    auto fusionRegionInfo = FusionRegionInfo::analyze(op, adaptor);
-    auto totalNumElems = fusionRegionInfo.totalNumElems;
-    auto loopCnt = fusionRegionInfo.loopCnt;
-    auto vectorLength = fusionRegionInfo.vectorLength;
-    auto needCvtDataLayout = fusionRegionInfo.needCvtDataLayout;
-    bool isSmallSize = totalNumElems < vectorLength;
+    ElementwiseFusionAnalysis analysis(op, rewriter);
+    auto fusionDesc = analysis.run(remappedOperands);
+    if (llvm::failed(fusionDesc)) {
+      return failure();
+    }
 
-    // When AnnotateDotFusion marks this fusion for OACC accumulator reuse, the
-    // (single) result is written in place into the tagged operand buffer (the
-    // loop iter-arg / OACC), so no separate output buffer is allocated.
-    int64_t inplaceOperandIdx = -1;
-    if (auto inplaceAttr =
-            op->getAttrOfType<IntegerAttr>(kAccReuseInplaceOperand))
-      inplaceOperandIdx = inplaceAttr.getInt();
+    auto needCvtDataLayout = fusionDesc->needCvtVboolDataLayout;
 
-    int64_t inplaceResultIdx = -1;
-    if (auto inplaceAttr =
-            op->getAttrOfType<IntegerAttr>(kAccReuseInplaceResult))
-      inplaceResultIdx = inplaceAttr.getInt();
+#if TRITON_VERSION >= 38
+    auto totalNumElems =
+        triton::gcu::getTotalElemsPerThread(getFusionTensorType(op));
+#else
+    auto totalNumElems = triton::gcu::getTotalElemsPerThread(
+        op.getBody()->front().getResultTypes().front());
+#endif
+    bool isSmallSize = totalNumElems < fusionDesc->vectorLength;
+
+    auto convertI1MemrefToI8Memref = [&](Value memref) {
+      auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(
+          loc,
+          mlir::gcu::PtrType::get(rewriter.getContext(), rewriter.getI1Type()),
+          memref);
+      return rewriter.create<mlir::gcu::PtrToMemRefOp>(
+          loc,
+          MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
+                          rewriter.getI8Type()),
+          ptr);
+    };
+
+    const auto &inputDescs = fusionDesc->inputDescs;
+    const auto &outputDescs = fusionDesc->outputDescs;
+    const auto vectorLength = fusionDesc->vectorLength;
+    const auto loopUnrollCount = fusionDesc->loopUnrollCount;
 
     SmallVector<Value> results;
     SmallVector<Value> outputs;
-    for (auto [i, pair] : llvm::enumerate(
-             llvm::zip_equal(op.getResults(), fusionRegionInfo.useAlloca))) {
-      auto [result, useAlloca] = pair;
+    for (auto [i, result] : llvm::enumerate(op.getResults())) {
+      const auto &desc = outputDescs[i];
       auto resultType = dyn_cast<MemRefType>(
           getTypeConverter()->convertType(result.getType()));
       auto elementTy = resultType.getElementType();
-      if (inplaceResultIdx == static_cast<int64_t>(i)) {
-        results.push_back(adaptor.getOperands()[inplaceOperandIdx]);
-      } else if (useAlloca) {
-        auto allocaOp = rewriter.create<memref::AllocaOp>(loc, resultType);
-        allocaOp.setAlignment(kOaccSizeInBytes);
-        results.push_back(allocaOp.getResult());
+      auto outputElemTy = elementTy;
+      if (desc.useAlloca) {
+        if (desc.reuseInputIndex) {
+          results.push_back(remappedOperands[*desc.reuseInputIndex]);
+        } else {
+          auto allocaOp = rewriter.create<memref::AllocaOp>(loc, resultType);
+          allocaOp.setAlignment(kOaccSizeInBytes);
+          results.push_back(allocaOp.getResult());
+        }
       } else {
         auto lastUser = userAnalysis.getLastUser(result);
         results.push_back(syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                       replaced2Origin, resultType));
       }
-      if (elementTy.isInteger(1) && !useAlloca) {
-        outputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-            loc,
-            MemRefType::get(ArrayRef<int64_t>{totalNumElems},
-                            rewriter.getIntegerType(8)),
-            rewriter.create<mlir::gcu::PtrToMemRefOp>(
-                loc,
-                MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
-                                rewriter.getIntegerType(8)),
-                rewriter.create<mlir::gcu::MemRefToPtrOp>(
-                    loc,
-                    mlir::gcu::PtrType::get(rewriter.getContext(), elementTy),
-                    results.back())),
-            0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
-      } else {
-        outputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-            loc, MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
-            results.back(), 0, ArrayRef<int64_t>{totalNumElems},
-            ArrayRef<int64_t>{1}));
+      Value output = results.back();
+      if (elementTy.isInteger(1) && !desc.useAlloca) {
+        output = convertI1MemrefToI8Memref(output);
+        outputElemTy = rewriter.getI8Type();
+        if (fusionDesc->loopDepth != 1) {
+          auto [strides, offset] = resultType.getStridesAndOffset();
+          output = rewriter.create<memref::ReinterpretCastOp>(
+              loc, MemRefType::get(resultType.getShape(), outputElemTy), output,
+              offset, resultType.getShape(), strides);
+        }
       }
+      if (fusionDesc->loopDepth == 1) {
+        output = rewriter.create<memref::ReinterpretCastOp>(
+            loc,
+            MemRefType::get(ArrayRef<int64_t>{totalNumElems}, outputElemTy),
+            output, 0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1});
+      }
+      outputs.push_back(output);
     }
 
     SmallVector<Value> inputs;
-    SmallVector<bool> isAllocaInput(op.getNumOperands(), false);
-    for (unsigned i = 0; i < op.getNumOperands(); ++i) {
-      auto operand = adaptor.getOperands()[i];
-      auto operandType = operand.getType();
-      if (auto memrefTy = dyn_cast<MemRefType>(operandType)) {
-        auto elementTy = cast<MemRefType>(operandType).getElementType();
-        auto totalNumElems =
-            triton::gcu::getTotalElemsPerThread(op.getOperandTypes()[i]);
-        if (mlir::triton::gcu::isAllocaInputValue(operand) ||
-            i == static_cast<unsigned>(inplaceOperandIdx)) {
-          inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-              loc, MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
-              operand, 0, ArrayRef<int64_t>{totalNumElems},
-              ArrayRef<int64_t>{1}));
-          fusionRegionInfo.unrollFull = true;
-          isAllocaInput[i] = true;
-        } else {
-          if (elementTy.isInteger(1) &&
-              (llvm::any_of(
-                  op.getBody()->getArgument(i).getUsers(), [](auto user) {
-                    return !isa_and_nonnull<triton::BroadcastOp>(user);
-                  }))) {
-            inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-                loc,
-                MemRefType::get(ArrayRef<int64_t>{totalNumElems},
-                                rewriter.getIntegerType(8)),
-                rewriter.create<mlir::gcu::PtrToMemRefOp>(
-                    loc,
-                    MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
-                                    rewriter.getIntegerType(8)),
-                    rewriter.create<mlir::gcu::MemRefToPtrOp>(
-                        loc,
-                        mlir::gcu::PtrType::get(rewriter.getContext(),
-                                                elementTy),
-                        operand)),
-                0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
-          } else {
-            inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-                loc,
-                MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
-                operand, 0, ArrayRef<int64_t>{totalNumElems},
-                ArrayRef<int64_t>{1}));
+    for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
+      const auto &desc = inputDescs[i];
+      Value input = remappedOperands[i];
+      if (desc.kind == InputKind::MemRef) {
+        auto memrefTy = cast<MemRefType>(input.getType());
+        auto elementType = memrefTy.getElementType();
+        auto inputElementTy = elementType;
+        if (elementType.isInteger(1) && !desc.isAllocaInput &&
+            !(desc.broadcastDesc &&
+              desc.broadcastDesc->kind == BroadcastKind::BroadcastOnLastDim)) {
+          input = convertI1MemrefToI8Memref(input);
+          inputElementTy = rewriter.getI8Type();
+          if (fusionDesc->loopDepth != 1) {
+            auto [strides, offset] = memrefTy.getStridesAndOffset();
+            input = rewriter.create<memref::ReinterpretCastOp>(
+                loc, MemRefType::get(memrefTy.getShape(), inputElementTy),
+                input, offset, memrefTy.getShape(), strides);
           }
         }
-      } else {
-        inputs.push_back(operand);
+        if (fusionDesc->loopDepth == 1) {
+          auto numElements =
+              triton::gcu::getTotalElemsPerThread(operand.getType());
+          input = rewriter.create<memref::ReinterpretCastOp>(
+              loc,
+              MemRefType::get(ArrayRef<int64_t>{numElements}, inputElementTy),
+              input, 0, ArrayRef<int64_t>{numElements}, ArrayRef<int64_t>{1});
+        }
       }
+      inputs.push_back(input);
     }
 
     auto insertPoint = rewriter.saveInsertionPoint();
-    SmallVector<IRMapping> operandMaps(loopCnt);
+    SmallVector<IRMapping> operandMaps(fusionDesc->loopUnrollCount);
 
     Value mask;
     llvm::MapVector<Operation *, Value> offsets;
     DenseSet<Operation *> perVecContiguousOps;
-    auto useLoadStoreInstrOps = trySimplifyLoadStore(
-        op, rewriter, offsets, mask, vectorLength, perVecContiguousOps);
+    DenseSet<Operation *> useLoadStoreInstrOps;
+#if TRITON_VERSION >= 38
+    if (fusionDesc->maxBpe < 8)
+#endif
+      useLoadStoreInstrOps =
+          trySimplifyLoadStore(op, rewriter, offsets, mask,
+                               fusionDesc->vectorLength, perVecContiguousOps);
     bool disableLoadStroreInstrOptimize = false;
-
-    DenseMap<unsigned, unsigned> broadcastInfo;
-    DenseSet<unsigned> broadcastOnDim0;
-    for (auto &o : op.getRegion().back().without_terminator()) {
-      if (auto broadcastOp = dyn_cast<triton::BroadcastOp>(o)) {
-        auto srcType = broadcastOp.getSrc().getType();
-        auto resultType = broadcastOp.getType();
-        auto rank = srcType.getRank();
-        unsigned broadcastAxis = -1;
-        for (unsigned i = 0; i < rank; ++i) {
-          if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
-            broadcastAxis = i;
-            break;
-          }
-        }
-        if (auto arg = llvm::dyn_cast<BlockArgument>(broadcastOp.getSrc())) {
-          auto argNum = arg.getArgNumber();
-          if (broadcastAxis == 0) {
-            broadcastOnDim0.insert(argNum);
-            auto elemsPerThread = triton::gcu::getElemsPerThread(srcType);
-            auto elementNum = std::accumulate(
-                elemsPerThread.begin() + broadcastAxis, elemsPerThread.end(),
-                1u, std::multiplies<unsigned>());
-            auto elementTy =
-                dyn_cast<MemRefType>(inputs[argNum].getType()).getElementType();
-            std::optional<unsigned> vectorLen = std::nullopt;
-            Value remappedValue =
-                rewriter.getRemappedValue(op->getOperand(argNum));
-            for (auto user : llvm::make_filter_range(
-                     remappedValue.getUsers(), [](Operation *op) {
-                       return isa<memref::ReinterpretCastOp>(op);
-                     })) {
-              if (llvm::any_of(user->getUsers(), [&](auto op) {
-                    if (auto storeOp = dyn_cast<vector::StoreOp>(op)) {
-                      vectorLen = storeOp.getVectorType().getDimSize(0);
-                      return true;
-                    }
-                    return false;
-                  })) {
-                break;
-              }
-            }
-            auto emitLoad = [&](Value input, int offset) -> Value {
-              auto vlen = vectorLen ? *vectorLen : vectorLength;
-              if (vectorLength > vlen) {
-                auto len =
-                    vectorLength > elementNum ? elementNum : vectorLength;
-                auto vectorType =
-                    VectorType::get(ArrayRef<int64_t>{vlen}, elementTy);
-                SmallVector<Value> values;
-                for (unsigned i = 0; i < len / vlen; ++i) {
-                  values.emplace_back(rewriter.create<vector::LoadOp>(
-                      loc, vectorType, input,
-                      ValueRange{rewriter.create<arith::ConstantIndexOp>(
-                          loc, offset + i * vlen)}));
-                }
-                return rewriter
-                    .create<gcu::VectorConvertOp>(
-                        loc, VectorType::get(ArrayRef<int64_t>{len}, elementTy),
-                        values)
-                    ->getResult(0);
-              } else {
-                auto vectorType = VectorType::get(
-                    ArrayRef<int64_t>{vectorLength > elementNum ? elementNum
-                                                                : vlen},
-                    elementTy);
-                return rewriter.create<vector::LoadOp>(
-                    loc, vectorType, input,
-                    ValueRange{
-                        rewriter.create<arith::ConstantIndexOp>(loc, offset)});
-              }
-            };
-            if (vectorLength > elementNum) {
-              auto v = emitLoad(inputs[argNum], 0);
-              v = rewriter
-                      .create<gcu::VectorConvertOp>(
-                          loc,
-                          VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                          elementTy),
-                          SmallVector<Value>(vectorLength / elementNum, v))
-                      .getResult(0);
-              for (unsigned j = 0; j < loopCnt; ++j) {
-                operandMaps[j].map(op.getRegion().getArgument(argNum), v);
-              }
-            } else if (vectorLength == elementNum) {
-              auto v = emitLoad(inputs[argNum], 0);
-              for (unsigned j = 0; j < loopCnt; ++j) {
-                operandMaps[j].map(op.getRegion().getArgument(argNum), v);
-              }
-            } else {
-              if (elementNum > vectorLength * loopCnt) {
-                assert(loopCnt == kLoopUnrollTimes);
-                vectorLength = elementNum / loopCnt;
-              }
-              auto vlen = vectorLen ? *vectorLen : vectorLength;
-              auto tripCount = elementNum / vectorLength;
-              if (vlen <= vectorLength) {
-                for (unsigned i = 0; i < tripCount; ++i) {
-                  auto v = emitLoad(inputs[argNum], i * vectorLength);
-                  for (unsigned j = 0; j < loopCnt / tripCount; ++j) {
-                    operandMaps[j * tripCount + i].map(
-                        op.getRegion().getArgument(argNum), v);
-                  }
-                }
-              } else {
-                auto numVec = vlen / vectorLength;
-                for (unsigned i = 0; i < elementNum / vlen; ++i) {
-                  auto convertOp = rewriter.create<gcu::VectorConvertOp>(
-                      loc,
-                      SmallVector<Type>(
-                          numVec,
-                          VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                          elementTy)),
-                      emitLoad(inputs[argNum], i * vlen));
-                  for (unsigned j = 0; j < numVec; ++j) {
-                    for (unsigned k = 0; k < loopCnt / tripCount; ++k) {
-                      operandMaps[k * tripCount + i * numVec + j].map(
-                          op.getRegion().getArgument(argNum),
-                          convertOp.getResult(j));
-                    }
-                  }
-                }
-              }
-            }
-          } else if (broadcastAxis == rank - 1) {
-            auto elemsPerThread = triton::gcu::getElemsPerThread(resultType);
-            auto elementNum = elemsPerThread[broadcastAxis];
-            if (elementNum > vectorLength * loopCnt) {
-              assert(loopCnt == kLoopUnrollTimes);
-              vectorLength = elementNum / loopCnt;
-            }
-            broadcastInfo[argNum] = elementNum;
-          } else {
-            llvm_unreachable("unsupported broadcast axis");
-          }
-        } else {
-          llvm_unreachable("unsupported broadcast op");
-        }
-      }
-    }
 
     triton::gcu::TritonGCUBuilder b(loc, rewriter);
     SmallVector<Value> initValues;
-
-    for (size_t i = 0; i < inputs.size(); ++i) {
-      if (broadcastOnDim0.contains(i) || broadcastInfo.contains(i)) {
-        continue;
+    auto emitLoad = [&](const InputDesc &desc, Value input,
+                        int offset) -> Value {
+      assert(desc.broadcastDesc &&
+             desc.broadcastDesc->kind == BroadcastKind::BroadcastOnDim0);
+      const auto elementNumPerThread = desc.broadcastDesc->elementNumPerThread;
+      auto elementType = cast<MemRefType>(input.getType()).getElementType();
+      auto preferredVectorLength = desc.preferredVectorLength
+                                       ? *desc.preferredVectorLength
+                                       : vectorLength;
+      if (vectorLength > preferredVectorLength) {
+        auto length = vectorLength > elementNumPerThread ? elementNumPerThread
+                                                         : vectorLength;
+        auto vectorType = VectorType::get(
+            ArrayRef<int64_t>{preferredVectorLength}, elementType);
+        SmallVector<Value> values;
+        for (unsigned i = 0; i < length / preferredVectorLength; ++i) {
+          values.emplace_back(rewriter.create<vector::LoadOp>(
+              loc, vectorType, input,
+              ValueRange{rewriter.create<arith::ConstantIndexOp>(
+                  loc, offset + i * preferredVectorLength)}));
+        }
+        return rewriter
+            .create<gcu::VectorConvertOp>(
+                loc, VectorType::get(ArrayRef<int64_t>{length}, elementType),
+                values)
+            ->getResult(0);
+      } else {
+        auto vectorType =
+            VectorType::get(ArrayRef<int64_t>{vectorLength > elementNumPerThread
+                                                  ? elementNumPerThread
+                                                  : preferredVectorLength},
+                            elementType);
+        return rewriter.create<vector::LoadOp>(
+            loc, vectorType, input,
+            ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, offset)});
       }
-      if (isAllocaInput[i]) {
-        continue;
-      }
-      auto type = inputs[i].getType();
-      if (isa<MemRefType>(type)) {
-        initValues.emplace_back(b.tarAddr(inputs[i]));
-      } else if (auto ptrType = dyn_cast<gcu::PtrType>(type)) {
+    };
+    for (auto [argNum, input] : llvm::enumerate(inputs)) {
+      const auto &desc = inputDescs[argNum];
+      if (desc.broadcastDesc) {
+        if (desc.broadcastDesc->kind != BroadcastKind::BroadcastOnDim0)
+          continue;
+        auto vectorType =
+            VectorType::get(ArrayRef<int64_t>{vectorLength},
+                            cast<MemRefType>(input.getType()).getElementType());
+        auto elementNumPerThread = desc.broadcastDesc->elementNumPerThread;
+        if (vectorLength > elementNumPerThread) {
+          auto v = emitLoad(desc, input, 0);
+          v = rewriter
+                  .create<gcu::VectorConvertOp>(
+                      loc, vectorType,
+                      SmallVector<Value>(vectorLength / elementNumPerThread, v))
+                  .getResult(0);
+          for (unsigned i = 0; i < loopUnrollCount; ++i) {
+            operandMaps[i].map(op.getRegion().getArgument(argNum), v);
+          }
+        } else if (vectorLength == elementNumPerThread) {
+          auto v = emitLoad(desc, input, 0);
+          for (unsigned i = 0; i < loopUnrollCount; ++i) {
+            operandMaps[i].map(op.getRegion().getArgument(argNum), v);
+          }
+        } else {
+          auto preferredVectorLength = desc.preferredVectorLength
+                                           ? *desc.preferredVectorLength
+                                           : vectorLength;
+          auto tripCount = elementNumPerThread / vectorLength;
+          if (preferredVectorLength > vectorLength) {
+            auto numVec = preferredVectorLength / vectorLength;
+            for (unsigned i = 0;
+                 i < elementNumPerThread / preferredVectorLength; ++i) {
+              auto convertOp = rewriter.create<gcu::VectorConvertOp>(
+                  loc, SmallVector<Type>(numVec, vectorType),
+                  emitLoad(desc, input, i * preferredVectorLength));
+              for (unsigned j = 0; j < numVec; ++j) {
+                for (unsigned k = 0; k < loopUnrollCount / tripCount; ++k) {
+                  operandMaps[k * tripCount + i * numVec + j].map(
+                      op.getRegion().getArgument(argNum),
+                      convertOp.getResult(j));
+                }
+              }
+            }
+          } else {
+            for (unsigned j = 0; j < tripCount; ++j) {
+              auto v = emitLoad(desc, input, j * vectorLength);
+              for (unsigned k = 0; k < loopUnrollCount / tripCount; ++k) {
+                operandMaps[k * tripCount + j].map(
+                    op.getRegion().getArgument(argNum), v);
+              }
+            }
+          }
+        }
+      } else if (desc.kind == InputKind::Ptr) {
         Value memref = rewriter.create<mlir::gcu::PtrToMemRefOp>(
             loc,
-            MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
-                            ptrType.getElementType()),
-            inputs[i]);
-        for (unsigned j = 0; j < loopCnt; ++j) {
-          operandMaps[j].map(op.getRegion().getArgument(i), memref);
+            MemRefType::get(
+                ArrayRef<int64_t>{ShapedType::kDynamic},
+                cast<gcu::PtrType>(input.getType()).getElementType()),
+            input);
+        for (unsigned j = 0; j < loopUnrollCount; ++j) {
+          operandMaps[j].map(op.getRegion().getArgument(argNum), memref);
         }
+      } else if (desc.kind == InputKind::MemRef && !desc.isAllocaInput) {
+        initValues.emplace_back(b.tarAddr(input));
       }
     }
 
-    unsigned cnt = initValues.size();
-    for (auto [output, useAlloca] :
-         llvm::zip_equal(outputs, fusionRegionInfo.useAlloca)) {
-      if (!useAlloca) {
+    unsigned numInputTarAddrs = initValues.size();
+    for (auto [idx, output] : llvm::enumerate(outputs)) {
+      if (!outputDescs[idx].useAlloca)
         initValues.emplace_back(b.tarAddr(output));
-      }
     }
     auto tarStride = b.tarValue(kOaccSizeInBytes);
 
-    Value step;
-    DenseMap<Operation *, unsigned> map;
-
-    for (auto &o : op.getRegion().back().without_terminator()) {
-      if (auto makeRangeOp = dyn_cast<triton::MakeRangeOp>(o)) {
-        auto startIdx = makeRangeOp.getStart();
-        auto elementTy = makeRangeOp.getResult().getType().getElementType();
-        Value start =
-            rewriter.create<arith::ConstantIntOp>(loc, elementTy, startIdx)
-                .getResult();
-        if (!getSlicedAxies(makeRangeOp.getType()).empty()) {
-          start = rewriter.create<arith::AddIOp>(
-              loc,
-              rewriter.create<arith::MulIOp>(
-                  loc,
-                  rewriter.create<arith::IndexCastOp>(
-                      loc, elementTy,
-                      getWarpIds(rewriter, loc, makeRangeOp.getType()).front()),
-                  rewriter.create<arith::ConstantIntOp>(loc, elementTy,
-                                                        totalNumElems)),
-              start);
-        }
-        map[&o] = initValues.size();
-        initValues.emplace_back(
-            rewriter
-                .create<gcu::VectorStepOp>(
-                    loc,
-                    VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy),
-                    start)
-                .getResult());
+    DenseMap<Operation *, unsigned> iterArgIndexMap;
+    for (auto makeRangeOp : op.getBody()->getOps<triton::MakeRangeOp>()) {
+      auto startIdx = makeRangeOp.getStart();
+      auto elementTy = makeRangeOp.getResult().getType().getElementType();
+      Value start =
+          rewriter.create<arith::ConstantIntOp>(loc, elementTy, startIdx)
+              .getResult();
+      if (!getSlicedAxies(makeRangeOp.getType()).empty()) {
+        start = rewriter.create<arith::AddIOp>(
+            loc,
+            rewriter.create<arith::MulIOp>(
+                loc,
+                rewriter.create<arith::IndexCastOp>(
+                    loc, elementTy,
+                    getWarpIds(rewriter, loc, makeRangeOp.getType()).front()),
+                rewriter.create<arith::ConstantIntOp>(loc, elementTy,
+                                                      totalNumElems)),
+            start);
       }
+      iterArgIndexMap[makeRangeOp] = initValues.size();
+      initValues.emplace_back(
+          rewriter
+              .create<gcu::VectorStepOp>(
+                  loc,
+                  VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy),
+                  start)
+              .getResult());
     }
 
     if (!isSmallSize) {
@@ -811,14 +985,14 @@ struct GCUElementwiseFusionOpLowering
                 rewriter.create<arith::ConstantIntOp>(
                     loc, rewriter.getI64Type(),
                     mlir::triton::gcu::getBpe(ptrType.getElementType())))));
-        map[op] = initValues.size();
+        iterArgIndexMap[op] = initValues.size();
         initValues.emplace_back(addr);
       }
     }
-
+    Value step;
     auto loopBody = [&](OpBuilder &builder, Location loc, Value loopIter,
                         ValueRange iterArgs) {
-      SmallVector<Value> args(iterArgs);
+      SmallVector<Value> iterArgValues(iterArgs);
 
       // Compute the load/store offset for an alloca-backed buffer at the
       // given inner unroll index. When the outer loop runs more than once
@@ -830,7 +1004,7 @@ struct GCUElementwiseFusionOpLowering
       auto computeAllocaOffset = [&](unsigned innerIdx) -> Value {
         Value offset = builder.create<arith::ConstantIndexOp>(
             loc, innerIdx * vectorLength);
-        if (ceil<unsigned>(totalNumElems, vectorLength * loopCnt) > 1) {
+        if (ceil<unsigned>(totalNumElems, vectorLength * loopUnrollCount) > 1) {
           Value baseOffset;
           if (!useLoadStoreInstrOps.empty()) {
             // Tar mode: loopIter is an element offset, add it directly.
@@ -840,116 +1014,141 @@ struct GCUElementwiseFusionOpLowering
             // per-trip block size (vectorLength * loopCnt).
             baseOffset = builder.create<arith::MulIOp>(
                 loc, loopIter,
-                builder.create<arith::ConstantIndexOp>(loc,
-                                                       loopCnt * vectorLength));
+                builder.create<arith::ConstantIndexOp>(loc, loopUnrollCount *
+                                                                vectorLength));
           }
-          offset = builder.create<arith::AddIOp>(loc, baseOffset, offset);
+          offset = builder.createOrFold<arith::AddIOp>(loc, baseOffset, offset);
         }
         return offset;
       };
 
-      for (unsigned i = 0; i < loopCnt; ++i) {
+      for (unsigned i = 0; i < loopUnrollCount; ++i) {
         for (unsigned j = 0, k = 0; j < inputs.size(); ++j) {
-          if (broadcastOnDim0.contains(j)) {
-            continue;
-          }
-          if (broadcastInfo.contains(j)) {
-            auto elementNum = broadcastInfo[j];
+          const auto &desc = inputDescs[j];
+          if (desc.broadcastDesc) {
+            if (desc.broadcastDesc->kind != BroadcastKind::BroadcastOnLastDim)
+              continue;
+            auto elementNumPerThread = desc.broadcastDesc->elementNumPerThread;
             auto elementTy =
                 cast<MemRefType>(inputs[j].getType()).getElementType();
-            auto cnt = loopCnt * vectorLength / elementNum;
-            if (elementNum < vectorLength) {
-              auto num = vectorLength / elementNum;
-              SmallVector<Value> src;
-              for (unsigned k = 0; k < num; ++k) {
-                src.emplace_back(builder.create<vector::BroadcastOp>(
-                    loc,
-                    VectorType::get(ArrayRef<int64_t>{elementNum}, elementTy),
-                    builder.create<memref::LoadOp>(
-                        loc, inputs[j],
-                        ValueRange{builder.create<arith::AddIOp>(
-                            loc,
-                            builder.create<arith::MulIOp>(
-                                loc, loopIter,
-                                builder.create<arith::ConstantIndexOp>(loc,
-                                                                       cnt)),
-                            builder.create<arith::ConstantIndexOp>(
-                                loc, i * num + k))})));
-              }
-              auto v = builder
-                           .create<gcu::VectorConvertOp>(
-                               loc,
-                               VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                               elementTy),
-                               src)
-                           .getResult(0);
-              operandMaps[i].map(op.getRegion().getArgument(j), v);
-            } else {
-              auto num = elementNum / vectorLength;
-              if (i % num == 0) {
-                auto v = builder.create<vector::BroadcastOp>(
-                    loc,
-                    VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy),
-                    builder.create<memref::LoadOp>(
-                        loc, inputs[j],
-                        ValueRange{builder.create<arith::AddIOp>(
-                            loc,
-                            builder.create<arith::MulIOp>(
-                                loc, loopIter,
-                                builder.create<arith::ConstantIndexOp>(loc,
-                                                                       cnt)),
-                            builder.create<arith::ConstantIndexOp>(loc,
-                                                                   i / num))}));
-                for (unsigned k = 0; k < num; ++k) {
-                  operandMaps[i + k].map(op.getRegion().getArgument(j), v);
-                }
-              }
-            }
-          } else if (isAllocaInput[j]) {
-            auto memrefType = cast<MemRefType>(inputs[j].getType());
-            auto elementTy = memrefType.getElementType();
-            auto totalNumElems = memrefType.getDimSize(0);
-            Value offset = computeAllocaOffset(i);
-            Value mappingValue;
-            if (!elementTy.isInteger(1) && totalNumElems < vectorLength) {
-              auto vectorTy =
-                  VectorType::get(ArrayRef<int64_t>{totalNumElems}, elementTy);
-              Value v = builder
-                            .create<vector::LoadOp>(loc, vectorTy, inputs[j],
-                                                    ValueRange{offset})
-                            .getResult();
-              mappingValue =
+            auto rowsPerTrip =
+                loopUnrollCount * vectorLength / elementNumPerThread;
+            auto computeLoadOffset = [&](unsigned innerOffset) {
+              return builder.createOrFold<arith::AddIOp>(
+                  loc,
+                  builder.createOrFold<arith::MulIOp>(
+                      loc, loopIter,
+                      builder.create<arith::ConstantIndexOp>(loc, rowsPerTrip)),
+                  builder.create<arith::ConstantIndexOp>(loc, innerOffset));
+            };
+            auto broadcastLoad = [&](unsigned innerOffset,
+                                     unsigned broadcastLength) {
+              return builder.create<vector::BroadcastOp>(
+                  loc,
+                  VectorType::get(ArrayRef<int64_t>{broadcastLength},
+                                  elementTy),
+                  builder.create<memref::LoadOp>(
+                      loc, inputs[j],
+                      ValueRange{computeLoadOffset(innerOffset)}));
+            };
+            if (elementNumPerThread < vectorLength) {
+              auto rowsPerVector = vectorLength / elementNumPerThread;
+              SmallVector<Value> rowBroadcasts;
+              for (unsigned rowIdx = 0; rowIdx < rowsPerVector; ++rowIdx)
+                rowBroadcasts.emplace_back(broadcastLoad(
+                    i * rowsPerVector + rowIdx, elementNumPerThread));
+              auto broadcastVector =
                   builder
                       .create<gcu::VectorConvertOp>(
                           loc,
                           VectorType::get(ArrayRef<int64_t>{vectorLength},
                                           elementTy),
-                          SmallVector<Value>(vectorLength / totalNumElems, v))
-                      ->getResult(0);
+                          rowBroadcasts)
+                      .getResult(0);
+              operandMaps[i].map(op.getRegion().getArgument(j),
+                                 broadcastVector);
             } else {
-              auto vectorTy =
-                  VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy);
-              mappingValue =
-                  builder
-                      .create<vector::LoadOp>(loc, vectorTy, inputs[j],
-                                              ValueRange{offset})
-                      .getResult();
+              auto vectorsPerRow = elementNumPerThread / vectorLength;
+              if (i % vectorsPerRow == 0) {
+                auto broadcastVector =
+                    broadcastLoad(i / vectorsPerRow, vectorLength);
+                for (unsigned vecIdx = 0; vecIdx < vectorsPerRow; ++vecIdx) {
+                  operandMaps[i + vecIdx].map(op.getRegion().getArgument(j),
+                                              broadcastVector);
+                }
+              }
             }
-            operandMaps[i].map(op.getRegion().getArgument(j), mappingValue);
-          } else if (auto memrefTy =
-                         dyn_cast<MemRefType>(inputs[j].getType())) {
-            auto elementTy = memrefTy.getElementType();
-            Value tarAddr = args[k];
-            Value loaded =
+          } else if (desc.isAllocaInput) {
+            auto memrefType = cast<MemRefType>(inputs[j].getType());
+            auto elementTy = memrefType.getElementType();
+            Value offset = computeAllocaOffset(i);
+            unsigned preferredVectorLength = desc.preferredVectorLength
+                                                 ? *desc.preferredVectorLength
+                                                 : vectorLength;
+            auto subVectorType = VectorType::get(
+                ArrayRef<int64_t>{preferredVectorLength}, elementTy);
+            SmallVector<Value> subVectors;
+            if (preferredVectorLength >= totalNumElems) {
+              Value subVector = builder.create<vector::LoadOp>(
+                  loc, subVectorType, inputs[j], ValueRange{offset});
+              subVectors.assign(vectorLength / preferredVectorLength,
+                                subVector);
+            } else if (totalNumElems < vectorLength) {
+              for (unsigned vecIdx = 0;
+                   vecIdx < totalNumElems / preferredVectorLength; ++vecIdx) {
+                subVectors.emplace_back(builder.create<vector::LoadOp>(
+                    loc, subVectorType, inputs[j],
+                    ValueRange{builder.createOrFold<arith::AddIOp>(
+                        loc, offset,
+                        builder.create<arith::ConstantIndexOp>(
+                            loc, vecIdx * preferredVectorLength))}));
+              }
+              Value subVector =
+                  builder
+                      .create<gcu::VectorConvertOp>(
+                          loc,
+                          VectorType::get(ArrayRef<int64_t>{totalNumElems},
+                                          elementTy),
+                          subVectors)
+                      ->getResult(0);
+              subVectors.assign(vectorLength / totalNumElems, subVector);
+            } else {
+              assert(vectorLength >= preferredVectorLength);
+              for (unsigned vecIdx = 0;
+                   vecIdx < vectorLength / preferredVectorLength; ++vecIdx) {
+                subVectors.emplace_back(builder.create<vector::LoadOp>(
+                    loc, subVectorType, inputs[j],
+                    ValueRange{builder.createOrFold<arith::AddIOp>(
+                        loc, offset,
+                        builder.create<arith::ConstantIndexOp>(
+                            loc, vecIdx * preferredVectorLength))}));
+              }
+            }
+            auto loadedVector =
+                subVectors.size() == 1
+                    ? subVectors.front()
+                    : builder
+                          .create<gcu::VectorConvertOp>(
+                              loc,
+                              VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                              elementTy),
+                              subVectors)
+                          ->getResult(0);
+            operandMaps[i].map(op.getRegion().getArgument(j), loadedVector);
+          } else if (desc.kind == InputKind::MemRef) {
+            auto elementTy =
+                cast<MemRefType>(inputs[j].getType()).getElementType();
+            Value inputTarAddr = iterArgValues[k];
+            Value loadedVector =
                 isSmallSize
                     ? loadSmallSizeTarInput(b, builder, elementTy, vectorLength,
-                                            tarAddr, tarStride, loc)
+                                            inputTarAddr, tarStride, loc)
                     : generateSplitTarLoad(b, builder, elementTy, vectorLength,
-                                           tarAddr, tarStride, loc);
-            operandMaps[i].map(op.getRegion().getArgument(j), loaded);
-            args[k] = tarAddr;
+                                           inputTarAddr, tarStride, loc);
+            operandMaps[i].map(op.getRegion().getArgument(j), loadedVector);
+            iterArgValues[k] = inputTarAddr;
             ++k;
-          } else if (isa<gcu::PtrType>(inputs[j].getType())) {
+          } else if (desc.kind == InputKind::Ptr) {
             continue;
           } else {
             operandMaps[i].map(op.getRegion().getArgument(j), inputs[j]);
@@ -974,11 +1173,11 @@ struct GCUElementwiseFusionOpLowering
               isFullWarpBroadcast = true;
             } else if (constancyVal >= static_cast<int>(vectorLength) &&
                        constancyVal % static_cast<int>(vectorLength) == 0 &&
-                       totalNumElems <= vectorLength * loopCnt) {
+                       totalNumElems <= vectorLength * loopUnrollCount) {
               isBroadcast = true;
             }
           }
-          for (unsigned i = 0; i < loopCnt; ++i) {
+          for (unsigned i = 0; i < loopUnrollCount; ++i) {
             auto result = maskedLoadOp.getResult();
             auto elementTy = result.getType().getElementType();
             auto vecTy =
@@ -995,9 +1194,18 @@ struct GCUElementwiseFusionOpLowering
             } else if (useLoadStoreInstrOps.contains(&op) &&
                        (!disableLoadStroreInstrOptimize ||
                         !maskedLoadOp.getMask())) {
-              if (map.contains(&op)) {
-                operandMaps[i].map(result,
-                                   b.tarLoad(vecTy, args[map[&op]], tarStride));
+              if (iterArgIndexMap.contains(&op)) {
+                if (elementTy.isInteger(64) && vectorLength == 512)
+                  operandMaps[i].map(
+                      result,
+                      generateSplitTarLoad(b, builder, elementTy, vectorLength,
+                                           iterArgValues[iterArgIndexMap[&op]],
+                                           tarStride, loc));
+                else
+                  operandMaps[i].map(
+                      result,
+                      b.tarLoad(vecTy, iterArgValues[iterArgIndexMap[&op]],
+                                tarStride));
               } else {
                 assert(isSmallSize);
                 auto mask = builder.create<vector::ConstantMaskOp>(
@@ -1034,12 +1242,12 @@ struct GCUElementwiseFusionOpLowering
                                      vecTy, builder.getZeroAttr(elementTy)))));
               }
             } else if (perVecContiguousOps.contains(&op)) {
-              operandMaps[i].map(result, simplifyLoadToMaskedLoad(
-                                             maskedLoadOp, builder,
-                                             operandMaps[i], vectorLength,
-                                             needCvtDataLayout, isSmallSize,
-                                             totalNumElems, loopCnt, loopIter,
-                                             i, !useLoadStoreInstrOps.empty()));
+              operandMaps[i].map(
+                  result, simplifyLoadToMaskedLoad(
+                              maskedLoadOp, builder, operandMaps[i],
+                              vectorLength, needCvtDataLayout, isSmallSize,
+                              totalNumElems, loopUnrollCount, loopIter, i,
+                              !useLoadStoreInstrOps.empty()));
             } else if (offsets.contains(&op)) {
               assert(maskedLoadOp.getMask());
               auto mask = operandMaps[i].lookup(maskedLoadOp.getMask());
@@ -1100,7 +1308,7 @@ struct GCUElementwiseFusionOpLowering
           ++cur;
         }
         unsigned i = 0;
-        while (i < loopCnt) {
+        while (i < loopUnrollCount) {
           auto iter = cur;
           while (cur != iterRange.end()) {
             auto &o = *cur;
@@ -1123,8 +1331,16 @@ struct GCUElementwiseFusionOpLowering
                    !maskedStoreOp.getMask())) {
                 auto v = operandMaps[i].lookup(maskedStoreOp.getValue());
                 v = convertI1ToI8VectorForStore(builder, loc, v, vectorLength);
-                if (map.contains(&o)) {
-                  b.tarStore(v, args[map[&o]], tarStride);
+                if (iterArgIndexMap.contains(&o)) {
+                  auto vTy = cast<VectorType>(v.getType());
+                  if (vTy.getElementType().isInteger(64) &&
+                      vTy.getNumElements() == 512)
+                    generateSplitTarStore(b, builder, v,
+                                          iterArgValues[iterArgIndexMap[&o]],
+                                          tarStride, loc);
+                  else
+                    b.tarStore(v, iterArgValues[iterArgIndexMap[&o]],
+                               tarStride);
                 } else {
                   assert(isSmallSize);
                   auto mask = builder.create<vector::ConstantMaskOp>(
@@ -1206,8 +1422,9 @@ struct GCUElementwiseFusionOpLowering
               } else if (perVecContiguousOps.contains(&o)) {
                 simplifyStoreToMaskedStore(
                     maskedStoreOp, builder, operandMaps[i], vectorLength,
-                    needCvtDataLayout, isSmallSize, totalNumElems, loopCnt,
-                    loopIter, i, !useLoadStoreInstrOps.empty());
+                    needCvtDataLayout, isSmallSize, totalNumElems,
+                    loopUnrollCount, loopIter, i,
+                    !useLoadStoreInstrOps.empty());
               } else {
                 handleMaskedStoreOp(maskedStoreOp, builder, operandMaps[i],
                                     vectorLength, needCvtDataLayout);
@@ -1251,16 +1468,18 @@ struct GCUElementwiseFusionOpLowering
                     builder.create<arith::ConstantIntOp>(loc, elementTy,
                                                          vectorLength));
               }
-              operandMaps[i].map(makeRangeOp.getResult(), args[map[&o]]);
-              args[map[&o]] =
-                  rewriter.create<arith::AddIOp>(loc, args[map[&o]], step);
+              operandMaps[i].map(makeRangeOp.getResult(),
+                                 iterArgValues[iterArgIndexMap[&o]]);
+              iterArgValues[iterArgIndexMap[&o]] =
+                  rewriter.create<arith::AddIOp>(
+                      loc, iterArgValues[iterArgIndexMap[&o]], step);
             } else {
               handleCommonOp(o, builder, operandMaps[i], vectorLength,
                              needCvtDataLayout);
             }
             ++cur;
           }
-          if (++i != loopCnt) {
+          if (++i != loopUnrollCount) {
             cur = iter;
           }
         }
@@ -1268,30 +1487,30 @@ struct GCUElementwiseFusionOpLowering
 
       if (auto yieldOp = cast<triton::gcu::YieldOp>(
               op.getRegion().back().getTerminator())) {
-        for (unsigned i = 0; i < loopCnt; ++i) {
+        for (unsigned i = 0; i < loopUnrollCount; ++i) {
           for (unsigned j = 0, k = 0; j < yieldOp.getNumOperands(); ++j) {
             auto v = operandMaps[i].lookup(yieldOp.getOperand(j));
-            if (fusionRegionInfo.useAlloca[j]) {
+            if (outputDescs[j].useAlloca) {
               Value offset = computeAllocaOffset(i);
               builder.create<vector::StoreOp>(loc, v, outputs[j],
                                               ValueRange{offset});
             } else {
               v = convertI1ToI8VectorForStore(builder, loc, v, vectorLength);
-              Value tarAddr = args[cnt + k];
+              Value tarAddr = iterArgValues[numInputTarAddrs + k];
               if (isSmallSize)
                 v = narrowToStoreVector(builder, loc, v);
               generateSplitTarStore(b, builder, v, tarAddr, tarStride, loc);
-              args[cnt + k] = tarAddr;
+              iterArgValues[numInputTarAddrs + k] = tarAddr;
               ++k;
             }
           }
         }
-        builder.create<scf::YieldOp>(loc, args);
+        builder.create<scf::YieldOp>(loc, iterArgValues);
       }
     };
 
     auto setUnrollFullAttr = [&](scf::ForOp forOp) {
-      if (!fusionRegionInfo.unrollFull)
+      if (!fusionDesc->unrollFull)
         return;
       auto *ctx = rewriter.getContext();
       auto loopUnrollAttr = LLVM::LoopUnrollAttr::get(
@@ -1310,8 +1529,8 @@ struct GCUElementwiseFusionOpLowering
     };
 
     if (!useLoadStoreInstrOps.empty()) {
-      auto step =
-          rewriter.create<arith::ConstantIndexOp>(loc, vectorLength * loopCnt);
+      auto step = rewriter.create<arith::ConstantIndexOp>(
+          loc, vectorLength * loopUnrollCount);
       auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto upperBound =
           rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems);
@@ -1341,25 +1560,24 @@ struct GCUElementwiseFusionOpLowering
       auto forOp = rewriter.create<scf::ForOp>(
           loc, rewriter.create<arith::ConstantIndexOp>(loc, 0),
           rewriter.create<arith::ConstantIndexOp>(
-              loc, ceil<unsigned>(totalNumElems, vectorLength * loopCnt)),
+              loc,
+              ceil<unsigned>(totalNumElems, vectorLength * loopUnrollCount)),
           rewriter.create<arith::ConstantIndexOp>(loc, 1), initValues,
           loopBody);
       setUnrollFullAttr(forOp);
     }
 
-    if (auto yieldOp =
-            cast<triton::gcu::YieldOp>(op.getRegion().back().getTerminator())) {
-      for (unsigned i = 0; i < yieldOp.getNumOperands(); ++i) {
-        if (fusionRegionInfo.useAllocaStore[i]) {
-          auto result = op.getResult(i);
-          auto resultType = dyn_cast<MemRefType>(
-              getTypeConverter()->convertType(result.getType()));
-          auto lastUser = userAnalysis.getLastUser(result);
-          Value out = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                                  replaced2Origin, resultType);
-          ConfigMatrixStoreLocal(rewriter, loc, resultType, out, results[i]);
-          results[i] = out;
-        }
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      if (outputDescs[i].useLocalStore) {
+        auto result = op.getResult(i);
+        auto resultType = dyn_cast<MemRefType>(
+            getTypeConverter()->convertType(result.getType()));
+        auto lastUser = userAnalysis.getLastUser(result);
+        Value localMemory = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                        replaced2Origin, resultType);
+        ConfigMatrixStoreLocal(rewriter, loc, resultType, localMemory,
+                               results[i]);
+        results[i] = localMemory;
       }
     }
 
@@ -1682,36 +1900,29 @@ private:
     mask = nullptr;
     perVecContiguousOps.clear();
 
-    for (auto &o : op.getRegion().back()) {
-      if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(o)) {
-        if (isOffsetContiguousInBlock(&o)) {
-          auto offset = maskedLoadOp.getOffset();
-          map[&o] = offset;
-          offsets.insert(offset);
-          if (auto mask = maskedLoadOp.getMask()) {
-            masks.insert(mask);
-            mask2ops[mask].push_back(&o);
-          } else {
-            useLoadStoreInstrOps.insert(&o);
-          }
-        } else if (isOffsetContiguousPerVector(&o, vectorLength)) {
-          perVecContiguousOps.insert(&o);
+    auto processLoadStoreOp = [&](auto loadStoreOp) {
+      Value offset = loadStoreOp.getOffset();
+      int64_t totalNumElems =
+          triton::gcu::getTotalElemsPerThread(offset.getType());
+      if (isOffsetContiguousWithin(loadStoreOp, totalNumElems)) {
+        map[loadStoreOp] = offset;
+        offsets.insert(offset);
+        if (auto mask = loadStoreOp.getMask()) {
+          masks.insert(mask);
+          mask2ops[mask].push_back(loadStoreOp);
+        } else {
+          useLoadStoreInstrOps.insert(loadStoreOp);
         }
-      } else if (auto maskedStoreOp = dyn_cast<triton::gcu::MaskedStoreOp>(o)) {
-        if (isOffsetContiguousInBlock(&o)) {
-          auto offset = maskedStoreOp.getOffset();
-          map[&o] = offset;
-          offsets.insert(offset);
-          if (auto mask = maskedStoreOp.getMask()) {
-            masks.insert(mask);
-            mask2ops[mask].push_back(&o);
-          } else {
-            useLoadStoreInstrOps.insert(&o);
-          }
-        } else if (isOffsetContiguousPerVector(&o, vectorLength)) {
-          perVecContiguousOps.insert(&o);
-        }
+      } else if (isOffsetContiguousWithin(loadStoreOp, vectorLength)) {
+        perVecContiguousOps.insert(loadStoreOp);
       }
+    };
+
+    for (auto &o : *op.getBody()) {
+      if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(o))
+        processLoadStoreOp(maskedLoadOp);
+      else if (auto maskedStoreOp = dyn_cast<triton::gcu::MaskedStoreOp>(o))
+        processLoadStoreOp(maskedStoreOp);
     }
 
     auto generator =
@@ -2445,8 +2656,7 @@ private:
             builder.create<vector::GatherOp>(
                 loc, vectorType, map.lookup(op.getPtr()), ValueRange{zero},
                 map.lookup(op.getOffset()), mask,
-                other ? builder.create<vector::BroadcastOp>(loc, vectorType,
-                                                            map.lookup(other))
+                other ? map.lookup(other)
                       : builder.create<vector::BroadcastOp>(
                             loc, vectorType,
                             triton::gcu::createConstantZero(builder, loc,
@@ -2637,9 +2847,9 @@ private:
     Value result;
     auto resultTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
                                     getElementTypeOrSelf(op.getResult()));
-    if (mlir::triton::gcu::isNvLibDeviceSymbol(symbol)) {
+    if (symbol.starts_with("__ef_")) {
       std::string efSymbol = "__ef_v";
-      efSymbol += symbol.drop_front(strlen("__nv_"));
+      efSymbol += symbol.drop_front(strlen("__ef_"));
       result = builder.create<gcu::ExternElementwiseOp>(loc, resultTy, operands,
                                                         efSymbol);
     } else if (mlir::triton::gcu::isMixedPrecisionSymbol(symbol)) {
@@ -2801,12 +3011,25 @@ private:
 };
 } // namespace
 
+#if TRITON_VERSION == 35
 void mlir::triton::populateElementwiseFusionOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool,
+    gcu::AccPublishContext &accPublishContext) {
+  patterns.add<GCUElementwiseFusionOpLowering>(converter, patterns.getContext(),
+                                               userAnalysis, replaced2Origin,
+                                               pTagPool, accPublishContext);
+}
+#else
+void mlir::triton::populateElementwiseFusionOpToGCUPatterns(
+    const TypeConverter &converter, RewritePatternSet &patterns,
+    gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin,
+    triton::gcu::DTETagPool &pTagPool) {
   patterns.add<GCUElementwiseFusionOpLowering>(converter, patterns.getContext(),
                                                userAnalysis, replaced2Origin,
                                                pTagPool);
 }
+#endif

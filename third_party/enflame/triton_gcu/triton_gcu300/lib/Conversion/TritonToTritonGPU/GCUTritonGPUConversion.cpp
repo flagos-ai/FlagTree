@@ -35,10 +35,12 @@ using namespace mlir::triton::gpu;
 // we rebuild an order for this rank using the frequency map: dims that appear
 // in axisFreq are placed at the back (lower priority), sorted by frequency
 // ascending; the remaining dims use reverse-iota (higher priority).
-triton::gpu::BlockedEncodingAttr mlir::getBlockedEncodingWithOrder(
-    MLIRContext *context, ArrayRef<int64_t> shape, ArrayRef<unsigned> order,
-    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq, int numWarps,
-    int threadsPerWarp, int numCTAs) {
+triton::gpu::BlockedEncodingAttr
+mlir::getBlockedEncodingWithOrder(
+    MLIRContext *context, ArrayRef<int64_t> shape,
+    ArrayRef<unsigned> order,
+    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq,
+    int numWarps, int threadsPerWarp, int numCTAs) {
   int rank = shape.size();
   SmallVector<unsigned> effectiveOrder;
 
@@ -55,12 +57,13 @@ triton::gpu::BlockedEncodingAttr mlir::getBlockedEncodingWithOrder(
       else
         nonReduceDims.push_back(dim);
     }
-    llvm::sort(reduceDimsWithFreq, [](const std::pair<unsigned, unsigned> &a,
-                                      const std::pair<unsigned, unsigned> &b) {
-      if (a.second != b.second)
-        return a.second < b.second;
-      return a.first > b.first;
-    });
+    llvm::sort(reduceDimsWithFreq,
+               [](const std::pair<unsigned, unsigned> &a,
+                  const std::pair<unsigned, unsigned> &b) {
+                 if (a.second != b.second)
+                   return a.second < b.second;
+                 return a.first > b.first;
+               });
     effectiveOrder.append(nonReduceDims.begin(), nonReduceDims.end());
     for (auto &[dim, freq] : reduceDimsWithFreq) {
       (void)freq;
@@ -86,32 +89,34 @@ GCUTritonGPUTypeConverter::GCUTritonGPUTypeConverter(
       numCTAs(numCTAs) {
   addConversion([](Type type) { return type; });
 
-  addConversion([this, defaultOrder = SmallVector<unsigned>(defaultOrder),
-                 axisFreq = llvm::SmallDenseMap<unsigned, unsigned>(axisFreq)](
-                    RankedTensorType tensorType) -> RankedTensorType {
-    if (tensorType.getEncoding())
-      return tensorType;
-    ArrayRef<int64_t> shape = tensorType.getShape();
-    auto encoding = getBlockedEncodingWithOrder(
-        this->context, shape, defaultOrder, axisFreq, this->numWarps,
-        this->threadsPerWarp, this->numCTAs);
-    return tensorType.cloneWithEncoding(encoding);
-  });
+  addConversion(
+      [this, defaultOrder = SmallVector<unsigned>(defaultOrder),
+       axisFreq = llvm::SmallDenseMap<unsigned, unsigned>(axisFreq)](
+          RankedTensorType tensorType) -> RankedTensorType {
+        if (tensorType.getEncoding())
+          return tensorType;
+        ArrayRef<int64_t> shape = tensorType.getShape();
+        auto encoding = getBlockedEncodingWithOrder(
+            this->context, shape, defaultOrder, axisFreq, this->numWarps,
+            this->threadsPerWarp, this->numCTAs);
+        return tensorType.cloneWithEncoding(encoding);
+      });
 
-  addConversion([this](triton::PointerType ptrType) -> triton::PointerType {
-    auto pointeeTensorType =
-        dyn_cast<RankedTensorType>(ptrType.getPointeeType());
-    if (!pointeeTensorType)
-      return ptrType;
-    auto convertedTensorType = convertType(pointeeTensorType);
-    return triton::PointerType::get(convertedTensorType,
-                                    ptrType.getAddressSpace());
-  });
+  addConversion(
+      [this](triton::PointerType ptrType) -> triton::PointerType {
+        auto pointeeTensorType =
+            dyn_cast<RankedTensorType>(ptrType.getPointeeType());
+        if (!pointeeTensorType)
+          return ptrType;
+        auto convertedTensorType = convertType(pointeeTensorType);
+        return triton::PointerType::get(convertedTensorType,
+                                        ptrType.getAddressSpace());
+      });
 
   addTargetMaterialization([](OpBuilder &builder, RankedTensorType tensorType,
                               ValueRange inputs, Location loc) {
-    auto cast =
-        triton::gpu::ConvertLayoutOp::create(builder, loc, tensorType, inputs);
+    auto cast = triton::gpu::ConvertLayoutOp::create(builder, loc, tensorType,
+                                                     inputs);
     return cast.getResult();
   });
 }
