@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Hcu3.6-Build-And-Test
+name: Hcu3.6
 
 on:
   schedule:
@@ -38,8 +38,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hcu36x-unit-test:
-    runs-on: hcu3.6
+  hcu36x:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [hcu3.6, hcu3.6-bw1100]
+    runs-on: ${{ matrix.runner }}
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment

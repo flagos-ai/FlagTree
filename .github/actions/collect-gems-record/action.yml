@@ -101,6 +101,12 @@ inputs:
       Baseline runs only: whether this run became the new best baseline.
     required: false
     default: ''
+  notify:
+    description: >-
+      Also decide whether the run deserves a chat message, and write
+      notification.json when it does. Leave unset to collect only.
+    required: false
+    default: 'false'
   python:
     description: 'Python interpreter to use'
     required: false
@@ -117,6 +123,12 @@ outputs:
       Table schema matching the record. Pass it to the reporting step so a
       schema that grew a field repairs the table on the next run.
     value: ${{ steps.collect.outputs.schema-file }}
+  notification-file:
+    description: >-
+      Path to a notification for a chat, written only when the run changed
+      something against the baseline, failed, or had no baseline. Empty
+      otherwise, which is how the notify step stays quiet on a normal run.
+    value: ${{ steps.collect.outputs.notification-file }}
 
 runs:
   using: 'composite'
@@ -146,11 +158,13 @@ runs:
         OUT_DIR: ${{ inputs.output-dir }}
         BASELINE_DIR: ${{ inputs.baseline-dir }}
         LEDGER_DIR: ${{ inputs.ledger-dir }}
+        NOTIFY: ${{ inputs.notify }}
         PYTHON: ${{ inputs.python }}
       run: |
         set -uo pipefail
 
         echo "record-file=" >> "$GITHUB_OUTPUT"
+        echo "notification-file=" >> "$GITHUB_OUTPUT"
         echo "schema-file=${GITHUB_ACTION_PATH}/scripts/flaggems_runs.schema.json" >> "$GITHUB_OUTPUT"
 
         # An earlier failure leaves no summary to collect. That is not an
@@ -166,6 +180,7 @@ runs:
           args+=(--ledger "${LEDGER_DIR}/runs.jsonl")
           args+=(--op-ledger "${LEDGER_DIR}/operators.jsonl")
         fi
+        [[ "${NOTIFY}" == "true" ]] && args+=(--notify-out "${OUT_DIR}/notification.json")
 
         # Runs from this action's directory, so it does not depend on the
         # checkout and is therefore shared by every branch.
@@ -173,4 +188,10 @@ runs:
 
         if [[ -f "${OUT_DIR}/record.json" ]]; then
           echo "record-file=${OUT_DIR}/record.json" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Written only when the run is worth a message, so its absence is the
+        # normal quiet path rather than a failure.
+        if [[ -f "${OUT_DIR}/notification.json" ]]; then
+          echo "notification-file=${OUT_DIR}/notification.json" >> "$GITHUB_OUTPUT"
         fi
