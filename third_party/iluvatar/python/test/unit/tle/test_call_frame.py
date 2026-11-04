@@ -79,22 +79,22 @@ def test_callee_save_preserves_scalar_spills(tmp_path, private_pressure, nested_
     llvm.init_targets()
     source = _scalar_spill_call_ir(private_pressure, nested_call, block_threads)
     (tmp_path / "scalar-spill-call.ll").write_text(source)
-    binary = iluvatar.translate_llvmir_to_cubin(
-        source, iluvatar.TARGET_TRIPLE, "ivcore11", "", [], False, False)
+    binary = iluvatar.translate_llvmir_to_cubin(source, iluvatar.TARGET_TRIPLE, "ivcore11", "", [], False, False)
     (tmp_path / "scalar-spill-call.cubin").write_bytes(binary)
-    module, function, registers, spills, max_threads = driver.active.utils.load_binary(
-        "entry", binary, 0, 0)
+    module, function, registers, spills, max_threads = driver.active.utils.load_binary("entry", binary, 0, 0)
     assert module and max_threads >= block_threads
 
     count, guard, sentinel = 64, 17, -123456789
     threads = ctas * block_threads
-    output = torch.full((threads * 2 * count + 2 * guard,), sentinel,
-                        dtype=torch.int32, device="cuda")
+    output = torch.full((threads * 2 * count + 2 * guard, ), sentinel, dtype=torch.int32, device="cuda")
     torch.cuda.synchronize()
     libcuda = ctypes.CDLL("libcuda.so.1")
     launch = libcuda.cuLaunchKernel
-    launch.argtypes = [ctypes.c_void_p, *([ctypes.c_uint] * 7), ctypes.c_void_p,
-                       ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+    launch.argtypes = [
+        ctypes.c_void_p, *([ctypes.c_uint] * 7), ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p)
+    ]
     launch.restype = ctypes.c_int
     argument = ctypes.c_uint64(output.data_ptr())
     arguments = (ctypes.c_void_p * 1)(ctypes.cast(ctypes.pointer(argument), ctypes.c_void_p))
@@ -104,20 +104,31 @@ def test_callee_save_preserves_scalar_spills(tmp_path, private_pressure, nested_
     torch.cuda.synchronize()
     before, after = output[guard:-guard].view(threads, 2, count).unbind(1)
     mismatches = torch.nonzero(before != after)[:8].cpu().tolist()
-    (tmp_path / "result.json").write_text(json.dumps({
-        "private_pressure": private_pressure,
-        "nested_call": nested_call,
-        "physical_grid": [ctas, 1, 1],
-        "physical_threads": block_threads,
-        "compared_values": before.numel(),
-        "prefix_guard_intact": bool(torch.all(output[:guard] == sentinel)),
-        "suffix_guard_intact": bool(torch.all(output[-guard:] == sentinel)),
-        "registers": registers,
-        "spill_slots": spills,
-        "mismatched_values": int((before != after).sum()),
-        "examples": [{"position": p, "before": int(before[p[0], p[1]]),
-                      "after": int(after[p[0], p[1]])} for p in mismatches],
-    }, indent=2) + "\n")
+    (tmp_path / "result.json").write_text(
+        json.dumps(
+            {
+                "private_pressure":
+                private_pressure,
+                "nested_call":
+                nested_call,
+                "physical_grid": [ctas, 1, 1],
+                "physical_threads":
+                block_threads,
+                "compared_values":
+                before.numel(),
+                "prefix_guard_intact":
+                bool(torch.all(output[:guard] == sentinel)),
+                "suffix_guard_intact":
+                bool(torch.all(output[-guard:] == sentinel)),
+                "registers":
+                registers,
+                "spill_slots":
+                spills,
+                "mismatched_values":
+                int((before != after).sum()),
+                "examples": [{"position": p, "before": int(before[p[0], p[1]]), "after": int(after[p[0], p[1]])}
+                             for p in mismatches],
+            }, indent=2) + "\n")
     assert torch.all(output[:guard] == sentinel)
     assert torch.all(output[-guard:] == sentinel)
     assert torch.equal(before, after)
