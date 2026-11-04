@@ -47,14 +47,14 @@ def _consume_empty(reader, closed):
 def _empty_ring(closed, CAPACITY: tl.constexpr):
     storage = tle.gpu.alloc([CAPACITY, 16], dtype=tl.int32, scope=tle.gpu.smem, layout=CONTROL_LAYOUT)
     pipe = tle.pipe(capacity=CAPACITY, data=storage)
-    tle.gpu.warp_specialize([(_consume_empty, (pipe.reader(), closed)), (_produce_empty, (pipe.writer(),))], [1], [24])
+    tle.gpu.warp_specialize([(_consume_empty, (pipe.reader(), closed)), (_produce_empty, (pipe.writer(), ))], [1], [24])
 
 
 @triton.jit
 def _ring(output, closed, CAPACITY: tl.constexpr):
     storage = tle.gpu.alloc([CAPACITY, 16], dtype=tl.int32, scope=tle.gpu.smem, layout=CONTROL_LAYOUT)
     pipe = tle.pipe(capacity=CAPACITY, data=storage)
-    tle.gpu.warp_specialize([(_consume, (pipe.reader(), output, closed)), (_produce, (pipe.writer(),))], [1], [24])
+    tle.gpu.warp_specialize([(_consume, (pipe.reader(), output, closed)), (_produce, (pipe.writer(), ))], [1], [24])
 
 
 @pytest.mark.require_tle("pipe", "gpu.warp_specialize")
@@ -64,9 +64,10 @@ def test_cyclic_pipe_wrap_and_close_across_noinline(capacity):
         pytest.skip("requires NVIDIA Hopper")
     output = torch.full((4, 272), -1, dtype=torch.int32, device="cuda")
     closed = torch.full((4, 18), -1, dtype=torch.int32, device="cuda")
-    kernel = _ring[(4,)](output, closed, capacity, num_warps=4)
+    kernel = _ring[(4, )](output, closed, capacity, num_warps=4)
     torch.cuda.synchronize()
-    torch.testing.assert_close(output, torch.arange(272, dtype=torch.int32, device="cuda").expand(4, -1), atol=0, rtol=0)
+    torch.testing.assert_close(output,
+                               torch.arange(272, dtype=torch.int32, device="cuda").expand(4, -1), atol=0, rtol=0)
     expected_closed = torch.zeros_like(closed)
     expected_closed[:, -1] = 1
     torch.testing.assert_close(closed, expected_closed, atol=0, rtol=0)
@@ -80,6 +81,6 @@ def test_empty_pipe_closes_without_a_data_participant_contract(capacity):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:
         pytest.skip("requires NVIDIA Hopper")
     closed = torch.zeros(4, dtype=torch.int32, device="cuda")
-    _empty_ring[(4,)](closed, capacity, num_warps=4)
+    _empty_ring[(4, )](closed, capacity, num_warps=4)
     torch.cuda.synchronize()
     torch.testing.assert_close(closed, torch.ones_like(closed), atol=0, rtol=0)

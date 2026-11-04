@@ -100,9 +100,10 @@ LogicalResult DeviceIntraBarrierOp::verify() {
     if (matchPattern(getDynamicIndex(), m_ConstantInt(&value)))
       constantIndex = value.getSExtValue();
   }
-  if (constantIndex &&
-      (*constantIndex < 0 || (countAttr && *constantIndex >= countAttr.getInt())))
-    return emitOpError("constant barrier index is outside the declared capacity");
+  if (constantIndex && (*constantIndex < 0 ||
+                        (countAttr && *constantIndex >= countAttr.getInt())))
+    return emitOpError(
+        "constant barrier index is outside the declared capacity");
 
   auto barrierTypeAttr = getBarrierTypeAttr();
   auto coopKindAttr = getCoopKindAttr();

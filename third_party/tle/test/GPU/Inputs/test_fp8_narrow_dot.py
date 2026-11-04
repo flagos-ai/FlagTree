@@ -32,8 +32,8 @@ def test_native_fp8_n8_accumulation(dtype, warps, reduction):
     b = torch.randn((reduction, 16), device="cuda", dtype=torch.bfloat16).to(dtype)
     narrow = torch.empty((64, 8), device="cuda", dtype=torch.float32)
     wide = torch.empty((64, 16), device="cuda", dtype=torch.float32)
-    kernel = _narrow_dot[(1,)](a, b, narrow, 8, reduction, num_warps=warps, enable_fp_fusion=False)
-    _narrow_dot[(1,)](a, b, wide, 16, reduction, num_warps=warps, enable_fp_fusion=False)
+    kernel = _narrow_dot[(1, )](a, b, narrow, 8, reduction, num_warps=warps, enable_fp_fusion=False)
+    _narrow_dot[(1, )](a, b, wide, 16, reduction, num_warps=warps, enable_fp_fusion=False)
     assert torch.equal(narrow.view(torch.int32), wide[:, :8].contiguous().view(torch.int32))
     assert "wgmma.mma_async.sync.aligned.m64n8k32.f32" in kernel.asm["ptx"]
     assert "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16" not in kernel.asm["ptx"]

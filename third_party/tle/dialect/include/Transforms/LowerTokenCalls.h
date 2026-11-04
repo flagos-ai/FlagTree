@@ -21,8 +21,7 @@ static unsigned getDirectTokenBarrierRequirement(Operation *user) {
   return TokenNeedsNone;
 }
 
-static FailureOr<tt::FuncOp> getTokenCallee(ModuleOp module,
-                                             tt::CallOp call) {
+static FailureOr<tt::FuncOp> getTokenCallee(ModuleOp module, tt::CallOp call) {
   auto callee = module.lookupSymbol<tt::FuncOp>(call.getCallee());
   if (!callee)
     return call.emitOpError("cannot resolve token-bearing callee ")
@@ -32,9 +31,10 @@ static FailureOr<tt::FuncOp> getTokenCallee(ModuleOp module,
   return callee;
 }
 
-static FailureOr<unsigned> getTokenBarrierRequirement(
-    Value token, ModuleOp module, DenseMap<Value, unsigned> &requirements,
-    DenseSet<Value> &active) {
+static FailureOr<unsigned>
+getTokenBarrierRequirement(Value token, ModuleOp module,
+                           DenseMap<Value, unsigned> &requirements,
+                           DenseSet<Value> &active) {
   if (auto it = requirements.find(token); it != requirements.end())
     return it->second;
   if (!active.insert(token).second)
@@ -86,9 +86,10 @@ static FailureOr<unsigned> getTokenBarrierRequirement(
   return requirement;
 }
 
-static LogicalResult collectTokenLifecycleUsers(
-    Value token, ModuleOp module, DenseSet<Value> &visited,
-    DenseSet<Operation *> &lifecycleUsers) {
+static LogicalResult
+collectTokenLifecycleUsers(Value token, ModuleOp module,
+                           DenseSet<Value> &visited,
+                           DenseSet<Operation *> &lifecycleUsers) {
   if (!visited.insert(token).second)
     return success();
   for (OpOperand &use : token.getUses()) {
@@ -100,9 +101,9 @@ static LogicalResult collectTokenLifecycleUsers(
     if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(user)) {
       unsigned operandNumber = use.getOperandNumber();
       for (Region *region : wsOp.getPartitionRegions()) {
-        if (failed(collectTokenLifecycleUsers(
-                region->getArgument(operandNumber), module, visited,
-                lifecycleUsers)))
+        if (failed(
+                collectTokenLifecycleUsers(region->getArgument(operandNumber),
+                                           module, visited, lifecycleUsers)))
           return failure();
       }
       continue;
@@ -127,25 +128,24 @@ static bool haveCompatibleTokenContracts(ttnvws::CreateTokenOp lhs,
   if (lhs.getResult().getType() != rhs.getResult().getType() ||
       lhs.getLoadType() != rhs.getLoadType())
     return false;
-  for (StringRef attr :
-       ArrayRef<StringRef>{"full_count", "empty_count",
-                           kTleInferFullCountOffsetAttr}) {
+  for (StringRef attr : ArrayRef<StringRef>{"full_count", "empty_count",
+                                            kTleInferFullCountOffsetAttr}) {
     if (lhs->getAttr(attr) != rhs->getAttr(attr))
       return false;
   }
   return true;
 }
 
-static void recordOriginalOperand(
-    std::map<Operation *, SmallVector<unsigned>> &operands, Operation *op,
-    unsigned operandNumber) {
+static void
+recordOriginalOperand(std::map<Operation *, SmallVector<unsigned>> &operands,
+                      Operation *op, unsigned operandNumber) {
   SmallVector<unsigned> &indices = operands[op];
   if (!llvm::is_contained(indices, operandNumber))
     indices.push_back(operandNumber);
 }
 
 static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
-                                                       int numCTAs) {
+                                                      int numCTAs) {
   auto module = dyn_cast<ModuleOp>(parentOp);
   if (!module)
     return parentOp->emitOpError(
@@ -162,8 +162,8 @@ static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
   DenseSet<Operation *> allLifecycleUsers;
   SmallVector<ttnvws::CreateTokenOp> liveCreateTokens;
   for (ttnvws::CreateTokenOp create : createTokens) {
-    auto requirement = getTokenBarrierRequirement(
-        create.getResult(), module, requirements, active);
+    auto requirement = getTokenBarrierRequirement(create.getResult(), module,
+                                                  requirements, active);
     if (failed(requirement))
       return failure();
     if (*requirement == TokenNeedsNone && create.getResult().use_empty()) {
@@ -213,9 +213,9 @@ static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
     Type arrayType = ttg::MemDescType::get(
         {create.getNumBuffers(), 1}, builder.getI64Type(), barrierEncoding,
         sharedMemorySpace, /*mutableMemory=*/true);
-    Type slotType = ttg::MemDescType::get(
-        {1}, builder.getI64Type(), barrierEncoding, sharedMemorySpace,
-        /*mutableMemory=*/true);
+    Type slotType = ttg::MemDescType::get({1}, builder.getI64Type(),
+                                          barrierEncoding, sharedMemorySpace,
+                                          /*mutableMemory=*/true);
 
     TokenBarrierValues values;
     if (requirement & TokenNeedsFull)
@@ -226,10 +226,10 @@ static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
     barrierValues[create.getResult()] = values;
     tokenOrigins[create.getResult()] = create;
 
-    unsigned fullCount = create.getLoadType() ==
-                                 ttnvws::TokenLoadType::TMALoadOp
-                             ? 1
-                             : THREADS_PER_TASK;
+    unsigned fullCount =
+        create.getLoadType() == ttnvws::TokenLoadType::TMALoadOp
+            ? 1
+            : THREADS_PER_TASK;
     // A multi-TMA pipe contributes once per writer. Its declared count must
     // survive the helper-call lowering just as local-store counts do.
     if (auto count = getTokenCountOverride(create, "full_count"))
@@ -409,9 +409,9 @@ static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
       return user->emitOpError("has no propagated create-token origin");
 
     OpBuilder builder(user);
-    Type slotType = ttg::MemDescType::get(
-        {1}, builder.getI64Type(), barrierEncoding, sharedMemorySpace,
-        /*mutableMemory=*/true);
+    Type slotType = ttg::MemDescType::get({1}, builder.getI64Type(),
+                                          barrierEncoding, sharedMemorySpace,
+                                          /*mutableMemory=*/true);
     auto fullSlot = [&](Value idx) -> Value {
       assert(values.full && "full-barrier user requires a full array");
       return ttg::MemDescIndexOp::create(builder, user->getLoc(), slotType,
@@ -447,8 +447,7 @@ static LogicalResult lowerTokenOperationsThroughCalls(Operation *parentOp,
       Value barrier = emptySlot(releaseOp.getIdx());
       setAsyncTaskIds(barrier.getDefiningOp(), getAsyncTaskIds(user));
       unsigned releaseCount = THREADS_PER_TASK;
-      if (auto attr =
-              releaseOp->getAttrOfType<IntegerAttr>("release_count"))
+      if (auto attr = releaseOp->getAttrOfType<IntegerAttr>("release_count"))
         releaseCount = static_cast<unsigned>(attr.getInt());
       processConsumerReleaseOp(builder, releaseOp, barrier, numCTAs,
                                releaseCount);

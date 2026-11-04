@@ -26,8 +26,7 @@ def _owned_copy(descriptor_pointer, output, width: tl.constexpr):
 
 
 @triton.jit
-def _repeat_owned_copies(table, small_output, large_output,
-                         repeats: tl.constexpr):
+def _repeat_owned_copies(table, small_output, large_output, repeats: tl.constexpr):
     for iteration in tl.range(0, repeats):
         _owned_copy(table, small_output + tl.program_id(0) * 512, 64)
         _owned_copy(table + 128, large_output + tl.program_id(0) * 4096, 512)
@@ -41,8 +40,7 @@ def _borrowed_copy(descriptor_pointer, destination, complete, phase):
 
 
 @triton.jit
-def _loop_barrier_copy(table, output, repeats: tl.constexpr,
-                       inner_owned: tl.constexpr):
+def _loop_barrier_copy(table, output, repeats: tl.constexpr, inner_owned: tl.constexpr):
     destination = tle.gpu.alloc([8, 64], tl.bfloat16, scope=tle.gpu.smem)
     if not inner_owned:
         complete = tle.gpu.alloc_barrier(expect_bytes=1024)
@@ -64,10 +62,17 @@ def _descriptor_table(source):
     # Both copy widths use hardware boxes of 64 columns under B128 swizzling.
     # The 512-column destination is filled by eight such TMA transfers.
     for _ in range(2):
-        payload.extend(encode_tma_descriptor(
-            source.data_ptr(), 3, source.element_size(), 9,
-            (8, 64), (8, 512), (512, 1), 0,
-        ))
+        payload.extend(
+            encode_tma_descriptor(
+                source.data_ptr(),
+                3,
+                source.element_size(),
+                9,
+                (8, 64),
+                (8, 512),
+                (512, 1),
+                0,
+            ))
     table = torch.frombuffer(payload, dtype=torch.uint8).to(device="cuda")
     assert table.data_ptr() % 128 == 0
     return table
@@ -95,10 +100,9 @@ def test_owned_mbarrier_storage_reuse(warps, mode):
     expected = source[:, :64].expand(64, -1, -1)
     if mode == "different_helpers":
         large = torch.empty((64, 8, 512), dtype=torch.bfloat16, device="cuda")
-        compiled = _repeat_owned_copies[(64,)](table, output, large, 32, num_warps=warps)
+        compiled = _repeat_owned_copies[(64, )](table, output, large, 32, num_warps=warps)
         torch.testing.assert_close(large, source.expand(64, -1, -1), rtol=0, atol=0)
     else:
-        compiled = _loop_barrier_copy[(64,)](
-            table, output, 32, mode == "inner_owned", num_warps=warps)
+        compiled = _loop_barrier_copy[(64, )](table, output, 32, mode == "inner_owned", num_warps=warps)
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
     _assert_barriers_closed(compiled)

@@ -691,11 +691,12 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
       auto parent = yieldOp->getParentOp();
 #ifdef __TLE__
-      // A while yield feeds the before arguments, whose signature is independent
-      // of the condition-forwarded values that define the while results.
+      // A while yield feeds the before arguments, whose signature is
+      // independent of the condition-forwarded values that define the while
+      // results.
       if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
-        setEncoding({whileOp.getBeforeArguments()[use.getOperandNumber()]}, info,
-                    changed, user);
+        setEncoding({whileOp.getBeforeArguments()[use.getOperandNumber()]},
+                    info, changed, user);
         continue;
       }
 #endif // __TLE__

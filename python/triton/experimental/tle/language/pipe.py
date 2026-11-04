@@ -144,9 +144,8 @@ def pipe(
                 f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
     value = gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
-    identity = _semantic.builder.create_pipe_create(
-        value._field_handles(_semantic), capacity, scope, name or "",
-        list(fields.keys()), list(reader_names or ()), one_shot)
+    identity = _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
+                                                    list(fields.keys()), list(reader_names or ()), one_shot)
     value.identity = identity
     return value
 

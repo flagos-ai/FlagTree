@@ -1158,8 +1158,8 @@ LogicalResult DistributedBarrierOp::verify() {
   auto domainShapeAttr =
       op->getAttrOfType<DenseI32ArrayAttr>("group_domain_shape");
 
-  const bool hasAnyGroupMeta =
-      rankAttr || shapeAttr || axesAttr || maskAttr || domainShapeAttr || kindAttr;
+  const bool hasAnyGroupMeta = rankAttr || shapeAttr || axesAttr || maskAttr ||
+                               domainShapeAttr || kindAttr;
   if (!hasAnyGroupMeta)
     return success();
 
@@ -1180,11 +1180,10 @@ LogicalResult DistributedBarrierOp::verify() {
 
   if (kind == "cluster" || kind == "grid") {
     if (rankAttr || shapeAttr || axesAttr || maskAttr || domainShapeAttr) {
-      return emitOpError()
-             << kind
-             << " group_kind does not accept "
-                "group_rank/group_shape/group_axes/group_mask/"
-                "group_domain_shape attrs";
+      return emitOpError() << kind
+                           << " group_kind does not accept "
+                              "group_rank/group_shape/group_axes/group_mask/"
+                              "group_domain_shape attrs";
     }
     return success();
   }
@@ -1244,17 +1243,17 @@ LogicalResult DistributedBarrierOp::verify() {
       if (dim <= 0)
         return emitOpError() << "group_domain_shape entries must be > 0";
     }
-    for (auto [axis, extent] : llvm::zip(axesAttr.asArrayRef(),
-                                         shapeAttr.asArrayRef())) {
+    for (auto [axis, extent] :
+         llvm::zip(axesAttr.asArrayRef(), shapeAttr.asArrayRef())) {
       if (axis >= static_cast<int32_t>(domainShapeAttr.size()))
         return emitOpError() << "group axis " << axis
                              << " is outside group_domain_shape rank "
                              << domainShapeAttr.size();
       int32_t domainExtent = domainShapeAttr.asArrayRef()[axis];
       if (domainExtent % extent != 0)
-        return emitOpError() << "group extent " << extent
-                             << " must divide domain extent " << domainExtent
-                             << " on axis " << axis;
+        return emitOpError()
+               << "group extent " << extent << " must divide domain extent "
+               << domainExtent << " on axis " << axis;
     }
   }
 

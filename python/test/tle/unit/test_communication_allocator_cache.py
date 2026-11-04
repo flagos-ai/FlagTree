@@ -36,22 +36,21 @@ def allocator_environment(monkeypatch, tmp_path):
         distributed=SimpleNamespace(is_available=lambda: False),
     )
     for name, value in {
-        "tempfile": tempfile,
-        "torch": torch,
-        "FLAGCX_LIB_PATH": str(sdk),
-        "FLAGCX_INCLUDE_PATH": str(include),
-        "flagcx_allocator_source": "allocator source",
-        "load_inline": build,
-        "CUDAPluggableAllocator": load,
-        "_allocator": None,
-        "_allocator_wrapper": None,
-        "_flagcx_allocator_failed_to_compile": False,
+            "tempfile": tempfile,
+            "torch": torch,
+            "FLAGCX_LIB_PATH": str(sdk),
+            "FLAGCX_INCLUDE_PATH": str(include),
+            "flagcx_allocator_source": "allocator source",
+            "load_inline": build,
+            "CUDAPluggableAllocator": load,
+            "_allocator": None,
+            "_allocator_wrapper": None,
+            "_flagcx_allocator_failed_to_compile": False,
     }.items():
         monkeypatch.setattr(communication, name, value, raising=False)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setenv("LOCAL_RANK", "0")
-    return SimpleNamespace(sdk=sdk, include=include, compiled=compiled,
-                           loaded=loaded, torch=torch, temporary=tmp_path)
+    return SimpleNamespace(sdk=sdk, include=include, compiled=compiled, loaded=loaded, torch=torch, temporary=tmp_path)
 
 
 def test_existing_legacy_allocator_cannot_select_a_different_sdk(allocator_environment):
@@ -77,9 +76,7 @@ def test_same_allocator_inputs_reuse_the_compilation(allocator_environment):
 
 
 @pytest.mark.parametrize("changed_input", ["host_library", "header", "source", "torch", "cuda"])
-def test_changed_allocator_input_cannot_reuse_old_library(
-    allocator_environment, monkeypatch, changed_input
-):
+def test_changed_allocator_input_cannot_reuse_old_library(allocator_environment, monkeypatch, changed_input):
     env = allocator_environment
     communication.compile_flagcx_allocator()
     if changed_input == "host_library":
@@ -97,9 +94,7 @@ def test_changed_allocator_input_cannot_reuse_old_library(
     assert env.loaded[0] != env.loaded[1]
 
 
-def test_identical_sdk_bytes_at_another_path_rebuild_the_runtime_link(
-    allocator_environment, monkeypatch
-):
+def test_identical_sdk_bytes_at_another_path_rebuild_the_runtime_link(allocator_environment, monkeypatch):
     env = allocator_environment
     communication.compile_flagcx_allocator()
     other = env.temporary / "other-sdk"

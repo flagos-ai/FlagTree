@@ -40,12 +40,9 @@ if enabled:
     from torch.cuda.memory import CUDAPluggableAllocator
     from torch.utils.cpp_extension import load_inline
 
-    from .flagcx_wrapper import (
-        FLAGCX_WIN_COLL_SYMMETRIC,
-        FLAGCXLibrary,
-        flagcxDevCommRequirements,
-        flagcxUniqueId,  # noqa: F401
-    )
+    from .flagcx_wrapper import (FLAGCX_WIN_COLL_SYMMETRIC, FLAGCXLibrary, flagcxDevCommRequirements,
+                                 flagcxUniqueId,  # noqa: F401
+                                 )
 
     FLAGCX_LIB_PATH = str(flagcx_rt_conf.shared_lib_path.parent)
     FLAGCX_INCLUDE_PATH = str(flagcx_rt_conf.include_path)
@@ -242,7 +239,7 @@ def allocate_dist_tensor(shape, *, dtype, device):
     if not enabled:
         raise RuntimeError("FlagCX/TLE is unavailable")
     get_mem_pool()  # initialize and validate the communicator before allocation
-    shape = (shape,) if isinstance(shape, int) else tuple(int(value) for value in shape)
+    shape = (shape, ) if isinstance(shape, int) else tuple(int(value) for value in shape)
     if not shape or any(value <= 0 for value in shape):
         raise ValueError(f"symmetric tensor shape must be positive, got {shape}")
     pool = torch.cuda.MemPool()
@@ -356,21 +353,15 @@ def create_dist_tensor(buf_tensor, *, intra_barrier_count=1):
     if buf_size <= 0:
         raise ValueError("FlagCX symmetric windows require a non-empty tensor")
     if buf_ptr % _FLAGCX_WINDOW_ALIGNMENT:
-        raise ValueError(
-            "FlagCX symmetric windows require a 4096-byte-aligned base address; "
-            f"got {buf_ptr:#x}. Use tle.allocate_dist_tensor(...)."
-        )
+        raise ValueError("FlagCX symmetric windows require a 4096-byte-aligned base address; "
+                         f"got {buf_ptr:#x}. Use tle.allocate_dist_tensor(...).")
     if dev_comm is not None or dev_mem is not None or win is not None:
-        raise RuntimeError(
-            "An active FlagCX window already owns its communication resources; "
-            "call cleanup_communicator() before creating another window."
-        )
+        raise RuntimeError("An active FlagCX window already owns its communication resources; "
+                           "call cleanup_communicator() before creating another window.")
     can_query_capacity = flagcx.supports_intra_barrier_count_query
     if intra_barrier_count > 1 and not can_query_capacity:
-        raise RuntimeError(
-            "Multiple intra-barrier slots require an SDK capacity query; "
-            "install a FlagCX SDK that reports provisioned barrier capacity."
-        )
+        raise RuntimeError("Multiple intra-barrier slots require an SDK capacity query; "
+                           "install a FlagCX SDK that reports provisioned barrier capacity.")
 
     # Publish completed local CUDA writes before the host rendezvous. A host
     # barrier alone cannot order peer reads after initialization on this GPU.
@@ -403,13 +394,10 @@ def create_dist_tensor(buf_tensor, *, intra_barrier_count=1):
     if can_query_capacity:
         try:
             actual_barrier_count = flagcx.flagcxDevCommGetIntraBarrierCount(dev_comm)
-            if (isinstance(actual_barrier_count, bool)
-                    or not isinstance(actual_barrier_count, int)
+            if (isinstance(actual_barrier_count, bool) or not isinstance(actual_barrier_count, int)
                     or not intra_barrier_count <= actual_barrier_count <= 0x7fffffff):
-                raise RuntimeError(
-                    f"FlagCX provisioned {actual_barrier_count!r} intra-barrier slots; "
-                    f"{intra_barrier_count} were required"
-                )
+                raise RuntimeError(f"FlagCX provisioned {actual_barrier_count!r} intra-barrier slots; "
+                                   f"{intra_barrier_count} were required")
         except BaseException:
             flagcx.flagcxDevCommDestroy(comm, dev_comm)
             dev_comm = None

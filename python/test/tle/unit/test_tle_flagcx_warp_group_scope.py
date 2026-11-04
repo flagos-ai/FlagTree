@@ -15,14 +15,12 @@ from triton.compiler import ASTSource
 @triton.jit(noinline=True)
 def _barrier_helper(mem, comm, KIND: tl.constexpr):
     if KIND == 0:
-        tle.distributed_barrier(device_dptr=(mem, comm), space="device",
-                                barrier_kind="arrive", index=0, barrier_count=1)
+        tle.distributed_barrier(device_dptr=(mem, comm), space="device", barrier_kind="arrive", index=0,
+                                barrier_count=1)
     elif KIND == 1:
-        tle.distributed_barrier(device_dptr=(mem, comm), space="device",
-                                barrier_kind="wait", index=0, barrier_count=1)
+        tle.distributed_barrier(device_dptr=(mem, comm), space="device", barrier_kind="wait", index=0, barrier_count=1)
     else:
-        tle.distributed_barrier(device_dptr=(mem, comm), space="device",
-                                barrier_kind="sync", index=0, barrier_count=1)
+        tle.distributed_barrier(device_dptr=(mem, comm), space="device", barrier_kind="sync", index=0, barrier_count=1)
 
 
 @triton.jit
@@ -30,14 +28,12 @@ def _consumer(out, mem, comm, KIND: tl.constexpr, NESTED: tl.constexpr):
     if NESTED:
         _barrier_helper(mem, comm, KIND)
     elif KIND == 0:
-        tle.distributed_barrier(device_dptr=(mem, comm), space="device",
-                                barrier_kind="arrive", index=0, barrier_count=1)
+        tle.distributed_barrier(device_dptr=(mem, comm), space="device", barrier_kind="arrive", index=0,
+                                barrier_count=1)
     elif KIND == 1:
-        tle.distributed_barrier(device_dptr=(mem, comm), space="device",
-                                barrier_kind="wait", index=0, barrier_count=1)
+        tle.distributed_barrier(device_dptr=(mem, comm), space="device", barrier_kind="wait", index=0, barrier_count=1)
     else:
-        tle.distributed_barrier(device_dptr=(mem, comm), space="device",
-                                barrier_kind="sync", index=0, barrier_count=1)
+        tle.distributed_barrier(device_dptr=(mem, comm), space="device", barrier_kind="sync", index=0, barrier_count=1)
     tl.store(out + tl.arange(0, 128), 1)
 
 
@@ -48,8 +44,7 @@ def _producer(out):
 
 @triton.jit
 def _entry(out, mem, comm, KIND: tl.constexpr, NESTED: tl.constexpr):
-    tle.gpu.warp_specialize([(_consumer, (out, mem, comm, KIND, NESTED)),
-                            (_producer, (out,))], [4], [24])
+    tle.gpu.warp_specialize([(_consumer, (out, mem, comm, KIND, NESTED)), (_producer, (out, ))], [4], [24])
 
 
 @pytest.mark.parametrize("kind", (0, 1, 2))
@@ -60,7 +55,7 @@ def test_linked_flagcx_barrier_has_no_whole_cta_sync(kind, nested, monkeypatch):
     monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "nvidia")
     compiled = triton.compile(
         ASTSource(_entry, signature={"out": "*i32", "mem": "i64", "comm": "i64"},
-                  constexprs={"KIND": kind, "NESTED": nested}),
-        target=GPUTarget("cuda", 90, 32), options={"num_warps": 8})
+                  constexprs={"KIND": kind, "NESTED": nested}), target=GPUTarget("cuda", 90, 32),
+        options={"num_warps": 8})
     assert not re.search(r"\bbar\.sync\s+0\s*;", compiled.asm["ptx"]), \
         "FlagCX block cooperation still waits for the producer's threads"

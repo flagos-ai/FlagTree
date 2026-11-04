@@ -21,8 +21,8 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/CopyFill.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/IR/SMEMPlan.h"
 #include "tle/dialect/include/Transforms/Passes.h"

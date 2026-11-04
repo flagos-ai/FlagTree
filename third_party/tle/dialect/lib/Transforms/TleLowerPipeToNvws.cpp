@@ -198,16 +198,13 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee,
     return call.emitOpError("callee return count does not match call results");
 
   OpBuilder builder(call);
-  SmallVector<Type> argumentTypes = llvm::to_vector(
-      llvm::map_range(call.getOperands(), [](Value value) {
-        return value.getType();
-      }));
-  auto begin = PipeCallBeginOp::create(
-      builder, call.getLoc(), argumentTypes, call.getOperands(),
-      callee.getName(), callId);
+  SmallVector<Type> argumentTypes = llvm::to_vector(llvm::map_range(
+      call.getOperands(), [](Value value) { return value.getType(); }));
+  auto begin =
+      PipeCallBeginOp::create(builder, call.getLoc(), argumentTypes,
+                              call.getOperands(), callee.getName(), callId);
   IRMapping mapping;
-  for (auto [arg, alias] :
-       llvm::zip(block.getArguments(), begin.getAliases()))
+  for (auto [arg, alias] : llvm::zip(block.getArguments(), begin.getAliases()))
     mapping.map(arg, alias);
   for (Operation &op : block.getOperations()) {
     if (&op == returnOp.getOperation())
@@ -1628,20 +1625,17 @@ static LogicalResult verifyNoUseAfterDrain(PipeDrainBuildState &state,
          << taskId;
 }
 
-static LogicalResult
-verifyRequiredDrainParticipant(PipeDrainBuildState &state, Operation *op,
-                               StringRef role,
-                               std::optional<std::pair<int32_t, int32_t>> task) {
+static LogicalResult verifyRequiredDrainParticipant(
+    PipeDrainBuildState &state, Operation *op, StringRef role,
+    std::optional<std::pair<int32_t, int32_t>> task) {
   if (!task)
-    return op->emitOpError("wait_drained requires ") << role
-                                                     << " to reach drain";
+    return op->emitOpError("wait_drained requires ")
+           << role << " to reach drain";
   int32_t taskId = task->first;
   auto it = state.drainTasks.find(taskId);
   if (it == state.drainTasks.end())
-    return op->emitOpError("wait_drained requires ") << role
-                                                     << " async_task_id "
-                                                     << taskId
-                                                     << " to call drain";
+    return op->emitOpError("wait_drained requires ")
+           << role << " async_task_id " << taskId << " to call drain";
   if (it->second != task->second)
     return op->emitOpError("wait_drained participant thread count mismatch "
                            "for ")
@@ -1649,9 +1643,10 @@ verifyRequiredDrainParticipant(PipeDrainBuildState &state, Operation *op,
   return success();
 }
 
-static LogicalResult analyzePipeDrains(
-    ArrayRef<Operation *> ops, std::map<std::string, PipeDefinition> &pipes,
-    std::map<std::string, int32_t> &drainParticipantCounts) {
+static LogicalResult
+analyzePipeDrains(ArrayRef<Operation *> ops,
+                  std::map<std::string, PipeDefinition> &pipes,
+                  std::map<std::string, int32_t> &drainParticipantCounts) {
   std::map<std::string, PipeDrainBuildState> states;
 
   for (const auto &entry : pipes) {
@@ -1706,13 +1701,11 @@ static LogicalResult analyzePipeDrains(
     }
 
     if (auto release = dyn_cast<PipeReaderReleaseOp>(op)) {
-      auto readerName =
-          getPipeReaderName(state.readerNames, release);
+      auto readerName = getPipeReaderName(state.readerNames, release);
       if (failed(readerName))
         return failure();
       auto it = state.readerReleaseTasks.find(*readerName);
-      if (it != state.readerReleaseTasks.end() &&
-          it->second.first != *taskId)
+      if (it != state.readerReleaseTasks.end() && it->second.first != *taskId)
         return release.emitOpError("uses reader ")
                << *readerName << " async_task_id " << *taskId
                << " but that reader already released from async_task_id "
@@ -1738,9 +1731,8 @@ static LogicalResult analyzePipeDrains(
       std::optional<std::pair<int32_t, int32_t>> defaultReader;
       if (it != state.readerReleaseTasks.end())
         defaultReader = it->second;
-      if (failed(verifyRequiredDrainParticipant(state, diagnosticOp,
-                                                "default reader release",
-                                                defaultReader)))
+      if (failed(verifyRequiredDrainParticipant(
+              state, diagnosticOp, "default reader release", defaultReader)))
         return failure();
     } else {
       for (const std::string &readerName : state.readerNames) {
@@ -1965,8 +1957,8 @@ public:
       return;
     }
     std::map<std::string, int32_t> drainParticipantCounts;
-    if (failed(analyzePipeDrains(ops, pipeDefinitions,
-                                 drainParticipantCounts))) {
+    if (failed(
+            analyzePipeDrains(ops, pipeDefinitions, drainParticipantCounts))) {
       signalPassFailure();
       return;
     }
@@ -1983,7 +1975,9 @@ public:
         auto drainIt = drainParticipantCounts.find(key);
         if (drainIt != drainParticipantCounts.end())
           drainCount = drainIt->second;
-        pipes.emplace(key, createPipeState(create, definition->second.multiTmaWriters, drainCount));
+        pipes.emplace(key, createPipeState(create,
+                                           definition->second.multiTmaWriters,
+                                           drainCount));
         creates.push_back(create);
         continue;
       }
@@ -2290,8 +2284,7 @@ public:
     SmallVector<PipeCallBeginOp> callBegins;
     module.walk([&](PipeCallBeginOp begin) { callBegins.push_back(begin); });
     for (PipeCallBeginOp begin : llvm::reverse(callBegins)) {
-      for (auto [index, operand] :
-           llvm::enumerate(begin->getOpOperands())) {
+      for (auto [index, operand] : llvm::enumerate(begin->getOpOperands())) {
         Value identity = canonicalizePipeField(operand.get());
         if (identity != operand.get() && isNvwsTokenValue(identity)) {
           operand.set(identity);
@@ -2317,19 +2310,17 @@ public:
     // those ops are lowered, remove their dead block arguments and captures
     // before erasing the defining pipe.create ops.
     RewritePatternSet patterns(&getContext());
-    ttg::WarpSpecializeOp::getCanonicalizationPatterns(patterns,
-                                                        &getContext());
+    ttg::WarpSpecializeOp::getCanonicalizationPatterns(patterns, &getContext());
     SmallVector<Operation *> warpSpecializations;
-    module.walk([&](ttg::WarpSpecializeOp ws) {
-      warpSpecializations.push_back(ws);
-    });
+    module.walk(
+        [&](ttg::WarpSpecializeOp ws) { warpSpecializations.push_back(ws); });
     // Only prune the obsolete identity captures here. Folding unrelated
     // compute/control-flow inside marked call scopes is not this pass's job.
     GreedyRewriteConfig config;
     config.setStrictness(GreedyRewriteStrictness::ExistingOps);
-    if (failed(applyOpPatternsGreedily(warpSpecializations,
-                                       FrozenRewritePatternSet(std::move(patterns)),
-                                       config))) {
+    if (failed(applyOpPatternsGreedily(
+            warpSpecializations, FrozenRewritePatternSet(std::move(patterns)),
+            config))) {
       module.emitError("failed to canonicalize lowered pipe captures");
       signalPassFailure();
       return;

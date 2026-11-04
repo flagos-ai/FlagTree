@@ -582,23 +582,23 @@ class TestBufferedTensor:
                 ("writer_acquire", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
 
         def create_pipe_writer_commit(self, identity, fields, stage, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(("writer_commit", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names)))
+            self.pipe_ops.append(
+                ("writer_commit", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names)))
 
         def create_pipe_writer_close(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
                 ("writer_close", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_reader_wait(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
-                                    reader_field_names):
+        def create_pipe_reader_wait(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names,
+                                    reader_name, reader_field_names):
             self.pipe_ops.append(("reader_wait", identity, list(fields), stage, phase, capacity, scope, pipe_name,
                                   list(field_names), reader_name, list(reader_field_names)))
             return "is_closed"
 
-        def create_pipe_reader_release(self, identity, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
-                                       reader_field_names):
-            self.pipe_ops.append(
-                ("reader_release", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
-                 list(reader_field_names)))
+        def create_pipe_reader_release(self, identity, fields, stage, capacity, scope, pipe_name, field_names,
+                                       reader_name, reader_field_names):
+            self.pipe_ops.append(("reader_release", identity, list(fields), stage, capacity, scope, pipe_name,
+                                  list(field_names), reader_name, list(reader_field_names)))
 
         def create_pipe_drain(self, identity, fields, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(("drain", identity, list(fields), capacity, scope, pipe_name, list(field_names)))
@@ -785,6 +785,7 @@ class TestCachePolicyFrontend:
         policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
         policy = tl.constexpr(policy) if wrapped else policy
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
+
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_preserves_allocation_shape(self):
         buffer, semantic = self._make_buffer([32, 1024])
@@ -803,7 +804,7 @@ class TestCachePolicyFrontend:
     @pytest.mark.parametrize(
         ("offsets", "shape", "message"),
         [
-            ((0,), (8, 1024), "match the buffer rank"),
+            ((0, ), (8, 1024), "match the buffer rank"),
             ((25, 0), (8, 1024), "outside extent"),
             ((4, 0), (8, 1024), "aligned power-of-two"),
             ((0, 0), (6, 1024), "aligned power-of-two"),
@@ -848,11 +849,11 @@ class TestTmaCopyBarrierFrontend:
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
 
-        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier,
-                     eviction_policy=eviction_policy, _semantic=semantic)
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, eviction_policy=eviction_policy,
+                     _semantic=semantic)
 
-        assert semantic.builder.tma_copy_args == (
-            "desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512, eviction_policy)
+        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0",
+                                                                   "stage_0"], "slot_handle", 512, eviction_policy)
         assert semantic._tle_barrier_backend_uses == {("bar", 0): "mbarrier"}
 
     @pytest.mark.parametrize("backend", ["generic", "iluvatar", "common_ir"])
@@ -1051,10 +1052,10 @@ class TestPipeFrontend:
         assert result.slot.b.shape == [32, 16]
         assert not hasattr(result.slot, "a")
         assert result.slot.type.fields == [("b", result.slot.b.type)]
-        assert semantic.builder.pipe_ops[0] == ("reader_wait", "pipe_identity", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
-                                                ["a", "b"], "right", ["b"])
-        assert semantic.builder.pipe_ops[1] == ("reader_release", "pipe_identity", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
-                                                "right", ["b"])
+        assert semantic.builder.pipe_ops[0] == ("reader_wait", "pipe_identity", ["base", "base"], "stage_0",
+                                                "pred_False", 4, "cta", "", ["a", "b"], "right", ["b"])
+        assert semantic.builder.pipe_ops[1] == ("reader_release", "pipe_identity", ["base", "base"], "stage_0", 4,
+                                                "cta", "", ["a", "b"], "right", ["b"])
 
     def test_pipe_reader_rejects_invalid_field_subset(self):
         a, semantic = self._make_buffer([4, 16])
@@ -1106,10 +1107,10 @@ class TestPipeFrontend:
             "reader_wait",
             "reader_release",
         ]
-        assert semantic.builder.pipe_ops[0] == ("writer_acquire", "pipe_identity", ["base"], "stage_0", "pred_False", 4, "cta", "a",
-                                                ["a"])
-        assert semantic.builder.pipe_ops[3] == ("reader_wait", "pipe_identity", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
-                                                "", ["a"])
+        assert semantic.builder.pipe_ops[0] == ("writer_acquire", "pipe_identity", ["base"], "stage_0", "pred_False", 4,
+                                                "cta", "a", ["a"])
+        assert semantic.builder.pipe_ops[3] == ("reader_wait", "pipe_identity", ["base"], "stage_0", "pred_False", 4,
+                                                "cta", "a", ["a"], "", ["a"])
 
     @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_one_shot_keeps_frontend_contract(self):
@@ -1144,9 +1145,8 @@ class TestPipeFrontend:
         assert pipe.type.fields == []
         assert semantic.builder.pipe_create_args == ([], 1, "cta", "ready", [], [], True)
         assert semantic.builder.pipe_ops[0] == ("writer_commit", "pipe_identity", [], "stage_0", 1, "cta", "ready", [])
-        assert semantic.builder.pipe_ops[1] == (
-            "reader_wait", "pipe_identity", [], "stage_0", "pred_False", 1, "cta", "ready", [], "", []
-        )
+        assert semantic.builder.pipe_ops[1] == ("reader_wait", "pipe_identity", [], "stage_0", "pred_False", 1, "cta",
+                                                "ready", [], "", [])
         assert wait_result.slot.fields == {}
 
     @pytest.mark.require_tle("pipe")

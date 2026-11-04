@@ -163,9 +163,10 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value descriptor, Type blockType,
               bool isSigned) -> Value {
              auto descriptorType = tt::TensorDescType::get(
-                 self.getContext(), cast<RankedTensorType>(blockType), isSigned);
+                 self.getContext(), cast<RankedTensorType>(blockType),
+                 isSigned);
              return self.create<ttng::ReinterpretTensorDescOp>(descriptorType,
-                                                             descriptor);
+                                                               descriptor);
            })
       // TLE-Lite
       .def(
@@ -415,14 +416,15 @@ void init_triton_tle_ir(py::module &&m) {
             copy.setEvict(evictionPolicy);
 #endif
           },
-          py::arg("src"), py::arg("dst"), py::arg("indices"), py::arg("barrier"),
-          py::arg("expect_bytes"),
+          py::arg("src"), py::arg("dst"), py::arg("indices"),
+          py::arg("barrier"), py::arg("expect_bytes"),
           py::arg("eviction_policy") = tt::EvictionPolicy::NORMAL)
       .def(
           "create_tma_copy",
           [](TritonOpBuilder &self, Value src, Value dst,
              std::vector<Value> &indices, py::object barrier,
-             int32_t expectBytes, tt::EvictionPolicy evictionPolicy, std::vector<int64_t> copyShape) {
+             int32_t expectBytes, tt::EvictionPolicy evictionPolicy,
+             std::vector<int64_t> copyShape) {
 #ifdef __HCU__
             if (!barrier.is_none() || expectBytes > 0)
               throw py::value_error(
@@ -812,16 +814,16 @@ void init_triton_tle_ir(py::module &&m) {
              if (oneShot)
                oneShotAttr = builder.getBoolAttr(true);
              return self.create<tle::PipeCreateOp>(
-                 builder.getI32Type(), fields, builder.getI32IntegerAttr(capacity),
+                 builder.getI32Type(), fields,
+                 builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readerNamesAttr,
                  oneShotAttr);
            })
       .def("create_pipe_writer_acquire",
-           [](TritonOpBuilder &self, Value identity,
-              std::vector<Value> fields, Value stage,
-              Value phase, int32_t capacity, const std::string &scope,
-              const std::string &pipeName,
+           [](TritonOpBuilder &self, Value identity, std::vector<Value> fields,
+              Value stage, Value phase, int32_t capacity,
+              const std::string &scope, const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
              auto &builder = self.getBuilder();
              SmallVector<Attribute> fieldNameAttrs;
@@ -832,14 +834,14 @@ void init_triton_tle_ir(py::module &&m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<tle::PipeWriterAcquireOp>(
-                 identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, phase,
+                 builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_writer_commit",
-           [](TritonOpBuilder &self, Value identity,
-              std::vector<Value> fields, Value stage,
-              int32_t capacity, const std::string &scope,
+           [](TritonOpBuilder &self, Value identity, std::vector<Value> fields,
+              Value stage, int32_t capacity, const std::string &scope,
               const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
              auto &builder = self.getBuilder();
@@ -856,10 +858,9 @@ void init_triton_tle_ir(py::module &&m) {
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_writer_close",
-           [](TritonOpBuilder &self, Value identity,
-              std::vector<Value> fields, Value stage,
-              Value phase, int32_t capacity, const std::string &scope,
-              const std::string &pipeName,
+           [](TritonOpBuilder &self, Value identity, std::vector<Value> fields,
+              Value stage, Value phase, int32_t capacity,
+              const std::string &scope, const std::string &pipeName,
               std::vector<std::string> fieldNames) -> void {
              auto &builder = self.getBuilder();
              SmallVector<Attribute> fieldNameAttrs;
@@ -870,15 +871,16 @@ void init_triton_tle_ir(py::module &&m) {
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              self.create<tle::PipeWriterCloseOp>(
-                 identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 identity, fields, stage, phase,
+                 builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
            })
       .def("create_pipe_reader_wait",
-           [](TritonOpBuilder &self, Value identity,
-              std::vector<Value> fields, Value stage,
-              Value phase, int32_t capacity, const std::string &scope,
-              const std::string &pipeName, std::vector<std::string> fieldNames,
+           [](TritonOpBuilder &self, Value identity, std::vector<Value> fields,
+              Value stage, Value phase, int32_t capacity,
+              const std::string &scope, const std::string &pipeName,
+              std::vector<std::string> fieldNames,
               const std::string &readerName,
               std::vector<std::string>) -> Value {
              auto &builder = self.getBuilder();
@@ -899,9 +901,8 @@ void init_triton_tle_ir(py::module &&m) {
                  builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
            })
       .def("create_pipe_reader_release",
-           [](TritonOpBuilder &self, Value identity,
-              std::vector<Value> fields, Value stage,
-              int32_t capacity, const std::string &scope,
+           [](TritonOpBuilder &self, Value identity, std::vector<Value> fields,
+              Value stage, int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
               const std::string &readerName, std::vector<std::string>) -> void {
              auto &builder = self.getBuilder();
@@ -1096,8 +1097,7 @@ void init_triton_tle_ir(py::module &&m) {
                 maskAttr = DenseI32ArrayAttr::get(ctx, groupMask);
               }
               if (!groupDomainShape.empty()) {
-                domainShapeAttr =
-                    DenseI32ArrayAttr::get(ctx, groupDomainShape);
+                domainShapeAttr = DenseI32ArrayAttr::get(ctx, groupDomainShape);
               }
             }
 
@@ -1107,7 +1107,8 @@ void init_triton_tle_ir(py::module &&m) {
                 rankAttr, shapeAttr, axesAttr, maskAttr, domainShapeAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
-          py::arg("group_mask"), py::arg("group_domain_shape") = std::vector<int32_t>{})
+          py::arg("group_mask"),
+          py::arg("group_domain_shape") = std::vector<int32_t>{})
       .def(
           "create_remote_pointers",
           [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,

@@ -78,12 +78,19 @@ def test_raw_tma_scope_cloning_copies_selected_descriptor(branch, callee):
     source = torch.arange(128, dtype=torch.float16, device="cuda").reshape(2, 8, 8)
     payload = bytearray()
     for owner in range(2):
-        payload.extend(encode_tma_descriptor(
-            source[owner].data_ptr(), 0, source.element_size(), 6,
-            (8, 8), (8, 8), (8, 1), 0,
-        ))
+        payload.extend(
+            encode_tma_descriptor(
+                source[owner].data_ptr(),
+                0,
+                source.element_size(),
+                6,
+                (8, 8),
+                (8, 8),
+                (8, 1),
+                0,
+            ))
     table = torch.frombuffer(payload, dtype=torch.uint8).to(device="cuda")
     assert table.data_ptr() % 128 == 0
     output = torch.empty_like(source)
-    _copy_descriptor_table[(2,)](table, output, branch, callee, num_warps=4)
+    _copy_descriptor_table[(2, )](table, output, branch, callee, num_warps=4)
     torch.testing.assert_close(output, source, rtol=0, atol=0)

@@ -21,7 +21,8 @@ def test_shard_id_unit_axes_are_zero(shape):
     mesh = tle.device_mesh({"block": [(f"axis{i}", size) for i, size in enumerate(shape)]})
     count = math.prod(shape)
     output = torch.full((count, len(shape)), -1, device="cuda", dtype=torch.int32)
-    _coordinates[(count,)](output, mesh, len(shape))
+    _coordinates[(count, )](output, mesh, len(shape))
     expected = torch.tensor([[pid // math.prod(shape[i + 1:]) % size
-                              for i, size in enumerate(shape)] for pid in range(count)], dtype=torch.int32)
+                              for i, size in enumerate(shape)]
+                             for pid in range(count)], dtype=torch.int32)
     torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)

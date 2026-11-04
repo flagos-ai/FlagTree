@@ -602,8 +602,8 @@ void mlir::triton::combineRedundantWaitOps(
 #ifdef __TLE__
       // Keep a user transport wait's group-count ownership across cleanup.
       if (auto explicitWait = dyn_cast<ttg::AsyncWaitOp>(next);
-          explicitWait && explicitWait->hasAttr(
-                              triton::tle::kTleExplicitAsyncWaitGroupAttr))
+          explicitWait &&
+          explicitWait->hasAttr(triton::tle::kTleExplicitAsyncWaitGroupAttr))
         break;
 #endif
       if (auto nextWait = dyn_cast<ttg::AsyncWaitOp>(next)) {

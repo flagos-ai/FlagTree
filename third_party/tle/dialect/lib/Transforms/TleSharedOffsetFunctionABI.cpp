@@ -29,7 +29,7 @@ static Type offsetType(Type type) {
     if (llvm::equal(elements, structure.getBody()))
       return type;
     return LLVM::LLVMStructType::getLiteral(type.getContext(), elements,
-                                           structure.isPacked());
+                                            structure.isPacked());
   }
   if (auto array = dyn_cast<LLVM::LLVMArrayType>(type))
     return LLVM::LLVMArrayType::get(offsetType(array.getElementType()),
@@ -65,13 +65,15 @@ static Value convertValue(OpBuilder &builder, Location loc, Value value,
     SmallVector<int64_t> position{static_cast<int64_t>(index)};
     Value element = LLVM::ExtractValueOp::create(builder, loc, value, position);
     element = convertValue(builder, loc, element, elementType, arena, encode);
-    result = LLVM::InsertValueOp::create(builder, loc, result, element, position);
+    result =
+        LLVM::InsertValueOp::create(builder, loc, result, element, position);
   }
   return result;
 }
 
 struct TritonTleSharedOffsetFunctionABI
-    : impl::TritonTleSharedOffsetFunctionABIBase<TritonTleSharedOffsetFunctionABI> {
+    : impl::TritonTleSharedOffsetFunctionABIBase<
+          TritonTleSharedOffsetFunctionABI> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
     auto arena = module.lookupSymbol<LLVM::GlobalOp>("global_smem");
@@ -79,11 +81,13 @@ struct TritonTleSharedOffsetFunctionABI
       return;
     llvm::MapVector<Operation *, SmallVector<Type>> functions;
     for (auto function : module.getOps<LLVM::LLVMFuncOp>()) {
-      if (function.isExternal() || function.getLinkage() != LLVM::Linkage::Internal ||
+      if (function.isExternal() ||
+          function.getLinkage() != LLVM::Linkage::Internal ||
           function->hasAttr(kOffsetABI))
         continue;
       auto inputs = function.getFunctionType().getParams();
-      if (llvm::none_of(inputs, [](Type type) { return offsetType(type) != type; }))
+      if (llvm::none_of(inputs,
+                        [](Type type) { return offsetType(type) != type; }))
         continue;
       if (function.getFunctionType().isVarArg()) {
         function.emitError("Shared offset ABI requires non-variadic functions");
@@ -95,7 +99,8 @@ struct TritonTleSharedOffsetFunctionABI
         for (StringRef attr : {"llvm.byval", "llvm.byref", "llvm.inalloca",
                                "llvm.preallocated", "llvm.sret"}) {
           if (function.getArgAttr(index, attr)) {
-            function.emitError("Shared offset ABI cannot change copy/return argument conventions");
+            function.emitError("Shared offset ABI cannot change copy/return "
+                               "argument conventions");
             return signalPassFailure();
           }
         }
@@ -122,8 +127,10 @@ struct TritonTleSharedOffsetFunctionABI
       builder.setInsertionPoint(call);
       Value base = LLVM::AddressOfOp::create(builder, call.getLoc(), arena);
       SmallVector<Value> arguments;
-      for (auto [value, type] : llvm::zip_equal(call.getCalleeOperands(), found->second))
-        arguments.push_back(convertValue(builder, call.getLoc(), value, type, base, true));
+      for (auto [value, type] :
+           llvm::zip_equal(call.getCalleeOperands(), found->second))
+        arguments.push_back(
+            convertValue(builder, call.getLoc(), value, type, base, true));
       call.getCalleeOperandsMutable().assign(arguments);
     });
     for (auto &[operation, inputs] : functions) {
@@ -131,7 +138,8 @@ struct TritonTleSharedOffsetFunctionABI
       builder.setInsertionPointToStart(&function.getBody().front());
       Value base = LLVM::AddressOfOp::create(builder, function.getLoc(), arena);
       SmallVector<Type> encodedInputs;
-      for (auto [argument, type] : llvm::zip_equal(function.getArguments(), inputs)) {
+      for (auto [argument, type] :
+           llvm::zip_equal(function.getArguments(), inputs)) {
         Type encoded = offsetType(type);
         encodedInputs.push_back(encoded);
         if (encoded == type)
@@ -139,16 +147,18 @@ struct TritonTleSharedOffsetFunctionABI
         // These facts constrain the original pointer, not its integer offset
         // (offset zero is legal even for a nonnull pointer). Do not attach
         // pointer-only optimization attributes to the new integer argument.
-        for (StringRef attr : {"llvm.align", "llvm.noalias", "llvm.nonnull",
-                               "llvm.dereferenceable", "llvm.dereferenceable_or_null",
-                               "llvm.nocapture", "llvm.readonly", "llvm.writeonly",
-                               "llvm.readnone"})
+        for (StringRef attr :
+             {"llvm.align", "llvm.noalias", "llvm.nonnull",
+              "llvm.dereferenceable", "llvm.dereferenceable_or_null",
+              "llvm.nocapture", "llvm.readonly", "llvm.writeonly",
+              "llvm.readnone"})
           function.removeArgAttr(argument.getArgNumber(), attr);
         SmallVector<OpOperand *> uses;
         for (OpOperand &use : argument.getUses())
           uses.push_back(&use);
         argument.setType(encoded);
-        Value pointer = convertValue(builder, function.getLoc(), argument, type, base, false);
+        Value pointer = convertValue(builder, function.getLoc(), argument, type,
+                                     base, false);
         for (OpOperand *use : uses)
           use->set(pointer);
       }

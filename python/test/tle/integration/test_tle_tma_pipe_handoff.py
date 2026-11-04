@@ -7,29 +7,16 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-
-_MESH_VALUE = tle.device_mesh(
-    {"block": [("block_y", 8), ("block_x", 16)]}
-)
+_MESH_VALUE = tle.device_mesh({"block": [("block_y", 8), ("block_x", 16)]})
 _MESH = tl.constexpr(_MESH_VALUE)
-_WEIGHT_LAYOUT = tl.constexpr(
-    tle.gpu.BlockEncoding([1, 4], [4, 8], [8, 1], [1, 0])
-)
-_SOURCE_LAYOUT = tl.constexpr(
-    tle.gpu.SlicedEncoding(0, _WEIGHT_LAYOUT.value)
-)
-_OUTPUT_LAYOUT = tl.constexpr(
-    tle.gpu.SlicedEncoding(1, _WEIGHT_LAYOUT.value)
-)
+_WEIGHT_LAYOUT = tl.constexpr(tle.gpu.BlockEncoding([1, 4], [4, 8], [8, 1], [1, 0]))
+_SOURCE_LAYOUT = tl.constexpr(tle.gpu.SlicedEncoding(0, _WEIGHT_LAYOUT.value))
+_OUTPUT_LAYOUT = tl.constexpr(tle.gpu.SlicedEncoding(1, _WEIGHT_LAYOUT.value))
 
 
 def _has_nvidia_hopper_gpu() -> bool:
     target = triton.runtime.driver.active.get_current_target()
-    return (
-        target.backend == "cuda"
-        and torch.cuda.is_available()
-        and torch.cuda.get_device_capability()[0] >= 9
-    )
+    return (target.backend == "cuda" and torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9)
 
 
 pytestmark = pytest.mark.skipif(
@@ -190,7 +177,7 @@ def test_large_tma_pipe_drains_before_fieldless_handoff(with_allocator, producer
     q_weights = torch.randn((128 * 16, 2048), dtype=torch.bfloat16, device="cuda")
     k_weights = torch.randn((128 * 8, 2048), dtype=torch.bfloat16, device="cuda")
     v_weights = torch.randn((128 * 8, 2048), dtype=torch.bfloat16, device="cuda")
-    source = torch.randn((2048,), dtype=torch.bfloat16, device="cuda")
+    source = torch.randn((2048, ), dtype=torch.bfloat16, device="cuda")
     q_descriptor = TensorDescriptor.from_tensor(q_weights, block_shape=[16, 1024])
     k_descriptor = TensorDescriptor.from_tensor(k_weights, block_shape=[8, 1024])
     v_descriptor = TensorDescriptor.from_tensor(v_weights, block_shape=[8, 1024])
@@ -204,13 +191,13 @@ def test_large_tma_pipe_drains_before_fieldless_handoff(with_allocator, producer
         output,
         status,
         producer_warps,
-        grid=(128,),
+        grid=(128, ),
         num_warps=8,
     )
     assert compiled.metadata.shared <= torch.cuda.get_device_properties(0).shared_memory_per_block_optin
     assert compiled.metadata.launch_cooperative_grid is True
 
-    _large_tma_pipe_handoff_kernel[(128,)](
+    _large_tma_pipe_handoff_kernel[(128, )](
         q_descriptor,
         k_descriptor,
         v_descriptor,

@@ -10,11 +10,7 @@ import triton.experimental.tle.language as tle
 
 def _has_nvidia_hopper_gpu() -> bool:
     target = triton.runtime.driver.active.get_current_target()
-    return (
-        target.backend == "cuda"
-        and torch.cuda.is_available()
-        and torch.cuda.get_device_capability()[0] >= 9
-    )
+    return (target.backend == "cuda" and torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9)
 
 
 pytestmark = pytest.mark.skipif(
@@ -22,10 +18,7 @@ pytestmark = pytest.mark.skipif(
     reason="warp-specialized fieldless handoffs require NVIDIA Hopper (sm90+)",
 )
 
-
-_MESH_2D_8X16_VALUE = tle.device_mesh(
-    {"block": [("block_y", 8), ("block_x", 16)]}
-)
+_MESH_2D_8X16_VALUE = tle.device_mesh({"block": [("block_y", 8), ("block_x", 16)]})
 _MESH_2D_8X16 = tl.constexpr(_MESH_2D_8X16_VALUE)
 
 
@@ -173,7 +166,7 @@ def _named_rendezvous_kernel(output):
 @pytest.mark.require_tle("pipe", "gpu.warp_specialize")
 def test_two_fieldless_one_shot_handoffs_execute_in_order():
     output = torch.zeros(4, dtype=torch.int32, device="cuda")
-    _fieldless_handoff_kernel[(1,)](output, num_warps=8)
+    _fieldless_handoff_kernel[(1, )](output, num_warps=8)
     torch.cuda.synchronize()
     torch.testing.assert_close(
         output.cpu(),
@@ -184,9 +177,9 @@ def test_two_fieldless_one_shot_handoffs_execute_in_order():
 @pytest.mark.require_tle("pipe", "gpu.warp_specialize")
 def test_fieldless_cyclic_handoff_reuses_token_without_payload_storage(with_allocator):
     output = torch.zeros(8, dtype=torch.int32, device="cuda")
-    _fieldless_cyclic_kernel.warmup(output, grid=(1,), num_warps=8)
+    _fieldless_cyclic_kernel.warmup(output, grid=(1, ), num_warps=8)
 
-    _fieldless_cyclic_kernel[(1,)](output, num_warps=8)
+    _fieldless_cyclic_kernel[(1, )](output, num_warps=8)
     torch.cuda.synchronize()
 
     torch.testing.assert_close(
@@ -198,9 +191,9 @@ def test_fieldless_cyclic_handoff_reuses_token_without_payload_storage(with_allo
 @pytest.mark.require_tle("gpu.alloc_barrier", "gpu.barrier_wait", "gpu.warp_specialize")
 def test_named_barrier_rendezvous_is_reusable_across_warp_groups(with_allocator):
     output = torch.zeros(8, dtype=torch.int32, device="cuda")
-    compiled = _named_rendezvous_kernel.warmup(output, grid=(1,), num_warps=8)
+    compiled = _named_rendezvous_kernel.warmup(output, grid=(1, ), num_warps=8)
 
-    _named_rendezvous_kernel[(1,)](output, num_warps=8)
+    _named_rendezvous_kernel[(1, )](output, num_warps=8)
     torch.cuda.synchronize()
 
     assert compiled.n_spills == 0
@@ -213,22 +206,20 @@ def test_named_barrier_rendezvous_is_reusable_across_warp_groups(with_allocator)
 @pytest.mark.require_tle("distributed_barrier", "pipe", "gpu.warp_specialize")
 def test_2d_grid_barriers_compose_with_fieldless_handoff(with_allocator):
     output = torch.zeros(128 * 3, dtype=torch.int32, device="cuda")
-    compiled = _grid_handoff_kernel.warmup(output, grid=(128,), num_warps=8)
+    compiled = _grid_handoff_kernel.warmup(output, grid=(128, ), num_warps=8)
     assert compiled.metadata.launch_cooperative_grid is True
     # Static barrier call sites must own distinct phase counters.  Sharing a
     # counter permits a fast CTA from the next call site to flip the phase
     # before a slow CTA has observed the previous phase and eventually
     # deadlocks repeated CUDA-graph replays.
     assert compiled.metadata.global_scratch_size == 8
-    _grid_handoff_kernel[(128,)](output, num_warps=8)
+    _grid_handoff_kernel[(128, )](output, num_warps=8)
     torch.cuda.synchronize()
     torch.testing.assert_close(
         output.cpu(),
-        torch.cat(
-            [
-                torch.ones(128, dtype=torch.int32),
-                torch.full((128,), 2, dtype=torch.int32),
-                torch.full((128,), 3, dtype=torch.int32),
-            ]
-        ),
+        torch.cat([
+            torch.ones(128, dtype=torch.int32),
+            torch.full((128, ), 2, dtype=torch.int32),
+            torch.full((128, ), 3, dtype=torch.int32),
+        ]),
     )

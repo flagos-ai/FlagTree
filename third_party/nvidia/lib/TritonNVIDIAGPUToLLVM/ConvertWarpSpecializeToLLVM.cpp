@@ -374,9 +374,8 @@ struct ScopedHelperWorkItem {
 
 static std::string getScopedHelperName(LLVM::LLVMFuncOp callee,
                                        WarpGroupBarrierScope scope) {
-  return (callee.getSymName() + "__tle_ws_barrier_" +
-          Twine(scope.barrierIdx) + "_" + Twine(scope.numThreads) + "_start_" +
-          Twine(scope.firstWarp))
+  return (callee.getSymName() + "__tle_ws_barrier_" + Twine(scope.barrierIdx) +
+          "_" + Twine(scope.numThreads) + "_start_" + Twine(scope.firstWarp))
       .str();
 }
 
@@ -422,8 +421,8 @@ static void scopeWarpGroupHelperBarriers(
   llvm::DenseSet<Operation *> visited;
 
   auto retargetCall = [&](LLVM::CallOp call, WarpGroupBarrierScope scope) {
-    if (tle::scopeFlagcxBlockBarrierCall(call, scope.firstWarp, scope.numThreads,
-                                        scope.barrierIdx))
+    if (tle::scopeFlagcxBlockBarrierCall(call, scope.firstWarp,
+                                         scope.numThreads, scope.barrierIdx))
       return;
     std::optional<StringRef> calleeName = call.getCallee();
     if (!calleeName)
@@ -459,9 +458,7 @@ static void scopeWarpGroupHelperBarriers(
       retargetCall(call, scope);
 
     SmallVector<NVVM::Barrier0Op> barriers;
-    scoped.walk([&](NVVM::Barrier0Op barrier) {
-      barriers.push_back(barrier);
-    });
+    scoped.walk([&](NVVM::Barrier0Op barrier) { barriers.push_back(barrier); });
     for (NVVM::Barrier0Op barrier : barriers) {
       TritonLLVMIRRewriter b(barrier.getLoc(), barrier);
       createBarrier(b, scope.barrierIdx, scope.numThreads);
@@ -640,11 +637,13 @@ static LogicalResult rewriteWarpGroupBarriers(ModuleOp module,
       if (isa<WarpSpecializePartitionsOp>(operation))
         return WalkResult::skip();
       if (auto call = dyn_cast<LLVM::CallOp>(operation))
-        tleHelperCalls.push_back({call, {kDefaultWarpGroupBarrierIdx, defaultThreads, 0}});
+        tleHelperCalls.push_back(
+            {call, {kDefaultWarpGroupBarrierIdx, defaultThreads, 0}});
       return WalkResult::advance();
     });
     kernel.walk([&](WarpSpecializeOp ws) {
-      for (auto [index, partition] : llvm::enumerate(ws.getPartitionRegions())) {
+      for (auto [index, partition] :
+           llvm::enumerate(ws.getPartitionRegions())) {
         unsigned barrier = kNumReservedBarriers + index;
         unsigned threads = ws.getPartitionNumWarps()[index] * threadsPerWarp;
         unsigned firstWarp = (*ws.getWarpGroupStartIds())[index];

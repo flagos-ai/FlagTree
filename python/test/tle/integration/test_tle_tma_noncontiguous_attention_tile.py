@@ -10,11 +10,7 @@ import triton.experimental.tle.language as tle
 
 def _has_nvidia_hopper_gpu() -> bool:
     target = triton.runtime.driver.active.get_current_target()
-    return (
-        target.backend == "cuda"
-        and torch.cuda.is_available()
-        and torch.cuda.get_device_capability()[0] >= 9
-    )
+    return (target.backend == "cuda" and torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9)
 
 
 pytestmark = pytest.mark.skipif(
@@ -29,18 +25,18 @@ def _attention_tile_consumer(reader, row_major, transposed):
     linear = tl.arange(0, 8192)
     token = linear // 128
     dimension = linear % 128
-    zero = tl.full((8192,), 0, tl.int32)
+    zero = tl.full((8192, ), 0, tl.int32)
     row_pointer = tle.gpu.local_ptr(
         ready.slot.value,
         (zero, zero, token, zero, dimension),
-        shape=(8192,),
+        shape=(8192, ),
     )
     tl.store(row_major + linear, tl.load(row_pointer))
 
     transposed_linear = tl.arange(0, 8192)
     transposed_dimension = transposed_linear // 64
     transposed_token = transposed_linear % 64
-    transposed_zero = tl.full((8192,), 0, tl.int32)
+    transposed_zero = tl.full((8192, ), 0, tl.int32)
     transposed_pointer = tle.gpu.local_ptr(
         ready.slot.value,
         (
@@ -50,7 +46,7 @@ def _attention_tile_consumer(reader, row_major, transposed):
             transposed_zero,
             transposed_dimension,
         ),
-        shape=(8192,),
+        shape=(8192, ),
     )
     tl.store(transposed + transposed_linear, tl.load(transposed_pointer))
     reader.release(0)
@@ -104,7 +100,7 @@ def test_noncontiguous_paged_attention_descriptor_preserves_tile_axes(with_alloc
     row_major = torch.empty((64, 128), dtype=torch.bfloat16, device="cuda")
     transposed = torch.empty((128, 64), dtype=torch.bfloat16, device="cuda")
 
-    _attention_tile_kernel[(1,)](
+    _attention_tile_kernel[(1, )](
         descriptor,
         row_major,
         transposed,

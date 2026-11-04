@@ -12,7 +12,6 @@ import triton.experimental.tle.language as tle
 
 from triton.runtime import DistributedRtContext
 
-
 _MESH = tl.constexpr(tle.device_mesh({"device": 4, "block": [("block", 1)]}))
 
 
@@ -36,7 +35,7 @@ def test_flagcx_device_library_calls_are_directly_inlinable(monkeypatch, kind):
     monkeypatch.setattr(DistributedRtContext, "_init_count", 0)
     context = DistributedRtContext(0x7F0000000E00, 0x7F0000001000)
     output = torch.empty(1, dtype=torch.int32, device="cuda")
-    compiled = _flagcx_abi.warmup(output, context, kind, grid=(1,), num_warps=4)
+    compiled = _flagcx_abi.warmup(output, context, kind, grid=(1, ), num_warps=4)
     # Exact ABI agreement lets the library's alwaysinline routines inline and
     # specialize the constant cooperation kind. A pointer address-space or
     # return-type mismatch leaves incompatible, indirect calls after linking.

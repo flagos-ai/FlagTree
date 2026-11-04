@@ -52,12 +52,12 @@ class TestDeviceMesh:
     def test_device_mesh_axis_group_preserves_launch_domain(self):
         mesh = tle.device_mesh({"block": [("block_y", 8), ("block_x", 16)]})
 
-        group = mesh.axis_group(("block_y",))
+        group = mesh.axis_group(("block_y", ))
 
-        assert group.shape == (8,)
-        assert group.dim_names == ("block_y",)
-        assert group.grid_group_axes == (0,)
-        assert group.grid_group_shape == (8,)
+        assert group.shape == (8, )
+        assert group.dim_names == ("block_y", )
+        assert group.grid_group_axes == (0, )
+        assert group.grid_group_shape == (8, )
         assert group.launch_shape == (8, 16)
         assert group.launch_dim_names == ("block_y", "block_x")
 
@@ -65,11 +65,11 @@ class TestDeviceMesh:
         mesh = tle.device_mesh({"block": [("block_y", 8), ("block_x", 16)]})
 
         with pytest.raises(ValueError, match="must divide"):
-            mesh.axis_group(("block_y",), group_shape=(3,))
+            mesh.axis_group(("block_y", ), group_shape=(3, ))
         with pytest.raises(ValueError, match="must be unique"):
             mesh.axis_group(("block_y", "block_y"))
         with pytest.raises(ValueError, match="unknown grid axis"):
-            mesh.axis_group(("missing",))
+            mesh.axis_group(("missing", ))
 
     def test_device_mesh_invalid_topology(self):
         with pytest.raises(TypeError):
@@ -381,13 +381,10 @@ class TestDistributedBarrierScope:
         mesh = tle.device_mesh({"block": [("block_y", 8), ("block_x", 16)]})
         semantic = _FakeSemantic()
 
-        tle.distributed_barrier(
-            mesh=mesh.axis_group(("block_y",)), _semantic=semantic)
+        tle.distributed_barrier(mesh=mesh.axis_group(("block_y", )), _semantic=semantic)
 
         assert semantic.builder.options.launch_cooperative_grid is True
-        assert semantic.builder.distributed_barrier_group_args == [
-            ("grid_axis", [8], [0], [], [8, 16])
-        ]
+        assert semantic.builder.distributed_barrier_group_args == [("grid_axis", [8], [0], [], [8, 16])]
 
     def test_distributed_barrier_grid_mesh_rejects_cluster_launch(self):
         mesh = tle.device_mesh({"block": [("block_x", 4)]})

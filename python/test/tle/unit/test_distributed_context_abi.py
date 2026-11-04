@@ -88,7 +88,7 @@ def test_runtime_context_tuple_rejects_wrong_arity_or_tensor_handles():
 
     scalar = tl.tensor(object(), tl.int64)
     with pytest.raises(ValueError, match='two handles'):
-        _parse_src_arg(None, tl.tuple((scalar,)))
+        _parse_src_arg(None, tl.tuple((scalar, )))
     vector = tl.tensor(object(), tl.block_type(tl.int64, [2]))
     with pytest.raises(TypeError, match='scalar i64 handles'):
         _parse_src_arg(None, tl.tuple((vector, scalar)))

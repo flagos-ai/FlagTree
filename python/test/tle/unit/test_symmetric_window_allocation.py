@@ -10,7 +10,9 @@ import torch
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("shape,dtype", [
-    ((1792,), torch.uint8), ((3, 64), torch.float32), ((7_292_672,), torch.uint8),
+    ((1792, ), torch.uint8),
+    ((3, 64), torch.float32),
+    ((7_292_672, ), torch.uint8),
 ])
 def test_symmetric_window_starts_at_cuda_allocation_base(monkeypatch, shape, dtype):
     from triton.experimental.tle.language import communication

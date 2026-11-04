@@ -7,20 +7,13 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-
-_MESH_VALUE = tle.device_mesh(
-    {"block": [("block_y", 8), ("block_x", 16)]}
-)
+_MESH_VALUE = tle.device_mesh({"block": [("block_y", 8), ("block_x", 16)]})
 _MESH = tl.constexpr(_MESH_VALUE)
 
 
 def _has_nvidia_hopper_gpu() -> bool:
     target = triton.runtime.driver.active.get_current_target()
-    return (
-        target.backend == "cuda"
-        and torch.cuda.is_available()
-        and torch.cuda.get_device_capability()[0] >= 9
-    )
+    return (target.backend == "cuda" and torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9)
 
 
 pytestmark = pytest.mark.skipif(
@@ -77,10 +70,10 @@ def test_noinline_reduction_inherits_default_warp_group_barrier_scope(with_alloc
         source,
         partials,
         output,
-        grid=(128,),
+        grid=(128, ),
         num_warps=8,
     )
-    _noinline_collective_kernel[(128,)](
+    _noinline_collective_kernel[(128, )](
         source,
         partials,
         output,
@@ -91,8 +84,6 @@ def test_noinline_reduction_inherits_default_warp_group_barrier_scope(with_alloc
     expected = torch.zeros(128, dtype=torch.float32)
     source_cpu = source.cpu()
     for shard_y in range(8):
-        expected[shard_y * 16] = (
-            source_cpu[shard_y * 128 : (shard_y + 1) * 128].sum()
-            + source_cpu[1024 + shard_y * 128 : 1024 + (shard_y + 1) * 128].sum()
-        )
+        expected[shard_y * 16] = (source_cpu[shard_y * 128:(shard_y + 1) * 128].sum() +
+                                  source_cpu[1024 + shard_y * 128:1024 + (shard_y + 1) * 128].sum())
     torch.testing.assert_close(output.cpu(), expected)

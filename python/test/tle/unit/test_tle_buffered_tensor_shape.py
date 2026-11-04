@@ -21,9 +21,9 @@ def _type(shape):
 
 
 def test_buffered_tensor_accepts_non_power_of_two_leading_allocation_extent():
-    value = _type((135168,))
+    value = _type((135168, ))
 
-    assert value.shape == (135168,)
+    assert value.shape == (135168, )
     assert value.alloc_shape == [135168]
     assert value.numel == 135168
 

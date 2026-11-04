@@ -3,12 +3,12 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
+#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-#include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
 #include <map>
 
@@ -168,9 +168,10 @@ collectTopLevelConstants(ArrayRef<Operation *> operations) {
   return constants;
 }
 
-static LogicalResult verifyNoEscapingResults(ArrayRef<Operation *> operations,
-                                             const DenseSet<Operation *> &rootOps,
-                                             PipeCallBeginOp begin) {
+static LogicalResult
+verifyNoEscapingResults(ArrayRef<Operation *> operations,
+                        const DenseSet<Operation *> &rootOps,
+                        PipeCallBeginOp begin) {
   for (Operation *root : operations) {
     for (Value result : root->getResults()) {
       for (Operation *user : result.getUsers()) {
@@ -234,17 +235,14 @@ createOutlinedFunction(ModuleOp module, StringRef name,
     return emitError(loc) << "cannot restore pipe helper " << name
                           << " because that symbol already exists";
 
-  SmallVector<Type> argumentTypes =
-      llvm::to_vector(llvm::map_range(captures, [](Value value) {
-        return value.getType();
-      }));
+  SmallVector<Type> argumentTypes = llvm::to_vector(
+      llvm::map_range(captures, [](Value value) { return value.getType(); }));
   OpBuilder builder = OpBuilder::atBlockEnd(module.getBody());
   auto functionType = builder.getFunctionType(argumentTypes, {});
   auto function = tt::FuncOp::create(builder, loc, name, functionType);
   function.setVisibility(SymbolTable::Visibility::Private);
   function->setAttr("noinline", builder.getBoolAttr(true));
-  function->setAttr(ttg::AttrNumWarpsName,
-                    builder.getI32IntegerAttr(numWarps));
+  function->setAttr(ttg::AttrNumWarpsName, builder.getI32IntegerAttr(numWarps));
   Block *entry = function.addEntryBlock();
 
   IRMapping mapping;
@@ -261,8 +259,8 @@ createOutlinedFunction(ModuleOp module, StringRef name,
   for (Operation *op : operations)
     builder.clone(*op, mapping);
   tt::ReturnOp::create(builder, loc);
-  SmallVector<std::string> argumentSources = llvm::to_vector(
-      llvm::map_range(captures, describeValue));
+  SmallVector<std::string> argumentSources =
+      llvm::to_vector(llvm::map_range(captures, describeValue));
   return OutlinedFunction{function, std::move(argumentTypes),
                           std::move(argumentSources), callArgumentCount,
                           numWarps};
@@ -294,9 +292,9 @@ static LogicalResult verifyEquivalentBody(OutlinedFunction &outlined,
         argument.getArgNumber() >= callArgumentCount)
       return failure();
     unsigned index = argument.getArgNumber();
-    return success(rhs == callAliases[index] ||
-                   (isNvwsTokenValue(captures[index]) &&
-                    rhs == captures[index]));
+    return success(
+        rhs == callAliases[index] ||
+        (isNvwsTokenValue(captures[index]) && rhs == captures[index]));
   };
   auto markEquivalent = [&](Value lhs, Value rhs) {
     auto [it, inserted] = equivalentValues.try_emplace(lhs, rhs);
@@ -324,8 +322,8 @@ static LogicalResult verifyEquivalentBody(OutlinedFunction &outlined,
                    << describeValue(lhsOperand) << " but got "
                    << rhsOperand.getType() << " from "
                    << describeValue(rhsOperand);
-        for (unsigned argumentIndex = 0;
-             argumentIndex < callArgumentCount; ++argumentIndex) {
+        for (unsigned argumentIndex = 0; argumentIndex < callArgumentCount;
+             ++argumentIndex) {
           if (rhsOperand == captures[argumentIndex])
             diagnostic << " (call operand " << argumentIndex << ")";
           if (rhsOperand == callAliases[argumentIndex])
@@ -426,14 +424,12 @@ public:
       SmallVector<Value> captures =
           collectCaptures(operations, rootOps, scope.begin.getArguments(),
                           scope.begin.getAliases());
-      SmallVector<Type> argumentTypes =
-          llvm::to_vector(llvm::map_range(captures, [](Value value) {
-            return value.getType();
-          }));
+      SmallVector<Type> argumentTypes = llvm::to_vector(llvm::map_range(
+          captures, [](Value value) { return value.getType(); }));
       if (it == functions.end()) {
         FailureOr<OutlinedFunction> outlined = createOutlinedFunction(
-            module, name, operations, captures,
-            scope.begin.getAliases(), numWarps, scope.begin.getLoc());
+            module, name, operations, captures, scope.begin.getAliases(),
+            numWarps, scope.begin.getLoc());
         if (failed(outlined)) {
           signalPassFailure();
           return;
@@ -445,11 +441,11 @@ public:
             scope.begin.emitOpError("calls to pipe helper ");
         diagnostic << name << " do not have one structural lowered ABI: "
                    << "expected " << it->second.argumentTypes.size()
-                   << " arguments and " << it->second.numWarps
-                   << " warps, got " << argumentTypes.size()
-                   << " arguments and " << numWarps << " warps; call ABI has "
-                   << it->second.callArgumentCount << " versus "
-                   << scope.begin.getArguments().size() << " arguments";
+                   << " arguments and " << it->second.numWarps << " warps, got "
+                   << argumentTypes.size() << " arguments and " << numWarps
+                   << " warps; call ABI has " << it->second.callArgumentCount
+                   << " versus " << scope.begin.getArguments().size()
+                   << " arguments";
         unsigned commonArguments =
             std::min(it->second.argumentTypes.size(), argumentTypes.size());
         for (unsigned index = 0; index < commonArguments; ++index) {

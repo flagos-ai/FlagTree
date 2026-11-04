@@ -150,8 +150,7 @@ static unsigned getLegalCpAsyncVec(unsigned maxVec, unsigned elemBits) {
   return 0;
 }
 
-static unsigned getSmallestLegalCpAsyncVec(unsigned maxVec,
-                                           unsigned elemBits) {
+static unsigned getSmallestLegalCpAsyncVec(unsigned maxVec, unsigned elemBits) {
   if (elemBits == 0)
     return 0;
 
@@ -486,9 +485,9 @@ static LogicalResult downgradeAsyncCopy(IRRewriter &rewriter,
     mask = convertTensorEncoding(rewriter, copyOp.getLoc(), mask, *encoding);
     other = convertTensorEncoding(rewriter, copyOp.getLoc(), other, *encoding);
   }
-  auto load = tt::LoadOp::create(
-      rewriter, copyOp.getLoc(), src, mask, other, copyOp.getCache(),
-      copyOp.getEvict(), copyOp.getIsVolatile());
+  auto load = tt::LoadOp::create(rewriter, copyOp.getLoc(), src, mask, other,
+                                 copyOp.getCache(), copyOp.getEvict(),
+                                 copyOp.getIsVolatile());
   Value storeValue = load.getResult();
   auto loadTy = cast<RankedTensorType>(storeValue.getType());
   if (loadTy.getEncoding() != originalSrcTy.getEncoding()) {

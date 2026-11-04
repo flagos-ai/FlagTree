@@ -9,14 +9,15 @@ namespace mlir::triton::tle {
 
 inline bool isFlagcxBlockBarrierCall(LLVM::CallOp call) {
   auto name = call.getCallee();
-  if (!name || (*name != "flagcxIntraBarrierArriveS" &&
-                *name != "flagcxIntraBarrierWaitS" &&
-                *name != "flagcxIntraBarrierSyncS") ||
+  if (!name ||
+      (*name != "flagcxIntraBarrierArriveS" &&
+       *name != "flagcxIntraBarrierWaitS" &&
+       *name != "flagcxIntraBarrierSyncS") ||
       call.getNumOperands() != 5)
     return false;
   auto constant = call.getOperand(1).getDefiningOp<LLVM::ConstantOp>();
-  auto kind = constant ? dyn_cast<IntegerAttr>(constant.getValue())
-                       : IntegerAttr();
+  auto kind =
+      constant ? dyn_cast<IntegerAttr>(constant.getValue()) : IntegerAttr();
   return kind && kind.getInt() == 2;
 }
 
@@ -34,9 +35,9 @@ inline bool scopeFlagcxBlockBarrierCall(LLVM::CallOp call, unsigned firstWarp,
     return LLVM::ConstantOp::create(builder, call.getLoc(), i32,
                                     builder.getI32IntegerAttr(value));
   };
-  SmallVector<Value> args{call.getOperand(0), integer(firstWarp),
+  SmallVector<Value> args{call.getOperand(0),       integer(firstWarp),
                           integer(numThreads / 32), integer(barrierIdx),
-                          call.getOperand(2), call.getOperand(3),
+                          call.getOperand(2),       call.getOperand(3),
                           call.getOperand(4)};
   ModuleOp module = call->getParentOfType<ModuleOp>();
   if (!module.lookupSymbol<LLVM::LLVMFuncOp>(name)) {

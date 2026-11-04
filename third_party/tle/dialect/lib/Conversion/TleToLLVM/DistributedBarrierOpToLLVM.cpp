@@ -222,23 +222,21 @@ struct DistributedBarrierOpConversion
         Value groupCoord = coord;
         if (extent != 1)
           groupCoord = b.udiv(coord, b.i32_val(extent));
-        groupIndex = b.add(b.mul(groupIndex, b.i32_val(groupsOnAxis)),
-                           groupCoord);
+        groupIndex =
+            b.add(b.mul(groupIndex, b.i32_val(groupsOnAxis)), groupCoord);
         if (extent != 1) {
           Value localCoord = b.urem(coord, b.i32_val(extent));
-          localRank = b.add(b.mul(localRank, b.i32_val(extent)),
-                            localCoord);
+          localRank = b.add(b.mul(localRank, b.i32_val(extent)), localCoord);
         }
       }
     }
-    Value scratchByteOffset = b.i32_val(scratchOffset +
-                                        kGridArrivedOffsetBytes);
+    Value scratchByteOffset =
+        b.i32_val(scratchOffset + kGridArrivedOffsetBytes);
     if (isAxisGroup)
-      scratchByteOffset =
-          b.add(scratchByteOffset,
-                b.mul(groupIndex, b.i32_val(kGridScratchBytes)));
-    Value arrivedBytePtr = b.gep(globalPtrTy, i8Ty, globalScratchBase,
-                                 scratchByteOffset);
+      scratchByteOffset = b.add(
+          scratchByteOffset, b.mul(groupIndex, b.i32_val(kGridScratchBytes)));
+    Value arrivedBytePtr =
+        b.gep(globalPtrTy, i8Ty, globalScratchBase, scratchByteOffset);
     Value arrivedPtr = b.bitcast(arrivedBytePtr, globalI32PtrTy);
 
     Value threadId = getThreadId(rewriter, loc);
@@ -257,8 +255,7 @@ struct DistributedBarrierOpConversion
     Value gridDimZ = rewriter.create<NVVM::GridDimZOp>(loc, i32Ty);
     Value totalCTAs = b.mul(gridDimX, gridDimY);
     totalCTAs = b.mul(totalCTAs, gridDimZ);
-    Value expectedCTAs =
-        isAxisGroup ? b.i32_val(participantCount) : totalCTAs;
+    Value expectedCTAs = isAxisGroup ? b.i32_val(participantCount) : totalCTAs;
 
     Block *curBlock = rewriter.getInsertionBlock();
     Block *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
@@ -553,8 +550,7 @@ struct DistributedBarrierOpConversion
       return lowerFlagCxSpaceBarrier(op, adaptor, rewriter);
 
     if (auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr)) {
-      if (kindAttr.getValue() == "grid" ||
-          kindAttr.getValue() == "grid_axis")
+      if (kindAttr.getValue() == "grid" || kindAttr.getValue() == "grid_axis")
         return lowerGridBarrier(op, rewriter);
       if (kindAttr.getValue() == "submesh")
         return lowerSubmeshBarrier(op, rewriter);

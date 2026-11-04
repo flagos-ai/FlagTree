@@ -77,8 +77,8 @@ struct DeviceIntraBarrierOpConversion
       return rewriter.notifyMatchFailure(op, "invalid coop_kind");
 
     if (auto index = adaptor.getDynamicIndex())
-      tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(), index, coopValue,
-                              orderValue, barrierType);
+      tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(), index,
+                              coopValue, orderValue, barrierType);
     else
       tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(),
                               op.getIndexAttr().getInt(), coopValue, orderValue,
@@ -93,5 +93,6 @@ struct DeviceIntraBarrierOpConversion
 void mlir::triton::tle::populateFlagCxBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<FlagCxBarrierOpConversion, DeviceIntraBarrierOpConversion>(typeConverter, benefit);
+  patterns.add<FlagCxBarrierOpConversion, DeviceIntraBarrierOpConversion>(
+      typeConverter, benefit);
 }

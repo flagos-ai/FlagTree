@@ -23,9 +23,9 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
@@ -243,7 +243,8 @@ struct TritonTleLowerBarriers
     for (const auto &[alloc, slots] : ownedBarrierSlots) {
       Operation *function =
           alloc.getDefiningOp()->getParentOfType<FunctionOpInterface>();
-      if (!function || !alloc.getDefiningOp()->getParentRegion()->hasOneBlock()) {
+      if (!function ||
+          !alloc.getDefiningOp()->getParentRegion()->hasOneBlock()) {
         alloc.getDefiningOp()->emitOpError(
             "owned mbarriers require a single-block defining region");
         return signalPassFailure();

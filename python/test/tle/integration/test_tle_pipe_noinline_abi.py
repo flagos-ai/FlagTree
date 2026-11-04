@@ -50,7 +50,7 @@ def test_distinct_control_pipes_share_nested_noinline_functions(same_name, tmp_p
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:
         pytest.skip("requires NVIDIA Hopper warp specialization")
     output = torch.zeros(4, dtype=torch.int32, device="cuda")
-    kernel = _two_control_pipes[(1,)](output, same_name, num_warps=4)
+    kernel = _two_control_pipes[(1, )](output, same_name, num_warps=4)
     torch.cuda.synchronize()
     torch.testing.assert_close(output.cpu(), torch.tensor([11, 22, 33, 44], dtype=torch.int32))
     # Source decorators/TTIR are insufficient: the final device bodies and

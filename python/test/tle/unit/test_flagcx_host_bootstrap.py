@@ -40,15 +40,17 @@ def test_unique_id_uses_cpu_tensor_and_the_host_group(communication, monkeypatch
         pytest.fail("FlagCX ID bootstrap must not initialize CUDA NCCL")
 
     monkeypatch.setattr(comm.torch.Tensor, "cuda", forbidden_cuda)
-    monkeypatch.setattr(comm, "dist", SimpleNamespace(
-        is_initialized=lambda: True, get_rank=lambda: rank, get_world_size=lambda: 2,
-        broadcast=broadcast))
+    monkeypatch.setattr(
+        comm, "dist",
+        SimpleNamespace(is_initialized=lambda: True, get_rank=lambda: rank, get_world_size=lambda: 2,
+                        broadcast=broadcast))
     identifier = bytes(range(256))
     token = object()
-    monkeypatch.setattr(comm, "flagcx", SimpleNamespace(
-        flagcxGetUniqueId=lambda: SimpleNamespace(internal=identifier),
-        unique_id_from_bytes=lambda data: SimpleNamespace(internal=data),
-        flagcxCommInitRank=lambda *_: token))
+    monkeypatch.setattr(
+        comm, "flagcx",
+        SimpleNamespace(flagcxGetUniqueId=lambda: SimpleNamespace(internal=identifier),
+                        unique_id_from_bytes=lambda data: SimpleNamespace(internal=data),
+                        flagcxCommInitRank=lambda *_: token))
     comm.init_communicator()
     assert broadcasts == [identifier]
     assert comm.comm is token
@@ -73,16 +75,16 @@ def test_window_publication_synchronizes_cuda_then_uses_host_barriers(communicat
 
     monkeypatch.setattr(comm.torch.cuda, "synchronize", lambda *_: events.append("cuda_sync"))
     monkeypatch.setattr(comm, "dist", SimpleNamespace(is_initialized=lambda: True, barrier=barrier))
-    monkeypatch.setattr(comm, "flagcx", SimpleNamespace(
-        supports_intra_barrier_count_query=False,
-        flagcxCommWindowRegister=register,
-        flagcxDevCommCreate=lambda *_: object(), flagcxDevMemCreate=lambda *_: object(),
-        flagcxDevCommGetDevicePtr=lambda *_: SimpleNamespace(value=11),
-        flagcxDevMemGetDevicePtr=lambda *_: SimpleNamespace(value=22)))
+    monkeypatch.setattr(
+        comm, "flagcx",
+        SimpleNamespace(supports_intra_barrier_count_query=False, flagcxCommWindowRegister=register,
+                        flagcxDevCommCreate=lambda *_: object(), flagcxDevMemCreate=lambda *_: object(),
+                        flagcxDevCommGetDevicePtr=lambda *_: SimpleNamespace(value=11),
+                        flagcxDevMemGetDevicePtr=lambda *_: SimpleNamespace(value=22)))
     context = SimpleNamespace()
     monkeypatch.setattr(triton.runtime, "DistributedRtContext", lambda *_: context)
-    window = SimpleNamespace(is_cuda=True, is_contiguous=lambda: True, data_ptr=lambda: 4096,
-                             numel=lambda: 4096, element_size=lambda: 1, device="cuda:0")
+    window = SimpleNamespace(is_cuda=True, is_contiguous=lambda: True, data_ptr=lambda: 4096, numel=lambda: 4096,
+                             element_size=lambda: 1, device="cuda:0")
     assert comm.create_dist_tensor(window) is context
     assert context.intra_barrier_count == 1
     assert events == ["cuda_sync", "host_barrier", "register", "host_barrier"]

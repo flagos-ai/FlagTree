@@ -400,7 +400,8 @@ class device_mesh:
             self._launch_shape = tuple(_launch_shape if _launch_shape is not None else _shape)
             self._launch_dim_names = tuple(_launch_dim_names if _launch_dim_names is not None else _dim_names)
             self._physical_shape = tuple(_physical_shape if _physical_shape is not None else self._launch_shape)
-            self._physical_dim_names = tuple(_physical_dim_names if _physical_dim_names is not None else self._launch_dim_names)
+            self._physical_dim_names = tuple(
+                _physical_dim_names if _physical_dim_names is not None else self._launch_dim_names)
             self._grid_group_axes = None if _grid_group_axes is None else tuple(_grid_group_axes)
             self._grid_group_shape = None if _grid_group_shape is None else tuple(_grid_group_shape)
             return
@@ -525,8 +526,7 @@ class device_mesh:
             raise ValueError(f"grid axis group axes must be unique, got {axes}")
         unknown = tuple(axis for axis in axes if axis not in self._launch_dim_names)
         if unknown:
-            raise ValueError(
-                f"unknown grid axis group names {unknown}; launch axes are {self._launch_dim_names}")
+            raise ValueError(f"unknown grid axis group names {unknown}; launch axes are {self._launch_dim_names}")
         axis_indices = tuple(self._launch_dim_names.index(axis) for axis in axes)
         if any("block" not in self._launch_dim_names[index] for index in axis_indices):
             raise ValueError("grid axis groups require block launch axes")
@@ -536,17 +536,12 @@ class device_mesh:
         else:
             if not isinstance(group_shape, (tuple, list)):
                 raise TypeError("group_shape must be a list or tuple")
-            extents = tuple(
-                _as_positive_int(value, "grid axis group extent")
-                for value in group_shape
-            )
+            extents = tuple(_as_positive_int(value, "grid axis group extent") for value in group_shape)
             if len(extents) != len(axis_indices):
-                raise ValueError(
-                    f"group_shape rank {len(extents)} must match axes rank {len(axis_indices)}")
+                raise ValueError(f"group_shape rank {len(extents)} must match axes rank {len(axis_indices)}")
         for axis, extent, domain in zip(axes, extents, domain_extents):
             if domain % extent:
-                raise ValueError(
-                    f"grid axis group extent {extent} must divide {axis!r} domain {domain}")
+                raise ValueError(f"grid axis group extent {extent} must divide {axis!r} domain {domain}")
         return device_mesh(
             None,
             _shape=extents,
@@ -896,8 +891,7 @@ def _collect_cluster_members_by_outer_coord(
     # Decode that domain first; node/device axes are outer coordinates, never
     # per-rank program_id dimensions.
     physical_shape = mesh._physical_shape
-    physical_cluster_axes = tuple(mesh._physical_dim_names.index(mesh.launch_dim_names[axis])
-                                  for axis in cluster_axes)
+    physical_cluster_axes = tuple(mesh._physical_dim_names.index(mesh.launch_dim_names[axis]) for axis in cluster_axes)
     cluster_axis_set = set(physical_cluster_axes)
     outer_axes = tuple(axis for axis in range(len(physical_shape)) if axis not in cluster_axis_set)
     launch_size = _prod(physical_shape)
@@ -1082,8 +1076,7 @@ def _apply_mesh_grid_launch(mesh: device_mesh, _semantic: TLESemantic | None) ->
     # Atomic grid barriers can use a resident ordinary launch on backends
     # without the CUDA cooperative-launch API. Honor the backend capability
     # when deriving the mesh contract, before codegen creates launch metadata.
-    object.__setattr__(options, "launch_cooperative_grid",
-                       bool(getattr(options, "supports_cooperative_grid", True)))
+    object.__setattr__(options, "launch_cooperative_grid", bool(getattr(options, "supports_cooperative_grid", True)))
 
 
 def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
@@ -1181,11 +1174,10 @@ def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | N
 
 
 def check_and_handle_indexed_device_barrier(space: str = None, device_dptr=None,
-                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
-                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                                          barrier_count: int | None = None,
-                                          _semantic: TLESemantic | None = None):
+                                            barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                            group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
+                                            order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                                            barrier_count: int | None = None, _semantic: TLESemantic | None = None):
     if space and space in ("device", "node"):
         builder = _semantic.builder
         ptr = _parse_src_arg(builder, device_dptr, 1)
@@ -1205,14 +1197,13 @@ def check_and_handle_indexed_device_barrier(space: str = None, device_dptr=None,
                 if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < barrier_count:
                     raise ValueError("Barrier index is outside barrier_count")
                 index = tl.full((), index, tl.int32, _semantic=_semantic)
-            builder.create_indexed_device_barrier(
-                ptr, index.handle, barrier_count,
-                _parse_barrier_enum_arg(group_kind), _parse_barrier_enum_arg(order),
-                _parse_barrier_enum_arg(barrier_kind))
+            builder.create_indexed_device_barrier(ptr, index.handle, barrier_count, _parse_barrier_enum_arg(group_kind),
+                                                  _parse_barrier_enum_arg(order), _parse_barrier_enum_arg(barrier_kind))
             return True
     if barrier_count is not None:
         raise ValueError("barrier_count is only supported for device-space barriers")
     return False
+
 
 def _parse_barrier_enum_arg(arg) -> str:
     # Successor of the base _parse_device_barrier_args: normalize
@@ -1432,7 +1423,8 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
         space = _normalize_barrier_space(space)
     if mesh is None and space == "device" and barrier_count is None and not isinstance(index, tl.tensor):
         scope = tl._unwrap_if_constexpr(memory_scope)
-        system_scope = scope == attr.SyncScope.SYSTEM if isinstance(scope, attr.SyncScope) else _parse_barrier_enum_arg(scope) == "system"
+        system_scope = scope == attr.SyncScope.SYSTEM if isinstance(
+            scope, attr.SyncScope) else _parse_barrier_enum_arg(scope) == "system"
         if tl._unwrap_if_constexpr(context_id) != 0 or not system_scope:
             raise ValueError("mesh-less device barriers use context_id=0 and system scope; provide a mesh otherwise")
         barrier_count = 1
@@ -1440,10 +1432,9 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
         if tl._unwrap_if_constexpr(context_id) != 0 or _parse_barrier_enum_arg(memory_scope) != "system":
             raise ValueError("indexed device barriers use context_id=0 and system scope")
 
-    if check_and_handle_indexed_device_barrier(space=space, device_dptr=device_dptr,
-                                               barrier_kind=barrier_kind, group_kind=group_kind,
-                                               index=index, order=order, barrier_count=barrier_count,
-                                               _semantic=_semantic):
+    if check_and_handle_indexed_device_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
+                                               group_kind=group_kind, index=index, order=order,
+                                               barrier_count=barrier_count, _semantic=_semantic):
         return None
 
     if mesh is not None:
@@ -1478,10 +1469,9 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
                 builder.create_distributed_barrier("grid", [], [], [], [])
             return None
         except TypeError as exc:
-            raise NotImplementedError(
-                "grid distributed_barrier requires rebuilt TLE extension with "
-                "group-aware create_distributed_barrier(group_kind, group_shape, "
-                "group_axes, group_mask, group_domain_shape)") from exc
+            raise NotImplementedError("grid distributed_barrier requires rebuilt TLE extension with "
+                                      "group-aware create_distributed_barrier(group_kind, group_shape, "
+                                      "group_axes, group_mask, group_domain_shape)") from exc
 
     if mesh is not None:
         _apply_mesh_cluster_launch(mesh, _semantic)
