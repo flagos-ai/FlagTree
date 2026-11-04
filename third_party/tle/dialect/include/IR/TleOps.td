@@ -432,7 +432,8 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
     OptionalAttr<I32Attr>:$group_rank,
     OptionalAttr<DenseI32ArrayAttr>:$group_shape,
     OptionalAttr<DenseI32ArrayAttr>:$group_axes,
-    OptionalAttr<DenseI32ArrayAttr>:$group_mask
+    OptionalAttr<DenseI32ArrayAttr>:$group_mask,
+    OptionalAttr<DenseI32ArrayAttr>:$group_domain_shape
   );
   let hasVerifier = 1;
 }
