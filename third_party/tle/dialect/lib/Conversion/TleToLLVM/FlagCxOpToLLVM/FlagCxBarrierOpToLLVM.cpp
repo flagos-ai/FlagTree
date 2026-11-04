@@ -56,10 +56,42 @@ struct FlagCxBarrierOpConversion
   }
 };
 
+struct DeviceIntraBarrierOpConversion
+    : public ConvertOpToLLVMPattern<tle::DeviceIntraBarrierOp> {
+  DeviceIntraBarrierOpConversion(LLVMTypeConverter &typeConverter,
+                                 PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(tle::DeviceIntraBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    auto coopValue = op.getCoopKindAttr().getInt();
+    auto orderValue = op.getOrderAttr().getInt();
+    auto barrierType = op.getBarrierTypeAttr().getValue();
+    if (!llvm::is_contained(std::array<size_t, 5>{0, 1, 2, 3, 4}, coopValue))
+      return rewriter.notifyMatchFailure(op, "invalid coop_kind");
+
+    if (!llvm::is_contained(std::array<size_t, 4>{0, 1, 2, 3}, orderValue))
+      return rewriter.notifyMatchFailure(op, "invalid coop_kind");
+
+    if (auto index = adaptor.getDynamicIndex())
+      tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(), index, coopValue,
+                              orderValue, barrierType);
+    else
+      tle::getBarrierFuncCall(loc, rewriter, adaptor.getComm(),
+                              op.getIndexAttr().getInt(), coopValue, orderValue,
+                              barrierType);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::tle::populateFlagCxBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<FlagCxBarrierOpConversion>(typeConverter, benefit);
+  patterns.add<FlagCxBarrierOpConversion, DeviceIntraBarrierOpConversion>(typeConverter, benefit);
 }

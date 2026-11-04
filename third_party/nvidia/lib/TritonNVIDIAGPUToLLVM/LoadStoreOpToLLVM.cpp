@@ -14,6 +14,7 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/CopyFill.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/RemotePointerUtils.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
@@ -212,7 +213,7 @@ struct LoadStoreConversionBase {
     return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
   }
 
-  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+  unsigned getMaxVectorSizeByAxisInfo(Value ptr) const {
     auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
     if (!tensorTy)
       return 1;
@@ -232,7 +233,8 @@ struct LoadStoreConversionBase {
     unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
     unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
 
-    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+    unsigned contiguous = axisInfo->getContiguity(order[0]);
+    return std::min({128 / pointeeBitWidth, maxMultiple, contiguous});
   }
 
   unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
@@ -240,11 +242,12 @@ struct LoadStoreConversionBase {
       return vec;
 
     // AxisInfo contiguity and TLE layout hints may both propose vectorized
-    // shared-memory accesses. They are legal only up to the width whose first
-    // element alignment is proven by AxisInfo divisibility.
+    // shared-memory accesses. Both pointer contiguity and first-element
+    // alignment must be proven; contiguous registers alone do not prove that
+    // gathered pointers address adjacent memory elements.
     unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
-    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
-    return std::min(std::max(vec, hint), alignmentBound);
+    unsigned axisBound = getMaxVectorSizeByAxisInfo(ptr);
+    return std::min(std::max(vec, hint), axisBound);
   }
 #endif
 
@@ -1407,6 +1410,19 @@ struct AsyncCopyGlobalToLocalOpConversion
     }
 
     // We assume other = 0, see XXX(Keren) below
+#ifdef __TLE__
+    // Operand conversion has already replaced tensor constants by LLVM
+    // aggregates. Check their actual scalar bits, including signed zero.
+    SmallVector<Value> otherElems;
+    if (llMask && llOther) {
+      otherElems = unpackLLElements(loc, llOther, rewriter);
+      assert(otherElems.size() == srcElems.size());
+    }
+    const bool materializeOther =
+        llMask && llOther &&
+        !llvm::all_of(maskElems, tte::hasLLVMTrueMask) &&
+        !llvm::all_of(otherElems, tte::hasLLVMZeroFillBits);
+#endif
     // %other
     // SmallVector<Value> otherElems;
     // if (llOther) {
@@ -1419,11 +1435,20 @@ struct AsyncCopyGlobalToLocalOpConversion
     auto ptrTy = srcElems[0].getType();
     auto structTy =
         LLVM::LLVMStructType::getLiteral(ctx, ArrayRef<Type>{ptrTy, i1_ty});
+#ifdef __TLE__
+    if (materializeOther)
+      structTy = LLVM::LLVMStructType::getLiteral(
+          ctx, ArrayRef<Type>{ptrTy, i1_ty, resElemTy});
+#endif
     for (int i = 0; i < srcElems.size(); i++) {
       Value packedArr = LLVM::UndefOp::create(rewriter, loc, structTy);
       packedArr = b.insert_val(packedArr, srcElems[i], 0);
       auto maskElem = llMask ? maskElems[i] : b.false_val();
       packedArr = b.insert_val(packedArr, maskElem, 1);
+#ifdef __TLE__
+      if (materializeOther)
+        packedArr = b.insert_val(packedArr, otherElems[i], 2);
+#endif
       vals.push_back(packedArr);
     }
 
@@ -1488,6 +1513,9 @@ struct AsyncCopyGlobalToLocalOpConversion
 
     auto emitCpAsync =
         [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
+#ifdef __TLE__
+         materializeOther,
+#endif
          l2PolicyReg](RewriterBase &rewriter, Location loc,
                       ArrayRef<Value> vals, Value shmemAddr, int startIdx,
                       VectorType vecTy) -> SmallVector<Value> {
@@ -1535,15 +1563,67 @@ struct AsyncCopyGlobalToLocalOpConversion
         // When 'other != 0' is supported, we will need to fold the
         // op.getMask() and redundantDataMask() into the same predicate, the
         // way it is done for LoadOp.
+#ifdef __TLE__
+        if (!materializeOther) {
+#endif
         auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
         srcSize = ptxBuilder.newOperand(selectOp, "r");
+#ifdef __TLE__
+        }
+#endif
       }
       auto &copyExec =
           evictOpr
               ? copyAsyncOp(dstOperand, srcOperand, copySize, srcSize, evictOpr)
               : copyAsyncOp(dstOperand, srcOperand, copySize, srcSize);
+#ifdef __TLE__
+      Value fillPred;
+      if (materializeOther) {
+        // An absent redundancy predicate means every thread participates.
+        copyExec.maybePredicate(maybeAnd(rewriter, loc, threadPred, maskElem));
+        fillPred = maybeAnd(rewriter, loc, threadPred,
+                            b.xor_(maskElem, b.true_val()));
+      } else {
+#endif
       copyExec.maybePredicate(threadPred);
+#ifdef __TLE__
+      }
+#endif
       ptxBuilder.launch(rewriter, loc, void_ty(ctx));
+#ifdef __TLE__
+      if (materializeOther) {
+        // Keep the fill condition visible to LLVM. A predicate inside opaque
+        // PTX would retain dead stores when mask range analysis proves true.
+        auto *currentBlock = rewriter.getInsertionBlock();
+        auto *endBlock = rewriter.splitBlock(currentBlock,
+                                             rewriter.getInsertionPoint());
+        auto *fillBlock = rewriter.createBlock(
+            currentBlock->getParent(), std::next(Region::iterator(currentBlock)));
+        rewriter.setInsertionPointToEnd(currentBlock);
+        LLVM::CondBrOp::create(rewriter, loc, fillPred, fillBlock, endBlock,
+                              ValueRange{});
+        rewriter.setInsertionPointToEnd(fillBlock);
+        PTXBuilder fillBuilder;
+        unsigned width = elemTy.getIntOrFloatBitWidth();
+        auto intTy = IntegerType::get(ctx, width);
+        for (unsigned i = 0; i < vecTy.getNumElements(); ++i) {
+          Value fill = b.extract_val(elemTy, vals[startIdx + i], 2);
+          fill = b.bitcast(fill, intTy);
+          if (width < 16)
+            fill = b.zext(i16_ty, fill);
+          auto *address = fillBuilder.newAddrOperand(
+              shmemAddr, "r", i * width / 8);
+          auto *value = fillBuilder.newOperand(
+              fill, width <= 16 ? "h" : width == 32 ? "r" : "l");
+          auto &store = *fillBuilder.create<>("st");
+          store.shared().b(width);
+          store(address, value);
+        }
+        fillBuilder.launch(rewriter, loc, void_ty(ctx));
+        LLVM::BrOp::create(rewriter, loc, ValueRange{}, endBlock);
+        rewriter.setInsertionPointToStart(endBlock);
+      }
+#endif
       return {};
     };
 

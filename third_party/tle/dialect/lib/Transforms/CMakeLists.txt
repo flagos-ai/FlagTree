@@ -18,6 +18,8 @@ add_triton_library(TritonTLETransforms
   TleLogicalDomains.cpp
   TleLowerAsyncLoad.cpp
   TleLowerPipeToNvws.cpp
+  TleRestorePipeFunctionCalls.cpp
+  TleSharedOffsetFunctionABI.cpp
   TleLowerBarriers.cpp
   TleAllocateNamedBarriers.cpp
   TleTileToLLVMUtils.cpp
@@ -53,3 +55,4 @@ target_include_directories(TritonTLETransforms PUBLIC
   ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/include
   ${CMAKE_SOURCE_DIR}/include
 )
+

@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Analysis/CompatibleProposalMerge.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -689,6 +690,15 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     }
     if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
       auto parent = yieldOp->getParentOp();
+#ifdef __TLE__
+      // A while yield feeds the before arguments, whose signature is independent
+      // of the condition-forwarded values that define the while results.
+      if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+        setEncoding({whileOp.getBeforeArguments()[use.getOperandNumber()]}, info,
+                    changed, user);
+        continue;
+      }
+#endif // __TLE__
       SmallVector<Value> valuesToPropagate;
       if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent))
         valuesToPropagate.push_back(parent->getResult(use.getOperandNumber()));
@@ -2536,6 +2546,10 @@ bool LayoutPropagation::solveSmallComponents() {
                                    bool rejectReachableReductionOrScan = true,
                                    bool restrictWeakStoreProposals = false) {
     bool localChanged = false;
+#ifdef __TLE__
+    proposals = triton::tle::mergeCompatibleProposals(
+        std::move(proposals), proposalsOverlapAndCompatible, mergeProposalInto);
+#else
     bool merged = true;
     while (merged) {
       merged = false;
@@ -2550,6 +2564,7 @@ bool LayoutPropagation::solveSmallComponents() {
         }
       }
     }
+#endif
     for (Proposal &proposal : proposals)
       localChanged |= commitIfProfitable(proposal, /*requireBenefit=*/true,
                                          rejectReachableReductionOrScan,
@@ -2653,6 +2668,14 @@ collectUseTargets(OpOperand &use, Attribute enc,
   }
   if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
     auto parent = yieldOp->getParentOp();
+#ifdef __TLE__
+    // Keep the cost model on the same region edge as forward propagation.
+    if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+      targets.push_back(
+          {whileOp.getBeforeArguments()[use.getOperandNumber()], enc});
+      return;
+    }
+#endif // __TLE__
     if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent))
       targets.push_back({parent->getResult(use.getOperandNumber()), enc});
     if (auto forOp = dyn_cast<scf::ForOp>(parent))
@@ -4245,7 +4268,14 @@ void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
+#ifdef __TLE__
+  // Address/mask DAGs use generic rematerialization, not matrix-data hoisting.
+  if (isa<DotOperandEncodingAttr>(targetType.getEncoding()) &&
+      !isa<triton::PointerType>(targetType.getElementType()) &&
+      !targetType.getElementType().isInteger(1))
+#else
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
+#endif
     return;
   Value oldV = convertOp.getSrc();
   LDBG("check backward remat with source " << oldV << " encoding "

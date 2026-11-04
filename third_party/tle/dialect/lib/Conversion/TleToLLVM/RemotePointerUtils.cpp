@@ -43,8 +43,9 @@ unsigned inferTlePointerLayoutVectorHint(Value ptr) {
       dyn_cast<triton::gpu::DistributedEncodingTrait>(tensorTy.getEncoding());
   if (!dist)
     return 1;
-  auto order = triton::gpu::getOrder(dist, tensorTy.getShape());
-  auto contigPerThread = triton::gpu::getContigPerThread(tensorTy);
+  auto linear = triton::gpu::toLinearEncoding(tensorTy);
+  auto order = linear.getOrder();
+  auto contigPerThread = linear.getContigPerThread();
   if (order.empty() || contigPerThread.empty())
     return 1;
 
@@ -55,17 +56,14 @@ unsigned inferTlePointerLayoutVectorHint(Value ptr) {
   unsigned elemsPerThread = std::max<unsigned>(
       1, static_cast<unsigned>(
              triton::gpu::getTotalElemsPerThread(ptr.getType())));
-  unsigned best = 1;
-  for (unsigned axis : order) {
-    if (axis >= contigPerThread.size())
-      continue;
-    unsigned candidate = std::max<unsigned>(
-        1,
-        std::min<unsigned>(std::min<unsigned>(maxByType, contigPerThread[axis]),
-                           elemsPerThread));
-    best = std::max(best, candidate);
-  }
-  return best;
+  // Vector operands consume consecutive registers. Contiguity on a slower
+  // axis cannot enlarge a vector on the fastest register axis (notably for
+  // dot operand layouts, whose two axes can have very different widths).
+  unsigned axis = order.front();
+  if (axis >= contigPerThread.size())
+    return 1;
+  return std::max<unsigned>(
+      1, std::min({maxByType, contigPerThread[axis], elemsPerThread}));
 }
 
 } // namespace mlir::triton::tle

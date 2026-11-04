@@ -26,6 +26,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 
 namespace mlir::triton::gpu {
 #define GEN_PASS_DEF_TRITONGPUALLOCATEWARPGROUPS
@@ -101,6 +104,13 @@ struct AllocateWarpGroups
     // Round this up to the nearest warpgroup (multiple of 4) and then pad each
     // `ttg.warp_specialize` to the nearest warpgroup.
     int numExtraWarpGroups = llvm::divideCeil(maxExtraWarps, 4);
+#ifdef __TLE__
+    // A device call has a fixed register ABI, so a caller cannot lend away
+    // registers on the assumption that its callee preserves setmaxnreg state.
+    // Let ptxas assign a uniform register budget across call boundaries.
+    bool hasOutOfLineCalls = false;
+    mod.walk([&](triton::CallOp) { hasOutOfLineCalls = true; });
+#endif
     mod.walk([&](WarpSpecializeOp op) {
       padToMaxWarpGroups(op, numExtraWarpGroups);
     });
@@ -155,6 +165,13 @@ struct AllocateWarpGroups
 
       // Require that an estimate has been set and that we have even warpgroups.
       auto regsAttr = op.getRequestedRegisters();
+#ifdef __TLE__
+      if (hasOutOfLineCalls) {
+        // requestedRegisters is provenance, not a dynamic register budget:
+        // device calls require a fixed ABI even with full warp groups.
+        return;
+      }
+#endif
       if (!regsAttr || op.getTotalPartitionWarps() % 4 != 0)
         return;
 
