@@ -28,3 +28,9 @@ add_triton_ut(
     MLIRSCFDialect
     MLIRParser
 )
+
+add_triton_ut(
+  NAME TestTleCompatibleProposalMerge
+  SRCS CompatibleProposalMergeTest.cpp CompatibleProposalMergeAllocationTest.cpp
+  LIBS LLVMSupport
+)
