@@ -21,14 +21,35 @@
 # SOFTWARE.
 
 import functools
+import weakref
 
 
 class DistributedRtContext:
+    """Host-side handle for the FlagCX device communication context.
+
+    The launcher ABI names its two appended values ``device_comm_ptr`` and
+    ``device_mem_ptr`` in that order.  TLE pointer intrinsics use the context
+    as a source view instead: index 0 is the symmetric memory handle and
+    index 1 is the communication handle.  Keep those two contracts explicit
+    instead of swapping constructor arguments at each call site.
+    """
+    _instance = None
+    _initialized = False
     _init_count = 0
+    _contexts = weakref.WeakSet()
+
+    def __new__(cls, _comm_ptr=None, _mem_ptr=None):
+        if _comm_ptr is None and _mem_ptr is None and cls._init_count == 1 and cls._instance is not None:
+            return cls._instance
+        return super().__new__(cls)
 
     def __init__(self, _comm_ptr=None, _mem_ptr=None):
+        if _comm_ptr is None and _mem_ptr is None and getattr(self, "_comm_ptr", None) is not None:
+            return
         if _comm_ptr is not None and _mem_ptr is not None:
             type(self)._init_count += 1
+            type(self)._instance = self
+            type(self)._contexts.add(self)
         self._comm_ptr = _comm_ptr
         self._mem_ptr = _mem_ptr
         self._registered_buffer = None
@@ -39,6 +60,23 @@ class DistributedRtContext:
     @property
     def registered_buffer(self):
         return getattr(self, "_registered_buffer", None)
+
+    @classmethod
+    def _reset(cls) -> None:
+        """Invalidate the process-local handle after FlagCX teardown.
+
+        Explicit contexts remain independent. Teardown invalidates every
+        process-local handle so a later artifact cannot reuse destroyed
+        pointers through the optional single-context lookup.
+        """
+        for instance in cls._contexts:
+            instance._comm_ptr = None
+            instance._mem_ptr = None
+            instance._registered_buffer = None
+        cls._contexts.clear()
+        cls._instance = None
+        cls._initialized = False
+        cls._init_count = 0
 
     def get_packed_data(self):
         return int(self._mem_ptr), int(self._comm_ptr)
@@ -68,7 +106,7 @@ class DistributedRtContext:
         return inner_action and user_action
 
     def __getitem__(self, index=0):
-        return list(self._get_needed_params().values())[index]
+        return (self._mem_ptr, self._comm_ptr)[index]
 
     def add_args_to_jitfunction(self, **kwargs):
         params = kwargs['params']  # list
