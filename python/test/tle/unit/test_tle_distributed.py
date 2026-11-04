@@ -329,7 +329,7 @@ class TestDistributedBarrierScope:
         with pytest.raises(ValueError, match="mesh is required"):
             tle.distributed_barrier(
                 device_dptr=_FakeDevicePtr(),
-                space="device",
+                space="world",
                 _semantic=_FakeSemantic(),
             )
 

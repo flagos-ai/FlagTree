@@ -57,6 +57,7 @@
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -986,6 +987,35 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("space"), py::arg("group_kind"), py::arg("order"),
           py::arg("barrier_kind"), py::arg("context_id") = 0,
           py::arg("memory_scope") = "system")
+      .def(
+          "create_indexed_device_barrier",
+          [](TritonOpBuilder &self, Value comm, Value index,
+             int32_t barrierCount, const std::string &groupKind,
+             const std::string &order, const std::string &barrierKind) {
+            auto &builder = self.getBuilder();
+            int32_t coop = llvm::StringSwitch<int32_t>(groupKind)
+                               .Case("thread", 0)
+                               .Case("warp", 1)
+                               .Case("block", 2)
+                               .Default(-1);
+            int32_t ordering = llvm::StringSwitch<int32_t>(order)
+                                   .Case("relaxed", 0)
+                                   .Case("acquire", 1)
+                                   .Case("release", 2)
+                                   .Case("acqrel", 3)
+                                   .Default(-1);
+            if (barrierCount <= 0 || coop < 0 || ordering < 0 ||
+                (barrierKind != "arrive" && barrierKind != "wait" &&
+                 barrierKind != "sync"))
+              throw py::value_error("Invalid indexed device barrier contract");
+            self.create<tle::DeviceIntraBarrierOp>(
+                comm, index, builder.getStringAttr(barrierKind),
+                builder.getI32IntegerAttr(coop), IntegerAttr(),
+                builder.getBoolAttr(false), builder.getI32IntegerAttr(ordering),
+                builder.getI32IntegerAttr(barrierCount));
+          },
+          py::arg("comm"), py::arg("index"), py::arg("barrier_count"),
+          py::arg("group_kind"), py::arg("order"), py::arg("barrier_kind"))
       .def(
           "create_signal",
           [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,

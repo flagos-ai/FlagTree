@@ -51,6 +51,16 @@ LLVM::CallOp getUnifiedBarrierFuncCall(
     int32_t teamKind, int32_t barrierIndex, int32_t contextId, int32_t coopKind,
     int32_t order, int32_t scope, llvm::StringRef barrierType);
 
+LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
+                                ConversionPatternRewriter &rewriter, Value comm,
+                                size_t barrierIndex, size_t coopKind,
+                                size_t order, llvm::StringRef barrierType);
+
+LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
+                                ConversionPatternRewriter &rewriter, Value comm,
+                                Value barrierIndex, size_t coopKind,
+                                size_t order, llvm::StringRef barrierType);
+
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter, Value comm,
                                Value peer, Value slotId, Value value,

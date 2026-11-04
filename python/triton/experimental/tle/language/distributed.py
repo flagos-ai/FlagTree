@@ -1180,11 +1180,51 @@ def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | N
     return ("device", "inter", "world")[team_kind_value]
 
 
+def check_and_handle_indexed_device_barrier(space: str = None, device_dptr=None,
+                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
+                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                                          barrier_count: int | None = None,
+                                          _semantic: TLESemantic | None = None):
+    if space and space in ("device", "node"):
+        builder = _semantic.builder
+        ptr = _parse_src_arg(builder, device_dptr, 1)
+        index = tl._unwrap_if_constexpr(index)
+        barrier_count = tl._unwrap_if_constexpr(barrier_count)
+        if isinstance(index, tl.tensor) or barrier_count is not None:
+            if space != "device" or ptr is None:
+                raise ValueError("Indexed barriers require an explicit device context and space='device'")
+            if (isinstance(barrier_count, bool) or not isinstance(barrier_count, int)
+                    or not 0 < barrier_count <= 0x7fffffff):
+                raise ValueError("Indexed barriers require a positive int32 barrier_count")
+            if isinstance(index, tl.tensor):
+                if index.shape != [] or index.dtype != tl.int32:
+                    raise TypeError("Barrier index must be a scalar int32 tensor")
+            else:
+                index = 0 if index is None else index
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < barrier_count:
+                    raise ValueError("Barrier index is outside barrier_count")
+                index = tl.full((), index, tl.int32, _semantic=_semantic)
+            builder.create_indexed_device_barrier(
+                ptr, index.handle, barrier_count,
+                _parse_barrier_enum_arg(group_kind), _parse_barrier_enum_arg(order),
+                _parse_barrier_enum_arg(barrier_kind))
+            return True
+    if barrier_count is not None:
+        raise ValueError("barrier_count is only supported for device-space barriers")
+    return False
+
 def _parse_barrier_enum_arg(arg) -> str:
     # Successor of the base _parse_device_barrier_args: normalize
     # BarrierKind/GroupKind/MemoryOrder enums or raw strings to lowercase str.
     arg = tl._unwrap_if_constexpr(arg)
-    if isinstance(arg, (BarrierKind, GroupKind, MemoryOrder)):
+    if isinstance(arg, attr.FlagCXCoopKind):
+        return ("thread", "warp", "block")[int(arg)]
+    if isinstance(arg, attr.MemoryOrder):
+        return ("relaxed", "acquire", "release", "acqrel")[int(arg)]
+    if isinstance(arg, attr.SyncScope):
+        return ("system", "device", "block", "thread")[int(arg)]
+    if isinstance(arg, (BarrierKind, GroupKind, MemoryOrder, MemoryScope)):
         return arg.value
     return str(arg).lower()
 
@@ -1350,7 +1390,8 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                         order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
                         _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0,
-                        memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM):
+                        memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM,
+                        barrier_count: int | None = None):
     """
     M3 entrypoint: distributed synchronization primitive.
     Dispatch order:
@@ -1372,10 +1413,38 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     ``index`` selects the barrier channel and ``context_id`` selects the
     pre-created FlagCX device context.
     Both values must agree across all participants in the barrier.
+    - cluster mesh: cluster/submesh synchronization
+    - block mesh: cooperative grid synchronization
+    - device space: index may be a CTA-uniform scalar int32 tensor when
+      barrier_count declares the runtime slot capacity. Create the context with
+      intra_barrier_count >= barrier_count. Each slot must have one cooperating
+      group per chip, with 0 <= index < barrier_count. Dynamic indices require
+      explicit context handles; implicit/lite contexts are not supported.
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
+
+    # A mesh-less intra communicator is the single-channel local contract.
+    # Mesh-bearing calls retain the unified team/context/scope contract.
+    space = tl._unwrap_if_constexpr(space)
+    if space is not None and space != "chiplet":
+        space = _normalize_barrier_space(space)
+    if mesh is None and space == "device" and barrier_count is None and not isinstance(index, tl.tensor):
+        scope = tl._unwrap_if_constexpr(memory_scope)
+        system_scope = scope == attr.SyncScope.SYSTEM if isinstance(scope, attr.SyncScope) else _parse_barrier_enum_arg(scope) == "system"
+        if tl._unwrap_if_constexpr(context_id) != 0 or not system_scope:
+            raise ValueError("mesh-less device barriers use context_id=0 and system scope; provide a mesh otherwise")
+        barrier_count = 1
+    if barrier_count is not None:
+        if tl._unwrap_if_constexpr(context_id) != 0 or _parse_barrier_enum_arg(memory_scope) != "system":
+            raise ValueError("indexed device barriers use context_id=0 and system scope")
+
+    if check_and_handle_indexed_device_barrier(space=space, device_dptr=device_dptr,
+                                               barrier_kind=barrier_kind, group_kind=group_kind,
+                                               index=index, order=order, barrier_count=barrier_count,
+                                               _semantic=_semantic):
+        return None
 
     if mesh is not None:
         cluster_analysis = _is_cluster_submesh(mesh)
