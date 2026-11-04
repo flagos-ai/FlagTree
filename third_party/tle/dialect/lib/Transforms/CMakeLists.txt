@@ -19,6 +19,7 @@ add_triton_library(TritonTLETransforms
   TleLowerAsyncLoad.cpp
   TleLowerPipeToNvws.cpp
   TleRestorePipeFunctionCalls.cpp
+  TleSharedOffsetFunctionABI.cpp
   TleLowerBarriers.cpp
   TleAllocateNamedBarriers.cpp
   TleTileToLLVMUtils.cpp
