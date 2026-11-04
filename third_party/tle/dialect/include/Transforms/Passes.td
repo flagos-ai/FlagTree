@@ -462,6 +462,19 @@ def TritonTleRestorePipeFunctionCalls
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
 }
 
+def TritonTleSharedOffsetFunctionABI
+    : Pass<"triton-tle-shared-offset-function-abi", "mlir::ModuleOp"> {
+  let summary = "Pass Shared device-function arguments as arena-relative offsets";
+  let description = [{
+    After NVIDIA LLVM lowering, convert Shared pointer leaves of internal
+    device-function arguments to 32-bit offsets from global_smem. Callers
+    encode and callees decode, including nested memdesc structures. Constant
+    call-site offsets no longer keep absolute Shared addresses live from pipe
+    initialization through an entire persistent entry. Returns and external
+    function interfaces retain their existing representation.
+  }];
+  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+}
 
 def TritonTleLowerExtractTile
     : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
