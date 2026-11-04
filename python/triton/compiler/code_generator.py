@@ -1372,8 +1372,9 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-            if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
-                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
+            # flagtree reorder-loop-loads
+            if reorder and knobs.language.reorder_loop_loads and _unwrap_if_constexpr(loop_unroll_factor) is not None:
+                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)

@@ -362,7 +362,6 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
-
 #ifdef __FLAGTREE_RLC_ENHANCE__
   let options = [
     Option<"enableRlcEnhance", "enable-rlc-enhance",
