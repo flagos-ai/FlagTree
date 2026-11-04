@@ -83,6 +83,10 @@ on:
         required: false
       FLAGTREE_FEISHU_BITABLE_APP_TOKEN:
         required: false
+      # Target chat for change notifications. Absent means no notifications,
+      # which is how a branch that has not set it up stays silent.
+      FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID:
+        required: false
 
 env:
   FLAGGEMS_CI_DIR: '/root/flaggems_ci'
@@ -200,6 +204,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           build-outcome: ${{ steps.build.outcome }}
           test-outcome: ${{ steps.run-flaggems-test.outcome }}
+          notify: 'true'
 
       - name: Report Record to Feishu
         if: ${{ always() && steps.collect.outputs.record-file != '' }}
@@ -213,6 +218,18 @@ jobs:
           app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
           app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
           app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
+
+      # Only fires when the collector decided this run changed something, so
+      # the chat stays quiet on the ordinary no-change PR.
+      - name: Notify Feishu Chat
+        if: ${{ always() && steps.collect.outputs.notification-file != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/notify-feishu@main
+        with:
+          notification: ${{ steps.collect.outputs.notification-file }}
+          chat-id: ${{ secrets.FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID }}
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
 
       - name: Cleanup FlagGems Repo
         if: always()
