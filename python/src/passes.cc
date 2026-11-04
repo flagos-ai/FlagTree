@@ -132,10 +132,10 @@ void init_triton_passes_ttgpuir(py::module &&m) {
         TritonGPURemoveLayoutConversionsOptions options;
         options.enableRlcEnhance = enhance;
         pm.addPass(createTritonGPURemoveLayoutConversions(options));
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
         (void)enhance;
         pm.addPass(createTritonGPURemoveLayoutConversions());
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       },
       py::arg("pm"), py::arg("enable_rlc_enhance") = false);
   ADD_PASS_WRAPPER_0("add_reduce_data_duplication",
