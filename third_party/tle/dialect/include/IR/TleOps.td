@@ -302,6 +302,14 @@ def Tle_PipeCallEndOp : Tle_Op<"pipe.call_end"> {
   let assemblyFormat = "attr-dict";
 }
 
+def Tle_PipeCallReturnOp : Tle_Op<"pipe.call_return"> {
+  let summary = "preserve the result ABI of a temporarily inlined pipe call";
+  let arguments = (ins Variadic<AnyType>:$values, I64Attr:$call_id);
+  let results = (outs Variadic<AnyType>:$aliases);
+  let assemblyFormat = "$values attr-dict `:` functional-type($values, $aliases)";
+  let hasVerifier = 1;
+}
+
 def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndResultEncoding]> {
   let arguments = (ins TT_Tensor:$src, I32Attr:$axis, BoolAttr:$reverse);
   let results = (outs TT_Tensor:$exclusive, TT_Type:$total);
