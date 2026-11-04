@@ -163,6 +163,24 @@ runs:
             break
           fi
 
+          # FlagGems CI assets. A per-backend skip list only concerns its own
+          # backend; everything else there (shared tooling, conftest.py, the
+          # default skip list) affects every backend's results.
+          if [[ "$file" == .github/workflows/gems/* ]]; then
+            # A skip list named after another backend cannot affect this one.
+            # default.yaml is NOT such a file: it applies to every backend
+            # that has no override, so it counts as shared.
+            if [[ "$file" == */skip_list/*.yaml ]] \
+               && [[ "$file" != */skip_list/default.yaml ]] \
+               && [[ "$file" != */skip_list/${BACKEND}.yaml ]]; then
+              echo "'$file' -> Another backend's skip list, not relevant"
+              continue
+            fi
+            echo "'$file' -> FlagGems CI asset for '$BACKEND' changed, need to run"
+            SHOULD_SKIP=false
+            break
+          fi
+
           # It is a code file. Check whether it lives inside third_party/ or .github/workflows/benchmark/
           if [[ "$file" == third_party/* ]] || [[ "$file" == .github/workflows/benchmark/* ]]; then
             if [[ "$file" == third_party/${BACKEND}/* ]] || [[ "$file" == .github/workflows/benchmark/${BACKEND}/* ]]; then

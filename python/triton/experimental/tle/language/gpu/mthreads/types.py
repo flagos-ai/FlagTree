@@ -19,6 +19,8 @@
 # SOFTWARE.
 """mthreads-specific TLE types."""
 
+from dataclasses import dataclass
+
 import triton.language.core as tl
 
 from ..types import distributed_encoding
@@ -46,6 +48,35 @@ def _normalize_static_int_sequence(values, name, *, require_positive=False):
 
 def _is_power_of_two(value):
     return value > 0 and (value & (value - 1)) == 0
+
+
+_TME_CACHE_POLICIES = ("none", "once", "normal", "persist")
+
+
+@dataclass(frozen=True)
+class TMECachePolicy:
+    """Per-copy MThreads TME inner/outer cache persistence hints.
+
+    Each field accepts ``"none"``, ``"once"``, ``"normal"``, or ``"persist"``.
+    The default preserves normal persistence in both domains. Non-default
+    hints are performance-sensitive and must be measured on the target kernel.
+    This immutable value can be used as a ``tl.constexpr`` kernel or worker
+    argument. It does not change copy completion or synchronization.
+    """
+
+    inner: str = "normal"
+    outer: str = "normal"
+
+    def __post_init__(self):
+        for name in ("inner", "outer"):
+            value = tl._unwrap_if_constexpr(getattr(self, name))
+            if not isinstance(value, str) or value not in _TME_CACHE_POLICIES:
+                raise ValueError(f"TMECachePolicy {name} must be a compile-time string: none, once, normal, or persist")
+            object.__setattr__(self, name, value)
+
+    @property
+    def type(self):
+        return tl.constexpr_type(self)
 
 
 class _MusaMmaEncoding(distributed_encoding):

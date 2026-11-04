@@ -203,6 +203,13 @@ void init_triton_iluvatar_tle_ir(py::module m) {
               mlir::Value index) -> mlir::Value {
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
            })
+      .def("create_memdesc_alias",
+           [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
+              int64_t offsetBytes) -> mlir::Value {
+             return self.create<iluvatar_tle::MemDescAliasOp>(
+                 resultType, src,
+                 self.getBuilder().getI64IntegerAttr(offsetBytes));
+           })
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,
               mlir::Value src, int axis, bool reverse) -> mlir::OpState {

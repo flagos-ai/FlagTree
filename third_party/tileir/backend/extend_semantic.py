@@ -1,5 +1,6 @@
 from triton.language import core as tl
 from triton.language.semantic import TritonSemantic
+from triton.backends.tileir.extend_core import tileir_tensor_descriptor
 
 
 def _str_to_tileir_semantic(semantic_option):
@@ -81,6 +82,10 @@ def _tileir_capability(semantic):
 
 
 class CudaTileSemantic(TritonSemantic):
+
+    def make_tensor_descriptor(self, base, shape, strides, block_shape, padding_option="zero"):
+        desc = super().make_tensor_descriptor(base, shape, strides, block_shape, padding_option)
+        return tileir_tensor_descriptor(desc.handle, desc.shape, desc.strides, desc.block_type, base)
 
     def make_tensor_view(self, res_type, base, shapes, strides):
         return tl.tensor(

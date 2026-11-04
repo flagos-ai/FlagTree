@@ -223,3 +223,31 @@ def install_extension(*args, **kargs):
             if os.path.exists(src):
                 shutil.copy(src, os.path.join(include_dir, header))
                 print(f"[spacemit] Vendored {header} from spine-runtime")
+
+    # Vendor the MLIR Python bindings (mlir_core) into the backend so the
+    # wheel is self-contained: llvm_direct.py / mixed_bridge.py (the smt_rvisa
+    # LLVM-direct emitter) import them at module load, and _mlir_loader.py
+    # resolves backend/mlir_core at runtime with no PYTHONPATH.
+    # Source resolution: an LLVM install with python_packages/mlir_core, a
+    # "-python" release package (a directory containing mlir_core/), or the
+    # mlir_core directory itself — via SPINE_MLIR_BINDINGS_DIR or $LLVM_SYSPATH.
+    mlir_bindings_root = os.environ.get("SPINE_MLIR_BINDINGS_DIR") or os.environ.get("LLVM_SYSPATH")
+    if mlir_bindings_root:
+        mlir_bindings_src = None
+        for sub in (os.path.join("python_packages", "mlir_core"), "mlir_core", ""):
+            cand = os.path.join(mlir_bindings_root, sub) if sub else mlir_bindings_root
+            if os.path.isdir(os.path.join(cand, "mlir")):
+                mlir_bindings_src = cand
+                break
+        if mlir_bindings_src is None:
+            raise RuntimeError("[spacemit] MLIR Python bindings (mlir_core) not found under "
+                               f"{mlir_bindings_root} — pass the -python release package or an "
+                               "LLVM install with python_packages/mlir_core via "
+                               "SPINE_MLIR_BINDINGS_DIR / LLVM_SYSPATH (smt_rvisa llvm_direct "
+                               "needs them).")
+        mlir_bindings_dst = os.path.join(backend_dir, "mlir_core")
+        if os.path.isdir(mlir_bindings_dst):
+            shutil.rmtree(mlir_bindings_dst)
+        shutil.copytree(mlir_bindings_src, mlir_bindings_dst)
+        print(f"[spacemit] Vendored MLIR Python bindings to backend/mlir_core/ "
+              f"(from {mlir_bindings_src})")

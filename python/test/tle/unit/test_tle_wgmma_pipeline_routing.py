@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import triton
 import triton.language as tl
@@ -102,14 +104,16 @@ def _warp_specialize_barrier_inline_kernel(out):
 
 
 @triton.jit
-def _ws_named_barrier_default(bar):
+def _ws_named_barrier_default(bar, out):
+    tl.store(out, 7)
     tle.gpu.barrier_arrive(bar)
 
 
 @triton.jit
 def _ws_named_barrier_worker(bar, out):
     tle.gpu.barrier_wait(bar)
-    tl.store(out, 1)
+    value = tl.load(out)
+    tl.store(out + 1, value)
 
 
 @triton.jit
@@ -117,7 +121,7 @@ def _warp_specialize_named_barrier_kernel(out):
     bar = tle.gpu.alloc_barrier(arrive_count=256)
     tle.gpu.warp_specialize(
         [
-            (_ws_named_barrier_default, (bar, )),
+            (_ws_named_barrier_default, (bar, out)),
             (_ws_named_barrier_worker, (bar, out)),
         ],
         [4],
@@ -154,19 +158,19 @@ def _has_user_promise_mode_attr(ttir):
             _alloc_barriers_trigger_kernel,
             {},
             True,
-            marks=pytest.mark.require_tle("gpu.alloc_barriers"),
+            marks=pytest.mark.skip_if_tle_unsupported("gpu.alloc_barriers"),
         ),
         pytest.param(
             _alloc_barrier_trigger_kernel,
             {},
             True,
-            marks=pytest.mark.require_tle("gpu.alloc_barrier"),
+            marks=pytest.mark.skip_if_tle_unsupported("gpu.alloc_barrier"),
         ),
         pytest.param(
             _wgmma_wait_trigger_kernel,
             {},
             True,
-            marks=pytest.mark.require_tle("gpu.wgmma_wait"),
+            marks=pytest.mark.skip_if_tle_unsupported("gpu.wgmma_wait"),
         ),
     ],
 )
@@ -176,7 +180,7 @@ def test_tle_wgmma_pipeline_route_marker_exact_api_list(kernel, signature, route
     assert _has_user_promise_mode_attr(ttir) is routes_user_promise
 
 
-@pytest.mark.require_tle("gpu.warp_specialize")
+@pytest.mark.skip_if_tle_unsupported("gpu.warp_specialize")
 def test_tle_warp_specialize_keeps_call_lowering_without_user_promise_marker():
     ttir = _make_ttir(_warp_specialize_call_lower_kernel, {"out": "*i32"})
 
@@ -185,7 +189,7 @@ def test_tle_warp_specialize_keeps_call_lowering_without_user_promise_marker():
     assert not _has_user_promise_mode_attr(ttir)
 
 
-@pytest.mark.require_tle(
+@pytest.mark.skip_if_tle_unsupported(
     "gpu.alloc_barrier",
     "gpu.barrier_arrive",
     "gpu.barrier_wait",
@@ -199,7 +203,7 @@ def test_tle_warp_specialize_inlines_with_user_promise_marker():
     assert "tt.call" not in ttir
 
 
-@pytest.mark.require_tle(
+@pytest.mark.skip_if_tle_unsupported(
     "gpu.alloc_barrier",
     "gpu.barrier_arrive",
     "gpu.barrier_wait",
@@ -208,7 +212,7 @@ def test_tle_warp_specialize_inlines_with_user_promise_marker():
 def test_named_barrier_capture_has_no_mbarrier_storage_after_full_pipeline():
     import torch
 
-    out = torch.empty(1, device="cuda", dtype=torch.int32)
+    out = torch.zeros(2, device="cuda", dtype=torch.int32)
     compiled = _warp_specialize_named_barrier_kernel.warmup(out, grid=(1, ), num_warps=4)
     ttgir = compiled.asm["ttgir"]
 
@@ -217,3 +221,11 @@ def test_named_barrier_capture_has_no_mbarrier_storage_after_full_pipeline():
     assert "tle.barrier" not in ttgir
     assert "ttg.local_alloc" not in ttgir
     assert "ttng.init_barrier" not in ttgir
+
+    _warp_specialize_named_barrier_kernel[(1, )](out, num_warps=4)
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(out, torch.full_like(out, 7))
+    ptx = compiled.asm["ptx"]
+    assert re.search(r"\bbar\.arrive(?:\.[a-z]+)*\s+3,\s*256\s*;", ptx)
+    assert re.search(r"\bbar\.sync(?:\.[a-z]+)*\s+3,\s*256\s*;", ptx)

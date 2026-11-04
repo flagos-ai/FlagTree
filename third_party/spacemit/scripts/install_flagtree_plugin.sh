@@ -52,8 +52,8 @@ if [[ -n "${LLVM_SYSPATH:-}" && ! -d "${LLVM_SYSPATH}/lib/cmake/llvm" ]]; then
   exit 1
 fi
 
-# export 这两个变量, setup.py 用 os.environ.get 读取后复制对应的 .so / 头文件。
-# (之前用 ${VAR:+VAR=...} 内联前缀, 但 bash 在 ${} 展开里遇到 = 会把赋值当命令执行)
+# Export these two variables; setup.py reads them via os.environ.get and copies the corresponding .so / header files.
+# (An inline ${VAR:+VAR=...} prefix was used before, but bash treats an = inside ${} expansion as a command)
 export SPINE_MLIR_INSTALL_DIR="${SPINE_MLIR_INSTALL_DIR:-}"
 export SPINE_RUNTIME_INSTALL_DIR="${SPINE_RUNTIME_INSTALL_DIR:-}"
 

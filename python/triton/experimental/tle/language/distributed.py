@@ -1129,11 +1129,8 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
 def _use_dsa_barrier(builder) -> bool:
     # The tsingmicro backend consumes dsa::DistributedBarrierOp in its TLEToMK
     # pass; the tle-dialect barrier only lowers on NVIDIA backends.
-    try:
-        from triton._flagtree_backend import get_active_backend_name
-        if get_active_backend_name() != "tsingmicro":
-            return False
-    except Exception:
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND != "tsingmicro":
         return False
     return hasattr(builder, "create_dsa_distributed_barrier")
 

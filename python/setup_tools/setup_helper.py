@@ -120,6 +120,11 @@ def get_generated_backend_packages(backend):
             "include.cooperative_groups.details",
             "include.crt",
             "lib.cupti",
+            "tileir_cuda",
+            "tileir_cuda.bin",
+            "tileir_cuda.nvvm",
+            "tileir_cuda.nvvm.lib64",
+            "tileir_cuda.nvvm.libdevice",
         ),
         "xpu": (
             "xpu3",
@@ -265,17 +270,16 @@ class FlagPrismSetup:
         self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
         # FlagPrism: register all supported integration backends together.
-        supported_backends = {"ascend", "iluvatar", "mthreads"}
+        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
-        # FlagPrism: FLAGTREE_BACKEND is unset for the default NVIDIA build.
+        # FlagPrism: allow the default NVIDIA build and supported named backends.
         if self.enabled and backend and backend not in supported_backends:
-            # FlagPrism: report the newly supported mthreads backend.
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, or enflame.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
@@ -386,7 +390,11 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
         triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
     os.makedirs(triton_pkg_dir, exist_ok=True)
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
-    dest_file.write_text(flagtree_backend)
+    # FLAGTREE_BACKEND=tileir selects the multi-backend build configuration.
+    # An empty runtime marker lets FlagTree detect NVIDIA as the active hardware
+    # backend; eligible kernels are then routed to TileIR individually.
+    runtime_backend = "" if flagtree_backend == "tileir" else flagtree_backend
+    dest_file.write_text(runtime_backend)
 
 
 def write_backend_file_to_build_lib(build_lib):

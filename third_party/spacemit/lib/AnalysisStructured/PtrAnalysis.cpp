@@ -703,6 +703,46 @@ LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
   return success();
 }
 
+// SubI(a, b): negate b's state then delegate to addState.
+// This handles the common pattern in im2col:  ih = oh*stride - pad + kh*dil
+// where pad is a scalar constant that was previously an unsupported arith.subi.
+LogicalResult PtrAnalysis::visitOperandSub(arith::SubIOp subOp, PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  PtrState lhsState;
+  if (visitOperand(subOp.getLhs(), lhsState, loc, builder).failed())
+    return failure();
+
+  PtrState rhsState;
+  if (visitOperand(subOp.getRhs(), rhsState, loc, builder).failed())
+    return failure();
+
+  // Negate the RHS state so we can reuse addState: SubI(a,b) == AddI(a,-b).
+  PtrState negRhs;
+  if (rhsState.scalar) {
+    auto zeroVal = arith::ConstantIndexOp::create(builder, loc, 0).getResult();
+    negRhs.scalar =
+        arith::SubIOp::create(builder, loc, zeroVal, rhsState.scalar)
+            .getResult();
+  }
+  for (size_t i = 0; i < rhsState.offsets.size(); i++) {
+    auto zeroOFR = OpFoldResult(builder.getIndexAttr(0));
+    negRhs.offsets.push_back(
+        subOFRs(zeroOFR, rhsState.offsets[i], loc, builder));
+    negRhs.strides.push_back(
+        subOFRs(zeroOFR, rhsState.strides[i], loc, builder));
+    negRhs.sizes.push_back(rhsState.sizes[i]);
+    negRhs.shape.push_back(rhsState.shape.size() > i ? rhsState.shape[i]
+                                                     : zeroOFR);
+  }
+
+  if (failed(state.addState(lhsState, negRhs, isAnalysisingUnstructured, subOp,
+                            builder)))
+    return failure();
+  state.origiOffsets = state.offsets;
+  return success();
+}
+
 LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
                                            const Location loc,
                                            OpBuilder &builder) {
@@ -1370,6 +1410,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
 
   if (auto op = operand.getDefiningOp<arith::AddIOp>()) {
     return visitOperandAdd(op, state, loc, builder);
+  } else if (auto op = operand.getDefiningOp<arith::SubIOp>()) {
+    return visitOperandSub(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<arith::MulIOp>()) {
     return visitOperandMul(op, state, loc, builder);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {
@@ -1742,6 +1784,28 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
   return success();
 }
 
+// The TritonToStructured prepass wraps every integer/index-tensor loop iter-arg
+// with tts.get_structured_state and decomposes the 1->N tuple, so the
+// offsets/origiOffsets/strides results feed scf.for init args and yields.
+// When rewriting fails, remapping only result #0 leaves those uses live: the
+// op cannot be erased and leaks into the final linalg output, where spine-opt
+// rejects it as an unregistered dialect. Fully revert instead: replace
+// result #0 with the original value, every offset/stride with a zero
+// constant, then erase the op. The carried loop state becomes dead constants,
+// which is semantically the original IR (the value was never a pointer).
+static void revertGetStructuredStateOp(tts::GetStructuredStateOp op,
+                                       Value tritonValue) {
+  OpBuilder builder(op);
+  SmallVector<Value> replacements;
+  replacements.push_back(tritonValue);
+  for (size_t i = 1, e = op->getNumResults(); i < e; i++) {
+    replacements.push_back(arith::ConstantOp::create(builder, op.getLoc(),
+                                                     builder.getIndexAttr(0)));
+  }
+  op->replaceAllUsesWith(replacements);
+  op->erase();
+}
+
 LogicalResult
 PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   auto tritonValue = op->getOperand(0);
@@ -1752,7 +1816,7 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   if (!knownPtrs.contains(tritonValue)) {
     op.emitRemark(
         "Rewrite GetStructuredStateOp failed. Could not find PtrState.");
-    op.getResult(0).replaceAllUsesWith(tritonValue);
+    revertGetStructuredStateOp(op, tritonValue);
     return failure();
   }
 
@@ -1760,7 +1824,7 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   if (!state.isStructured()) {
     op.emitRemark(
         "Rewrite GetStructuredStateOp failed. PtrState is not structured.");
-    op.getResult(0).replaceAllUsesWith(tritonValue);
+    revertGetStructuredStateOp(op, tritonValue);
     return failure();
   }
   Value remappedValue =
@@ -1863,6 +1927,15 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   Operation *newOp = nullptr;
 
   if (mask) {
+    // A scalar i1 mask is an arbitrary predicate (e.g. `pid == 0`), not a
+    // range over a tensor dimension. MaskState.dims cannot represent it and
+    // tts.load has no predicate operand, so parsing it would silently drop
+    // the mask and make the load unconditional. Leave the op unrewritten so
+    // the unstructured path (tts.gather) keeps the predicate and lowers it
+    // to a guarded load.
+    if (!isa<ShapedType>(mask.getType())) {
+      return failure();
+    }
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
       return failure();
@@ -2161,6 +2234,15 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   // Analyze the mask operand to determine at runtime the size of the data
   // are moving.
   if (mask) {
+    // A scalar i1 mask is an arbitrary predicate (e.g. `pid == 0`), not a
+    // range over a tensor dimension. MaskState.dims cannot represent it and
+    // tts.store has no predicate operand, so parsing it would silently drop
+    // the mask and make the store unconditional. Leave the op unrewritten so
+    // the unstructured path (tts.scatter) keeps the predicate and lowers it
+    // to a guarded store.
+    if (!isa<ShapedType>(mask.getType())) {
+      return failure();
+    }
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
       return failure();

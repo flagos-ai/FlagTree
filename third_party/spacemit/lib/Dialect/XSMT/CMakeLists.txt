@@ -8,5 +8,6 @@ add_triton_library(XSMTIR
 
   LINK_LIBS PUBLIC
   MLIRLLVMDialect
+  MLIRPtrDialect
   TritonIR
 )

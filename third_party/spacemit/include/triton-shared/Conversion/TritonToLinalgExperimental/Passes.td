@@ -52,4 +52,17 @@ def ConvertScanOp : Pass<"convert-triton-scan", "mlir::ModuleOp"> {
     let constructor = "triton::createConvertScanOpPass()";
 }
 
+def LoopPtrCarryToOffset : Pass<"loop-ptr-carry-to-offset", "mlir::ModuleOp"> {
+  let summary = "Rewrite loop-carried scalar tt.ptr values into integer offsets";
+  let description = [{
+    Rewrites `scf.while` loops whose iteration arguments carry scalar
+    `!tt.ptr` values advanced by loop-invariant strides (the
+    `ptr += stride` idiom) into equivalent loops carrying integer offsets,
+    rebuilding the pointer at the top of the loop body with `tt.addptr`.
+    Loop-carried raw pointers are not legalized by the downstream
+    TritonToLinalg / spine-opt pipelines; integer-carried loops are.
+  }];
+  let constructor = "triton::createLoopPtrCarryToOffsetPass()";
+}
+
 #endif

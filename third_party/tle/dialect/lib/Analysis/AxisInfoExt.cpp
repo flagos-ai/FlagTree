@@ -57,6 +57,65 @@ int64_t saturatingMultiplyDivisor(int64_t lhs, int64_t rhs) {
   return multiplyDivisor(lhs, rhs);
 }
 
+class TleExtractTileOpAxisInfoVisitor final : public AxisInfoVisitor {
+public:
+  AxisInfo
+  getAxisInfo(Operation *op,
+              ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
+    auto extract = dyn_cast<triton::tle::ExtractTileOp>(op);
+    if (!extract || operands.empty())
+      return AxisInfo();
+
+    const AxisInfo &srcInfo = operands[0]->getValue();
+    auto srcTy = dyn_cast<RankedTensorType>(extract.getSrc().getType());
+    auto resultTy = dyn_cast<RankedTensorType>(extract.getResult().getType());
+    if (!srcTy || !resultTy || srcInfo.getRank() != resultTy.getRank())
+      return AxisInfo();
+
+    AxisInfo::DimVectorT contiguity, divisibility, constancy;
+    contiguity.reserve(resultTy.getRank());
+    divisibility.reserve(resultTy.getRank());
+    constancy.reserve(resultTy.getRank());
+
+    auto resultShape = resultTy.getShape();
+    auto elementPtrTy = dyn_cast<PointerType>(srcTy.getElementType());
+    const int64_t contiguousStep =
+        elementPtrTy
+            ? std::max<int64_t>(1, getPointeeBitWidth(elementPtrTy) / 8)
+            : 1;
+    for (int d = 0; d < resultTy.getRank(); ++d) {
+      const int64_t resultExtent = resultShape[d];
+      const int64_t srcContiguity = srcInfo.getContiguity(d);
+      const int64_t resultContiguity = std::min(srcContiguity, resultExtent);
+      contiguity.push_back(resultContiguity);
+      constancy.push_back(std::min(srcInfo.getConstancy(d), resultExtent));
+
+      int64_t resultDivisibility = srcInfo.getDivisibility(d);
+      if (resultContiguity < srcContiguity) {
+        // Extracting an aligned sub-tile may split a contiguous source run.
+        // The new run starts every resultExtent elements, so retain only the
+        // alignment guaranteed by both the source and that step. Pointer
+        // divisibility is expressed in bytes; scalar divisibility is in
+        // elements.
+        resultDivisibility =
+            std::gcd(resultDivisibility,
+                     saturatingMultiplyDivisor(resultExtent, contiguousStep));
+      }
+      divisibility.push_back(resultDivisibility);
+    }
+
+    // extract_tile selects a subset without changing any values. A uniform
+    // source therefore keeps the same known constant value.
+    return AxisInfo(contiguity, divisibility, constancy,
+                    srcInfo.getConstantValue());
+  }
+
+  bool match(Operation *op) override {
+    return isa<triton::tle::ExtractTileOp>(op) &&
+           op->hasAttr(triton::tle::kPlannedTileAttr);
+  }
+};
+
 class TleLocalPointersOpAxisInfoVisitor final : public AxisInfoVisitor {
 public:
   AxisInfo
@@ -293,6 +352,7 @@ public:
 } // namespace
 
 void AxisInfoExt::addVisitors(mlir::triton::AxisInfoVisitorList &visitors) {
+  visitors.append<TleExtractTileOpAxisInfoVisitor>();
   visitors.append<TleLocalPointersOpAxisInfoVisitor>();
   visitors.append<TleRemotePointersOpAxisInfoVisitor>();
 }

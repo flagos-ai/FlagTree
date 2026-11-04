@@ -56,9 +56,13 @@ macro(flagtree_configure_options)
   if(NOT FLAGTREE_BACKEND)
     add_definitions(-D__NVIDIA__)
     add_definitions(-D__AMD__)
+    add_definitions(-D__TLE_TILED_SMEM__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__TLE_TILED_SMEM__)
     add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
     add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_RLC_ENHANCE__)
+    add_definitions(-D__FLAGTREE_PIPELINE_ENHANCE__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_PIPELINE_ENHANCE__)
     add_definitions(-D__FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__)
     add_definitions(-D__FLAGTREE_CONCAT_DOT_OPERAND__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_CONCAT_DOT_OPERAND__)
@@ -115,8 +119,8 @@ endmacro()
 # FlagPrism: configure the external profiler/debugger after base options exist.
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
-  # FlagPrism: enable the external tools for the supported mthreads backend.
-  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+  # FlagPrism: enable the external tools for supported backends.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -124,13 +128,12 @@ macro(flagtree_configure_flagprism)
          ${_flagprism_default})
 
   if(TRITON_BUILD_FLAGPRISM)
-    # FlagPrism: accept mthreads as a supported integration backend.
-    # FlagPrism: FLAGTREE_BACKEND is unset for the default NVIDIA build.
+    # FlagPrism: allow the default NVIDIA build and supported named backends.
     if(FLAGTREE_BACKEND AND
-       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, or enflame.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
@@ -264,6 +267,8 @@ macro(flagtree_configure_core_source)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
     set(TRITON_CORE_BINARY_DIR
       ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/include)
     include_directories(${TRITON_CORE_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/backend/include)
@@ -273,9 +278,9 @@ macro(flagtree_configure_core_source)
       include_directories(${TRITON_CORE_BINARY_DIR}/tle/dialect/include)
     endif()
     add_subdirectory(
-      ${TRITON_CORE_SOURCE_DIR}/include ${TRITON_CORE_BINARY_DIR}/include)
+      ${PROJECT_SOURCE_DIR}/include ${PROJECT_BINARY_DIR}/include)
     add_subdirectory(
-      ${TRITON_CORE_SOURCE_DIR}/lib ${TRITON_CORE_BINARY_DIR}/lib)
+      ${PROJECT_SOURCE_DIR}/lib ${PROJECT_BINARY_DIR}/lib)
   endif()
 endmacro()
 
@@ -589,6 +594,30 @@ macro(flagtree_configure_tools_and_tests)
   # add_subdirectory() calls above, so unittests/triton.so/triton-llvm-opt all link cleanly.
   if(FLAGTREE_BACKEND STREQUAL "ppu" AND TARGET TritonGPUTransforms AND TARGET TritonPPUGPUIR)
     target_link_libraries(TritonGPUTransforms PUBLIC TritonPPUGPUIR)
+  endif()
+
+  # The spacemit backend consumes the generic TLE dialect (TleIR/TleTableGen
+  # from third_party/tle), but third_party/spacemit is configured before the
+  # tle plugin by the root CMakeLists.txt, so its targets cannot reference
+  # TleTableGen at configure time and spine-triton-opt's TRITON_LIBS capture
+  # misses TleIR. Wire both here, after flagtree_configure_tle_plugin (invoked
+  # earlier in the root CMakeLists.txt) has defined the targets (mirrors
+  # flagtree_add_tle_generated_header_dependencies, which documents the same
+  # race for core targets).
+  if(FLAGTREE_BACKEND STREQUAL "spacemit")
+    if(TARGET TleTableGen)
+      foreach(t SpineTriton TLEToLinalg TritonToUnstructured spine-triton-opt)
+        if(TARGET ${t})
+          add_dependencies(${t} TleTableGen)
+        endif()
+      endforeach()
+    endif()
+    if(TARGET spine-triton-opt AND TARGET TleIR)
+      # TleDialect's registration lives in TleIR; spine-triton-opt registers the
+      # dialect (RegisterSpineTritonDialects.h) and thus needs its symbols. Also
+      # provided transitively via TLEToLinalg's PUBLIC link, kept explicit here.
+      target_link_libraries(spine-triton-opt PRIVATE TleIR)
+    endif()
   endif()
 endmacro()
 

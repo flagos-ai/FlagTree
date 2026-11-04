@@ -20,6 +20,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -431,13 +432,16 @@ public:
 
     Location loc = op.getLoc();
     Value memref;
+    auto memorySpace =
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext());
 
     Operation *definingOp = input.getDefiningOp();
     if (definingOp && isa<bufferization::ToTensorOp>(definingOp)) {
       memref = definingOp->getOperand(0);
     } else {
       auto memrefType =
-          MemRefType::get(tensorType.getShape(), tensorType.getElementType());
+          MemRefType::get(tensorType.getShape(), tensorType.getElementType(),
+                          AffineMap(), memorySpace);
       memref =
           bufferization::ToBufferOp::create(rewriter, loc, memrefType, input);
     }
@@ -483,8 +487,9 @@ public:
       return failure();
 
     Location loc = op.getLoc();
-    MemRefType memRefType =
-        MemRefType::get(vectorType.getShape(), vectorType.getElementType());
+    MemRefType memRefType = MemRefType::get(
+        vectorType.getShape(), vectorType.getElementType(), AffineMap(),
+        mlir::triton::getDefaultBridgeMemorySpace(rewriter.getContext()));
     Value alloc = memref::AllocOp::create(rewriter, loc, memRefType);
 
     SmallVector<Value> indices;

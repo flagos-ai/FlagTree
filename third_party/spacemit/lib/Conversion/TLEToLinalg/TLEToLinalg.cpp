@@ -4,174 +4,153 @@
 // SPDX-License-Identifier: MIT
 //
 // TLE → Linalg/Tensor lowering patterns:
-//   xtle.extract_tile → tensor.extract_slice
-//   xtle.insert_tile  → tensor.insert_slice
+//   tle.dsl_region → spine_ext.raw_region
 //
 //===----------------------------------------------------------------------===//
 
 #include "triton-shared/Conversion/TLEToLinalg/TLEToLinalg.h"
-#include "triton-shared/Dialect/TLE/IR/TLEDialect.h"
-#include "triton-shared/Dialect/TLE/IR/TLEOps.h"
+#include "tle/dialect/include/IR/Dialect.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "tle-to-linalg"
 
 using namespace mlir;
+// Alias onto the generic third_party/tle dialect namespace so the
+// pattern code reads unchanged.
+namespace tle = ::mlir::triton::tle;
 
 namespace {
 
 // ============================================================================
-// Helper: delinearize a tile index into per-dimension offsets.
+// DSLRegionOpPattern: tle.dsl_region → spine_ext.raw_region
 //
-// Given:
-//   srcShape  = [S0, S1, ..., Sn]
-//   tileShape = [T0, T1, ..., Tn]
-//   grid      = [S0/T0, S1/T1, ..., Sn/Tn]
-//
-// For a linear tile index `idx`, compute:
-//   offsets[i] = (idx / stride_i % grid[i]) * tileShape[i]
-//
-// where stride_i = product(grid[i+1:]).
+// Reads the op's real region body (raw fn ops, built at trace time by
+// create_tle_dsl_region_direct — no string attr to parse), clones it into a
+// new generic (unregistered) "spine_ext.raw_region" op that spine-opt
+// processes via SpineRawRegionInlinePass, replacing func.return →
+// spine_ext.return.
 // ============================================================================
-SmallVector<OpFoldResult> delinearizeIndex(Location loc, Value index,
-                                           ArrayRef<int64_t> srcShape,
-                                           ArrayRef<int64_t> tileShape,
-                                           PatternRewriter &rewriter) {
-  int64_t rank = srcShape.size();
-  SmallVector<int64_t> grid(rank);
-  for (int64_t i = 0; i < rank; ++i)
-    grid[i] = srcShape[i] / tileShape[i];
+struct DSLRegionOpPattern : public OpRewritePattern<tle::DSLRegionOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  // Try to extract a static constant from the index value.
-  std::optional<int64_t> staticIdx;
-  if (auto constOp = index.getDefiningOp<arith::ConstantOp>()) {
-    if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
-      staticIdx = intAttr.getInt();
-  }
-
-  SmallVector<OpFoldResult> offsets;
-  if (staticIdx.has_value()) {
-    // Static path: compute offsets at compile time.
-    int64_t remain = *staticIdx;
-    for (int64_t i = 0; i < rank; ++i) {
-      int64_t stride = 1;
-      for (int64_t j = i + 1; j < rank; ++j)
-        stride *= grid[j];
-      int64_t tileIdx = remain / stride;
-      remain %= stride;
-      offsets.push_back(rewriter.getIndexAttr(tileIdx * tileShape[i]));
-    }
-  } else {
-    // Dynamic path: emit arith ops to compute offsets at runtime.
-    // Ensure index is index type.
-    if (!index.getType().isIndex())
-      index = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
-                                         index);
-    for (int64_t i = 0; i < rank; ++i) {
-      int64_t stride = 1;
-      for (int64_t j = i + 1; j < rank; ++j)
-        stride *= grid[j];
-
-      // tileIdx = (index / stride) % grid[i]
-      Value tileIdx = index;
-      if (stride != 1) {
-        Value strideVal = arith::ConstantIndexOp::create(rewriter, loc, stride);
-        tileIdx = arith::DivUIOp::create(rewriter, loc, tileIdx, strideVal);
-      }
-      if (grid[i] != 1) {
-        // Only need modulo if not the first dimension (or grid > 1)
-        Value gridVal = arith::ConstantIndexOp::create(rewriter, loc, grid[i]);
-        tileIdx = arith::RemUIOp::create(rewriter, loc, tileIdx, gridVal);
-      }
-      // offset = tileIdx * tileShape[i]
-      Value tileSizeVal =
-          arith::ConstantIndexOp::create(rewriter, loc, tileShape[i]);
-      Value offset = arith::MulIOp::create(rewriter, loc, tileIdx, tileSizeVal);
-      offsets.push_back(offset);
-    }
-  }
-  return offsets;
-}
-
-// ============================================================================
-// ExtractTileOp → tensor.extract_slice
-// ============================================================================
-struct ExtractTileOpPattern
-    : public OpRewritePattern<mlir::tle::ExtractTileOp> {
-  using OpRewritePattern<mlir::tle::ExtractTileOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::tle::ExtractTileOp op,
+  LogicalResult matchAndRewrite(tle::DSLRegionOp op,
                                 PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value src = op.getSrc();
-    Value index = op.getIndex();
+    // 0. Positional-anchor placeholder. call_registry.py emits an empty
+    //    tle.dsl_region named "__spine_bridge_pt_N" at the exact program point
+    //    of each llvm-direct _sr_call, so svector and bridge stages interleave
+    //    in any order. Lower it to a func.call to a private no-arg stub; the
+    //    stub survives to ll.mlir as `llvm.call @__spine_bridge_pt_N`, which
+    //    _inject_mixed_llvm_llmlir then text-replaces with the real bridge.
+    //    fn_name is a free extra attribute on the generic DSLRegionOp (its
+    //    ODS has no fn_name operand), set at emit time in
+    //    create_tle_dsl_region_direct.
+    auto fnNameAttr = op->getAttrOfType<StringAttr>("fn_name");
+    if (!fnNameAttr)
+      return op.emitError("tle.dsl_region: missing fn_name attribute");
+    StringRef fnName = fnNameAttr.getValue();
+    if (fnName.size() >= 18 && fnName.substr(0, 18) == "__spine_bridge_pt_") {
+      auto loc = op.getLoc();
+      auto mod = op->getParentOfType<ModuleOp>();
+      if (mod && !mod.lookupSymbol(fnName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(mod.getBody());
+        auto fnType = FunctionType::get(rewriter.getContext(), {}, {});
+        auto decl = func::FuncOp::create(rewriter, loc, fnName, fnType);
+        decl.setSymVisibilityAttr(
+            StringAttr::get(rewriter.getContext(), "private"));
+        Block *body = decl.addEntryBlock();
+        OpBuilder declBuilder(body, body->end());
+        func::ReturnOp::create(declBuilder, loc);
+      }
+      func::CallOp::create(rewriter, loc, fnName, TypeRange{}, ValueRange{});
+      rewriter.eraseOp(op);
+      return success();
+    }
 
-    auto srcTy = cast<RankedTensorType>(src.getType());
-    auto dstTy = cast<RankedTensorType>(op.getResult().getType());
-    auto srcShape = srcTy.getShape();
-    auto tileShape = dstTy.getShape();
-    int64_t rank = srcShape.size();
+    // 1. The raw fn body is already a real region on the op; its block args are
+    //    the raw fn parameters (memref<*> etc.).
+    Region &srcRegion = op.getBody();
+    if (srcRegion.empty())
+      return op.emitError("tle.dsl_region: empty region");
+    Block &srcBlock = srcRegion.front();
+    auto argTypes = srcBlock.getArgumentTypes();
 
-    // Compute per-dimension offsets from the linear tile index.
-    SmallVector<OpFoldResult> offsets =
-        delinearizeIndex(loc, index, srcShape, tileShape, rewriter);
+    // 2. Build spine_ext.raw_region as a generic (unregistered) op.
+    //    The ptr->memref pipeline wraps tle.dsl_region's !tt.ptr operands in a
+    //    cast chain (ptr.to_ptr <- memref.reinterpret_cast <- %arg :
+    //    memref<*>), because dsl_region is not part of those passes' conversion
+    //    target. Trace each operand back through that chain to the value whose
+    //    type matches the raw fn's block-arg type (the original memref<*>), so
+    //    the raw_region operand types line up with the region block args.
+    OperationState state(op.getLoc(), "spine_ext.raw_region");
+    SmallVector<Value> operands;
+    unsigned idx = 0;
+    for (Value in : op.getInputs()) {
+      Type want = idx < argTypes.size() ? argTypes[idx] : Type();
+      // Walk def chain through the cast ops the ptr pipeline inserts.
+      for (int hop = 0; hop < 8 && in.getType() != want; ++hop) {
+        Operation *def = in.getDefiningOp();
+        if (!def)
+          break;
+        if (auto c = dyn_cast<UnrealizedConversionCastOp>(def)) {
+          if (c.getInputs().size() != 1)
+            break;
+          in = c.getInputs().front();
+        } else if (def->getName().getStringRef() == "ptr.to_ptr" &&
+                   def->getNumOperands() == 1) {
+          in = def->getOperand(0);
+        } else if (auto rc = dyn_cast<memref::ReinterpretCastOp>(def)) {
+          in = rc.getSource();
+        } else if (auto mc = dyn_cast<memref::CastOp>(def)) {
+          in = mc.getSource();
+        } else {
+          break;
+        }
+      }
+      operands.push_back(in);
+      ++idx;
+    }
+    state.addOperands(operands);
+    state.addAttribute("fn_name", fnNameAttr);
 
-    // Sizes = tileShape (all static).
-    SmallVector<OpFoldResult> sizes;
-    for (int64_t i = 0; i < rank; ++i)
-      sizes.push_back(rewriter.getIndexAttr(tileShape[i]));
+    // 3. Build region with an empty block first; create the op so the region
+    //    is attached to a container BEFORE cloning into it (cloning calls
+    //    Region::getContext(), which asserts on a detached region).
+    Region *body = state.addRegion();
+    Block *block = new Block();
+    body->push_back(block);
+    for (Type paramTy : argTypes)
+      block->addArgument(paramTy, op.getLoc());
 
-    // Strides = all 1.
-    SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
+    Operation *newOp = rewriter.create(state);
 
-    auto extractSlice = tensor::ExtractSliceOp::create(
-        rewriter, loc, dstTy, src, offsets, sizes, strides);
+    // 4. Clone the raw fn body into the now-attached region block, replacing
+    //    func.return → spine_ext.return.
+    Block *attached = &newOp->getRegion(0).front();
+    IRMapping mapping;
+    for (auto [fArg, bArg] :
+         llvm::zip(srcBlock.getArguments(), attached->getArguments()))
+      mapping.map(fArg, bArg);
 
-    rewriter.replaceOp(op, extractSlice.getResult());
-    return success();
-  }
-};
+    OpBuilder bodyBuilder(attached, attached->end());
+    for (Operation &inner : srcBlock) {
+      if (isa<func::ReturnOp>(inner)) {
+        OperationState retState(inner.getLoc(), "spine_ext.return");
+        bodyBuilder.create(retState);
+      } else {
+        bodyBuilder.clone(inner, mapping);
+      }
+    }
 
-// ============================================================================
-// InsertTileOp → tensor.insert_slice
-// ============================================================================
-struct InsertTileOpPattern : public OpRewritePattern<mlir::tle::InsertTileOp> {
-  using OpRewritePattern<mlir::tle::InsertTileOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(mlir::tle::InsertTileOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value src = op.getSrc();
-    Value tile = op.getTile();
-    Value index = op.getIndex();
-
-    auto srcTy = cast<RankedTensorType>(src.getType());
-    auto tileTy = cast<RankedTensorType>(tile.getType());
-    auto srcShape = srcTy.getShape();
-    auto tileShape = tileTy.getShape();
-    int64_t rank = srcShape.size();
-
-    // Compute per-dimension offsets from the linear tile index.
-    SmallVector<OpFoldResult> offsets =
-        delinearizeIndex(loc, index, srcShape, tileShape, rewriter);
-
-    // Sizes = tileShape (all static).
-    SmallVector<OpFoldResult> sizes;
-    for (int64_t i = 0; i < rank; ++i)
-      sizes.push_back(rewriter.getIndexAttr(tileShape[i]));
-
-    // Strides = all 1.
-    SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
-
-    auto insertSlice = tensor::InsertSliceOp::create(rewriter, loc, tile, src,
-                                                     offsets, sizes, strides);
-
-    rewriter.replaceOp(op, insertSlice.getResult());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -183,6 +162,5 @@ struct InsertTileOpPattern : public OpRewritePattern<mlir::tle::InsertTileOp> {
 // ============================================================================
 void mlir::triton::populateTLEToLinalgConversionPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<ExtractTileOpPattern>(patterns.getContext());
-  patterns.add<InsertTileOpPattern>(patterns.getContext());
+  patterns.add<DSLRegionOpPattern>(patterns.getContext());
 }

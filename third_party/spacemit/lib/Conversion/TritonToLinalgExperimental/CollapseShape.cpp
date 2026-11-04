@@ -82,7 +82,7 @@ struct CollapseFill : public OpRewritePattern<linalg::FillOp> {
     auto output = memref::CollapseShapeOp::create(
         rewriter, loc,
         MemRefType::get(llvm::ArrayRef<int64_t>{resultType.getNumElements()},
-                        elementType),
+                        elementType, AffineMap(), resultType.getMemorySpace()),
         result, reassociationMap);
     op.getOutputsMutable()[0].set(output.getResult());
     return success();
