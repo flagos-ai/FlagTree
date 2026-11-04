@@ -12,7 +12,7 @@ mlir_tablegen(Dialect.h.inc -gen-dialect-decls)
 mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs)
 add_mlir_doc(TritonDialect TritonDialect dialects/ -gen-dialect-doc)
 
-set(LLVM_TARGET_DEFINITIONS TritonTypes.td)
+flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS TritonTypes.td)
 mlir_tablegen(Types.h.inc -gen-typedef-decls)
 mlir_tablegen(Types.cpp.inc -gen-typedef-defs)
 

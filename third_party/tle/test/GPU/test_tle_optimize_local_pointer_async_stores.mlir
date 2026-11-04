@@ -170,3 +170,34 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [2, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @preserve_nonzero_other
+  tt.func @preserve_nonzero_other(%gptr: tensor<64x128x!tt.ptr<f32>, #blocked>) {
+    %c128 = arith.constant 128 : i32
+    %c128t = tt.splat %c128 : i32 -> tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<64x512xf32, #shared, #smem, mutable>
+    %row = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>>
+    %row2d = tt.expand_dims %row {axis = 1 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<64x1xi32, #blocked>
+    %rowb = tt.broadcast %row2d : tensor<64x1xi32, #blocked> -> tensor<64x128xi32, #blocked>
+    %col = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
+    %col.off = arith.addi %col, %c128t : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
+    %col2d = tt.expand_dims %col.off {axis = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x128xi32, #blocked>
+    %colb = tt.broadcast %col2d : tensor<1x128xi32, #blocked> -> tensor<64x128xi32, #blocked>
+    %ptr = "tle.local_pointers"(%smem, %rowb, %colb) : (!ttg.memdesc<64x512xf32, #shared, #smem, mutable>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>) -> tensor<64x128x!tt.ptr<f32, 3>, #blocked>
+    %mask = arith.constant dense<true> : tensor<64x128xi1, #blocked>
+    %other = arith.constant dense<0xFF800000> : tensor<64x128xf32, #blocked>
+    // CHECK-NOT: ttg.async_copy_global_to_local
+    // CHECK: %[[V:.*]] = tt.load %{{.*}}, %{{.*}}, %{{.*}} : tensor<64x128x!tt.ptr<f32>, #blocked>
+    // CHECK: tt.store
+    %v = tt.load %gptr, %mask, %other : tensor<64x128x!tt.ptr<f32>, #blocked>
+    tt.store %ptr, %v : tensor<64x128x!tt.ptr<f32, 3>, #blocked>
+    tt.return
+  }
+}
