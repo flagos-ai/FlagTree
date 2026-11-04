@@ -1260,8 +1260,8 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     # The desensitized xtdk-llvm19 package does not ship llvm-link, but the
     # printf package does.  Stage it from there so `link_flagcx_device_ir`
     # can merge FlagCX bitcode without FLAGCX_XPU_LLVM_LINK being set.
-    cache.store(files=("llvm-link", ), condition=is_xpu,
-                copy_src_path=f"{_printf_pkg}/bin", copy_dst_path="third_party/xpu/backend/llvm19/bin")
+    cache.store(files=("llvm-link", ), condition=is_xpu, copy_src_path=f"{_printf_pkg}/bin",
+                copy_dst_path="third_party/xpu/backend/llvm19/bin")
     cache.store(
         # ONE shared copy of the LLVM 19 runtime for the whole install.  The
         # staged tools are dynamically linked against `libLLVM.so.19.1`; without
