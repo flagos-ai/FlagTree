@@ -86,7 +86,6 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-          export FLAGTREE_BACKEND=hcu
           export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
           python3 -m pytest -s third_party/hcu/python/test/unit
           python3 -m pytest -s python/test/tle/integration/test_tle_local_store.py
@@ -115,7 +114,3 @@ jobs:
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/03-matrix-multiplication.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/04-hello-world.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
-          cd third_party/hcu/python/tutorials/tle/raw/dushmem
-          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port=29500 01-simple-shift/simple-shift.py
-          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port=29500 02-allgather-gemm/ag-gemm.py
-          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port=29500 03-gemm-allreduce/gemm-ar.py

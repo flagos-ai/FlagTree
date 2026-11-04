@@ -397,8 +397,8 @@ class HCUJITFunction(RawJITFunction):
         text, final_rewrites = _sanitize_clang_ir(text)
         rewrites.extend(final_rewrites)
 
-        # C++ findExternalLLVMFunc() 必须使用 LLVM symbol，
-        # 不能继续使用 source-level 的 kernel function name。
+        # findExternalLLVMFunc() in C++ must look up functions by their LLVM symbol,
+        # not by the source-level kernel function name.
         self.extern_func_name = lowered_func_name
 
         # Validate that FlagTree's embedded LLVM and MLIR LLVM importer can
