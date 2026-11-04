@@ -60,10 +60,34 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
-def _parse_src_arg(builder, src, index=0):
+def _lite_mode_supplies_device_handle() -> bool:
+    """Whether the FlagCX handles arrive as injected function arguments.
+
+    Lite mode runs ``tle-add-distributed-params``, which prepends
+    ``device_comm_ptr``/``device_mem_ptr`` to every function, so device-space TLE
+    ops legitimately carry no source operand there.
+    """
     try:
         from triton.runtime import DistributedRtContext
-        src = tl._unwrap_if_constexpr(src)
+
+        return bool(DistributedRtContext().is_lite_mode)
+    except Exception:
+        return False
+
+
+def _parse_src_arg(builder, src, index=0):
+    src = tl._unwrap_if_constexpr(src)
+    if isinstance(src, tl.tuple):
+        # Scalar runtime memory/communication handles already have IR values;
+        # no process-local address needs to become a compiler constant.
+        if len(src) != 2:
+            raise ValueError("a runtime device context requires two handles")
+        handle = src[index]
+        if not isinstance(handle, tl.tensor) or handle.shape or handle.dtype not in (tl.int64, tl.uint64):
+            raise TypeError("a runtime device context requires scalar i64 handles")
+        return handle.handle
+    try:
+        from triton.runtime import DistributedRtContext
         if isinstance(src, DistributedRtContext):
             return builder.get_int64(src[index])
         elif src:
@@ -1525,6 +1549,16 @@ def _create_remote_pointers_tensor(
         # create_dist_tensor exposes registered memory at index 0 and the
         # communicator at index 1.
         ptr = _parse_src_arg(builder, tensor, 0)
+        # ``flagcxGetIntraPointerC`` resolves the peer address from the symmetric
+        # window handle, and only lite mode supplies it without an operand (the
+        # ``device_mem_ptr`` argument ``tle-add-distributed-params`` injects).
+        # ``_parse_src_arg`` answers ``None`` for anything that is neither a
+        # DistributedRtContext nor a tl.tensor -- a plain int included, and ``0``
+        # is additionally falsy -- so outside lite mode that answer builds an op
+        # no lowering can complete.
+        if ptr is None and not _lite_mode_supplies_device_handle():
+            raise TypeError("device space remote pointers require a DistributedRtContext or pointer tensor as the "
+                            f"source window handle, got {type(tensor).__name__}")
         remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
                                                    offset_tensor.handle)
     else:
