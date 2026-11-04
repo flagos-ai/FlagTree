@@ -13,7 +13,8 @@ def parse_ptxas_resource_usage(log: str) -> dict[str, int]:
     not a local allocation size. Keep all three quantities separate.
     """
     records = re.findall(
-        r"(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads", log,
+        r"(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads",
+        log,
     )
     if not records:
         raise RuntimeError("ptxas did not report per-function resource usage")
