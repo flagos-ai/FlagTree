@@ -456,8 +456,7 @@ class CorexBackend(BaseBackend):
         if CorexBackend.instrumentation:
             CorexBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
         proc = sm_arch_from_capability(capability)
-        iluvatar.passes.ttgpuir.add_to_llvmir(pm, proc, options.enable_reflect_ftz,
-                                              options.disable_load_vectorize)
+        iluvatar.passes.ttgpuir.add_to_llvmir(pm, proc, options.enable_reflect_ftz, options.disable_load_vectorize)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         # [WA] On ivcore11 this relies on a shared-memory software barrier

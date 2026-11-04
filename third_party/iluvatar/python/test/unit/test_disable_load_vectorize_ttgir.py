@@ -40,8 +40,7 @@ _STORE_RE = re.compile(r"@llvm\.bi\.store\.kop\.v(\d+)[a-z]\d+")
 def _compile(tmp_path, disable):
     src = tmp_path / "load_store.ttgir"
     src.write_text(TTGIR)
-    return triton.compile(str(src), target=GPUTarget("corex", 71, 64),
-                          options={"disable_load_vectorize": disable})
+    return triton.compile(str(src), target=GPUTarget("corex", 71, 64), options={"disable_load_vectorize": disable})
 
 
 def _vector_loads(llir):

@@ -306,7 +306,7 @@ namespace mlir::triton {
 
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz,
-                                        bool disableLoadVectorize) {
+                                         bool disableLoadVectorize) {
   return std::make_unique<ConvertTritonILUVATARGPUToLLVM>(targetArch, ftz,
                                                           disableLoadVectorize);
 }

@@ -312,14 +312,15 @@ createTritonGPUAccelerateMatmulWithSme(unsigned useSme) {
 
 void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
   using namespace mlir::triton;
-  m.def("add_to_llvmir",
-        [](mlir::PassManager &pm, const std::string &arch, bool ftz,
-           bool disableLoadVectorize) {
-          pm.addPass(mlir::triton::createConvertTritonILUVATARGPUToLLVMPass(
-              arch, ftz, disableLoadVectorize));
-        },
-        py::arg("pm"), py::arg("arch"), py::arg("ftz"),
-        py::arg("disable_load_vectorize") = false);
+  m.def(
+      "add_to_llvmir",
+      [](mlir::PassManager &pm, const std::string &arch, bool ftz,
+         bool disableLoadVectorize) {
+        pm.addPass(mlir::triton::createConvertTritonILUVATARGPUToLLVMPass(
+            arch, ftz, disableLoadVectorize));
+      },
+      py::arg("pm"), py::arg("arch"), py::arg("ftz"),
+      py::arg("disable_load_vectorize") = false);
   // Lower ttg.warp_specialize to LLVM. On ivcore11 this uses a shared-memory
   // software-barrier workaround (no hardware named barrier / setmaxnreg).
   m.def("add_warp_specialize_to_llvm", [](mlir::PassManager &pm,
