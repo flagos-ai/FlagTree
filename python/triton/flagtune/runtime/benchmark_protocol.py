@@ -167,8 +167,9 @@ def resolve_benchmarker(
     receive ``measurement_ms / n_retries`` as their per-graph ``rep`` value so
     the existing graph helper can retain its internal algorithm while the
     caller controls total timed work. All registered replay backends use
-    ``triton.testing.do_bench_cudagraph``. MUSA first imports torchada to alias
-    CUDA-style PyTorch APIs; capture size and warmup follow the shared helper.
+    ``triton.testing.do_bench_cudagraph``. MUSA imports torchada on the first
+    benchmark call to alias CUDA-style PyTorch APIs; resolving the benchmarker
+    does not require torchada. Capture size and warmup follow the shared helper.
     """
     selected = _validate_request(mode, warmup_ms, measurement_ms, n_retries)
     active = driver.active
@@ -176,27 +177,6 @@ def resolve_benchmarker(
         implementation = _replay_implementation(active)
         if implementation is not None:
             is_musa = type(active).__module__ == "triton.backends.mthreads.driver"
-            if is_musa:
-                import triton
-
-                device_interface = active.get_device_interface()
-                next_power_of_2 = triton.next_power_of_2
-                try:
-                    # Importing torchada installs the CUDA-to-MUSA API aliases.
-                    import torchada
-                except ImportError as exc:
-                    raise FlagTuneDependencyError(
-                        "FlagTune MUSA replay requires torchada and its MUSA dependencies; "
-                        "install torchada with 'python -m pip install torchada' in the MUSA environment "
-                        "and check the chained import error") from exc
-                finally:
-                    # TorchADA dependencies may replace this constexpr helper.
-                    triton.next_power_of_2 = next_power_of_2
-                get_backend = getattr(torchada, "get_backend", None)
-                if get_backend is None or get_backend() is not device_interface:
-                    raise RuntimeError(
-                        "FlagTune MUSA replay requires torchada.get_backend() to select the active torch.musa backend")
-
             from triton.testing import do_bench_cudagraph
 
             configurable_retries = _supports_configurable_retries(do_bench_cudagraph)
@@ -212,6 +192,28 @@ def resolve_benchmarker(
             per_replay_ms = float(measurement_ms) / effective_retries
 
             def replay_benchmark(kernel_call, quantiles):
+                if is_musa:
+                    import triton
+
+                    device_interface = active.get_device_interface()
+                    next_power_of_2 = triton.next_power_of_2
+                    try:
+                        # Importing torchada installs the CUDA-to-MUSA API aliases.
+                        import torchada
+                    except ImportError as exc:
+                        raise FlagTuneDependencyError(
+                            "FlagTune MUSA replay requires torchada and its MUSA dependencies; "
+                            "install torchada with 'python -m pip install torchada' in the MUSA environment "
+                            "and check the chained import error") from exc
+                    finally:
+                        # TorchADA's SGLang import chain may replace this constexpr helper.
+                        triton.next_power_of_2 = next_power_of_2
+                    get_backend = getattr(torchada, "get_backend", None)
+                    if get_backend is None or get_backend() is not device_interface:
+                        raise RuntimeError(
+                            "FlagTune MUSA replay requires torchada.get_backend() to select the active torch.musa backend"
+                        )
+
                 kwargs = {
                     "rep": per_replay_ms,
                     "quantiles": quantiles,
