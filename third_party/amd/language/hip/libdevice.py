@@ -188,18 +188,16 @@ def cos(arg0, _semantic=None):
 # parity lets platform-neutral kernel templates resolve on both backends.
 @core.extern
 def fast_cosf(arg0, _semantic=None):
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__ocml_cos_f32", core.dtype("fp32")),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [arg0], {
+        (core.dtype("fp32"), ): ("__ocml_cos_f32", core.dtype("fp32")),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def fast_sinf(arg0, _semantic=None):
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__ocml_sin_f32", core.dtype("fp32")),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [arg0], {
+        (core.dtype("fp32"), ): ("__ocml_sin_f32", core.dtype("fp32")),
+    }, is_pure=True, _semantic=_semantic)
 
 
 # NVIDIA maps mul_rn to __nv_fmul_rn: a separately rounded product that a later
@@ -218,11 +216,9 @@ def mul_rn(arg0, arg1, _semantic=None):
     # multiply from the promoted type.
     arg0, arg1 = _semantic.binary_op_type_checking_impl(arg0, arg1)
     if arg0.dtype == core.dtype("fp64"):
-        return core.inline_asm_elementwise("v_mul_f64 $0, $1, $2", "=v,v,v",
-                                           [arg0, arg1], dtype=core.dtype("fp64"),
+        return core.inline_asm_elementwise("v_mul_f64 $0, $1, $2", "=v,v,v", [arg0, arg1], dtype=core.dtype("fp64"),
                                            is_pure=True, pack=1, _semantic=_semantic)
-    return core.inline_asm_elementwise("v_mul_f32_e64 $0, $1, $2", "=v,v,v",
-                                       [arg0, arg1], dtype=core.dtype("fp32"),
+    return core.inline_asm_elementwise("v_mul_f32_e64 $0, $1, $2", "=v,v,v", [arg0, arg1], dtype=core.dtype("fp32"),
                                        is_pure=True, pack=1, _semantic=_semantic)
 
 
