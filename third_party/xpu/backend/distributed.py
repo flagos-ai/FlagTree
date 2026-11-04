@@ -40,7 +40,7 @@ class FlagcxRuntimeConfig:
         module_dir = os.environ.get("FLAGCX_MODULE_PATH")
         module_dir = Path(module_dir).expanduser() if module_dir else None
         wheel_dir = self._get_flagcx_wheel_path()
-        cache_dir = Path(os.environ.get("FLAGTREE_CACHE_DIR", Path.home() / ".flagtree")) / "flagcx" / "xpu"
+        cache_dir = Path(Path.home() / ".flagtree") / "flagcx" / "xpu"
         backend_dir = Path(__file__).parent
         source_triton_dir = backend_dir.parent / "python" / "triton"
         triton_dir = source_triton_dir if source_triton_dir.is_dir() else backend_dir.parent.parent

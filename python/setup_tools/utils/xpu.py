@@ -192,6 +192,21 @@ class XPUFlagCXRegistrar(FlagCXRegistrar):
             for destination in destinations:
                 destination.parent.mkdir(parents=True, exist_ok=True)
         super()._copy_required_files()
+        self._pin_flagcx_api_path()
+
+    def _pin_flagcx_api_path(self):
+        api_path = str(Path(self.flagcx_src_dir) / "src" / "flagcx" / "api.py")
+        for destinations in self._get_required_dst_files_paths().values():
+            for destination in destinations:
+                if destination.name != "flagcx_wrapper.py":
+                    continue
+                text = destination.read_text()
+                text = re.sub(
+                    r'(os\.environ\.get\(\s*"FLAGCX_API_PATH",\s*\n\s*)"[^"]*"',
+                    rf'\g<1>"{api_path}"',
+                    text,
+                )
+                destination.write_text(text)
 
 
 def handle_flagcx(*args, **kwargs):
@@ -1242,6 +1257,11 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_src_path=f"{_llvm19_pkg}/lib/linux", copy_dst_path="third_party/xpu/backend/llvm19/lib/linux")
     cache.store(files=("libclang_rt.xpuprintf-xpu3.a", "libclang_rt.xpuprintfs-xpu3.a"), condition=is_xpu,
                 copy_src_path=f"{_printf_pkg}/lib/linux", copy_dst_path="third_party/xpu/backend/llvm19/lib/linux")
+    # The desensitized xtdk-llvm19 package does not ship llvm-link, but the
+    # printf package does.  Stage it from there so `link_flagcx_device_ir`
+    # can merge FlagCX bitcode without FLAGCX_XPU_LLVM_LINK being set.
+    cache.store(files=("llvm-link", ), condition=is_xpu,
+                copy_src_path=f"{_printf_pkg}/bin", copy_dst_path="third_party/xpu/backend/llvm19/bin")
     cache.store(
         # ONE shared copy of the LLVM 19 runtime for the whole install.  The
         # staged tools are dynamically linked against `libLLVM.so.19.1`; without
