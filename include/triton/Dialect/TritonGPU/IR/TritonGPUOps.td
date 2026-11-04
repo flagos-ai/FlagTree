@@ -718,12 +718,14 @@ def TTG_TMACopyOp : TTG_Op<"tma_copy", [
     Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$dst,
     Variadic<I32>:$indices,
     Optional<TTG_MemDescType>:$barrier,
-    OptionalAttr<I32Attr>:$expect_bytes
+    OptionalAttr<I32Attr>:$expect_bytes,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict
   );
   //assemble
   let assemblyFormat = [{
     $src `,` $dst `,` `[` $indices `]`
     (`,` `barrier` $barrier^)?
+    oilist(`evictionPolicy` `=` $evict)
     attr-dict `:` type($src) `,` type($dst)
     (`,` qualified(type($barrier))^)?
   }];

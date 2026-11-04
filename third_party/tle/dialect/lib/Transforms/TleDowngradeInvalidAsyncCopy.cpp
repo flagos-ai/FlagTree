@@ -150,6 +150,23 @@ static unsigned getLegalCpAsyncVec(unsigned maxVec, unsigned elemBits) {
   return 0;
 }
 
+static unsigned getSmallestLegalCpAsyncVec(unsigned maxVec,
+                                           unsigned elemBits) {
+  if (elemBits == 0)
+    return 0;
+
+  maxVec = std::min<unsigned>(maxVec, 128 / elemBits);
+  for (unsigned vecBytes : {4u, 8u, 16u}) {
+    unsigned vecBits = vecBytes * 8;
+    if (vecBits % elemBits != 0)
+      continue;
+    unsigned vec = vecBits / elemBits;
+    if (llvm::isPowerOf2_32(vec) && vec <= maxVec)
+      return vec;
+  }
+  return 0;
+}
+
 static unsigned
 getMaxVectorElementsOnAxis(Value value, unsigned axis, unsigned elemBits,
                            tt::ModuleAxisInfoAnalysis &axisInfo) {
@@ -167,6 +184,70 @@ getMaxVectorElementsOnAxis(Value value, unsigned axis, unsigned elemBits,
   if (isa<tt::PointerType>(tensorTy.getElementType()))
     maxMultiple = std::max<unsigned>(divisibility / elemBytes, 1);
   return std::min(contiguity, maxMultiple);
+}
+
+struct RequiredAsyncCopyLayout {
+  ttg::BlockedEncodingAttr encoding;
+  unsigned contiguity;
+};
+
+static std::optional<RequiredAsyncCopyLayout>
+getRequiredAsyncCopyLayout(ttg::AsyncCopyGlobalToLocalOp copyOp,
+                           tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto srcTy = dyn_cast<RankedTensorType>(copyOp.getSrc().getType());
+  auto dstTy = dyn_cast<ttg::MemDescType>(copyOp.getResult().getType());
+  if (!srcTy || !dstTy)
+    return std::nullopt;
+  auto blockedEnc = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
+  if (!blockedEnc)
+    return std::nullopt;
+
+  Type elemTy = dstTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return std::nullopt;
+  unsigned elemBits = elemTy.getIntOrFloatBitWidth();
+  if (elemBits == 0)
+    return std::nullopt;
+
+  auto *ptrInfo = axisInfo.getAxisInfo(copyOp.getSrc());
+  if (!ptrInfo)
+    return std::nullopt;
+
+  SmallVector<unsigned> order(srcTy.getRank());
+  std::iota(order.begin(), order.end(), 0);
+  llvm::stable_sort(order, [&](unsigned lhs, unsigned rhs) {
+    return ptrInfo->getContiguity(lhs) > ptrInfo->getContiguity(rhs);
+  });
+
+  Value mask = copyOp.getMask();
+  auto *maskInfo = mask ? axisInfo.getAxisInfo(mask) : nullptr;
+  auto sizePerThread = llvm::to_vector(blockedEnc.getSizePerThread());
+
+  for (unsigned axis : order) {
+    unsigned maxVec =
+        getMaxVectorElementsOnAxis(copyOp.getSrc(), axis, elemBits, axisInfo);
+    if (maskInfo && axis < static_cast<unsigned>(maskInfo->getRank()))
+      maxVec = std::min<unsigned>(
+          maxVec, std::max<int64_t>(maskInfo->getConstancy(axis), 1));
+    maxVec = std::min<unsigned>(maxVec, srcTy.getShape()[axis]);
+
+    // Introduce only the minimum redundant-thread ownership required for a
+    // legal cp.async transaction (for example [1, 256]xbf16 on eight warps).
+    unsigned legalVec = getSmallestLegalCpAsyncVec(maxVec, elemBits);
+    if (legalVec == 0)
+      continue;
+
+    SmallVector<unsigned> newSizePerThread(sizePerThread);
+    newSizePerThread[axis] = std::max(newSizePerThread[axis], legalVec);
+    unsigned numWarps = product(blockedEnc.getWarpsPerCTA());
+    unsigned threadsPerWarp = product(blockedEnc.getThreadsPerWarp());
+    auto newEnc = ttg::BlockedEncodingAttr::get(
+        copyOp.getContext(), srcTy.getShape(), newSizePerThread, order,
+        numWarps, threadsPerWarp, blockedEnc.getCTALayout());
+    return RequiredAsyncCopyLayout{newEnc, legalVec};
+  }
+
+  return std::nullopt;
 }
 
 static std::optional<ttg::BlockedEncodingAttr>
@@ -308,6 +389,33 @@ static bool rematerializeLogicalAsyncCopy(
 }
 
 static LogicalResult
+legalizeRequiredAsyncCopy(IRRewriter &rewriter,
+                          ttg::AsyncCopyGlobalToLocalOp copyOp,
+                          tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto layout = getRequiredAsyncCopyLayout(copyOp, axisInfo);
+  if (!layout)
+    return failure();
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(copyOp);
+  Value src = convertTensorEncoding(rewriter, copyOp.getLoc(), copyOp.getSrc(),
+                                    layout->encoding);
+  Value mask = convertTensorEncoding(rewriter, copyOp.getLoc(),
+                                     copyOp.getMask(), layout->encoding);
+  Value other = convertTensorEncoding(rewriter, copyOp.getLoc(),
+                                      copyOp.getOther(), layout->encoding);
+  rewriter.modifyOpInPlace(copyOp, [&]() {
+    copyOp.getSrcMutable().assign(src);
+    if (mask)
+      copyOp.getMaskMutable().assign(mask);
+    if (other)
+      copyOp.getOtherMutable().assign(other);
+    copyOp.setContiguity(layout->contiguity);
+  });
+  return success();
+}
+
+static LogicalResult
 collectErasableTokenUsers(Value token,
                           SmallPtrSetImpl<Operation *> &visitedTokenOps,
                           SmallPtrSetImpl<Operation *> &localLoadSet,
@@ -380,7 +488,7 @@ static LogicalResult downgradeAsyncCopy(IRRewriter &rewriter,
   }
   auto load = tt::LoadOp::create(
       rewriter, copyOp.getLoc(), src, mask, other, copyOp.getCache(),
-      copyOp.getEvict(), copyOp.getIsVolatile(), rewriter.getStringAttr(""));
+      copyOp.getEvict(), copyOp.getIsVolatile());
   Value storeValue = load.getResult();
   auto loadTy = cast<RankedTensorType>(storeValue.getType());
   if (loadTy.getEncoding() != originalSrcTy.getEncoding()) {
@@ -435,6 +543,13 @@ struct DowngradeInvalidAsyncCopyPass
       if (copyOp->hasAttr(kCopyPlanAttr) != planned)
         return;
       dropUnsafeLoopFreePartitionCachePolicy(copyOp);
+#ifdef __ILUVATAR__
+      // Iluvatar SME async copies use inputStride plus an SME source
+      // encoding.  Their transaction shape is defined by the SME lowering,
+      // not by the NVIDIA cp.async byte-width table below.
+      if (copyOp.isIluvatarSmeAsyncCopy())
+        return;
+#endif
       if (hasLegalCpAsyncWidth(copyOp, axisInfo))
         return;
       invalidCopies.push_back(copyOp);
@@ -442,6 +557,15 @@ struct DowngradeInvalidAsyncCopyPass
 
     IRRewriter rewriter(&getContext());
     for (ttg::AsyncCopyGlobalToLocalOp copyOp : invalidCopies) {
+      if (copyOp->hasAttr(kTleRequiredAsyncCopyAttr)) {
+        if (succeeded(legalizeRequiredAsyncCopy(rewriter, copyOp, axisInfo)))
+          continue;
+        copyOp.emitError(
+            "explicit tle.gpu.copy(is_async=True) cannot be represented by "
+            "a legal NVIDIA cp.async width; refusing synchronous downgrade");
+        signalPassFailure();
+        return;
+      }
       if (copyOp->getBlock() &&
           failed(downgradeAsyncCopy(rewriter, copyOp, axisInfo))) {
         copyOp.emitError("cannot downgrade invalid async copy with non-trivial "

@@ -32,6 +32,7 @@
 #include "mlir/Support/LLVM.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
@@ -67,6 +68,8 @@ static constexpr llvm::StringLiteral
     kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
 
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
+  if (waitOp->hasAttr(triton::tle::kTleExplicitAsyncWaitGroupAttr))
+    return true;
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))
