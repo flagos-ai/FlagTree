@@ -31,6 +31,25 @@ def NVGPUWarpSpecialization : Pass<"nvgpu-warp-specialization", "mlir::ModuleOp"
   ];
 }
 
+#ifdef __TLE__
+def NVGPULowerWSTokens : Pass<"nvgpu-lower-ws-tokens", "mlir::ModuleOp"> {
+  let summary = "lower NVWS synchronization tokens to mbarriers";
+
+  let description = [{
+    This pass materializes the mbarrier state for existing NVWS tokens,
+    including tokens captured by explicit warp-specialized regions and
+    passed through device functions. It does not partition loops or assign
+    warp-specialization tasks. Modules without tokens are left unchanged.
+  }];
+
+  let dependentDialects = ["mlir::gpu::GPUDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::nvws::NVWSDialect"];
+}
+#endif
+
 def NVGPUTestWSTaskPartition : Pass<"nvgpu-test-ws-task-partition", "mlir::ModuleOp"> {
   let summary = "test warp specialization task partition";
 

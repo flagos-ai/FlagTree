@@ -207,8 +207,43 @@ class WarpSpecializeCallerContext:
         fn.set_attr("ttg.num-warps", builder.get_int32_attr(self.num_warps))
 
 
+def _is_distributed_rt_context(value):
+    try:
+        from triton.runtime import DistributedRtContext
+    except ImportError:
+        return False
+    return isinstance(value, DistributedRtContext)
+
+
+def _unwrap_warp_specialize_values(value):
+    """Unwrap static values without losing distributed runtime handles.
+
+    ``tl._unwrap_if_constexpr`` reconstructs every nested ``tl.tuple``.  A
+    ``DistributedRtContext`` is deliberately a host-side static handle, so
+    unwrapping it to the raw object makes tuple construction ask for a Triton
+    ``.type`` that the handle does not have.  Keep that one value wrapped and
+    let the TLE distributed builtins unwrap it at their boundary.
+    """
+    if isinstance(value, tl.constexpr):
+        if _is_distributed_rt_context(value.value):
+            return value
+        return _unwrap_warp_specialize_values(value.value)
+    if _is_distributed_rt_context(value):
+        return tl.constexpr(value)
+    if isinstance(value, tl.tuple):
+        return tl.tuple(
+            [_unwrap_warp_specialize_values(item) for item in value.values],
+            value.type,
+        )
+    if isinstance(value, list):
+        return [_unwrap_warp_specialize_values(item) for item in value]
+    if isinstance(value, builtins.tuple):
+        return builtins.tuple(_unwrap_warp_specialize_values(item) for item in value)
+    return value
+
+
 def _as_call_args(args):
-    args = tl._unwrap_if_constexpr(args)
+    args = _unwrap_warp_specialize_values(args)
     if isinstance(args, tl.tuple):
         args = tuple(args.values)
     elif isinstance(args, tuple):
@@ -220,20 +255,26 @@ def _as_call_args(args):
         if isinstance(arg, (tl.dtype, float, int, bool, str, tuple)) or isinstance(getattr(arg, "type", None),
                                                                                    tl.constexpr_type):
             return tl.constexpr(arg)
+        # Distributed runtime contexts are host-side constexpr handles.  They
+        # must not be captured as warp-specialize IR operands (they have no
+        # ``type``/SSA value); wrapping them preserves the context for the
+        # callee's TLE builtins while keeping the capture list empty.
+        if _is_distributed_rt_context(arg):
+            return tl.constexpr(arg)
         return arg
 
     return tuple(normalize(arg) for arg in args)
 
 
 def _as_warp_specialize_entry(entry, index: int):
-    entry = tl._unwrap_if_constexpr(entry)
+    entry = _unwrap_warp_specialize_values(entry)
     if isinstance(entry, tl.tuple):
         entry = tuple(entry.values)
     if not isinstance(entry, tuple):
         raise ValueError(f"warp_specialize entry {index} must be a tuple, got {type(entry).__name__}")
     if len(entry) != 2:
         raise ValueError(f"warp_specialize entry {index} must be (fn, args); pass cid as a normal constexpr arg")
-    if not isinstance(tl._unwrap_if_constexpr(entry[1]), (tuple, tl.tuple)):
+    if not isinstance(_unwrap_warp_specialize_values(entry[1]), (tuple, tl.tuple)):
         raise ValueError(f"warp_specialize entry {index} args must be a tuple")
     return entry
 
@@ -292,7 +333,7 @@ def warp_specialize(
     """
     if _generator is None:
         raise ValueError("warp_specialize requires a Triton code generator")
-    functions_and_args = tl._unwrap_if_constexpr(functions_and_args)
+    functions_and_args = _unwrap_warp_specialize_values(functions_and_args)
     mthreads_enabled = mthreads_common.enabled()
     if mthreads_enabled:
         worker_num_warps, worker_num_regs = mthreads_warp_specialize.normalize_config(worker_num_warps, worker_num_regs)
