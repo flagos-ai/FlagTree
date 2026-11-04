@@ -519,6 +519,11 @@ def _configure_sms(ctx: TleGemmReduceScatterContext, num_scatter_sms: int, num_r
 
 _GEMM_AUTOTUNE_CORE_CONFIGS = [
     # BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages
+    # Small tiles for devices with a 64 KiB shared-memory limit.
+    (64, 64, 32, 8, 4, 2),
+    (64, 128, 32, 8, 4, 2),
+    (128, 64, 32, 8, 4, 2),
+    (64, 64, 64, 8, 4, 2),
     (128, 256, 64, 8, 8, 4),
     (128, 256, 64, 8, 8, 3),
     (128, 256, 64, 8, 8, 5),
