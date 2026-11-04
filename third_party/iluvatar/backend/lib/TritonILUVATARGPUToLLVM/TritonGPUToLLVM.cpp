@@ -76,9 +76,11 @@ public:
 struct ConvertTritonILUVATARGPUToLLVM
     : public triton::impl::ConvertTritonILUVATARGPUToLLVMBase<
           ConvertTritonILUVATARGPUToLLVM> {
-  explicit ConvertTritonILUVATARGPUToLLVM(StringRef targetArch, bool ftz) {
+  explicit ConvertTritonILUVATARGPUToLLVM(StringRef targetArch, bool ftz,
+                                          bool disableLoadVectorize) {
     this->arch = targetArch.str();
     this->ftz = ftz;
+    this->disableLoadVectorize = disableLoadVectorize;
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -187,7 +189,8 @@ struct ConvertTritonILUVATARGPUToLLVM
                                                   axisInfoAnalysis, allocation,
                                                   targetInfo, ILUVATARBenefit);
     ILUVATAR::populateLoadStoreOpToLLVMPatterns(
-        typeConverter, targetInfo, patterns, axisInfoAnalysis, ILUVATARBenefit);
+        typeConverter, targetInfo, patterns, axisInfoAnalysis, ILUVATARBenefit,
+        disableLoadVectorize);
     ILUVATAR::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
     ILUVATAR::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
                                               ILUVATARBenefit, targetInfo);
@@ -302,8 +305,10 @@ private:
 namespace mlir::triton {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz) {
-  return std::make_unique<ConvertTritonILUVATARGPUToLLVM>(targetArch, ftz);
+createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz,
+                                        bool disableLoadVectorize) {
+  return std::make_unique<ConvertTritonILUVATARGPUToLLVM>(targetArch, ftz,
+                                                          disableLoadVectorize);
 }
 
 } // namespace mlir::triton
