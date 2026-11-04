@@ -49,6 +49,7 @@
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/IR/VerifyUtils.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -378,30 +379,35 @@ void init_triton_tle_ir(py::module &&m) {
           "create_tma_copy",
           [](TritonOpBuilder &self, Value src, Value dst,
              std::vector<Value> &indices, py::object barrier,
-             int32_t expectBytes) {
+             int32_t expectBytes, tt::EvictionPolicy evictionPolicy) {
 #ifdef __HCU__
-            if (!barrier.is_none() || expectBytes > 0)
+            if (!barrier.is_none() || expectBytes > 0 ||
+                evictionPolicy != tt::EvictionPolicy::NORMAL)
               throw py::value_error(
-                  "TMA completion barrier is only supported on NVIDIA backend");
+                  "TMA completion barriers and eviction policies are only "
+                  "supported on the NVIDIA backend");
             self.create<ttg::TMACopyOp>(src, dst, indices);
 #else
-             auto &builder = self.getBuilder();
-             Value barrierValue;
-             if (!barrier.is_none())
-               barrierValue = py::cast<Value>(barrier);
-             IntegerAttr expectBytesAttr;
-             if (expectBytes > 0)
-               expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
-             self.create<ttg::TMACopyOp>(src, dst, indices, barrierValue,
-                                         expectBytesAttr);
+            auto &builder = self.getBuilder();
+            Value barrierValue;
+            if (!barrier.is_none())
+              barrierValue = py::cast<Value>(barrier);
+            IntegerAttr expectBytesAttr;
+            if (expectBytes > 0)
+              expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
+            auto copy = self.create<ttg::TMACopyOp>(
+                src, dst, indices, barrierValue, expectBytesAttr);
+            copy.setEvict(evictionPolicy);
 #endif
-            return;
-          })
+          },
+          py::arg("src"), py::arg("dst"), py::arg("indices"), py::arg("barrier"),
+          py::arg("expect_bytes"),
+          py::arg("eviction_policy") = tt::EvictionPolicy::NORMAL)
       .def(
           "create_tma_copy",
           [](TritonOpBuilder &self, Value src, Value dst,
              std::vector<Value> &indices, py::object barrier,
-             int32_t expectBytes, std::vector<int64_t> copyShape) {
+             int32_t expectBytes, tt::EvictionPolicy evictionPolicy, std::vector<int64_t> copyShape) {
 #ifdef __HCU__
             if (!barrier.is_none() || expectBytes > 0)
               throw py::value_error(
@@ -417,6 +423,9 @@ void init_triton_tle_ir(py::module &&m) {
              auto op = self.create<ttg::TMACopyOp>(
                  src, dst, indices, barrierValue, expectBytesAttr);
 #endif
+#ifndef __HCU__
+            op.setEvict(evictionPolicy);
+#endif
             op->setAttr(tle::kLogicalCopyShapeAttr,
                         self.getBuilder().getDenseI64ArrayAttr(copyShape));
           })
@@ -427,6 +436,28 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_local_store",
            [](TritonOpBuilder &self, Value &dst, Value &regValues) -> void {
              self.create<ttg::LocalStoreOp>(regValues, dst);
+           })
+      .def("create_async_copy_global_to_local",
+           [](TritonOpBuilder &self, Value smem, Value pointer, Value mask,
+              Value other, tt::CacheModifier cacheModifier,
+              tt::EvictionPolicy evictionPolicy, bool isVolatile) {
+             auto copy = self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 pointer, smem, mask, other, cacheModifier, evictionPolicy,
+                 isVolatile);
+             copy->setAttr(tle::kTleRequiredAsyncCopyAttr,
+                           self.getBuilder().getUnitAttr());
+           })
+      .def("create_async_commit_group",
+           [](TritonOpBuilder &self) {
+             ValueRange tokens;
+             self.create<ttg::AsyncCommitGroupOp>(tokens);
+           })
+      .def("create_async_wait_group",
+           [](TritonOpBuilder &self, int maxPending) {
+             ValueRange tokens;
+             auto wait = self.create<ttg::AsyncWaitOp>(tokens, maxPending);
+             wait->setAttr(tle::kTleExplicitAsyncWaitGroupAttr,
+                           self.getBuilder().getUnitAttr());
            })
       .def("create_tle_wgmma",
            [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
