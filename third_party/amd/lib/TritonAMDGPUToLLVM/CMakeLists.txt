@@ -1,6 +1,8 @@
 set(TLE_AMD_BARRIER_SOURCE BarrierOpToLLVM.cpp)
+set(TLE_AMD_DISTRIBUTED_BARRIER_SOURCE)
 if(FLAGTREE_TLE)
   set(TLE_AMD_BARRIER_SOURCE ../../tle/BarrierOpToLLVM.cpp)
+  set(TLE_AMD_DISTRIBUTED_BARRIER_SOURCE ../../tle/DistributedBarrierOpToLLVM.cpp)
 endif()
 
 if(FLAGTREE_TLE)
@@ -45,6 +47,7 @@ add_triton_library(TritonAMDGPUToLLVM
     ScalarizePackedFOps.cpp
     TDMUtility.cpp
     ${TLE_AMD_BARRIER_SOURCE}
+    ${TLE_AMD_DISTRIBUTED_BARRIER_SOURCE}
 
     DEPENDS
     TritonAMDGPUConversionPassIncGen
