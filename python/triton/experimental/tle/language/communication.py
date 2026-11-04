@@ -337,16 +337,45 @@ def init_communicator():
     _init_communicator_ = True
 
 
-def create_dist_tensor(buf_tensor):
+def create_dist_tensor(buf_tensor, *, intra_barrier_count=1):
+    """Register a symmetric window and allocate runtime-owned barrier slots.
+
+    Slot indices used by kernels must be below intra_barrier_count. The runtime
+    initializes and retains their state until cleanup_communicator().
+    """
     global comm, rank, dev_mem, dev_comm, win
+    if (isinstance(intra_barrier_count, bool) or not isinstance(intra_barrier_count, int)
+            or not 0 < intra_barrier_count <= 0x7fffffff):
+        raise ValueError("intra_barrier_count must be a positive int32")
+    if not getattr(buf_tensor, "is_cuda", False):
+        raise TypeError("FlagCX symmetric windows require a CUDA tensor")
+    if not buf_tensor.is_contiguous():
+        raise ValueError("FlagCX symmetric windows require a contiguous tensor")
     buf_ptr = buf_tensor.data_ptr()
     buf_size = buf_tensor.numel() * buf_tensor.element_size()
-
+    if buf_size <= 0:
+        raise ValueError("FlagCX symmetric windows require a non-empty tensor")
+    if buf_ptr % _FLAGCX_WINDOW_ALIGNMENT:
+        raise ValueError(
+            "FlagCX symmetric windows require a 4096-byte-aligned base address; "
+            f"got {buf_ptr:#x}. Use tle.allocate_dist_tensor(...)."
+        )
     if dev_comm is not None or dev_mem is not None or win is not None:
         raise RuntimeError(
             "An active FlagCX window already owns its communication resources; "
             "call cleanup_communicator() before creating another window."
         )
+    can_query_capacity = flagcx.supports_intra_barrier_count_query
+    if intra_barrier_count > 1 and not can_query_capacity:
+        raise RuntimeError(
+            "Multiple intra-barrier slots require an SDK capacity query; "
+            "install a FlagCX SDK that reports provisioned barrier capacity."
+        )
+
+    # Publish completed local CUDA writes before the host rendezvous. A host
+    # barrier alone cannot order peer reads after initialization on this GPU.
+    # Keep the caller's default process group untouched: window setup needs no
+    # CUDA NCCL collective, including before FlagCX registers the window.
     torch.cuda.synchronize(buf_tensor.device)
     if dist.is_initialized():
         _distributed_barrier()
@@ -355,11 +384,11 @@ def create_dist_tensor(buf_tensor):
     win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
     print(f"[Rank {rank}] Window registered (symmetric)")
 
-    # Create DevComm with 1 intra barrier
+    # Runtime-owned slots are disjoint from the caller's reusable payload pool.
     reqs = flagcxDevCommRequirements()
     reqs.intraMulticast = False
     reqs.barrierCount = 8
-    reqs.intraBarrierCount = 8
+    reqs.intraBarrierCount = intra_barrier_count
     reqs.interBarrierCount = 8
     reqs.intraLLA2ABlockCount = 0
     reqs.intraLLA2ASlotCount = 0
@@ -370,6 +399,23 @@ def create_dist_tensor(buf_tensor):
 
     dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
     print(f"[Rank {rank}] DevComm created")
+    actual_barrier_count = intra_barrier_count
+    if can_query_capacity:
+        try:
+            actual_barrier_count = flagcx.flagcxDevCommGetIntraBarrierCount(dev_comm)
+            if (isinstance(actual_barrier_count, bool)
+                    or not isinstance(actual_barrier_count, int)
+                    or not intra_barrier_count <= actual_barrier_count <= 0x7fffffff):
+                raise RuntimeError(
+                    f"FlagCX provisioned {actual_barrier_count!r} intra-barrier slots; "
+                    f"{intra_barrier_count} were required"
+                )
+        except BaseException:
+            flagcx.flagcxDevCommDestroy(comm, dev_comm)
+            dev_comm = None
+            flagcx.flagcxCommWindowDeregister(comm, win)
+            win = None
+            raise
 
     # Create DevMem (with window)
     dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr, buf_size, win)
@@ -386,4 +432,5 @@ def create_dist_tensor(buf_tensor):
 
     from triton.runtime import DistributedRtContext
     ctx = DistributedRtContext(dev_comm_dptr.value, dev_mem_dptr.value)
+    ctx.intra_barrier_count = actual_barrier_count
     return ctx

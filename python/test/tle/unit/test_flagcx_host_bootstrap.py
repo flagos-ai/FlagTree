@@ -88,4 +88,5 @@ def test_window_publication_synchronizes_cuda_then_uses_host_barriers(communicat
     window = SimpleNamespace(is_cuda=True, is_contiguous=lambda: True, data_ptr=lambda: 4096,
                              numel=lambda: 4096, element_size=lambda: 1, device="cuda:0")
     assert comm.create_dist_tensor(window) is context
+    assert context.intra_barrier_count == 1
     assert events == ["cuda_sync", "host_barrier", "register", "host_barrier"]
