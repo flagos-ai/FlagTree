@@ -577,6 +577,7 @@ class nvidia_knobs(base_knobs):
     dump_ptxas_log: env_bool = env_bool("TRITON_DUMP_PTXAS_LOG")
     rlc_enhance: env_bool = env_bool("FLAGTREE_RLC_ENHANCE", True)  # flagtree rlc enhance
     pipeline_enhance: env_bool = env_bool("FLAGTREE_PIPELINE_ENHANCE", True)  # flagtree pipeline enhance
+    concat_dot_operand: env_bool = env_bool("FLAGTREE_CONCAT_DOT_OPERAND", True)  # flagtree concat dot operand
 
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
