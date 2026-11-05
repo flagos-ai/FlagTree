@@ -122,13 +122,21 @@ class range(_tl_range):
     Behaves exactly like ``tl.range`` but adds the ``reorder`` hint, a TLE-specific
     extension that is intentionally kept out of the upstream Triton primitive.
 
-    :param reorder: If ``True`` (and ``loop_unroll_factor`` is set), instructs the
-        FlagTree ``reorder-loop-loads`` optimization to cluster loads produced by the
-        unrolled loop body ahead of the remaining ops, improving memory-latency hiding.
+    :param reorder: Only takes effect together with ``loop_unroll_factor``; instructs the
+        FlagTree ``reorder-loop-loads`` optimization to issue the loads of later unrolled
+        iterations ahead of the compute of earlier ones, so that more loads are in flight.
+        ``True`` moves the loads of every unrolled iteration to the front; an ``int`` k >= 1
+        keeps the loads at most k iterations ahead of the compute that consumes them, which
+        bounds the registers that hold the prefetched values (``reorder=1`` is usually the
+        right choice when the unrolled body is large or ``num_warps`` is small).
+        The hint asserts that the loads of one unrolled iteration do not alias the stores of
+        another one. Loads that follow a write of their own iteration, volatile loads, and
+        loads that depend on a side effect are never moved, and no load is moved across an
+        atomic, a barrier or another op with unknown side effects.
         Requires a FlagTree build with ``__FLAGTREE_REORDER_LOOP_LOADS__`` enabled;
         ``FLAGTREE_REORDER_LOOP_LOADS=0`` (``knobs.language.reorder_loop_loads``)
         drops the hint at run time.
-    :type reorder: bool
+    :type reorder: bool or int
     """
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
@@ -136,6 +144,9 @@ class range(_tl_range):
                  reorder=False):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor, disallow_acc_multi_buffer, flatten,
                          warp_specialize, disable_licm)
+        reorder = tl._unwrap_if_constexpr(reorder)
+        if not isinstance(reorder, builtins.int) or (reorder is not True and reorder is not False and reorder < 0):
+            raise ValueError(f"tle.range: reorder must be a bool or a non-negative int, got {reorder!r}")
         self.reorder = reorder
 
 

@@ -1307,7 +1307,7 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
-            reorder = getattr(iterator, 'reorder', False)  # flagtree reorder-loop-loads
+            reorder = _unwrap_if_constexpr(getattr(iterator, 'reorder', False))  # flagtree reorder-loop-loads
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1372,9 +1372,12 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-            # flagtree reorder-loop-loads
+            # flagtree reorder-loop-loads: True clusters every unrolled iteration's loads, an int k >= 1
+            # keeps them at most k iterations ahead
             if reorder and knobs.language.reorder_loop_loads and _unwrap_if_constexpr(loop_unroll_factor) is not None:
-                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))
+                reorder_attr = (self.builder.get_bool_attr(True) if reorder is True else self.builder.get_int32_attr(
+                    int(reorder)))
+                for_op.set_attr("tt.reorder", reorder_attr)
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
