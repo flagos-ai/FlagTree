@@ -74,13 +74,16 @@ namespace ttng = triton::nvidia_gpu;
 #ifdef __TLE__
 namespace tle = triton::tle;
 
-// TLE named barrier ids at or above this value are virtual; the TLE allocator
-// maps them to physical ids at the end of the TTGIR pipeline.
+// The named barrier id space, repeated from the passes that own it: the TLE
+// allocator (TleAllocateNamedBarriers.cpp, the same three constants) treats
+// ids at or above kFirstVirtualNamedBarrierId as virtual and maps them to the
+// physical ids 0 to kNumHardwareBarriers - 1 (kPPUNumBarriers in
+// BarrierUtility.h) at the end of the TTGIR pipeline; the warp specialization
+// lowering (ConvertWarpSpecializeToLLVM.cpp, BarrierIndex) takes the physical
+// ids of the default warp group's barrier, the switch loop, then one per
+// partition. The budget of a kernel is the physical ids left after them.
 constexpr int64_t kFirstVirtualNamedBarrierId = 16;
 constexpr int64_t kNumHardwareBarriers = 16;
-// Ids the warp specialization lowering reserves: the default warp group's
-// barrier and the switch loop. Keep in step with TleAllocateNamedBarriers,
-// which hands out virtual ids above them.
 constexpr int64_t kNumWarpSpecializeReservedBarriers = 2;
 
 // The threads that execute an op: a ttg.warp_specialize worker partition, or
@@ -129,25 +132,62 @@ static Value canonicalizeCapture(Value value) {
   return value;
 }
 
-// The number of loops around `op` inside its warp group.
+// The number of loops around `op` within its ttg.warp_specialize, or within
+// the function for an op outside one. Loops around a warp_specialize count
+// for neither its default region nor its partitions: a pipe that hands over
+// between warp groups never sits in one (checkRunsOnce), and only such pipes
+// compete for hardware barriers.
 static int getLoopDepth(Operation *op) {
   int depth = 0;
   for (Operation *parent = op->getParentOp();
-       parent && !isa<tt::FuncOp, ttg::WarpSpecializePartitionsOp>(parent);
+       parent &&
+       !isa<tt::FuncOp, ttg::WarpSpecializeOp, ttg::WarpSpecializePartitionsOp>(
+           parent);
        parent = parent->getParentOp())
     depth += isa<scf::ForOp, scf::WhileOp>(parent);
   return depth;
 }
 
-static Value getMemDescRoot(Value value) {
-  value = canonicalizeCapture(value);
+static std::optional<int64_t> getConstantI32(Value value) {
+  if (auto op = value.getDefiningOp<arith::ConstantIntOp>())
+    return op.value();
+  if (auto op = value.getDefiningOp<arith::ConstantOp>())
+    if (auto attr = dyn_cast<IntegerAttr>(op.getValue()))
+      return attr.getInt();
+  return std::nullopt;
+}
+
+// Prints what a pipe field denotes: its allocation and the static offsets of
+// the views taken of it, outermost first. A reader in a worker partition sees
+// the field through a capture, and two pipes may ring through different
+// stages of one allocation. Views that keep the whole buffer (an identity
+// subslice, an alias at offset 0) and views at a dynamic index add nothing.
+static void printFieldKey(raw_ostream &os, Value field) {
+  SmallVector<std::string> views;
+  Value value = canonicalizeCapture(field);
   while (Operation *def = value.getDefiningOp()) {
-    if (!isa<ttg::MemDescIndexOp, ttg::MemDescSubsliceOp, ttg::MemDescTransOp,
-             ttg::MemDescReinterpretOp, tle::MemDescAliasOp>(def))
+    if (auto index = dyn_cast<ttg::MemDescIndexOp>(def)) {
+      if (std::optional<int64_t> constant = getConstantI32(index.getIndex()))
+        views.push_back("[" + std::to_string(*constant) + "]");
+    } else if (auto subslice = dyn_cast<ttg::MemDescSubsliceOp>(def)) {
+      if (subslice.getType().getShape() !=
+          subslice.getSrc().getType().getShape()) {
+        std::string offsets;
+        for (int32_t offset : subslice.getOffsets())
+          offsets += std::to_string(offset) + ":";
+        views.push_back("[" + offsets + "]");
+      }
+    } else if (auto alias = dyn_cast<tle::MemDescAliasOp>(def)) {
+      if (alias.getOffsetBytes())
+        views.push_back("+" + std::to_string(alias.getOffsetBytes()));
+    } else if (!isa<ttg::MemDescTransOp, ttg::MemDescReinterpretOp>(def)) {
       break;
+    }
     value = canonicalizeCapture(def->getOperand(0));
   }
-  return value;
+  os << value.getAsOpaquePointer();
+  for (const std::string &view : llvm::reverse(views))
+    os << view;
 }
 
 // Makes `value` available at `useOp`, capturing it into the enclosing worker
@@ -196,8 +236,7 @@ static bool isPipeLifecycleOp(Operation *op) {
 }
 
 // The lifecycle ops of one pipe share capacity, scope, name, field names and
-// field allocations. Fields are compared by their allocation, since a reader
-// in a worker partition sees them through captures.
+// fields (printFieldKey).
 static std::string getPipeKey(Operation *op) {
   std::string key;
   llvm::raw_string_ostream os(key);
@@ -209,18 +248,11 @@ static std::string getPipeKey(Operation *op) {
   os << "|";
   op->getAttr("field_names").print(os);
   os << "|";
-  for (Value field : getPipeFields(op))
-    os << getMemDescRoot(field).getAsOpaquePointer() << ",";
+  for (Value field : getPipeFields(op)) {
+    printFieldKey(os, field);
+    os << ",";
+  }
   return key;
-}
-
-static std::optional<int64_t> getConstantI32(Value value) {
-  if (auto op = value.getDefiningOp<arith::ConstantIntOp>())
-    return op.value();
-  if (auto op = value.getDefiningOp<arith::ConstantOp>())
-    if (auto attr = dyn_cast<IntegerAttr>(op.getValue()))
-      return attr.getInt();
-  return std::nullopt;
 }
 
 static Value i32Const(OpBuilder &builder, Location loc, int64_t value) {
@@ -431,7 +463,10 @@ static Operation *getWarpSpecialize(const Endpoint &endpoint) {
 // wait, and the counters of the software path are zero filled once, at the
 // create. The hardware keeps that state across executions, so a pipe that
 // hands over between warp groups is created, and its warp_specialize runs,
-// once per kernel: neither sits inside a loop.
+// once per kernel: neither sits inside a loop. A one_shot pipe skips the
+// initial arrivals, but its counters are zero filled once all the same, and
+// nothing orders a second execution of its writer after the readers of the
+// first: it is held to the same rule.
 static LogicalResult checkRunsOnce(Pipe &pipe) {
   auto inLoop = [](Operation *op) {
     return op->getParentOfType<LoopLikeOpInterface>() != nullptr;
@@ -444,8 +479,9 @@ static LogicalResult checkRunsOnce(Pipe &pipe) {
     return success();
   return pipe.create.emitOpError(
       "hands over between warp groups inside a loop; the hardware barriers "
-      "keep their state across executions, so such a pipe is created and "
-      "used by a warp_specialize that runs once per kernel");
+      "and the shared-memory counters keep their state across executions, so "
+      "such a pipe is created and used by a warp_specialize that runs once "
+      "per kernel");
 }
 
 static FailureOr<std::string> getReaderName(const Pipe &pipe, Operation *op) {
@@ -476,8 +512,13 @@ static LogicalResult analyzePipes(ModuleOp module, PipeMap &pipes) {
   for (Operation *op : ops) {
     if (auto create = dyn_cast<tle::PipeCreateOp>(op)) {
       Pipe &pipe = pipes[getPipeKey(op)];
-      if (pipe.create)
-        return create.emitOpError("duplicates an earlier pipe.create");
+      if (pipe.create) {
+        InFlightDiagnostic diag = create.emitOpError(
+            "duplicates an earlier pipe.create of the same capacity, scope, "
+            "name and fields");
+        diag.attachNote(pipe.create.getLoc()) << "earlier pipe.create";
+        return diag;
+      }
       pipe.create = create;
       pipe.capacity = create.getCapacity();
       if (auto oneShot = create.getOneShotAttr())
@@ -543,7 +584,7 @@ static LogicalResult analyzePipes(ModuleOp module, PipeMap &pipes) {
       pipe.readerThreads.push_back(reader.threads);
       pipe.emptyThreads += reader.threads;
     }
-    if (pipe.crossGroupReaders && !pipe.oneShot && failed(checkRunsOnce(pipe)))
+    if (pipe.crossGroupReaders && failed(checkRunsOnce(pipe)))
       return failure();
   }
   return success();
@@ -852,7 +893,7 @@ private:
         readerRelease = release;
     }
     reason = "the consume loop body must wait, release, then refill under "
-             "if (position + depth < n) as its last statement";
+             "if (position + depth < n), in that order";
     if (!initialAcquire || !initialCommit || !refillAcquire || !refillCommit ||
         !readerWait || !readerRelease ||
         readerWait->getBlock() != consume.getBody() ||
@@ -1029,15 +1070,15 @@ private:
              });
   }
 
-  // Complete the oldest `count - keep` groups and publish exactly those slots.
-  Pending drain(OpBuilder &b, Operation *anchor, Pending pending, Value keep) {
+  // Complete every pending group and publish its slot, oldest first.
+  Pending drain(OpBuilder &b, Operation *anchor, Pending pending) {
     Location loc = anchor->getLoc();
     currentOp = anchor;
-    waitCopies(b, loc, keep);
-    Value completed = arith::SubIOp::create(b, loc, pending.count, keep);
+    Value none = i32Const(b, loc, 0);
+    waitCopies(b, loc, none);
     auto loop =
-        scf::ForOp::create(b, loc, i32Const(b, loc, 0), completed,
-                           i32Const(b, loc, 1), ValueRange{pending.stages});
+        scf::ForOp::create(b, loc, none, pending.count, i32Const(b, loc, 1),
+                           ValueRange{pending.stages});
     {
       OpBuilder::InsertionGuard guard(b);
       b.setInsertionPointToStart(loop.getBody());
@@ -1047,7 +1088,7 @@ private:
       Value rest = arith::ShRUIOp::create(b, loc, stages, i32Const(b, loc, 2));
       scf::YieldOp::create(b, loc, ValueRange{rest});
     }
-    return {keep, loop.getResult(0)};
+    return {none, loop.getResult(0)};
   }
 
   template <typename Emit>
@@ -1071,11 +1112,9 @@ private:
     Value nonempty =
         arith::CmpIOp::create(b, anchor->getLoc(), arith::CmpIPredicate::ne,
                               pending.count, i32Const(b, anchor->getLoc(), 0));
-    return conditionally(b, anchor, nonempty, pending,
-                         [&](OpBuilder &nested, Pending p) {
-                           return drain(nested, anchor, p,
-                                        i32Const(nested, anchor->getLoc(), 0));
-                         });
+    return conditionally(
+        b, anchor, nonempty, pending,
+        [&](OpBuilder &nested, Pending p) { return drain(nested, anchor, p); });
   }
 
   Pending consume(OpBuilder &b, Operation *anchor, Pending pending,
@@ -1101,10 +1140,10 @@ private:
       scf::YieldOp::create(b, loc, ValueRange{younger, rest});
       b.setInsertionPointToStart(&branch.getElseRegion().front());
       Value found = queueContains(b, loc, pending, stage);
-      Pending next = conditionally(
-          b, anchor, found, pending, [&](OpBuilder &nested, Pending p) {
-            return drain(nested, anchor, p, i32Const(nested, loc, 0));
-          });
+      Pending next = conditionally(b, anchor, found, pending,
+                                   [&](OpBuilder &nested, Pending p) {
+                                     return drain(nested, anchor, p);
+                                   });
       scf::YieldOp::create(b, loc, ValueRange{next.count, next.stages});
     }
     return {branch.getResult(0), branch.getResult(1)};
@@ -1176,9 +1215,8 @@ private:
       } else if (auto acquire = dyn_cast<tle::PipeWriterAcquireOp>(op)) {
         Value reused = queueContains(b, loc, pending, acquire.getStage());
         pending = conditionally(
-            b, op, reused, pending, [&](OpBuilder &nested, Pending p) {
-              return drain(nested, op, p, i32Const(nested, loc, 0));
-            });
+            b, op, reused, pending,
+            [&](OpBuilder &nested, Pending p) { return drain(nested, op, p); });
         lower(op);
       } else if (auto commit = dyn_cast<tle::PipeWriterCommitOp>(op)) {
         ttg::AsyncCommitGroupOp::create(
@@ -1345,6 +1383,14 @@ private:
     // loop, the shared-memory hazards of the counters (their zero fill, the
     // group's own counter updates) that the barrier analysis would otherwise
     // resolve with a barrier in front of the load inside the loop.
+    //
+    // No fence follows the loop. The peer's stage accesses completed before
+    // its counter advanced (the group barrier in arrive), and this warp's
+    // accesses to the stage are control dependent on the counter value: a
+    // warp issues its shared-memory accesses in order, so none of them starts
+    // before the volatile load that ends the spin has returned. The hardware
+    // path gets the same ordering from the shared-memory fence bit of the
+    // named barriers (BarrierUtility.h).
     ttg::LocalBarrierOp::create(b, loc);
     Value wanted = arith::ExtUIOp::create(b, loc, b.getI32Type(), currentPhase);
     if (invertPhase)

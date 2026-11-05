@@ -178,3 +178,58 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// A one_shot pipe handing over between warp groups inside a loop: its
+// counters are zero filled once, and nothing orders a second execution of the
+// writer after the readers of the first.
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @one_shot_warp_specialize_in_loop(%buf: !ttg.memdesc<1x128xf32, #shared, #smem, mutable>, %n: i32) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %phase = arith.constant false
+    // expected-error @below {{hands over between warp groups inside a loop; the hardware barriers and the shared-memory counters keep their state across executions}}
+    tle.pipe.create %buf {capacity = 1 : i32, field_names = ["data"], one_shot = true, scope = "cta"} : !ttg.memdesc<1x128xf32, #shared, #smem, mutable>
+    scf.for %i = %c0 to %n step %c1 : i32 {
+      ttg.warp_specialize(%buf)
+      default {
+        tle.pipe.writer_acquire %buf[%c0, %phase] {capacity = 1 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<1x128xf32, #shared, #smem, mutable>
+        tle.pipe.writer_commit %buf[%c0] {capacity = 1 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<1x128xf32, #shared, #smem, mutable>
+        ttg.warp_yield
+      }
+      partition0(%reader: !ttg.memdesc<1x128xf32, #shared, #smem, mutable>) num_warps(4) {
+        %stage = arith.constant 0 : i32
+        %parity = arith.constant false
+        %closed = tle.pipe.reader_wait %reader[%stage, %parity] {capacity = 1 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<1x128xf32, #shared, #smem, mutable>
+        tle.pipe.reader_release %reader[%stage] {capacity = 1 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<1x128xf32, #shared, #smem, mutable>
+        ttg.warp_return
+      } : (!ttg.memdesc<1x128xf32, #shared, #smem, mutable>) -> ()
+    }
+    tt.return
+  }
+}
+
+// -----
+
+// Two creates of the same capacity, scope, name and fields are one pipe. Pipes
+// on one allocation differ by name or by the stages they ring through.
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @duplicate_create(%ring: !ttg.memdesc<4x128xf32, #shared, #smem, mutable>) {
+    // expected-note @below {{earlier pipe.create}}
+    tle.pipe.create %ring {capacity = 4 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<4x128xf32, #shared, #smem, mutable>
+    // expected-error @below {{duplicates an earlier pipe.create of the same capacity, scope, name and fields}}
+    tle.pipe.create %ring {capacity = 4 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<4x128xf32, #shared, #smem, mutable>
+    tt.return
+  }
+}

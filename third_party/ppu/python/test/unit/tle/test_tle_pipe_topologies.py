@@ -9,8 +9,10 @@ pipes between them cover what FlagGems' warp-specialized attention kernels use:
 * an exchange of partial results between D and P0, one pipe per direction;
 * a capacity-2 ring shared by two pipes, each direction using its own stage.
 
-With 16 pipe barriers needed and 12 hardware barriers left, the later pipes
-use the software barriers in shared memory.
+The pipes need 21 hardware barriers (per stage, one full barrier for each
+reader group and, unless one_shot, one empty barrier) and 12 are left after the
+ids warp specialization reserves. The pipes of the loop take all of them, so
+q, l0 and l1 use the software barriers in shared memory.
 """
 
 import pytest
