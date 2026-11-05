@@ -525,7 +525,7 @@ class FlagTreeCache:
             need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
             archive_name = Path(unquote(urlparse(url).path)).name
             local_archive = Path(path) / archive_name
-            # Marker is a sibling dotfile: packages ship their own version.txt; a cache without one is staged -> adopt
+            # A cache without this sibling marker is adopted and the marker is written.
             marker_file = Path(path) / f".{file}.version"
             if not need_download and version is not None:
                 if marker_file.exists():
@@ -539,12 +539,6 @@ class FlagTreeCache:
                             cache_path.unlink()
                         need_download = True
                 else:
-                    legacy_file = Path(cache_path) / "version.txt"
-                    legacy_ver = legacy_file.read_text().strip() if legacy_file.exists() else None
-                    if legacy_ver != version:
-                        note = f" (its version.txt says '{legacy_ver}')" if legacy_ver else ""
-                        print(f"[cache] no version marker for '{file}': adopting the cache as "
-                              f"'{version}'{note}; remove {cache_path} to force a refresh")
                     marker_file.write_text(version)
             if need_download:
                 if cache_path.exists():
