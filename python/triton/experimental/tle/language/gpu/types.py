@@ -23,11 +23,13 @@
 from __future__ import annotations
 
 import math
+from math import prod
 
 import triton.language.core as tl
 from typing import Optional, List, Tuple, TYPE_CHECKING
 from abc import abstractmethod
 from triton._C.libtriton import ir
+from triton._utils import TRITON_MAX_TENSOR_NUMEL, is_power_of_two
 from triton.language.semantic import TritonSemantic
 
 if TYPE_CHECKING:
@@ -322,6 +324,16 @@ class swizzled_shared_layout(shared_layout):
         self.numCTASplit = numCTASplit
         self.numCTAOrder = numCTAOrder
 
+    def _structural_key(self):
+        return (self.vectorSize, self.perPhase, self.maxPhase, tuple(self.order), tuple(self.numCTAs),
+                tuple(self.numCTAsPerCGA), tuple(self.numCTASplit), tuple(self.numCTAOrder))
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self._structural_key() == other._structural_key()
+
+    def __hash__(self):
+        return hash(self._structural_key())
+
     """
     Make a default non-swizzled shared layout encoding.
     """
@@ -562,6 +574,32 @@ class _logical_tensor_descriptor(tl.tensor_descriptor):
         return self.type.logical_shape
 
 
+def _make_subslice_layout(src_layout: shared_layout, subslice_shape: List[int]) -> shared_layout:
+    if isinstance(src_layout, swizzled_shared_layout):
+        return swizzled_shared_layout(
+            src_layout.vectorSize,
+            src_layout.perPhase,
+            src_layout.maxPhase,
+            list(src_layout.order),
+            list(src_layout.numCTAs),
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+        )
+    if isinstance(src_layout, nv_mma_shared_layout):
+        return nv_mma_shared_layout(
+            list(subslice_shape),
+            list(src_layout.order),
+            src_layout.elemType,
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+            src_layout.fp4Padded,
+            src_layout.swizzled,
+        )
+    raise ValueError(f"buffered_tensor.subslice does not support layout {type(src_layout).__name__}")
+
+
 class buffered_tensor(tl.base_value):
     """
     A symbolic type representing a tensor allocated in a manually managed buffer
@@ -692,8 +730,26 @@ class buffered_tensor(tl.base_value):
         if self.type.storage is not smem:
             raise ValueError(f"buffered_tensor.subslice supports only smem storage, got {self.type.storage}")
 
-        start = tl._unwrap_if_constexpr(start)
-        length = tl._unwrap_if_constexpr(length)
+        start = _unwrap_pipe_constexpr(start)
+        length = _unwrap_pipe_constexpr(length)
+        if isinstance(start, (tuple, list)) and isinstance(length, (tuple, list)):
+            offsets, sub_shape = list(start), list(length)
+            if len(offsets) != len(self.shape) or len(sub_shape) != len(self.shape):
+                raise ValueError("buffered_tensor.subslice offsets and shape must match the buffer rank")
+            for offset, size, extent in zip(offsets, sub_shape, self.shape):
+                if isinstance(offset, bool) or not isinstance(offset, int):
+                    raise ValueError("buffered_tensor.subslice offsets must be compile-time integers")
+                if isinstance(size, bool) or not isinstance(size, int):
+                    raise ValueError("buffered_tensor.subslice shape must be compile-time integers")
+                if offset < 0 or size <= 0 or offset + size > extent:
+                    raise ValueError("buffered_tensor.subslice is outside extent")
+                if size != extent and (size & (size - 1) or offset % size):
+                    raise ValueError("buffered_tensor.subslice requires an aligned power-of-two tile")
+            from . import semantic as tle_semantic
+            handle = tle_semantic.subview(self, offsets, sub_shape, [1] * len(sub_shape), self.type.layout, _semantic,
+                                          alloc_shape=self.type.alloc_shape)
+            return buffered_tensor(handle, self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                                   alloc_shape=self.type.alloc_shape)
         dim = tl._unwrap_if_constexpr(dim)
         for name, value in (("start", start), ("length", length), ("dim", dim)):
             if not isinstance(value, int):
@@ -748,9 +804,29 @@ class buffered_tensor_type(tl.base_type):
 
     def __init__(self, element_ty: tl.dtype, shape: List, storage: scope, layout: Optional[shared_layout] = None,
                  semantic: TritonSemantic = None, alloc_shape: List = None):
+        # MemDescType deliberately permits a non-power-of-two leading
+        # dimension (the stage/allocation dimension), while ordinary Triton
+        # register tensors require every dimension to be a power of two.  A
+        # buffered tensor is a memory descriptor, not a register tensor, so do
+        # not apply block_type's stronger rule to that leading dimension.
+        shape = tuple(shape)
+        if not shape:
+            raise TypeError("0d buffered_tensor_type is forbidden")
+        for index, extent in enumerate(shape):
+            if not isinstance(extent, int):
+                raise TypeError(f"Shape element {index} must have type `constexpr[int]`, "
+                                f"got `constexpr[{type(extent)}]`")
+            if extent <= 0:
+                raise ValueError(f"Shape element {index} must be positive")
+            if index > 0 and not is_power_of_two(extent):
+                raise ValueError(f"Shape element {index} must be a power of 2")
+        numel = prod(shape)
+        if numel > TRITON_MAX_TENSOR_NUMEL:
+            raise ValueError(f"numel ({numel}) exceeds triton maximum tensor numel "
+                             f"({TRITON_MAX_TENSOR_NUMEL})")
         self.element_ty = element_ty
-        self.shape = tuple(tl._unwrap_shape(shape))
-        self.numel = math.prod(self.shape)
+        self.shape = shape
+        self.numel = numel
         self.name = f"<{self.shape}, {self.element_ty}>"
         # Storage
         self.storage = storage

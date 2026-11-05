@@ -342,6 +342,7 @@ def alloc(
     alias: Optional[tle.buffered_tensor] = None,
     alias_offset_bytes: int = 0,
     nv_mma_shared_layout=True,
+    alignment_bytes: Optional[int] = None,
     _semantic: TLESemantic | None = None,
 ) -> tle.buffered_tensor:
     """
@@ -353,7 +354,9 @@ def alloc(
             NVIDIA SMEM supports one non-power-of-two matrix dimension (a
             multiple of 16) through the logical-domain storage planner.
         dtype: Data type
-        layout: Memory layout encoding (optional)
+        layout: Memory layout encoding (optional). An explicit shared encoding
+            describes a physical MemDesc and preserves its leading extent;
+            layout=None selects automatic logical-matrix storage planning.
         scope: Storage type (default to shared memory)
         init_value: Optional initial register tensor with the padded matrix shape.
             For a 3D allocation, a matrix initializes every slot with the same
@@ -371,6 +374,9 @@ def alloc(
             when the tile is a TCU-eligible 2D operand; otherwise it uses the
             generic swizzled encoding. An explicit ``nv_mma_shared_layout``
             object is still rejected.
+        alignment_bytes: Additional power-of-two alignment for a new Shared
+            allocation (for example, a byte arena containing aligned aliases).
+            Does not weaken the layout alignment. Not valid for alias views.
         _semantic: Semantic analyzer (internal use)
 
     Returns:
@@ -399,6 +405,13 @@ def alloc(
 
     alias = tl._unwrap_if_constexpr(alias)
     alias_offset_bytes = tl._unwrap_if_constexpr(alias_offset_bytes)
+    alignment_bytes = tl._unwrap_if_constexpr(alignment_bytes)
+    if alignment_bytes is not None:
+        if (isinstance(alignment_bytes, bool) or not isinstance(alignment_bytes, int) or alignment_bytes <= 0
+                or alignment_bytes & (alignment_bytes - 1) or alignment_bytes > (1 << 30)):
+            raise ValueError("alignment_bytes must be a positive power of two fitting signed i32")
+        if alias is not None or scope is not tle.smem:
+            raise ValueError("alignment_bytes is valid only for a new Shared allocation, not an alias")
     if alias is not None:
         if init_value is not None:
             raise ValueError("alloc alias mode cannot be combined with init_value")
@@ -455,7 +468,11 @@ def alloc(
             _semantic.builder, unwrapped_shape))
         if use_mthreads_buffer:
             mthreads_buffer.validate_shape(unwrapped_shape)
-        non_power_payload_axes = ([] if use_mthreads_buffer else
+        # A plain linear MemDesc describes a physical arena, not a logical
+        # matrix. Its byte extent need not fit a ranked register tensor.
+        physical_buffer = (len(unwrapped_shape) == 1 and not nv_mma_shared_layout) or (isinstance(
+            layout, tle.shared_layout) and all(dim & (dim - 1) == 0 for dim in unwrapped_shape[1:]))
+        non_power_payload_axes = ([] if use_mthreads_buffer or physical_buffer else
                                   [axis for axis, dim in enumerate(payload_shape, payload_offset) if dim & (dim - 1)])
         if len(non_power_payload_axes) > 1:
             raise ValueError("tle.gpu.alloc permits at most one non-power-of-two matrix dimension")
@@ -585,6 +602,13 @@ def alloc(
                             value = _semantic.reshape(value, storage_shape[1:], False)
                         slot = buffer.slot(stage, _semantic=_semantic)
                         _semantic.builder.create_local_store(slot.handle, value.handle)
+            if alignment_bytes is not None:
+                # NVMMA's largest swizzle period is 1024 B; ordinary Swizzled
+                # layouts require 16 B. An explicit arena requirement is a
+                # lower bound, never an override that weakens either layout.
+                layout_alignment = 1024 if isinstance(layout, tle.nv_mma_shared_layout) else 16
+                tensor_handle.set_attr("alignment",
+                                       _semantic.builder.get_int32_attr(max(alignment_bytes, layout_alignment)))
             if mthreads_auto_sqmma_shared_layout and alias is None:
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
             if logical_candidate:
@@ -1498,6 +1522,7 @@ def _make_full_indices(buffer: tle.buffered_tensor, _semantic: TLESemantic | Non
 def local_ptr(
     buffer: tle.buffered_tensor,
     indices: Optional[Sequence] = None,
+    shape: Optional[Sequence[int]] = None,
     _semantic: TLESemantic | None = None,
     _generator=None,
 ) -> tl.tensor:
@@ -1510,6 +1535,9 @@ def local_ptr(
             length must equal ``rank(buffer)`` and every tensor must have the
             same shape. If ``None``, emit a full-view pointer tensor over
             ``buffer`` shape (or scalar pointer for rank-0 buffer).
+        shape: Optional explicit result tensor shape. Indices are broadcast to
+            this shape; their values are not reshaped. With ``indices=None``,
+            it must match the full buffer shape.
         _semantic: Semantic analyzer (internal use).
         _generator: Triton code generator (internal use).
 
@@ -1528,6 +1556,17 @@ def local_ptr(
     remote_buffer_marker = remote_shard_id is not None
 
     buffer_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in buffer.type.shape)
+    requested_shape = tl._unwrap_if_constexpr(shape)
+    if requested_shape is not None:
+        if isinstance(requested_shape, tl.tuple):
+            requested_shape = tuple(requested_shape.values)
+        elif isinstance(requested_shape, (tuple, list)):
+            requested_shape = tuple(requested_shape)
+        else:
+            raise ValueError("local_ptr shape must be a tuple/list of compile-time integers or None")
+        requested_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in requested_shape)
+        if any(dim <= 0 for dim in requested_shape):
+            raise ValueError("local_ptr shape dimensions must be positive")
     indices = tl._unwrap_if_constexpr(indices)
     no_indices = indices is None
     if no_indices:
@@ -1549,6 +1588,12 @@ def local_ptr(
             idx_tensor = idx if isinstance(idx, tensor) else _semantic.to_tensor(idx)
             if not idx_tensor.dtype.is_int():
                 raise ValueError("local_ptr indices must use integer dtypes")
+            if requested_shape is not None:
+                idx_tensor = tl.broadcast_to(idx_tensor, *requested_shape, _semantic=_semantic)
+                idx_tensors.append(idx_tensor)
+                scalar_index_flags.append(False)
+                view_shape = requested_shape
+                continue
             is_scalar_index = not idx_tensor.type.is_block()
             scalar_index_flags.append(is_scalar_index)
             if is_scalar_index:
@@ -1572,6 +1617,9 @@ def local_ptr(
         all_scalar_indices = len(buffer_shape) == 0
         if not all_scalar_indices:
             view_shape = buffer_shape
+        if requested_shape is not None and tuple(view_shape or ()) != requested_shape:
+            raise ValueError(
+                f"local_ptr explicit shape {requested_shape} does not match full buffer shape {view_shape}")
 
     try:
         from .semantic import TLESemantic
