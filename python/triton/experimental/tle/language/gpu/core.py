@@ -25,6 +25,7 @@ import builtins
 import triton.language.core as tl
 from typing import Optional, Sequence, TYPE_CHECKING
 from enum import Enum
+from triton._C.libtriton import ir
 from . import types as tle
 from . import semantic as tle_semantic
 from .mthreads import common as mthreads_common
@@ -113,6 +114,47 @@ def set_layout(value, layout, _semantic=None):
         _semantic.builder.create_tle_gpu_set_layout(value.handle, target_encoding),
         value.type,
     )
+
+
+@tl.builtin
+def tensor_map_fenceproxy_acquire(descriptor, _semantic=None):
+    """Acquire host-written tensor-map data before its first TMA use."""
+    if not isinstance(descriptor, tl.tensor) or not isinstance(descriptor.type, tl.pointer_type):
+        raise ValueError("tensor_map_fenceproxy_acquire expects a pointer")
+    builder = _semantic.builder
+    if not hasattr(builder, "create_tle_gpu_tensor_map_fenceproxy_acquire"):
+        raise RuntimeError("tensor_map_fenceproxy_acquire requires a Triton build with "
+                           "__TLE__ tensor-map support")
+    builder.create_tle_gpu_tensor_map_fenceproxy_acquire(descriptor.handle)
+
+
+@tl.builtin
+def reinterpret_tensor_map(descriptor, destination, _semantic=None):
+    """Type a raw tensor-map entry for copies into ``destination``."""
+    if not isinstance(descriptor, tl.tensor) or not isinstance(descriptor.type, tl.pointer_type):
+        raise ValueError("reinterpret_tensor_map descriptor must be a pointer")
+    if not isinstance(destination, tle.buffered_tensor):
+        raise ValueError("reinterpret_tensor_map destination must be a buffered_tensor")
+    builder = _semantic.builder
+    if not hasattr(builder, "create_tle_gpu_reinterpret_tensor_map"):
+        raise RuntimeError("reinterpret_tensor_map requires a Triton build with __TLE__ "
+                           "tensor-map support")
+    # Scope cloning restores buffered shapes as Python tuples; block_type
+    # accepts lists or Triton tuples, so normalize at this TLE boundary.
+    block_type = tl.block_type(destination.dtype, list(destination.shape))
+    handle = builder.create_tle_gpu_reinterpret_tensor_map(
+        descriptor.handle,
+        block_type.to_ir(builder),
+        destination.dtype.is_int_signed(),
+    )
+    shape = [tl.full((), extent, tl.int32, _semantic=_semantic) for extent in destination.shape]
+    running_stride = 1
+    stride_values = []
+    for extent in reversed(destination.shape):
+        stride_values.append(running_stride)
+        running_stride *= extent
+    strides = [tl.full((), stride, tl.int64, _semantic=_semantic) for stride in reversed(stride_values)]
+    return tl.tensor_descriptor(handle, shape, strides, block_type)
 
 
 class range(_tl_range):
