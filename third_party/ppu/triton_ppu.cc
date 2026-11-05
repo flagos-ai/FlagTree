@@ -30,6 +30,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "passes.h"
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "llvm/IR/Constants.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -109,6 +110,15 @@ static void checkMatmulConstraints(const std::string &A_dtype,
 }
 
 void init_triton_ppu(py::module &&m) {
+  m.def("has_aiu_descriptor_load", [](mlir::ModuleOp module) {
+    return module
+        .walk([](mlir::triton::DescriptorLoadOp op) {
+          return mlir::triton::isPPUAIUCache(op.getCache())
+                     ? mlir::WalkResult::interrupt()
+                     : mlir::WalkResult::advance();
+        })
+        .wasInterrupted();
+  });
   auto passes = m.def_submodule("passes");
   init_triton_ppu_passes_ttgpuir(passes.def_submodule("ttgpuir"));
   init_triton_ppu_passes_ttppugpuir(passes.def_submodule("ttppugpuir"));

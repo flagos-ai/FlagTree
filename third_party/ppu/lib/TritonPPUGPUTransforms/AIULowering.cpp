@@ -24,8 +24,10 @@
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "TritonPPUGPUTransforms/Passes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -75,7 +77,8 @@ public:
 
     Operation *copy =
         rewriter.create<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(
-            loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
+            loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc,
+            op.getCache(), op.getEvict());
 
     Value Zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 0);
 
@@ -104,6 +107,47 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
+
+    // Native AIU coordinates must not wrap the 24-bit encoding. In
+    // particular, negative X/Z offsets fault on the tested SDK 2.1 path.
+    // Check the actual indices after block-pointer advance has been lowered.
+    bool invalid = false;
+    OpBuilder builder(context);
+    m.walk([&](triton::AIULoadOp op) {
+      if (!triton::isPPUAIUCache(op.getCache()))
+        return;
+      builder.setInsertionPoint(op);
+      Value valid;
+      auto tile = op.getType().getShape();
+      for (auto [axis, coordinate] : llvm::enumerate(op.getIndices())) {
+        int64_t maximum = (1 << 24) - tile[axis];
+        APInt constant;
+        if (matchPattern(coordinate, m_ConstantInt(&constant))) {
+          if (constant.getSExtValue() < 0 ||
+              constant.getSExtValue() > maximum) {
+            op.emitError("PPU AIU copy requires nonnegative X/Z offsets within "
+                         "the 24-bit coordinate range");
+            invalid = true;
+          }
+          continue;
+        }
+        Value limit = arith::ConstantOp::create(
+            builder, op.getLoc(),
+            builder.getIntegerAttr(coordinate.getType(), maximum));
+        Value fits = arith::CmpIOp::create(
+            builder, op.getLoc(), arith::CmpIPredicate::ule, coordinate, limit);
+        valid = valid ? arith::AndIOp::create(builder, op.getLoc(), valid, fits)
+                      : fits;
+      }
+      if (valid)
+        triton::AssertOp::create(builder, op.getLoc(), valid,
+                                 "PPU AIU copy requires nonnegative X/Z "
+                                 "offsets within the 24-bit coordinate range");
+    });
+    if (invalid) {
+      signalPassFailure();
+      return;
+    }
 
     mlir::RewritePatternSet patterns(context);
     patterns.add<mlir::triton::gpu::AIULoadLowering>(context);

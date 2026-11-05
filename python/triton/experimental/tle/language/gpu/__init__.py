@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 # flagtree tle
-from . import hcu, metax, mthreads
+from . import hcu, metax, mthreads, ppu
 from ._nvidia_cache_policy import (
     CachePolicy,
     FractionalEvictionPolicy,
@@ -53,6 +53,7 @@ __all__ = [
     "mthreads",
     "hcu",
     "metax",
+    "ppu",
     "pipeline",
     "range",
     "alloc",

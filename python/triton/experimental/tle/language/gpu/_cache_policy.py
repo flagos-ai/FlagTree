@@ -47,6 +47,10 @@ _BACKEND_POLICIES = {
         POINTER: ("LSUCachePolicy", ),
         DESCRIPTOR: ("TMECachePolicy", ),
     }),
+    "ppu": (".ppu", {
+        POINTER: ("CachePolicy", "AIUCachePolicy"),
+        DESCRIPTOR: ("AIUCachePolicy", ),
+    }),
     "hcu": (".hcu", {
         POINTER: ("CachePolicy", ),
     }),

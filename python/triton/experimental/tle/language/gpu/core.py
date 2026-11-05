@@ -1469,6 +1469,14 @@ def copy(
         return normcopy(src, dst, shape, direction, mask, other, _semantic)
     if mask is not None:
         raise ValueError("copy mask is only supported for standard pointer-tensor copies")
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND == "ppu":
+        # PPU has no TMA engine: a descriptor copy is an asynchronous block
+        # pointer load that the backend promotes to a native AIU transfer.
+        # ``cache_policy`` is ``None`` or an AIUCachePolicy here; None selects
+        # ppu.DEFAULT_AIU_KP (documented there rather than hidden in lowering).
+        from .ppu import _copy_descriptor
+        return _copy_descriptor(src, dst, shape, offsets, barrier, cache_policy, _semantic=_semantic)
     if mthreads_enabled:
         barrier_slot = None
         if barrier is not None:
