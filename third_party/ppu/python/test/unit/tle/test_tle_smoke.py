@@ -174,6 +174,13 @@ def _kernel_distributed_barrier():
 
 
 @triton.jit
+def _kernel_mbarrier_phase():
+    bar = tle.alloc_barrier()
+    tle.barrier_arrive(bar, phaseIdx=0)
+    tle.barrier_wait(bar, phaseIdx=0)
+
+
+@triton.jit
 def _ws_default_partition():
     pass
 
@@ -229,6 +236,21 @@ def test_ppu_compiles_warp_specialize():
         triton.compiler.ASTSource(fn=_kernel_warp_specialize, signature={}, constexprs={}),
         target=_GPU_TARGET,
     )
+
+
+def test_ppu_rejects_phased_barrier_with_clear_error():
+    """PPU has named barriers but no mbarrier: the phased wait/arrive is
+    rejected on the frontend IR, naming the API. The ttng mbarrier ops that any
+    other mbarrier form lowers to are illegal in the LLVM conversion
+    (third_party/ppu/test/TritonGPU/barrier-errors.mlir)."""
+    with pytest.raises(NotImplementedError) as excinfo:
+        triton.compile(
+            triton.compiler.ASTSource(fn=_kernel_mbarrier_phase, signature={}, constexprs={}),
+            target=_GPU_TARGET,
+        )
+    full = str(excinfo.value) + "".join(str(c) for c in _exception_chain(excinfo.value))
+    assert "tle.gpu.barrier_wait(phaseIdx=...)" in full
+    assert "ppu" in full.lower()
 
 
 def _exception_chain(exc):

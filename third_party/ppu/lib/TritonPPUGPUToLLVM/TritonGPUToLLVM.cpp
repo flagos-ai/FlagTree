@@ -99,6 +99,12 @@ public:
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::ppu_gpu::TritonPPUGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
+    // PPU has no mbarrier: BarrierOpToLLVM reports these with the reason.
+    addIllegalOp<
+        triton::nvidia_gpu::InitBarrierOp, triton::nvidia_gpu::InvalBarrierOp,
+        triton::nvidia_gpu::BarrierExpectOp, triton::nvidia_gpu::WaitBarrierOp,
+        triton::nvidia_gpu::ArriveBarrierOp,
+        triton::nvidia_gpu::AsyncCopyMbarrierArriveOp>();
 #ifdef __TLE__
     addIllegalDialect<tle::TleDialect>();
     // TLE named barriers are expressed with TritonNvidiaGPU ops.

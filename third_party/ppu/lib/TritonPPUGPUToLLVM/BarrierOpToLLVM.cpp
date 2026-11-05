@@ -38,13 +38,27 @@ namespace {
 // issuing warp drains only its shared-memory accesses; its outstanding global
 // accesses keep flowing (draining them costs ~3000 cycles per barrier), so
 // unlike bar.sync on NVIDIA they do not order global memory between the
-// groups. Asynchronous copies are covered by the explicit async_wait the
-// producer issues before signalling.
-unsigned getNumThreads(Value numThreads) {
+// groups. The kernel orders data it hands over through global memory itself
+// (documented on tle.gpu.barrier_wait/arrive); the lowering does not widen the
+// fence from the ops preceding a barrier, since a scan of one block misses the
+// stores of earlier blocks and loop iterations, and widening every arrive
+// after an unrelated output store would pay the drain for nothing.
+// Asynchronous copies are covered by the explicit async_wait the producer
+// issues before signalling (see BarrierUtility.h).
+//
+// The SDK builtin takes the thread count as a constant. TLE emits it as one
+// (arrive_count on the frontend, the group size in the pipe lowering), so a
+// non-constant count is reported instead of silently falling through to the
+// generic legalization failure.
+std::optional<unsigned> getConstantNumThreads(Value numThreads) {
   if (auto cst = numThreads.getDefiningOp<LLVM::ConstantOp>())
     if (auto attr = dyn_cast<IntegerAttr>(cst.getValue()))
       return attr.getInt();
-  return 0;
+  return std::nullopt;
+}
+
+LogicalResult emitNonConstantThreadCount(Operation *op) {
+  return op->emitError("PPU named barriers need a constant thread count");
 }
 
 struct NamedBarrierArriveOpConversion
@@ -55,12 +69,11 @@ struct NamedBarrierArriveOpConversion
   matchAndRewrite(triton::nvidia_gpu::NamedBarrierArriveOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    unsigned numThreads = getNumThreads(adaptor.getNumThreads());
+    auto numThreads = getConstantNumThreads(adaptor.getNumThreads());
     if (!numThreads)
-      return rewriter.notifyMatchFailure(
-          op, "PPU named barriers need a constant thread count");
+      return emitNonConstantThreadCount(op);
     ppu::createPPUBarrierArrive(rewriter, op.getLoc(), adaptor.getBar(),
-                                numThreads, ppu::kPPUBarrierFenceShared);
+                                *numThreads, ppu::kPPUBarrierFenceShared);
     rewriter.eraseOp(op);
     return success();
   }
@@ -73,17 +86,36 @@ struct NamedBarrierWaitOpConversion
   LogicalResult
   matchAndRewrite(triton::nvidia_gpu::NamedBarrierWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    unsigned numThreads = getNumThreads(adaptor.getNumThreads());
+    auto numThreads = getConstantNumThreads(adaptor.getNumThreads());
     if (!numThreads)
-      return rewriter.notifyMatchFailure(
-          op, "PPU named barriers need a constant thread count");
+      return emitNonConstantThreadCount(op);
     ppu::createPPUBarrierSync(rewriter, op.getLoc(), adaptor.getBar(),
-                              numThreads, ppu::kPPUBarrierFenceShared);
+                              *numThreads, ppu::kPPUBarrierFenceShared);
     rewriter.eraseOp(op);
     return success();
   }
 };
 #endif
+
+// PPU has no mbarrier. The TLE frontend lowers its phased barrier forms
+// (barrier_wait/arrive with phaseIdx, alloc_barrier with init=READY or
+// expect_bytes, copy with a completion barrier) and gluon its mbarrier
+// builtins to these ops. The PPU compiler rejects them on the frontend IR,
+// naming the API; this is the backstop for IR that reaches the conversion
+// another way, so that it fails here with the reason instead of in ppu-llc.
+template <typename OpT>
+struct MbarrierOpRejection : public ConvertOpToLLVMPattern<OpT> {
+  using ConvertOpToLLVMPattern<OpT>::ConvertOpToLLVMPattern;
+  using OpAdaptor = typename ConvertOpToLLVMPattern<OpT>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(OpT op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return op.emitError("the PPU backend has no mbarrier; use named barriers "
+                        "(tle.gpu.barrier_wait/barrier_arrive without "
+                        "phaseIdx)");
+  }
+};
 
 // The barrier Membar inserts between conflicting shared-memory accesses (also
 // after every async_wait). It only has to order shared memory.
@@ -109,6 +141,14 @@ void mlir::triton::ppu::populateBarrierOpToLLVMPatterns(
     PatternBenefit benefit) {
   patterns.add<LocalBarrierOpConversion>(typeConverter,
                                          benefit.getBenefit() + 1);
+  patterns
+      .add<MbarrierOpRejection<triton::nvidia_gpu::InitBarrierOp>,
+           MbarrierOpRejection<triton::nvidia_gpu::InvalBarrierOp>,
+           MbarrierOpRejection<triton::nvidia_gpu::BarrierExpectOp>,
+           MbarrierOpRejection<triton::nvidia_gpu::WaitBarrierOp>,
+           MbarrierOpRejection<triton::nvidia_gpu::ArriveBarrierOp>,
+           MbarrierOpRejection<triton::nvidia_gpu::AsyncCopyMbarrierArriveOp>>(
+          typeConverter, benefit);
 #ifdef __TLE__
   patterns.add<NamedBarrierArriveOpConversion, NamedBarrierWaitOpConversion>(
       typeConverter, benefit);

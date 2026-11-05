@@ -148,7 +148,10 @@ def _helper_kernel(x, y, z, rows, BLOCK: tl.constexpr):
 
 def test_reduction_in_noinline_helper():
     """A helper that is not inlined gets the barrier of its caller's warp
-    group as an argument."""
+    group as an argument. The frontend specializes it per warp group (name
+    suffix _TLEWSNW<n>, ttg.num-warps = n), so its barriers count that group's
+    threads; the lowering rejects a helper called from a group of another size
+    (third_party/ppu/test/TritonGPU/warp-specialize-errors.mlir)."""
     rows, block = 64, 256
     x = torch.randn(rows, block, device="cuda")
     y = torch.zeros(rows, device="cuda")

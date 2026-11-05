@@ -64,8 +64,9 @@
 #include "TritonAMDGPUTransforms/TritonGPUConversion.h"
 
 #if defined(__PPU__) && defined(__TLE__)
+#include "TritonPPUGPUToLLVM/Passes.h"
 #include "TritonPPUGPUTransforms/Passes.h"
-#endif
+#endif // __PPU__ && __TLE__
 
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -116,7 +117,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::gluon::registerGluonPasses();
 #if defined(__PPU__) && defined(__TLE__)
   mlir::registerTritonPPUGPUPasses();
-#endif
+  mlir::triton::registerTritonPPUGPUToLLVMPasses();
+#endif // __PPU__ && __TLE__
 #ifdef __TLE__
   mlir::triton::tle::registerPasses(); // flagtree tle
 #endif
