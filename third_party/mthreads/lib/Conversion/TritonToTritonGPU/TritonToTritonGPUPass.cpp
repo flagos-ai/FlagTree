@@ -400,8 +400,32 @@ static LogicalResult propagateMusaTleEncodingHints(
   mergeMusaTleLayoutProducerDomains(producerFamilies);
 
   WalkResult memoryWalk = func.walk([&](Operation *op) {
-    if (!getMemAccessPtr(op))
+    Value pointer = getMemAccessPtr(op);
+    if (!pointer)
       return WalkResult::advance();
+
+    // Shared indices can reach memory operations in different layout domains.
+    // Keep each producer's explicit contract and bridge mismatching operands
+    // at the consumer, instead of rejecting otherwise legal load/store uses.
+    Attribute memoryEncoding = getTleExplicitMemoryEncoding(op);
+    for (OpResult result : op->getResults()) {
+      if (Attribute encoding = getTleExplicitValueEncoding(result)) {
+        memoryEncoding = encoding;
+        break;
+      }
+    }
+    if (!memoryEncoding)
+      memoryEncoding = getTleExplicitValueEncoding(pointer);
+    if (memoryEncoding) {
+      OpBuilder builder(op);
+      for (OpOperand &operand : op->getOpOperands()) {
+        auto type = dyn_cast<RankedTensorType>(operand.get().getType());
+        if (type && type.getEncoding() && type.getEncoding() != memoryEncoding)
+          operand.set(triton::gpu::ConvertLayoutOp::create(
+              builder, op->getLoc(), type.cloneWithEncoding(memoryEncoding),
+              operand.get()));
+      }
+    }
 
     Attribute explicitEncoding;
     if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)))
@@ -707,8 +731,24 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
                                                       retTypes)))
       return failure();
 #endif
+#ifdef __TLE__
+    SmallVector<Value> operands(adaptor.getOperands());
+    if (Attribute encoding = getTleExplicitMemoryEncoding(op)) {
+      // A store has no result through which layout propagation can align its
+      // pointer and mask with an explicitly laid-out value. Materialize these
+      // conversions at the memory operation, preserving other users' layouts.
+      for (Value &operand : operands) {
+        auto type = dyn_cast<RankedTensorType>(operand.getType());
+        if (type && type.getEncoding() != encoding)
+          operand = triton::gpu::ConvertLayoutOp::create(
+              rewriter, op.getLoc(), type.cloneWithEncoding(encoding), operand);
+      }
+    }
+    rewriter.replaceOpWithNewOp<Op>(op, retTypes, operands, op->getAttrs());
+#else
     rewriter.replaceOpWithNewOp<Op>(op, retTypes, adaptor.getOperands(),
                                     op->getAttrs());
+#endif
 
     return success();
   }
@@ -817,6 +857,21 @@ struct TritonExpandDimsPattern
     if (!_argEncoding)
       return failure();
 #ifdef __TLE__
+    if (Attribute encoding = getTleExplicitResultEncoding(op, 0)) {
+      auto resultType = op.getType().cloneWithEncoding(encoding);
+      auto sourceType =
+          argType.cloneWithEncoding(triton::gpu::SliceEncodingAttr::get(
+              getContext(), op.getAxis(),
+              cast<triton::gpu::DistributedEncodingTrait>(encoding)));
+      Value source = adaptor.getSrc();
+      if (source.getType() != sourceType)
+        source = triton::gpu::ConvertLayoutOp::create(rewriter, op.getLoc(),
+                                                      sourceType, source);
+      addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
+                        op, resultType, source, op.getAxis()),
+                    adaptor.getAttributes());
+      return success();
+    }
     // Explicit TLE layout propagation can assign the input its final slice
     // encoding before conversion. Reinsert that axis without rebuilding a
     // blocked encoding (or casting a SliceEncodingAttr to one).
@@ -938,6 +993,16 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
         getContext(), origShape, retSizePerThread, retOrder, numWarps,
         threadsPerWarp, numCTAs);
+#ifdef __TLE__
+    // Layout propagation may have already fixed the result's blocked layout.
+    // Replacing it with the dot heuristic leaves users of the explicit type
+    // behind an unresolved source materialization. Use the same layout for
+    // the result, accumulator and dot-operand parents.
+    if (auto explicitBlocked =
+            dyn_cast_or_null<triton::gpu::BlockedEncodingAttr>(
+                getTleExplicitResultEncoding(op.getOperation(), 0)))
+      dEncoding = explicitBlocked;
+#endif // __TLE__
     RankedTensorType retType = origType.cloneWithEncoding(dEncoding);
     // a & b must be of smem layout
     auto aType = cast<RankedTensorType>(adaptor.getA().getType());

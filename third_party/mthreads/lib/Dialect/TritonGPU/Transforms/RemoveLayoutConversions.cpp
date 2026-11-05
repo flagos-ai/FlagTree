@@ -1071,8 +1071,28 @@ void LayoutRematerialization::rewriteSlice(SetVector<Value> &slice,
       auto newType =
           cast<RankedTensorType>(old.getType()).cloneWithEncoding(it->second);
       newV.setType(newType);
+#ifdef __TLE__
+      // This is an additional materialization for a conversion's consumers.
+      // The original producer retains its explicit contract; a clone in a
+      // different layout must not inherit the original result's marker.
+      auto resultNumber = cast<OpResult>(old).getResultNumber();
+      if (Attribute explicitEncoding =
+              getTleExplicitResultEncoding(newOp, resultNumber)) {
+        if (explicitEncoding != newType.getEncoding())
+          newOp->removeAttr(getTleExplicitEncodingAttrName(resultNumber));
+      }
+#endif // __TLE__
       addRematValue(old, it->second, newV);
     }
+#ifdef __TLE__
+    if (Attribute memoryEncoding = getTleExplicitMemoryEncoding(newOp)) {
+      Value pointer = getMemAccessPtr(newOp);
+      auto pointerType =
+          pointer ? dyn_cast<RankedTensorType>(pointer.getType()) : nullptr;
+      if (pointerType && pointerType.getEncoding() != memoryEncoding)
+        newOp->removeAttr(getTleExplicitMemoryEncodingAttrName());
+    }
+#endif // __TLE__
   }
   // Check mapping and see if there are existing convertOps on the old Argument
   convertOp.replaceAllUsesWith(mapping.lookup(convertOp.getSrc()));
@@ -1758,6 +1778,8 @@ bool retargetTleSqmmaStores(ModuleOp module) {
   module.walk([&](StoreOp store) { stores.push_back(store); });
   for (StoreOp store : stores) {
     if (!store || !store->getBlock())
+      continue;
+    if (getTleExplicitMemoryEncoding(store))
       continue;
     auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
     if (!valueConvert)
