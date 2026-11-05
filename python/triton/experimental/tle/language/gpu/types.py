@@ -144,8 +144,6 @@ class BlockEncoding(distributed_encoding):
                      tuple(self.order), tuple(tuple(basis) for basis in self.cga_layout)))
 
 
-
-
 class MmaEncoding(distributed_encoding):
     """Explicit #ttg.nvidia_mma encoding for a dot result or accumulator."""
 
@@ -327,9 +325,8 @@ class swizzled_shared_layout(shared_layout):
         self.numCTAOrder = numCTAOrder
 
     def _structural_key(self):
-        return (self.vectorSize, self.perPhase, self.maxPhase, tuple(self.order),
-                tuple(self.numCTAs), tuple(self.numCTAsPerCGA),
-                tuple(self.numCTASplit), tuple(self.numCTAOrder))
+        return (self.vectorSize, self.perPhase, self.maxPhase, tuple(self.order), tuple(self.numCTAs),
+                tuple(self.numCTAsPerCGA), tuple(self.numCTASplit), tuple(self.numCTAOrder))
 
     def __eq__(self, other):
         return type(self) is type(other) and self._structural_key() == other._structural_key()
@@ -410,8 +407,6 @@ class tensor_memory_layout(shared_layout):
             self.CTASplitN,
             self.twoCTAs,
         )
-
-
 
 
 class nv_mma_shared_layout(shared_layout):
@@ -577,6 +572,8 @@ class _logical_tensor_descriptor(tl.tensor_descriptor):
     @property
     def block_shape(self):
         return self.type.logical_shape
+
+
 def _make_subslice_layout(src_layout: shared_layout, subslice_shape: List[int]) -> shared_layout:
     if isinstance(src_layout, swizzled_shared_layout):
         return swizzled_shared_layout(
@@ -749,10 +746,10 @@ class buffered_tensor(tl.base_value):
                 if size != extent and (size & (size - 1) or offset % size):
                     raise ValueError("buffered_tensor.subslice requires an aligned power-of-two tile")
             from . import semantic as tle_semantic
-            handle = tle_semantic.subview(self, offsets, sub_shape, [1] * len(sub_shape),
-                                         self.type.layout, _semantic, alloc_shape=self.type.alloc_shape)
-            return buffered_tensor(handle, self.dtype, sub_shape, self.type.storage, self.type.layout,
-                                   _semantic, alloc_shape=self.type.alloc_shape)
+            handle = tle_semantic.subview(self, offsets, sub_shape, [1] * len(sub_shape), self.type.layout, _semantic,
+                                          alloc_shape=self.type.alloc_shape)
+            return buffered_tensor(handle, self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                                   alloc_shape=self.type.alloc_shape)
         dim = tl._unwrap_if_constexpr(dim)
         for name, value in (("start", start), ("length", length), ("dim", dim)):
             if not isinstance(value, int):
@@ -817,22 +814,16 @@ class buffered_tensor_type(tl.base_type):
             raise TypeError("0d buffered_tensor_type is forbidden")
         for index, extent in enumerate(shape):
             if not isinstance(extent, int):
-                raise TypeError(
-                    f"Shape element {index} must have type `constexpr[int]`, "
-                    f"got `constexpr[{type(extent)}]`"
-                )
+                raise TypeError(f"Shape element {index} must have type `constexpr[int]`, "
+                                f"got `constexpr[{type(extent)}]`")
             if extent <= 0:
                 raise ValueError(f"Shape element {index} must be positive")
             if index > 0 and not is_power_of_two(extent):
-                raise ValueError(
-                    f"Shape element {index} must be a power of 2"
-                )
+                raise ValueError(f"Shape element {index} must be a power of 2")
         numel = prod(shape)
         if numel > TRITON_MAX_TENSOR_NUMEL:
-            raise ValueError(
-                f"numel ({numel}) exceeds triton maximum tensor numel "
-                f"({TRITON_MAX_TENSOR_NUMEL})"
-            )
+            raise ValueError(f"numel ({numel}) exceeds triton maximum tensor numel "
+                             f"({TRITON_MAX_TENSOR_NUMEL})")
         self.element_ty = element_ty
         self.shape = shape
         self.numel = numel

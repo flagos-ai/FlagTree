@@ -778,6 +778,7 @@ class TestCachePolicyFrontend:
         policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
         policy = tl.constexpr(policy) if wrapped else policy
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
+
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_preserves_allocation_shape(self):
         buffer, semantic = self._make_buffer([32, 1024])
@@ -796,7 +797,7 @@ class TestCachePolicyFrontend:
     @pytest.mark.parametrize(
         ("offsets", "shape", "message"),
         [
-            ((0,), (8, 1024), "match the buffer rank"),
+            ((0, ), (8, 1024), "match the buffer rank"),
             ((25, 0), (8, 1024), "outside extent"),
             ((4, 0), (8, 1024), "aligned power-of-two"),
             ((0, 0), (6, 1024), "aligned power-of-two"),
