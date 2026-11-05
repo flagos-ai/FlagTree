@@ -4126,17 +4126,19 @@ struct XPUTLECopyG2LOpConversion
     // TAIL CLAMP (2026-10-14): for a RANK-1 smem buffer (the loop-invariant
     // weight vectors this scope targets) the staging read is clamped to the
     // descriptor's real extent `adaptor.getShapes()[0]`, so `N < W` no longer
-    // requires the caller to pad the GM array. The SM slots in `[N, W)` are left
-    // untouched (whatever was there before), which is safe for the layernorm
-    // data flow: `bias` feeds the reduce but only through a `tl.where(r0_mask,
+    // requires the caller to pad the GM array. The SM slots in `[N, W)` are
+    // left untouched (whatever was there before), which is safe for the
+    // layernorm data flow: `bias` feeds the reduce but only through a
+    // `tl.where(r0_mask,
     // ...)` that zeroes padding columns, and `gamma`/`beta` are applied after
     // the reduce, on columns the output descriptor clamps away at the tensor
     // edge. Callers that need the padding region ZEROED must still pre-pad.
     //
-    // Rank >= 2 keeps the old behaviour (exactly product(buffer_shape) elements,
-    // caller pads): the staging DMA is one contiguous block cut across cores, so
-    // clamping an inner dimension would leave holes rather than a tail -- that
-    // needs per-dimension segment planning like planTileSegmentsFromLayout.
+    // Rank >= 2 keeps the old behaviour (exactly product(buffer_shape)
+    // elements, caller pads): the staging DMA is one contiguous block cut
+    // across cores, so clamping an inner dimension would leave holes rather
+    // than a tail -- that needs per-dimension segment planning like
+    // planTileSegmentsFromLayout.
     if (Operation *allocOp = getTLESmemAlloc(op.getDstBuffer())) {
       auto memDescTy =
           cast<triton::gpu::MemDescType>(op.getDstBuffer().getType());
@@ -4685,8 +4687,8 @@ static unsigned tleBroadcastCols(Value buffer, Type resultTy) {
     return 0;
   if (memTy.getShape().size() != 1 || resTy.getRank() != 2)
     return 0;
-  auto clusterLayout = dyn_cast_if_present<triton::xpu::ClusterLayoutAttr>(
-      resTy.getEncoding());
+  auto clusterLayout =
+      dyn_cast_if_present<triton::xpu::ClusterLayoutAttr>(resTy.getEncoding());
   if (!clusterLayout)
     return 0;
   auto sizePerCore = clusterLayout.getSizePerCore();
@@ -4871,10 +4873,9 @@ struct XPUTLELocalPtrOpConversion
     for (unsigned i = 0; i < numElems; ++i) {
       // `slotTy` fixes the width of one step, `tleSlotIndex` which step this
       // core and tile iteration takes; both are in slot units.
-      Value ptr = gep(
-          basePtrTy, slotTy, lmBase,
-          tleSlotIndex(loc, op, adaptor.getLoopIndex(), numElems, i, rewriter,
-                       ptrBcastCols));
+      Value ptr = gep(basePtrTy, slotTy, lmBase,
+                      tleSlotIndex(loc, op, adaptor.getLoopIndex(), numElems, i,
+                                   rewriter, ptrBcastCols));
       resultPtrs.push_back(ptr);
     }
 
@@ -5418,10 +5419,9 @@ struct XPUTLEVLoadOpConversion
     auto basePtrTy = LLVM::LLVMPointerType::get(ctx, 0);
     SmallVector<Value> loadedVals;
     for (unsigned i = 0; i < numVecs; ++i) {
-      Value ptr = gep(
-          basePtrTy, llvmVecTy, lmBase,
-          tleSlotIndex(loc, op, adaptor.getLoopIndex(), numVecs, i, rewriter,
-                       bcastCols));
+      Value ptr = gep(basePtrTy, llvmVecTy, lmBase,
+                      tleSlotIndex(loc, op, adaptor.getLoopIndex(), numVecs, i,
+                                   rewriter, bcastCols));
       Value v = load(llvmVecTy, ptr);
       loadedVals.push_back(v);
     }

@@ -149,7 +149,8 @@ static bool isElfStackSizeOOB(std::string ElfObject, uint32_t Margin = 0) {
     // payload is linked in at the ELF stage -- carries such a section symbol,
     // and it matches the substring above with size 0, which would trip the
     // `!= 4` check below. Only the STT_OBJECT `XPU_KERNEL_STACK_SIZE_<kernel>`
-    // symbol holds the u32 stack size, so skip section symbols and keep scanning.
+    // symbol holds the u32 stack size, so skip section symbols and keep
+    // scanning.
     if (object::ELFSymbolRef(Symbol).getELFType() == llvm::ELF::STT_SECTION) {
       continue;
     }

@@ -750,7 +750,8 @@ public:
       return; // already tiled by this pass -- not a failure
     } else if (!this->budgetTiling) {
       if (numCol > numUnroll && numCol % numUnroll != 0)
-        why = "factor-not-divisor"; // wants tiling, factor does not divide width
+        why =
+            "factor-not-divisor"; // wants tiling, factor does not divide width
       else
         return; // numCol <= numUnroll: no tiling needed
     } else {
@@ -1758,8 +1759,7 @@ public:
           // same idiom handleTransInLoop uses in
           // TritonXPU/Transforms/Legalize.cpp.
           if (auto transOp = dyn_cast<triton::TransOp>(op)) {
-            auto srcTy =
-                dyn_cast<RankedTensorType>(transOp.getSrc().getType());
+            auto srcTy = dyn_cast<RankedTensorType>(transOp.getSrc().getType());
             auto order = transOp.getOrder();
             if (srcTy && order.size() == srcTy.getShape().size()) {
               shape.clear();
@@ -1942,8 +1942,9 @@ public:
   // so kernels that already compile are unaffected.
   void sliceSplatConstOperands(MLIRContext *context, OpBuilder &builder,
                                Location &loc, Operation *op, int64_t iterNum) {
-    // vvsubf/vvaddf/... carry SameOperandsAndResultType; vcmpf requires lhs==rhs
-    // only via its lowering assertion (no MLIR trait), so name it explicitly.
+    // vvsubf/vvaddf/... carry SameOperandsAndResultType; vcmpf requires
+    // lhs==rhs only via its lowering assertion (no MLIR trait), so name it
+    // explicitly.
     bool sameOperandTy = op->hasTrait<OpTrait::SameTypeOperands>() ||
                          op->hasTrait<OpTrait::SameOperandsAndResultType>() ||
                          isa<triton::xpu::VCmpFOp>(op);
@@ -1957,7 +1958,8 @@ public:
       if (!isSliceInvariant(op->getOperand(i)))
         continue; // only a splat constant may be narrowed via extract_slice
       auto tensorTy = dyn_cast<RankedTensorType>(op->getOperand(i).getType());
-      if (!tensorTy || !isa<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding()))
+      if (!tensorTy ||
+          !isa<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding()))
         continue; // getExtractedOperand needs a ClusterLayout; else leave as-is
       auto extractSliceOp =
           getExtractedOperand(context, builder, loc, op, i, iterNum);

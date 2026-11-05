@@ -398,16 +398,6 @@ def compile(src, target=None, options=None, _env_vars=None):
         # from ttir.
         first_stage = list(stages.keys()).index("ttir") + 1
 
-    # A backend may decide that part of this kernel belongs on a different core
-    # type and has to be compiled through the other pipeline. It then compiles
-    # the pieces itself (re-entering compile() with .ttir entry points) and
-    # returns a kernel-like object that launches them in order; None keeps the
-    # single-kernel path untouched.
-    split = getattr(backend, "try_split_kernel", None)
-    if split is not None and src.ext == "ttir" and not ir_source:
-        if (split_kernel := split(module, options, src, target, raw_options)) is not None:
-            return split_kernel
-
     if target.backend in ("cuda", "xpu", os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda")):
         # Match the same set as XPUBackend.supports_target (configured string
         # via TRITON_XPU_TARGET_BACKEND plus the "cuda"/"xpu" aliases) so the

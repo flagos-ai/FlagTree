@@ -63,16 +63,16 @@ template <> struct is_xpu_memory_op<triton::xpu::SM2GMMaskOp> {
 // The full combine-region op set for reduce/scan vectorization. The integer ops
 // (cmpi, int arithmetic, signed/unsigned int max/min, int div) and the
 // NaN-propagating float max/min were once gated to TLE kernels only; that gate
-// is lifted (KTC-148) -- they are admitted for every kernel. The retype Cases in
-// Vectorize.cpp and the emitCombineOp arms in ReduceOpToLLVM.cpp already list
-// them, and the select element-type gate in VectorizabilityAnalysis matches what
-// VSelectOpConversion lowers (F16/F32/i32; i8/i16 have no vector select).
+// is lifted (KTC-148) -- they are admitted for every kernel. The retype Cases
+// in Vectorize.cpp and the emitCombineOp arms in ReduceOpToLLVM.cpp already
+// list them, and the select element-type gate in VectorizabilityAnalysis
+// matches what VSelectOpConversion lowers (F16/F32/i32; i8/i16 have no vector
+// select).
 #define COMBINE_OP                                                             \
-  COMBINE_BINARY_OP, arith::CmpFOp, arith::CmpIOp, arith::AddIOp,               \
-      arith::SubIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,             \
-      arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp, arith::MinimumFOp,     \
+  COMBINE_BINARY_OP, arith::CmpFOp, arith::CmpIOp, arith::AddIOp,              \
+      arith::SubIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,            \
+      arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp, arith::MinimumFOp,    \
       arith::DivSIOp, arith::DivUIOp
-
 
 enum class OffsetState {
   Unknown = -1,

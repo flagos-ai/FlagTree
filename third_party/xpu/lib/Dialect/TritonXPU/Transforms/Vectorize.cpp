@@ -659,8 +659,8 @@ struct TritonXPUVectorizePass
           .Case<triton::ExpandDimsOp>([&](auto expandOp) {
             auto newVectorizedTensorTy =
                 getVectorType(expandOp.getResult().getType());
-             expandOp.getResult().setType(newVectorizedTensorTy);
-           })
+            expandOp.getResult().setType(newVectorizedTensorTy);
+          })
           .Case<triton::xpu::ScanOp>([&](auto scanOp) {
             // Width-preserving pass-through: the results follow getVectorType
             // like every other op in the tree, so the users above (truncf,
@@ -679,9 +679,9 @@ struct TritonXPUVectorizePass
                 // Derive from the freshly retyped result, not the operand:
                 // producers may or may not have been retyped yet, the result
                 // was scalar until two lines ago either way.
-                auto vecTy = cast<RankedTensorType>(
-                                 scanOp->getResult(i).getType())
-                                 .getElementType();
+                auto vecTy =
+                    cast<RankedTensorType>(scanOp->getResult(i).getType())
+                        .getElementType();
                 vecSize = cast<VectorType>(vecTy).getNumElements();
                 auto arg1 = block.getArguments()[i];
                 auto arg2 = block.getArguments()[inputSize + i];
@@ -702,8 +702,8 @@ struct TritonXPUVectorizePass
                     auto splat = DenseElementsAttr::get(
                         cast<ShapedType>(Type(newVecTy)),
                         ArrayRef<Attribute>{cstOp.getValue()});
-                    use.set(builder.create<arith::ConstantOp>(
-                        cstOp.getLoc(), newVecTy, splat));
+                    use.set(builder.create<arith::ConstantOp>(cstOp.getLoc(),
+                                                              newVecTy, splat));
                   }
                 }
               }
@@ -1628,9 +1628,9 @@ struct TritonXPUVectorizePass
                  << ",none=" << cover[unsigned(VecTyCoverage::None)] << "}"
                  << " mat{in=" << sp.matIn << ",out=" << sp.matOut << "}"
                  << " p4{price=" << sp.price << ",save=" << sp.save
-                 << ",core=" << sp.coreCost
-                 << ",net=" << sp.net() << ",unpriced=" << sp.unpricedEdge
-                 << "/" << sp.unpricedTerm << ",free=" << sp.free << "}"
+                 << ",core=" << sp.coreCost << ",net=" << sp.net()
+                 << ",unpriced=" << sp.unpricedEdge << "/" << sp.unpricedTerm
+                 << ",free=" << sp.free << "}"
                  << " unpricedEdgeTys={";
     const char *usep = "";
     for (auto &entry : unpricedTys) {
@@ -2804,19 +2804,18 @@ struct TritonXPUVectorizePass
             for (auto &op : block) {
               TypeSwitch<Operation *>(&op)
                   .Case<REDUCE_COMBINE_OP, arith::SubFOp, arith::DivFOp,
-                        arith::SelectOp>(
-                      [&](auto redComOp) {
-                        // The non-COMBINE_OP kinds are only admitted by
-                        // reduceCombineIsVectorizable while the region lowering
-                        // is on (TRITONXPU_REDUCE_REGION unset or 1), so
-                        // reaching them here implies the region-interpreting
-                        // lowering is in use.
-                        for (auto res : redComOp->getResults()) {
-                          auto elemTy = res.getType();
-                          VectorType vecType = VectorType::get(vecSize, elemTy);
-                          res.setType(vecType);
-                        }
-                      })
+                        arith::SelectOp>([&](auto redComOp) {
+                    // The non-COMBINE_OP kinds are only admitted by
+                    // reduceCombineIsVectorizable while the region lowering
+                    // is on (TRITONXPU_REDUCE_REGION unset or 1), so
+                    // reaching them here implies the region-interpreting
+                    // lowering is in use.
+                    for (auto res : redComOp->getResults()) {
+                      auto elemTy = res.getType();
+                      VectorType vecType = VectorType::get(vecSize, elemTy);
+                      res.setType(vecType);
+                    }
+                  })
                   .Case<arith::ConstantOp>([&](auto cstOp) {
                     // Left scalar on purpose: emitCombineOp splats it to the
                     // vector shape of whichever op consumes it.
@@ -3027,8 +3026,8 @@ private:
   // the two sides of the A/B differ (ReduceVec hardcoded true made both sides
   // byte-identical). Mirrors TRITONXPU_SCAN_VEC's default-on semantics.
   bool ReduceVec = mlir::triton::tools::isEnvValueBool(
-                        mlir::triton::tools::getStrEnv("TRITONXPU_REDUCE_VEC"))
-                        .value_or(true);
+                       mlir::triton::tools::getStrEnv("TRITONXPU_REDUCE_VEC"))
+                       .value_or(true);
   bool BF16ToFP32VecOpt = true;
 };
 

@@ -1,11 +1,11 @@
+#include "CombineEmit.h"
 #include "PatternTritonXPUOpToLLVM.h"
 #include "Utility.h"
-#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Analysis/VectorizabilityAnalysis.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // LLVM22 dragon-style macros for XPU only
-#include "CombineEmit.h"
-#include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/TypeSwitch.h"
 #include <cfloat>
@@ -791,9 +791,10 @@ private:
                         body.without_terminator().end()) == 1)
         plainAdd = isa<arith::AddFOp, arith::AddIOp>(body.front());
       if (!plainAdd && !isa<FloatType>(netElemTy))
-        netEligible = false; // masked (non-add) collapse needs the float vvor;
-                             // i32 max/min stay serial (network net-negative,
-                             // KTC-148 asm A/B). Plain int add still nets below.
+        netEligible =
+            false; // masked (non-add) collapse needs the float vvor;
+                   // i32 max/min stay serial (network net-negative,
+                   // KTC-148 asm A/B). Plain int add still nets below.
     }
     if (netEligible) {
       // Shared masked lane-prefix network (with the scan lowering); the total

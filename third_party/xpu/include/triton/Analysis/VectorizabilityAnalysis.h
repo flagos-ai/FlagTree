@@ -70,7 +70,7 @@ using OperationTree = llvm::SetVector<mlir::Operation *>;
 // terminator, and the shared region-admission walk visits it (its operand
 // is the combine result, defined in-block). Terminators carry no results,
 // so every results-touching consumer is a no-op on them.
-#define REDUCE_COMBINE_OP \
+#define REDUCE_COMBINE_OP                                                      \
   COMBINE_OP, triton::xpu::ReduceReturnOp, triton::xpu::ScanReturnOp
 
 // The scalar -> vector op table, single-sourced (redesign-v2.md §3.1,
@@ -345,8 +345,8 @@ public:
       std::function<bool(triton::xpu::ScanOp, Type)> scanOperandFits = nullptr)
       : ReduceVec(reduceVec), dumpFlag(dumpFlag),
         reduceOperandFits(std::move(reduceOperandFits)),
-        fitOracle(std::move(fitOracle)), tleSmemVec(tleSmemVec),
-        tleVec(tleVec), scanOperandFits(std::move(scanOperandFits)) {}
+        fitOracle(std::move(fitOracle)), tleSmemVec(tleSmemVec), tleVec(tleVec),
+        scanOperandFits(std::move(scanOperandFits)) {}
 
   // Every op that can be retyped if `root` is, or an empty result when the
   // closure cannot be formed. The closure is bidirectional (operands and users)
