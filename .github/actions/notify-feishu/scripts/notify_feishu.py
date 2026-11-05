@@ -30,7 +30,7 @@ domain knowledge; this only delivers.
 Takes either a notification JSON file:
 
     {"title": "...", "color": "red", "lines": [["Backend", "nvidia"], ...],
-     "link": {"text": "Open run", "url": "https://..."}}
+     "links": [{"text": "Open run", "url": "https://..."}, ...]}
 
 or the same fields on the command line.
 
@@ -76,12 +76,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--chat-id", default=os.environ.get("FEISHU_CHAT_ID", ""),
                         help="Target chat_id (oc_...). Defaults to $FEISHU_CHAT_ID")
+    parser.add_argument(
+        "--open-id", default=os.environ.get("FEISHU_OPEN_ID", ""),
+        help=("Target user open_id(s) (ou_...) for a direct message, comma "
+              "separated for several. Takes precedence over --chat-id. "
+              "Defaults to $FEISHU_OPEN_ID"))
     parser.add_argument("--notification", type=Path, help="Path to a notification JSON file")
     parser.add_argument("--title", default="", help="Card title")
     parser.add_argument("--color", default="", help=f"Header theme, one of: {', '.join(COLORS)}")
     parser.add_argument("--text", default="", help="Body text, used when no --notification is given")
     parser.add_argument("--link-url", default="", help="URL for the button at the card footer")
     parser.add_argument("--link-text", default="Open", help="Label for that button")
+    parser.add_argument("--link2-url", default="", help="URL for a second button, when there is one")
+    parser.add_argument("--link2-text", default="Open", help="Label for the second button")
     parser.add_argument("--strict", action="store_true", help="Exit non-zero when sending fails")
     parser.add_argument("--dry-run", action="store_true", help="Print the card that would be sent and exit")
     parser.add_argument("--list-chats", action="store_true", help="List the chats this bot belongs to, then exit")
@@ -154,18 +161,25 @@ def build_card(spec: Dict) -> Dict:
     if note:
         elements.append({"tag": "note", "elements": [{"tag": "lark_md", "content": str(note)}]})
 
-    link = spec.get("link") or {}
-    if link.get("url"):
-        elements.append({
-            "tag":
-            "action",
-            "actions": [{
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": str(link.get("text") or "Open")},
-                "url": str(link["url"]),
-                "type": "primary",
-            }],
+    # `link` for one button, `links` for a row of them. The first is primary
+    # so there is still an obvious default action among several.
+    links = spec.get("links") or []
+    if not links:
+        single = spec.get("link") or {}
+        if single:
+            links = [single]
+    buttons = []
+    for index, item in enumerate(links):
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        buttons.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": str(item.get("text") or "Open")},
+            "url": str(item["url"]),
+            "type": "primary" if index == 0 else "default",
         })
+    if buttons:
+        elements.append({"tag": "action", "actions": buttons})
 
     return {
         "config": {"wide_screen_mode": True},
@@ -186,8 +200,13 @@ def spec_from_args(args: argparse.Namespace) -> Dict:
         spec["color"] = args.color
     if args.text:
         spec["text"] = args.text
+    links = []
     if args.link_url:
-        spec["link"] = {"text": args.link_text, "url": args.link_url}
+        links.append({"text": args.link_text, "url": args.link_url})
+    if args.link2_url:
+        links.append({"text": args.link2_text, "url": args.link2_url})
+    if links:
+        spec["links"] = links
     return spec
 
 
@@ -233,8 +252,17 @@ def main() -> int:
         print(json.dumps(card, ensure_ascii=False, indent=2))
         return 0
 
-    if not args.chat_id:
-        print("[WARN] No chat id given, nothing was sent.")
+    # A direct message wins over a chat: a caller that resolved a person meant
+    # to reach that person, not to fall back to a room full of others. Several
+    # ids are allowed, since one failure can concern more than one person.
+    if args.open_id:
+        receive_id_type = "open_id"
+        recipients = [p for p in args.open_id.replace(",", " ").split() if p]
+    elif args.chat_id:
+        receive_id_type = "chat_id"
+        recipients = [args.chat_id]
+    else:
+        print("[WARN] No recipient given, nothing was sent.")
         return 1 if args.strict else 0
 
     if not fc.credentials_present():
@@ -243,16 +271,36 @@ def main() -> int:
 
     try:
         token = fc.get_token()
-        message_id = fc.send_message(token, args.chat_id, card)
     except fc.FeishuError as e:
-        # A bot that was never added to the chat fails here, and the API's own
-        # message does not say so. Name the likely cause.
-        print(f"[ERROR] Sending failed: {e}")
-        print("[HINT] If this is a permission error, check that the bot was "
-              "added to the chat: chat settings -> Group Bots -> Add Bot.")
+        print(f"[ERROR] Could not authenticate: {e}")
         return 1 if args.strict else 0
 
-    print(f"[INFO] Sent message {message_id} to {args.chat_id}")
+    # One recipient failing must not cost the others their message, so each
+    # send is reported on its own and only the tally decides the exit code.
+    sent, failed = 0, 0
+    for recipient in recipients:
+        try:
+            message_id = fc.send_message(token, recipient, card, receive_id_type=receive_id_type)
+        except fc.FeishuError as e:
+            # The API reports both "the bot is not in that chat" and "this user
+            # has never talked to the bot" as a permission error without
+            # saying which.
+            print(f"[ERROR] Sending to {recipient} failed: {e}")
+            if receive_id_type == "open_id":
+                print("[HINT] If this is a permission error, the recipient may "
+                      "never have opened a conversation with the bot. Sending "
+                      "them a message in Feishu once is enough.")
+            else:
+                print("[HINT] If this is a permission error, check that the bot "
+                      "was added to the chat: chat settings -> Group Bots -> "
+                      "Add Bot.")
+            failed += 1
+            continue
+        print(f"[INFO] Sent message {message_id} to {recipient}")
+        sent += 1
+
+    if failed and args.strict:
+        return 1
     return 0
 
 
