@@ -45,6 +45,9 @@ namespace {
 
 namespace ttg = mlir::triton::gpu;
 
+// Address spaces of tt.ptr: global memory, and shared memory for the pointers
+// of tle.local_pointers.
+constexpr int kGlobalMemoryAddressSpace = 1;
 constexpr int kSharedMemoryAddressSpace = 3;
 
 struct RematerializedValue {
@@ -60,8 +63,8 @@ struct RematerializationCacheEntry {
 
 struct RematerializationState {
   SmallVector<RematerializationCacheEntry> cache;
-  // Re-issue a local pointer load only within its block and with no write in
-  // between (keep-smem-read-order).
+  // Re-issue a local pointer load only within its block and with nothing in
+  // between that may write its buffer (keep-smem-read-order).
   bool keepSmemReadOrder = false;
 };
 
@@ -70,6 +73,52 @@ static Value stripConvertLayouts(Value value) {
   while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
     current = cvt.getSrc();
   return current;
+}
+
+// The local_alloc a shared memory descriptor is a view of, or null when the
+// descriptor cannot be traced to one: a block argument, or a view whose first
+// operand is not its source descriptor. The shared memory alias analysis
+// reads the source of a view from its first operand too.
+static ttg::LocalAllocOp findViewedAlloc(Value memDesc) {
+  while (Operation *def = memDesc.getDefiningOp()) {
+    if (auto alloc = dyn_cast<ttg::LocalAllocOp>(def))
+      return alloc;
+    if (!def->hasTrait<OpTrait::MemDescViewTrait>() ||
+        def->getNumOperands() == 0 ||
+        !isa<ttg::MemDescType>(def->getOperand(0).getType()))
+      return nullptr;
+    memDesc = def->getOperand(0);
+  }
+  return nullptr;
+}
+
+// Whether an effect may write the shared memory of `alloc` (null when the
+// buffer read is not known). A write through a descriptor of another local
+// allocation, or of another memory space, is of a different buffer. A write
+// through a pointer is of shared memory in the shared address space and of
+// global memory in the global one; a pointer of any other address space, and
+// a write without a value, may be of anything.
+static bool mayWriteSharedAlloc(const MemoryEffects::EffectInstance &effect,
+                                ttg::LocalAllocOp alloc) {
+  if (isa<MemoryEffects::Read, MemoryEffects::Allocate, MemoryEffects::Free>(
+          effect.getEffect()))
+    return false;
+  Value value = effect.getValue();
+  if (!value)
+    return true;
+  Type type = value.getType();
+  if (auto memDescTy = dyn_cast<ttg::MemDescType>(type)) {
+    if (!isa_and_nonnull<ttg::SharedMemorySpaceAttr>(
+            memDescTy.getMemorySpace()))
+      return false;
+    auto written = findViewedAlloc(value);
+    return !alloc || !written || written == alloc;
+  }
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    type = tensorTy.getElementType();
+  if (auto ptrTy = dyn_cast<triton::PointerType>(type))
+    return ptrTy.getAddressSpace() != kGlobalMemoryAddressSpace;
+  return true;
 }
 
 static Value stripIndexValueWrappers(Value value) {
@@ -421,25 +470,6 @@ rematerializeLocalPointerLoad(triton::LoadOp load, RankedTensorType targetTy,
       sourceTy.getElementType() != targetTy.getElementType())
     return std::nullopt;
 
-#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
-  // The load is re-issued at the conversion: keep it in its block, with no
-  // write in between.
-  if (state.keepSmemReadOrder) {
-    Block *insertBlock = builder.getInsertionBlock();
-    if (!insertBlock || insertBlock != load->getBlock())
-      return std::nullopt;
-    for (Operation *op = load->getNextNode();
-         op && op != &*builder.getInsertionPoint(); op = op->getNextNode()) {
-      auto effects = getEffectsRecursively(op);
-      if (!effects || llvm::any_of(*effects, [](const auto &effect) {
-            return !isa<MemoryEffects::Read, MemoryEffects::Allocate,
-                        MemoryEffects::Free>(effect.getEffect());
-          }))
-        return std::nullopt;
-    }
-  }
-#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
-
   Value ptr = stripConvertLayouts(load.getPtr());
   auto localPointers = ptr.getDefiningOp<tle::LocalPointersOp>();
   if (!localPointers)
@@ -448,6 +478,24 @@ rematerializeLocalPointerLoad(triton::LoadOp load, RankedTensorType targetTy,
   auto memDescTy = dyn_cast<ttg::MemDescType>(localPointers.getSrc().getType());
   if (!memDescTy || memDescTy.getElementType() != targetTy.getElementType())
     return std::nullopt;
+
+  // The load is re-issued at the conversion: it stays in its block, with
+  // nothing in between that may write the buffer it reads (an op whose
+  // effects are unknown counts as a write).
+  if (state.keepSmemReadOrder) {
+    Block *insertBlock = builder.getInsertionBlock();
+    if (!insertBlock || insertBlock != load->getBlock())
+      return std::nullopt;
+    ttg::LocalAllocOp alloc = findViewedAlloc(localPointers.getSrc());
+    for (Operation *op = load->getNextNode();
+         op && op != &*builder.getInsertionPoint(); op = op->getNextNode()) {
+      auto effects = getEffectsRecursively(op);
+      if (!effects || llvm::any_of(*effects, [&](const auto &effect) {
+            return mayWriteSharedAlloc(effect, alloc);
+          }))
+        return std::nullopt;
+    }
+  }
 
   SmallVector<Value> indices;
   indices.reserve(localPointers.getIndices().size());
