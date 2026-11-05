@@ -125,6 +125,16 @@ def ldexp(arg0, arg1, _semantic=None):
 
 @core.extern
 def pow(arg0, arg1, _semantic=None):
+    int_dtypes = (core.dtype("int1"), core.dtype("int8"), core.dtype("int16"),
+                  core.dtype("int32"), core.dtype("int64"),
+                  core.dtype("uint8"), core.dtype("uint16"),
+                  core.dtype("uint32"), core.dtype("uint64"))
+    arg0 = _semantic.to_tensor(arg0)
+    arg1 = _semantic.to_tensor(arg1)
+    if arg0.dtype in int_dtypes:
+        arg0 = _semantic.cast(arg0, core.dtype("fp32"))
+    if arg1.dtype in int_dtypes:
+        arg1 = _semantic.cast(arg1, core.dtype("fp32"))
     if triton_enable_libdevice_simt() and is_compile_on_910_95:
         return core.extern_elementwise("", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("__hmf_pow_fp32", core.dtype("fp32")),
