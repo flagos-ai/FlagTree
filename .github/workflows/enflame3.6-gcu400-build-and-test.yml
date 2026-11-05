@@ -27,6 +27,10 @@ on:
         description: Source commit for the GCU400 import and full-suite control
         required: true
         default: 65094ea8defe55d449b759130fd71da7dcaf07b6
+      build_control:
+        description: Rebuild the source control or trace its already installed compiler
+        required: true
+        default: 'true'
   schedule:
     - cron: '40 20 * * *'
   push:
@@ -70,7 +74,7 @@ jobs:
           backend: enflame
 
       - name: Cleanup FlagTree Environment
-        if: steps.check_backend.outputs.should_skip != 'true'
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && inputs.build_control != 'false' }}
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Set control target branch
@@ -78,7 +82,7 @@ jobs:
         run: echo 'TARGET_BRANCH=main' >> "$GITHUB_ENV"
 
       - name: Build FlagTree
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && inputs.build_control != 'false' }}
         shell: bash
         run: |
           set -x
@@ -119,8 +123,26 @@ jobs:
           set -x
 
           ## triton unit test
-          python3 -m pytest third_party/enflame/python/test/unit \
-              --ignore=third_party/enflame/python/test/unit/language/test_core.py
+          python3 -u - <<'PY'
+          import faulthandler
+          import sys
+          import threading
+          import torch
+          import triton
+          import triton._C.libtriton
+          faulthandler.enable(all_threads=True)
+          def profile(frame, event, arg):
+              filename = frame.f_code.co_filename
+              if event not in ("call", "c_call"):
+                  return
+              target = str(getattr(arg, "__module__", "")) + "." + str(getattr(arg, "__qualname__", "")) if event == "c_call" else frame.f_code.co_name
+              if any(part in filename for part in ("torch_gcu", "/triton/backends/enflame/", "/triton/runtime/driver")) or "gcu" in target.lower():
+                  print("TRACE_GCU", event, filename, frame.f_lineno, target, flush=True)
+          sys.setprofile(profile)
+          threading.setprofile(profile)
+          import pytest
+          raise SystemExit(pytest.main(["third_party/enflame/python/test/unit", "--ignore=third_party/enflame/python/test/unit/language/test_core.py", "-s", "-p", "no:faulthandler"]))
+          PY
 
           ## tle unit test
           python3 -m pytest python/test/tle \
