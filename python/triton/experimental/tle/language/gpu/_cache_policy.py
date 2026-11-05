@@ -50,6 +50,9 @@ _BACKEND_POLICIES = {
     "hcu": (".hcu", {
         POINTER: ("CachePolicy", ),
     }),
+    "metax": (".metax", {
+        POINTER: ("CachePolicy", ),
+    }),
 }
 
 _NOT_SUPPORTED = "copy cache_policy is not supported by this backend/path"

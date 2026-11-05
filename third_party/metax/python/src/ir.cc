@@ -291,6 +291,9 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .value("CS", CacheModifier::CS)
       .value("WT", CacheModifier::WT)
       .value("CV", CacheModifier::CV)
+      .value("LU", CacheModifier::LU)
+      .value("NC", CacheModifier::NC)
+      .value("BL", CacheModifier::BL)
       .export_values();
 
   py::enum_<MemSemantic>(m, "MEM_SEMANTIC", py::module_local())
@@ -310,6 +313,15 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .value("NORMAL", EvictionPolicy::NORMAL)
       .value("EVICT_FIRST", EvictionPolicy::EVICT_FIRST)
       .value("EVICT_LAST", EvictionPolicy::EVICT_LAST)
+      .value("L1_EVICT_NORMAL", EvictionPolicy::L1_EVICT_NORMAL)
+      .value("L1_EVICT_FIRST", EvictionPolicy::L1_EVICT_FIRST)
+      .value("L1_EVICT_LAST", EvictionPolicy::L1_EVICT_LAST)
+      .value("L1_EVICT_UNCHANGED", EvictionPolicy::L1_EVICT_UNCHANGED)
+      .value("L1_NO_ALLOCATE", EvictionPolicy::L1_NO_ALLOCATE)
+      .value("L2_EVICT_NORMAL", EvictionPolicy::L2_EVICT_NORMAL)
+      .value("L2_EVICT_FIRST", EvictionPolicy::L2_EVICT_FIRST)
+      .value("L2_EVICT_LAST", EvictionPolicy::L2_EVICT_LAST)
+      .value("L2_EVICT_UNCHANGED", EvictionPolicy::L2_EVICT_UNCHANGED)
       .export_values();
 
   py::enum_<RMWOp>(m, "ATOMIC_OP", py::module_local())

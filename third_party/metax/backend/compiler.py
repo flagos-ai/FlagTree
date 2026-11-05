@@ -379,15 +379,21 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, capability):
+        src, copy_cache_helpers = metax.split_copy_cache_helpers(src)
         mlir_opt_path = knobs.metax.mlir_opt_path
         opted_mlir = metax.mlir_opt(src, mlir_opt_path)
         mlir_translate_path = knobs.metax.mlir_translate_path
         llir = metax.translate_mlir_to_llir(opted_mlir, mlir_translate_path)
-        if options.extern_libs:
-            paths = [path for (name, path) in options.extern_libs]
+        if options.extern_libs or copy_cache_helpers:
+            paths = [path for (name, path) in (options.extern_libs or ())]
             maca_path = os.environ.get('MACA_PATH')
             assert maca_path, "Not found MACA_PATH"
-            llir = metax.link_extern_libs(llir, paths, maca_path)
+            with tempfile.TemporaryDirectory(prefix="flagtree-metax-copy-") as directory:
+                if copy_cache_helpers:
+                    helper_path = Path(directory) / "copy-cache.ll"
+                    helper_path.write_text(copy_cache_helpers)
+                    paths.append(str(helper_path))
+                llir = metax.link_extern_libs(llir, paths, maca_path)
         metadata["name"] = maca_get_kernel_name(llir)
         return llir
 
