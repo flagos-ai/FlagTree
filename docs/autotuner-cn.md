@@ -7,7 +7,7 @@
 - 用字典列表定义候选参数，支持 `key_fn` 和 `prune_fn`。
 - 本地调优与指定通信组内的联合调优。
 - 分布式候选参数列表取交集、执行参数一致性检查和统一缓存命中决策。
-- 自动缓存调优结果到 FLAGTREE_AUTOTUNE_CACHE_DIR 环境变量或者调优器参数 cache_dir 指定的目录，默认为 ~/.flagtree/autotune/local|distributed/
+- 自动缓存调优结果到 FLAGTREE_AUTOTUNE_CACHE_DIR 环境变量指定的目录或者调优器参数 cache_dir 指定的目录，默认为 ~/.flagtree/autotune/local | distributed/
 
 调优器不会自动识别函数是否包含分布式通信。函数涉及多个 rank 协作时，必须显式传入 `autotune_pg` 进程组参数进行分布式调优。
 
