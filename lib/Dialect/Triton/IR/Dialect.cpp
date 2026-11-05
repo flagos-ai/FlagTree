@@ -95,7 +95,7 @@ Value TritonInlinerInterface::handleArgument(
     return argument;
   // Promises apply to this call's value, not every use of the caller operand.
   auto hinted = triton::BitcastOp::create(builder, call->getLoc(),
-                                         argument.getType(), argument);
+                                          argument.getType(), argument);
   for (NamedAttribute hint : hints)
     hinted->setAttr(hint.getName(), hint.getValue());
   return hinted;

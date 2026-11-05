@@ -15,7 +15,8 @@ namespace {
 
 void expectSameMembership(StringRef source) {
   MLIRContext context;
-  context.loadDialect<arith::ArithDialect, func::FuncDialect, scf::SCFDialect>();
+  context
+      .loadDialect<arith::ArithDialect, func::FuncDialect, scf::SCFDialect>();
   auto module = parseSourceString<ModuleOp>(source, &context);
   ASSERT_TRUE(module);
   module->walk([&](Operation *root) {
@@ -25,9 +26,11 @@ void expectSameMembership(StringRef source) {
       return;
     auto reference = mlir::getSlice(root);
     auto actual = getCoalescingSlice(root);
-    ASSERT_EQ(reference.size(), actual.size()) << root->getName().getStringRef().str();
+    ASSERT_EQ(reference.size(), actual.size())
+        << root->getName().getStringRef().str();
     for (Operation *member : reference)
-      EXPECT_TRUE(actual.contains(member)) << member->getName().getStringRef().str();
+      EXPECT_TRUE(actual.contains(member))
+          << member->getName().getStringRef().str();
   });
 }
 
@@ -129,7 +132,8 @@ TEST(CoalescingSlice, RepeatedOperandsAndManyOverlappingRoots) {
 
 TEST(CoalescingSlice, WhileCarriedArgumentsConnectBothRegions) {
   MLIRContext context;
-  context.loadDialect<arith::ArithDialect, func::FuncDialect, scf::SCFDialect>();
+  context
+      .loadDialect<arith::ArithDialect, func::FuncDialect, scf::SCFDialect>();
   auto module = parseSourceString<ModuleOp>(R"mlir(
     module {
       func.func @loop(%initial: i32, %limit: i32) -> i32 {
@@ -151,7 +155,8 @@ TEST(CoalescingSlice, WhileCarriedArgumentsConnectBothRegions) {
         return %sum : i32
       }
     }
-  )mlir", &context);
+  )mlir",
+                                            &context);
   ASSERT_TRUE(module);
   auto function = module->lookupSymbol<func::FuncOp>("loop");
   auto loop = *function.getOps<scf::WhileOp>().begin();
@@ -162,8 +167,8 @@ TEST(CoalescingSlice, WhileCarriedArgumentsConnectBothRegions) {
   // Neither mlir::getSlice's single-region precondition nor a reference call
   // to that API defines membership here. Check the actual loop dependency
   // group explicitly, from both the condition and the carried-value update.
-  for (Operation *root : {&loop.getBefore().front().front(),
-                          &loop.getAfter().front().front()}) {
+  for (Operation *root :
+       {&loop.getBefore().front().front(), &loop.getAfter().front().front()}) {
     auto actual = getCoalescingSlice(root);
     ASSERT_EQ(actual.size(), expected.size());
     for (Operation *op : expected)

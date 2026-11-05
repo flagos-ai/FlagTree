@@ -762,15 +762,15 @@ LogicalResult MemDescReshapeOp::verify() {
 
 #ifdef __TLE__
 static bool canHoldNVMMASwizzleCore(ArrayRef<int64_t> shape,
-                                   NVMMASharedEncodingAttr encoding) {
+                                    NVMMASharedEncodingAttr encoding) {
   if (encoding.getSwizzlingByteWidth() == 0)
     return true;
   if (shape.size() < 2)
     return false;
 
   auto shapePerCTA = getShapePerCTA(encoding, shape);
-  auto tmaShape = triton::nvidia_gpu::getTMABlockShape(
-      encoding, shapePerCTA, /*packedSize=*/true);
+  auto tmaShape = triton::nvidia_gpu::getTMABlockShape(encoding, shapePerCTA,
+                                                       /*packedSize=*/true);
   int64_t rows = product<int64_t>(ArrayRef<int64_t>(tmaShape).drop_back());
   int64_t columns = tmaShape.back();
   if (encoding.getTransposed())
@@ -811,12 +811,12 @@ static LogicalResult inferMemDescReshapeOpEncoding(ArrayRef<int64_t> srcShape,
         // Only form a candidate linear layout after proving its geometry legal.
         if (canHoldNVMMASwizzleCore(dstShape, candidateEncoding)) {
 #endif
-        auto srcLL = toLinearLayout(srcShape, srcEnc);
-        auto dstLL = toLinearLayout(dstShape, candidateEncoding);
-        if (reshapeLayout(ctx, srcLL, dstShape) == dstLL) {
-          dstEnc = candidateEncoding;
-          return success();
-        }
+          auto srcLL = toLinearLayout(srcShape, srcEnc);
+          auto dstLL = toLinearLayout(dstShape, candidateEncoding);
+          if (reshapeLayout(ctx, srcLL, dstShape) == dstLL) {
+            dstEnc = candidateEncoding;
+            return success();
+          }
 #ifdef __TLE__
         }
 #endif
