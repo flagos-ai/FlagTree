@@ -1413,6 +1413,17 @@ bool supportMMA(triton::DotOp op, int version) {
     // TODO(Keren): for now, fallback to MMAv2 if handling batch matmul.
     if (rank == 3)
       return false;
+#ifdef __TLE__
+    // Hopper FP8 WGMMA supports N=8 with the same native K32 accumulation
+    // as N=16. Promoting this legal narrow dot to FP16 MMA changes the
+    // accumulation sequence and needlessly doubles its instruction count.
+    if (rank == 2 && numWarps % 4 == 0 && retShapePerCTA[0] % 64 == 0 &&
+        retShapePerCTA[1] % 16 == 8 &&
+        llvm::isa<Float8E5M2Type, Float8E4M3FNType>(aElemTy) &&
+        llvm::isa<Float8E5M2Type, Float8E4M3FNType>(bElemTy) &&
+        retType.getElementType().isF32() && op.getMaxNumImpreciseAcc() >= 32)
+      return supportMMA(op.getA(), version) && supportMMA(op.getB(), version);
+#endif
     if (!(numWarps % 4 == 0 && retShapePerCTA[rank - 2] % 64 == 0 &&
           retShapePerCTA[rank - 1] % 16 == 0 &&
           (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(aElemTy) ||
