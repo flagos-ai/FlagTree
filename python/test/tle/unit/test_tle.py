@@ -740,9 +740,9 @@ class TestCachePolicyFrontend:
         assert wrapped == tle.gpu.mthreads.TMECachePolicy("once", "none")
 
     @pytest.mark.parametrize("field", ["inner", "outer"])
-    @pytest.mark.parametrize("value", ["invalid", "last_use", "NORMAL", 0, None, ("once", "none")])
+    @pytest.mark.parametrize("value", ["invalid", "last_use", "NORMAL", 6, None, ("once", "none")])
     def test_policy_rejects_invalid_fields(self, field, value):
-        with pytest.raises(ValueError, match=f"TMECachePolicy {field} must be a compile-time string"):
+        with pytest.raises(ValueError, match=f"TMECachePolicy {field} must be none, once, normal, persist"):
             tle.gpu.mthreads.TMECachePolicy(**{field: value})
 
     @pytest.mark.parametrize("enabled,common_ir", [(False, False), (False, True), (True, False), (True, True)])

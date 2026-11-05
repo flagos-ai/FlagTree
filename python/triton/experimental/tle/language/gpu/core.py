@@ -1170,11 +1170,21 @@ def copy(
             as ``other`` (zero by default). For local-to-global copies, masked
             elements are not stored. TMA descriptor copies do not accept a
             mask.
-        cache_policy: Optional backend-specific compile-time policy object.
-            None preserves the backend's default behavior. The target,
-            copy direction and memory path determine supported policies.
-            Hints affect only the global-memory side of this copy and
-            preserve its synchronization semantics.
+        cache_policy: Optional native policy for this copy's global-memory side.
+            None preserves the backend's default behavior. NVIDIA uses
+            ``tle.gpu.CachePolicy`` with native cache modifiers, L1 eviction,
+            static L2 policy objects (fraction=1).
+            MThreads uses ``mthreads.TMECachePolicy``
+            for descriptor copies and ``mthreads.LSUCachePolicy`` for pointer
+            copies. PPU uses ``ppu.CachePolicy`` or ``ppu.AIUCachePolicy``;
+            HCU and MetaX use their namespaced ``CachePolicy`` classes.
+            Static fields are immutable compile-time values. Each type retains
+            its backend's native meaning; there is no portable intent mapping.
+            The target, copy direction, and memory path determine which controls
+            are supported; invalid combinations raise errors. Hints do not
+            change synchronization. Measure non-default policies on the target
+            workload. NVIDIA CachePolicy() requires at least one explicit hint;
+            use None to retain the default.
         other: Optional fill value for the local-memory elements a
             global-to-local copy does not read, i.e. the lanes the ``mask``
             excludes. It is passed as the ``other`` operand of the generated
