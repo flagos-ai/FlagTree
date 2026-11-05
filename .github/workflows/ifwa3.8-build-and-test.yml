@@ -1,0 +1,95 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Ifwa3.8-Build-And-Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [triton_v3.8.x]
+  pull_request:
+    branches: [triton_v3.8.x]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ifwa-build-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ifwa38x-build:
+    if: >-
+      github.repository == 'flagos-ai/FlagTree' &&
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    runs-on: [self-hosted, Linux, X64, flagtree-ifwa-build]
+    timeout-minutes: 120
+    container:
+      image: harbor.baai.ac.cn/flagtree/flagtree-ifwa-py313-torch2.13.0-cpu-ubuntu22.04@sha256:2cd1e179eaed533fa494c1fa1daf380a451719a416619ba37d63f6f1ccf42f01
+      options: --user 1002:1002 --cap-drop ALL --security-opt no-new-privileges --ulimit core=0:0 --tmpfs /run/ifwa:rw,exec,nosuid,size=4g,mode=1777
+      volumes:
+        - ifwa-ci-ccache:/ccache
+        - ifwa-ci-cache:/triton-cache
+        - ifwa-ci-sdk:/opt/ifwa:ro
+        - ifwa-ci-dependencies:/opt/torch-ifwa:ro
+    defaults:
+      run:
+        shell: bash
+    env:
+      HOME: /run/ifwa/home
+      OUTPUT_DIR: /tmp/ifwa-runtime
+      CCACHE_DIR: /ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      TRITON_CACHE_DIR: /triton-cache
+      MAX_JOBS: '4'
+      FLAGTREE_BACKEND: intellifusion
+      TRITON_BUILD_PROTON: 'OFF'
+    steps:
+      - name: Ensure directories
+        run: mkdir -p "$HOME" "$TRITON_CACHE_DIR" "$OUTPUT_DIR"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Build FlagTree
+        run: |
+          ccache --show-stats
+          python -m pip install --no-build-isolation -e . -v
+          ccache --show-stats
+
+      - name: Prepare IFWA toolkit
+        id: backend
+        run: |
+          python -m pip install --no-deps /opt/torch-ifwa/torch_ifwa-0.0.10-cp313-cp313-linux_x86_64.whl
+
+          python \
+            third_party/intellifusion/ci/check_install.py --editable-root "$GITHUB_WORKSPACE/python"
+
+      - name: Examples Test
+        if: ${{ !cancelled() && steps.backend.outcome == 'success' }}
+        run: |
+          source /opt/ifwa/cmodel-env.sh
+
+          # IFWA runtime examples
+          python -m pytest -s --tb=short -ra --disable-warnings \
+            third_party/intellifusion/examples --junitxml="$OUTPUT_DIR/ifwa-examples.xml"

@@ -1,0 +1,46 @@
+add_triton_library(TritonGPNPUToLLVM
+    Passes.cpp
+    TritonGPUToLLVM.cpp
+    AllocateSharedMemory.cpp
+    GPNPUCompatToLLVM.cpp
+    TensorMemoryToLLVM.cpp
+    MMAv5ToLLVM.cpp
+    LoweringUtility.cpp
+    PTXAsmFormat.cpp
+    ArithOpToLLVM.cpp
+    ConvertLayoutOpToLLVM.cpp
+    DotOpToLLVM.cpp
+    ElementwiseOpToLLVM.cpp
+    Fp4ToFpOpToLLVM.cpp
+    MathOpToLLVM.cpp
+    LoadStoreOpToLLVM.cpp
+    TMAToLLVM.cpp
+    BarrierOpToLLVM.cpp
+    SPMDOpToLLVM.cpp
+    TargetInfo.cpp
+
+    LINK_LIBS PUBLIC
+    MLIRIR
+    MLIRPass
+    MLIRTransforms
+    MLIRArithDialect
+    MLIRArithToLLVM
+    MLIRArithTransforms
+    MLIRControlFlowToLLVM
+    MLIRGPUDialect
+    MLIRGPUToNVVMTransforms
+    MLIRMathToLLVM
+    MLIRMemRefToLLVM
+    MLIRLLVMCommonConversion
+    MLIRLLVMDialect
+    MLIRNVVMDialect
+    MLIRSCFDialect
+    MLIRUBToLLVM
+    NVGPUIR
+    TritonAnalysis
+    TritonGPUToLLVM
+    TritonGPUIR
+    TritonIR
+    TritonNvidiaGPUIR
+    TritonGPNPUTransforms
+)

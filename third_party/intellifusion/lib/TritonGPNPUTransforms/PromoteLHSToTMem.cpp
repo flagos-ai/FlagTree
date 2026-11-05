@@ -1,0 +1,128 @@
+#include "Passes.h"
+#include "mlir/IR/TypeUtilities.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
+#include "triton/Tools/Sys/GetEnv.h"
+
+namespace ttg = mlir::triton::gpu;
+
+namespace mlir {
+namespace triton {
+namespace Intellifusion {
+
+using namespace mlir::triton::nvidia_gpu;
+
+namespace {
+template <class MMAOpTy>
+Attribute getLHSTMemLayout(MMAOpTy tcGen5MMAOp, gpu::MemDescType lhsTMEMType) {
+  int numWarps = ttg::lookupNumWarps(tcGen5MMAOp);
+  return nvidia_gpu::getDefaultLayoutForTmemLdSt(lhsTMEMType, numWarps);
+}
+
+template <class MMAOpTy> class LHSToTMem : public OpRewritePattern<MMAOpTy> {
+public:
+  using OpRewritePattern<MMAOpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MMAOpTy tcGen5MMAOp,
+                                PatternRewriter &rewriter) const override {
+    MLIRContext *context = tcGen5MMAOp->getContext();
+    Location loc = tcGen5MMAOp.getLoc();
+    auto lhs = tcGen5MMAOp.getA();
+    auto localAllocOp = lhs.template getDefiningOp<ttg::LocalAllocOp>();
+    if (!localAllocOp)
+      return failure();
+    // Limit the liverange of the TMem allocations to single block.
+    if (localAllocOp->getParentRegion() != tcGen5MMAOp->getParentRegion())
+      return failure();
+    Value src = localAllocOp.getSrc();
+    auto srcType = cast<RankedTensorType>(src.getType());
+    auto srcLayout = srcType.getEncoding();
+    auto accTMemEncoding = dyn_cast<TensorMemoryEncodingAttr>(
+        tcGen5MMAOp.getD().getType().getEncoding());
+    auto cgaLayout = triton::gpu::getCGALayout(srcLayout);
+    // TMem encoding for A operand is the same as for D (Acc), with colStride 1,
+    // i.e. densely packed in TMEM.
+    unsigned elemBitWidth =
+        lhs.getType().getElementType().getIntOrFloatBitWidth();
+    if (!llvm::is_contained({8, 16, 32}, elemBitWidth)) {
+      return failure();
+    }
+    // Padded fp4 operand cannot be trivially promoted to TMEM.
+    if (isFp4Padded(lhs.getType().getEncoding())) {
+      return failure();
+    }
+    const unsigned colStride = 1;
+    auto aTMemEncoding = TensorMemoryEncodingAttr::get(
+        context, accTMemEncoding.getBlockM(), lhs.getType().getShape()[1],
+        colStride, cgaLayout, accTMemEncoding.getTwoCTAs());
+    Attribute tensorMemorySpace =
+        triton::nvidia_gpu::TensorMemorySpaceAttr::get(context);
+    ttg::MemDescType lhsMemDescType = ttg::MemDescType::get(
+        lhs.getType().getShape(), lhs.getType().getElementType(), aTMemEncoding,
+        tensorMemorySpace,
+        /*mutableMemory=*/false);
+    bool layoutTmemCompatible =
+        isDistributedLayoutTMemCompatible(tcGen5MMAOp, srcType, lhsMemDescType);
+    Attribute newLayout = srcLayout;
+    if (!layoutTmemCompatible) {
+      if (!comesFromLoadOrBlockArg(src) ||
+          triton::tools::getBoolEnv("ALLOW_LHS_TMEM_LAYOUT_CONVERSION")) {
+        newLayout = getLHSTMemLayout(tcGen5MMAOp, lhsMemDescType);
+      } else {
+        return failure();
+      }
+    }
+    rewriter.setInsertionPointAfter(localAllocOp);
+    if (newLayout != srcLayout) {
+      auto ty = cast<RankedTensorType>(src.getType());
+      auto newTy = ty.cloneWithEncoding(newLayout);
+      src = ttg::ConvertLayoutOp::create(rewriter, loc, newTy, src);
+    }
+    Value tMemAlloc = TMEMAllocOp::create(rewriter, loc, lhsMemDescType, src);
+    tcGen5MMAOp.getAMutable().assign(tMemAlloc);
+    return success();
+  }
+};
+} // namespace
+
+class GPNPUPromoteLHSToTMemPass
+    : public PassWrapper<GPNPUPromoteLHSToTMemPass, OperationPass<ModuleOp>> {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(GPNPUPromoteLHSToTMemPass)
+
+  StringRef getArgument() const final {
+    return "tritongpu-promote-lhs-to-tmem";
+  }
+  StringRef getDescription() const final {
+    return "Promote LHS operand of MMAv5 op to Tensor Memory";
+  }
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<ttg::TritonGPUDialect, nvidia_gpu::TritonNvidiaGPUDialect,
+                    triton::TritonDialect>();
+  }
+
+  void runOnOperation() override {
+    MLIRContext *context = &getContext();
+    ModuleOp m = getOperation();
+
+    RewritePatternSet patterns(context);
+    patterns.add<LHSToTMem<TCGen5MMAOp>>(context);
+    patterns.add<LHSToTMem<TCGen5MMAScaledOp>>(context);
+    if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
+      signalPassFailure();
+    }
+  }
+};
+
+std::unique_ptr<Pass> createGPNPUPromoteLHSToTMemPass() {
+  return std::make_unique<GPNPUPromoteLHSToTMemPass>();
+}
+
+} // namespace Intellifusion
+} // namespace triton
+} // namespace mlir

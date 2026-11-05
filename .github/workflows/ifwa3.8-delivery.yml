@@ -1,0 +1,195 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: CD-IFWA3.8
+
+on:
+  workflow_dispatch:
+    inputs:
+      WHL_VER:
+        description: 'Public package version, for example 0.6.0 or 0.6.0rc1'
+        type: string
+        required: true
+        default: '0.6.0'
+      BRANCH:
+        description: 'Release source branch'
+        type: string
+        required: true
+        default: 'triton_v3.8.x'
+  workflow_call:
+    inputs:
+      WHL_VER:
+        type: string
+        required: false
+        default: '0.6.0'
+      BRANCH:
+        type: string
+        required: false
+        default: 'triton_v3.8.x'
+      repository_url:
+        description: 'PyPI-compatible upload endpoint; defaults to the repository variable'
+        type: string
+        required: false
+    secrets:
+      FLAGTREE_PYPI_KEY:
+        required: true
+      FLAGTREE_PYPI_USERNAME:
+        required: true
+      FLAGTREE_PYPI_PASSWORD:
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ifwa-delivery-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  delivery:
+    if: github.repository == 'flagos-ai/FlagTree'
+    runs-on: [self-hosted, Linux, X64, flagtree-ifwa-build]
+    timeout-minutes: 120
+    container:
+      image: harbor.baai.ac.cn/flagtree/flagtree-ifwa-py313-torch2.13.0-cpu-ubuntu22.04@sha256:2cd1e179eaed533fa494c1fa1daf380a451719a416619ba37d63f6f1ccf42f01
+      options: --user 1002:1002 --cap-drop ALL --security-opt no-new-privileges --ulimit core=0:0 --tmpfs /run/ifwa:rw,exec,nosuid,size=4g,mode=1777
+      volumes:
+        - ifwa-ci-ccache:/ccache
+    defaults:
+      run:
+        shell: bash
+    env:
+      HOME: /run/ifwa/home
+      OUTPUT_DIR: /tmp/ifwa-dist-${{ github.run_id }}-${{ github.run_attempt }}
+      CCACHE_DIR: /ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      MAX_JOBS: '4'
+      FLAGTREE_BACKEND: intellifusion
+      TRITON_BUILD_PROTON: 'OFF'
+      WHL_VER: ${{ inputs.WHL_VER }}
+      TARGET_BRANCH: ${{ inputs.BRANCH }}
+      TWINE_REPOSITORY_URL: ${{ inputs.repository_url || vars.FLAGTREE_PYPI_REPOSITORY_URL }}
+
+    steps:
+      - name: Validate release configuration
+        env:
+          FLAGTREE_PYPI_KEY: ${{ secrets.FLAGTREE_PYPI_KEY }}
+          TWINE_USERNAME: ${{ secrets.FLAGTREE_PYPI_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.FLAGTREE_PYPI_PASSWORD }}
+        run: |
+          mkdir -p "$HOME" "$OUTPUT_DIR"
+
+          test "$TARGET_BRANCH" = triton_v3.8.x
+          test "$GITHUB_REF" = "refs/heads/$TARGET_BRANCH"
+          test -n "$FLAGTREE_PYPI_KEY"
+          test -n "$TWINE_USERNAME"
+          test -n "$TWINE_PASSWORD"
+          python3 -m twine --version
+          python3 - <<'PY'
+          import os
+          import platform
+          import sys
+          from packaging.version import Version
+          from urllib.parse import urlsplit
+
+          version = os.environ['WHL_VER']
+          parsed = Version(version)
+          assert parsed.local is None and str(parsed) == version, 'Use a canonical public PEP 440 version'
+          assert sys.version_info[:2] == (3, 13) and platform.machine() == 'x86_64', 'Python 3.13/x86_64 required'
+          url = urlsplit(os.environ['TWINE_REPOSITORY_URL'])
+          assert url.scheme == 'https' and url.hostname and not url.username and not url.password, 'Configure an HTTPS upload endpoint without credentials'
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'FLAGTREE_WHEEL_VERSION={version}+intellifusion3.8\n')
+          PY
+
+      - name: Checkout release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Reject an existing release tag
+        run: |
+          git check-ref-format "refs/tags/$FLAGTREE_WHEEL_VERSION"
+          existing=$(git ls-remote --tags origin "refs/tags/$FLAGTREE_WHEEL_VERSION")
+          test -z "$existing"
+
+      - name: Build wheel
+        env:
+          FLAGTREE_PYPI_KEY: ${{ secrets.FLAGTREE_PYPI_KEY }}
+        run: |
+          python3 -m pip wheel --no-build-isolation --no-deps . --wheel-dir "$OUTPUT_DIR" -v
+
+      - name: Check wheel metadata and installation
+        run: |
+          python3 - <<'PY'
+          import email
+          import os
+          import zipfile
+          from pathlib import Path
+          from packaging.utils import parse_wheel_filename
+          from packaging.version import Version
+
+          wheels = list(Path(os.environ['OUTPUT_DIR']).glob('*.whl'))
+          assert len(wheels) == 1, 'Expected exactly one wheel'
+          expected = Version(os.environ['FLAGTREE_WHEEL_VERSION'])
+          name, version, _, tags = parse_wheel_filename(wheels[0].name)
+          assert name == 'flagtree' and version == expected, 'Wheel filename version mismatch'
+          assert all(t.interpreter == 'cp313' and t.abi == 'cp313' and t.platform.endswith('_x86_64') for t in tags), 'Unexpected wheel target'
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              entries = [n for n in wheel.namelist() if n.endswith('.dist-info/METADATA')]
+              assert len(entries) == 1, 'Expected one package metadata record'
+              metadata = email.message_from_bytes(wheel.read(entries[0]))
+              assert metadata['Name'] == 'flagtree' and Version(metadata['Version']) == expected, 'Wheel metadata version mismatch'
+          PY
+          python3 -m twine check "$OUTPUT_DIR"/*.whl
+          python3 -m venv --system-site-packages /run/ifwa/wheel-check
+          /run/ifwa/wheel-check/bin/python -m pip install --no-index --no-deps --ignore-installed "$OUTPUT_DIR"/*.whl
+          cd /run/ifwa
+          /run/ifwa/wheel-check/bin/python "$GITHUB_WORKSPACE/third_party/intellifusion/ci/check_install.py"
+
+      - name: Preserve checked wheel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ifwa3.8-wheel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.OUTPUT_DIR }}/*.whl
+          if-no-files-found: error
+
+      - name: Publish wheel
+        env:
+          TWINE_USERNAME: ${{ secrets.FLAGTREE_PYPI_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.FLAGTREE_PYPI_PASSWORD }}
+          TWINE_NON_INTERACTIVE: '1'
+        run: |
+          python3 -m twine upload "$OUTPUT_DIR"/*.whl
+
+      - name: Tag published source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+
+          existing=$(git ls-remote --tags origin "refs/tags/$FLAGTREE_WHEEL_VERSION")
+          test -z "$existing"
+          git -c user.name=flagtree-bot -c user.email=flagtree-bot@users.noreply.github.com \
+            tag -a "$FLAGTREE_WHEEL_VERSION" "$GITHUB_SHA" -m "Publish $FLAGTREE_WHEEL_VERSION"
+          git push origin "refs/tags/$FLAGTREE_WHEEL_VERSION:refs/tags/$FLAGTREE_WHEEL_VERSION"

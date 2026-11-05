@@ -1,0 +1,36 @@
+add_triton_library(TritonGPNPUTransforms
+    Passes.cpp
+    DotStrategy.cpp
+    PlanCTA.cpp
+    AccelerateMatmul.cpp
+    OptimizeDescriptorEncoding.cpp
+    PromoteLHSToTMem.cpp
+    RemoveTMEMTokens.cpp
+    OptimizeTMemLayouts.cpp
+    FuseTMemLoadReduce.cpp
+    TMALowering.cpp
+    TMAUtilities.cpp
+    InterleaveTMem.cpp
+    FenceInsertion.cpp
+    MMALowering.cpp
+    TensorMemoryAllocation.cpp
+    ProxyFenceInsertion.cpp
+    CheckMatmulTwoCTAs.cpp
+    TMemBarrierInsertion.cpp
+    ClusterBarrierInsertion.cpp
+
+    LINK_LIBS PUBLIC
+    MLIRArithDialect
+    MLIRIR
+    MLIRPass
+    MLIRSCFDialect
+    MLIRTransformUtils
+    MLIRTransforms
+    MLIRUBDialect
+    TritonAnalysis
+    TritonGPUIR
+    TritonGPUTransforms
+    TritonIR
+    TritonNvidiaGPUIR
+    TritonNvidiaGPUTransforms
+)
