@@ -639,6 +639,10 @@ class CUDABackend(BaseBackend):
             ]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
+                if hasattr(tle, "passes"):
+                    from triton.experimental.tle.compiler_resources import parse_ptxas_resource_usage
+                    with open(flog.name) as resource_log:
+                        metadata.update(parse_ptxas_resource_usage(resource_log.read()))
                 if knobs.nvidia.dump_ptxas_log:
                     with open(flog.name) as log_file:
                         print(log_file.read())
