@@ -168,7 +168,8 @@ public:
                                 "positive expect_bytes");
         if (expectBytes.getInt() > 0)
           rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
-            loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()), pred);
+              loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()),
+              pred);
         auto tmaLoad =
             rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
                 op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc,
@@ -227,8 +228,8 @@ public:
 
     } else {
       if (op.getEvict() != triton::EvictionPolicy::NORMAL)
-        return op.emitOpError(
-            "eviction policies are supported only for global-to-shared TMA copies");
+        return op.emitOpError("eviction policies are supported only for "
+                              "global-to-shared TMA copies");
 #if !defined(__HCU__)
       if (op.getBarrier())
         return op.emitOpError(
