@@ -48,7 +48,7 @@
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "nvidia/include/CommonIRToTTGIR/Passes.h"
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -115,7 +115,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #endif
 #ifdef __FLAGTREE_COMMON_IR__
   mlir::triton::registerCommonIRToTTGIRPasses();
-#endif
+#endif // __FLAGTREE_COMMON_IR__
   mlir::test::registerTestAliasPass();
   mlir::test::registerTestAlignmentPass();
   mlir::test::registerAMDTestAlignmentPass();
@@ -213,7 +213,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #endif
 #ifdef __FLAGTREE_COMMON_IR__
       mlir::triton::tile::CommonIRDialect,
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 #ifdef __MCTLE__
       mlir::triton::mctle::McTleDialect,
 #endif

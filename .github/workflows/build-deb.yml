@@ -23,11 +23,11 @@ name: Build Debian Packages
 # PRs trigger this only for packaging-file changes; source changes do
 # not (the full wheel build is too heavy for a general PR gate).
 # Release tags are unprefixed since 0.3.0, e.g. 0.6.0 / 0.6.0rc1.
+# Verifies that the packaging definition still builds and installs. It is
+# not a release path: packages published to the FlagOS repositories are
+# built and uploaded by flagos-ai/build-infra from a pinned ref, so no tag
+# triggers a build here.
 on:
-  push:
-    tags:
-      - '[0-9]*'
-      - 'v[0-9]*'
   pull_request:
     branches: [main]
     paths:
@@ -41,8 +41,6 @@ concurrency:
 
 jobs:
   build-deb:
-    # Skip backend-variant tags like 0.6.0+mthreads3.6.
-    if: ${{ github.event_name != 'push' || !contains(github.ref_name, '+') }}
     # WARNING: this builds the full FlagTree LLVM/MLIR wheel from source
     # (~36 min on a 4-core builder) and peaks well above 4 GB RAM. The
     # public `ubuntu-latest` runner (4 vCPU / ~16 GB RAM) is on the edge
@@ -55,7 +53,7 @@ jobs:
       matrix:
         include:
           # Original row; artifact name unchanged so downstream collectors
-          # (upload-nexus) keep working.
+          # keep working.
           - target: ubuntu2404
             base_image: ubuntu:24.04
             python_version: ""

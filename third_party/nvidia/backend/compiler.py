@@ -333,7 +333,7 @@ class CUDABackend(BaseBackend):
         # encodings are chosen for one wide operand. Left as a join chain, the
         # operand is staged through shared memory instead of reaching the mma
         # in registers.
-        if hasattr(passes.ttgpuir, "add_concat_dot_operand"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_concat_dot_operand"):
             passes.ttgpuir.add_concat_dot_operand(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
@@ -341,6 +341,7 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         # TODO(Qingyi): Move PlanCTAPass to the front of CoalescePass
         nvidia.passes.ttnvgpuir.add_plan_cta(pm)
+        # flagtree rlc enhance
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
@@ -356,13 +357,14 @@ class CUDABackend(BaseBackend):
         # ordered slices of one wider operand. Runs after accelerate-matmul so
         # the mma layout is known, and before remove-layout-conversions so the
         # per-extract converts it leaves behind get folded into the dots.
-        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
             passes.ttgpuir.add_merge_segmented_dot(pm)
+        # flagtree rlc enhance
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         # flagtree pass: layout cleanup can expose a chain the first run could
         # not see, so match once more over the settled register layouts.
-        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
             passes.ttgpuir.add_merge_segmented_dot(pm)
         tle.passes.add_promote_local_store_staging(pm)
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
@@ -381,7 +383,8 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_schedule_loops(pm)
             tle.passes.add_tile_style_pipeline_schedule(pm)
             tle.passes.add_materialize_tile_style_pipeline(pm)
-            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
+            # flagtree pipeline enhance
+            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled, knobs.nvidia.pipeline_enhance)
         elif capability // 10 >= 10:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
@@ -393,7 +396,8 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
             passes.ttgpuir.add_schedule_loops(pm)
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
-            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
+            # flagtree pipeline enhance
+            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled, knobs.nvidia.pipeline_enhance)
             passes.ttgpuir.add_optimize_partition_warps(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             # hoist again and allow hoisting out of if statements
@@ -413,6 +417,7 @@ class CUDABackend(BaseBackend):
             tle.passes.add_lower_tma_copy(pm)
             tle.passes.add_schedule_tma_store_sync(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
+        # flagtree rlc enhance
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
@@ -432,7 +437,7 @@ class CUDABackend(BaseBackend):
         # flagtree pass: rebuild the join tree for any concat whose operand did
         # not end up with a layout the register relabel can serve. Runs after
         # everything that can still fold or retag the operand.
-        if hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
             passes.ttgpuir.add_expand_concat_dot_operand(pm)
 
         pm.run(mod, 'make_ttgir')
@@ -634,6 +639,10 @@ class CUDABackend(BaseBackend):
             ]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
+                if hasattr(tle, "passes"):
+                    from triton.experimental.tle.compiler_resources import parse_ptxas_resource_usage
+                    with open(flog.name) as resource_log:
+                        metadata.update(parse_ptxas_resource_usage(resource_log.read()))
                 if knobs.nvidia.dump_ptxas_log:
                     with open(flog.name) as log_file:
                         print(log_file.read())

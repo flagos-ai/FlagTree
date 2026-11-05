@@ -1455,10 +1455,14 @@ struct AsyncCopyGlobalToLocalOpConversion
              << vecBytes << " bytes";
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    // Modifiers cp.async cannot express fall back to ca/cg in emitCpAsync.
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     if (op.getCache() != CacheModifier::NONE &&
         op.getCache() != CacheModifier::CA &&
         op.getCache() != CacheModifier::CG)
       return op.emitError("cp.async supports only ca/cg cache modifiers");
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
     auto freeVarMasks = getFreeVariableMasks(srcTy);
     // NOTE(@peterbell10): We load redundant data on different CTAs, so the data
@@ -1468,8 +1472,19 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    // Adapted from https://github.com/triton-lang/triton/pull/11660 and
+    // https://github.com/triton-lang/triton/pull/11848: ptxas before CUDA 13.4
+    // (PTX 9.4) miscompiles cp.async with an L2::cache_hint into an illegal
+    // instruction, so the eviction policy is only emitted from PTX 9.4 on.
+    Value l2PolicyReg;
+    if (targetInfo.getPtxVersion() >= 94)
+      l2PolicyReg =
+          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     Value l2PolicyReg =
         createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
     auto emitCpAsync =
         [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
@@ -1481,6 +1496,14 @@ struct AsyncCopyGlobalToLocalOpConversion
       auto elemTy = vecTy.getElementType();
       auto nBytes = vecTy.getNumElements() * elemTy.getIntOrFloatBitWidth() / 8;
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+      // Adapted from https://github.com/triton-lang/triton/pull/11660: honor
+      // an explicit `ca`; `cg` only exists for 16-byte copies and `cv` not at
+      // all, so those take the default instead of rejecting the op.
+      CacheModifier srcCacheModifier =
+          nBytes == 16 && opCache != CacheModifier::CA ? CacheModifier::CG
+                                                       : CacheModifier::CA;
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
       // Keep Triton's historical default when the user does not specify a
       // cache modifier, but honor tl.load/ttg.async_copy cache modifiers when
       // they are present.
@@ -1488,6 +1511,7 @@ struct AsyncCopyGlobalToLocalOpConversion
           opCache == CacheModifier::NONE
               ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
               : opCache;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);

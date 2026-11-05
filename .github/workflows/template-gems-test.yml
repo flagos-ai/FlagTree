@@ -31,6 +31,15 @@ on:
         description: 'Backend name, e.g. nvidia, mthreads, ppu'
         required: true
         type: string
+      variant:
+        description: >-
+          Configuration label for a backend that tests several at once, e.g.
+          a matrix over devices or python versions. It becomes part of the
+          record id, so those results do not overwrite one another. Leave
+          unset when the backend tests a single configuration.
+        required: false
+        type: string
+        default: ''
       gpu-env-var:
         description: 'GPU device environment variable name'
         required: false
@@ -63,7 +72,21 @@ on:
         default: ''
     secrets:
       github-token:
+        description: 'Token for label lookups. Kept required for compatibility.'
         required: true
+      # Reporting credentials. Optional: when a caller does not forward them
+      # the reporting step finds no credentials and skips, which keeps this
+      # template usable from branches that have not been updated.
+      FLAGTREE_FEISHU_APP_ID:
+        required: false
+      FLAGTREE_FEISHU_APP_SECRET:
+        required: false
+      FLAGTREE_FEISHU_BITABLE_APP_TOKEN:
+        required: false
+      # Target chat for change notifications. Absent means no notifications,
+      # which is how a branch that has not set it up stays silent.
+      FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID:
+        required: false
 
 env:
   FLAGGEMS_CI_DIR: '/root/flaggems_ci'
@@ -112,6 +135,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Build FlagTree
+        id: build
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
@@ -155,6 +179,57 @@ jobs:
           baseline-dir: '${{ steps.setup.outputs.best_dir }}'
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
           fail-on-missing-baseline: 'true'
+
+      # Runs even when the build or the test failed: those runs are exactly the
+      # ones worth recording. Never allowed to fail this PR gate.
+      - name: Collect FlagGems Record
+        id: collect
+        if: ${{ always() && steps.check_backend.outputs.should_skip != 'true' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/collect-gems-record@main
+        with:
+          output-dir: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          baseline-dir: ${{ steps.setup.outputs.best_dir }}
+          ledger-dir: ${{ env.FLAGGEMS_CI_DIR }}/Ledger
+          kind: test
+          backend: ${{ inputs.backend }}
+          variant: ${{ inputs.variant }}
+          runner: ${{ inputs.runner }}
+          flaggems-tag: ${{ inputs.flaggems-tag }}
+          flagtree-sha: ${{ github.event.pull_request.head.sha }}
+          flagtree-branch: ${{ github.base_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          pr-url: ${{ github.event.pull_request.html_url }}
+          actor: ${{ github.actor }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          build-outcome: ${{ steps.build.outcome }}
+          test-outcome: ${{ steps.run-flaggems-test.outcome }}
+          notify: 'true'
+
+      - name: Report Record to Feishu
+        if: ${{ always() && steps.collect.outputs.record-file != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/report-feishu@main
+        with:
+          record: ${{ steps.collect.outputs.record-file }}
+          table-name: flaggems_runs
+          schema: ${{ steps.collect.outputs.schema-file }}
+          dedup-field: record_id
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+          app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
+
+      # Only fires when the collector decided this run changed something, so
+      # the chat stays quiet on the ordinary no-change PR.
+      - name: Notify Feishu Chat
+        if: ${{ always() && steps.collect.outputs.notification-file != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/notify-feishu@main
+        with:
+          notification: ${{ steps.collect.outputs.notification-file }}
+          chat-id: ${{ secrets.FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID }}
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
 
       - name: Cleanup FlagGems Repo
         if: always()
