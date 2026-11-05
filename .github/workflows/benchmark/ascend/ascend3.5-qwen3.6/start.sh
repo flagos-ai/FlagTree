@@ -68,7 +68,7 @@ nohup vllm serve ./Qwen3.6-27B  \
     --no-async-scheduling \
     --no-enable-prefix-caching \
     --trust-remote-code \
-    --dtype bfloat16 2>&1 >vllm.log &
+    --dtype bfloat16 >vllm.log 2>&1 &
 echo "$!" >pid.txt
 
 PID_FILE="pid.txt"
