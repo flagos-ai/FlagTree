@@ -82,8 +82,7 @@ static bool isFullViewIndex(Value index, unsigned axis,
   return false;
 }
 
-static bool isFullView(tle::LocalPointersOp pointers,
-                       ArrayRef<int64_t> shape) {
+static bool isFullView(tle::LocalPointersOp pointers, ArrayRef<int64_t> shape) {
   auto indices = pointers.getIndices();
   if (indices.empty())
     return true;

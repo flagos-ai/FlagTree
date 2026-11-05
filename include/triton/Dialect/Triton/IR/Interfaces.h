@@ -64,8 +64,8 @@ struct TritonInlinerInterface : public DialectInlinerInterface {
   /// as necessary.
   void handleTerminator(Operation *op, ValueRange valuesToRepl) const final;
 #ifdef __TLE__
-  Value handleArgument(OpBuilder &builder, Operation *call,
-                       Operation *callable, Value argument,
+  Value handleArgument(OpBuilder &builder, Operation *call, Operation *callable,
+                       Value argument,
                        DictionaryAttr argumentAttrs) const final;
 #endif
 };
