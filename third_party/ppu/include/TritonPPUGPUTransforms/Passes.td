@@ -70,19 +70,27 @@ def TritonPPUTleLowerPipe : Pass<"tritonppu-tle-lower-pipe", "mlir::ModuleOp"> {
   let description = [{
     Lowers tle.pipe.* lifecycle ops to ttng named barrier ops that the PPU
     backend maps to hardware barriers: per stage, one full barrier for each
-    reader group and one empty barrier. Pipes that do not fit the 16 hardware
-    barriers use counters in shared memory instead. Must run after the TLE
-    barrier lowering and before the software pipeliner.
+    reader group and one empty barrier (none for one_shot). Pipes that do not
+    fit the hardware barriers left after the ids warp specialization and other
+    TLE barriers take (the pipes in deeper loops come first) use counters in
+    shared memory instead. Must run after the TLE barrier lowering and before
+    the software pipeliner.
 
     Supported forms, rejected before rewriting:
 
+    - A pipe is created and used in one kernel, after inlining. Lifecycle ops
+      belong to the create with the same capacity, scope, name, field names
+      and fields, where a field is its allocation plus the static offsets of
+      the views taken of it: two pipes on one allocation differ by name or by
+      the stages they ring through.
     - CTA-scoped pipes with one writer warp group and one reader per group,
       named or default; pipes that only order accesses inside one group lower
       to group barriers and need no hand-over.
-    - A pipe handing over between warp groups is created, and its
-      warp_specialize runs, once per kernel: the hardware barriers keep their
-      state across executions, so neither may sit inside a loop (a persistent
-      kernel loops inside the partitions).
+    - A pipe handing over between warp groups, one_shot or not, is created,
+      and its warp_specialize runs, once per kernel: the hardware barriers and
+      the shared-memory counters keep their state across executions, so
+      neither may sit inside a loop (a persistent kernel loops inside the
+      partitions).
     - Capacity 1 and above; close, or one_shot without close, as on NVIDIA.
       A writer that runs its pipe twice without an intervening reader drains
       is a hang, not diagnosed. The phase of the lifecycle ops continues
@@ -97,9 +105,10 @@ def TritonPPUTleLowerPipe : Pass<"tritonppu-tle-lower-pipe", "mlir::ModuleOp"> {
     pending copy groups in registers and completes a group when its local
     reader reaches the slot. The FIFO schedule replaces that queue when the
     writer region is exactly a prefetch loop of min(n, depth) followed by a
-    consume loop that waits, releases and refills under `position + depth < n`.
-    Every other shape completes the copies at the commit. Each fallback emits
-    a remark naming the reason; see MLIR_ENABLE_DIAGNOSTICS=remarks.
+    consume loop that waits, releases and refills under `position + depth < n`,
+    in that order. Every other shape completes the copies at the commit. Each
+    fallback emits a remark naming the reason; see
+    MLIR_ENABLE_DIAGNOSTICS=remarks.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",

@@ -212,3 +212,53 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// Two unnamed pipes of one capacity ring through different stages of one
+// allocation: the offsets of their views tell them apart, and each takes its
+// own barriers (full 16-17 and empty 18-19, then full 20-21 and empty 22-23).
+// CHECK-LABEL: tt.func @two_pipes_one_allocation
+// CHECK: default {
+// CHECK: %[[EMPTY_LO:.*]] = arith.constant 18 : i32
+// CHECK: ttng.wait_barrier_named %[[EMPTY_LO]]
+// CHECK: %[[FULL_LO:.*]] = arith.constant 16 : i32
+// CHECK: ttng.arrive_barrier_named %[[FULL_LO]]
+// CHECK: %[[EMPTY_HI:.*]] = arith.constant 22 : i32
+// CHECK: ttng.wait_barrier_named %[[EMPTY_HI]]
+// CHECK: %[[FULL_HI:.*]] = arith.constant 20 : i32
+// CHECK: ttng.arrive_barrier_named %[[FULL_HI]]
+// CHECK: partition0
+// CHECK-NOT: tle.pipe
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @two_pipes_one_allocation() {
+    %c0 = arith.constant 0 : i32
+    %phase = arith.constant false
+    %ring = ttg.local_alloc : () -> !ttg.memdesc<4x128xf32, #shared, #smem, mutable>
+    %lo = ttg.memdesc_subslice %ring [0, 0] : !ttg.memdesc<4x128xf32, #shared, #smem, mutable> -> !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+    %hi = ttg.memdesc_subslice %ring [2, 0] : !ttg.memdesc<4x128xf32, #shared, #smem, mutable> -> !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+    tle.pipe.create %lo {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+    tle.pipe.create %hi {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+    ttg.warp_specialize(%lo, %hi)
+    default {
+      tle.pipe.writer_acquire %lo[%c0, %phase] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      tle.pipe.writer_commit %lo[%c0] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      tle.pipe.writer_acquire %hi[%c0, %phase] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      tle.pipe.writer_commit %hi[%c0] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      ttg.warp_yield
+    }
+    partition0(%rlo: !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>, %rhi: !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>) num_warps(4) {
+      %stage = arith.constant 0 : i32
+      %parity = arith.constant false
+      %closed_lo = tle.pipe.reader_wait %rlo[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      tle.pipe.reader_release %rlo[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      %closed_hi = tle.pipe.reader_wait %rhi[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      tle.pipe.reader_release %rhi[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>, !ttg.memdesc<2x128xf32, #shared, #smem, mutable, 4x128>) -> ()
+    tt.return
+  }
+}

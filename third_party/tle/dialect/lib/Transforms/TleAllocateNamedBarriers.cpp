@@ -56,6 +56,11 @@ struct TritonTleAllocateNamedBarriers
 #else
 namespace {
 
+// The named barrier id space. The warp specialization lowering
+// (ConvertWarpSpecializeToLLVM.cpp, BarrierIndex) owns the reserved physical
+// ids; the PPU pipe lowering (third_party/ppu TleLowerPipe.cpp) repeats the
+// virtual id boundary, the physical id count (kPPUNumBarriers in its
+// BarrierUtility.h) and the reservation to budget the ids left for pipes.
 constexpr int64_t kFirstVirtualNamedBarrierId = 16;
 constexpr int64_t kNumPhysicalNamedBarriers = 16;
 // Keep virtual TLE allocations in the historical user-visible range. Existing
