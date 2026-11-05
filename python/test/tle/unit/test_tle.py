@@ -566,8 +566,8 @@ class TestBufferedTensor:
             self.memdesc_subslice_args = (result_ty, src, list(offsets))
             return "subslice_handle"
 
-        def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1):
-            self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
+        def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1, eviction_policy=""):
+            self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes, eviction_policy)
 
         def create_tile_get_memdesc(self, result_ty, buffer):
             return buffer
@@ -615,6 +615,9 @@ class TestBufferedTensor:
 
         def _convert_to_ir_values(self, values, require_i64=False):
             return [self.to_tensor(value).handle for value in values]
+
+        def _str_to_eviction_policy(self, policy):
+            return policy
 
     def _make_buffer(self, shape):
         semantic = self._FakeSemantic()
@@ -837,13 +840,16 @@ class TestTmaCopyBarrierFrontend:
         )
 
     @pytest.mark.skip_if_tle_unsupported("gpu.copy")
-    def test_copy_accepts_explicit_tma_completion_barrier(self):
+    @pytest.mark.parametrize("eviction_policy", ["", "evict_first", "evict_last"])
+    def test_copy_accepts_explicit_tma_completion_barrier(self, eviction_policy):
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
 
-        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, eviction_policy=eviction_policy,
+                     _semantic=semantic)
 
-        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512)
+        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0",
+                                                                   "stage_0"], "slot_handle", 512, eviction_policy)
         assert semantic._tle_barrier_backend_uses == {("bar", 0): "mbarrier"}
 
     @pytest.mark.parametrize("backend", ["generic", "iluvatar", "common_ir"])

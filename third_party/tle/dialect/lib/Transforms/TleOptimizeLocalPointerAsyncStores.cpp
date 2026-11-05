@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "tle/dialect/include/IR/CopyFill.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/IR/SMEMPlan.h"
@@ -297,10 +298,9 @@ matchAsyncStoreCandidate(triton::StoreOp store) {
     return std::nullopt;
   if (load.getIsVolatile())
     return std::nullopt;
-  // The current AsyncCopyGlobalToLocal lowering only implements the implicit
-  // zero fill; a non-zero `other` operand is ignored. Keep the regular
-  // load/store pair so the requested fill value is honored.
-  if (load.getOther() && !isZeroConst(load.getOther()))
+  // cp.async zero-fills bytes, not floating values. Preserve signed zero and
+  // nonzero fills, while recognizing bytewise zero through layout changes.
+  if (load.getOther() && !hasZeroFillBits(load.getOther()))
     return std::nullopt;
   if (!isa<RankedTensorType>(load.getType()))
     return std::nullopt;

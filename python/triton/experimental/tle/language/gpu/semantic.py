@@ -35,11 +35,22 @@ import triton.language.core as tl
 from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from . import types as tle
 from .mthreads import copy as mthreads_copy
-from math import prod
+from math import prod, copysign
 
 
 class TLEFrontendSemantic(TritonSemantic):
     """Triton frontend with logical descriptor carriers for TLE lowering."""
+
+    def scalar_constant(self, value, dtype):
+        # A floating negative zero has a nonzero sign bit. The native null
+        # constant shortcut uses numerical equality and would erase that bit.
+        if (isinstance(value, float) and value == 0.0 and copysign(1.0, value) < 0 and dtype is not None
+                and dtype.is_floating()):
+            source_dtype = tl.float64 if dtype == tl.float64 else tl.float32
+            get_value = self.builder.get_fp64 if source_dtype == tl.float64 else self.builder.get_fp32
+            scalar = self.tensor(get_value(value), source_dtype)
+            return self.cast(scalar, dtype)
+        return super().scalar_constant(value, dtype)
 
     @staticmethod
     def _reject_logical_descriptor_use(desc):
