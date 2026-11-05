@@ -71,9 +71,11 @@ static triton::MakeTensorPtrOp findMakeTensorPtrOp(Value ptr) {
 }
 
 // The copy reads a 2-D tile with one unit-stride dimension and fills
-// everything out of bounds with zeros. Rows that are a constant stride apart
-// must fit the descriptor (see AIUUtility.h); a run-time stride is checked
-// where the copy is issued, and a tile it cannot zero fill traps.
+// everything out of bounds with zeros. With a constant row stride and a
+// constant row length, a layout the descriptor cannot express (see
+// isAIUStrideExpressible in AIUUtility.h) is not promoted and stays a plain
+// load; when either is a run-time value, the layout is checked on the device
+// where the copy is issued, and a tile the descriptor cannot copy traps.
 static bool isAIULoadLayout(triton::LoadOp loadOp) {
   if (cast<RankedTensorType>(loadOp.getType()).getRank() != 2 ||
       loadOp.getPadding() == triton::PaddingOption::PAD_NAN)

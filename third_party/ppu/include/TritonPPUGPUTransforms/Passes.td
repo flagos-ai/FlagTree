@@ -58,7 +58,11 @@ def TlePromoteAsyncLoadToAIUPass : Pass<"tle-promote-async-load-to-aiu", "mlir::
   let description = [{
     Finds tt.LoadOp with the tt.load.async attribute and tensor pointer operands,
     and replaces them with tt.AIULoadOp; only 1/2/4-byte element types are
-    promoted. Must run before rewrite_tensor_pointer.
+    promoted. The AIU descriptor has no row stride: with a constant row stride
+    and a constant row length, a layout it cannot express is not promoted and
+    stays a plain load; when either is a run-time value, the layout is checked
+    on the device where the copy is issued. Must run before
+    rewrite_tensor_pointer.
   }];
 
   let dependentDialects = ["mlir::triton::TritonDialect"];

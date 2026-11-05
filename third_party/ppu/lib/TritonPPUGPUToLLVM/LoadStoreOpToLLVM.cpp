@@ -747,11 +747,12 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     // Rows that are not the row length apart (see AIUUtility.h) are read as
     // the 2d tensor [rows, rowStride] when no column past the row length is
     // zero filled, and as the 3d tensor [rows, rowStride / rowLength,
-    // rowLength] with the cube's rows on y otherwise. The 16-bit y offset and
-    // 15-bit row count of the 3d form cannot span a large tensor, so its base
-    // pointer moves to the warp's first row if that is not negative. Only a
-    // negative row offset stays in the descriptor, and a cube past the last row
-    // gets y offset 1 into a 1-row tensor; the AIU zero fills both.
+    // rowLength] with the cube's rows on y otherwise. The y offset and row
+    // count of the 3d form are bounded by kAIUMaxDim and cannot span a large
+    // tensor, so its base pointer moves to the warp's first row if that is not
+    // negative. Only a negative row offset stays in the descriptor, and a cube
+    // past the last row gets y offset 1 into a 1-row tensor; the AIU zero
+    // fills both.
     Value rowStride = adaptor.getStrides()[rowDim];
     LLVM::PPU::AIURowLayout rowLayout =
         LLVM::PPU::getAIURowLayout(op.getStrides(), op.getShape(), rowDim);
@@ -788,10 +789,10 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
           b.sub(adaptor.getShape()[rowDim], b.sext(i64_ty, rowBase));
       tensorShapeY3d =
           b.trunc(i32_ty, b.smin(b.smax(rowsLeft, b.i64_val(1)),
-                                 b.i64_val(LLVM::PPU::kAIU3DMaxDim)));
+                                 b.i64_val(LLVM::PPU::kAIUMaxDim)));
       yOffset3d = b.select(b.icmp_slt(rowsLeft, b.i64_val(1)), b.i32_val(1),
                            b.smax(b.smin(rowOffset, b.i32_val(0)),
-                                  b.i32_val(-LLVM::PPU::kAIU3DMaxDim)));
+                                  b.i32_val(-LLVM::PPU::kAIUMaxDim)));
       Value rowBaseElems = b.mul(b.sext(i64_ty, rowBase), rowStride);
       src3d = b.gep(adaptor.getSrc().getType(), llvmElemTy, adaptor.getSrc(),
                     rowBaseElems);
@@ -807,7 +808,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
         // stride. Both operands of the 32-bit division are at most 2^30 when
         // it is used.
         Value rowLength = adaptor.getShape()[colDim];
-        Value maxDim = b.i64_val(LLVM::PPU::kAIU3DMaxDim);
+        Value maxDim = b.i64_val(LLVM::PPU::kAIUMaxDim);
         Value fits =
             b.and_(b.and_(b.icmp_sgt(rowLength, b.i64_val(0)),
                           b.icmp_sle(rowLength, maxDim)),
@@ -835,6 +836,24 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
                          "column boundary check",
                          targetInfo, rewriter);
       }
+    }
+    if (rowLayout == LLVM::PPU::AIURowLayout::Runtime) {
+      // The 2d form holds the stride as its row length, which is bounded by
+      // kAIUMaxDim like the fields of the 3d form; the compile-time gate
+      // rejects a larger constant stride (isAIUStrideExpressible). A larger
+      // run-time stride traps unless the 3d form is taken, which holds the
+      // stride as a multiple of the row length, or the rows are dense, whose
+      // row length the 2d form holds either way.
+      Value rowLength = adaptor.getShape()[colDim];
+      Value tooLong =
+          b.and_(b.icmp_ne(rowStride, rowLength),
+                 b.icmp_sgt(rowStride, b.i64_val(LLVM::PPU::kAIUMaxDim)));
+      if (use3d)
+        tooLong = b.and_(tooLong, b.xor_(use3d, b.true_val()));
+      emitDeviceAssert(op, tooLong,
+                       "AIU load: the row stride is larger than the row "
+                       "length field of the 2d descriptor; use a plain load",
+                       targetInfo, rewriter);
     }
 
     unsigned numCopies = tileC / channelElemsPerCTA;
