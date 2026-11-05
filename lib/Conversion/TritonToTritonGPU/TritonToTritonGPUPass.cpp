@@ -33,6 +33,7 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PriorityWorklist.h"
+#include "llvm/ADT/STLExtras.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -76,7 +77,8 @@ static bool tleEncodingsMayVary(Operation *op) {
 static LogicalResult mergeTleEncodingInfo(TleEncodingInfo oldInfo,
                                           TleEncodingInfo newInfo,
                                           Operation *op,
-                                          TleEncodingInfo &merged) {
+                                          TleEncodingInfo &merged,
+                                          Value diagnosticValue = {}) {
   if (!oldInfo) {
     merged = newInfo;
     return success();
@@ -103,26 +105,66 @@ static LogicalResult mergeTleEncodingInfo(TleEncodingInfo oldInfo,
     return success();
   }
 
-  op->emitOpError("found conflicting TLE encoding hints for value:\n  ")
-      << oldInfo.encoding << "\nand\n  " << newInfo.encoding;
+  InFlightDiagnostic diagnostic =
+      op->emitOpError("found conflicting TLE encoding hints");
+  if (diagnosticValue)
+    diagnostic << " for SSA value " << diagnosticValue;
+  diagnostic << ":\n  " << oldInfo.encoding << "\nand\n  " << newInfo.encoding;
   return failure();
 }
 
-static LogicalResult
-updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
-                  llvm::MapVector<Value, TleEncodingInfo> &valueToEncoding,
-                  llvm::PriorityWorklist<Value> &worklist) {
+using TleEncodingMap = llvm::MapVector<Value, TleEncodingInfo>;
+using TleEncodingWorklist = llvm::PriorityWorklist<Value>;
+
+// Constants, ranges, and scalar splats are layout-polymorphic tensor sources.
+// CSE intentionally shares them before this pass, but allowing an encoding
+// hint to propagate through a shared source joins otherwise independent layout
+// domains. Give every use its own cheap source so each copy can acquire the
+// consumer's encoding. Later CSE may merge copies that received the same type.
+static void rematerializeSharedTleLayoutSources(FuncOp func) {
+  SmallVector<Operation *> sources;
+  func.walk([&](Operation *op) {
+    if (!isa<arith::ConstantOp, triton::MakeRangeOp, triton::SplatOp>(op) ||
+        op->getNumResults() != 1 ||
+        !isa<RankedTensorType>(op->getResult(0).getType()) ||
+        !op->getResult(0).hasNUsesOrMore(2))
+      return;
+    sources.push_back(op);
+  });
+
+  for (Operation *source : sources) {
+    SmallVector<OpOperand *> uses;
+    for (OpOperand &use : source->getResult(0).getUses())
+      uses.push_back(&use);
+    for (OpOperand *use : llvm::drop_begin(uses)) {
+      OpBuilder builder(use->getOwner());
+      Operation *clone = builder.clone(*source);
+      use->set(clone->getResult(0));
+    }
+  }
+}
+
+static LogicalResult updateTleEncoding(ArrayRef<Value> values,
+                                       TleEncodingInfo info, FuncOp func,
+                                       TleEncodingMap &valueToEncoding,
+                                       TleEncodingWorklist &worklist) {
   for (Value value : values) {
     if (!isa<RankedTensorType>(value.getType()))
       continue;
 
     auto [it, inserted] = valueToEncoding.insert({value, info});
     if (!inserted) {
-      Operation *defOp = value.getDefiningOp();
-      Operation *diagOp = defOp ? defOp : func.getOperation();
+      Operation *diagOp = value.getDefiningOp();
+      if (!diagOp)
+        if (auto blockArg = dyn_cast<BlockArgument>(value))
+          diagOp = blockArg.getOwner()->getParentOp();
+      if (!diagOp)
+        diagOp = func.getOperation();
       TleEncodingInfo merged;
-      if (failed(mergeTleEncodingInfo(it->second, info, diagOp, merged)))
+      if (failed(
+              mergeTleEncodingInfo(it->second, info, diagOp, merged, value))) {
         return failure();
+      }
       if (merged.encoding == it->second.encoding &&
           merged.mayVary == it->second.mayVary)
         continue;
@@ -133,19 +175,36 @@ updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
   return success();
 }
 
+// A while has two independent signatures. Initial operands and after-region
+// yields feed the before arguments; condition operands feed the after arguments
+// and results. They need not have the same arity, type, or encoding.
+static SmallVector<Value> getTleWhileTiedArgs(scf::WhileOp op, unsigned index,
+                                              bool before) {
+  if (before)
+    return {op.getOperand(index), op.getBeforeArguments()[index],
+            op.getYieldOp().getOperand(index)};
+  return {op.getResult(index), op.getAfterArguments()[index],
+          op.getConditionOp().getArgs()[index]};
+}
+
 static LogicalResult propagateTleEncodingHints(FuncOp func) {
+  SmallVector<tle::SetLayoutOp> hints;
+  func.walk([&](tle::SetLayoutOp op) { hints.push_back(op); });
+  if (hints.empty())
+    return success();
+
+  rematerializeSharedTleLayoutSources(func);
+
   llvm::SmallVector<std::pair<Value, TleEncodingInfo>> seedEncodings;
-  func.walk([&](tle::SetLayoutOp op) {
+  for (tle::SetLayoutOp op : hints) {
     seedEncodings.push_back(
         {op.getSrc(), TleEncodingInfo{op.getTargetEncoding(), true}});
     seedEncodings.push_back(
         {op.getResult(), TleEncodingInfo{op.getTargetEncoding(), false}});
-  });
-  if (seedEncodings.empty())
-    return success();
+  }
 
-  llvm::MapVector<Value, TleEncodingInfo> valueToEncoding;
-  llvm::PriorityWorklist<Value> worklist;
+  TleEncodingMap valueToEncoding;
+  TleEncodingWorklist worklist;
   for (auto &[value, info] : seedEncodings) {
     if (failed(
             updateTleEncoding({value}, info, func, valueToEncoding, worklist)))
@@ -159,16 +218,38 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
 
     for (OpOperand &use : value.getUses()) {
       Operation *op = use.getOwner();
+      // Memory access layouts are selected independently of the shared
+      // address/mask DAG. Legalize that boundary with convert_layout below;
+      // RemoveLayoutConversions owns any profitable index rematerialization.
+      if (isa<triton::LoadOp, triton::StoreOp>(op))
+        continue;
       if (isa<scf::ForOp, scf::WhileOp>(op)) {
         int offset = 3 * isa<scf::ForOp>(op);
-        auto tiedArgs = getTiedArgs(op, use.getOperandNumber() - offset);
+        int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs =
+            isa<scf::WhileOp>(op)
+                ? getTleWhileTiedArgs(cast<scf::WhileOp>(op), tiedIndex, true)
+                : getTiedArgs(op, tiedIndex);
         if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
                                      worklist)))
           return failure();
         continue;
       }
-      if (isa<scf::YieldOp>(op)) {
-        auto tiedArgs = getTiedArgs(op, use.getOperandNumber());
+      if (isa<scf::YieldOp, scf::ConditionOp>(op)) {
+        Operation *parentOp = op->getParentOp();
+        if (!isa_and_nonnull<scf::ForOp, scf::WhileOp, scf::IfOp>(parentOp))
+          continue;
+        int offset = isa<scf::ConditionOp>(op);
+        int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs =
+            isa<scf::WhileOp>(parentOp)
+                ? getTleWhileTiedArgs(cast<scf::WhileOp>(parentOp), tiedIndex,
+                                      isa<scf::YieldOp>(op))
+                : getTiedArgs(parentOp, tiedIndex);
         if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
                                      worklist)))
           return failure();
@@ -183,6 +264,21 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
           return failure();
         continue;
       }
+      if (auto wgmma = dyn_cast<tle::WGMMAOp>(op)) {
+        // Shared/register A and Shared B have independent layouts. Only
+        // the accumulator and async result carry the same tensor encoding.
+        if (use.getOperandNumber() == 2 &&
+            failed(updateTleEncoding({wgmma.getD()}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+      if (auto wait = dyn_cast<tle::WGMMAWaitOp>(op)) {
+        if (failed(updateTleEncoding({wait.getOutput()}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
       if (isa<tle::SetLayoutOp>(op))
         continue;
 
@@ -194,6 +290,17 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
         continue;
       }
 
+      // Scalar results have no encoding (in particular rank-one reductions).
+      if (llvm::none_of(op->getResultTypes(),
+                        [](Type type) { return isa<RankedTensorType>(type); }))
+        continue;
+      // Expanding a different slice axis needs a conversion at that use;
+      // it cannot inherit the source encoding as a view.
+      if (auto expand = dyn_cast<triton::ExpandDimsOp>(op))
+        if (auto slice =
+                dyn_cast<triton::gpu::SliceEncodingAttr>(info.encoding))
+          if (slice.getDim() != expand.getAxis())
+            continue;
       Attribute dstEncoding = inferDstEncoding(op, info.encoding);
       if (!dstEncoding)
         continue;
@@ -207,12 +314,24 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
     if (auto opResult = dyn_cast<OpResult>(value)) {
       Operation *definingOp = opResult.getOwner();
       if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
-        auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
+        auto tiedArgs =
+            isa<scf::WhileOp>(definingOp)
+                ? getTleWhileTiedArgs(cast<scf::WhileOp>(definingOp),
+                                      opResult.getResultNumber(), false)
+                : getTiedArgs(definingOp, opResult.getResultNumber());
         if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
                                      worklist)))
           return failure();
       } else if (isa<triton::DotOpInterface>(definingOp)) {
         if (failed(updateTleEncoding({definingOp->getOperand(2)}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+      } else if (auto wgmma = dyn_cast<tle::WGMMAOp>(definingOp)) {
+        if (failed(updateTleEncoding({wgmma.getC()}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+      } else if (auto wait = dyn_cast<tle::WGMMAWaitOp>(definingOp)) {
+        if (failed(updateTleEncoding({wait.getInput()}, info, func,
                                      valueToEncoding, worklist)))
           return failure();
       } else if (auto localPointers =
@@ -224,7 +343,18 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
         if (failed(updateTleEncoding(tensorIndices, info, func, valueToEncoding,
                                      worklist)))
           return failure();
-      } else if (!isa<tle::SetLayoutOp>(definingOp)) {
+      } else if (!isa<tle::SetLayoutOp, triton::LoadOp>(definingOp)) {
+        if (auto expand = dyn_cast<triton::ExpandDimsOp>(definingOp)) {
+          auto sourceInfo = valueToEncoding.find(expand.getSrc());
+          if (sourceInfo != valueToEncoding.end())
+            if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(
+                    sourceInfo->second.encoding))
+              // One computed producer can feed different expanded axes.
+              // Keep its chosen slice and materialize the other use in the
+              // ExpandDims conversion, as in forward hint propagation.
+              if (slice.getDim() != expand.getAxis())
+                continue;
+        }
         Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
         if (srcEncoding) {
           TleEncodingInfo srcInfo{
@@ -242,7 +372,16 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
       Operation *parentOp = blockArg.getOwner()->getParentOp();
       if (isa<scf::ForOp, scf::WhileOp>(parentOp)) {
         int offset = isa<scf::ForOp>(parentOp);
-        auto tiedArgs = getTiedArgs(parentOp, blockArg.getArgNumber() - offset);
+        int tiedIndex = static_cast<int>(blockArg.getArgNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        SmallVector<Value> tiedArgs;
+        if (auto whileOp = dyn_cast<scf::WhileOp>(parentOp))
+          tiedArgs = getTleWhileTiedArgs(whileOp, tiedIndex,
+                                         blockArg.getOwner() ==
+                                             &whileOp.getBefore().front());
+        else
+          tiedArgs = getTiedArgs(parentOp, tiedIndex);
         if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
                                      worklist)))
           return failure();
@@ -273,7 +412,22 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
     if (!getMemAccessPtr(op))
       return WalkResult::advance();
 
-    Attribute explicitEncoding;
+    Attribute explicitEncoding = getTleExplicitMemoryEncoding(op);
+    if (!explicitEncoding) {
+      if (auto load = dyn_cast<triton::LoadOp>(op))
+        explicitEncoding = getTleExplicitValueEncoding(load.getResult());
+      else if (auto store = dyn_cast<triton::StoreOp>(op))
+        explicitEncoding = getTleExplicitValueEncoding(store.getValue());
+    }
+    if (isa<triton::LoadOp, triton::StoreOp>(op)) {
+      // Prefer the data layout; otherwise retain a pointer/mask/fallback hint.
+      for (Value operand : op->getOperands())
+        if (!explicitEncoding)
+          explicitEncoding = getTleExplicitValueEncoding(operand);
+      if (explicitEncoding)
+        setTleExplicitMemoryEncoding(op, explicitEncoding);
+      return WalkResult::advance();
+    }
     if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)))
       return WalkResult::interrupt();
 
@@ -310,12 +464,106 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
                                                       retTypes)))
 #endif
       return failure();
+#ifdef __TLE__
+    Operation *operation = op;
+    if (auto reshape = dyn_cast<triton::ReshapeOp>(operation)) {
+      if (!reshape.getAllowReorder() &&
+          reshape->hasAttr(getTleExplicitEncodingAttrName(0))) {
+        Value src = adaptor.getOperands()[0];
+        auto srcType = cast<RankedTensorType>(src.getType());
+        Attribute viewEncoding =
+            inferDstEncoding(reshape, srcType.getEncoding());
+        if (!viewEncoding)
+          return failure();
+        auto targetType = cast<RankedTensorType>(retTypes[0]);
+        auto view = triton::ReshapeOp::create(
+            rewriter, op.getLoc(), targetType.cloneWithEncoding(viewEncoding),
+            src, reshape.getAllowReorder());
+        addNamedAttrs(view, adaptor.getAttributes());
+        // Preserve the view's register coordinates before satisfying the
+        // explicit consumer contract, just as for an explicit transpose.
+        setTleExplicitResultEncoding(cast<OpResult>(view.getResult()),
+                                     viewEncoding);
+        Value result = view.getResult();
+        if (result.getType() != targetType) {
+          auto conversion = triton::gpu::ConvertLayoutOp::create(
+              rewriter, op.getLoc(), targetType, result);
+          setTleExplicitResultEncoding(cast<OpResult>(conversion.getResult()),
+                                       targetType.getEncoding());
+          result = conversion;
+        }
+        rewriter.replaceOp(op, result);
+        return success();
+      }
+    }
+    if (operation->hasTrait<OpTrait::Elementwise>()) {
+      Attribute encoding;
+      for (Type type : retTypes)
+        if (auto tensor = dyn_cast<RankedTensorType>(type)) {
+          if (encoding && encoding != tensor.getEncoding())
+            return rewriter.notifyMatchFailure(
+                op, "elementwise results require one encoding");
+          encoding = tensor.getEncoding();
+        }
+      SmallVector<Value> operands(adaptor.getOperands());
+      for (Value &operand : operands) {
+        auto tensor = dyn_cast<RankedTensorType>(operand.getType());
+        if (!tensor || !encoding || tensor.getEncoding() == encoding)
+          continue;
+        // Preserve each SSA producer's layout and convert this use to the
+        // elementwise result layout; shared index domains remain independent.
+        operand = triton::gpu::ConvertLayoutOp::create(
+            rewriter, op.getLoc(), tensor.cloneWithEncoding(encoding), operand);
+      }
+      rewriter.replaceOpWithNewOp<Op>(op, retTypes, operands, op->getAttrs());
+      return success();
+    }
+#endif
     rewriter.replaceOpWithNewOp<Op>(op, retTypes, adaptor.getOperands(),
                                     op->getAttrs());
 
     return success();
   }
 };
+
+#ifdef __TLE__
+template <typename Op>
+class TleExplicitMemoryOpPattern : public OpConversionPattern<Op> {
+public:
+  using OpConversionPattern<Op>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, typename Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Type> resultTypes;
+    if (failed(this->getTypeConverter()->convertTypes(op->getResults(),
+                                                      resultTypes)))
+      return failure();
+
+    SmallVector<Value> operands(adaptor.getOperands());
+    Attribute explicitEncoding = getTleExplicitMemoryEncoding(op);
+    if (explicitEncoding)
+      for (Type &resultType : resultTypes)
+        if (auto tensorType = dyn_cast<RankedTensorType>(resultType))
+          resultType = tensorType.cloneWithEncoding(explicitEncoding);
+    for (Value &operand : operands) {
+      auto tensorType = dyn_cast<RankedTensorType>(operand.getType());
+      if (!explicitEncoding || !tensorType ||
+          tensorType.getEncoding() == explicitEncoding)
+        continue;
+
+      auto targetType = tensorType.cloneWithEncoding(explicitEncoding);
+      auto convert = rewriter.create<triton::gpu::ConvertLayoutOp>(
+          op.getLoc(), targetType, operand);
+      setTleExplicitResultEncoding(convert.getOperation(), 0, explicitEncoding);
+      operand = convert;
+    }
+
+    rewriter.replaceOpWithNewOp<Op>(op, resultTypes, operands, op->getAttrs());
+    return success();
+  }
+};
+#endif
 
 class ArithConstantPattern : public OpConversionPattern<arith::ConstantOp> {
 public:
@@ -419,6 +667,45 @@ struct TritonExpandDimsPattern
     Attribute _argEncoding = argType.getEncoding();
     if (!_argEncoding)
       return failure();
+#ifdef __TLE__
+    Value source = adaptor.getSrc();
+    if (getTleExplicitValueEncoding(op.getResult())) {
+      auto targetType = cast<RankedTensorType>(
+          getTypeConverter()->convertType(op.getResult()));
+      auto sourceType =
+          argType.cloneWithEncoding(triton::gpu::SliceEncodingAttr::get(
+              getContext(), op.getAxis(),
+              cast<DistributedEncodingTrait>(targetType.getEncoding())));
+      if (argType != sourceType)
+        source =
+            ConvertLayoutOp::create(rewriter, op.getLoc(), sourceType, source);
+      auto expanded = triton::ExpandDimsOp::create(rewriter, op.getLoc(),
+                                                   source, adaptor.getAxis());
+      addNamedAttrs(expanded, adaptor.getAttributes());
+      setTleExplicitResultEncoding(cast<OpResult>(expanded.getResult()),
+                                   targetType.getEncoding());
+      rewriter.replaceOp(op, expanded.getResult());
+      return success();
+    }
+    if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(_argEncoding)) {
+      if (slice.getDim() == op.getAxis()) {
+        addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
+                          op, source, adaptor.getAxis()),
+                      adaptor.getAttributes());
+        return success();
+      }
+    }
+    // MMA and dot-operand encodings, like an incompatible slice, need a
+    // per-use conversion before constructing the expanded blocked layout.
+    if (!isa<triton::gpu::BlockedEncodingAttr>(_argEncoding)) {
+      auto converter = getTypeConverter<TritonGPUTypeConverter>();
+      _argEncoding = getDefaultBlockedEncoding(
+          getContext(), argType.getShape(),
+          converter->getNumWarps(op.getResult()),
+          converter->getThreadsPerWarp(), converter->getNumCTAs());
+      argType = argType.cloneWithEncoding(_argEncoding);
+    }
+#endif
     auto argEncoding = cast<triton::gpu::BlockedEncodingAttr>(_argEncoding);
     // return shape
     auto retShape = argType.getShape().vec();
@@ -455,8 +742,13 @@ struct TritonExpandDimsPattern
         getContext(), op.getAxis(), retEncoding);
     RankedTensorType newArgType = argType.cloneWithEncoding(newArgEncoding);
     // construct new op
+#ifdef __TLE__
+    auto newSrc = triton::gpu::ConvertLayoutOp::create(rewriter, op.getLoc(),
+                                                       newArgType, source);
+#else
     auto newSrc = triton::gpu::ConvertLayoutOp::create(
         rewriter, op.getLoc(), newArgType, adaptor.getSrc());
+#endif
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
                       op, newSrc, adaptor.getAxis()),
                   adaptor.getAttributes());
@@ -493,7 +785,11 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     RankedTensorType origType = op.getType();
     auto origShape = origType.getShape();
     auto typeConverter = getTypeConverter<TritonGPUTypeConverter>();
+#ifdef __TLE__
+    int numWarps = typeConverter->getNumWarps(op.getResult());
+#else
     int numWarps = typeConverter->getNumWarps();
+#endif
     int threadsPerWarp = typeConverter->getThreadsPerWarp();
     int numCTAs = typeConverter->getNumCTAs();
     auto rank = origShape.size();
@@ -518,6 +814,15 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
         getContext(), origShape, retSizePerThread, retOrder, numWarps,
         threadsPerWarp, numCTAs);
+#ifdef __TLE__
+    // Layout propagation fixes the C/D contract independently of A and B.
+    // Replacing that encoding with a default leaves live explicit consumers
+    // with a result type that the conversion cannot materialize.
+    if (origType.getEncoding())
+      dEncoding =
+          cast<RankedTensorType>(typeConverter->convertType(op.getResult()))
+              .getEncoding();
+#endif
     RankedTensorType retType = origType.cloneWithEncoding(dEncoding);
     // a & b must be of smem layout
     auto aType = cast<RankedTensorType>(adaptor.getA().getType());
@@ -645,7 +950,12 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
       auto defaultEnc = getDefaultBlockedEncoding(
           getContext(),
           cast<RankedTensorType>(op.getResult(0).getType()).getShape(),
+#ifdef __TLE__
+          typeConverter->getNumWarps(op.getResult(0)),
+          typeConverter->getThreadsPerWarp(),
+#else
           typeConverter->getNumWarps(), typeConverter->getThreadsPerWarp(),
+#endif
           typeConverter->getNumCTAs());
 
       auto append = [&](ArrayRef<unsigned> vals, unsigned val) {
@@ -691,6 +1001,29 @@ struct TritonTransPattern : public OpConversionPattern<TransOp> {
     auto srcEnc = srcTy.getEncoding();
     if (!srcEnc)
       return failure();
+#ifdef __TLE__
+    if (op->hasAttr(getTleExplicitEncodingAttrName(0))) {
+      // Keep the transpose a pure view. A consumer's explicit layout is a
+      // separate conversion, including DotOperand/Linear representations of
+      // the same physical mapping, which the transpose verifier distinguishes.
+      auto targetType = getTypeConverter()->convertType(op.getResult());
+      auto trans = TransOp::create(rewriter, op.getLoc(), src, op.getOrder());
+      addNamedAttrs(trans, adaptor.getAttributes());
+      setTleExplicitResultEncoding(cast<OpResult>(trans.getResult()),
+                                   trans.getType().getEncoding());
+      Value result = trans.getResult();
+      if (result.getType() != targetType) {
+        auto conversion =
+            ConvertLayoutOp::create(rewriter, op.getLoc(), targetType, result);
+        setTleExplicitResultEncoding(
+            cast<OpResult>(conversion.getResult()),
+            cast<RankedTensorType>(targetType).getEncoding());
+        result = conversion;
+      }
+      rewriter.replaceOp(op, result);
+      return success();
+    }
+#endif
     addNamedAttrs(rewriter.replaceOpWithNewOp<TransOp>(op, src, op.getOrder()),
                   adaptor.getAttributes());
     return success();
@@ -731,6 +1064,32 @@ struct TritonReducePattern : public OpConversionPattern<triton::ReduceOp> {
     auto &newCombineOp = newReduce.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
                                newCombineOp.end());
+#ifdef __TLE__
+    // Reduction results have the input's slice encoding. An explicit consumer
+    // layout is a separate conversion, not a different reduction result type.
+    SmallVector<Value> results;
+    for (auto [original, reduced] :
+         llvm::zip(op.getResults(), newReduce.getResults())) {
+      Value result = reduced;
+      if (getTleExplicitValueEncoding(original)) {
+        auto targetType = getTypeConverter()->convertType(original);
+        auto reducedType = cast<RankedTensorType>(reduced.getType());
+        setTleExplicitResultEncoding(cast<OpResult>(reduced),
+                                     reducedType.getEncoding());
+        if (reducedType != targetType) {
+          auto conversion = ConvertLayoutOp::create(rewriter, op.getLoc(),
+                                                    targetType, reduced);
+          setTleExplicitResultEncoding(
+              cast<OpResult>(conversion.getResult()),
+              cast<RankedTensorType>(targetType).getEncoding());
+          result = conversion;
+        }
+      }
+      results.push_back(result);
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+#endif
     rewriter.replaceOp(op, newReduce.getResult());
     return success();
   }
@@ -750,6 +1109,32 @@ struct TritonScanPattern : public OpConversionPattern<triton::ScanOp> {
     auto &newCombineOp = newScan.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
                                newCombineOp.end());
+#ifdef __TLE__
+    // A scan preserves its input encoding. A consumer's explicit result
+    // encoding requires a conversion after the scan, independently per result.
+    SmallVector<Value> results;
+    for (auto [original, scanned] :
+         llvm::zip(op.getResults(), newScan.getResults())) {
+      Value result = scanned;
+      if (getTleExplicitValueEncoding(original)) {
+        auto targetType = getTypeConverter()->convertType(original);
+        auto scannedType = cast<RankedTensorType>(scanned.getType());
+        setTleExplicitResultEncoding(cast<OpResult>(scanned),
+                                     scannedType.getEncoding());
+        if (scannedType != targetType) {
+          auto conversion = ConvertLayoutOp::create(rewriter, op.getLoc(),
+                                                    targetType, scanned);
+          setTleExplicitResultEncoding(
+              cast<OpResult>(conversion.getResult()),
+              cast<RankedTensorType>(targetType).getEncoding());
+          result = conversion;
+        }
+      }
+      results.push_back(result);
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+#endif
     rewriter.replaceOp(op, newScan.getResult());
     return success();
   }
@@ -868,6 +1253,7 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<triton::gpu::LocalAllocOp>,
       GenericOpPattern<triton::gpu::LocalStoreOp>,
       GenericOpPattern<triton::gpu::LocalLoadOp>,
+      TleExplicitMemoryOpPattern<triton::gpu::AsyncCopyGlobalToLocalOp>,
 #endif
 #ifdef __FLAGTREE_COMMON_IR__
       GenericOpPattern<triton::gpu::AsyncCopyGlobalToLocalOp>,
@@ -878,8 +1264,13 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonMapElementwisePattern,
       GatherScatterOpPattern<DescriptorGatherOp>,
       GatherScatterOpPattern<DescriptorScatterOp>,
+#ifdef __TLE__
+      TleExplicitMemoryOpPattern<triton::LoadOp>,
+      TleExplicitMemoryOpPattern<triton::StoreOp>,
+#else
       GenericOpPattern<triton::LoadOp>,
       GenericOpPattern<triton::StoreOp>,
+#endif
       GenericOpPattern<triton::HistogramOp>,
       GenericOpPattern<triton::GatherOp>,
       GenericOpPattern<triton::ExternElementwiseOp>,
@@ -1302,6 +1693,7 @@ public:
 #ifdef __TLE__
     if (failed(applyTleEncodingHints(mod)))
       return signalPassFailure();
+    typeConverter.snapshotNumWarps(mod);
 #endif
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
