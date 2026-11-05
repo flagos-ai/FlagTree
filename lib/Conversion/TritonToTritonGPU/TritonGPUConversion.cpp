@@ -213,6 +213,29 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 #ifdef __TLE__
   // flagtree tle raw
   addIllegalOp<triton::tle::SetLayoutOp>();
+  // Encoded types alone do not make an access legal. Its selected layout
+  // must agree with the entire pointer, mask, and data tuple.
+  addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp>([&](Operation *op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    if (Attribute encoding = getTleExplicitMemoryEncoding(op))
+      for (Type type : llvm::concat<Type>(op->getOperandTypes(),
+                                         op->getResultTypes()))
+        if (auto tensor = dyn_cast<RankedTensorType>(type))
+          if (tensor.getEncoding() != encoding)
+            return false;
+    return true;
+  });
+  // A shared computed index may require different slices at different uses.
+  // Keep mismatched views illegal so conversion materializes each edge.
+  addDynamicallyLegalOp<triton::ExpandDimsOp>([&](triton::ExpandDimsOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    auto source = dyn_cast_or_null<triton::gpu::SliceEncodingAttr>(
+        op.getSrc().getType().getEncoding());
+    return source && source.getDim() == op.getAxis() &&
+           source.getParent() == op.getType().getEncoding();
+  });
   addDynamicallyLegalDialect<triton::tle::TleDialect>([&](Operation *op) {
     bool hasLegalRegions = true;
     for (auto &region : op->getRegions()) {

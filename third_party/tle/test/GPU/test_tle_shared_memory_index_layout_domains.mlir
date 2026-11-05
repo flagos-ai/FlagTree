@@ -2,8 +2,8 @@
 
 // A front-end CSE is allowed to share pure range/mask expressions.  Each
 // memory access nevertheless owns an independent layout domain: the shared
-// expressions below must be rematerialized instead of forcing the load and
-// store to use one encoding.
+// expressions below are converted at each access boundary so the load and
+// store retain their own encodings.
 
 #load_layout = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [8], order = [0]}>
 #store_layout = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [8], order = [0]}>

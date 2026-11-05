@@ -810,14 +810,19 @@ static LogicalResult inferMemDescReshapeOpEncoding(ArrayRef<int64_t> srcShape,
         // views: the collapsed row extent must still contain a swizzle core.
         // Only form a candidate linear layout after proving its geometry legal.
         if (canHoldNVMMASwizzleCore(dstShape, candidateEncoding)) {
-#endif
           auto srcLL = toLinearLayout(srcShape, srcEnc);
           auto dstLL = toLinearLayout(dstShape, candidateEncoding);
           if (reshapeLayout(ctx, srcLL, dstShape) == dstLL) {
             dstEnc = candidateEncoding;
             return success();
           }
-#ifdef __TLE__
+        }
+#else
+        auto srcLL = toLinearLayout(srcShape, srcEnc);
+        auto dstLL = toLinearLayout(dstShape, candidateEncoding);
+        if (reshapeLayout(ctx, srcLL, dstShape) == dstLL) {
+          dstEnc = candidateEncoding;
+          return success();
         }
 #endif
       }
