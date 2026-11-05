@@ -9,6 +9,7 @@ def validate_benchmark(
     baseline_csv,
     dimension_fields,
     regression_threshold=0.20,
+    exclude_cols=None,
 ):
     if not os.path.exists(baseline_csv):
         print(f"Baseline CSV '{baseline_csv}' not found. Saving current results as baseline.")
@@ -16,6 +17,9 @@ def validate_benchmark(
         return True
     current = pd.read_csv(current_csv)
     baseline = pd.read_csv(baseline_csv)
+    if exclude_cols is None:
+        exclude_cols = []
+    exclude_cols = [c.lower() for c in exclude_cols]
     passed = True
     for _, cur_row in current.iterrows():
         match_cond = True
@@ -28,6 +32,10 @@ def validate_benchmark(
         base_row = base_rows.iloc[0]
         perf_cols = [c for c in current.columns if c not in dimension_fields]
         for col in perf_cols:
+            if any(ex in col.lower() for ex in exclude_cols):
+                print(f"  SKIP  {dict((d, cur_row[d]) for d in dimension_fields)} {col}: "
+                      f"excluded from validation")
+                continue
             cur_val = cur_row[col]
             base_val = base_row[col]
             if pd.isna(cur_val) or pd.isna(base_val):

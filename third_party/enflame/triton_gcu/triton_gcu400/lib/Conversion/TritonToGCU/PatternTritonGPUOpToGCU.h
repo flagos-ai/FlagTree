@@ -21,6 +21,8 @@
 #include <string>
 
 #include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace {
 constexpr unsigned oaccSizeInBytes = 512;
@@ -31,56 +33,67 @@ namespace triton {
 
 namespace gcu {
 class FirstLastUserAnalysis;
-class PrivateTagPool;
+class DTETagPool;
+struct AccPublishContext;
 } // namespace gcu
 
 void populateLoadStoreOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool);
 
 void populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool,
+    gcu::AccPublishContext &accPublishContext);
 
 void populateScanOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool);
 
+#if TRITON_VERSION == 35
 void populateElementwiseFusionOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool,
+    gcu::AccPublishContext &accPublishContext);
+#else
+void populateElementwiseFusionOpToGCUPatterns(
+    const TypeConverter &converter, RewritePatternSet &patterns,
+    gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin,
+    triton::gcu::DTETagPool &pTagPool);
+#endif
 
 void populateMakeRangeOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool);
 
 void populateTTSmemOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool);
 
 void populateDistributedOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool);
 
 void populateTleOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     ConversionTarget &target, gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool);
+    triton::gcu::DTETagPool &pTagPool);
 
 } // namespace triton
 } // namespace mlir

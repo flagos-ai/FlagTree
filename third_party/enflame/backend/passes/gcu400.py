@@ -17,6 +17,7 @@ __all__ = [
     'add_triton_gcu_allocate_warp_groups',
     'add_triton_wgdot_to_gcu',
     'add_triton_gcu_remove_layout_conversions',
+    'add_tritongpu_remove_layout_conversions',
     'add_triton_gcu_data_layout_optimize',
     'add_gcu_combine_ops',
     'add_triton_gcu_optimize_dot_operands',
@@ -141,6 +142,11 @@ def add_triton_gcu_remove_layout_conversions(pipeline):
     pipeline.add_pass('triton-gcu-remove-layout-conversions')
 
 
+def add_tritongpu_remove_layout_conversions(pipeline):
+    """使用 Triton 原生 remove-layout-conversions pass。"""
+    pipeline.add_pass('tritongpu-remove-layout-conversions')
+
+
 def add_triton_gcu_data_layout_optimize(pipeline):
     """Optimize data layouts for GCU."""
     pipeline.add_pass('triton-gcu-data-layout-optimize')
@@ -197,6 +203,14 @@ def add_triton_gcu_insert_producer_fences(pipeline):
     pipeline.add_pass('triton-gcu-insert-producer-fences')
 
 
-def add_convert_triton_to_gcu(pipeline):
-    """Convert Triton operations to GCU operations."""
-    pipeline.add_pass('convert-triton-to-gcu')
+def add_convert_triton_to_gcu(pipeline, single_kernel_slot: bool = False):
+    """Convert Triton operations to GCU operations.
+
+    Args:
+        pipeline: MLIR pass pipeline
+        single_kernel_slot: Force the full private/shared tag pool so that a
+            kernel occupying a single hardware slot gets a deterministic tag
+            allocation
+    """
+    options = 'single_kernel_slot=true' if single_kernel_slot else ''
+    pipeline.add_pass('convert-triton-to-gcu', options)

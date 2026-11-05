@@ -121,6 +121,34 @@ std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v) {
   return v;
 }
 
+// Mirrors the recursion of getScalarValue, but only inspects the IR: it creates
+// nothing and reports nothing, so a caller can find out whether the scalar path
+// is available before it starts rewriting. Keep the two in sync.
+bool canExtractScalar(Value v) {
+  auto canExtract = [](Value value, auto &self) -> bool {
+    if (!isa<ShapedType>(value.getType()))
+      return true;
+
+    if (auto op = value.getDefiningOp<arith::ConstantOp>()) {
+      auto attr = dyn_cast<DenseElementsAttr>(op.getValue());
+      // A non-splat tensor has no single value to extract.
+      return attr && attr.isSplat();
+    }
+    if (auto op = value.getDefiningOp<triton::SplatOp>())
+      return self(op.getSrc(), self);
+    if (auto op = value.getDefiningOp<arith::SIToFPOp>())
+      return self(op.getIn(), self);
+    if (auto op = value.getDefiningOp<arith::SelectOp>()) {
+      // The condition must be a scalar i1; both arms must be scalar-like.
+      if (isa<ShapedType>(op.getCondition().getType()))
+        return false;
+      return self(op.getTrueValue(), self) && self(op.getFalseValue(), self);
+    }
+    return false;
+  };
+  return canExtract(v, canExtract);
+}
+
 OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
                      const OpFoldResult rhs) {
   auto lhsIntAttr = getIntAttr(lhs);

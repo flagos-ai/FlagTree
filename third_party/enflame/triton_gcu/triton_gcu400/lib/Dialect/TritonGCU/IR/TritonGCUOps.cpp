@@ -67,8 +67,14 @@ LogicalResult StoreOp::verify() {
 // -- WarpGroupDotOp --
 mlir::LogicalResult WarpGroupDotOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
+    DictionaryAttr attributes,
+#if TRITON_VERSION >= 38
+    // Triton 3.8 配套的 MLIR 把 OpaqueProperties 改名为 PropertyRef。
+    ::mlir::PropertyRef properties,
+#else
+    OpaqueProperties properties,
+#endif
+    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
   auto accTy = cast<RankedTensorType>(operands[2].getType());
   inferredReturnTypes.push_back(accTy);
 

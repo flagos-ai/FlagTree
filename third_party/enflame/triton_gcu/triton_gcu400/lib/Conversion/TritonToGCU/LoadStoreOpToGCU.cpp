@@ -26,6 +26,49 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace {
+// Mirrors the scalar `other` extraction of TritonLoadOpLowering, but only
+// inspects the IR: it creates no op and reports nothing. The lowering must
+// reject a per-lane `other` *before* it starts rewriting, because by the time
+// the value is extracted syncAllocOp has already updated the user analysis and
+// the replaced2Origin map, and bailing out then would leave them out of sync.
+// Keep this in sync with the extraction below.
+bool canLowerScalarOther(Value other) {
+  if (!other)
+    return true;
+
+  auto fusionOp = other.getDefiningOp<triton::gcu::ElementwiseFusionRegionOp>();
+  if (!fusionOp) {
+    if (auto selectOp = other.getDefiningOp<arith::SelectOp>())
+      // The condition is fed straight into a scalar arith.select, so it must
+      // not be a tensor.
+      return !isa<ShapedType>(selectOp.getCondition().getType()) &&
+             triton::gcu::canExtractScalar(selectOp.getTrueValue()) &&
+             triton::gcu::canExtractScalar(selectOp.getFalseValue());
+    return triton::gcu::canExtractScalar(other);
+  }
+
+  unsigned resultIndex = cast<OpResult>(other).getResultNumber();
+  auto yieldOp = fusionOp.getRegion().back().getTerminator();
+  if (resultIndex >= yieldOp->getNumOperands())
+    return false;
+  auto yieldValue = yieldOp->getOperand(resultIndex);
+  auto selectOp = yieldValue.getDefiningOp<arith::SelectOp>();
+  if (!selectOp)
+    return triton::gcu::canExtractScalar(yieldValue);
+
+  // Inside the region the condition is a block argument; it is remapped to the
+  // matching external operand when the scalar select is built.
+  Value cond = selectOp.getCondition();
+  if (auto blockArg = dyn_cast<BlockArgument>(cond)) {
+    if (blockArg.getArgNumber() >= fusionOp.getOperands().size())
+      return false;
+    cond = fusionOp.getOperands()[blockArg.getArgNumber()];
+  }
+  return !isa<ShapedType>(cond.getType()) &&
+         triton::gcu::canExtractScalar(selectOp.getTrueValue()) &&
+         triton::gcu::canExtractScalar(selectOp.getFalseValue());
+}
+
 struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
@@ -46,6 +89,18 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
     auto loadType = loadOp.getType();
     // tensor
     if (isa<TensorType>(loadType)) {
+      // A per-lane `other` can only be applied by the elementwise path; here it
+      // is squeezed into a single scalar for tarGather, which is only possible
+      // for constant/splat/sitofp/select of scalars. Report it up front instead
+      // of hitting an unreachable after the IR has been mutated.
+      if (!canLowerScalarOther(loadOp.getOther()))
+        return loadOp.emitError()
+               << "masked load has a per-lane `other` fill value that cannot "
+                  "be lowered to a scalar: the load was not fused into an "
+                  "elementwise region (e.g. its pointer tensor has rank > 2), "
+                  "so `other` must be a constant, splat, sitofp or select of "
+                  "scalars. Use a scalar `other`, or a rank-1/2 pointer "
+                  "tensor so that the load can be fused.";
       auto lastUser =
           userAnalysis.getLastUser(loadOp.getOperation()->getResults()[0]);
       auto resultType = dyn_cast<MemRefType>(
@@ -250,7 +305,7 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
     auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     // tensor
     if (isa<TensorType>(storeOp.getPtr().getType())) {
-      auto values = adaptor.getValue();
+      auto values = stripUnrealizedConversionCastOp(adaptor.getValue());
       auto valueType = dyn_cast<MemRefType>(values.getType());
       auto elementType = valueType.getElementType();
       auto bpe = mlir::triton::gcu::getBpe(elementType);
@@ -326,8 +381,9 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
 
       rewriter.create<scf::IfOp>(
           loc, mask, [&](OpBuilder &builder, Location loc) {
-            builder.create<memref::StoreOp>(loc, adaptor.getValue(), buffer,
-                                            ValueRange{zero});
+            builder.create<memref::StoreOp>(
+                loc, stripUnrealizedConversionCastOp(adaptor.getValue()),
+                buffer, ValueRange{zero});
             if (needScalarFence)
               doMemFence(builder, storeOp.getOperation());
             builder.create<scf::YieldOp>(loc);
@@ -344,7 +400,7 @@ void mlir::triton::populateLoadStoreOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool) {
   patterns.add<TritonLoadOpLowering, TritonStoreOpLowering>(
       converter, patterns.getContext(), userAnalysis, replaced2Origin,
       pTagPool);

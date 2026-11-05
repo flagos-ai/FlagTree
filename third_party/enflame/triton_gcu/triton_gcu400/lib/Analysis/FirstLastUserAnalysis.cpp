@@ -582,7 +582,9 @@ void FirstLastUserAnalysis::start() {
         });
       }
     } else if (llvm::any_of(_op->getResultTypes(),
-                            llvm::IsaPred<RankedTensorType>)) {
+                            llvm::IsaPred<RankedTensorType>) ||
+               llvm::any_of(_op->getResultTypes(),
+                            llvm::IsaPred<triton::gpu::MemDescType>)) {
       LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
       [[maybe_unused]] int i = 0;
       for (auto v : _op->getResults()) {

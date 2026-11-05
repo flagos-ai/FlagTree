@@ -69,17 +69,17 @@ matchReduceCombiningKind(Region &combineOp) {
           [&](auto externElementwiseOp)
               -> std::optional<vector::CombiningKind> {
             auto symbol = externElementwiseOp.getSymbol();
-            if (symbol == "__nv_fmaxf") {
+            if (symbol == "__ef_fmaxf") {
               return vector::CombiningKind::MAXIMUMF;
-            } else if (symbol == "__nv_max") {
+            } else if (symbol == "__ef_max") {
               return vector::CombiningKind::MAXSI;
-            } else if (symbol == "__nv_umax") {
+            } else if (symbol == "__ef_umax") {
               return vector::CombiningKind::MAXUI;
-            } else if (symbol == "__nv_fminf") {
+            } else if (symbol == "__ef_fminf") {
               return vector::CombiningKind::MINIMUMF;
-            } else if (symbol == "__nv_min") {
+            } else if (symbol == "__ef_min") {
               return vector::CombiningKind::MINSI;
-            } else if (symbol == "__nv_umin") {
+            } else if (symbol == "__ef_umin") {
               return vector::CombiningKind::MINUI;
             } else {
               return std::nullopt;
@@ -521,9 +521,9 @@ private:
       auto externElementwiseOp =
           cast<triton::ExternElementwiseOp>(opList.front());
       auto symbol = externElementwiseOp.getSymbol();
-      if ((symbol == "__nv_fmaxf" || symbol == "__nv_max" ||
-           symbol == "__nv_umax" || symbol == "__nv_fminf" ||
-           symbol == "__nv_min" || symbol == "__nv_umin") &&
+      if ((symbol == "__ef_fmaxf" || symbol == "__ef_max" ||
+           symbol == "__ef_umax" || symbol == "__ef_fminf" ||
+           symbol == "__ef_min" || symbol == "__ef_umin") &&
           (reduceDims[1] % 16 == 0 && reduceDims[2] % 512 == 0)) {
         Value output = outputs[0];
         Value input = inputs[0];
@@ -547,19 +547,19 @@ private:
           workspace = output;
         }
 
-        if (symbol == "__nv_fmaxf") {
+        if (symbol == "__ef_fmaxf") {
           rewriter.create<gcu::ReduceOp>(loc, gcu::ReduceOperation::MAXF,
                                          output, input, workspace, reduceAxis);
-        } else if (symbol == "__nv_max") {
+        } else if (symbol == "__ef_max") {
           rewriter.create<gcu::ReduceOp>(loc, gcu::ReduceOperation::MAXSI,
                                          output, input, workspace, reduceAxis);
-        } else if (symbol == "__nv_umax") {
+        } else if (symbol == "__ef_umax") {
           rewriter.create<gcu::ReduceOp>(loc, gcu::ReduceOperation::MAXUI,
                                          output, input, workspace, reduceAxis);
-        } else if (symbol == "__nv_fminf") {
+        } else if (symbol == "__ef_fminf") {
           rewriter.create<gcu::ReduceOp>(loc, gcu::ReduceOperation::MINF,
                                          output, input, workspace, reduceAxis);
-        } else if (symbol == "__nv_min") {
+        } else if (symbol == "__ef_min") {
           rewriter.create<gcu::ReduceOp>(loc, gcu::ReduceOperation::MINSI,
                                          output, input, workspace, reduceAxis);
         } else {

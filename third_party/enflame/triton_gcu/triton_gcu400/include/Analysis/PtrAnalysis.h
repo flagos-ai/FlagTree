@@ -44,16 +44,30 @@ using llvm::SmallVector;
 
 struct MaskState;
 
+extern const char *const kSkipDte;
+
 struct PtrInfo {
   Value base;
   llvm::SmallVector<Value, 4> shape;
   llvm::SmallVector<Value, 4> strides;
-  // For loads: per-dim memory offsets (kept at zero; the mask start is folded
-  // into the base). For stores: per-dim within-tile mask start (e.g. half for
-  // a `>=`-style mask); ConfigGcuStore combines it with each warp's partition
-  // to compute the per-warp source slice offset and destination offset.
+  // For loads: per-dim memory offsets, normally zero because the mask start is
+  // folded into the base (see foldMaskStartIntoBase). For stores AND for DMA
+  // loads whose mask carries a non-zero within-tile start, `offsets` carries
+  // the per-dim mask start (e.g. half for a `>=`-style mask): ConfigGcuStore /
+  // ConfigGcuLoad convert it into the per-warp source slice offset and the
+  // destination (tile) write offset.
   llvm::SmallVector<Value, 4> offsets;
   llvm::DenseSet<int32_t> broadcastDims;
+
+  /// Build a dense 0/1 array of length `rank`: 1 if the dimension is a
+  /// broadcast (zero-stride) dimension, 0 otherwise.
+  SmallVector<int32_t> getBroadcastDimsArray(unsigned rank) const {
+    SmallVector<int32_t> arr(rank, 0);
+    for (auto d : broadcastDims)
+      if (d < static_cast<int32_t>(rank))
+        arr[d] = 1;
+    return arr;
+  }
 };
 
 // Data structure used to decode pointer arithmetic and potentially to be
@@ -92,7 +106,7 @@ struct PtrState {
   void setState(OpBuilder &builder, Location loc, const PtrState &srcState);
 
   PtrInfo getPtrInfo(OpBuilder &builder, Location loc, const MaskState &mstate,
-                     bool exposeMaskStartOffset);
+                     bool foldMaskStartIntoBase, bool exposeMaskStartOffset);
 };
 
 class PtrAnalysis {

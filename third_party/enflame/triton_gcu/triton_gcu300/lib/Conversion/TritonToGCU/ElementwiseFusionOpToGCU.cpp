@@ -89,11 +89,11 @@ bool hasBuiltinImpl(Operation *op) {
           math::RoundEvenOp>(op);
 
   if (auto ewOp = dyn_cast<triton::ExternElementwiseOp>(op)) {
-    return (ewOp.getSymbol() != "__nv_ffs" &&
-            ewOp.getSymbol() != "__nv_isnanf" &&
-            ewOp.getSymbol() != "__nv_isinff" &&
-            ewOp.getSymbol() != "__nv_finitef" &&
-            ewOp.getSymbol() != "__nv_fmodf" &&
+    return (ewOp.getSymbol() != "__ef_ffs" &&
+            ewOp.getSymbol() != "__ef_isnanf" &&
+            ewOp.getSymbol() != "__ef_isinff" &&
+            ewOp.getSymbol() != "__ef_finitef" &&
+            ewOp.getSymbol() != "__ef_fmodf" &&
             !ewOp.getSymbol().starts_with("__gcu"));
   }
   return isArithOp || isMathOp;
@@ -103,47 +103,47 @@ std::string getBuiltinOpSymbol(Operation *op) {
   if (isa<triton::ExternElementwiseOp>(op)) {
     auto ewOp = dyn_cast<triton::ExternElementwiseOp>(op);
     auto name = ewOp.getSymbol();
-    if (name == "__nv_fmaxf") {
+    if (name == "__ef_fmaxf") {
       return "maximumf";
-    } else if (name == "__nv_fminf") {
+    } else if (name == "__ef_fminf") {
       return "minimumf";
-    } else if (name == "__nv_floorf") {
+    } else if (name == "__ef_floorf") {
       return "floor";
-    } else if (name == "__nv_min") {
+    } else if (name == "__ef_min") {
       return "minsi";
-    } else if (name == "__nv_max") {
+    } else if (name == "__ef_max") {
       return "maxsi";
-    } else if (name == "__nv_umin") {
+    } else if (name == "__ef_umin") {
       return "minui";
-    } else if (name == "__nv_umax") {
+    } else if (name == "__ef_umax") {
       return "maxui";
-    } else if (name == "__nv_powf") {
+    } else if (name == "__ef_powf") {
       return "powf";
-    } else if (name == "__nv_powif") {
+    } else if (name == "__ef_powif") {
       return "fpowi";
-    } else if (name == "__nv_log2f") {
+    } else if (name == "__ef_log2f") {
       return "log2";
-    } else if (name == "__nv_log1pf") {
+    } else if (name == "__ef_log1pf") {
       return "log1p";
-    } else if (name == "__nv_exp2f") {
+    } else if (name == "__ef_exp2f") {
       return "exp2";
-    } else if (name == "__nv_acosf") {
+    } else if (name == "__ef_acosf") {
       return "acos";
-    } else if (name == "__nv_atan2f") {
+    } else if (name == "__ef_atan2f") {
       return "atan2";
-    } else if (name == "__nv_atanf") {
+    } else if (name == "__ef_atanf") {
       return "atan";
-    } else if (name == "__nv_tanf") {
+    } else if (name == "__ef_tanf") {
       return "tan";
-    } else if (name == "__nv_tanhf") {
+    } else if (name == "__ef_tanhf") {
       return "tanh";
-    } else if (name == "__nv_erff") {
+    } else if (name == "__ef_erff") {
       return "erf";
-    } else if (name == "__nv_sqrtf") {
+    } else if (name == "__ef_sqrtf") {
       return "sqrt";
-    } else if (name == "__nv_rsqrtf") {
+    } else if (name == "__ef_rsqrtf") {
       return "rsqrt";
-    } else if (name == "__nv_rintf") {
+    } else if (name == "__ef_rintf") {
       return "roundeven";
     } else {
       llvm_unreachable(
@@ -670,55 +670,55 @@ private:
     }
     auto symbol = op.getSymbol();
     Operation *newOp;
-    if (symbol == "__nv_fmaxf") {
+    if (symbol == "__ef_fmaxf") {
       newOp = builder.create<arith::MaximumFOp>(loc, operands.front().getType(),
                                                 operands);
-    } else if (symbol == "__nv_fminf") {
+    } else if (symbol == "__ef_fminf") {
       newOp = builder.create<arith::MinimumFOp>(loc, operands.front().getType(),
                                                 operands);
-    } else if (symbol == "__nv_floorf") {
+    } else if (symbol == "__ef_floorf") {
       newOp = builder.create<math::FloorOp>(loc, operands.front().getType(),
                                             operands);
-    } else if (symbol == "__nv_min") {
+    } else if (symbol == "__ef_min") {
       newOp = builder.create<arith::MinSIOp>(loc, operands.front().getType(),
                                              operands);
-    } else if (symbol == "__nv_max") {
+    } else if (symbol == "__ef_max") {
       newOp = builder.create<arith::MaxSIOp>(loc, operands.front().getType(),
                                              operands);
-    } else if (symbol == "__nv_umin") {
+    } else if (symbol == "__ef_umin") {
       newOp = builder.create<arith::MinUIOp>(loc, operands.front().getType(),
                                              operands);
-    } else if (symbol == "__nv_umax") {
+    } else if (symbol == "__ef_umax") {
       newOp = builder.create<arith::MaxUIOp>(loc, operands.front().getType(),
                                              operands);
-    } else if (symbol == "__nv_powf") {
+    } else if (symbol == "__ef_powf") {
       newOp = builder.create<math::PowFOp>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_powif") {
+    } else if (symbol == "__ef_powif") {
       newOp = builder.create<math::FPowIOp>(loc, operands.front().getType(),
                                             operands);
-    } else if (symbol == "__nv_log2f") {
+    } else if (symbol == "__ef_log2f") {
       newOp = builder.create<math::Log2Op>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_log1pf") {
+    } else if (symbol == "__ef_log1pf") {
       newOp = builder.create<math::Log1pOp>(loc, operands.front().getType(),
                                             operands);
-    } else if (symbol == "__nv_exp2f") {
+    } else if (symbol == "__ef_exp2f") {
       newOp = builder.create<math::Exp2Op>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_ffs") {
+    } else if (symbol == "__ef_ffs") {
       newOp = builder.create<math::CtPopOp>(loc, operands.front().getType(),
                                             operands);
-    } else if (symbol == "__nv_erff") {
+    } else if (symbol == "__ef_erff") {
       newOp = builder.create<math::ErfOp>(loc, operands.front().getType(),
                                           operands);
-    } else if (symbol == "__nv_tanf") {
+    } else if (symbol == "__ef_tanf") {
       newOp = builder.create<math::TanOp>(loc, operands.front().getType(),
                                           operands);
-    } else if (symbol == "__nv_tanhf") {
+    } else if (symbol == "__ef_tanhf") {
       newOp = builder.create<math::TanhOp>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_fdiv_rn") {
+    } else if (symbol == "__ef_fdiv_rn") {
       auto resType = operands.front().getType();
       auto vectorType = dyn_cast<VectorType>(resType);
       auto elemType = vectorType.getElementType();
@@ -729,7 +729,7 @@ private:
       auto div = builder.create<arith::DivFOp>(loc, resType, operands);
       newOp = builder.create<math::FloorOp>(
           loc, resType, builder.create<arith::AddFOp>(loc, div, constValue));
-    } else if (symbol == "__nv_fdiv_rz") {
+    } else if (symbol == "__ef_fdiv_rz") {
       auto resType = operands.front().getType();
       auto vectorType = dyn_cast<VectorType>(resType);
       auto elemType = vectorType.getElementType();
@@ -745,7 +745,7 @@ private:
                                         zero),
           builder.create<math::FloorOp>(loc, resType, div),
           builder.create<math::CeilOp>(loc, resType, div));
-    } else if (symbol == "__nv_fmodf") {
+    } else if (symbol == "__ef_fmodf") {
       auto resType = operands.front().getType();
       auto vectorType = dyn_cast<VectorType>(resType);
       auto elemType = vectorType.getElementType();
@@ -765,7 +765,7 @@ private:
       newOp = builder.create<arith::SubFOp>(
           loc, operands[0],
           builder.create<arith::MulFOp>(loc, vfloor, operands[1]));
-    } else if (symbol == "__nv_truncf") {
+    } else if (symbol == "__ef_truncf") {
       auto resType = operands.front().getType();
       auto vectorType = dyn_cast<VectorType>(resType);
       auto elemType = vectorType.getElementType();
@@ -777,13 +777,13 @@ private:
       newOp = builder.create<arith::SelectOp>(
           loc, cmp, builder.create<math::FloorOp>(loc, resType, operands[0]),
           builder.create<math::CeilOp>(loc, resType, operands[0]));
-    } else if (symbol == "__nv_sqrtf") {
+    } else if (symbol == "__ef_sqrtf") {
       newOp = builder.create<math::SqrtOp>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_rsqrtf") {
+    } else if (symbol == "__ef_rsqrtf") {
       newOp = builder.create<math::RsqrtOp>(loc, operands.front().getType(),
                                             operands);
-    } else if (symbol == "__nv_isnanf") {
+    } else if (symbol == "__ef_isnanf") {
       // isnan(x) -> cmpf uno x, x, e.g.
       // cmpf uno 1.0, 1.0 -> false
       // cmpf uno nan, nan -> true
@@ -793,7 +793,7 @@ private:
       auto cmpFOp = builder.create<arith::CmpFOp>(
           loc, arith::CmpFPredicate::UNO, operands.front(), operands.front());
       newOp = builder.create<arith::ExtSIOp>(loc, resVectorType, cmpFOp);
-    } else if (symbol == "__nv_isinff") {
+    } else if (symbol == "__ef_isinff") {
       auto elemType =
           dyn_cast<VectorType>(operands.front().getType()).getElementType();
       auto constPositiveInf =
@@ -811,7 +811,7 @@ private:
           dyn_cast<TensorType>(op.getResult().getType()).getElementType());
       newOp =
           builder.create<arith::ExtSIOp>(loc, resVectorType, cmpFOpPositiveInf);
-    } else if (symbol == "__nv_finitef") {
+    } else if (symbol == "__ef_finitef") {
       // isfinitf(x) ->
       // %1 = fcmp uno %x, %x
       // %2 = absf %x
@@ -846,19 +846,19 @@ private:
       auto isNanfOrInffOpI32 =
           builder.create<arith::ExtSIOp>(loc, resVectorType, isNanfOrInffOp);
       newOp = builder.create<arith::XOrIOp>(loc, isNanfOrInffOpI32, oneMaskVec);
-    } else if (symbol == "__nv_rintf") {
+    } else if (symbol == "__ef_rintf") {
       newOp = builder.create<math::RoundEvenOp>(loc, operands.front().getType(),
                                                 operands);
-    } else if (symbol == "__nv_acosf") {
+    } else if (symbol == "__ef_acosf") {
       newOp = builder.create<math::AcosOp>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_atanf") {
+    } else if (symbol == "__ef_atanf") {
       newOp = builder.create<math::AtanOp>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__nv_atan2f") {
+    } else if (symbol == "__ef_atan2f") {
       newOp = builder.create<math::Atan2Op>(loc, operands.front().getType(),
                                             operands);
-    } else if (symbol == "__nv_expf") {
+    } else if (symbol == "__ef_expf") {
       newOp = builder.create<math::ExpOp>(loc, operands.front().getType(),
                                           operands);
     } else if (llvm::any_of(mixedPrecisionSymbolPrefixList,

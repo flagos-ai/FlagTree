@@ -15,6 +15,7 @@
  */
 #include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
@@ -327,26 +328,28 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
     return failure();
   }
   auto rankedTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
-  if (!rankedTensorTy || rankedTensorTy.getRank() != 1) {
+  if (!rankedTensorTy ||
+      (rankedTensorTy.getRank() != 1 && rankedTensorTy.getRank() != 2)) {
     return failure();
   }
   auto offset = addPtrOp.getOffset();
   auto basePtr = addPtrOp.getPtr();
   // Triton AddPtr offsets here are expected to be signless integer
   // tensors/scalars.
-  auto accumulateOffset = [&](Value baseOffset, Value offsetToAdd,
-                              bool needSplat = false) -> Value {
-    if (needSplat) {
+  auto accumulateOffset = [&](Value baseOffset, Value offsetToAdd) -> Value {
+    auto rankedTensorTy = cast<RankedTensorType>(baseOffset.getType());
+    auto elementTy = getElementTypeOrSelf(offsetToAdd.getType());
+    if (!isa<RankedTensorType>(offsetToAdd.getType())) {
       offsetToAdd = builder.create<triton::SplatOp>(
-          loc,
-          cast<RankedTensorType>(baseOffset.getType())
-              .clone(offsetToAdd.getType()),
-          offsetToAdd);
+          loc, rankedTensorTy.clone(elementTy), offsetToAdd);
+    } else if (cast<RankedTensorType>(offsetToAdd.getType()).getShape() !=
+               rankedTensorTy.getShape()) {
+      offsetToAdd = builder.create<triton::BroadcastOp>(
+          loc, rankedTensorTy.clone(elementTy), offsetToAdd);
     }
     auto promotedType =
-        mlir::triton::gcu::getBpe(getElementTypeOrSelf(baseOffset.getType())) >
-                mlir::triton::gcu::getBpe(
-                    getElementTypeOrSelf(offsetToAdd.getType()))
+        mlir::triton::gcu::getBpe(rankedTensorTy.getElementType()) >
+                mlir::triton::gcu::getBpe(elementTy)
             ? baseOffset.getType()
             : offsetToAdd.getType();
     if (promotedType != baseOffset.getType()) {
@@ -359,6 +362,32 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
     }
     return builder.create<arith::AddIOp>(loc, baseOffset, offsetToAdd);
   };
+  if (rankedTensorTy.getRank() == 2) {
+    if (auto broadcastOp = basePtr.getDefiningOp<triton::BroadcastOp>()) {
+      if (auto expandDimsOp =
+              broadcastOp.getSrc().getDefiningOp<triton::ExpandDimsOp>()) {
+        auto result =
+            tryDecomposeLoadStorePtr(builder, loc, expandDimsOp.getSrc());
+        if (failed(result)) {
+          return failure();
+        }
+        basePtr = result->basePtr;
+        offset = accumulateOffset(
+            offset, builder.create<triton::ExpandDimsOp>(
+                        loc, result->offset, expandDimsOp.getAxis()));
+        return PtrDecomposeResult{basePtr, offset};
+      } else {
+        auto result =
+            tryDecomposeLoadStorePtr(builder, loc, broadcastOp.getSrc());
+        if (failed(result)) {
+          return failure();
+        }
+        basePtr = result->basePtr;
+        offset = accumulateOffset(offset, result->offset);
+        return PtrDecomposeResult{basePtr, offset};
+      }
+    }
+  }
   while (auto addPtrOp = basePtr.getDefiningOp<triton::AddPtrOp>()) {
     basePtr = addPtrOp.getPtr();
     offset = accumulateOffset(offset, addPtrOp.getOffset());
@@ -367,7 +396,7 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
     basePtr = splatOp.getSrc();
     while (auto addPtrOp = basePtr.getDefiningOp<triton::AddPtrOp>()) {
       basePtr = addPtrOp.getPtr();
-      offset = accumulateOffset(offset, addPtrOp.getOffset(), true);
+      offset = accumulateOffset(offset, addPtrOp.getOffset());
     }
     if (bitcastOp) {
       auto pointeeType =
@@ -393,6 +422,48 @@ struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
   matchAndRewrite(triton::LoadOp op,
                   mlir::PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    if (llvm::any_of(op->getUsers(), [](auto user) {
+          return isa<triton::gpu::LocalAllocOp>(user);
+        })) {
+      return failure();
+    }
+    if (auto selectOp = op.getPtr().getDefiningOp<arith::SelectOp>()) {
+      auto condition = selectOp.getCondition();
+      auto truePtr = selectOp.getTrueValue();
+      auto falsePtr = selectOp.getFalseValue();
+      auto buildBranchLoad = [&](mlir::OpBuilder &builder, Value ptr) -> Value {
+        Operation *cloned = builder.clone(*op.getOperation());
+        cast<triton::LoadOp>(cloned).getPtrMutable().assign(ptr);
+        return cloned->getResult(0);
+      };
+      auto resultType = op.getType();
+      if (auto splatOp = condition.getDefiningOp<triton::SplatOp>()) {
+        condition = splatOp.getSrc();
+        auto ifOp = rewriter.create<scf::IfOp>(loc, mlir::TypeRange{resultType},
+                                               condition, true);
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+          auto res = buildBranchLoad(rewriter, truePtr);
+          rewriter.create<scf::YieldOp>(loc, res);
+        }
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
+          Value res = buildBranchLoad(rewriter, falsePtr);
+          rewriter.create<scf::YieldOp>(loc, res);
+        }
+        rewriter.replaceOp(op, ifOp.getResult(0));
+        return success();
+      } else {
+        rewriter.setInsertionPoint(op);
+        auto trueValue = buildBranchLoad(rewriter, truePtr);
+        auto falseValue = buildBranchLoad(rewriter, falsePtr);
+        rewriter.replaceOpWithNewOp<arith::SelectOp>(op, resultType, condition,
+                                                     trueValue, falseValue);
+        return success();
+      }
+    }
     auto result = tryDecomposeLoadStorePtr(rewriter, loc, op.getPtr());
     if (succeeded(result)) {
       auto [basePtr, offset] = *result;
@@ -401,7 +472,7 @@ struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
       auto maskedLoadOp = rewriter.create<triton::gcu::MaskedLoadOp>(
           loc, basePtr, offset, mask, other);
       auto axisInfoEx = analysis.getAxisInfoEx(op.getPtr());
-      if (!axisInfoEx) {
+      if (!axisInfoEx || maskedLoadOp.getResult().getType().getRank() != 1) {
         rewriter.replaceOp(op, maskedLoadOp);
         return success();
       }
@@ -439,9 +510,11 @@ struct ConvertTritonStoreOp : public OpRewritePattern<triton::StoreOp> {
       auto mask = op.getMask();
       auto value = op.getValue();
       auto axisInfoEx = analysis.getAxisInfoEx(op.getPtr());
-      auto isContinual = axisInfoEx && axisInfoEx->getContinualInterval(0) == 1;
       auto maskedStoreOp = rewriter.create<triton::gcu::MaskedStoreOp>(
           loc, basePtr, offset, value, mask);
+      auto isContinual = axisInfoEx &&
+                         axisInfoEx->getContinualInterval(0) == 1 &&
+                         maskedStoreOp.getValue().getType().getRank() == 1;
       if (isContinual) {
         maskedStoreOp->setAttr(kIsContinual, rewriter.getBoolAttr(isContinual));
       }
@@ -604,83 +677,41 @@ static bool isZeroCopyView(Operation *op) {
     return false;
   }
 }
-static bool canFuse(Operation *op);
-static bool canFuseBroadcast(triton::BroadcastOp op) {
+
+static std::optional<unsigned> getUniqueBroadcastAxis(triton::BroadcastOp op) {
   auto srcType = op.getSrc().getType();
   auto resultType = op.getType();
   auto rank = srcType.getRank();
-
-  std::optional<unsigned> broadcastAxis;
+  std::optional<unsigned> broadcastAxis = std::nullopt;
   for (unsigned i = 0; i < rank; ++i) {
     if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
       if (broadcastAxis) {
-        return false;
+        return std::nullopt;
       }
       broadcastAxis = i;
     }
   }
+  return broadcastAxis;
+}
+
+static inline bool isValidOaccCount(unsigned numOacc) {
+  return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
+}
+
+static bool canFuseBroadcast(triton::BroadcastOp op) {
+  auto srcType = op.getSrc().getType();
+  auto resultType = op.getType();
+  auto rank = srcType.getRank();
+  auto broadcastAxis = getUniqueBroadcastAxis(op);
+
   if (!broadcastAxis || (*broadcastAxis != 0 && *broadcastAxis != rank - 1)) {
     return false;
   }
-
-  auto bpe = triton::gcu::getBpe(getElementTypeOrSelf(srcType));
-
-  if (getElementTypeOrSelf(srcType).isInteger(1)) {
-    auto defOp = op.getSrc().getDefiningOp();
-    while (isZeroCopyView(defOp)) {
-      defOp = defOp->getOperand(0).getDefiningOp();
-    }
-    if (!defOp) {
-      return false;
-    }
-    if (isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(defOp)) {
-      if (llvm::any_of(defOp->getOperands(), [](auto operand) {
-            auto defOp = operand.getDefiningOp();
-            return !defOp || !isa<arith::CmpIOp, arith::CmpFOp>(defOp);
-          })) {
-        return false;
-      }
-      defOp = defOp->getOperand(0).getDefiningOp();
-    } else if (!isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
-      return false;
-    }
-    for (auto user : op->getUsers()) {
-      if (isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(user)) {
-        if (llvm::any_of(user->getUsers(),
-                         [](auto innerUser) { return !canFuse(innerUser); })) {
-          return false;
-        }
-        auto defOp =
-            (op.getResult() == user->getOperand(0) ? user->getOperand(1)
-                                                   : user->getOperand(0))
-                .getDefiningOp();
-        if (isa<triton::BroadcastOp>(defOp) &&
-            llvm::count_if(defOp->getUsers(), [](auto user) {
-              return isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(user);
-            }) == 1) {
-          while (isZeroCopyView(defOp)) {
-            defOp = defOp->getOperand(0).getDefiningOp();
-          }
-          if (!defOp) {
-            return false;
-          }
-          if (llvm::any_of(defOp->getOperands(), [](auto operand) {
-                auto defOp = operand.getDefiningOp();
-                return !defOp || !isa<arith::CmpIOp, arith::CmpFOp>(defOp);
-              })) {
-            return false;
-          }
-        } else if (!isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
-          return false;
-        }
-      } else if (!canFuse(user)) {
-        return false;
-      }
-    }
-    bpe =
-        triton::gcu::getBpe(getElementTypeOrSelf(defOp->getOperandTypes()[0]));
+  auto elementType = getElementTypeOrSelf(srcType);
+  if (elementType.isInteger(1)) {
+    return false;
   }
-
+  auto bpe = triton::gcu::getBpe(elementType);
   auto elemsPerThread = broadcastAxis == 0
                             ? triton::gcu::getElemsPerThread(srcType)
                             : triton::gcu::getElemsPerThread(resultType);
@@ -690,7 +721,7 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
       bpe;
   auto numOacc = sizeInBytes / kOaccSizeInBytes;
   // TODO(peng.tian): need to support general implementation
-  return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
+  return isValidOaccCount(numOacc);
 }
 
 static bool canFuse(Operation *op) {
@@ -916,6 +947,13 @@ static FusionTensorDesc getFusionTensorDesc(RankedTensorType type) {
 }
 
 struct FusionGroup {
+  static RankedTensorType getRankedTensorType(Operation *fusionOp) {
+    if (auto maskedStoreOp = dyn_cast<triton::gcu::MaskedStoreOp>(fusionOp)) {
+      return maskedStoreOp.getValue().getType();
+    } else {
+      return cast<RankedTensorType>(fusionOp->getResultTypes().front());
+    }
+  }
   bool empty() const { return ops.empty(); }
   bool isUsedBy(Operation *op) const {
     return llvm::any_of(ops, [op](auto innerOp) {
@@ -924,14 +962,15 @@ struct FusionGroup {
     });
   }
   bool tryInsert(Operation *op) {
-    auto tensorType =
-        isa<triton::gcu::MaskedStoreOp>(op)
-            ? cast<triton::gcu::MaskedStoreOp>(op).getValue().getType()
-            : cast<RankedTensorType>(op->getResultTypes().front());
+    auto tensorType = getRankedTensorType(op);
     auto tensorDesc = getFusionTensorDesc(tensorType);
     if (ops.empty()) {
       ops.push_back(op);
       tensorDescs.emplace_back(tensorDesc);
+      if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
+        tensorDescs.emplace_back(
+            getFusionTensorDesc(reshapeOp.getSrc().getType()));
+      }
       return true;
     }
     if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
@@ -1176,7 +1215,8 @@ struct GCUTritonFusionPass
       DominanceInfo dominanceInfo(func);
       preProcessMaskedLoadStore(func, dominanceInfo);
       sinkFusibleProducersToUses(func, dominanceInfo);
-      func.walk([&](Block *block) { runFuse(block); });
+      auto fusibleI1Broadcast = collectFusibleI1Broadcast(func);
+      func.walk([&](Block *block) { runFuse(block, fusibleI1Broadcast); });
       func.walk([&](Block *block) { fuseReduceOps(block); });
     }
   }
@@ -1187,13 +1227,148 @@ struct GCUTritonFusionPass
   }
 
 private:
-  void runFuse(Block *block);
+  void runFuse(Block *block, llvm::DenseSet<Operation *> &fusibleOp);
   void fuseOps(std::unique_ptr<FusionGroup> fusionGroup);
   bool tryDeepFuse(SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups);
   void splitFusion(SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups);
+  llvm::DenseSet<Operation *> collectFusibleI1Broadcast(FuncOp op);
   void fuseReduceOps(Block *block);
 };
 } // namespace
+
+llvm::DenseSet<Operation *>
+GCUTritonFusionPass::collectFusibleI1Broadcast(FuncOp funcOp) {
+  llvm::DenseSet<Operation *> fusibleOps;
+  llvm::DenseSet<Operation *> visitedI1BroadcastOp;
+  llvm::SmallVector<Operation *> worklist;
+  llvm::DenseSet<Operation *> visited;
+  DenseSet<Operation *> broadcastOnDim0;
+  DenseSet<Operation *> broadcastOnLastDim;
+  auto hasFusibleBroadcastAxis = [&](triton::BroadcastOp op) {
+    auto srcType = op.getSrc().getType();
+    auto rank = srcType.getRank();
+    auto broadcastAxis = getUniqueBroadcastAxis(op);
+    if (!broadcastAxis)
+      return false;
+    if (*broadcastAxis == 0) {
+      visitedI1BroadcastOp.insert(op);
+      broadcastOnDim0.insert(op);
+      return true;
+    }
+    if (*broadcastAxis == rank - 1) {
+      visitedI1BroadcastOp.insert(op);
+      broadcastOnLastDim.insert(op);
+      return true;
+    }
+    return false;
+  };
+  auto isChainOp = [&](Operation *op) {
+    return isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(op) ||
+           (isa<triton::BroadcastOp>(op) &&
+            hasFusibleBroadcastAxis(cast<triton::BroadcastOp>(op))) ||
+           isZeroCopyView(op);
+  };
+  funcOp->walk([&](triton::BroadcastOp op) {
+    auto srcType = op.getSrc().getType();
+    auto elementType = srcType.getElementType();
+    if (!elementType.isInteger(1) || visitedI1BroadcastOp.contains(op)) {
+      return WalkResult::advance();
+    }
+    if (!hasFusibleBroadcastAxis(op)) {
+      return WalkResult::advance();
+    }
+    worklist.push_back(op);
+    visited.insert(op);
+    bool fusible = true;
+    unsigned producerMinBpe = 8;
+    unsigned consumerMinBpe = 8;
+    while (!worklist.empty()) {
+      auto cur = worklist.pop_back_val();
+      if (isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(cur) ||
+          broadcastOnDim0.contains(cur) || isZeroCopyView(cur)) {
+        for (auto operand : cur->getOperands()) {
+          auto defOp = operand.getDefiningOp();
+          if (isChainOp(defOp)) {
+            if (!visited.contains(defOp)) {
+              visited.insert(defOp);
+              worklist.push_back(defOp);
+            }
+          } else if (isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
+            producerMinBpe = std::min(producerMinBpe,
+                                      triton::gcu::getBpe(getElementTypeOrSelf(
+                                          defOp->getOperandTypes()[0])));
+          } else {
+            fusible = false;
+          }
+        }
+      }
+      for (auto user : cur->getUsers()) {
+        if (isChainOp(user)) {
+          if (!visited.contains(user)) {
+            visited.insert(user);
+            worklist.push_back(user);
+          }
+        } else if (auto maskedStoreOp =
+                       dyn_cast<triton::gcu::MaskedStoreOp>(user)) {
+          consumerMinBpe = std::min(
+              consumerMinBpe,
+              triton::gcu::getBpe(
+                  maskedStoreOp.getValue().getType().getElementType()));
+        } else if (canFuse(user) &&
+                   !cast<RankedTensorType>(user->getResultTypes()[0])
+                        .getElementType()
+                        .isInteger(1)) {
+          consumerMinBpe =
+              std::min(consumerMinBpe,
+                       triton::gcu::getBpe(
+                           cast<RankedTensorType>(user->getResultTypes()[0])
+                               .getElementType()));
+          continue;
+        } else {
+          fusible = false;
+        }
+      }
+    }
+    if (fusible) {
+      for (auto op : broadcastOnDim0) {
+        auto srcType = cast<triton::BroadcastOp>(op).getSrc().getType();
+        auto elemsPerThread = triton::gcu::getElemsPerThread(srcType);
+        auto sizeInBytes =
+            std::accumulate(elemsPerThread.begin(), elemsPerThread.end(), 1,
+                            std::multiplies<int64_t>()) *
+            producerMinBpe;
+        auto numOacc = sizeInBytes / kOaccSizeInBytes;
+        if (isValidOaccCount(numOacc)) {
+          continue;
+        }
+        fusible = false;
+        break;
+      }
+    }
+    if (fusible) {
+      for (auto op : broadcastOnLastDim) {
+        auto resultType = cast<triton::BroadcastOp>(op).getType();
+        auto elemsPerThread = triton::gcu::getElemsPerThread(resultType);
+        auto sizeInBytes = elemsPerThread.back() * consumerMinBpe;
+        auto numOacc = sizeInBytes / kOaccSizeInBytes;
+        if (isValidOaccCount(numOacc)) {
+          continue;
+        }
+        fusible = false;
+        break;
+      }
+    }
+    if (fusible) {
+      fusibleOps.insert_range(broadcastOnDim0);
+      fusibleOps.insert_range(broadcastOnLastDim);
+    }
+    visited.clear();
+    broadcastOnDim0.clear();
+    broadcastOnLastDim.clear();
+    return WalkResult::advance();
+  });
+  return fusibleOps;
+}
 
 void GCUTritonFusionPass::fuseReduceOps(Block *block) {
   for (auto &op : block->getOperations()) {
@@ -1336,10 +1511,7 @@ void GCUTritonFusionPass::splitFusion(
       for (auto op : splitFusionGroup) {
         newGroup->ops.push_back(op);
         op->moveBefore(block, iter);
-        auto tensorType =
-            isa<triton::gcu::MaskedStoreOp>(op)
-                ? cast<triton::gcu::MaskedStoreOp>(op).getValue().getType()
-                : cast<RankedTensorType>(op->getResultTypes().front());
+        auto tensorType = FusionGroup::getRankedTensorType(op);
         auto tensorDesc = getFusionTensorDesc(tensorType);
         if (!llvm::is_contained(newGroup->tensorDescs, tensorDesc)) {
           newGroup->tensorDescs.push_back(tensorDesc);
@@ -1352,7 +1524,8 @@ void GCUTritonFusionPass::splitFusion(
   fusionGroups = std::move(newGroups);
 }
 
-void GCUTritonFusionPass::runFuse(Block *block) {
+void GCUTritonFusionPass::runFuse(Block *block,
+                                  llvm::DenseSet<Operation *> &fusibleOp) {
   SmallVector<std::unique_ptr<FusionGroup>> fusionGroups;
   auto startNewGroup = [&]() {
     fusionGroups.emplace_back(std::make_unique<FusionGroup>());
@@ -1368,7 +1541,7 @@ void GCUTritonFusionPass::runFuse(Block *block) {
     operations.push_back(&op);
   }
   for (auto op : operations) {
-    if (canFuse(op)) {
+    if (canFuse(op) || fusibleOp.erase(op)) {
       if (isa<triton::gpu::ConvertLayoutOp>(op) &&
           !currentGroup()->isUsedBy(op)) {
         if (!currentGroup()->empty()) {
@@ -1400,11 +1573,11 @@ void GCUTritonFusionPass::runFuse(Block *block) {
   if (fusionGroups.empty()) {
     return;
   }
+  splitFusion(fusionGroups);
   bool changed = true;
   do {
     changed = tryDeepFuse(fusionGroups);
   } while (changed);
-  splitFusion(fusionGroups);
   for (auto &fusionGroup : fusionGroups) {
     fuseOps(std::move(fusionGroup));
   }

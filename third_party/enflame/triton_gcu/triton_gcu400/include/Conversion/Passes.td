@@ -34,6 +34,9 @@ def ConvertTritonToGCUPass: Pass<"convert-triton-to-gcu", "gpu::GPUModuleOp"> {
            "Length of vector in byte">,
     Option<"vectorizationMaxLength", "vectorization-max-length", "unsigned", /*default=*/"16384u",
             "Maximum vector length in byte for vectorization">,
+    Option<"single_kernel_slot", "single_kernel_slot", "bool", /*default=*/"false",
+           "Force the full private/shared tag pool so that a kernel occupying a "
+           "single hardware slot gets a deterministic tag allocation">,
   ];
 }
 

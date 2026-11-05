@@ -16,6 +16,7 @@
 
 #include <utility>
 
+#include "Constants.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Utils/TritonVersionCompat.h"
 
@@ -79,6 +80,20 @@ static int64_t getOrCreateGroup(llvm::DenseMap<Value, int64_t> &memdescToGroup,
   return groupId;
 }
 
+/// Trace through MemDesc view ops (subslice, trans, reshape, index) to
+/// the root local_alloc, so barrier groups are keyed on the underlying
+/// allocation rather than the view op result.
+static Value traceToRootAlloc(Value memdesc) {
+  while (auto *def = memdesc.getDefiningOp()) {
+    if (isa<triton::gpu::MemDescSubsliceOp, triton::gpu::MemDescTransOp,
+            triton::gpu::MemDescReshapeOp, triton::gpu::MemDescIndexOp>(def))
+      memdesc = def->getOperand(0);
+    else
+      break;
+  }
+  return memdesc;
+}
+
 /// Collect all tle.local_pointers result values and their derived values
 /// (through broadcast, convert_layout), grouped by their source memdesc.
 /// Also registers memdesc values from ttg.tma_copy into the same groups
@@ -94,7 +109,7 @@ static BarrierGroupMaps collectLocalPointerGroups(gpu::GPUModuleOp module) {
     if (op->getNumOperands() < 1 || op->getNumResults() != 1)
       return;
 
-    Value memdesc = op->getOperand(0);
+    Value memdesc = traceToRootAlloc(op->getOperand(0));
     int64_t groupId =
         getOrCreateGroup(maps.memdescToGroup, memdesc, nextGroupId);
     maps.ptrToGroup[op->getResult(0)] = groupId;
@@ -208,12 +223,959 @@ static void insertLocalPointerBarriers(gpu::GPUModuleOp module) {
       processRegionForBarriers(region, maps, dirty);
 }
 
+/// Trace a value back to the `tle.local_pointers` op that produced it, looking
+/// through the broadcast / convert_layout chains the lowering inserts.
+static Operation *traceToLocalPointers(Value ptr) {
+  while (Operation *def = ptr.getDefiningOp()) {
+    if (def->getName().getStringRef() == "tle.local_pointers")
+      return def;
+    if (isa<triton::BroadcastOp, triton::gpu::ConvertLayoutOp>(def)) {
+      ptr = def->getOperand(0);
+      continue;
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+/// Trace a stored value back to the `tt.load` that produced it, looking through
+/// layout-only ops (`tt.broadcast` / `ttg.convert_layout`) that may be inserted
+/// between the load and the store.
+static triton::LoadOp traceToLoad(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    if (auto load = dyn_cast<triton::LoadOp>(def))
+      return load;
+    if (isa<triton::BroadcastOp, triton::gpu::ConvertLayoutOp>(def)) {
+      value = def->getOperand(0);
+      continue;
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+/// Step 2b: mark the global loads that fill a TLE pipe slot as async.
+///
+/// What it does:
+///   Attaches `tt.load.async` to every global `tt.load` whose result is stored
+///   into a buffer backing a `tle.pipe`, so that the later DTE lowering issues
+///   the producer's A and B copies as overlapped asynchronous transfers.
+///
+/// Why it is needed:
+///   `TTSmemLowerToGCU` picks between a private *async* DTE tag and the single
+///   shared *sync* tag from `tt.load.async` plus a `firstUse` wait anchor.
+///   Only the async branch calls `pTagPool.setMap(firstUse, tag)`, and that is
+///   what defers the `dma_wait` to the producer commit.  With the sync tag
+///   every copy waits for its own transfer right after issuing it, which
+///   serializes the producer's A and B DTEs (`loadA, waitA, loadB, waitB`)
+///   instead of letting them overlap (`loadA, loadB, waitA, waitB`).
+///
+///   Auto-WS gets the attribute for free: `BlockedToMMA`
+///   (tritongcu-accelerate-matmul) sets it on the loads behind the dot
+///   operands while the loop is still plain `tt.load -> tt.dot`.  In the TLE
+///   pipeline `tle-lower-pipe-to-gcuws` has already decoupled producer from
+///   consumer by the time that pass runs, so nothing behind the dot operand
+///   traces back to a `tt.load`; the attribute is never set and the pipe
+///   producer falls back to the shared sync tag.
+///
+///   A store of a globally loaded tile into a TLE pipe slot *is* that
+///   producer -> consumer handoff, so it is marked here.  This runs before
+///   `ConvertLocalPointersOp` rewrites the store into `ttg.local_store`, and
+///   `TritonGCULocalMemOptimize::FuseLoadLocalStorePattern` already propagates
+///   the attribute onto the resulting `copy_global_to_local`.
+///
+/// How it works:
+///   (a) Collect the shared buffers behind every `tle.pipe.*` op, funnelling
+///       views through their root alloc.  Both operands and results are
+///       inspected: the default region refers to the `ttg.local_alloc`
+///       directly, while a worker partition sees the same memdesc as a block
+///       argument.
+///   (b) Keep the stores whose pointer traces back to a `tle.local_pointers`
+///       on a pipe buffer and whose value traces back to a *global* `tt.load`
+///       (address space != shared).  Shared -> pipe copies are skipped because
+///       they must stay synchronous.
+///   (c) Attach `tt.load.async` to the collected loads.
+static void markPipeFillLoadsAsync(gpu::GPUModuleOp module) {
+  constexpr int kSharedAS = 3;
+
+  // (a) Shared buffers backing a TLE pipe, keyed on their root alloc.
+  llvm::DenseSet<Value> pipeMemdescs;
+  module.walk([&](Operation *op) {
+    if (!op->getName().getStringRef().starts_with("tle.pipe."))
+      return;
+    for (Value operand : op->getOperands())
+      if (isa<triton::gpu::MemDescType>(operand.getType()))
+        pipeMemdescs.insert(traceToRootAlloc(operand));
+    for (Value result : op->getResults())
+      if (isa<triton::gpu::MemDescType>(result.getType()))
+        pipeMemdescs.insert(traceToRootAlloc(result));
+  });
+  if (pipeMemdescs.empty())
+    return;
+
+  // (b) Collect the global loads stored into a pipe slot.
+  SmallVector<triton::LoadOp> loads;
+  module.walk([&](triton::StoreOp store) {
+    auto *localPointers = traceToLocalPointers(store.getPtr());
+    if (!localPointers || localPointers->getNumOperands() < 1)
+      return;
+    if (!pipeMemdescs.contains(traceToRootAlloc(localPointers->getOperand(0))))
+      return;
+    triton::LoadOp loadOp = traceToLoad(store.getValue());
+    if (!loadOp)
+      return;
+    // Only global -> shared staging moves through the DTE; a shared memory
+    // read stored back into a pipe slot has to stay synchronous.
+    auto ptrTy = dyn_cast<RankedTensorType>(loadOp.getPtr().getType());
+    if (!ptrTy)
+      return;
+    auto elemTy = dyn_cast<triton::PointerType>(ptrTy.getElementType());
+    if (!elemTy || elemTy.getAddressSpace() == kSharedAS)
+      return;
+    loads.push_back(loadOp);
+  });
+
+  // (c) Mark only after the walk is done, so the IR is not mutated while
+  // iterating.
+  for (triton::LoadOp loadOp : loads)
+    loadOp->setAttr(kLoadAsync, BoolAttr::get(module.getContext(), true));
+}
+
 // ===----------------------------------------------------------------------===
-// Phase 2: Lower all tle ops
+// Shared helpers for canonicalization and optimization passes.
+// ===----------------------------------------------------------------------===
+
+/// Strip index wrappers (convert_layout, ext/trunc) to expose the underlying
+/// make_range or constant for subslice pattern matching.
+static Value stripSubsliceIndexWrappers(Value v) {
+  while (true) {
+    if (auto cvt = v.getDefiningOp<triton::gpu::ConvertLayoutOp>()) {
+      v = cvt.getSrc();
+      continue;
+    }
+    if (auto ext = v.getDefiningOp<arith::ExtSIOp>()) {
+      v = ext.getIn();
+      continue;
+    }
+    if (auto ext = v.getDefiningOp<arith::ExtUIOp>()) {
+      v = ext.getIn();
+      continue;
+    }
+    if (auto tr = v.getDefiningOp<arith::TruncIOp>()) {
+      v = tr.getIn();
+      continue;
+    }
+    break;
+  }
+  return v;
+}
+
+/// Try to match `value` as make_range(start, start+extent), optionally
+/// offset by a constant addend. Sets `offset` to the effective start.
+static bool matchRangeWithOffset(Value value, int64_t extent, int64_t &offset) {
+  Value current = stripSubsliceIndexWrappers(value);
+  if (auto range = current.getDefiningOp<triton::MakeRangeOp>()) {
+    offset = range.getStart();
+    return range.getEnd() - range.getStart() == extent;
+  }
+
+  auto add = current.getDefiningOp<arith::AddIOp>();
+  if (!add)
+    return false;
+
+  auto tryMatch = [&](Value lhs, Value rhs) -> bool {
+    Value lhsStripped = stripSubsliceIndexWrappers(lhs);
+    // Also strip expand_dims to handle addi(expand_dims(range), const),
+    // e.g. `1 + tl.arange(0, N)[None, :]` -> addi(expand_dims(range), splat(1))
+    while (auto expand = lhsStripped.getDefiningOp<triton::ExpandDimsOp>())
+      lhsStripped = stripSubsliceIndexWrappers(expand.getSrc());
+    auto range = lhsStripped.getDefiningOp<triton::MakeRangeOp>();
+    if (!range)
+      return false;
+    Value rhsStripped = stripSubsliceIndexWrappers(rhs);
+    if (auto cst = rhsStripped.getDefiningOp<arith::ConstantOp>()) {
+      if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
+        if (dense.isSplat()) {
+          offset =
+              range.getStart() + dense.getSplatValue<APInt>().getSExtValue();
+          return range.getEnd() - range.getStart() == extent;
+        }
+      }
+    }
+    if (auto cstInt = rhsStripped.getDefiningOp<arith::ConstantIntOp>()) {
+      offset = range.getStart() + cstInt.value();
+      return range.getEnd() - range.getStart() == extent;
+    }
+    return false;
+  };
+
+  return tryMatch(add.getLhs(), add.getRhs()) ||
+         tryMatch(add.getRhs(), add.getLhs());
+}
+
+/// Match one index of a multi-dim tle.local_pointers against the
+/// "full range along a single axis" pattern the TLE frontend emits.
+///
+/// The index tensor has the full result shape, but its data only varies
+/// along `axis`:
+///
+///   // result shape MxN.
+///   // axis-0 index (varies along dim 0):
+///   %r    = tt.make_range(offset0, offset0+M)          : tensor<Mxi32>
+///   %re   = tt.expand_dims(%r) {axis = 1}              : tensor<Mx1xi32>
+///   %idx0 = tt.broadcast(%re)                          : tensor<MxNxi32>
+
+///   // axis-1 index (varies along dim 1):
+///   %c    = tt.make_range(offset1, offset1+N)          : tensor<Nxi32>
+///   %ce   = tt.expand_dims(%c) {axis = 0}              : tensor<1xNxi32>
+///   %idx1 = tt.broadcast(%ce)                          : tensor<MxNxi32>
+///   %ptr  = tle.local_pointers %md[%idx0, %idx1] : tensor<MxNx!tt.ptr>
+///
+/// So the index must be defined by a BroadcastOp: any other producer
+/// (e.g. an addi of two broadcasts forming a flat row-major iota, which
+/// Case D handles separately) is not a per-axis range and must be
+/// rejected here, or Cases B/C would misread it and silently drop the
+/// real offsets. The broadcast source must be size 1 in every dim except
+/// `axis` (only then does the index vary along exactly one axis); we then
+/// peel the expand_dims chain and match the underlying make_range (or
+/// addi(range, const) for a non-zero offset). On mismatch the caller
+/// falls through to Path B, keeping the original offset-carrying indices.
+static bool matchFullIndexForAxis(Value index, size_t axis,
+                                  ArrayRef<int64_t> shape, int64_t &offset) {
+  auto indexTy = dyn_cast<RankedTensorType>(index.getType());
+  if (!indexTy || !indexTy.getElementType().isInteger())
+    return false;
+  if (indexTy.getShape() != shape)
+    return false;
+
+  Value current = stripSubsliceIndexWrappers(index);
+  if (shape.size() == 1)
+    return matchRangeWithOffset(current, shape.front(), offset);
+
+  auto bcast = current.getDefiningOp<triton::BroadcastOp>();
+  if (!bcast)
+    return false;
+
+  auto bcastSrcTy = dyn_cast<RankedTensorType>(bcast.getSrc().getType());
+  if (!bcastSrcTy || bcastSrcTy.getRank() != static_cast<int64_t>(shape.size()))
+    return false;
+  for (auto [dim, dimSize] : llvm::enumerate(shape)) {
+    const int64_t expected = dim == axis ? dimSize : 1;
+    if (bcastSrcTy.getShape()[dim] != expected)
+      return false;
+  }
+
+  current = stripSubsliceIndexWrappers(bcast.getSrc());
+  while (auto expand = current.getDefiningOp<triton::ExpandDimsOp>())
+    current = stripSubsliceIndexWrappers(expand.getSrc());
+
+  auto rangeTy = dyn_cast<RankedTensorType>(current.getType());
+  if (!rangeTy)
+    return false;
+  // For 1D: check shape directly. For multi-dim (e.g. addi(expand_dims,
+  // const)): matchRangeWithOffset handles it by stripping expand_dims from addi
+  // operands.
+  if (rangeTy.getRank() == 1) {
+    if (rangeTy.getShape()[0] != shape[axis])
+      return false;
+  }
+
+  return matchRangeWithOffset(current, shape[axis], offset);
+}
+
+/// Check if a mask value is provably all-true (trivially true).
+/// Matches: arith.constant dense<true>, tt.splat(arith.constant true).
+static bool isTriviallyTrueMask(Value mask) {
+  if (!mask)
+    return true;
+
+  if (auto constOp = mask.getDefiningOp<arith::ConstantOp>()) {
+    if (auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue())) {
+      if (denseAttr.isSplat() && denseAttr.getElementType().isInteger(1) &&
+          denseAttr.getSplatValue<bool>())
+        return true;
+    }
+  }
+
+  if (auto splatOp = mask.getDefiningOp<triton::SplatOp>()) {
+    if (auto constSrc =
+            splatOp.getSrc().getDefiningOp<arith::ConstantIntOp>()) {
+      return constSrc.value() != 0;
+    }
+    if (auto constSrc = splatOp.getSrc().getDefiningOp<arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constSrc.getValue()))
+        return intAttr.getValue().getBoolValue();
+    }
+  }
+
+  return false;
+}
+
+/// Whether any user of the tle.local_pointers result is a tt.load with a
+/// non-trivially-true mask. Gates Cases B/C/D: such loads take Path B and
+/// are later converted to a DTE (slice_pad/slice_deslice) transfer whose
+/// source shape/size derivation assumes a ROOT buffer base.
+///
+/// Example (offset [4, 0] sub-tile of a 8x16 root, masked load):
+///   %md   = ttg.local_alloc : !ttg.memdesc<8x16xf32>        // ROOT
+///   %r    = tt.make_range(4, 8)         : tensor<4xi32>
+///   %re   = tt.expand_dims(%r) {axis=1} : tensor<4x1xi32>
+///   %idx0 = tt.broadcast(%re)           : tensor<4x8xi32>
+///   %c    = tt.make_range(0, 8)         : tensor<8xi32>
+///   %ce   = tt.expand_dims(%c) {axis=0} : tensor<1x8xi32>
+///   %idx1 = tt.broadcast(%ce)           : tensor<4x8xi32>
+///   %ptr  = tle.local_pointers %md[%idx0, %idx1] : tensor<4x8x!tt.ptr<f32>>
+///   %val  = tt.load %ptr, %mask        // mask = col < 4 (non-trivial)
+///
+/// Without this gate Case B rewrites to %sub = ttg.memdesc_subslice
+/// %md[4, 0] + zero-index local_pointers. The masked load then takes
+/// Path B: memdesc_to_ptr folds the view offset into a mid-buffer base
+/// (element [4, 0]) and the view size information is lost, so the DTE
+/// conversion derives transfer sizes from the ROOT shape (8x16) and
+/// reads rows 4..12 of an 8-row root -> out-of-bounds, device crash.
+///
+/// With this gate Cases B/C/D are skipped: the offset-carrying indices
+/// keep Path B on the ROOT base, and the DTE lowering handles the offset
+/// safely by placing it in the DTE source offsets ([4, 0]) instead of the
+/// base pointer (rows 4..8 stay in bounds).
+///
+/// Unmasked (or trivially-true-mask) loads do not need this gate: they
+/// take Path A, a structured ttg.local_load on the sub-view memdesc whose
+/// reduced shape (4x8) bounds the transfer, so Cases B/C/D are safe for
+/// them. Only non-trivial masks force Path B, hence the filter above.
+static bool hasNonTriviallyMaskedLoadUser(Operation *op) {
+  Value ptrTensor = op->getResult(0);
+  for (auto *user : ptrTensor.getUsers()) {
+    if (auto loadOp = dyn_cast<triton::LoadOp>(user)) {
+      if (loadOp.getPtr() == ptrTensor && loadOp.getMask() &&
+          !isTriviallyTrueMask(loadOp.getMask()))
+        return true;
+    }
+  }
+  return false;
+}
+
+// ===----------------------------------------------------------------------===
+// Phase 0: Canonicalize tle.local_pointers - MemDesc view canonicalization
+//
+// Unified handling of memdesc view transformations on tle.local_pointers.
+// Runs BEFORE barrier insertion so that barrier groups track the simplified
+// tle.local_pointers and the produced memdesc_xxx ops are available to all
+// downstream phases.
+//
+// Supported cases (applied in priority order, iteratively):
+//
+// Case A - memdesc_index (dim-0 scalar index peeling):
+//   When bufferRank > resultRank and the first index is a splat/constant
+//   scalar, extract it into ttg.memdesc_index to reduce the memdesc rank.
+//
+//   %ptr = tle.local_pointers %md[%splat_idx, %idx1]
+//            : !ttg.memdesc<4x128xf16> -> tensor<128x!tt.ptr<f16>>
+//   =>
+//   %indexed = ttg.memdesc_index %md[%scalar]
+//            : !ttg.memdesc<4x128xf16> -> !ttg.memdesc<128xf16>
+//   %ptr = tle.local_pointers %indexed[%idx1]
+//            : !ttg.memdesc<128xf16> -> tensor<128x!tt.ptr<f16>>
+//
+// Case B - memdesc_subslice (static sub-tile offset extraction):
+//   When all indices match make_range(offset, offset+extent) with static
+//   offsets and the result shape is a proper sub-tile of the memdesc,
+//   extract the constant offsets into ttg.memdesc_subslice. The remaining
+//   tle.local_pointers gets zero-based indices covering the sub-tile.
+//
+//   %ptr = tle.local_pointers %md[%range_off64, %range_off32]
+//            : !ttg.memdesc<128x64xf16> -> tensor<64x32x!tt.ptr<f16>>
+//   =>
+//   %sub = ttg.memdesc_subslice %md[64, 32]
+//            : !ttg.memdesc<128x64xf16> -> !ttg.memdesc<64x32xf16>
+//   %ptr = tle.local_pointers %sub[%range_0_64, %range_0_32]
+//            : !ttg.memdesc<64x32xf16> -> tensor<64x32x!tt.ptr<f16>>
+//
+// Case C - memdesc_trans (transposed access pattern detection):
+//   When a 2D tle.local_pointers has its axis-0 and axis-1 indices swapped
+//   relative to the standard row-major pattern, produce ttg.memdesc_trans.
+//   (Currently limited to 2D rank-preserving cases.)
+//
+//   %ptr = tle.local_pointers %md[%idx_col, %idx_row]
+//            : !ttg.memdesc<M x N x f16> -> tensor<N x M x !tt.ptr<f16>>
+//   =>
+//   %transposed = ttg.memdesc_trans %md {order = [1, 0]}
+//            : !ttg.memdesc<M x N x f16> -> !ttg.memdesc<N x M x f16>
+//   %ptr = tle.local_pointers %transposed[%idx_row, %idx_col]
+//            : !ttg.memdesc<N x M x f16> -> tensor<N x M x !tt.ptr<f16>>
+//
+// Case D - memdesc_reshape (1D buffer with multi-dim access):
+//   When a 1D memdesc is accessed with a multi-dim index tensor (e.g.,
+//   memdesc<256xf16> + tensor<16x16xi32>), produce ttg.memdesc_reshape
+//   so downstream passes can use structured DTE ops instead of flat
+//   pointer arithmetic.
+//
+//   %ptr = tle.local_pointers %md[%flat_idx]
+//            : !ttg.memdesc<256xf16> -> tensor<16x16x!tt.ptr<f16>>
+//   =>
+//   %reshaped = ttg.memdesc_reshape %md
+//            : !ttg.memdesc<256xf16> -> !ttg.memdesc<16x16xf16>
+//   %ptr = tle.local_pointers %reshaped[%idx0, %idx1]
+//            : !ttg.memdesc<16x16xf16> -> tensor<16x16x!tt.ptr<f16>>
+//
+//   NOTE: Case D requires the flat index to be decomposable into per-axis
+//   make_range patterns. This is a best-effort optimization; unmatched
+//   patterns fall through to ConvertLocalPointersOp's Path B.
+// ===----------------------------------------------------------------------===
+
+/// Case A: Peel dim-0 scalar index into ttg.memdesc_index.
+/// Returns the rewritten tle.local_pointers op (or nullptr).
+static Operation *canonicalizeDim0Index(Operation *op, OpBuilder &builder) {
+  Value memDescVal = op->getOperand(0);
+  auto memDescTy = cast<triton::gpu::MemDescType>(memDescVal.getType());
+  auto bufferShape = memDescTy.getShape();
+  unsigned bufferRank = memDescTy.getRank();
+  unsigned numIndices = op->getNumOperands() - 1;
+
+  if (numIndices == 0 || numIndices != bufferRank)
+    return nullptr;
+
+  unsigned resultRank = 0;
+  if (auto rtt = dyn_cast<RankedTensorType>(op->getResult(0).getType()))
+    resultRank = rtt.getRank();
+
+  if (resultRank != bufferRank - 1)
+    return nullptr;
+
+  Value dim0Index = op->getOperand(1);
+  Value scalarIndex;
+
+  if (auto splatOp = dim0Index.getDefiningOp<triton::SplatOp>()) {
+    scalarIndex = splatOp.getSrc();
+  } else if (auto constOp = dim0Index.getDefiningOp<arith::ConstantOp>()) {
+    if (auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue())) {
+      if (denseAttr.isSplat()) {
+        auto splatVal = denseAttr.getSplatValue<Attribute>();
+        scalarIndex = builder.create<arith::ConstantOp>(
+            op->getLoc(), builder.getI32Type(),
+            builder.getI32IntegerAttr(cast<IntegerAttr>(splatVal).getInt()));
+      }
+    }
+  }
+
+  if (!scalarIndex)
+    return nullptr;
+
+  if (!scalarIndex.getType().isInteger(32))
+    scalarIndex = builder.create<arith::TruncIOp>(
+        op->getLoc(), builder.getI32Type(), scalarIndex);
+
+  auto reducedShape = bufferShape.drop_front(1);
+
+  Attribute reducedEncoding = memDescTy.getEncoding();
+  if (auto encTrait =
+          dyn_cast<triton::gpu::LayoutEncodingTrait>(reducedEncoding)) {
+    unsigned encRank = encTrait.getRank();
+    unsigned newShapeSize = reducedShape.size();
+    if (!(encRank == newShapeSize || encRank == newShapeSize - 1)) {
+      if (auto swizzled = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
+              reducedEncoding)) {
+        auto oldOrder = swizzled.getOrder();
+        SmallVector<unsigned> newOrder;
+        for (unsigned o : oldOrder) {
+          if (o == 0)
+            continue;
+          newOrder.push_back(o - 1);
+        }
+        auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
+            builder.getContext(), newOrder.size());
+        reducedEncoding = triton::gpu::SwizzledSharedEncodingAttr::get(
+            builder.getContext(), swizzled.getVec(), swizzled.getPerPhase(),
+            swizzled.getMaxPhase(), newOrder, reducedCTA);
+      } else if (auto nvmmaShared =
+                     dyn_cast<triton::gpu::NVMMASharedEncodingAttr>(
+                         reducedEncoding)) {
+        auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
+            builder.getContext(), newShapeSize);
+        reducedEncoding = triton::gpu::NVMMASharedEncodingAttr::get(
+            builder.getContext(), nvmmaShared.getSwizzlingByteWidth(),
+            nvmmaShared.getTransposed(), nvmmaShared.getElementBitWidth(),
+            nvmmaShared.getFp4Padded(), reducedCTA);
+      }
+    }
+  }
+
+  auto reducedMemDescTy = triton::gpu::MemDescType::get(
+      reducedShape, memDescTy.getElementType(), reducedEncoding,
+      memDescTy.getMemorySpace(), memDescTy.getMutableMemory());
+
+  auto indexOp = builder.create<triton::gpu::MemDescIndexOp>(
+      op->getLoc(), reducedMemDescTy, memDescVal, scalarIndex);
+
+  SmallVector<Value> newOperands;
+  newOperands.push_back(indexOp.getResult());
+  for (unsigned i = 2; i < op->getNumOperands(); ++i)
+    newOperands.push_back(op->getOperand(i));
+
+  OperationState state(op->getLoc(), "tle.local_pointers");
+  state.addOperands(newOperands);
+  state.addTypes(op->getResultTypes());
+  state.addAttributes(op->getAttrs());
+  Operation *newOp = builder.create(state);
+
+  op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
+  op->erase();
+  return newOp;
+}
+
+/// Case B: Extract static sub-tile offsets into ttg.memdesc_subslice.
+/// Returns the rewritten tle.local_pointers op (or nullptr).
+static Operation *canonicalizeSubslice(Operation *op, OpBuilder &builder) {
+  Value memDescVal = op->getOperand(0);
+  auto memDescTy = cast<triton::gpu::MemDescType>(memDescVal.getType());
+  auto memDescShape = memDescTy.getShape();
+  unsigned bufferRank = memDescTy.getRank();
+  unsigned numIndices = op->getNumOperands() - 1;
+
+  if (numIndices == 0 || numIndices != bufferRank)
+    return nullptr;
+
+  auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!resultTy || resultTy.getRank() != bufferRank)
+    return nullptr;
+
+  auto ptrElemTy = dyn_cast<triton::PointerType>(resultTy.getElementType());
+  if (!ptrElemTy)
+    return nullptr;
+
+  auto resultShape = resultTy.getShape();
+
+  // Every axis must match make_range(offset, offset+extent).
+  SmallVector<int32_t> offsets(bufferRank, 0);
+  bool hasNonZeroOffset = false;
+  for (unsigned axis = 0; axis < bufferRank; ++axis) {
+    Value index = op->getOperand(axis + 1);
+    int64_t offset = 0;
+    if (!matchFullIndexForAxis(index, axis, resultShape, offset))
+      return nullptr;
+    if (offset < 0 || offset + resultShape[axis] > memDescShape[axis])
+      return nullptr;
+    offsets[axis] = static_cast<int32_t>(offset);
+    if (offset != 0)
+      hasNonZeroOffset = true;
+  }
+
+  // Skip full-view (all offsets zero AND shape matches buffer exactly).
+  // Sub-shapes (offsets non-zero or result shape != buffer shape) are valid
+  // subslice targets — TTMemDescSubsliceOpLowering handles them via
+  // memref::SubViewOp with StridedLayoutAttr to preserve source strides.
+  bool isFullView = !hasNonZeroOffset && llvm::equal(resultShape, memDescShape);
+  if (isFullView)
+    return nullptr;
+
+  // MemDescSubsliceOp verifier requires offset to be aligned to the
+  // result size in each split dimension: offset & (resultSize - 1) == 0.
+  // Skip canonicalization if any offset is unaligned (falls through to Path B).
+  for (unsigned axis = 0; axis < bufferRank; ++axis) {
+    if (resultShape[axis] > 0 && (offsets[axis] & (resultShape[axis] - 1)))
+      return nullptr;
+  }
+
+  auto subTy = triton::gpu::MemDescType::get(
+      resultShape, memDescTy.getElementType(), memDescTy.getEncoding(),
+      memDescTy.getMemorySpace(), memDescTy.getMutableMemory(),
+      memDescTy.getAllocShape());
+  auto subslice = builder.create<triton::gpu::MemDescSubsliceOp>(
+      op->getLoc(), subTy, memDescVal, offsets);
+
+  // Rebuild tle.local_pointers with zero-based indices on the sub-tile.
+  // The zero-based form (no indices) is the simplest; Step 2's
+  // ConvertLocalPointersOp recognizes it.
+  SmallVector<Value> newOperands;
+  newOperands.push_back(subslice.getResult());
+
+  OperationState state(op->getLoc(), "tle.local_pointers");
+  state.addOperands(newOperands);
+  state.addTypes(op->getResultTypes());
+  state.addAttributes(op->getAttrs());
+  Operation *newOp = builder.create(state);
+
+  op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
+  op->erase();
+  return newOp;
+}
+
+/// Case C: Detect transposed 2D access and produce ttg.memdesc_trans.
+/// Returns the rewritten tle.local_pointers op (or nullptr).
+///
+/// Detects when a 2D tle.local_pointers accesses memdesc<MxN> but
+/// the index pattern indicates column-major order (axis swap). Limited
+/// to 2D rank-preserving cases.
+static Operation *canonicalizeTranspose(Operation *op, OpBuilder &builder) {
+  Value memDescVal = op->getOperand(0);
+  auto memDescTy = cast<triton::gpu::MemDescType>(memDescVal.getType());
+  unsigned bufferRank = memDescTy.getRank();
+  unsigned numIndices = op->getNumOperands() - 1;
+
+  if (bufferRank != 2 || numIndices != 2)
+    return nullptr;
+
+  auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!resultTy || resultTy.getRank() != 2)
+    return nullptr;
+
+  auto resultShape = resultTy.getShape();
+  auto memDescShape = memDescTy.getShape();
+
+  // Transposed access: result[Nr, Mr] from a sub-region of memdesc[Ms, Ns],
+  // i.e. the result dims may be smaller than the swapped buffer dims.
+  if (resultShape[0] > memDescShape[1] || resultShape[1] > memDescShape[0])
+    return nullptr;
+
+  // Transposed access: index[0] varies along axis 1 of the result (covers
+  // the buffer's dim 0), and index[1] varies along axis 0 of the result
+  // (covers the buffer's dim 1). This is the opposite of the standard
+  // row-major pattern where index[0] varies along axis 0 and index[1]
+  // along axis 1.
+  int64_t offset0 = 0, offset1 = 0;
+  if (!matchFullIndexForAxis(op->getOperand(1), /*axis=*/1, resultShape,
+                             offset0))
+    return nullptr;
+  if (!matchFullIndexForAxis(op->getOperand(2), /*axis=*/0, resultShape,
+                             offset1))
+    return nullptr;
+
+  // Sub-region bounds: dim 0 covers [offset0, offset0 + resultShape[1]),
+  // dim 1 covers [offset1, offset1 + resultShape[0]).
+  int64_t subM = resultShape[1];
+  int64_t subN = resultShape[0];
+  if (offset0 < 0 || offset0 + subM > memDescShape[0])
+    return nullptr;
+  if (offset1 < 0 || offset1 + subN > memDescShape[1])
+    return nullptr;
+
+  // MemDescSubsliceOp verifier: a split dim's offset must be aligned to the
+  // result size (offset & (size - 1) == 0); a non-split dim's offset must
+  // be zero.
+  if (subM != memDescShape[0] && (offset0 & (subM - 1)))
+    return nullptr;
+  if (subM == memDescShape[0] && offset0 != 0)
+    return nullptr;
+  if (subN != memDescShape[1] && (offset1 & (subN - 1)))
+    return nullptr;
+  if (subN == memDescShape[1] && offset1 != 0)
+    return nullptr;
+
+  // Emit subslice first (when the region is not the full buffer), then the
+  // transpose on top of it: trans(sub(md))[r, c] = md[offset0 + c,
+  // offset1 + r], which is exactly the transposed sub-region access.
+  Value view = memDescVal;
+  if (subM != memDescShape[0] || subN != memDescShape[1]) {
+    SmallVector<int32_t> subOffsets = {static_cast<int32_t>(offset0),
+                                       static_cast<int32_t>(offset1)};
+    auto subTy = triton::gpu::MemDescType::get(
+        SmallVector<int64_t>{subM, subN}, memDescTy.getElementType(),
+        memDescTy.getEncoding(), memDescTy.getMemorySpace(),
+        memDescTy.getMutableMemory(), memDescTy.getAllocShape());
+    view = builder
+               .create<triton::gpu::MemDescSubsliceOp>(op->getLoc(), subTy,
+                                                       view, subOffsets)
+               .getResult();
+  }
+
+  SmallVector<int32_t> order = {1, 0};
+  auto transOp =
+      builder.create<triton::gpu::MemDescTransOp>(op->getLoc(), view, order);
+
+  // Rebuild with zero-index form on the transposed memdesc.
+  SmallVector<Value> newOperands;
+  newOperands.push_back(transOp.getResult());
+
+  OperationState state(op->getLoc(), "tle.local_pointers");
+  state.addOperands(newOperands);
+  state.addTypes(op->getResultTypes());
+  state.addAttributes(op->getAttrs());
+  Operation *newOp = builder.create(state);
+
+  op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
+  op->erase();
+  return newOp;
+}
+
+/// Check if a contribution value matches axis d's row-major iota:
+///   muli(broadcast(expand_dims(make_range(0, extent), ...)), stride_const)
+/// or stride==1: broadcast(expand_dims(make_range(0, extent), ...))
+/// where stride_const may be a tt.splat(arith.constant_int) or an
+/// arith.constant with a dense splat elements attr.
+///
+/// The expand_dims chain must insert every axis except `axis` itself (so the
+/// range data ends up along axis `axis` of the final shape). For rank=2,
+/// axis 0 -> expand_dims axis=1 (shape [extent, 1]); axis 1 -> expand_dims
+/// axis=0 (shape [1, extent]).
+static bool matchAxisContribution(Value contrib, unsigned axis, unsigned rank,
+                                  int64_t extent, int64_t stride) {
+  // Strip outer broadcasts before looking for muli. The contribution may
+  // be broadcast(muli(range, const)) from broadcast(addi(muli, ...)).
+  Value current = contrib;
+  while (auto bcast = current.getDefiningOp<triton::BroadcastOp>())
+    current = bcast.getSrc();
+
+  Value rangeSrc = current;
+  int64_t mulStride = 1;
+
+  // Strip an outer muli with a splat constant stride. This runs for unit
+  // strides as well: the frontend may emit muli(range, 1) even when the
+  // stride is 1, and the range must still be exposed for the
+  // broadcast/expand_dims chain matching below.
+  if (auto muli = current.getDefiningOp<arith::MulIOp>()) {
+    auto trySplatRhs = [&](Value splatVal, Value otherSide) -> bool {
+      // tt.splat(arith.constant_int)
+      if (auto splat = splatVal.getDefiningOp<triton::SplatOp>()) {
+        if (auto cst = splat.getSrc().getDefiningOp<arith::ConstantIntOp>()) {
+          mulStride = cst.value();
+          rangeSrc = otherSide;
+          return true;
+        }
+        return false;
+      }
+      // arith.constant with dense splat elements attr
+      if (auto cst = splatVal.getDefiningOp<arith::ConstantOp>()) {
+        if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
+          if (dense.isSplat()) {
+            mulStride = dense.getSplatValue<APInt>().getSExtValue();
+            rangeSrc = otherSide;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    if (!trySplatRhs(muli.getRhs(), muli.getLhs()) &&
+        !trySplatRhs(muli.getLhs(), muli.getRhs()))
+      return false;
+  } else if (stride != 1) {
+    return false;
+  }
+
+  if (mulStride != stride)
+    return false;
+
+  // Traverse the broadcast/expand_dims chain and collect the inserted axes.
+  // The range data must end up along `axis`, so the set of expand_dims axes
+  // must be exactly {0, 1, ..., rank-1} \ {axis}.
+  Value src = rangeSrc;
+  SmallVector<unsigned> insertedAxes;
+  while (src) {
+    if (auto bcast = src.getDefiningOp<triton::BroadcastOp>()) {
+      src = bcast.getSrc();
+      continue;
+    }
+    if (auto expand = src.getDefiningOp<triton::ExpandDimsOp>()) {
+      insertedAxes.push_back(expand.getAxis());
+      src = expand.getSrc();
+      continue;
+    }
+    break;
+  }
+
+  if (insertedAxes.size() != rank - 1)
+    return false;
+  // Verify the inserted axes are exactly {0..rank-1} \ {axis}.
+  SmallVector<unsigned> expectedAxes;
+  for (unsigned i = 0; i < rank; ++i)
+    if (i != axis)
+      expectedAxes.push_back(i);
+  // Order-insensitive comparison (expand_dims order may vary).
+  SmallVector<unsigned> sortedInserted = insertedAxes;
+  llvm::sort(sortedInserted);
+  if (sortedInserted != expectedAxes)
+    return false;
+
+  if (auto makeRange = src.getDefiningOp<triton::MakeRangeOp>())
+    return makeRange.getStart() == 0 &&
+           makeRange.getEnd() == static_cast<uint32_t>(extent);
+  return false;
+}
+
+/// Verify flatIdx is a row-major iota pattern:
+///   flat_idx = sum_d(broadcast(expand_dims(arange(0, S_d), d)) * stride_d)
+/// where stride_d = product(S_{d+1..rank-1}).
+/// Simplified: does not handle trunci/extsi intermediate layers.
+static bool isRowMajorIota(Value flatIdx, ArrayRef<int64_t> resultShape) {
+  // Decompose addi chain to collect per-axis contributions.
+  SmallVector<Value> contributions;
+  Value current = flatIdx;
+  while (auto addi = current.getDefiningOp<arith::AddIOp>()) {
+    contributions.push_back(addi.getRhs());
+    current = addi.getLhs();
+  }
+  contributions.push_back(current);
+
+  unsigned rank = resultShape.size();
+  for (unsigned d = 0; d < rank; ++d) {
+    int64_t expectedExtent = resultShape[d];
+    int64_t expectedStride = 1;
+    for (unsigned i = d + 1; i < rank; ++i)
+      expectedStride *= resultShape[i];
+
+    bool found = false;
+    for (Value contrib : contributions) {
+      if (matchAxisContribution(contrib, d, rank, expectedExtent,
+                                expectedStride)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return false;
+  }
+  return true;
+}
+
+/// Case D: Canonicalize 1D memdesc + higher-rank index into memdesc_reshape.
+/// Returns the rewritten tle.local_pointers op (or nullptr).
+///
+/// Applies when: 1D buffer, single index operand, result rank > 1,
+/// product(resultShape) == memdesc.shape[0], and the index tensor has
+/// the same rank as the result.
+///
+/// Produces:
+///   %reshaped = ttg.memdesc_reshape %md
+///             : !ttg.memdesc<256xf16> -> !ttg.memdesc<16x16xf16>
+///
+/// Then rewrites the tle.local_pointers to use the reshaped memdesc
+/// with zero indices (no explicit index operands). ConvertLocalPointersOp
+/// Path B will synthesize full-view indices and use standard multi-dim
+/// pointer arithmetic on the reshaped memdesc.
+///
+/// The original flat index (tensor<16x16xi32>) is dropped because it
+/// is redundant for a full-view access on the reshaped memdesc. The
+/// downstream `lowerViaMemDescToPtr` zero-index path generates identical
+/// pointer arithmetic: base + row*N + col.
+///
+///   Before:
+///     %ptr = tle.local_pointers %md[%flat_idx]
+///              : !ttg.memdesc<256xf16> -> tensor<16x16x!tt.ptr<f16>>
+///   After:
+///     %reshaped = ttg.memdesc_reshape %md
+///              : !ttg.memdesc<256xf16> -> !ttg.memdesc<16x16xf16>
+///     %ptr = tle.local_pointers %reshaped
+///              : !ttg.memdesc<16x16xf16> -> tensor<16x16x!tt.ptr<f16>>
+///
+/// Only applies when the flat index is a row-major iota pattern:
+///   flat_idx = expand_dims(arange(0, M), 1) * N + expand_dims(arange(0, N), 0)
+/// Non-iota flat indices (gather patterns) are rejected and fall through
+/// to lowerViaMemDescToPtr's 1D-buffer special case.
+static Operation *canonicalizeReshape(Operation *op, OpBuilder &builder) {
+  Value memDescVal = op->getOperand(0);
+  auto memDescTy = cast<triton::gpu::MemDescType>(memDescVal.getType());
+  unsigned bufferRank = memDescTy.getRank();
+  unsigned numIndices = op->getNumOperands() - 1;
+
+  if (bufferRank != 1 || numIndices != 1)
+    return nullptr;
+
+  auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!resultTy || resultTy.getRank() <= 1)
+    return nullptr;
+
+  auto resultShape = resultTy.getShape();
+  int64_t totalElems = 1;
+  for (int64_t d : resultShape)
+    totalElems *= d;
+
+  if (totalElems != memDescTy.getShape()[0])
+    return nullptr;
+
+  Value flatIdx = op->getOperand(1);
+  auto flatIdxTy = dyn_cast<RankedTensorType>(flatIdx.getType());
+  if (!flatIdxTy || flatIdxTy.getRank() != resultTy.getRank())
+    return nullptr;
+
+  // Verify flat_idx is a row-major iota pattern. Non-iota flat indices
+  // (gather patterns) are rejected - they must fall through to Path B's
+  // 1D-buffer special case to preserve correct gather semantics.
+  if (!isRowMajorIota(flatIdx, resultShape))
+    return nullptr;
+
+  // Produce ttg.memdesc_reshape: 1D -> multi-dim. Use the shape-inference
+  // builder so the result encoding is correctly inferred from the source.
+  auto reshapeOp = builder.create<triton::gpu::MemDescReshapeOp>(
+      op->getLoc(), memDescVal, SmallVector<int64_t>(resultShape));
+
+  // Rebuild tle.local_pointers with reshaped memdesc and no explicit
+  // indices (zero-index form). ConvertLocalPointersOp's Path B will
+  // synthesize full-view indices via synthesizeFullViewIndices() and
+  // generate the equivalent pointer arithmetic on the reshaped shape.
+  SmallVector<Value> newOperands;
+  newOperands.push_back(reshapeOp.getResult());
+
+  OperationState state(op->getLoc(), "tle.local_pointers");
+  state.addOperands(newOperands);
+  state.addTypes(op->getResultTypes());
+  state.addAttributes(op->getAttrs());
+  Operation *newOp = builder.create(state);
+
+  op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
+  op->erase();
+  return newOp;
+}
+
+/// Erase dead tle.local_pointers ops with no users.
+static bool tryEraseDeadLocalPointers(Operation *op) {
+  if (op->getResult(0).use_empty()) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "canonicalizeLocalPointers: erasing dead op " << *op << "\n");
+    op->erase();
+    return true;
+  }
+  return false;
+}
+
+/// Phase 0 entry: canonicalize all tle.local_pointers in the module.
+/// Applies Cases A-D with a worklist: each rewritten op is pushed back so
+/// canonicalization can cascade (e.g. Case A -> Case B), and dead ops are
+/// erased opportunistically. Each op appears in the worklist at most once
+/// at a time, so the total work is linear in the number of rewrites
+/// (instead of re-walking the whole module after every change).
+static void canonicalizeLocalPointers(gpu::GPUModuleOp module) {
+  SmallVector<Operation *> worklist;
+  module.walk([&](Operation *op) {
+    if (op->getName().getStringRef() == "tle.local_pointers" &&
+        op->getNumResults() == 1)
+      worklist.push_back(op);
+  });
+
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    // DCE: erase dead ops first. Their users may include other
+    // tle.local_pointers ops that are still in the worklist; those get
+    // erased when popped.
+    if (tryEraseDeadLocalPointers(op))
+      continue;
+
+    OpBuilder builder(op);
+
+    // Try each canonicalization case in priority order. On success the
+    // rewritten op goes back on the worklist so later cases can apply.
+    // Case A is unconditional. Cases B/C/D are skipped when a user is a
+    // non-trivially-masked tt.load: that load takes Path B, whose DTE
+    // lowering derives the transfer sizes from the ROOT buffer shape and
+    // would read out of bounds from a mid-buffer view base (see
+    // hasNonTriviallyMaskedLoadUser). The original offset-carrying
+    // indices keep Path B on the root base, which is safe.
+    Operation *next = nullptr;
+    bool viewCasesAllowed = !hasNonTriviallyMaskedLoadUser(op);
+    if ((next = canonicalizeDim0Index(op, builder)) ||
+        (viewCasesAllowed && (next = canonicalizeSubslice(op, builder))) ||
+        (viewCasesAllowed && (next = canonicalizeTranspose(op, builder))) ||
+        (viewCasesAllowed && (next = canonicalizeReshape(op, builder)))) {
+      worklist.push_back(next);
+    }
+  }
+}
+
+// ===----------------------------------------------------------------------===
+// Step 2: Lower all tle ops
 // ===----------------------------------------------------------------------===
 
 // ===----------------------------------------------------------------------===
-// Phase 2a: Lower tle.local_pointers
+// Step 2a: Lower tle.local_pointers
 // ===----------------------------------------------------------------------===
 
 /// Compute row-major strides from a static shape.
@@ -227,11 +1189,64 @@ static SmallVector<int64_t> computeRowMajorStrides(ArrayRef<int64_t> shape) {
   return strides;
 }
 
-/// Try to look through a tt.broadcast to find the pre-broadcast source.
-static Value lookThroughBroadcast(Value v) {
-  if (auto broadcastOp = v.getDefiningOp<triton::BroadcastOp>())
-    return broadcastOp.getSrc();
-  return v;
+/// Compute the true memory strides (in root-buffer elements) of a MemDesc
+/// view chain (ttg.memdesc_subslice / ttg.memdesc_trans) relative to the
+/// view's first element.
+///
+/// The chain is walked down to a root buffer whose memory layout is
+/// contiguous row-major:
+///   - a plain ttg.local_alloc result (row-major by construction),
+///   - a ttg.memdesc_index result (contiguous slice along dim 0),
+///   - a ttg.memdesc_reshape result (Case D only fires on row-major iota
+///     patterns over a contiguous buffer).
+/// Subslice preserves the strides of its source; trans permutes them.
+///
+/// Path B (lowerViaMemDescToPtr) must use these strides instead of
+/// row-major(viewShape): a 2D sub-tile of a [8,16] buffer has row stride 16,
+/// not 8. The view's static offset is NOT folded here - the base pointer
+/// produced by triton_gcu.memdesc_to_ptr already addresses the view's first
+/// element (MemDescToPtrOpLowering folds the offset into the root pointer).
+///
+/// Returns failure when the chain root is not a MemDescType (caller should
+/// fall back to row-major of the view shape).
+static FailureOr<SmallVector<int64_t>> resolveViewStrides(Value view) {
+  // Collect subslice/trans ops from the view down to the root.
+  SmallVector<Operation *> chainOps;
+  Value curr = view;
+  while (auto *def = curr.getDefiningOp()) {
+    if (isa<triton::gpu::MemDescSubsliceOp, triton::gpu::MemDescTransOp>(def)) {
+      chainOps.push_back(def);
+      curr = def->getOperand(0);
+    } else {
+      break;
+    }
+  }
+  auto rootTy = dyn_cast<triton::gpu::MemDescType>(curr.getType());
+  if (!rootTy)
+    return failure();
+  auto strides = computeRowMajorStrides(rootTy.getShape());
+
+  // Fold the chain bottom-up. Subslice preserves strides; trans permutes.
+  for (Operation *op : llvm::reverse(chainOps)) {
+    if (auto trans = dyn_cast<triton::gpu::MemDescTransOp>(op)) {
+      auto order = trans.getOrder();
+      SmallVector<int64_t> permuted(strides.size());
+      for (unsigned d = 0; d < strides.size(); ++d)
+        permuted[d] = strides[order[d]];
+      strides = std::move(permuted);
+    }
+    // MemDescSubsliceOp: strides unchanged.
+  }
+  return strides;
+}
+
+/// Strides for Path B pointer arithmetic: the true view strides when the
+/// memdesc operand is a view chain, row-major of the shape otherwise.
+static SmallVector<int64_t> getPointerArithStrides(Value memDescVal,
+                                                   ArrayRef<int64_t> shape) {
+  if (auto viewStrides = resolveViewStrides(memDescVal); succeeded(viewStrides))
+    return std::move(*viewStrides);
+  return computeRowMajorStrides(shape);
 }
 
 /// For zero-index full-view local_pointers, derive a per-axis encoding
@@ -294,7 +1309,7 @@ synthesizeFullViewIndices(Operation *op, PatternRewriter &rewriter,
 // Check if all indices represent full-block access to the memdesc.
 // Returns true for zero-index form (full-view by definition) or when
 // each index[i] traces back to make_range(0, bufferShape[i]).
-static bool isFullBlockAccess(Operation *op) {
+static bool isZeroOrFullRangeIndex(Operation *op) {
   auto memDescTy =
       dyn_cast<triton::gpu::MemDescType>(op->getOperand(0).getType());
   auto bufferShape = memDescTy.getShape();
@@ -323,14 +1338,14 @@ static bool isFullBlockAccess(Operation *op) {
         src = expand.getSrc();
         continue;
       }
+      if (auto trunc = src.getDefiningOp<arith::TruncIOp>()) {
+        src = trunc.getIn();
+        continue;
+      }
+
       break;
     }
 
-    // Strip truncation (i64->i32)
-    if (auto trunc = src.getDefiningOp<arith::TruncIOp>())
-      src = trunc.getIn();
-
-    // Check for make_range(0, dimSize)
     if (auto makeRange = src.getDefiningOp<triton::MakeRangeOp>()) {
       return makeRange.getStart() == 0 &&
              makeRange.getEnd() == static_cast<uint32_t>(dimSize);
@@ -346,24 +1361,34 @@ static bool isFullBlockAccess(Operation *op) {
   return true;
 }
 
-// Check if all users of a tle.local_pointers result are only unmasked
-// tt.load and/or tt.store (no atomics, no masks, no other uses).
-// ttg.local_store/ttg.local_load don't support masks, so masked accesses
-// must go through Path B (memdesc_to_ptr + pointer arithmetic).
-static bool allUsersAreUnmaskedLoadStore(Operation *op) {
+// Check if all users of a tle.local_pointers result are only load/store
+// (unmasked or trivially-true mask) or remote_pointers. Non-trivial masks
+// and other op types are rejected. Volatile / cache / eviction hints are
+// intentionally IGNORED: the GCU backend does not model those modifiers on
+// shared-memory accesses, so ttg.local_load / ttg.local_store (which have no
+// such operands) are considered equivalent regardless of the hints.
+static bool allUsersAreStructuredLoadStore(Operation *op) {
   auto ptrTensor = op->getResult(0);
   for (auto *user : ptrTensor.getUsers()) {
     if (auto loadOp = dyn_cast<triton::LoadOp>(user)) {
-      if (loadOp.getPtr() != ptrTensor || loadOp.getMask())
+      if (loadOp.getPtr() != ptrTensor)
+        return false;
+      if (loadOp.getMask() && !isTriviallyTrueMask(loadOp.getMask()))
         return false;
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(user)) {
-      if (storeOp.getPtr() != ptrTensor || storeOp.getMask())
+      if (storeOp.getPtr() != ptrTensor)
+        return false;
+      if (storeOp.getMask() && !isTriviallyTrueMask(storeOp.getMask()))
         return false;
     } else if (user->getName().getStringRef() == "tle.remote_pointers") {
       if (user->getNumResults() != 1)
         return false;
       for (auto *remoteUser : user->getResult(0).getUsers()) {
-        if (!isa<triton::LoadOp>(remoteUser))
+        auto remoteLoadOp = dyn_cast<triton::LoadOp>(remoteUser);
+        if (!remoteLoadOp || remoteLoadOp.getPtr() != user->getResult(0))
+          return false;
+        if (remoteLoadOp.getMask() &&
+            !isTriviallyTrueMask(remoteLoadOp.getMask()))
           return false;
       }
       continue;
@@ -374,12 +1399,14 @@ static bool allUsersAreUnmaskedLoadStore(Operation *op) {
   return true;
 }
 
-// Path A: Full-block access lowering.
-// Replace tt.store(tle.local_pointers, val) -> ttg.local_store(val, memdesc)
-// Replace tt.load (tle.local_pointers)      -> ttg.local_load (memdesc)
-// Then erase tle.local_pointers.
-static LogicalResult lowerFullBlockAccess(Operation *op, Value memDescVal,
-                                          PatternRewriter &rewriter) {
+// Path A: Structured lowering to ttg.local_load / ttg.local_store.
+// Applies when: zero/full-range indices + resultShape matches buffer +
+// all users are load/store (unmasked or trivially-true mask) or
+// remote_pointers. Handles all post-canonicalize zero-index forms
+// (including memdesc_index/subslice/trans/reshape results).
+// Trivially-true masks are stripped (local_load/local_store have no mask).
+static LogicalResult lowerToLocalLoadStore(Operation *op, Value memDescVal,
+                                           PatternRewriter &rewriter) {
   SmallVector<Operation *> usersToRewrite;
   for (auto *user : op->getResult(0).getUsers())
     usersToRewrite.push_back(user);
@@ -427,12 +1454,22 @@ static LogicalResult lowerFullBlockAccess(Operation *op, Value memDescVal,
   return success();
 }
 
-// Path B: Sub-view / runtime-offset / atomic fallback lowering.
-// Generate memdesc_to_ptr + pointer arithmetic.
-// TODO(haizhu.shao): Implement proper subview lowering with
-// memdesc_subview + local_load.
-static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
-                                        PatternRewriter &rewriter) {
+static triton::gcu::MemDescToPtrOp createMemDescToPtr(PatternRewriter &rewriter,
+                                                      Location loc,
+                                                      Value memDescVal,
+                                                      Type elemTy) {
+  constexpr int kSharedMemAddrSpace = 3;
+  auto ptrTy = triton::PointerType::get(elemTy, kSharedMemAddrSpace);
+  return rewriter.create<triton::gcu::MemDescToPtrOp>(loc, ptrTy, memDescVal);
+}
+
+// Path B: Fallback lowering via memdesc_to_ptr + pointer arithmetic.
+// Used when Path A conditions are not met: non-trivial masks, volatile,
+// scalar dynamic indices, gather patterns, unaligned offsets, or
+// non-load/store users. Downstream DTE pass handles masks natively
+// on the generated pointer arithmetic.
+static LogicalResult lowerViaMemDescToPtr(Operation *op, Value memDescVal,
+                                          PatternRewriter &rewriter) {
   auto loc = op->getLoc();
   auto memDescTy = cast<triton::gpu::MemDescType>(memDescVal.getType());
   auto elemTy = memDescTy.getElementType();
@@ -453,17 +1490,17 @@ static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
       return rewriter.notifyMatchFailure(
           op, "scalar: indices count does not match buffer rank");
 
-    constexpr int kSharedMemAddrSpace = 3;
-    auto basePtrTy = triton::PointerType::get(elemTy, kSharedMemAddrSpace);
-    auto basePtr = rewriter.create<triton::gcu::MemDescToPtrOp>(loc, basePtrTy,
-                                                                memDescVal);
+    auto basePtr = createMemDescToPtr(rewriter, loc, memDescVal, elemTy);
 
     if (numIndices == 0) {
       rewriter.replaceOp(op, basePtr.getResult());
       return success();
     }
 
-    auto strides = computeRowMajorStrides(bufferShape);
+    // Use the true view strides when the memdesc is a view chain: the base
+    // pointer already addresses the view's first element, and a sub-tile's
+    // row stride is the root row stride, not row-major(viewShape).
+    auto strides = getPointerArithStrides(memDescVal, bufferShape);
     auto i32Ty = rewriter.getI32Type();
     Value linearOffset;
     for (unsigned dim = 0; dim < bufferRank; ++dim) {
@@ -497,7 +1534,7 @@ static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
 
   // Special case: single 1D buffer with a higher-rank index tensor used as
   // flat element offset.  e.g. memdesc<256xf16> + tensor<16x16xi32>
-  //   → tensor<16x16x!tt.ptr<f16,3>>
+  //   -> tensor<16x16x!tt.ptr<f16,3>>
   // ptrAccum = splat(basePtr, resultShape) + index
   if (numIndices == bufferRank && bufferRank == 1 && resultRank > bufferRank) {
     Value idx = op->getOperand(1);
@@ -511,10 +1548,7 @@ static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
       return rewriter.notifyMatchFailure(op,
                                          "result element type is not tt.ptr");
 
-    constexpr int kSharedMemAddrSpace = 3;
-    auto basePtrTy = triton::PointerType::get(elemTy, kSharedMemAddrSpace);
-    auto basePtr = rewriter.create<triton::gcu::MemDescToPtrOp>(loc, basePtrTy,
-                                                                memDescVal);
+    auto basePtr = createMemDescToPtr(rewriter, loc, memDescVal, elemTy);
 
     auto i32Ty = rewriter.getI32Type();
     if (idxTy.getElementType() != i32Ty) {
@@ -557,15 +1591,16 @@ static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
   if (!ptrElemTy)
     return rewriter.notifyMatchFailure(op, "result element type is not tt.ptr");
 
-  auto strides = computeRowMajorStrides(bufferShape);
+  // Use the true view strides when the memdesc is a view chain: the base
+  // pointer already addresses the view's first element (the view offset is
+  // folded by MemDescToPtrOpLowering), and a sub-tile's row stride is the
+  // root row stride, not row-major(viewShape).
+  auto strides = getPointerArithStrides(memDescVal, bufferShape);
 
-  constexpr int kSharedMemAddrSpace = 3;
-  auto basePtrTy = triton::PointerType::get(elemTy, kSharedMemAddrSpace);
   auto i32Ty = rewriter.getI32Type();
 
   // %base_ptr = triton_gcu.memdesc_to_ptr %memdesc
-  auto basePtr =
-      rewriter.create<triton::gcu::MemDescToPtrOp>(loc, basePtrTy, memDescVal);
+  auto basePtr = createMemDescToPtr(rewriter, loc, memDescVal, elemTy);
 
   if (bufferRank == 0) {
     auto scalarPtrTensorTy =
@@ -582,10 +1617,7 @@ static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
 
   for (unsigned dim = 0; dim < bufferRank; ++dim) {
     Value idx = indices[dim];
-
-    // Try to look through tt.broadcast to get the pre-broadcast source,
-    // which typically has a "1" in non-owning dimensions.
-    Value idxSrc = lookThroughBroadcast(idx);
+    Value idxSrc = idx;
     auto idxSrcTy = cast<RankedTensorType>(idxSrc.getType());
     auto idxSrcShape = idxSrcTy.getShape();
     auto idxSrcEncoding = idxSrcTy.getEncoding();
@@ -710,25 +1742,34 @@ struct ConvertLocalPointersOp : public RewritePattern {
       return rewriter.notifyMatchFailure(
           op, "indices count does not match buffer rank");
 
-    // Path A: Full-block access pattern (only for unmasked load/store users).
-    // TODO(TBD): support more flexible patterns (e.g. ttg.memdesc_reshape,
-    // ttg.memdesc_trans) that still cover the full block.
+    if (op->getResult(0).use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     bool resultShapeMatchesBuffer = true;
     if (auto resultTy =
             dyn_cast<RankedTensorType>(op->getResult(0).getType())) {
       resultShapeMatchesBuffer = resultTy.getShape() == bufferShape;
     }
-    if (isFullBlockAccess(op) && allUsersAreUnmaskedLoadStore(op) &&
+
+    // Path A: Structured lowering to ttg.local_load / ttg.local_store.
+    // Applies when: zero/full-range indices + resultShape matches buffer +
+    // all users are load/store (unmasked or trivially-true mask) or
+    // remote_pointers. Handles all post-canonicalize zero-index forms.
+    if (isZeroOrFullRangeIndex(op) && allUsersAreStructuredLoadStore(op) &&
         resultShapeMatchesBuffer) {
-      LLVM_DEBUG(llvm::dbgs() << "ConvertLocalPointersOp: Path A (full-block) "
+      LLVM_DEBUG(llvm::dbgs() << "ConvertLocalPointersOp: Path A (structured) "
                               << "for " << *op << "\n");
-      return lowerFullBlockAccess(op, memDescVal, rewriter);
+      return lowerToLocalLoadStore(op, memDescVal, rewriter);
     }
 
-    // Path B: Sub-view / runtime offset / atomic fallback.
-    LLVM_DEBUG(llvm::dbgs() << "ConvertLocalPointersOp: Path B (sub-view) "
+    // Path B: Fallback via memdesc_to_ptr + pointer arithmetic.
+    // Handles non-trivial masks, volatile, scalar dynamic indices,
+    // gather patterns, unaligned offsets, non-load/store users.
+    LLVM_DEBUG(llvm::dbgs() << "ConvertLocalPointersOp: Path B (fallback) "
                             << "for " << *op << "\n");
-    return lowerSubViewAccess(op, memDescVal, rewriter);
+    return lowerViaMemDescToPtr(op, memDescVal, rewriter);
   }
 };
 
@@ -1065,7 +2106,7 @@ static Operation *traceToMemDescToPtr(Value v) {
 
 /// Collect the chain of ops from memdesc_to_ptr (exclusive) down to
 /// (and including) the Value `target`, in def-chain order (memdesc_to_ptr
-/// result → ... → target). Only follows tt.splat / tt.addptr / tt.broadcast.
+/// result -> ... -> target). Only follows tt.splat / tt.addptr / tt.broadcast.
 /// Returns true on success.
 static bool collectDefChain(Value target, Operation *memdescToPtrOp,
                             SmallVectorImpl<Operation *> &chain) {
@@ -1133,7 +2174,7 @@ static Value cloneDefChainWithNewBase(OpBuilder &builder,
 }
 
 /// Rewrite AS 7 (remote) pointer types to AS 3 (shared) in a type.
-/// For tt.ptr<T, 7> → tt.ptr<T, 3>; for tensor<...x!tt.ptr<T, 7>> →
+/// For tt.ptr<T, 7> -> tt.ptr<T, 3>; for tensor<...x!tt.ptr<T, 7>> ->
 /// tensor<...x!tt.ptr<T, 3>>. Returns the original type unchanged if no
 /// AS 7 is present.
 static Type rewriteRemoteAddrSpace(Type ty) {
@@ -1185,7 +2226,7 @@ static void fixRemoteAddrSpaceTypes(Value startVal) {
   }
 }
 
-/// Rewrite AS 7 (remote) → AS 3 (shared) in tt.func parameter / result types
+/// Rewrite AS 7 (remote) -> AS 3 (shared) in tt.func parameter / result types
 /// and tt.call operand / result types so that callee signatures stay consistent
 /// after fixRemoteAddrSpaceTypes has rewritten all value types.
 static void fixRemoteAddrSpaceFuncSignatures(gpu::GPUModuleOp module) {
@@ -1306,11 +2347,11 @@ static void postProcessRemotePointers(gpu::GPUModuleOp module) {
 // The downstream lowering for remote_memdesc expects its source to be the
 // original local_alloc (full-rank memdesc), so we swap them:
 //   %rem = triton_gcu.remote_memdesc %alloc, %id : memdesc<2xMxK>
-//   %idx = ttg.memdesc_index %rem[%i]             : memdesc<2xMxK> ->
-//   memdesc<MxK>
+//   %idx = ttg.memdesc_index %rem[%i]          : memdesc<2xMxK> -> memdesc<MxK>
 //
-// Case A: memdesc_index has no other users besides remote_memdesc → swap in
-// place. Case B: memdesc_index has other users → clone memdesc_index for
+// Case A: memdesc_index has no other users besides remote_memdesc -> swap in
+// place.
+// Case B: memdesc_index has other users -> clone memdesc_index for
 // remote_memdesc.
 // ===----------------------------------------------------------------------===
 static void postProcessMemDescIndex(gpu::GPUModuleOp module) {
@@ -1378,147 +2419,6 @@ static void postProcessMemDescIndex(gpu::GPUModuleOp module) {
 }
 
 // ===----------------------------------------------------------------------===
-// Pre-process: peel dim-0 scalar index into ttg.memdesc_index
-//
-// When tle.local_pointers has bufferRank > resultRank AND the first index
-// is a tt.splat of a scalar, we can split it into:
-//   %slice = ttg.memdesc_index %memdesc[%scalar] : memdesc<NxMxK> ->
-//   memdesc<MxK> %new   = tle.local_pointers(%slice, remaining_indices...)
-// This runs BEFORE the pattern rewriter so that Phase 2 only sees
-// tle.local_pointers where bufferRank == numIndices == resultRank.
-// ===----------------------------------------------------------------------===
-static void preProcessLocalPointers(gpu::GPUModuleOp module) {
-  SmallVector<Operation *> opsToProcess;
-  module.walk([&](Operation *op) {
-    if (op->getName().getStringRef() != "tle.local_pointers")
-      return;
-    if (op->getNumResults() != 1)
-      return;
-    Value memDescVal = op->getOperand(0);
-    auto memDescTy = dyn_cast<triton::gpu::MemDescType>(memDescVal.getType());
-    if (!memDescTy)
-      return;
-    unsigned bufferRank = memDescTy.getRank();
-    unsigned numIndices = op->getNumOperands() - 1;
-    if (numIndices == 0 || numIndices != bufferRank)
-      return;
-
-    // Determine result rank.
-    unsigned resultRank = 0;
-    if (auto rtt = dyn_cast<RankedTensorType>(op->getResult(0).getType()))
-      resultRank = rtt.getRank();
-
-    if (resultRank == bufferRank) {
-      return;
-    } else if (resultRank == bufferRank - 1) {
-      opsToProcess.push_back(op);
-    } else {
-      // resultRank > bufferRank (e.g. 1D buffer with 2D index tensor):
-      // handled directly in ConvertLocalPointersOp, skip preProcess.
-      return;
-    }
-  });
-
-  for (Operation *op : opsToProcess) {
-    Value memDescVal = op->getOperand(0);
-    auto memDescTy = cast<triton::gpu::MemDescType>(memDescVal.getType());
-    auto bufferShape = memDescTy.getShape();
-
-    Value dim0Index = op->getOperand(1);
-    Value scalarIndex;
-
-    if (auto splatOp = dim0Index.getDefiningOp<triton::SplatOp>()) {
-      scalarIndex = splatOp.getSrc();
-    } else if (auto constOp = dim0Index.getDefiningOp<arith::ConstantOp>()) {
-      if (auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue())) {
-        if (denseAttr.isSplat()) {
-          OpBuilder builder(op);
-          auto splatVal = denseAttr.getSplatValue<Attribute>();
-          scalarIndex = builder.create<arith::ConstantOp>(
-              op->getLoc(), builder.getI32Type(),
-              builder.getI32IntegerAttr(cast<IntegerAttr>(splatVal).getInt()));
-        }
-      }
-    }
-
-    if (!scalarIndex) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "preProcessLocalPointers: dim-0 index is not tt.splat "
-                    "or constant splat, skipping "
-                 << *op << "\n");
-      continue;
-    }
-
-    OpBuilder builder(op);
-
-    if (!scalarIndex.getType().isInteger(32))
-      scalarIndex = builder.create<arith::TruncIOp>(
-          op->getLoc(), builder.getI32Type(), scalarIndex);
-
-    auto reducedShape = bufferShape.drop_front(1);
-
-    // Encoding rank must be shape.size or shape.size - 1.
-    // If the original encoding rank == bufferRank (same as original shape),
-    // we need a reduced encoding for the new shape (rank - 1).
-    // For swizzled_shared, reconstruct with order dropping the highest dim.
-    Attribute reducedEncoding = memDescTy.getEncoding();
-    if (auto encTrait =
-            dyn_cast<triton::gpu::LayoutEncodingTrait>(reducedEncoding)) {
-      unsigned encRank = encTrait.getRank();
-      unsigned newShapeSize = reducedShape.size();
-      if (!(encRank == newShapeSize || encRank == newShapeSize - 1)) {
-        if (auto swizzled = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
-                reducedEncoding)) {
-          auto oldOrder = swizzled.getOrder();
-          SmallVector<unsigned> newOrder;
-          for (unsigned o : oldOrder) {
-            if (o == 0)
-              continue;
-            newOrder.push_back(o - 1);
-          }
-          auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
-              builder.getContext(), newOrder.size());
-          reducedEncoding = triton::gpu::SwizzledSharedEncodingAttr::get(
-              builder.getContext(), swizzled.getVec(), swizzled.getPerPhase(),
-              swizzled.getMaxPhase(), newOrder, reducedCTA);
-        } else if (auto nvmmaShared =
-                       dyn_cast<triton::gpu::NVMMASharedEncodingAttr>(
-                           reducedEncoding)) {
-          auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
-              builder.getContext(), newShapeSize);
-          reducedEncoding = triton::gpu::NVMMASharedEncodingAttr::get(
-              builder.getContext(), nvmmaShared.getSwizzlingByteWidth(),
-              nvmmaShared.getTransposed(), nvmmaShared.getElementBitWidth(),
-              nvmmaShared.getFp4Padded(), reducedCTA);
-        }
-      }
-    }
-
-    auto reducedMemDescTy = triton::gpu::MemDescType::get(
-        reducedShape, memDescTy.getElementType(), reducedEncoding,
-        memDescTy.getMemorySpace(), memDescTy.getMutableMemory());
-
-    auto indexOp = builder.create<triton::gpu::MemDescIndexOp>(
-        op->getLoc(), reducedMemDescTy, memDescVal, scalarIndex);
-
-    // Build new tle.local_pointers with reduced memdesc + remaining indices.
-    SmallVector<Value> newOperands;
-    newOperands.push_back(indexOp.getResult());
-    for (unsigned i = 2; i < op->getNumOperands(); ++i)
-      newOperands.push_back(op->getOperand(i));
-
-    OperationState state(op->getLoc(), "tle.local_pointers");
-    state.addOperands(newOperands);
-    state.addTypes(op->getResultTypes());
-    state.addAttributes(op->getAttrs());
-    Operation *newOp = builder.create(state);
-
-    op->getResult(0).replaceAllUsesWith(newOp->getResult(0));
-    op->erase();
-  }
-}
-
-// ===----------------------------------------------------------------------===
 // Phase 2c: Lower tle.extract_tile / tle.insert_tile
 //
 // tle.extract_ptr extracts a raw !llvm.ptr from a !tt.ptr<T>. We lower it
@@ -1558,16 +2458,23 @@ struct TleToTritonGCUPass
     auto module = getOperation();
     MLIRContext *ctx = &getContext();
 
-    // Phase 0: Peel dim-0 scalar indices from tle.local_pointers with
-    // bufferRank > resultRank into ttg.memdesc_index + reduced local_pointers.
-    preProcessLocalPointers(module);
+    // Step 1: Canonicalize tle.local_pointers - extract memdesc view ops
+    // (memdesc_index, memdesc_subslice, memdesc_trans, memdesc_reshape).
+    // Runs before barrier insertion so barrier groups track simplified ops.
+    canonicalizeLocalPointers(module);
 
-    // Phase 1: Insert barriers between store→load transitions on
+    // Step 2: Insert barriers between store->load transitions on
     // tle.local_pointers sharing the same memdesc.
-    // This runs BEFORE lowering so we can track high-level ops directly.
     insertLocalPointerBarriers(module);
 
-    // Phase 2: Lower TLE ops to TritonGCU ops.
+    // Step 2b: Mark the global loads that fill a TLE pipe slot as async DTE,
+    // so the DTE lowering gives the producer its own async tags instead of
+    // serializing every copy on the shared sync tag.
+    markPipeFillLoadsAsync(module);
+
+    // Step 3: Lower tle.local_pointers via patterns.
+    // Path A: structured -> ttg.local_load / ttg.local_store
+    // Path B: fallback -> memdesc_to_ptr + pointer arithmetic
     RewritePatternSet patterns(ctx);
     patterns.add<ConvertLocalPointersOp>(ctx);
     patterns.add<ConvertTMACopyOp>(ctx);
@@ -1575,6 +2482,7 @@ struct TleToTritonGCUPass
 
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       return signalPassFailure();
+
     // post process tle.remote_pointers
     postProcessRemotePointers(module);
     // Swap memdesc_index / remote_memdesc so remote_memdesc sits on the

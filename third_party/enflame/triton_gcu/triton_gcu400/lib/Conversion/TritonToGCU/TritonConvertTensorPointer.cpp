@@ -13,14 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// 公共 include：TRITON_VERSION < 38 与 >= 38 两个分支都要用，统一放到条件编译
+// 之前，避免 #else 分支重复引入同一批头文件。
+// 注意 GPUDialect.h 必须在 Passes.h.inc 之前引入：该 pass 绑定
+// gpu::GPUModuleOp， 生成的 base class 需要其完整声明。
 #include <memory>
+
+#include "Conversion/TritonToGCU/TritonToGCUPass.h"
+
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Pass/Pass.h"
+
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTTENSORPOINTERPASS
+#include "Conversion/Passes.h.inc"
+} // namespace mlir
+
+#if TRITON_VERSION < 38
 #include <stack>
 
 #include "Constants.h"
-#include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 
 #include "llvm/Support/Debug.h"
@@ -34,10 +48,6 @@
 #endif
 
 #define DEBUG_TYPE "triton-convert-tensor-pointer"
-namespace mlir {
-#define GEN_PASS_DEF_CONVERTTENSORPOINTERPASS
-#include "Conversion/Passes.h.inc"
-} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -650,3 +660,20 @@ void ConvertTensorPointerPass::runOnOperation() {
     op->erase();
   }
 }
+
+#else  // TRITON_VERSION >= 38
+// Triton 3.8 移除了 block pointer 体系（tt.make_tensor_ptr / tt.advance /
+// TritonTensorPtrType / isTensorPointerType / TritonRewriteTensorPointer），本
+// pass 的转换目标已不存在，3.8 下退化为 no-op：保留 pass 名，使 python 侧
+// pipeline 里的 add_pass("convert-tensor-pointer") 仍然合法，输入也不会出现
+// block pointer 形式。
+namespace {
+class ConvertTensorPointerPass
+    : public mlir::impl::ConvertTensorPointerPassBase<
+          ConvertTensorPointerPass> {
+public:
+  using Base::Base;
+  void runOnOperation() override {}
+};
+} // namespace
+#endif // TRITON_VERSION < 38
