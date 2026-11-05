@@ -116,6 +116,23 @@ jobs:
           print("IMPORT_CORE_OK", flush=True)
           PY
 
+      - name: Minimal GCU SDK initialization reproducer
+        shell: bash
+        run: |
+          python3 -X faulthandler -u - <<'PY'
+          import importlib.metadata
+          import torch
+          print("MINIMAL_TORCH", torch.__version__, flush=True)
+          for distribution in importlib.metadata.distributions():
+              name = distribution.metadata.get("Name", "")
+              if "gcu" in name.lower() or name.lower() == "torch":
+                  print("SDK_PACKAGE", name, distribution.version, flush=True)
+          import torch_gcu
+          print("MINIMAL_GCU_INIT_BEGIN", flush=True)
+          print(torch_gcu.gcu.current_device(), flush=True)
+          print("MINIMAL_GCU_INIT_OK", flush=True)
+          PY
+
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
