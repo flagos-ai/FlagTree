@@ -350,6 +350,7 @@ def memory_space(input, space, _builder=None, _semantic: TLESemantic | None = No
     input.handle.set_attr("tt.memory_space", _semantic.builder.get_string_attr(space))
     return input
 
+
 _VALID_MESH_AXES = {"cluster_x", "cluster_y", "cluster_z"}
 
 
@@ -382,8 +383,7 @@ def _resolve_sharding_placement(sharding, storage, _semantic):
         raise ValueError(f"alloc sharding supports at most one split axis, got {sorted(axes)}")
     axis = next(iter(axes), None)
     if axis is not None and axis not in _VALID_MESH_AXES:
-        raise ValueError(
-            f"alloc sharding split axis must be one of {sorted(_VALID_MESH_AXES)}, got {axis!r}")
+        raise ValueError(f"alloc sharding split axis must be one of {sorted(_VALID_MESH_AXES)}, got {axis!r}")
 
     # Make the launch cluster dimensions available even when the kernel never
     # calls tle.remote(..., scope=mesh). Imported lazily to avoid a module cycle.
@@ -405,7 +405,7 @@ def alloc(
     alias_offset_bytes: int = 0,
     nv_mma_shared_layout=True,
     sharding=None,
-   _semantic: TLESemantic | None = None,
+    _semantic: TLESemantic | None = None,
 ) -> tle.buffered_tensor:
     """
     Allocate local memory buffer
@@ -684,12 +684,9 @@ def alloc(
         sharding = tl._unwrap_if_constexpr(sharding)
         if sharding is not None:
             mesh_axis = _resolve_sharding_placement(sharding, storage, _semantic)
-            tensor_handle.set_attr("ttg.local_alloc.mesh_share",
-                                   _semantic.builder.get_bool_attr(True))
+            tensor_handle.set_attr("ttg.local_alloc.mesh_share", _semantic.builder.get_bool_attr(True))
             if mesh_axis is not None:
-                tensor_handle.set_attr(
-                    "ttg.local_alloc.mesh_axis",
-                    _semantic.builder.get_string_attr(mesh_axis))
+                tensor_handle.set_attr("ttg.local_alloc.mesh_axis", _semantic.builder.get_string_attr(mesh_axis))
         return tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
 
     except Exception as e:

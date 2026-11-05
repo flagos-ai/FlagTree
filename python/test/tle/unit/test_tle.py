@@ -762,7 +762,7 @@ class TestAllocSharding:
         return buffer, semantic.builder.local_alloc_handle
 
     def test_split_axis_records_mesh_share_and_axis(self):
-        buffer, handle = self._alloc(tle.sharding(self.MESH, split=(("cluster_y",), [])))
+        buffer, handle = self._alloc(tle.sharding(self.MESH, split=(("cluster_y", ), [])))
 
         assert isinstance(buffer, tle.gpu.buffered_tensor)
         assert buffer.shape == [4, 16]
@@ -807,14 +807,14 @@ class TestAllocSharding:
         block_mesh = tle.device_mesh({"block": [("block_x", 2)]})
 
         with pytest.raises(RuntimeError, match="must be one of"):
-            self._alloc(tle.sharding(block_mesh, split=(("block_x",), [])))
+            self._alloc(tle.sharding(block_mesh, split=(("block_x", ), [])))
 
     def test_rejects_axis_missing_from_mesh(self):
         with pytest.raises(ValueError, match="unknown mesh axis"):
-            tle.sharding(self.MESH, split=(("cluster_z",), []))
+            tle.sharding(self.MESH, split=(("cluster_z", ), []))
 
     def test_resolver_rejects_non_smem_storage(self):
-        spec = tle.sharding(self.MESH, split=(("cluster_y",), []))
+        spec = tle.sharding(self.MESH, split=(("cluster_y", ), []))
 
         with pytest.raises(ValueError, match="only supported for tle.gpu.smem"):
             _resolve_sharding_placement(spec, tle.gpu.tmem, None)

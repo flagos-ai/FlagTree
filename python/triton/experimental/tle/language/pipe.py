@@ -87,8 +87,7 @@ _VALID_PIPE_SCOPES = ("cta", "cluster")
 def _validate_pipe_scope(scope):
     scope = _unwrap_pipe_constexpr(scope)
     if scope not in _VALID_PIPE_SCOPES:
-        raise ValueError(
-            f"tle.pipe scope must be one of {_VALID_PIPE_SCOPES}, got {scope!r}")
+        raise ValueError(f"tle.pipe scope must be one of {_VALID_PIPE_SCOPES}, got {scope!r}")
     return scope
 
 

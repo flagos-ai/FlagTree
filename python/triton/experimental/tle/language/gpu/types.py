@@ -378,18 +378,17 @@ class swizzled_shared_layout(shared_layout):
         )
 
     def __eq__(self, other) -> bool:
-        return (type(self) is type(other) and self.vectorSize == other.vectorSize
-                and self.perPhase == other.perPhase and self.maxPhase == other.maxPhase
-                and _seq_key(self.order) == _seq_key(other.order)
+        return (type(self) is type(other) and self.vectorSize == other.vectorSize and self.perPhase == other.perPhase
+                and self.maxPhase == other.maxPhase and _seq_key(self.order) == _seq_key(other.order)
                 and _seq_key(self.numCTAs) == _seq_key(other.numCTAs)
                 and _seq_key(self.numCTAsPerCGA) == _seq_key(other.numCTAsPerCGA)
                 and _seq_key(self.numCTASplit) == _seq_key(other.numCTASplit)
                 and _seq_key(self.numCTAOrder) == _seq_key(other.numCTAOrder))
 
     def __hash__(self):
-        return hash((type(self).__name__, self.vectorSize, self.perPhase, self.maxPhase,
-                     _seq_key(self.order), _seq_key(self.numCTAs), _seq_key(self.numCTAsPerCGA),
-                     _seq_key(self.numCTASplit), _seq_key(self.numCTAOrder)))
+        return hash((type(self).__name__, self.vectorSize, self.perPhase, self.maxPhase, _seq_key(self.order),
+                     _seq_key(self.numCTAs), _seq_key(self.numCTAsPerCGA), _seq_key(self.numCTASplit),
+                     _seq_key(self.numCTAOrder)))
 
 
 class tensor_memory_layout(shared_layout):
@@ -429,14 +428,13 @@ class tensor_memory_layout(shared_layout):
         )
 
     def __eq__(self, other) -> bool:
-        return (type(self) is type(other) and self.blockM == other.blockM
-                and self.blockN == other.blockN and self.colStride == other.colStride
-                and self.CTASplitM == other.CTASplitM and self.CTASplitN == other.CTASplitN
-                and self.twoCTAs == other.twoCTAs)
+        return (type(self) is type(other) and self.blockM == other.blockM and self.blockN == other.blockN
+                and self.colStride == other.colStride and self.CTASplitM == other.CTASplitM
+                and self.CTASplitN == other.CTASplitN and self.twoCTAs == other.twoCTAs)
 
     def __hash__(self):
-        return hash((type(self).__name__, self.blockM, self.blockN, self.colStride,
-                     self.CTASplitM, self.CTASplitN, self.twoCTAs))
+        return hash((type(self).__name__, self.blockM, self.blockN, self.colStride, self.CTASplitM, self.CTASplitN,
+                     self.twoCTAs))
 
 
 class nv_mma_shared_layout(shared_layout):
