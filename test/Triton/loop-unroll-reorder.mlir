@@ -153,3 +153,38 @@ tt.func @reorder_partial_unroll(%src: !tt.ptr<f32>, %dst: !tt.ptr<f32>, %n: i32)
   } {tt.loop_unroll_factor = 2 : i32, tt.reorder = true}
   tt.return
 }
+
+// -----
+
+// A barrier orders its own iteration: the load after it stays after it, the
+// loads of later iterations are still issued ahead of it.
+// CHECK-LABEL: @reorder_barrier_orders_own_iteration
+// CHECK: tt.load
+// CHECK-NOT: gpu.barrier
+// CHECK: tt.load
+// CHECK-NOT: tt.load
+// CHECK: gpu.barrier
+// CHECK-NOT: gpu.barrier
+// CHECK: tt.load
+// CHECK-NOT: tt.load
+// CHECK: tt.store
+// CHECK: gpu.barrier
+// CHECK-NOT: gpu.barrier
+// CHECK: tt.load
+// CHECK: tt.store
+tt.func @reorder_barrier_orders_own_iteration(%a: !tt.ptr<f32>, %c: !tt.ptr<f32>, %d: !tt.ptr<f32>) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c2 = arith.constant 2 : i32
+  scf.for %i = %c0 to %c2 step %c1 : i32 {
+    %pa = tt.addptr %a, %i : !tt.ptr<f32>, i32
+    %va = tt.load %pa : !tt.ptr<f32>
+    gpu.barrier
+    %pc = tt.addptr %c, %i : !tt.ptr<f32>, i32
+    %vc = tt.load %pc : !tt.ptr<f32>
+    %w = arith.addf %va, %vc : f32
+    %pd = tt.addptr %d, %i : !tt.ptr<f32>, i32
+    tt.store %pd, %w : !tt.ptr<f32>
+  } {tt.loop_unroll_factor = 2 : i32, tt.reorder = true}
+  tt.return
+}

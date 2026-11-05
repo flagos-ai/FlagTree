@@ -132,7 +132,9 @@ class range(_tl_range):
         The hint asserts that the loads of one unrolled iteration do not alias the stores of
         another one. Loads that follow a write of their own iteration, volatile loads, and
         loads that depend on a side effect are never moved, and no load is moved across an
-        atomic, a barrier or another op with unknown side effects.
+        atomic or another op with unknown side effects. A barrier (``tl.debug_barrier``)
+        orders the loads and stores of its own iteration only: a load after it stays after
+        it, while the loads of later iterations may still be issued ahead of it.
         Requires a FlagTree build with ``__FLAGTREE_REORDER_LOOP_LOADS__`` enabled;
         ``FLAGTREE_REORDER_LOOP_LOADS=0`` (``knobs.language.reorder_loop_loads``)
         drops the hint at run time.

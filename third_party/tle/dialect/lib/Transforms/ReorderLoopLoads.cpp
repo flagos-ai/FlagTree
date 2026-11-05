@@ -57,15 +57,25 @@ bool onlyReadsMemory(Operation *op) {
   });
 }
 
+// A barrier (tl.debug_barrier) orders the loads and stores of the iteration it
+// sits in: a load after it stays after it (see the scan in reorderRange). It
+// is not a fence for the loads of later iterations, which by the hint's
+// contract do not depend on what earlier iterations store. Matched by name so
+// that this file does not depend on the GPU dialect.
+bool isBarrier(Operation *op) {
+  return op->getName().getStringRef() == "gpu.barrier";
+}
+
 // Whether a load of a later iteration must not be issued ahead of `op`.
 // Stores are deliberately not fences: reordering a load with the stores of
 // *other* unrolled iterations is what the `reorder` hint asks for (the user
-// asserts that they do not alias). Everything else that writes memory, syncs
-// threads, or has unknown effects is a fence, as is a volatile load.
+// asserts that they do not alias), and neither are barriers (see isBarrier).
+// Everything else that writes memory or has unknown effects is a fence, as is
+// a volatile load.
 bool isReorderFence(Operation *op) {
   if (auto load = dyn_cast<triton::LoadOp>(op))
     return load.getIsVolatile();
-  if (isa<triton::StoreOp>(op))
+  if (isa<triton::StoreOp>(op) || isBarrier(op))
     return false;
   if (onlyReadsMemory(op))
     return false;
@@ -134,15 +144,18 @@ void reorderRange(Block *block, Operation *beginOp, Operation *endOp,
     position[op] = i;
 
   // A load is hoisted together with the producers of its operands. That is
-  // only legal when it precedes every write of its own iteration and every
-  // producer is free of side effects or a hoisted load itself.
+  // only legal when it precedes every write and every barrier of its own
+  // iteration and every producer is free of side effects or a hoisted load
+  // itself.
   DenseSet<Operation *> hoistable;
   DenseMap<int64_t, SmallVector<Operation *>> loadsOf;
   SmallVector<bool> wroteMemory(numIterations + 1, false);
+  SmallVector<bool> sawBarrier(numIterations + 1, false);
   SmallVector<bool> hasFence(numIterations + 1, false);
   for (Operation *op : ops) {
     int64_t iter = iterOf[op];
-    if (isNonVolatileLoad(op) && iter < tail && !wroteMemory[iter]) {
+    if (isNonVolatileLoad(op) && iter < tail && !wroteMemory[iter] &&
+        !sawBarrier[iter]) {
       bool movable = true;
       SmallVector<Operation *> worklist{op};
       DenseSet<Operation *> seen{op};
@@ -165,6 +178,8 @@ void reorderRange(Block *block, Operation *beginOp, Operation *endOp,
     }
     if (mayWriteMemory(op))
       wroteMemory[iter] = true;
+    if (isBarrier(op))
+      sawBarrier[iter] = true;
     if (isReorderFence(op))
       hasFence[iter] = true;
   }
