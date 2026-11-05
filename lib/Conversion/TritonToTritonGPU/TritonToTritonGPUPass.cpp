@@ -33,6 +33,7 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PriorityWorklist.h"
+#include "llvm/ADT/STLExtras.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -133,14 +134,44 @@ updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
   return success();
 }
 
+// Pure tensor sources are layout-polymorphic. CSE may share them across
+// explicit layout domains, so each use needs its own source before hints are
+// propagated. Later CSE can merge copies that receive the same encoding.
+static void rematerializeSharedTleLayoutSources(FuncOp func) {
+  SmallVector<Operation *> sources;
+  func.walk([&](Operation *op) {
+    if (!isa<arith::ConstantOp, triton::MakeRangeOp, triton::SplatOp>(op) ||
+        op->getNumResults() != 1 ||
+        !isa<RankedTensorType>(op->getResult(0).getType()) ||
+        !op->getResult(0).hasNUsesOrMore(2))
+      return;
+    sources.push_back(op);
+  });
+  for (Operation *source : sources) {
+    SmallVector<OpOperand *> uses;
+    for (OpOperand &use : source->getResult(0).getUses())
+      uses.push_back(&use);
+    for (OpOperand *use : llvm::drop_begin(uses)) {
+      OpBuilder builder(use->getOwner());
+      use->set(builder.clone(*source)->getResult(0));
+    }
+  }
+}
+
 static LogicalResult propagateTleEncodingHints(FuncOp func) {
+  SmallVector<tle::SetLayoutOp> hints;
+  func.walk([&](tle::SetLayoutOp op) { hints.push_back(op); });
+  if (hints.empty())
+    return success();
+  rematerializeSharedTleLayoutSources(func);
+
   llvm::SmallVector<std::pair<Value, TleEncodingInfo>> seedEncodings;
-  func.walk([&](tle::SetLayoutOp op) {
+  for (tle::SetLayoutOp op : hints) {
     seedEncodings.push_back(
         {op.getSrc(), TleEncodingInfo{op.getTargetEncoding(), true}});
     seedEncodings.push_back(
         {op.getResult(), TleEncodingInfo{op.getTargetEncoding(), false}});
-  });
+  }
   if (seedEncodings.empty())
     return success();
 

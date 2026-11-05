@@ -44,7 +44,7 @@ def _non_power_two_shared_arena_kernel(output):
     tl.store(output + offsets, tl.load(pointers))
 
 
-@pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
 def test_non_power_two_shared_arena_compiles_and_aliases_tail(with_allocator):
     output = torch.empty((128, ), dtype=torch.int32, device="cuda")
     compiled = _non_power_two_shared_arena_kernel.warmup(

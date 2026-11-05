@@ -60,7 +60,7 @@ def _independent_layout_roots_with_shared_scalar_source(output):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.require_tle("gpu.set_layout")
+@pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
 def test_shared_indices_accept_independent_explicit_layouts():
     output_a = torch.empty((128, ), device="cuda", dtype=torch.int32)
     output_b = torch.empty_like(output_a)
@@ -71,7 +71,7 @@ def test_shared_indices_accept_independent_explicit_layouts():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.require_tle("gpu.set_layout")
+@pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
 def test_layout_domains_do_not_join_through_cse_constants():
     output_a = torch.full((64, ), -1, device="cuda", dtype=torch.int32)
     output_b = torch.full_like(output_a, -1)
@@ -82,7 +82,7 @@ def test_layout_domains_do_not_join_through_cse_constants():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.require_tle("gpu.set_layout")
+@pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
 def test_layout_domains_do_not_join_through_cse_scalar_splats():
     output = torch.full((64, ), -1, device="cuda", dtype=torch.int32)
     _independent_layout_roots_with_shared_scalar_source[(1, )](output, num_warps=8)

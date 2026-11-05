@@ -723,6 +723,36 @@ class TestBufferedTensor:
             buffer.subslice(start, length, dim, _semantic=semantic)
 
 
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
+
+        assert view.handle == "subslice_handle"
+        assert view.shape == [8, 1024]
+        assert view.type.alloc_shape == [32, 1024]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
+            "base",
+            [16, 0],
+        )
+
+    @pytest.mark.parametrize(
+        ("offsets", "shape", "message"),
+        [
+            ((0, ), (8, 1024), "match the buffer rank"),
+            ((25, 0), (8, 1024), "outside extent"),
+            ((4, 0), (8, 1024), "aligned power-of-two"),
+            ((0, 0), (6, 1024), "aligned power-of-two"),
+        ],
+    )
+    def test_buffered_tensor_subslice_rejects_invalid_static_views(self, offsets, shape, message):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        with pytest.raises(ValueError, match=message):
+            buffer.subslice(offsets, shape, _semantic=semantic)
+
 class TestCachePolicyFrontend:
 
     def test_policy_is_an_immutable_value(self):
@@ -779,35 +809,6 @@ class TestCachePolicyFrontend:
         policy = tl.constexpr(policy) if wrapped else policy
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
 
-    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
-    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
-        buffer, semantic = self._make_buffer([32, 1024])
-
-        view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
-
-        assert view.handle == "subslice_handle"
-        assert view.shape == [8, 1024]
-        assert view.type.alloc_shape == [32, 1024]
-        assert semantic.builder.memdesc_subslice_args == (
-            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
-            "base",
-            [16, 0],
-        )
-
-    @pytest.mark.parametrize(
-        ("offsets", "shape", "message"),
-        [
-            ((0, ), (8, 1024), "match the buffer rank"),
-            ((25, 0), (8, 1024), "outside extent"),
-            ((4, 0), (8, 1024), "aligned power-of-two"),
-            ((0, 0), (6, 1024), "aligned power-of-two"),
-        ],
-    )
-    def test_buffered_tensor_subslice_rejects_invalid_static_views(self, offsets, shape, message):
-        buffer, semantic = self._make_buffer([32, 1024])
-
-        with pytest.raises(ValueError, match=message):
-            buffer.subslice(offsets, shape, _semantic=semantic)
 
 
 class TestTmaCopyBarrierFrontend:

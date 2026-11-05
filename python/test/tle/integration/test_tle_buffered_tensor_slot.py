@@ -20,7 +20,7 @@ def _slot_roundtrip(source, output, SLOT: tl.constexpr):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='requires CUDA')
-@pytest.mark.require_tle('gpu.alloc', 'gpu.local_ptr')
+@pytest.mark.skip_if_tle_unsupported('gpu.alloc', 'gpu.local_ptr', 'gpu.buffered_tensor.slot')
 @pytest.mark.parametrize('slot', [-1, 0, 1])
 def test_buffered_tensor_slot_selects_distinct_shared_payloads(slot):
     source = torch.arange(256, device='cuda', dtype=torch.int32)

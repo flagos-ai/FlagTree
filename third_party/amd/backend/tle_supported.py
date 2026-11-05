@@ -4,4 +4,5 @@ TLE_SUPPORTED_PRIMITIVES = [
     "cumsum",
     "gpu.alloc",
     "gpu.local_ptr",
+    "gpu.buffered_tensor.slot",
 ]
