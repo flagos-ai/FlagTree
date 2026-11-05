@@ -151,4 +151,47 @@ def TT_TensorDescType : TritonTypeDef<"TensorDesc", "tensordesc", []> {
   }];
 }
 
+// Fixed-size C array type: `!tt.array<elementType, count>`.
+def TT_ArrayType : TritonTypeDef<"Array", "array", []> {
+  let summary = "fixed-size C array type (`::mlir::triton::ArrayType`)";
+  let description = [{
+    A fixed-size C array of `count` contiguous elements of `elementType`.  It is
+    used only as a pointer pointee or as a field of a struct, never as a value.
+  }];
+  let parameters = (ins "Type":$elementType, "int64_t":$count);
+  let assemblyFormat = "`<` $elementType `,` $count `>`";
+  let genVerifyDecl = 1;
+}
+
+// C-layout struct type.
+// Assembly: `!tt.struct<{name: type:offset, ...}, size = N, align = N>`.
+def TT_StructType : TritonTypeDef<"Struct", "struct", []> {
+  let summary = "C-layout struct type (`::mlir::triton::StructType`)";
+  let description = [{
+    A C-style record with an explicit byte layout.  Each field has a name, a
+    type, and a byte offset; the type also records the total size and alignment.
+    It is used only as a pointer pointee or as a nested field, never as a value.
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"StringAttr">:$fieldNames,
+    ArrayRefParameter<"Type">:$fieldTypes,
+    ArrayRefParameter<"int64_t">:$fieldOffsets,
+    "int64_t":$size,
+    "int64_t":$align
+  );
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    unsigned getFieldCount() const { return getFieldNames().size(); }
+    // Returns the field index, or -1 if no such field exists.
+    int64_t getFieldIndex(llvm::StringRef name) const {
+      auto names = getFieldNames();
+      for (unsigned i = 0; i < names.size(); ++i)
+        if (names[i].getValue() == name)
+          return static_cast<int64_t>(i);
+      return -1;
+    }
+  }];
+}
+
 #endif

@@ -88,3 +88,4 @@ jobs:
           source ~/env.sh
           python3 -m pytest third_party/ppu/python/test/unit/ \
             --ignore=third_party/ppu/python/test/unit/language/test_core.py
+          python3 -m pytest -s python/test/unit/language/test_custom_types.py

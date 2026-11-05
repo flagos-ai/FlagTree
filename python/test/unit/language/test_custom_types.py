@@ -1,0 +1,379 @@
+"""Frontend tests for C-interoperable custom types (structs).
+
+These run the AST -> TTIR path (via ``run_parser``), the interpreter, and the
+backend's own TTIR stage, which must run ``tt-lower-structs`` so that no custom
+aggregate type reaches the backend.  The pass itself is also covered by
+``test/Triton/lower-structs.mlir``.
+
+See ``docs/custom-types/RFC.md`` ("Backend support") for which backends are
+tested here and why the others are skipped.
+"""
+
+import ctypes
+import os
+import subprocess
+import sys
+
+import pytest
+import triton
+import triton.language as tl
+from triton._filecheck import run_parser
+from triton.language._custom_types import unsupported_backend_name
+
+# Backends that cannot lower the code these tests produce are dropped outright:
+# the frontend refuses to create the types there (see _custom_types and
+# docs/custom-types/RFC.md).  The check has to run at import, because the
+# @tl.struct_type classes below are created when this module is imported.
+#
+#   enflame - PtrAnalysis in triton_gcu/lib/Analysis only accepts pointers that
+#             trace back to a base pointer; the field addresses the pass emits
+#             (tt.ptr_to_int -> arith.addi -> tt.int_to_ptr) are opaque to it.
+#   xpu     - make_llir fails in ConvertTritonXPUToLLVM on the same IR shape,
+#             and its frontend hook returns an empty module for these kernels.
+_unsupported_backend = unsupported_backend_name()
+if _unsupported_backend is not None:
+    pytest.skip(f"custom struct/array types are not supported on the {_unsupported_backend} backend",
+                allow_module_level=True)
+
+
+def _parser_target():
+    """Target for the AST->TTIR tests.
+
+    ``run_parser`` defaults to a CUDA stub target, which resolves to zero
+    backends on the non-CUDA ones, so prefer what the active driver reports.
+    Deliberately not ``triton._internal_testing.get_current_target()``: that
+    imports torch, which not every backend's CI image has.
+    """
+    try:
+        from triton.runtime import driver
+        target = driver.active.get_current_target()
+        if target is not None:
+            return target
+    except Exception:
+        pass
+    # No driver that can activate itself (e.g. a CPU backend whose is_active()
+    # is always False): use the target the backend's spec package provides.
+    from triton._filecheck import stub_target
+    return stub_target
+
+
+def _run_parser(kernel_fn, args):
+    return run_parser(kernel_fn, args=args, target=_parser_target())
+
+
+def _backend_ttir(kernel_fn, args):
+    """Run ``kernel_fn`` through the backend's *own* TTIR stage, return its IR.
+
+    Only the TTIR stage: that is where ``tt-lower-structs`` has to run, before
+    anything backend-specific happens, and stopping there keeps the test
+    independent of each vendor's later pipeline (enflame's, for one, cannot
+    lower the pointer <-> integer arithmetic the pass emits).
+    """
+    import inspect
+    from triton.backends.compiler import Language
+    from triton.compiler import make_backend
+    target = _parser_target()
+    backend = make_backend(target)
+    options = backend.parse_options({})
+    stages = {}
+    if len(inspect.signature(backend.add_stages).parameters) >= 3:
+        backend.add_stages(stages, options, Language.TRITON)
+    else:
+        backend.add_stages(stages, options)  # backends on the older signature
+    # Same metadata compile() seeds the stages with: some TTIR stages read it
+    # (spacemit's make_ttir does metadata['target'].num_threads).
+    metadata = {"hash": "custom-types-test", "target": target, **vars(options)}
+    module = _run_parser(kernel_fn, args)
+    out = stages["ttir"](module, metadata)
+    return out.str_nodebug() if hasattr(out, "str_nodebug") else str(out)
+
+
+@tl.struct_type
+class TensorView(ctypes.Structure):
+    _fields_ = [
+        ("shape", ctypes.c_uint64 * 4),
+        ("stride", ctypes.c_uint64 * 4),
+        ("base", ctypes.c_void_p),
+        ("ndim", ctypes.c_uint32),
+    ]
+
+
+@tl.struct_type
+class Inner(ctypes.Structure):
+    # float32 (not float64): 64-bit float arithmetic is not available on every
+    # backend, and the tests only need a second scalar kind.
+    _fields_ = [("a", ctypes.c_int32), ("b", ctypes.c_float)]
+
+
+@tl.struct_type
+class Outer(ctypes.Structure):
+    _fields_ = [("inner", Inner), ("n", ctypes.c_uint32)]
+
+
+@tl.struct_type
+class WithArray(ctypes.Structure):
+    _fields_ = [("arr", Inner * 2), ("n", ctypes.c_uint32)]
+
+
+class _FakeBuffer:
+    """Minimal stand-in for a device buffer: just needs data_ptr()."""
+
+    def __init__(self, ptr=0x1000):
+        self._ptr = ptr
+
+    def data_ptr(self):
+        return self._ptr
+
+
+def _view(cls, ptr=0x1000):
+    return tl.StructView(cls._triton_struct_type, _FakeBuffer(ptr))
+
+
+def test_struct_layout_and_signature():
+    st = TensorView._triton_struct_type
+    assert st.size == 80
+    assert st.align == 8
+    assert [(n, o) for (n, _, o) in st.fields] == [("shape", 0), ("stride", 32), ("base", 64), ("ndim", 72)]
+    # Round-trips through the self-contained signature string.
+    from triton.language import str_to_ty
+    ty = str_to_ty("*" + st.signature(), None)
+    assert ty.element_ty == st
+
+
+def test_read_scalar_field():
+
+    @triton.jit
+    def kernel(x_view):
+        return x_view.ndim
+
+    module = _run_parser(kernel, args=(_view(TensorView), ))
+    text = module.str_nodebug()
+    assert "tt.struct_gep" in text
+    assert '"ndim"' in text
+    # The struct pointer argument type is preserved through codegen.
+    assert "!tt.struct<{shape:" in text
+
+
+def test_write_scalar_field():
+
+    @triton.jit
+    def kernel(x_view):
+        n = x_view.ndim
+        x_view.ndim = n + 1
+        return n
+
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    # One gep for the read and one for the write.
+    assert text.count("tt.struct_gep") == 2
+    assert "tt.store" in text
+
+
+def test_nested_field():
+
+    @triton.jit
+    def kernel(o):
+        return o.inner.a
+
+    text = _run_parser(kernel, args=(_view(Outer), )).str_nodebug()
+    # A gep for the nested struct, then a gep into it.
+    assert text.count("tt.struct_gep") == 2
+
+
+def test_pointer_field():
+
+    @triton.jit
+    def kernel(x_view):
+        return x_view.base
+
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    assert "tt.struct_gep" in text
+    assert '"base"' in text
+
+
+def test_unknown_field_raises():
+
+    @triton.jit
+    def kernel(x_view):
+        return x_view.nope
+
+    with pytest.raises(Exception):
+        _run_parser(kernel, args=(_view(TensorView), ))
+
+
+def test_array_element_read():
+
+    @triton.jit
+    def kernel(x_view):
+        return x_view.shape[0]
+
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    # struct_gep for the "shape" field, then array_gep for the element.
+    assert "tt.struct_gep" in text
+    assert "tt.array_gep" in text
+
+
+def test_array_element_dynamic_index():
+
+    @triton.jit
+    def kernel(x_view, i):
+        return x_view.shape[i]
+
+    text = _run_parser(kernel, args=(_view(TensorView), 0)).str_nodebug()
+    assert "tt.array_gep" in text
+
+
+def test_array_element_write():
+
+    @triton.jit
+    def kernel(x_view):
+        x_view.shape[0] = 7
+
+    text = _run_parser(kernel, args=(_view(TensorView), )).str_nodebug()
+    assert "tt.array_gep" in text
+    assert "tt.store" in text
+
+
+def test_array_of_struct_element():
+
+    @triton.jit
+    def kernel(o, i):
+        return o.arr[i].b
+
+    text = _run_parser(kernel, args=(_view(WithArray), 0)).str_nodebug()
+    # struct_gep for "arr", array_gep for the element, struct_gep for "b".
+    assert text.count("tt.struct_gep") == 2
+    assert "tt.array_gep" in text
+
+
+def test_array_of_struct_type_model():
+    st = WithArray._triton_struct_type
+    arr_ty = st.fields[0][1]
+    assert isinstance(arr_ty.element_ty, type(Inner._triton_struct_type))
+    assert arr_ty.count == 2
+    from triton.language import str_to_ty
+    assert str_to_ty("*" + st.signature(), None).element_ty == st
+
+
+class _FakeDeviceBuffer(bytearray):
+    """A writable byte buffer with a data_ptr(), mimicking a device tensor."""
+
+    def data_ptr(self):
+        return ctypes.addressof((ctypes.c_ubyte * len(self)).from_buffer(self))
+
+
+def test_to_device_uploads_struct_bytes():
+    tv = TensorView()
+    tv.ndim = 7
+    tv.base = 0xDEADBEEF
+    st = TensorView._triton_struct_type
+    buf = _FakeDeviceBuffer(st.size)
+    view = tv.to_device(buffer=buf)
+    assert isinstance(view, tl.StructView)
+    assert view.nbytes == st.size
+    raw = ctypes.string_at(ctypes.addressof(tv), ctypes.sizeof(TensorView))
+    assert bytes(buf) == raw
+    assert view.data_ptr() == buf.data_ptr()
+
+
+def test_structview_signature():
+    from triton.runtime.jit import mangle_type
+    view = _view(TensorView)
+    sig = mangle_type(view)
+    assert sig.startswith("*struct<")
+    assert "ndim:u32@72" in sig
+
+
+# --- backends ---------------------------------------------------------------------
+
+
+def test_backend_exposes_lower_structs_pass():
+    """Every backend's TTIR stage must expose the ``add_lower_structs`` binding.
+
+    Backends that override ``python/src/passes.cc`` replace the whole pass
+    binding list, so a missing binding makes ``make_ttir`` raise for *every*
+    kernel, not just ones using custom types.  This runs without a device.
+    """
+    from triton._C.libtriton import passes
+    assert hasattr(passes.ttir, "add_lower_structs")
+
+
+def test_backend_ttir_lowers_custom_types():
+    """The backend's TTIR stage must run ``tt-lower-structs``.
+
+    Runs a kernel that reads and writes a struct field through that backend's
+    own TTIR stage and checks the IR it produced no longer mentions the custom
+    types, i.e. the pass ran before anything backend-specific.
+    """
+
+    @triton.jit
+    def kernel(x_view):
+        x_view.ndim = x_view.ndim + 1
+
+    ttir = _backend_ttir(kernel, (_view(TensorView), ))
+    # The write is a side effect, so its address arithmetic survives DCE - the
+    # assertions below are checking something real rather than an empty module.
+    assert "tt.store" in ttir
+    assert "tt.struct_gep" not in ttir
+    assert "!tt.struct" not in ttir
+    assert "!tt.array" not in ttir
+
+
+# --- interpreter -----------------------------------------------------------------
+
+
+@triton.jit
+def _k_write_ndim(x_view):
+    x_view.ndim = x_view.ndim + 1
+
+
+@triton.jit
+def _k_write_shape(x_view, i):
+    x_view.shape[i] = x_view.shape[i] + 10
+
+
+@triton.jit
+def _k_nested_write(o):
+    o.inner.a = o.inner.a + 3
+
+
+@triton.jit
+def _k_array_of_struct(o, i):
+    o.arr[i].b = o.arr[i].b + 1.5
+
+
+@triton.jit
+def _k_copy_base(x_view):
+    x_view.shape[3] = x_view.base
+
+
+def _interp(fn):
+    from triton.runtime.interpreter import InterpretedFunction
+    return InterpretedFunction(fn)
+
+
+# The Triton interpreter patches ``triton.language`` in place the first time an
+# interpreted kernel runs, and never undoes it.  Running the interpreter here
+# would therefore corrupt every compiled test that executes later in this
+# process, so each case is executed in a child process instead.
+_INTERPRETER_HELPER = os.path.join(os.path.dirname(os.path.realpath(__file__)), "custom_types_interpreter_helper.py")
+
+
+def _run_interpreter_case(case):
+    proc = subprocess.run([sys.executable, _INTERPRETER_HELPER, case], capture_output=True)
+    assert proc.returncode == 0, proc.stderr.decode()
+
+
+def test_interpreter_scalar_and_array_field():
+    _run_interpreter_case("scalar_and_array_field")
+
+
+def test_interpreter_nested_struct():
+    _run_interpreter_case("nested_struct")
+
+
+def test_interpreter_array_of_struct():
+    _run_interpreter_case("array_of_struct")
+
+
+def test_interpreter_pointer_field():
+    _run_interpreter_case("pointer_field")

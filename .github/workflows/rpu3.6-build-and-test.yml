@@ -166,6 +166,7 @@ jobs:
               esac
             done
             pytest -q third_party/rpu/python/test/unit
+            pytest -q python/test/unit/language/test_custom_types.py
             python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board -v' || rc=$?
             if [ "$rc" -ne 255 ]; then exit "$rc"; fi
             n=$((n+1))

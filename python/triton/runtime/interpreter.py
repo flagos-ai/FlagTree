@@ -35,6 +35,7 @@ import dataclasses
 from dataclasses import dataclass
 
 from triton.language.semantic import TritonSemantic
+from triton.language import _custom_types
 from triton.runtime.jit import KernelInterface
 from triton.tools.tensor_descriptor import TensorDescriptor
 from .errors import InterpreterError
@@ -597,6 +598,10 @@ class InterpreterBuilder:
     def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile,
                            flagtree_hints=None):  # flagtree
         dtype_tt = ptrs.get_element_ty()
+        # A pointer field is a pointer-to-pointer: load the stored pointer,
+        # rather than fully unwrapping to the pointee scalar.
+        if isinstance(ptrs.dtype, tl.pointer_type) and isinstance(ptrs.dtype.element_ty, tl.pointer_type):
+            dtype_tt = ptrs.dtype.element_ty
         dtype_np = _get_np_dtype(dtype_tt)
         if other is None:
             other = TensorHandle(np.zeros_like(ptrs.data, dtype=dtype_np), dtype_tt)
@@ -817,6 +822,20 @@ class InterpreterBuilder:
         # int1's bitwidth is 1, but we need to use 8 for pointer arithmetic
         element_bytewidth = max(1, element_bitwidth // 8)
         return TensorHandle(ptr.data + element_bytewidth * offset.data.astype(np.uint64), ptr.dtype)
+
+    # custom struct/array types (reference-only)
+
+    def create_struct_gep(self, ptr, field):
+        struct_ty = ptr.dtype.element_ty
+        _, field_ty, offset = struct_ty.field(field)
+        return TensorHandle(ptr.data + offset, tl.pointer_type(field_ty))
+
+    def create_array_gep(self, ptr, index):
+        arr_ty = ptr.dtype.element_ty
+        elem_ty = arr_ty.element_ty
+        elem_size = _custom_types.type_sizeof(elem_ty)
+        off = index.data.astype(np.uint64) * elem_size
+        return TensorHandle(ptr.data + off, tl.pointer_type(elem_ty))
 
     def create_tensor_pointer_load(self, ptr, boundary_check, padding_option, cache_modifier, eviction_policy,
                                    is_volatile):
@@ -1368,6 +1387,10 @@ def _implicit_cvt(arg):
             raise ValueError(f"Unsupported integer value {arg}")
         handle = TensorHandle(np.array([arg], dtype=dtype), ty)
         return tl.tensor(handle, ty)
+    if hasattr(arg, "struct_type") and hasattr(arg, "data_ptr"):
+        ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg), None)
+        handle = TensorHandle(np.array([arg.data_ptr()], dtype=np.uint64), ty)
+        return _custom_types.struct_pointer(handle, ty)
     if hasattr(arg, "data_ptr"):
         ty = tl.str_to_ty(triton.runtime.jit.mangle_type(arg), None)
         handle = TensorHandle(np.array([arg.data_ptr()], dtype=np.uint64), ty)
@@ -1388,6 +1411,7 @@ def _implicit_cvt(arg):
 
 interpreter_builder = InterpreterBuilder()
 interpreter_semantic = TritonSemantic(interpreter_builder)
+_custom_types.set_default_semantic(interpreter_semantic)
 
 
 def _unwrap_tensor(t):
@@ -1428,6 +1452,8 @@ class GridExecutor:
                     arg.block_shape,
                     arg.padding,
                 )
+            elif isinstance(arg, _custom_types.StructView):
+                return arg
             elif not hasattr(arg, "data_ptr"):
                 return arg
 
@@ -1454,6 +1480,8 @@ class GridExecutor:
         storages = {}
 
         def _from_cpu(arg_dev, arg_hst):
+            if isinstance(arg_dev, _custom_types.StructView):
+                return
             if hasattr(arg_dev, "data_ptr"):
                 # No need to rewrap because this just modifies internal
                 arg_dev, arg_hst = _unwrap_tensor(arg_dev), _unwrap_tensor(arg_hst)
