@@ -700,6 +700,15 @@ class PPUDriver(GPUDriver):
         from triton.testing import do_bench
         return do_bench
 
+    # The byte alignment TensorDescriptor checks on the host for every stride
+    # but the innermost. The TleLowerTmaCopy pass (hintDescriptorAlignment)
+    # relies on it: a descriptor copy to shared memory marks the outer strides
+    # of its pointer load as multiples of this many bytes, which lets the copy
+    # vectorize into 16-byte cp.async. The value stays the Triton default so
+    # that the hint matches what the host has verified.
+    def get_tensor_descriptor_stride_alignment(self):
+        return 16
+
     def get_empty_cache_for_benchmark(self):
         import torch
 

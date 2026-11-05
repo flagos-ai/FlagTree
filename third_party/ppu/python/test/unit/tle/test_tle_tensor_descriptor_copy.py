@@ -131,6 +131,29 @@ def test_descriptor_copy_element_types_use_cp_async(dtype, tl_dtype):
     assert "ttg.async_copy_global_to_local" in ck.asm["ttgir"]
 
 
+@triton.jit
+def _leading_unit_dim_kernel(desc, y, R: tl.constexpr, C: tl.constexpr):
+    buf = tle.gpu.alloc([R, C], dtype=tl.bfloat16, layout=None, scope=tle.gpu.smem)
+    tle.gpu.copy(desc, buf, [1, R, C], [0, 0, 0])
+    rows = tl.arange(0, R)[:, None] + tl.zeros([R, C], dtype=tl.int32)
+    cols = tl.arange(0, C)[None, :] + tl.zeros([R, C], dtype=tl.int32)
+    tl.store(y + rows * C + cols, tl.load(tle.gpu.local_ptr(buf, (rows, cols))))
+
+
+def test_descriptor_copy_with_leading_unit_dim_stays_synchronous():
+    # A [1, R, C] block into an [R, C] buffer goes through a reshape that the
+    # local-pointer store optimization does not look through (known limitation
+    # noted in TleLowerTmaCopy.cpp): the values are right, the copy is not cp.async.
+    x = torch.randn(1, 64, 64, dtype=torch.bfloat16, device="cuda")
+    y = torch.zeros(64, 64, dtype=torch.bfloat16, device="cuda")
+    ck = _leading_unit_dim_kernel[(1, )](TensorDescriptor.from_tensor(x, [1, 64, 64]), y, R=64, C=64, num_warps=4)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(y, x[0], rtol=0, atol=0)
+    ttgir = ck.asm["ttgir"]
+    assert "ttg.tma_copy" not in ttgir
+    assert "ttg.async_copy_global_to_local" not in ttgir
+
+
 # A device assertion poisons the context, so the trap runs in its own process.
 _NAN_PADDING_TRAP_SCRIPT = textwrap.dedent("""
     import torch

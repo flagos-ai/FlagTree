@@ -27,15 +27,23 @@
 // copies become cp.async in the local-pointer store optimization. Copies that
 // signal an mbarrier remain unsupported.
 //
+// Known limitation: a descriptor block with unit leading dimensions beyond the
+// buffer's rank ([1, R, C] into [R, C]) is stored through a tt.reshape, which
+// the local-pointer store optimization does not look through (it strips
+// layout conversions only), so such a copy stays a synchronous pointer load
+// and store instead of becoming cp.async.
+//
 // The second pass prepares the expanded loads for vectorized cp.async:
 // - Replace padding with zero and assert that the descriptor does not request
 //   NaN padding, which cp.async cannot provide.
 // - Fold the unit innermost stride guaranteed by tensor descriptors.
 // - Restore alignment hints from ppu.tensordesc_divisibility in the cache key:
 //   bit 0 records a 16-byte aligned base; bit 1 + d records an extent divisible
-//   by 16. Host validation guarantees 16-byte aligned outer strides. The first
-//   pass copies these bits from the descriptor argument to its load, and the
-//   second applies them to the expanded pointer and mask operands.
+//   by 16. The outer strides are multiples of the alignment the host checks,
+//   PPUDriver.get_tensor_descriptor_stride_alignment() in
+//   third_party/ppu/backend/driver.py (16 bytes). The first pass copies these
+//   bits from the descriptor argument to its load, and the second applies them
+//   to the expanded pointer and mask operands.
 
 #include "TritonPPUGPUTransforms/Passes.h"
 
@@ -64,6 +72,9 @@ constexpr llvm::StringLiteral kDescriptorCopyLoadAttr("ppu.tle_copy_load");
 // copied from the argument to the descriptor load.
 constexpr llvm::StringLiteral
     kDescriptorDivisibilityAttr("ppu.tensordesc_divisibility");
+// The cp.async vector size, and the stride alignment the host checks
+// (PPUDriver.get_tensor_descriptor_stride_alignment); the two have to agree
+// for the stride hints of hintDescriptorAlignment to hold.
 constexpr int64_t kVectorBytes = 16;
 
 // Index tensors that address every element of a buffer of `shape`, in the
@@ -162,6 +173,8 @@ static LogicalResult lowerCopy(ttg::TMACopyOp op) {
                 arg.getArgNumber(), kDescriptorDivisibilityAttr))
           load->setAttr(kDescriptorDivisibilityAttr, bits);
     Value value = load.getResult();
+    // The local-pointer store optimization does not look through this
+    // reshape (see the file comment): the copy stays synchronous.
     if (blockTy.getRank() != bufferTy.getRank())
       value = tt::ReshapeOp::create(builder, loc, bufferTy.getShape(), value);
     tt::StoreOp::create(builder, loc, ptrs, value, tt::CacheModifier::NONE,
@@ -268,7 +281,10 @@ static std::optional<unsigned> spannedDim(Value value) {
 // Divisibility hints for the pointer and mask of a rewritten host descriptor
 // load, from the descriptor argument's alignment bits: the base splat, the
 // extent splats of the aligned dimensions, and the stride splats of the outer
-// dimensions (16-byte multiples, checked on the host).
+// dimensions. The strides carry no bit: TensorDescriptor checks every outer
+// stride on the host against the alignment the backend declares,
+// PPUDriver.get_tensor_descriptor_stride_alignment() in
+// third_party/ppu/backend/driver.py, which is kVectorBytes.
 static void hintDescriptorAlignment(tt::LoadOp load, int64_t bits) {
   auto ptrType = cast<RankedTensorType>(load.getPtr().getType());
   int64_t elemBytes =

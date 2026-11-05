@@ -141,12 +141,17 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
 }
 
 // The PPU0010 AIU descriptor has no row stride: the 2d form copies from a dense
-// [X, Z] tensor and the 3d form from a dense [Y, X, Z] tensor, whose sizes are
-// 15-bit fields, and both zero fill out of bounds. Rows that are S elements
-// apart are copied as the 2d tensor [rows, S] when nothing past the row length
-// V has to be zero filled, and as the 3d tensor [rows, S / V, V] at x = 0
-// otherwise, which needs S to be a multiple of V.
-constexpr int64_t kAIU3DMaxDim = 1 << 15;
+// [X, Z] tensor and the 3d form from a dense [Y, X, Z] tensor, and both zero
+// fill out of bounds. Rows that are S elements apart are copied as the 2d
+// tensor [rows, S] when nothing past the row length V has to be zero filled,
+// and as the 3d tensor [rows, S / V, V] at x = 0 otherwise, which needs S to
+// be a multiple of V.
+//
+// The widths of the size fields are not documented. On a PPU-ZW810E, a 2d row
+// length (Z) of 40000, a 3d row count (Y) of 32768 (40000 rows, clamped by the
+// lowering) and a 3d stride factor (X) of 32768 copy correctly; the compiler
+// takes kAIUMaxDim, inclusive, as the limit of each of these fields.
+constexpr int64_t kAIUMaxDim = 1 << 15;
 
 // Looks through the extensions that widen block-pointer shapes and strides to
 // i64.
@@ -188,13 +193,17 @@ inline AIURowLayout getAIURowLayout(ValueRange strides, ValueRange shape,
 }
 
 // Whether rows of `length` elements that are a constant `stride` apart can be
-// copied, zero filling past the row length if `zeroFillColumns`.
+// copied, zero filling past the row length if `zeroFillColumns`: the 2d form
+// holds the stride as its row length, the 3d form holds the row length and
+// the stride as a multiple of it, each within kAIUMaxDim.
 inline bool isAIUStrideExpressible(int64_t stride, int64_t length,
                                    bool zeroFillColumns) {
   if (length <= 0 || stride < length)
     return false;
-  return !zeroFillColumns || (stride % length == 0 && length <= kAIU3DMaxDim &&
-                              stride / length <= kAIU3DMaxDim);
+  if (!zeroFillColumns)
+    return stride <= kAIUMaxDim;
+  return stride % length == 0 && length <= kAIUMaxDim &&
+         stride / length <= kAIUMaxDim;
 }
 
 } // namespace PPU
