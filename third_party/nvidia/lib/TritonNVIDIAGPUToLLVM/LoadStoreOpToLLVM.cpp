@@ -1419,8 +1419,7 @@ struct AsyncCopyGlobalToLocalOpConversion
       assert(otherElems.size() == srcElems.size());
     }
     const bool materializeOther =
-        llMask && llOther &&
-        !llvm::all_of(maskElems, tte::hasLLVMTrueMask) &&
+        llMask && llOther && !llvm::all_of(maskElems, tte::hasLLVMTrueMask) &&
         !llvm::all_of(otherElems, tte::hasLLVMZeroFillBits);
 #endif
     // %other
@@ -1566,8 +1565,8 @@ struct AsyncCopyGlobalToLocalOpConversion
 #ifdef __TLE__
         if (!materializeOther) {
 #endif
-        auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
-        srcSize = ptxBuilder.newOperand(selectOp, "r");
+          auto selectOp = b.select(maskElem, b.i32_val(nBytes), b.i32_val(0));
+          srcSize = ptxBuilder.newOperand(selectOp, "r");
 #ifdef __TLE__
         }
 #endif
@@ -1581,11 +1580,11 @@ struct AsyncCopyGlobalToLocalOpConversion
       if (materializeOther) {
         // An absent redundancy predicate means every thread participates.
         copyExec.maybePredicate(maybeAnd(rewriter, loc, threadPred, maskElem));
-        fillPred = maybeAnd(rewriter, loc, threadPred,
-                            b.xor_(maskElem, b.true_val()));
+        fillPred =
+            maybeAnd(rewriter, loc, threadPred, b.xor_(maskElem, b.true_val()));
       } else {
 #endif
-      copyExec.maybePredicate(threadPred);
+        copyExec.maybePredicate(threadPred);
 #ifdef __TLE__
       }
 #endif
@@ -1595,13 +1594,14 @@ struct AsyncCopyGlobalToLocalOpConversion
         // Keep the fill condition visible to LLVM. A predicate inside opaque
         // PTX would retain dead stores when mask range analysis proves true.
         auto *currentBlock = rewriter.getInsertionBlock();
-        auto *endBlock = rewriter.splitBlock(currentBlock,
-                                             rewriter.getInsertionPoint());
-        auto *fillBlock = rewriter.createBlock(
-            currentBlock->getParent(), std::next(Region::iterator(currentBlock)));
+        auto *endBlock =
+            rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+        auto *fillBlock =
+            rewriter.createBlock(currentBlock->getParent(),
+                                 std::next(Region::iterator(currentBlock)));
         rewriter.setInsertionPointToEnd(currentBlock);
         LLVM::CondBrOp::create(rewriter, loc, fillPred, fillBlock, endBlock,
-                              ValueRange{});
+                               ValueRange{});
         rewriter.setInsertionPointToEnd(fillBlock);
         PTXBuilder fillBuilder;
         unsigned width = elemTy.getIntOrFloatBitWidth();
@@ -1611,10 +1611,11 @@ struct AsyncCopyGlobalToLocalOpConversion
           fill = b.bitcast(fill, intTy);
           if (width < 16)
             fill = b.zext(i16_ty, fill);
-          auto *address = fillBuilder.newAddrOperand(
-              shmemAddr, "r", i * width / 8);
-          auto *value = fillBuilder.newOperand(
-              fill, width <= 16 ? "h" : width == 32 ? "r" : "l");
+          auto *address =
+              fillBuilder.newAddrOperand(shmemAddr, "r", i * width / 8);
+          auto *value = fillBuilder.newOperand(fill, width <= 16   ? "h"
+                                                     : width == 32 ? "r"
+                                                                   : "l");
           auto &store = *fillBuilder.create<>("st");
           store.shared().b(width);
           store(address, value);

@@ -38,7 +38,7 @@ def _non_power_two_shared_arena_kernel(output):
         nv_mma_shared_layout=False,
     )
     offsets = tl.arange(0, 128)
-    pointers = tle.gpu.local_ptr(tail, (offsets,), [128])
+    pointers = tle.gpu.local_ptr(tail, (offsets, ), [128])
     tl.store(pointers, offsets)
     tl.debug_barrier()
     tl.store(output + offsets, tl.load(pointers))
@@ -46,19 +46,16 @@ def _non_power_two_shared_arena_kernel(output):
 
 @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
 def test_non_power_two_shared_arena_compiles_and_aliases_tail(with_allocator):
-    output = torch.empty((128,), dtype=torch.int32, device="cuda")
+    output = torch.empty((128, ), dtype=torch.int32, device="cuda")
     compiled = _non_power_two_shared_arena_kernel.warmup(
         output,
-        grid=(1,),
+        grid=(1, ),
         num_warps=4,
     )
     assert compiled.metadata.shared >= 135168
-    assert (
-        compiled.metadata.shared
-        <= torch.cuda.get_device_properties(0).shared_memory_per_block_optin
-    )
+    assert (compiled.metadata.shared <= torch.cuda.get_device_properties(0).shared_memory_per_block_optin)
 
-    _non_power_two_shared_arena_kernel[(1,)](output, num_warps=4)
+    _non_power_two_shared_arena_kernel[(1, )](output, num_warps=4)
     torch.testing.assert_close(
         output,
         torch.arange(128, dtype=torch.int32, device="cuda"),

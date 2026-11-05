@@ -37,9 +37,7 @@ def _copy_selected_tensor_map(table, output, OWNER_ELEMENTS: tl.constexpr):
 @pytest.mark.require_tle("gpu.reinterpret_tensor_map")
 def test_tensor_map_table_selects_distinct_owner_descriptors():
     owners = 2
-    source = torch.arange(
-        owners * 64, device="cuda", dtype=torch.float16
-    ).reshape(owners, 8, 8)
+    source = torch.arange(owners * 64, device="cuda", dtype=torch.float16).reshape(owners, 8, 8)
     payload = bytearray()
     for owner in range(owners):
         payload.extend(
@@ -52,12 +50,11 @@ def test_tensor_map_table_selects_distinct_owner_descriptors():
                 (8, 8),
                 (8, 1),
                 0,
-            )
-        )
+            ))
     table = torch.frombuffer(payload, dtype=torch.uint8).to(device="cuda")
     assert table.data_ptr() % 128 == 0
     output = torch.empty_like(source)
 
-    _copy_selected_tensor_map[(owners,)](table, output, 64, num_warps=4)
+    _copy_selected_tensor_map[(owners, )](table, output, 64, num_warps=4)
 
     torch.testing.assert_close(output, source)

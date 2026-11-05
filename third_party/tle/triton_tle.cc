@@ -160,9 +160,10 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value descriptor, Type blockType,
               bool isSigned) -> Value {
              auto descriptorType = tt::TensorDescType::get(
-                 self.getContext(), cast<RankedTensorType>(blockType), isSigned);
+                 self.getContext(), cast<RankedTensorType>(blockType),
+                 isSigned);
              return self.create<ttng::ReinterpretTensorDescOp>(descriptorType,
-                                                             descriptor);
+                                                               descriptor);
            })
       // TLE-Lite
       .def(
@@ -412,14 +413,15 @@ void init_triton_tle_ir(py::module &&m) {
             copy.setEvict(evictionPolicy);
 #endif
           },
-          py::arg("src"), py::arg("dst"), py::arg("indices"), py::arg("barrier"),
-          py::arg("expect_bytes"),
+          py::arg("src"), py::arg("dst"), py::arg("indices"),
+          py::arg("barrier"), py::arg("expect_bytes"),
           py::arg("eviction_policy") = tt::EvictionPolicy::NORMAL)
       .def(
           "create_tma_copy",
           [](TritonOpBuilder &self, Value src, Value dst,
              std::vector<Value> &indices, py::object barrier,
-             int32_t expectBytes, tt::EvictionPolicy evictionPolicy, std::vector<int64_t> copyShape) {
+             int32_t expectBytes, tt::EvictionPolicy evictionPolicy,
+             std::vector<int64_t> copyShape) {
 #ifdef __HCU__
             if (!barrier.is_none() || expectBytes > 0)
               throw py::value_error(

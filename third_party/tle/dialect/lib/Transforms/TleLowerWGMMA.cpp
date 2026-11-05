@@ -220,8 +220,8 @@ static void convertLoopCarriedAccumulator(OpOperand &use, Value encodedValue,
         // Convert an ordinary initial value before entering the loop; reuse
         // the native layout when the initial accumulator is asynchronous.
         OpBuilder builder(forOp);
-        encodedInit = ttg::ConvertLayoutOp::create(
-            builder, forOp.getLoc(), encoded.getType(), init);
+        encodedInit = ttg::ConvertLayoutOp::create(builder, forOp.getLoc(),
+                                                   encoded.getType(), init);
       }
     } else {
       continue;

@@ -46,8 +46,7 @@ def test_hopper_mma_cga_basis_uses_tensor_rank():
 def test_hopper_mma_slice_encoding_frontend():
     parent = tle.gpu.MmaEncoding([3, 0], [8, 1], [16, 8, 32])
     layout = tle.gpu.SlicedEncoding(1, parent)
-    module = run_parser(_hopper_scale_layout_kernel,
-                        kwargs={"layout": layout, "num_warps": 8},
+    module = run_parser(_hopper_scale_layout_kernel, kwargs={"layout": layout, "num_warps": 8},
                         target=GPUTarget("cuda", 90, 32))
     text = module.str_nodebug()
     assert "versionMajor = 3" in text

@@ -781,6 +781,7 @@ class TestCachePolicyFrontend:
         policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
         policy = tl.constexpr(policy) if wrapped else policy
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
+
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_preserves_allocation_shape(self):
         buffer, semantic = self._make_buffer([32, 1024])
@@ -799,7 +800,7 @@ class TestCachePolicyFrontend:
     @pytest.mark.parametrize(
         ("offsets", "shape", "message"),
         [
-            ((0,), (8, 1024), "match the buffer rank"),
+            ((0, ), (8, 1024), "match the buffer rank"),
             ((25, 0), (8, 1024), "outside extent"),
             ((4, 0), (8, 1024), "aligned power-of-two"),
             ((0, 0), (6, 1024), "aligned power-of-two"),
@@ -844,11 +845,11 @@ class TestTmaCopyBarrierFrontend:
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
 
-        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier,
-                     eviction_policy=eviction_policy, _semantic=semantic)
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, eviction_policy=eviction_policy,
+                     _semantic=semantic)
 
-        assert semantic.builder.tma_copy_args == (
-            "desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512, eviction_policy)
+        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0",
+                                                                   "stage_0"], "slot_handle", 512, eviction_policy)
         assert semantic._tle_barrier_backend_uses == {("bar", 0): "mbarrier"}
 
     @pytest.mark.parametrize("backend", ["generic", "iluvatar", "common_ir"])

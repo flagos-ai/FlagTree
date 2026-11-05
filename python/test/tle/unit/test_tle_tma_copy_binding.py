@@ -32,8 +32,7 @@ def _binding_kernel(arity: tl.constexpr, policy: tl.constexpr):
 
 
 @pytest.mark.require_tle("gpu.reinterpret_tensor_map")
-@pytest.mark.parametrize("arity, policy", [(3, ""), (5, ""), (6, ""),
-                                          (6, "evict_first"), (6, "evict_last")])
+@pytest.mark.parametrize("arity, policy", [(3, ""), (5, ""), (6, ""), (6, "evict_first"), (6, "evict_last")])
 def test_tma_copy_binding_preserves_call_forms(arity, policy):
     module = run_parser(
         _binding_kernel,
