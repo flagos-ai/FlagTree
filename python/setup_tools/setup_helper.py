@@ -34,6 +34,7 @@ import importlib.metadata
 from typing import List, Tuple
 from importlib.machinery import PathFinder
 from setuptools import find_packages
+from urllib.parse import unquote, urlparse
 from .utils.tools import flagtree_configs as configs
 
 downloader = utils.tools.DownloadManager()
@@ -522,16 +523,20 @@ class FlagTreeCache:
         if is_url:
             cache_path = self.cache_files[file]
             need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
+            archive_name = Path(unquote(urlparse(url).path)).name
+            local_archive = Path(path) / archive_name
             # Marker is a sibling dotfile: packages ship their own version.txt; a cache without one is staged -> adopt
             marker_file = Path(path) / f".{file}.version"
             if not need_download and version is not None:
                 if marker_file.exists():
                     cached_ver = marker_file.read_text().strip()
                     if cached_ver != version:
-                        print(
-                            f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
-                        )
-                        shutil.rmtree(cache_path)
+                        print(f"[cache] version mismatch for '{file}': cached='{cached_ver}', "
+                              f"expected='{version}', refreshing...")
+                        if cache_path.is_dir():
+                            shutil.rmtree(cache_path)
+                        else:
+                            cache_path.unlink()
                         need_download = True
                 else:
                     legacy_file = Path(cache_path) / "version.txt"
@@ -539,10 +544,27 @@ class FlagTreeCache:
                     if legacy_ver != version:
                         note = f" (its version.txt says '{legacy_ver}')" if legacy_ver else ""
                         print(f"[cache] no version marker for '{file}': adopting the cache as "
-                              f"'{version}'{note}; remove {cache_path} to force a re-download")
+                              f"'{version}'{note}; remove {cache_path} to force a refresh")
                     marker_file.write_text(version)
             if need_download:
-                downloader.download(url=url, path=path, file_name=file)
+                if cache_path.exists():
+                    if cache_path.is_dir():
+                        shutil.rmtree(cache_path)
+                    else:
+                        cache_path.unlink()
+                if local_archive.is_file():
+                    print(f"[cache] extracting local archive {local_archive}")
+                    utils.tools.decompress_file(
+                        url=url, archive_path=local_archive, dst_path=path, file_name=file
+                    )
+                else:
+                    downloader.download(url=url, path=path, file_name=file)
+                # md5_digest identifies the extracted result. Directory results are
+                # version-checked above; a file result that still mismatches is left
+                # in place so the failure can be inspected.
+                if md5_digest is not None and not self.check_file(path=cache_path, md5_digest=md5_digest):
+                    raise RuntimeError(f"[cache] extracted digest mismatch for '{cache_path}': "
+                                       f"expected '{md5_digest}'")
                 if version is not None:
                     marker_file.write_text(version)
 
