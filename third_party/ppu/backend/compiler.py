@@ -59,7 +59,11 @@ def reject_unsupported_tle(mod):
             features.add(feature)
         # PPU has hardware named barriers but no mbarrier: barrier_wait/arrive
         # without phaseIdx are supported, the phased forms are not, nor is a
-        # descriptor copy that signals an mbarrier on completion.
+        # descriptor copy that signals an mbarrier on completion. A barrier
+        # allocated with init=READY or expect_bytes has only mbarrier forms;
+        # the LLVM conversion rejects the ttng mbarrier ops they lower to
+        # (BarrierOpToLLVM.cpp), as it does every other mbarrier op that
+        # reaches it.
         if name in ("tle.barrier.wait", "tle.barrier.arrive") and op.get_str_attr("backend") == "mbarrier":
             features.add("tle.gpu.barrier_" + name.split(".")[-1] + "(phaseIdx=...)")
         if name == "ttg.tma_copy":

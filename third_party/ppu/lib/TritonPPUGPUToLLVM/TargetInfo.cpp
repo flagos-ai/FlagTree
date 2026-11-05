@@ -173,9 +173,13 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
     NVVM::SyncWarpOp::create(rewriter, loc, b.i32_val(0xffffffff));
   } else {
     // Orders shared memory (scratch buffers); see createPPUSharedMemoryBarrier.
-    unsigned numThreads = triton::gpu::lookupNumWarps(
-                              rewriter.getInsertionBlock()->getParentOp()) *
-                          triton::gpu::lookupThreadsPerWarp(rewriter);
+    // The warp count comes from the insertion block's region: inside a
+    // ttg.warp_specialize partition the block's parent op is the partitions
+    // op, which lies in the default group's context, while the region itself
+    // names the partition and its warps.
+    unsigned numThreads =
+        triton::gpu::lookupNumWarps(rewriter.getInsertionBlock()->getParent()) *
+        triton::gpu::lookupThreadsPerWarp(rewriter);
     createPPUSharedMemoryBarrier(rewriter, loc, numThreads);
   }
 }

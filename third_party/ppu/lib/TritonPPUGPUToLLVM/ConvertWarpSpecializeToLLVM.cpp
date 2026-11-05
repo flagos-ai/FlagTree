@@ -335,10 +335,31 @@ static std::string mangleWarpSpecializeFunctionName(StringRef name) {
   return (name + "_ws").str();
 }
 
+// Outlined Triton helpers by name, with the warp count they were compiled for
+// (ws_num_warps). A helper is specialized per warp group: the frontend
+// mangles its name with the caller's warp count (_TLEWSNW<n> for TLE), and its
+// barriers count that group's threads.
+using InternalFunctions = DenseMap<StringAttr, unsigned>;
+
 static bool isInternalCall(LLVM::CallOp callOp,
-                           const DenseSet<StringAttr> &internalFunctions) {
+                           const InternalFunctions &internalFunctions) {
   auto callee = callOp.getCalleeAttr();
   return callee && internalFunctions.contains(callee.getAttr());
+}
+
+// A helper called from a group of another size would wait on the group's
+// barrier for threads that never arrive, so the mismatch is a compile error.
+static LogicalResult
+checkCalleeNumWarps(LLVM::CallOp callOp, unsigned numWarps,
+                    const InternalFunctions &internalFunctions) {
+  unsigned calleeNumWarps =
+      internalFunctions.lookup(callOp.getCalleeAttr().getAttr());
+  if (calleeNumWarps == numWarps)
+    return success();
+  return callOp.emitError("helper '")
+         << *callOp.getCallee() << "' is compiled for " << calleeNumWarps
+         << " warps (ws_num_warps) but called from a warp group of " << numWarps
+         << " warps";
 }
 
 static void forwardWarpGroupBarrier(LLVM::CallOp callOp, Value barrier) {
@@ -351,7 +372,7 @@ static void forwardWarpGroupBarrier(LLVM::CallOp callOp, Value barrier) {
 // out of line while preserving the caller's warp-specialization context.
 static LogicalResult
 rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
-                               const DenseSet<StringAttr> &internalFunctions,
+                               const InternalFunctions &internalFunctions,
                                unsigned threadsPerWarp) {
   unsigned defaultNumWarps = lookupNumWarps(func);
   SmallVector<WarpSpecializeOp> wsOps;
@@ -372,6 +393,9 @@ rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
     if (auto callOp = dyn_cast<LLVM::CallOp>(op)) {
       if (!isInternalCall(callOp, internalFunctions))
         return WalkResult::advance();
+      if (failed(
+              checkCalleeNumWarps(callOp, defaultNumWarps, internalFunctions)))
+        return WalkResult::interrupt();
       TritonLLVMIRRewriter b(callOp.getLoc(), callOp);
       forwardWarpGroupBarrier(callOp, b.i32_val(kDefaultWarpGroupBarrierIdx));
     }
@@ -391,7 +415,8 @@ rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
                << (kNumBarriers - kNumReservedBarriers)
                << " warp group partitions";
       }
-      unsigned numThreads = wsOp.getPartitionNumWarps()[idx] * threadsPerWarp;
+      unsigned numWarps = wsOp.getPartitionNumWarps()[idx];
+      unsigned numThreads = numWarps * threadsPerWarp;
       WalkResult partitionResult = partition->walk([&](Operation *op) {
         if (isCtaBarrier(op)) {
           retargetCtaBarrier(op, barIdx, numThreads);
@@ -401,6 +426,8 @@ rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
         if (auto callOp = dyn_cast<LLVM::CallOp>(op)) {
           if (!isInternalCall(callOp, internalFunctions))
             return WalkResult::advance();
+          if (failed(checkCalleeNumWarps(callOp, numWarps, internalFunctions)))
+            return WalkResult::interrupt();
           TritonLLVMIRRewriter b(callOp.getLoc(), callOp);
           forwardWarpGroupBarrier(callOp, b.i32_val(barIdx));
         }
@@ -415,7 +442,7 @@ rewriteKernelWarpGroupBarriers(LLVM::LLVMFuncOp func,
 }
 
 static LogicalResult rewriteInnerFunctionWarpGroupBarriers(
-    LLVM::LLVMFuncOp func, const DenseSet<StringAttr> &internalFunctions,
+    LLVM::LLVMFuncOp func, const InternalFunctions &internalFunctions,
     unsigned threadsPerWarp) {
   MLIRContext *ctx = func.getContext();
   Type barrierType = IntegerType::get(ctx, 32);
@@ -437,18 +464,27 @@ static LogicalResult rewriteInnerFunctionWarpGroupBarriers(
   auto numWarpsAttr = func->getAttrOfType<IntegerAttr>("ws_num_warps");
   if (!numWarpsAttr)
     return func.emitError("function missing 'ws_num_warps' attribute");
-  unsigned numThreads = numWarpsAttr.getInt() * threadsPerWarp;
+  unsigned numWarps = numWarpsAttr.getInt();
+  unsigned numThreads = numWarps * threadsPerWarp;
 
-  func.walk([&](Operation *op) {
+  WalkResult result = func.walk([&](Operation *op) {
     if (isCtaBarrier(op)) {
       retargetCtaBarrier(op, barrier, numThreads);
-      return;
+      return WalkResult::skip();
     }
     if (auto callOp = dyn_cast<LLVM::CallOp>(op)) {
-      if (isInternalCall(callOp, internalFunctions))
-        forwardWarpGroupBarrier(callOp, barrier);
+      if (!isInternalCall(callOp, internalFunctions))
+        return WalkResult::advance();
+      // The helper runs in its caller's group, so a callee is held to the
+      // same count.
+      if (failed(checkCalleeNumWarps(callOp, numWarps, internalFunctions)))
+        return WalkResult::interrupt();
+      forwardWarpGroupBarrier(callOp, barrier);
     }
+    return WalkResult::advance();
   });
+  if (result.wasInterrupted())
+    return failure();
 
   return success();
 }
@@ -476,13 +512,15 @@ static LogicalResult rewriteWarpGroupBarriers(ModuleOp module,
   if (!hasWarpSpecialize)
     return success();
 
-  DenseSet<StringAttr> internalFunctions;
+  // Keyed by the name before mangling: calls still use it when their callee
+  // has already been renamed.
+  InternalFunctions internalFunctions;
   for (LLVM::LLVMFuncOp func : module.getOps<LLVM::LLVMFuncOp>()) {
     // Only Triton device functions carry this attribute. TLE Raw may
     // materialize other internal LLVM helpers whose ABI must remain unchanged.
-    if (func.getLinkage() != LLVM::Linkage::External &&
-        func->hasAttr("ws_num_warps"))
-      internalFunctions.insert(func.getSymNameAttr());
+    auto numWarps = func->getAttrOfType<IntegerAttr>("ws_num_warps");
+    if (func.getLinkage() != LLVM::Linkage::External && numWarps)
+      internalFunctions[func.getSymNameAttr()] = numWarps.getInt();
   }
 
   // Internal Triton helpers are renamed and gain a hidden barrier argument
