@@ -15,6 +15,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -26,6 +27,7 @@
 #include <memory>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/Transforms/Passes.h>
+#include <optional>
 
 #define DEBUG_TYPE "tx81-memref-to-llvm"
 
@@ -73,6 +75,14 @@ public:
     LowerToLLVMOptions options(context);
     options.useBarePtrCallConv = false;
     LLVMTypeConverter llvmTypeConverter(context, options);
+    // LLVM IR has no f8 types. Load/store the 8-bit pattern as i8 so
+    // llvm.load result is a sized LLVM type (builtin f8 is not).
+    llvmTypeConverter.addConversion([](Type type) -> std::optional<Type> {
+      auto ft = dyn_cast<FloatType>(type);
+      if (!ft || ft.getWidth() != 8)
+        return std::nullopt;
+      return IntegerType::get(type.getContext(), 8);
+    });
     triton::populateTx81MemrefToLLVMConversionPatterns(patterns,
                                                        llvmTypeConverter);
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {

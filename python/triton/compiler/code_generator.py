@@ -1372,8 +1372,9 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-            if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
-                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
+            # flagtree reorder-loop-loads
+            if reorder and knobs.language.reorder_loop_loads and _unwrap_if_constexpr(loop_unroll_factor) is not None:
+                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
@@ -1546,12 +1547,13 @@ class CodeGenerator(ast.NodeVisitor):
             self.local_defs = prev_defs
             self.caller_context = prev_caller_context
 
-    # flagtree tle: check supported
     def _get_tle_backend_name(self):
-        from triton._flagtree_backend import get_active_backend_name
+        from triton._flagtree_backend import FLAGTREE_BACKEND
 
-        return get_active_backend_name()
+        # An empty marker means NVIDIA; TileIR overrides this in its generator.
+        return FLAGTREE_BACKEND or "nvidia"
 
+    # flagtree tle: check supported
     def _require_tle_primitive(self, primitive):
         from triton.experimental.tle import primitive_name
 
@@ -1559,9 +1561,9 @@ class CodeGenerator(ast.NodeVisitor):
             name = primitive_name(primitive)
         except ValueError:
             return
-        from triton.experimental.tle import require_tle
+        from triton.experimental.tle import _require_tle_for_backend
 
-        require_tle(self._get_tle_backend_name(), name)
+        _require_tle_for_backend(self._get_tle_backend_name(), name)
 
     def call_Function(self, node, fn, args, kws):
         # 4. Get current line number and hints

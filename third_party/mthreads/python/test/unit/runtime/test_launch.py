@@ -170,7 +170,10 @@ def test_launch_with_options(options) -> None:
             options["extern_libs"] = {"ocml": str(libdir / 'ocml.bc'), "ockl": str(libdir / 'ockl.bc')}
         elif is_musa():
             libdir = current_dir.parent.parent.parent.parent / 'backend/lib'
-            options["extern_libs"] = {"libdevice": triton.knobs.musa.libdevice_path or str(libdir / 'libdevice.31.bc')}
+            options["extern_libs"] = {
+                "libdevice": triton.knobs.musa.libdevice_path or str(libdir / 'libdevice.31.bc'),
+                "printf": triton.knobs.musa.libprintf_path or str(libdir / 'libprintf.bc'),
+            }
 
     compile_info = {}
     counter = 0

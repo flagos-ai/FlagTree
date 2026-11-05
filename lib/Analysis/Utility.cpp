@@ -1529,6 +1529,15 @@ static bool isIdentityOnOutDim(const LinearLayout &layout, StringAttr dim) {
          layout.sublayoutIsZero(otherInDims, {dim});
 }
 
+// FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE=0 keeps a conversion that reads broadcast
+// copies in other warps or CTAs on shared memory, as before the backport; the
+// lane-local conversions keep the upstream selectors.
+static bool sameWarpLayoutShuffleEnabled() {
+  std::string value =
+      triton::tools::getStrEnv("FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE");
+  return value.empty() || triton::tools::isEnvValueBool(value).value_or(true);
+}
+
 // Triton main: triton/pull/11646.
 // FlagTree adaptation for triton/pull/11646.
 // Keep the tensor-type API and the existing mixed-transposition cost test.
@@ -1537,6 +1546,13 @@ bool cvtNeedsWarpShuffle(RankedTensorType srcTy, RankedTensorType dstTy) {
     return false;
   MLIRContext *ctx = srcTy.getContext();
   auto kRegister = StringAttr::get(ctx, "register");
+  if (!sameWarpLayoutShuffleEnabled()) {
+    auto kLane = StringAttr::get(ctx, "lane");
+    auto layout = minimalCvtLayout(srcTy, dstTy);
+    if (to_vector(layout.getOutDimNames()) !=
+        SmallVector<StringAttr, 2>{kRegister, kLane})
+      return false;
+  }
   auto srcLayout = toLinearLayout(srcTy).removeZeroBasesAlongDim(kRegister);
   auto dstLayout = toLinearLayout(dstTy).removeZeroBasesAlongDim(kRegister);
   bool canShuffle = isPermutationMatrixLayout(srcLayout) &&
