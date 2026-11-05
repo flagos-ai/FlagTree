@@ -63,18 +63,21 @@ TEST(CompatibleProposalMerge, DisjointProposalsDoNotRequirePairwiseComparison) {
   for (unsigned i = 0; i < 256; ++i)
     values.push_back(Proposal{{i, 0}});
   unsigned calls = 0;
-  auto result = mergeCompatibleProposals(values, [&](const auto &lhs, const auto &rhs) {
-    ++calls;
-    return compatible(lhs, rhs);
-  }, merge);
+  auto result = mergeCompatibleProposals(
+      values,
+      [&](const auto &lhs, const auto &rhs) {
+        ++calls;
+        return compatible(lhs, rhs);
+      },
+      merge);
   EXPECT_EQ(result, values);
   EXPECT_LE(calls, values.size());
 }
 
 TEST(CompatibleProposalMerge, LexicographicConflictResolution) {
   // Compatibility is not transitive: a connected-component union is invalid.
-  expectSame({Proposal{{0, 0}}, Proposal{{1, 0}},
-              Proposal{{1, 0}, {2, 1}}, Proposal{{0, 0}, {2, 2}}});
+  expectSame({Proposal{{0, 0}}, Proposal{{1, 0}}, Proposal{{1, 0}, {2, 1}},
+              Proposal{{0, 0}, {2, 2}}});
 }
 
 TEST(CompatibleProposalMerge, NewlyOverlappingEarlierCandidate) {

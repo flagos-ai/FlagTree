@@ -326,21 +326,23 @@ struct SharedByteSpan {
 static std::optional<size_t> getSharedDescriptorBytes(ttg::MemDescType type) {
   // These encodings allocate a dense per-CTA footprint. Padded and other
   // encodings require their own proof before their ranges can be narrowed.
-  if (!isa<ttg::SwizzledSharedEncodingAttr,ttg::NVMMASharedEncodingAttr>(
+  if (!isa<ttg::SwizzledSharedEncodingAttr, ttg::NVMMASharedEncodingAttr>(
           type.getEncoding()))
     return std::nullopt;
-  if (auto mma=dyn_cast<ttg::NVMMASharedEncodingAttr>(type.getEncoding()))
-    if (mma.getFp4Padded()) return std::nullopt;
-  if (type.getElementTypeBitWidth()<8) return std::nullopt;
-  if (!type.getAllocShape().empty() && type.getAllocShape()!=type.getShape())
+  if (auto mma = dyn_cast<ttg::NVMMASharedEncodingAttr>(type.getEncoding()))
+    if (mma.getFp4Padded())
+      return std::nullopt;
+  if (type.getElementTypeBitWidth() < 8)
+    return std::nullopt;
+  if (!type.getAllocShape().empty() && type.getAllocShape() != type.getShape())
     return std::nullopt;
   auto width = getElementByteWidth(type.getElementType());
   if (!width)
     return std::nullopt;
   size_t bytes = *width;
   for (int64_t dim : ttg::getAllocationShapePerCTA(type)) {
-    if (dim <= 0 || static_cast<size_t>(dim) >
-                        std::numeric_limits<size_t>::max() / bytes)
+    if (dim <= 0 ||
+        static_cast<size_t>(dim) > std::numeric_limits<size_t>::max() / bytes)
       return std::nullopt;
     bytes *= static_cast<size_t>(dim);
   }
@@ -357,57 +359,61 @@ static std::optional<SharedByteSpan> getSharedByteSpan(Value value) {
     if (!source || !source->exactBase || !bytes)
       return std::nullopt;
     int64_t delta = alias.getOffsetBytes();
-    if (delta < 0 || static_cast<size_t>(delta) > source->end-source->begin ||
-        *bytes > source->end-source->begin-static_cast<size_t>(delta))
+    if (delta < 0 || static_cast<size_t>(delta) > source->end - source->begin ||
+        *bytes > source->end - source->begin - static_cast<size_t>(delta))
       return std::nullopt;
-    size_t begin=source->begin+static_cast<size_t>(delta);
-    return SharedByteSpan{source->root,begin,begin+*bytes,true};
+    size_t begin = source->begin + static_cast<size_t>(delta);
+    return SharedByteSpan{source->root, begin, begin + *bytes, true};
   }
   // A dynamic or sliced view stays within its source, but its base is not
   // known here. Keep the whole source envelope and reject subsequent byte
   // aliases that would require a precise base.
   if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
-    auto source=getSharedByteSpan(index.getSrc());
-    auto bytes=getSharedDescriptorBytes(type);
+    auto source = getSharedByteSpan(index.getSrc());
+    auto bytes = getSharedDescriptorBytes(type);
     std::optional<int64_t> slot;
     // Only a direct SSA integer constant supplies this proof. In particular,
     // do not strip a truncation/cast and use its pre-conversion value.
-    if (auto constant=index.getIndex().getDefiningOp<arith::ConstantOp>())
-      if (auto integer=dyn_cast<IntegerAttr>(constant.getValue()))
-        if (integer.getValue().getBitWidth()<=64)
-          slot=integer.getValue().getSExtValue();
+    if (auto constant = index.getIndex().getDefiningOp<arith::ConstantOp>())
+      if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+        if (integer.getValue().getBitWidth() <= 64)
+          slot = integer.getValue().getSExtValue();
     if (source && source->exactBase && bytes && slot) {
-      if (*slot<0 || static_cast<size_t>(*slot)>
-                         (source->end-source->begin)/ *bytes)
+      if (*slot < 0 ||
+          static_cast<size_t>(*slot) > (source->end - source->begin) / *bytes)
         return std::nullopt;
-      size_t delta=static_cast<size_t>(*slot)* *bytes;
-      if (*bytes>source->end-source->begin-delta ||
-          delta>std::numeric_limits<uint32_t>::max())
+      size_t delta = static_cast<size_t>(*slot) * *bytes;
+      if (*bytes > source->end - source->begin - delta ||
+          delta > std::numeric_limits<uint32_t>::max())
         return std::nullopt;
       // LLVM memdesc_index advances by the per-CTA destination footprint.
-      size_t begin=source->begin+delta;
-      return SharedByteSpan{source->root,begin,begin+*bytes,true};
+      size_t begin = source->begin + delta;
+      return SharedByteSpan{source->root, begin, begin + *bytes, true};
     }
-    if (source) source->exactBase=false;
+    if (source)
+      source->exactBase = false;
     return source;
   }
   if (auto slice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
-    auto source=getSharedByteSpan(slice.getSrc());
-    if (source) source->exactBase=false;
+    auto source = getSharedByteSpan(slice.getSrc());
+    if (source)
+      source->exactBase = false;
     return source;
   }
   // Only allocations and function parameters establish a root. Unknown
   // producers, control-flow aliases and pointer arithmetic stay conservative.
-  bool formal=false;
-  if (auto argument=dyn_cast<BlockArgument>(value)) {
-    auto function=dyn_cast<FunctionOpInterface>(argument.getOwner()->getParentOp());
-    formal=function && argument.getOwner()->isEntryBlock();
+  bool formal = false;
+  if (auto argument = dyn_cast<BlockArgument>(value)) {
+    auto function =
+        dyn_cast<FunctionOpInterface>(argument.getOwner()->getParentOp());
+    formal = function && argument.getOwner()->isEntryBlock();
   }
   if (!formal && !value.getDefiningOp<ttg::LocalAllocOp>())
     return std::nullopt;
-  auto bytes=getSharedDescriptorBytes(type);
-  if (!bytes) return std::nullopt;
-  return SharedByteSpan{value,0,*bytes,true};
+  auto bytes = getSharedDescriptorBytes(type);
+  if (!bytes)
+    return std::nullopt;
+  return SharedByteSpan{value, 0, *bytes, true};
 }
 
 static size_t linearizeStatic(ArrayRef<int64_t> coord, ArrayRef<unsigned> shape,
@@ -431,7 +437,8 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
   bool usePhysicalSpan = !view;
   if (view) {
     auto rootTy = cast<ttg::MemDescType>(view->root.getType());
-    auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
     usePhysicalSpan = !shared || shared.getMaxPhase() != 1;
   }
   // A descriptor access covers its physical view, including an unknown slot's
@@ -439,12 +446,12 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
   // Unswizzled static views retain the existing coordinate-range precision.
   if (usePhysicalSpan && isa<ttg::MemDescType>(value.getType())) {
     auto span = getSharedByteSpan(value);
-    if (span && containsBufferId(allocation->getBufferIds(span->root), bufferId)) {
+    if (span &&
+        containsBufferId(allocation->getBufferIds(span->root), bufferId)) {
       auto allocated = allocation->getAllocatedInterval(bufferId);
       if (span->begin <= span->end && span->end <= allocated.size())
-        return SmallVector<Interval<size_t>>{
-            Interval<size_t>(allocated.start() + span->begin,
-                             allocated.start() + span->end)};
+        return SmallVector<Interval<size_t>>{Interval<size_t>(
+            allocated.start() + span->begin, allocated.start() + span->end)};
     }
   }
   if (!view)
@@ -521,7 +528,8 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
       return std::nullopt;
     // Logical row-major subranges cannot prove physical subranges for a
     // swizzled alias. Its proven descriptor envelope remains conservative.
-    auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
     if (!shared || shared.getMaxPhase() != 1)
       return SmallVector<Interval<size_t>>{
           Interval<size_t>(base + span->begin, base + span->end)};

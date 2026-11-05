@@ -32,7 +32,7 @@ def test_predicated_reduction_load_has_no_live_in_register(warps):
         pytest.skip("requires SM90")
     values = torch.randn((3, 256), device="cuda")
     output = torch.empty_like(values)
-    kernel = _repeated_softmax[(1,)](values, output, 3, num_warps=warps)
+    kernel = _repeated_softmax[(1, )](values, output, 3, num_warps=warps)
     torch.testing.assert_close(output, values.softmax(1), rtol=2e-6, atol=2e-7)
     # A predicated inline-asm output without initialization is a PTX live-in
     # on inactive lanes. In a device function ptxas saves it to local memory,

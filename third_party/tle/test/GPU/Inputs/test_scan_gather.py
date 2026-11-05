@@ -22,18 +22,15 @@ def _full_prefix(Input, Prefix, REVERSE: tl.constexpr):
 
 
 @triton.jit
-def _scan_gather(Input, Indices, Output, WARPS: tl.constexpr,
-                 REVERSE: tl.constexpr):
+def _scan_gather(Input, Indices, Output, WARPS: tl.constexpr, REVERSE: tl.constexpr):
     rows = tl.arange(0, 64)
     columns = tl.arange(0, 16)
     values = tl.load(Input + rows[:, None] * 16 + columns[None, :])
     prefix = tl.associative_scan(values, 0, _maximum, reverse=REVERSE)
     index = tl.load(Indices + tl.program_id(0))
-    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(
-        1, tle.gpu.MmaEncoding([2, 0], [1, WARPS], [16, 8]))
+    row_layout: tl.constexpr = tle.gpu.SlicedEncoding(1, tle.gpu.MmaEncoding([2, 0], [1, WARPS], [16, 8]))
     selected_rows = tl.full((1, 16), index, tl.int32)
-    selected = tle.gpu.set_layout(
-        tl.gather(prefix, selected_rows, 0).reshape((16,)), row_layout)
+    selected = tle.gpu.set_layout(tl.gather(prefix, selected_rows, 0).reshape((16, )), row_layout)
     tl.store(Output + tl.program_id(0) * 16 + columns, selected)
 
 
@@ -60,8 +57,8 @@ def test_scan_gather_keeps_explicit_result_encoding(dtype, reverse, warps):
     reference = torch.empty_like(values)
     output = torch.empty((6, 16), device='cuda', dtype=dtype)
     options = dict(num_warps=warps, enable_fp_fusion=False)
-    _full_prefix[(1,)](values, reference, reverse, **options)
-    compiled = _scan_gather[(6,)](values, indices, output, warps, reverse, **options)
+    _full_prefix[(1, )](values, reference, reverse, **options)
+    compiled = _scan_gather[(6, )](values, indices, output, warps, reverse, **options)
     expected = reference[indices.to(torch.int64)]
     assert torch.equal(output.view(torch.uint8), expected.view(torch.uint8))
     assert compiled.n_spills == 0
