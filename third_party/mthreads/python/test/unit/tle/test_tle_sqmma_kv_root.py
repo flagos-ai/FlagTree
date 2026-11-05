@@ -104,4 +104,16 @@ def test_shared_kv_fp8_runtime_precision(stages):
     torch.musa.synchronize()
     torch.testing.assert_close(qk.cpu(), expected_qk.float(), rtol=1e-3, atol=2e-3)
     torch.testing.assert_close(pv.cpu(), expected_pv.float(), rtol=1e-3, atol=2e-3)
-    assert "llvm.musa.sqmma.e4m3" in kernel.asm["llir"]
+    llir = kernel.asm["llir"]
+    assert "llvm.musa.sqmma.e4m3" in llir
+    descriptor = "@llvm.musa.sqmma.desc.i8"
+    declarations = [line for line in llir.splitlines() if line.startswith("declare") and descriptor in line]
+    calls = [line.strip() for line in llir.splitlines() if " call " in line and descriptor in line]
+    assert len(declarations) == 1
+    assert calls
+    if descriptor + "(ptr addrspace(3)" in declarations[0]:
+        assert all(descriptor + "(ptr addrspace(3)" in call for call in calls)
+    else:
+        assert descriptor + "(i8" in declarations[0]
+        assert all(descriptor + "(i8 " in call for call in calls)
+        assert any("load i8, ptr addrspace(3)" in line for line in llir.splitlines())

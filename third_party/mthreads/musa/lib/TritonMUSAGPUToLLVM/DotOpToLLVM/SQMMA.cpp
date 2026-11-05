@@ -15,6 +15,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <string>
@@ -61,6 +62,7 @@ bool isFP8(triton::musa::SQMMAEltType type) {
 struct SqmmaDescriptorIntrinsicSpec {
   llvm::StringRef intrinsicName;
   Type loadType;
+  Type scalarInputType;
   int64_t elemsPerLeadingGroup;
   Value leadingStrideBytes;
   Value swizzleGranularity;
@@ -148,7 +150,6 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   case triton::musa::SQMMAEltType::f16:
   case triton::musa::SQMMAEltType::bf16:
     intrinsicName = "llvm.musa.sqmma.desc.half";
-    loadType = rewriter.getIntegerType(16);
     break;
   case triton::musa::SQMMAEltType::tf32:
     intrinsicName = "llvm.musa.sqmma.desc.fp32";
@@ -162,10 +163,52 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
     return failure();
   }
 
+  Type scalarInputType;
+#ifdef __TLE__
+  llvm::LLVMContext llvmContext;
+  auto intrinsicId = llvm::Intrinsic::lookupIntrinsicID(intrinsicName);
+  if (!intrinsicId || llvm::Intrinsic::isOverloaded(intrinsicId)) {
+    emitError(loc) << "unsupported SQMMA descriptor intrinsic: "
+                   << intrinsicName;
+    return failure();
+  }
+  auto *signature = llvm::Intrinsic::getType(llvmContext, intrinsicId);
+  if (signature->getNumParams() != 4 ||
+      !signature->getReturnType()->isIntegerTy(32) ||
+      !signature->getParamType(1)->isIntegerTy(32) ||
+      !signature->getParamType(2)->isIntegerTy(32) ||
+      !signature->getParamType(3)->isIntegerTy(32)) {
+    emitError(loc) << "unsupported SQMMA descriptor signature: "
+                   << intrinsicName;
+    return failure();
+  }
+  auto *inputType = signature->getParamType(0);
+  if (inputType->isPointerTy()) {
+    if (inputType->getPointerAddressSpace() != 3) {
+      emitError(loc) << "SQMMA descriptor requires a shared-memory pointer: "
+                     << intrinsicName;
+      return failure();
+    }
+  } else {
+    if (inputType->isIntegerTy(elemBits))
+      scalarInputType = rewriter.getIntegerType(elemBits);
+    else if (inputType->isHalfTy() && elemBits == 16)
+      scalarInputType = rewriter.getF16Type();
+    else if (inputType->isFloatTy() && elemBits == 32)
+      scalarInputType = rewriter.getF32Type();
+    else {
+      emitError(loc) << "unsupported SQMMA descriptor scalar argument: "
+                     << intrinsicName;
+      return failure();
+    }
+  }
+#endif // __TLE__
+
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   return SqmmaDescriptorIntrinsicSpec{
       intrinsicName,
       loadType,
+      scalarInputType,
       grouping->elemsPerGroupInLeadingDim,
       b.i32_val(static_cast<int32_t>(groupedLeadingWidthBytes)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleGranularity)),
@@ -217,12 +260,13 @@ public:
     auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
     Value elemBase = b.bitcast(base, elemPtrTy);
     Value elemPtr = b.gep(elemPtrTy, descriptorSpec.loadType, elemBase, offset);
-    // Match the builtin contract: the descriptor consumes an element-typed
-    // shared-memory load, which preserves the address for the backend.
-    Value elem = b.load(descriptorSpec.loadType, elemPtr);
+    Value descriptorInput = elemPtr;
+    if (descriptorSpec.scalarInputType)
+      descriptorInput = LLVM::LoadOp::create(
+          rewriter, loc, descriptorSpec.scalarInputType, elemPtr);
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
-        ValueRange{elem, descriptorSpec.leadingStrideBytes,
+        ValueRange{descriptorInput, descriptorSpec.leadingStrideBytes,
                    descriptorSpec.swizzleGranularity,
                    descriptorSpec.swizzleStride});
     return desc.getResult(0);
