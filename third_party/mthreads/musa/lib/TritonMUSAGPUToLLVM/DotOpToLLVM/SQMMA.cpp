@@ -148,6 +148,7 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   case triton::musa::SQMMAEltType::f16:
   case triton::musa::SQMMAEltType::bf16:
     intrinsicName = "llvm.musa.sqmma.desc.half";
+    loadType = rewriter.getIntegerType(16);
     break;
   case triton::musa::SQMMAEltType::tf32:
     intrinsicName = "llvm.musa.sqmma.desc.fp32";
@@ -216,9 +217,12 @@ public:
     auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
     Value elemBase = b.bitcast(base, elemPtrTy);
     Value elemPtr = b.gep(elemPtrTy, descriptorSpec.loadType, elemBase, offset);
+    // Match the builtin contract: the descriptor consumes an element-typed
+    // shared-memory load, which preserves the address for the backend.
+    Value elem = b.load(descriptorSpec.loadType, elemPtr);
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
-        ValueRange{elemPtr, descriptorSpec.leadingStrideBytes,
+        ValueRange{elem, descriptorSpec.leadingStrideBytes,
                    descriptorSpec.swizzleGranularity,
                    descriptorSpec.swizzleStride});
     return desc.getResult(0);
