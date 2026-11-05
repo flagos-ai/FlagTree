@@ -338,6 +338,50 @@ def _check_mspti_env():
                 print("[WARNING] libmspti.so not set in LD_PRELOAD, please set libmspti.so in LD_PRELOAD to use mspti.")
 
 
+def do_bench_npu_events(funcs, warmup=5, active=30, clear_l2_cache=False):
+    """Mean elapsed time of a complete call on the current NPU stream, in ms.
+
+    Stream events include non-kernel work such as DSA tasks, as well as device
+    dependencies and submission gaps within the call. Work on other streams
+    must join the measured stream before the function returns.
+    """
+    import torch
+    import torch_npu
+
+    if warmup < 0 or active <= 0:
+        raise ValueError("warmup must be nonnegative and active must be positive")
+    if not isinstance(funcs, list):
+        funcs = [funcs]
+
+    buffer = runtime.driver.active.get_empty_cache_for_benchmark() if clear_l2_cache else None
+    stream = torch.npu.current_stream()
+    results = []
+    for fn in funcs:
+        # Compile/initialize the call before warming up or recording events.
+        fn()
+        torch.npu.synchronize()
+        for _ in builtins.range(warmup):
+            if buffer is not None:
+                buffer.zero_()
+            fn()
+        events = [(torch.npu.Event(enable_timing=True), torch.npu.Event(enable_timing=True))
+                  for _ in builtins.range(active)]
+        # Allocate the lazy event handles outside the measured calls.
+        for start, end in events:
+            start.record(stream)
+            end.record(stream)
+        torch.npu.synchronize()
+        for start, end in events:
+            if buffer is not None:
+                buffer.zero_()
+            start.record(stream)
+            fn()
+            end.record(stream)
+        torch.npu.synchronize()
+        results.append(sum(start.elapsed_time(end) for start, end in events) / active)
+    return results[0] if len(funcs) == 1 else results
+
+
 def do_bench_npu(
     funcs,
     warmup=5,
@@ -346,11 +390,16 @@ def do_bench_npu(
     prof_dir=None,
     keep_res=False,
     target_kernel_name: Optional[str] = None,
+    timing_method="auto",
 ):
     """
     Benchmark the runtime of the provided function on NPU.
-    this function utilizes NPU profiling tools (mspti or torch_npu.profiler) to capture pure Device-side kernel execution time.
-    By default, it returns the mean runtime in milliseconds of the provided function(s) based on `active` iterations.
+    By default, whole-call benchmarks use current-stream events, which include
+    non-kernel tasks such as DSA work. This is elapsed stream time, including
+    dependencies and submission gaps, rather than a sum of kernel durations.
+    Functions using other streams must join them to the measured stream.
+    Kernel-name filters, requested profiler artifacts, and the NPU autotuner
+    retain the profiling path. Returns mean runtime in milliseconds.
 
     :param funcs: Function (or list of functions) to benchmark. If a list is provided, returns a list of mean runtimes.
     :type funcs: Callable or List[Callable]
@@ -366,20 +415,30 @@ def do_bench_npu(
     :type keep_res: bool, optional
     :param target_kernel_name: Specific NPU kernel name to filter and benchmark. If None, benchmarks the entire function. If specified, returns the execution time of only that kernel. Defaults to None. Only used when falling back to torch_npu.profiler.
     :type target_kernel_name: str, optional
+    :param timing_method: "auto" selects stream events for whole calls and profiling for filters, artifacts, or NPU autotuning. "event" explicitly selects whole-call stream timing. "kernel" retains mspti/profiler kernel timing.
+    :type timing_method: str, optional
     """
     import math
     import os
-    mspti_available = True
-    if KernelMonitor is None:
-        mspti_available = False
-        print(f"[WARNING] mspti package not found. Falling back to torch_npu.profiler.")
-    _check_mspti_env()
+    if timing_method not in ("auto", "event", "kernel"):
+        raise ValueError(f"Unsupported NPU timing method: {timing_method!r}")
 
     if not isinstance(funcs, list):
         funcs = [funcs]
         use_autotune = False
     else:
         use_autotune = os.getenv("TRITON_BENCH_METHOD", "default").lower() == "npu"
+
+    requires_profiler = prof_dir is not None or keep_res or target_kernel_name is not None
+    if timing_method == "event" and requires_profiler:
+        raise ValueError("Event timing cannot filter kernels or produce profiler artifacts")
+    if timing_method == "event" or (timing_method == "auto" and not requires_profiler and not use_autotune):
+        return do_bench_npu_events(funcs, warmup, active, clear_l2_cache)
+
+    mspti_available = KernelMonitor is not None
+    if not mspti_available:
+        print("[WARNING] mspti package not found. Falling back to torch_npu.profiler.")
+    _check_mspti_env()
 
     results = None
     need_fallback = True
