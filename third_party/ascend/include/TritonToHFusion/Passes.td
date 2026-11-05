@@ -11,7 +11,9 @@ include "mlir/Pass/PassBase.td"
 def TritonToHFusion : Pass<"triton-to-hfusion", "mlir::ModuleOp"> {
   let summary = "Convert Triton to HFusion dialect";
   let constructor = "triton::createTritonToHFusionPass()";
-  let dependentDialects = ["hfusion::HFusionDialect"];
+  let dependentDialects = ["hfusion::HFusionDialect", "arith::ArithDialect",
+                           "linalg::LinalgDialect", "scf::SCFDialect",
+                           "tensor::TensorDialect"];
 }
 
 #endif // TRITON_TO_HFUSION_CONVERSION_PASSES
