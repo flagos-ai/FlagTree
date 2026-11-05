@@ -722,7 +722,6 @@ class TestBufferedTensor:
         with pytest.raises(ValueError, match="out of range"):
             buffer.subslice(start, length, dim, _semantic=semantic)
 
-
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_preserves_allocation_shape(self):
         buffer, semantic = self._make_buffer([32, 1024])
@@ -752,6 +751,7 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match=message):
             buffer.subslice(offsets, shape, _semantic=semantic)
+
 
 class TestCachePolicyFrontend:
 
@@ -808,7 +808,6 @@ class TestCachePolicyFrontend:
         policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
         policy = tl.constexpr(policy) if wrapped else policy
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
-
 
 
 class TestTmaCopyBarrierFrontend:

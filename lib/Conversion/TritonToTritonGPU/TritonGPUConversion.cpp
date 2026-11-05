@@ -219,8 +219,8 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     if (!isDynamicallyLegal(op, typeConverter))
       return false;
     if (Attribute encoding = getTleExplicitMemoryEncoding(op))
-      for (Type type : llvm::concat<Type>(op->getOperandTypes(),
-                                         op->getResultTypes()))
+      for (Type type :
+           llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes()))
         if (auto tensor = dyn_cast<RankedTensorType>(type))
           if (tensor.getEncoding() != encoding)
             return false;
