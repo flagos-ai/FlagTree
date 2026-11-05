@@ -1,5 +1,4 @@
 # Copyright 2026 FlagOS Contributors
-
 """Pass-level regression for repeated transitive-slice construction.
 
 No GPU or model is needed: a load-dependent pointer chain is sufficient. The
@@ -24,7 +23,11 @@ def _triton_opt():
             pytest.skip("requires a local triton-opt build")
         binary = str(candidates[0])
     help_text = subprocess.run(
-        [binary, "--help"], capture_output=True, text=True, timeout=10, check=True,
+        [binary, "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
     ).stdout
     if "tle-lower" not in help_text:
         pytest.skip("requires a TLE-enabled triton-opt build")
@@ -56,8 +59,12 @@ def pointer_chain(count):
 
 def test_coalesce_long_load_dependent_chain():
     result = subprocess.run(
-        [_triton_opt(), "-tritongpu-coalesce"], input=pointer_chain(512),
-        capture_output=True, text=True, timeout=30, check=True,
+        [_triton_opt(), "-tritongpu-coalesce"],
+        input=pointer_chain(512),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
     )
     assert result.stdout.count("tt.load") == 512
     assert result.stdout.count("tt.addptr") == 512

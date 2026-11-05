@@ -323,9 +323,9 @@ public:
     int64_t identityRun = sharedIdentityRun(memDescTy, elemBytes);
     for (int d = 0; d < rank; ++d) {
       physicalContiguity[d] = std::min(physicalContiguity[d], identityRun);
-      byteDivisibility[d] = std::gcd(
-          saturatingMultiplyDivisor(byteDivisibility[d], elemBytes),
-          identityRun * elemBytes);
+      byteDivisibility[d] =
+          std::gcd(saturatingMultiplyDivisor(byteDivisibility[d], elemBytes),
+                   identityRun * elemBytes);
     }
 
     std::optional<int64_t> constantValue = std::nullopt;

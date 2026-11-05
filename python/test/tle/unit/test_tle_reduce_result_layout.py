@@ -8,7 +8,6 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-
 _MATRIX = tl.constexpr(tle.gpu.BlockEncoding([1, 1], [4, 8], [1, 4], [1, 0]))
 _ROW = tl.constexpr(tle.gpu.SlicedEncoding(1, _MATRIX.value))
 
@@ -35,7 +34,7 @@ def test_tensor_reduction_to_explicit_matrix_layout(chunks, dtype):
     values = torch.arange(16 * 128 * chunks, dtype=dtype, device="cuda").reshape(16, -1)
     output = torch.empty((4, 4), dtype=dtype, device="cuda")
     for _ in range(2):
-        _reduce_to_matrix[(1,)](values, output, chunks, num_warps=4)
+        _reduce_to_matrix[(1, )](values, output, chunks, num_warps=4)
         torch.testing.assert_close(output, values.sum(1).reshape(4, 4).to(dtype), rtol=0, atol=0)
         values.add_(1)
 
@@ -57,7 +56,7 @@ def _shared_mask(output, row_output, limit):
 def test_shared_predicate_expands_in_two_layout_domains(limit):
     pair = torch.empty((4, 4), dtype=torch.bool, device="cuda")
     rows = torch.empty((4, 1), dtype=torch.bool, device="cuda")
-    _shared_mask[(1,)](pair, rows, limit, num_warps=4)
+    _shared_mask[(1, )](pair, rows, limit, num_warps=4)
     active = torch.arange(4, device="cuda") < limit
     torch.testing.assert_close(pair, active[:, None] & active[None, :])
     torch.testing.assert_close(rows, active[:, None])
@@ -74,5 +73,5 @@ def _expand_other_axis(output):
 @pytest.mark.require_tle("gpu.set_layout")
 def test_expand_explicit_source_along_another_axis():
     output = torch.empty((1, 4), dtype=torch.int32, device="cuda")
-    _expand_other_axis[(1,)](output, num_warps=4)
+    _expand_other_axis[(1, )](output, num_warps=4)
     torch.testing.assert_close(output, torch.arange(4, device="cuda", dtype=torch.int32)[None, :])

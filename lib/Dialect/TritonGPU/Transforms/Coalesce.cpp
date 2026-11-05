@@ -114,7 +114,8 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
         failedReachability = true;
     });
     if (failedReachability) {
-      moduleOp.emitError("failed to prove executable blocks for TLE coalescing");
+      moduleOp.emitError(
+          "failed to prove executable blocks for TLE coalescing");
       signalPassFailure();
       return;
     }
@@ -163,10 +164,9 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
       CTAEncodingAttr ctaLayout = getCTALayout(tensorType.getEncoding());
       SmallVector<int64_t> shapePerCTA = getShapePerCTA(tensorType);
 #ifdef __TLE__
-      auto layout = buildCoalescedEncoding(&getContext(), axisInfoAnalysis,
-                                           curr, numWarps, threadsPerWarp,
-                                           ctaLayout, shapePerCTA,
-                                           nonExecutableBlocks);
+      auto layout = buildCoalescedEncoding(
+          &getContext(), axisInfoAnalysis, curr, numWarps, threadsPerWarp,
+          ctaLayout, shapePerCTA, nonExecutableBlocks);
 #else
       auto layout = buildCoalescedEncoding(&getContext(), axisInfoAnalysis,
                                            curr, numWarps, threadsPerWarp,

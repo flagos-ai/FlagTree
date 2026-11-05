@@ -241,8 +241,8 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     if (!isDynamicallyLegal(op, typeConverter))
       return false;
     if (Attribute encoding = getTleExplicitMemoryEncoding(op))
-      for (Type type : llvm::concat<Type>(op->getOperandTypes(),
-                                         op->getResultTypes()))
+      for (Type type :
+           llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes()))
         if (auto tensorType = dyn_cast<RankedTensorType>(type))
           if (tensorType.getEncoding() != encoding)
             return false;
@@ -262,8 +262,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addDynamicallyLegalOp<triton::ReshapeOp>([&](triton::ReshapeOp op) {
     if (!isDynamicallyLegal(op, typeConverter))
       return false;
-    if (op.getAllowReorder() ||
-        !op->hasAttr(getTleExplicitEncodingAttrName(0)))
+    if (op.getAllowReorder() || !op->hasAttr(getTleExplicitEncodingAttrName(0)))
       return true;
     return inferDstEncoding(op, op.getSrc().getType().getEncoding()) ==
            op.getType().getEncoding();
@@ -287,10 +286,10 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
       if (!resultType)
         continue;
       auto sourceType = cast<RankedTensorType>(operand.getType());
-      auto source = cast<triton::gpu::DistributedEncodingTrait>(
-          sourceType.getEncoding());
-      auto expected = triton::gpu::SliceEncodingAttr::get(
-          op.getContext(), op.getAxis(), source);
+      auto source =
+          cast<triton::gpu::DistributedEncodingTrait>(sourceType.getEncoding());
+      auto expected = triton::gpu::SliceEncodingAttr::get(op.getContext(),
+                                                          op.getAxis(), source);
       if (resultType.getEncoding() != expected)
         return false;
     }
@@ -314,8 +313,8 @@ bool TritonGPUConversionTarget::isDynamicallyLegal(
   // even when the type converter considers every individual type legal.
   if (op->hasTrait<OpTrait::Elementwise>()) {
     Attribute encoding;
-    for (Type type : llvm::concat<Type>(op->getOperandTypes(),
-                                        op->getResultTypes()))
+    for (Type type :
+         llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes()))
       if (auto tensor = dyn_cast<RankedTensorType>(type)) {
         if (encoding && tensor.getEncoding() != encoding)
           return false;
