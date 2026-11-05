@@ -237,6 +237,50 @@ def find_records(token: str, app_token: str, table_id: str, field: str, value: s
     return [item["record_id"] for item in (data.get("items") or [])]
 
 
+def search_records(token: str, app_token: str, table_id: str, field: str, value: str,
+                   want: Optional[List[str]] = None) -> List[Dict]:
+    """Rows whose `field` equals `value`, as field dicts.
+
+    find_records answers "does a row exist" for idempotent writes; this one
+    answers "what does that row say", which is what a lookup table needs.
+    """
+    payload: Dict = {
+        "filter": {
+            "conjunction": "and",
+            "conditions": [{"field_name": field, "operator": "is", "value": [str(value)]}],
+        },
+    }
+    if want:
+        payload["field_names"] = want
+    url = f"{_records_url(app_token, table_id)}/search?page_size=100"
+    data = _request("POST", url, token, payload=payload).get("data", {})
+    return [item.get("fields") or {} for item in (data.get("items") or [])]
+
+
+def cell_text(value) -> str:
+    """Flatten a Bitable cell to plain text.
+
+    Text cells come back as a list of segments rather than a string, and a
+    link cell as a dict, so reading one without this returns something that
+    looks right in a log and is wrong in a comparison.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for seg in value:
+            if isinstance(seg, dict):
+                parts.append(str(seg.get("text") or seg.get("name") or ""))
+            else:
+                parts.append(str(seg))
+        return "".join(parts).strip()
+    if isinstance(value, dict):
+        return str(value.get("text") or value.get("link") or "").strip()
+    return str(value).strip()
+
+
 def create_records(token: str, app_token: str, table_id: str, rows: List[Dict]) -> int:
     """Batch-create rows, chunked to the API limit. Returns rows written."""
     url = f"{_records_url(app_token, table_id)}/batch_create"

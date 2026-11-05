@@ -53,8 +53,25 @@ inputs:
     description: 'Label for that button'
     required: false
     default: 'Open'
+  link2-url:
+    description: >-
+      URL for a second button, shown next to the first. Left empty the card
+      has one button, as before.
+    required: false
+    default: ''
+  link2-text:
+    description: 'Label for the second button'
+    required: false
+    default: 'Open'
   chat-id:
     description: 'Target chat_id (oc_...). Notifying is skipped when empty.'
+    required: false
+    default: ''
+  open-id:
+    description: >-
+      Target user open_id (ou_...) for a direct message, comma separated for
+      several. Takes precedence over chat-id, so a caller that resolved a
+      person reaches that person rather than falling back to a room.
     required: false
     default: ''
   app-id:
@@ -93,12 +110,15 @@ runs:
         FEISHU_APP_ID: ${{ inputs.app-id }}
         FEISHU_APP_SECRET: ${{ inputs.app-secret }}
         FEISHU_CHAT_ID: ${{ inputs.chat-id }}
+        FEISHU_OPEN_ID: ${{ inputs.open-id }}
         NOTIFICATION: ${{ inputs.notification }}
         TITLE: ${{ inputs.title }}
         TEXT: ${{ inputs.text }}
         COLOR: ${{ inputs.color }}
         LINK_URL: ${{ inputs.link-url }}
         LINK_TEXT: ${{ inputs.link-text }}
+        LINK2_URL: ${{ inputs.link2-url }}
+        LINK2_TEXT: ${{ inputs.link2-text }}
         STRICT: ${{ inputs.strict }}
         PYTHON: ${{ inputs.python }}
       run: |
@@ -132,8 +152,8 @@ runs:
           fail_or_skip "notify-feishu: no credentials available, nothing was sent. Check that the caller forwards FLAGTREE_FEISHU_APP_ID and _APP_SECRET."
         fi
 
-        if [[ -z "${FEISHU_CHAT_ID}" ]]; then
-          fail_or_skip "notify-feishu: no chat id, nothing was sent. Pass the target chat (oc_...) via chat-id; \`--list-chats\` on the script prints the ids of chats the bot belongs to."
+        if [[ -z "${FEISHU_CHAT_ID}" && -z "${FEISHU_OPEN_ID}" ]]; then
+          fail_or_skip "notify-feishu: no recipient, nothing was sent. Pass a chat (oc_...) via chat-id or a user (ou_...) via open-id; \`--list-chats\` on the script prints the ids of chats the bot belongs to."
         fi
 
         # feishu_client.py lives with report-feishu rather than being copied
@@ -154,10 +174,12 @@ runs:
 
         args=()
         [[ -n "${NOTIFICATION}" ]] && args+=(--notification "${NOTIFICATION}")
+        [[ -n "${FEISHU_OPEN_ID}" ]] && args+=(--open-id "${FEISHU_OPEN_ID}")
         [[ -n "${TITLE}" ]] && args+=(--title "${TITLE}")
         [[ -n "${TEXT}" ]] && args+=(--text "${TEXT}")
         [[ -n "${COLOR}" ]] && args+=(--color "${COLOR}")
         [[ -n "${LINK_URL}" ]] && args+=(--link-url "${LINK_URL}" --link-text "${LINK_TEXT}")
+        [[ -n "${LINK2_URL}" ]] && args+=(--link2-url "${LINK2_URL}" --link2-text "${LINK2_TEXT}")
         [[ "${STRICT}" == "true" ]] && args+=(--strict)
 
         "${PYTHON}" "${GITHUB_ACTION_PATH}/scripts/notify_feishu.py" "${args[@]}" \
