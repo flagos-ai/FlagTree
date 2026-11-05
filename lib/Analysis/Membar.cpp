@@ -316,6 +316,106 @@ static std::optional<unsigned> getElementByteWidth(Type type) {
   return std::nullopt;
 }
 
+struct SharedByteSpan {
+  Value root;
+  size_t begin;
+  size_t end;
+  bool exactBase;
+};
+
+static std::optional<size_t> getSharedDescriptorBytes(ttg::MemDescType type) {
+  // These encodings allocate a dense per-CTA footprint. Padded and other
+  // encodings require their own proof before their ranges can be narrowed.
+  if (!isa<ttg::SwizzledSharedEncodingAttr, ttg::NVMMASharedEncodingAttr>(
+          type.getEncoding()))
+    return std::nullopt;
+  if (auto mma = dyn_cast<ttg::NVMMASharedEncodingAttr>(type.getEncoding()))
+    if (mma.getFp4Padded())
+      return std::nullopt;
+  if (type.getElementTypeBitWidth() < 8)
+    return std::nullopt;
+  if (!type.getAllocShape().empty() && type.getAllocShape() != type.getShape())
+    return std::nullopt;
+  auto width = getElementByteWidth(type.getElementType());
+  if (!width)
+    return std::nullopt;
+  size_t bytes = *width;
+  for (int64_t dim : ttg::getAllocationShapePerCTA(type)) {
+    if (dim <= 0 ||
+        static_cast<size_t>(dim) > std::numeric_limits<size_t>::max() / bytes)
+      return std::nullopt;
+    bytes *= static_cast<size_t>(dim);
+  }
+  return bytes;
+}
+
+static std::optional<SharedByteSpan> getSharedByteSpan(Value value) {
+  auto type = dyn_cast<ttg::MemDescType>(value.getType());
+  if (!type || !isa<ttg::SharedMemorySpaceAttr>(type.getMemorySpace()))
+    return std::nullopt;
+  if (auto alias = value.getDefiningOp<tt::tle::MemDescAliasOp>()) {
+    auto source = getSharedByteSpan(alias.getSrc());
+    auto bytes = getSharedDescriptorBytes(type);
+    if (!source || !source->exactBase || !bytes)
+      return std::nullopt;
+    int64_t delta = alias.getOffsetBytes();
+    if (delta < 0 || static_cast<size_t>(delta) > source->end - source->begin ||
+        *bytes > source->end - source->begin - static_cast<size_t>(delta))
+      return std::nullopt;
+    size_t begin = source->begin + static_cast<size_t>(delta);
+    return SharedByteSpan{source->root, begin, begin + *bytes, true};
+  }
+  // A dynamic or sliced view stays within its source, but its base is not
+  // known here. Keep the whole source envelope and reject subsequent byte
+  // aliases that would require a precise base.
+  if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
+    auto source = getSharedByteSpan(index.getSrc());
+    auto bytes = getSharedDescriptorBytes(type);
+    std::optional<int64_t> slot;
+    // Only a direct SSA integer constant supplies this proof. In particular,
+    // do not strip a truncation/cast and use its pre-conversion value.
+    if (auto constant = index.getIndex().getDefiningOp<arith::ConstantOp>())
+      if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+        if (integer.getValue().getBitWidth() <= 64)
+          slot = integer.getValue().getSExtValue();
+    if (source && source->exactBase && bytes && slot) {
+      if (*slot < 0 ||
+          static_cast<size_t>(*slot) > (source->end - source->begin) / *bytes)
+        return std::nullopt;
+      size_t delta = static_cast<size_t>(*slot) * *bytes;
+      if (*bytes > source->end - source->begin - delta ||
+          delta > std::numeric_limits<uint32_t>::max())
+        return std::nullopt;
+      // LLVM memdesc_index advances by the per-CTA destination footprint.
+      size_t begin = source->begin + delta;
+      return SharedByteSpan{source->root, begin, begin + *bytes, true};
+    }
+    if (source)
+      source->exactBase = false;
+    return source;
+  }
+  if (auto slice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+    auto source = getSharedByteSpan(slice.getSrc());
+    if (source)
+      source->exactBase = false;
+    return source;
+  }
+  // Only allocations and function parameters establish a root. Unknown
+  // producers, control-flow aliases and pointer arithmetic stay conservative.
+  bool formal = false;
+  if (auto argument = dyn_cast<BlockArgument>(value)) {
+    auto function =
+        dyn_cast<FunctionOpInterface>(argument.getOwner()->getParentOp());
+    formal = function && argument.getOwner()->isEntryBlock();
+  }
+  if (!formal && !value.getDefiningOp<ttg::LocalAllocOp>())
+    return std::nullopt;
+  auto bytes = getSharedDescriptorBytes(type);
+  if (!bytes)
+    return std::nullopt;
+  return SharedByteSpan{value, 0, *bytes, true};
+}
+
 static size_t linearizeStatic(ArrayRef<int64_t> coord, ArrayRef<unsigned> shape,
                               ArrayRef<unsigned> order) {
   size_t linear = 0;
@@ -334,6 +434,26 @@ static std::optional<SmallVector<Interval<size_t>>>
 getStaticAccessIntervals(const Allocation *allocation, Value value,
                          Allocation::BufferId bufferId) {
   auto view = getStaticAccessView(value);
+  bool usePhysicalSpan = !view;
+  if (view) {
+    auto rootTy = cast<ttg::MemDescType>(view->root.getType());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
+    usePhysicalSpan = !shared || shared.getMaxPhase() != 1;
+  }
+  // A descriptor access covers its physical view, including an unknown slot's
+  // source envelope. Preserve the byte origin of aliases sharing an allocation.
+  // Unswizzled static views retain the existing coordinate-range precision.
+  if (usePhysicalSpan && isa<ttg::MemDescType>(value.getType())) {
+    auto span = getSharedByteSpan(value);
+    if (span &&
+        containsBufferId(allocation->getBufferIds(span->root), bufferId)) {
+      auto allocated = allocation->getAllocatedInterval(bufferId);
+      if (span->begin <= span->end && span->end <= allocated.size())
+        return SmallVector<Interval<size_t>>{Interval<size_t>(
+            allocated.start() + span->begin, allocated.start() + span->end)};
+    }
+  }
   if (!view)
     return std::nullopt;
   if (!containsBufferId(allocation->getBufferIds(view->root), bufferId))
@@ -399,7 +519,22 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
 
   SmallVector<Interval<size_t>> intervals;
   intervals.reserve(std::max<size_t>(outerCount, 1));
-  size_t base = allocation->getAllocatedInterval(bufferId).start();
+  auto allocated = allocation->getAllocatedInterval(bufferId);
+  size_t base = allocated.start();
+  if (view->root.getDefiningOp<tt::tle::MemDescAliasOp>()) {
+    auto span = getSharedByteSpan(view->root);
+    if (!span || !span->exactBase || span->end > allocated.size() ||
+        !containsBufferId(allocation->getBufferIds(span->root), bufferId))
+      return std::nullopt;
+    // Logical row-major subranges cannot prove physical subranges for a
+    // swizzled alias. Its proven descriptor envelope remains conservative.
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
+    if (!shared || shared.getMaxPhase() != 1)
+      return SmallVector<Interval<size_t>>{
+          Interval<size_t>(base + span->begin, base + span->end)};
+    base += span->begin;
+  }
   for (size_t linearOuter = 0; linearOuter < std::max<size_t>(outerCount, 1);
        ++linearOuter) {
     size_t residue = linearOuter;
@@ -423,10 +558,33 @@ getStaticAccessIntervals(const Allocation *allocation, Value value,
   return intervals;
 }
 
+static bool isSharedMemoryValue(Value value) {
+  Type type = value.getType();
+  if (auto memDesc = dyn_cast<ttg::MemDescType>(type))
+    return isa<ttg::SharedMemorySpaceAttr>(memDesc.getMemorySpace());
+  if (auto tensor = dyn_cast<RankedTensorType>(type))
+    type = tensor.getElementType();
+  if (auto pointer = dyn_cast<tt::PointerType>(type))
+    return pointer.getAddressSpace() == 3;
+  return false;
+}
+
 static void addEffectIntervals(const Allocation *allocation, Value value,
                                bool isWrite, Operation *op,
                                BlockInfo &curBlockInfo) {
-  for (auto bufferId : allocation->getBufferIds(value)) {
+  auto bufferIds = allocation->getBufferIds(value);
+  if (bufferIds.empty() && isSharedMemoryValue(value)) {
+    // Borrowed shared parameters and their views need not have a local
+    // allocation ID. They may alias any shared allocation, including one in
+    // the caller; preserve their effects in the existing dependency analysis.
+    Interval<size_t> allShared(0, std::numeric_limits<size_t>::max());
+    if (isWrite)
+      curBlockInfo.syncWriteIntervals[allShared].insert(op);
+    else
+      curBlockInfo.syncReadIntervals[allShared].insert(op);
+    return;
+  }
+  for (auto bufferId : bufferIds) {
     if (bufferId == Allocation::InvalidBufferId)
       continue;
     auto intervals = getStaticAccessIntervals(allocation, value, bufferId);
@@ -480,6 +638,12 @@ void MembarOrFenceAnalysis::resolve(FunctionOpInterface funcOp,
     if (block->isEntryBlock() &&
         !isa<RegionBranchOpInterface>(block->getParentOp()))
       blockList.emplace_back(block, Block::iterator());
+#ifdef __TLE__
+    if (block->isEntryBlock() &&
+        !isa<RegionBranchOpInterface>(block->getParentOp()) &&
+        tracksEntrySync() && block->getParentOp() == funcOp.getOperation())
+      inputBlockInfoMap[{block, Block::iterator()}].entryUnsynced = true;
+#endif
   });
 
   // A fixed point algorithm
@@ -598,6 +762,57 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
 }
 
+#ifdef __TLE__
+void MembarAnalysis::addToEntryPrefix(const BlockInfo &blockInfo) {
+  auto funcOp = cast<FunctionOpInterface>(allocation->getOperation());
+  BlockInfo accesses = blockInfo;
+  accesses.entryUnsynced = false;
+  (*entryPrefixMap)[funcOp].join(accesses);
+}
+
+void MembarAnalysis::updateCall(Operation *op, FunctionOpInterface callee,
+                                BlockInfo *blockInfo,
+                                FuncBlockInfoMapT *funcBlockInfoMap,
+                                MembarFilterFn filter, OpBuilder *builder) {
+  // The callee's shared memory lives in this call's virtual buffer.
+  size_t callOffset = 0;
+  auto callBufferId = allocation->getBufferId(op);
+  if (callBufferId != Allocation::InvalidBufferId)
+    callOffset = allocation->getAllocatedInterval(callBufferId).start();
+
+  auto exitIt = funcBlockInfoMap->find(callee);
+  BlockInfo calleeExit;
+  if (exitIt != funcBlockInfoMap->end())
+    calleeExit = exitIt->second.translated(callOffset);
+  else
+    calleeExit.entryUnsynced = true;
+
+  // Without entry summaries, fall back to the callee's exit state.
+  BlockInfo calleeEntry = calleeExit;
+  if (entryPrefixMap) {
+    auto entryIt = entryPrefixMap->find(callee);
+    calleeEntry = entryIt != entryPrefixMap->end()
+                      ? entryIt->second.translated(callOffset)
+                      : BlockInfo();
+  }
+
+  // Accesses pending in the caller must be ordered against what the callee
+  // touches before its first barrier.
+  if (blockInfo->isIntersected(calleeEntry, filter)) {
+    builder->setInsertionPoint(op);
+    insertBarrier(op, builder);
+    blockInfo->sync();
+  }
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(calleeEntry);
+  // A callee that synchronizes on every path also synchronizes the caller.
+  if (!calleeExit.entryUnsynced)
+    blockInfo->sync();
+  calleeExit.entryUnsynced = false;
+  blockInfo->join(calleeExit);
+}
+#endif
+
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
@@ -617,14 +832,44 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     return;
   }
 
+#ifdef __TLE__
+  // Atomicity orders the addressed memory, not the shared scratch used to
+  // broadcast returned values. Exempt only atomic chains without return
+  // scratch; overlapping broadcasts still need their write-after-read barrier.
+  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
+    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(rhs)) {
+      // Participant publication proves that every payload writer performs its
+      // own release fence and arrive. A synchronous store needs no additional
+      // CTA rendezvous, even when the barrier parameter may alias its buffer.
+      if (arrive.getParticipantArrive() && arrive.getReleaseFence() &&
+          isa<triton::StoreOp, triton::gpu::LocalStoreOp>(lhs))
+        return true;
+    }
+    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
+        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs) &&
+        allocation->getBufferId(lhs) == Allocation::InvalidBufferId &&
+        allocation->getBufferId(rhs) == Allocation::InvalidBufferId)
+      return true;
+    return filter ? filter(lhs, rhs) : false;
+  };
+#endif
+
   BlockInfo curBlockInfo;
   auto scratchBufferId = Allocation::InvalidBufferId;
   if (isa<triton::CallOp>(op)) {
     // Inter-function dependencies
     auto callOpInterface = dyn_cast<CallOpInterface>(op);
+#ifdef __TLE__
+    if (auto callee =
+            dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
+      updateCall(op, callee, blockInfo, funcBlockInfoMap, effectiveFilter,
+                 builder);
+    return;
+#else
     if (auto callee =
             dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
       curBlockInfo = funcBlockInfoMap->lookup(callee);
+#endif
   } else {
     // Intra-function dependencies
     if (auto memoryEffectOpInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
@@ -690,18 +935,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     scratchBufferId = allocation->getBufferId(op);
   }
 
-#ifdef __TLE__
-  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
-  // atomics on overlapping shared intervals do not require an extra CTA
-  // barrier here.
-  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
-    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
-      return true;
-    return filter ? filter(lhs, rhs) : false;
-  };
-#endif
-
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
   // read/write operations, and ending with a shared memory read, i.e., shared
@@ -742,10 +975,22 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
+#ifdef __TLE__
+      blockInfo->sync();
+#endif
     }
+#ifdef __TLE__
+    // The write phase runs before the op's internal barrier.
+    if (entryPrefixMap && blockInfo->entryUnsynced)
+      addToEntryPrefix(curBlockInfo);
+#endif
     // Ops with a scratch buffer that don't use warp.sync internally sync
     // read/write on shared memory
+#ifdef __TLE__
+    if (!isWarpSync)
+#else
     if (insertCTABarrier || !isWarpSync)
+#endif
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
 #ifdef __TLE__
@@ -757,6 +1002,10 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     insertBarrier(op, builder);
     blockInfo->sync();
   }
+#ifdef __TLE__
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(curBlockInfo);
+#endif
   // Update the region info, even if barrier is inserted, we have to maintain
   // the current op's read/write buffers.
   blockInfo->join(curBlockInfo);
