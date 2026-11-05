@@ -200,9 +200,9 @@ module attributes {"ttg.num-warps" = 4 : i32} {
       attributes {noinline = false} {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %field {capacity = 4 : i32, pipe_name = "field", field_names = ["field"], scope = "cta"} : !ttg.memdesc<4x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_acquire %field[%c0, %false] {capacity = 4 : i32, pipe_name = "field", field_names = ["field"], scope = "cta"} : !ttg.memdesc<4x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %field[%c0] {capacity = 4 : i32, pipe_name = "field", field_names = ["field"], scope = "cta"} : !ttg.memdesc<4x16xf16, #shared, #smem, mutable>
+    %pipe_identity_0 = tle.pipe.create %field {capacity = 4 : i32, pipe_name = "field", field_names = ["field"], scope = "cta"} : !ttg.memdesc<4x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_0, %field[%c0, %false] {capacity = 4 : i32, pipe_name = "field", field_names = ["field"], scope = "cta"} : !ttg.memdesc<4x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_0, %field[%c0] {capacity = 4 : i32, pipe_name = "field", field_names = ["field"], scope = "cta"} : !ttg.memdesc<4x16xf16, #shared, #smem, mutable>
     tt.return
   }
 }
