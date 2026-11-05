@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 from . import buffer, common, copy, pipe, warp_specialize, wgmma
-from .types import MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding, TMECachePolicy
+from .types import LSUCachePolicy, MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding, TMECachePolicy
 
 from triton._C import libtriton
 
@@ -56,6 +56,7 @@ __all__ = [
     "warp_specialize",
     "wgmma",
     "TMECachePolicy",
+    "LSUCachePolicy",
     "MusaDotOperandEncoding",
     "MusaSqmmaEncoding",
     "MusaWmmaEncoding",

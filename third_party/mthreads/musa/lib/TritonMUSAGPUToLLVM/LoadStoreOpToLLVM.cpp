@@ -3,6 +3,7 @@
 #include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
+#include "include/triton/Dialect/Triton/IR/CacheControls.h"
 #ifdef __TLE__
 #include "MUSATLE/Transforms/TransformAttrs.h"
 #endif
@@ -37,6 +38,141 @@ namespace {
 
 inline constexpr llvm::StringLiteral kInplaceLoadAttr =
     "musa.inplace_load_candidate";
+
+static LogicalResult validateLSUCachePolicy(Operation *op,
+                                            const MUSA::TargetInfo &targetInfo,
+                                            Value ptr) {
+  auto cache = getCacheModifier(op);
+  if (isPPUAIUCache(cache) || cache == CacheModifier::PPU_LSU_DEFAULT ||
+      isL1Eviction(getEvictionPolicy(op)) ||
+      isL2Eviction(getEvictionPolicy(op)))
+    return op->emitError("foreign cache controls are unsupported on MUSA");
+  if (!isMusaLSUCache(cache))
+    return success();
+  if (targetInfo.getComputeCapability() !=
+      triton::musa::kMUSACacheControlCapability)
+    return op->emitOpError("LSU copy cache policy requires MUSA mp_31");
+  auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptr.getType());
+  if (!ptrTy || ptrTy.getAddressSpace() != 1)
+    return op->emitOpError("LSU copy cache policy requires global memory");
+  Type elementType;
+  if (auto load = dyn_cast<triton::LoadOp>(op)) {
+    if (load.getIsVolatile() || load.getEvict() != EvictionPolicy::NORMAL)
+      return op->emitOpError("LSU copy cache policy cannot be combined with "
+                             "volatile or legacy cache/eviction modifiers");
+    elementType = getElementTypeOrSelf(load.getType());
+  } else if (auto store = dyn_cast<triton::StoreOp>(op)) {
+    if (store.getEvict() != EvictionPolicy::NORMAL)
+      return op->emitOpError("LSU copy cache policy cannot be combined with "
+                             "legacy cache/eviction modifiers");
+    elementType = getElementTypeOrSelf(store.getValue());
+  } else if (auto copy = dyn_cast<triton::gpu::AsyncCopyGlobalToLocalOp>(op)) {
+    if (copy.getIsVolatile() || copy.getEvict() != EvictionPolicy::NORMAL)
+      return op->emitOpError("LSU copy cache policy cannot be combined with "
+                             "volatile or legacy eviction modifiers");
+    elementType = copy.getResult().getType().getElementType();
+  }
+  if (!elementType || !elementType.isIntOrFloat() ||
+      (elementType.getIntOrFloatBitWidth() != 8 &&
+       elementType.getIntOrFloatBitWidth() != 16 &&
+       elementType.getIntOrFloatBitWidth() != 32 &&
+       elementType.getIntOrFloatBitWidth() != 64))
+    return op->emitOpError("LSU copy cache policy requires an 8, 16, 32, or "
+                           "64-bit numeric element type");
+  return success();
+}
+
+// Use integer bit carriers so the SDK intrinsic covers all supported copy
+// element types without a numerical conversion. The largest transaction is 16B.
+static Type getLSUCarrierType(Type type, RewriterBase &rewriter) {
+  unsigned bits;
+  if (auto vector = dyn_cast<VectorType>(type))
+    bits = vector.getNumElements() *
+           vector.getElementType().getIntOrFloatBitWidth();
+  else
+    bits = type.getIntOrFloatBitWidth();
+  if (bits == 128)
+    return LLVM::getVectorType(rewriter.getI32Type(), 4);
+  return rewriter.getIntegerType(bits);
+}
+
+static SmallVector<Value> getLSUPolicyOperands(CacheModifier policy,
+                                               bool isLoad, Location loc,
+                                               RewriterBase &rewriter) {
+  TritonLLVMOpBuilder b(loc, rewriter);
+  return {b.i32_val((static_cast<int>(policy) - 128) / 12),
+          b.i32_val(((static_cast<int>(policy) - 128) / 2) % 6),
+          // Preserve the SDK's direction-specific coherence defaults.
+          b.i32_val(isLoad ? 0 : 1),
+          b.i32_val((static_cast<int>(policy) - 128) % 2)};
+}
+
+static Value emitLSUCacheLoad(RewriterBase &rewriter, Location loc, Value ptr,
+                              Type type, Value pred, Value other,
+                              CacheModifier policy) {
+  if (matchPattern(pred, m_Zero()))
+    return other;
+  auto emit = [&]() -> Value {
+    Type carrier = getLSUCarrierType(type, rewriter);
+    SmallVector<Value> operands{ptr};
+    llvm::append_range(operands,
+                       getLSUPolicyOperands(policy, true, loc, rewriter));
+    Value loaded = LLVM::createLLVMIntrinsicCallOp(
+                       rewriter, loc, "llvm.musa.lsu.ld.cache.hint.i",
+                       TypeRange{carrier}, operands)
+                       .getResult(0);
+    return carrier == type
+               ? loaded
+               : LLVM::BitcastOp::create(rewriter, loc, type, loaded)
+                     .getResult();
+  };
+  if (!pred || matchPattern(pred, m_One()))
+    return emit();
+  Block *before = rewriter.getInsertionBlock();
+  Block *after = before->splitBlock(rewriter.getInsertionPoint());
+  Block *active = rewriter.createBlock(before->getParent(),
+                                       std::next(Region::iterator(before)));
+  after->addArgument(type, loc);
+  rewriter.setInsertionPointToEnd(before);
+  LLVM::CondBrOp::create(rewriter, loc, pred, active, after, other);
+  rewriter.setInsertionPointToEnd(active);
+  Value loaded = emit();
+  LLVM::BrOp::create(rewriter, loc, loaded, after);
+  rewriter.setInsertionPointToStart(after);
+  return after->getArgument(0);
+}
+
+static void emitLSUCacheStore(RewriterBase &rewriter, Location loc, Value ptr,
+                              Value value, Value pred, CacheModifier policy) {
+  if (matchPattern(pred, m_Zero()))
+    return;
+  auto emit = [&]() {
+    Type carrier = getLSUCarrierType(value.getType(), rewriter);
+    Value stored = carrier == value.getType()
+                       ? value
+                       : LLVM::BitcastOp::create(rewriter, loc, carrier, value)
+                             .getResult();
+    SmallVector<Value> operands{stored, ptr};
+    llvm::append_range(operands,
+                       getLSUPolicyOperands(policy, false, loc, rewriter));
+    LLVM::createLLVMIntrinsicCallOp(
+        rewriter, loc, "llvm.musa.lsu.st.cache.hint.i", TypeRange{}, operands);
+  };
+  if (!pred || matchPattern(pred, m_One())) {
+    emit();
+    return;
+  }
+  Block *before = rewriter.getInsertionBlock();
+  Block *after = before->splitBlock(rewriter.getInsertionPoint());
+  Block *active = rewriter.createBlock(before->getParent(),
+                                       std::next(Region::iterator(before)));
+  rewriter.setInsertionPointToEnd(before);
+  LLVM::CondBrOp::create(rewriter, loc, pred, active, after);
+  rewriter.setInsertionPointToEnd(active);
+  emit();
+  LLVM::BrOp::create(rewriter, loc, after);
+  rewriter.setInsertionPointToStart(after);
+}
 
 static bool supportsNativeFloatingAtomic(const MUSA::TargetInfo &targetInfo,
                                          Value ptr, Type valueElemTy) {
@@ -1186,6 +1322,10 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
 
     auto ptrElems = ::mlir::unpackLLElements(loc, llPtr, rewriter);
     unsigned numElems = ptrElems.size();
+    auto copyPolicy = op.getCache();
+    bool hasLSUPolicy = isMusaLSUCache(copyPolicy);
+    if (failed(validateLSUCachePolicy(op, targetInfo, ptrElems.front())))
+      return failure();
 
     unsigned vec = getVectorSize(ptr, axisInfoAnalysis);
     vec = std::min(vec, numElems);
@@ -1223,7 +1363,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
 
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
     uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
-    bool useInplaceLoad = op->hasAttr(kInplaceLoadAttr);
+    bool useInplaceLoad = op->hasAttr(kInplaceLoadAttr) && !hasLSUPolicy;
 
     SmallVector<Value> loaded;
     loaded.reserve(numElems);
@@ -1257,7 +1397,10 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
                 ? LLVM::ConstantOp::create(rewriter, loc, valueElemTy,
                                            rewriter.getZeroAttr(valueElemTy))
                 : otherElems[i];
-        Value val = useInplaceLoad
+        Value val = hasLSUPolicy ? emitLSUCacheLoad(rewriter, loc, ptrElems[i],
+                                                    valueElemTy, pred, falseVal,
+                                                    copyPolicy)
+                    : useInplaceLoad
                         ? LLVM::MUSA::llInplaceLoad(rewriter, loc, ptrElems[i],
                                                     valueElemTy, pred, falseVal)
                         : LLVM::MUSA::llLoad(rewriter, loc, ptrElems[i],
@@ -1294,7 +1437,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
         }
 
         Value vecVal =
-            useInplaceLoad
+            hasLSUPolicy ? emitLSUCacheLoad(rewriter, loc, ptrElems[vecStart],
+                                            vecTy, pred, falseVal, copyPolicy)
+            : useInplaceLoad
                 ? LLVM::MUSA::llInplaceLoad(rewriter, loc, ptrElems[vecStart],
                                             vecTy, pred, falseVal)
                 : LLVM::MUSA::llLoad(rewriter, loc, ptrElems[vecStart], vecTy,
@@ -1339,6 +1484,10 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
     auto ptrElems = ::mlir::unpackLLElements(loc, llPtr, rewriter);
     auto valElems = ::mlir::unpackLLElements(loc, llVal, rewriter);
     unsigned numElems = ptrElems.size();
+    auto copyPolicy = op.getCache();
+    bool hasLSUPolicy = isMusaLSUCache(copyPolicy);
+    if (failed(validateLSUCachePolicy(op, targetInfo, ptrElems.front())))
+      return failure();
     assert(numElems == valElems.size());
 
     unsigned vec = getVectorSize(ptr, axisInfoAnalysis);
@@ -1397,7 +1546,11 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
         if (!maskElems.empty()) {
           pred = maybeAnd(rewriter, loc, pred, maskElems[i]);
         }
-        LLVM::MUSA::llStore(rewriter, loc, ptrElems[i], valElems[i], pred);
+        if (hasLSUPolicy)
+          emitLSUCacheStore(rewriter, loc, ptrElems[i], valElems[i], pred,
+                            copyPolicy);
+        else
+          LLVM::MUSA::llStore(rewriter, loc, ptrElems[i], valElems[i], pred);
       }
       rewriter.eraseOp(op);
       return success();
@@ -1420,7 +1573,11 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
         storeVal = b.insert_element(
             vecTy, storeVal, valElems[vecStart + elemIdx], b.i32_val(elemIdx));
       }
-      LLVM::MUSA::llStore(rewriter, loc, ptrElems[vecStart], storeVal, pred);
+      if (hasLSUPolicy)
+        emitLSUCacheStore(rewriter, loc, ptrElems[vecStart], storeVal, pred,
+                          copyPolicy);
+      else
+        LLVM::MUSA::llStore(rewriter, loc, ptrElems[vecStart], storeVal, pred);
     }
 
     rewriter.eraseOp(op);
@@ -2013,6 +2170,12 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value llMask = adaptor.getMask();
 
     auto srcElems = ::mlir::unpackLLElements(loc, llSrc, rewriter);
+    if (failed(validateLSUCachePolicy(op, targetInfo, srcElems.front())))
+      return failure();
+    triton::remarkCacheControlConversion(
+        op, "MUSA memcpy.g2s", triton::CacheModifier::NONE,
+        triton::EvictionPolicy::NORMAL,
+        "the selected instruction uses its default cache controls");
     SmallVector<Value> maskElems;
     if (llMask)
       maskElems = ::mlir::unpackLLElements(loc, llMask, rewriter);

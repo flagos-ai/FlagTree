@@ -1222,8 +1222,6 @@ def copy(
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
     cache_policy = tl._unwrap_if_constexpr(cache_policy)
-    if mthreads_enabled:
-        cache_policy = mthreads_copy.normalize_cache_policy(cache_policy)
 
     def normcopy(
         src: tl.tensor,
@@ -1408,16 +1406,12 @@ def copy(
             f"Invalid copy combination: src={type(src).__name__}, dst={type(dst).__name__}. "
             "One operand must be tl.tensor (global memory) and the other must be tle.buffered_tensor (local memory)")
 
-    if mthreads_enabled:
-        if cache_policy is not None and (is_normcopy or direction != CopyDirection.GM_TO_LOCAL):
-            raise ValueError("copy cache_policy is only supported for descriptor-to-shared copies")
-    else:
-        cache_policy = resolve_policy(cache_policy, not is_normcopy, direction == CopyDirection.GM_TO_LOCAL, _semantic,
-                                      mthreads_enabled, iluvatar_enabled, tle_semantic.COMMON_IR_ENABLED)
-        if cache_policy is not None and is_normcopy:
-            global_operand = src if direction == CopyDirection.GM_TO_LOCAL else dst
-            if getattr(global_operand.dtype, "address_space", None) != 1:
-                raise ValueError("copy cache_policy requires a global-memory pointer")
+    cache_policy = resolve_policy(cache_policy, not is_normcopy, direction == CopyDirection.GM_TO_LOCAL, _semantic,
+                                  mthreads_enabled, iluvatar_enabled, tle_semantic.COMMON_IR_ENABLED)
+    if cache_policy is not None and is_normcopy:
+        global_operand = src if direction == CopyDirection.GM_TO_LOCAL else dst
+        if getattr(global_operand.dtype, "address_space", None) != 1:
+            raise ValueError("copy cache_policy requires a global-memory pointer")
 
     if not isinstance(shape, (tuple, list)):
         # Try to handle Triton tuple-like objects
@@ -1481,8 +1475,11 @@ def copy(
             if direction != CopyDirection.GM_TO_LOCAL:
                 raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
-        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, cache_policy=cache_policy,
-                                     _semantic=_semantic)
+        # TME persistence and prefetch are operands of the MUSA tma_copy
+        # builder rather than a tt.cache_policy annotation.
+        tme_scope, tme_prefetch_size = mthreads_copy.native_tme_controls(cache_policy)
+        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, cache_policy=tme_scope,
+                                     prefetch_size=tme_prefetch_size, _semantic=_semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, barrier, _semantic)
 

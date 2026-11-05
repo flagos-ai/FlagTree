@@ -43,6 +43,10 @@ _BACKEND_POLICIES = {
         POINTER: ("CachePolicy", ),
         DESCRIPTOR: ("CachePolicy", ),
     }),
+    "mthreads": (".mthreads.types", {
+        POINTER: ("LSUCachePolicy", ),
+        DESCRIPTOR: ("TMECachePolicy", ),
+    }),
 }
 
 _NOT_SUPPORTED = "copy cache_policy is not supported by this backend/path"

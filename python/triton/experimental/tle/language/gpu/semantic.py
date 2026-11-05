@@ -185,7 +185,7 @@ def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None
 
     if descriptor is not None:
         if mthreads_copy.enabled():
-            mthreads_copy.tmacopy(src, dst, direction, shape, offsets, _semantic)
+            mthreads_copy.tmacopy(src, dst, direction, shape, offsets, _semantic=_semantic)
             return
         indices = _semantic._convert_to_ir_values(offsets, require_i64=False)
         _semantic.builder.create_tma_copy(src.handle, dst.handle, indices)

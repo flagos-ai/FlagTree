@@ -679,7 +679,21 @@ void init_triton_musa_tle_ir(py::module m) {
           [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
              std::vector<mlir::Value> indices, py::object completionBarrier,
              int32_t expectBytes,
-             std::optional<std::pair<int32_t, int32_t>> cachePolicy) -> void {
+             std::optional<std::pair<int32_t, int32_t>> cachePolicy,
+             int32_t prefetchSize) -> void {
+            if (cachePolicy &&
+                (cachePolicy->first < 0 || cachePolicy->first > 5 ||
+                 cachePolicy->second < 0 || cachePolicy->second > 3))
+              throw py::value_error("TME persistence requires inner in [0, 5] "
+                                    "and outer in [0, 3]");
+            if (prefetchSize != 0 && prefetchSize != 64 &&
+                prefetchSize != 128 && prefetchSize != 256)
+              throw py::value_error(
+                  "TME prefetch size must be 0, 64, 128, or 256 bytes");
+            if (prefetchSize &&
+                !mlir::isa<mlir::triton::TensorDescType>(src.getType()))
+              throw py::value_error(
+                  "TME prefetch is only supported for descriptor loads");
             mlir::Value barrier;
             if (!completionBarrier.is_none())
               barrier = py::cast<mlir::Value>(completionBarrier);
@@ -687,6 +701,9 @@ void init_triton_musa_tle_ir(py::module m) {
             if (expectBytes >= 0)
               op->setAttr("expect_bytes",
                           self.getBuilder().getI32IntegerAttr(expectBytes));
+            if (prefetchSize)
+              op->setAttr("musa.tme.prefetch_size",
+                          self.getBuilder().getI32IntegerAttr(prefetchSize));
             if (cachePolicy) {
               op->setAttr(
                   musa::kTMEInnerPersistenceAttr,
@@ -698,7 +715,8 @@ void init_triton_musa_tle_ir(py::module m) {
           },
           py::arg("src"), py::arg("dst"), py::arg("indices"),
           py::arg("completionBarrier") = py::none(),
-          py::arg("expectBytes") = -1, py::arg("cachePolicy") = py::none())
+          py::arg("expectBytes") = -1, py::arg("cachePolicy") = py::none(),
+          py::arg("prefetchSize") = 0)
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               int32_t capacity, const std::string &scope,
