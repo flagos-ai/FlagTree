@@ -308,6 +308,24 @@ class _shared_linear_layout(shared_layout):
                 and self.block_bases == other.block_bases and self.alignment == other.alignment
                 and self.rank == other.rank)
 
+    def __hash__(self):
+        # Defining __eq__ without __hash__ makes the class unhashable; layout
+        # objects can be used as dict/set keys by caching paths.
+        return hash((type(self).__name__, tuple(tuple(basis) for basis in self.offset_bases),
+                     tuple(tuple(basis) for basis in self.block_bases), self.alignment, self.rank))
+
+
+def _seq_key(value):
+    """Normalize a possibly-sequence layout field for structural compare/hash.
+
+    Layout fields such as `order` / `numCTAs` are built as lists in some paths
+    and tuples in others (see make_default vs make_permute), so equality and
+    hashing both go through this to stay consistent with each other.
+    """
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return value
+
 
 class swizzled_shared_layout(shared_layout):
 
@@ -359,6 +377,20 @@ class swizzled_shared_layout(shared_layout):
             self.numCTAOrder,
         )
 
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.vectorSize == other.vectorSize
+                and self.perPhase == other.perPhase and self.maxPhase == other.maxPhase
+                and _seq_key(self.order) == _seq_key(other.order)
+                and _seq_key(self.numCTAs) == _seq_key(other.numCTAs)
+                and _seq_key(self.numCTAsPerCGA) == _seq_key(other.numCTAsPerCGA)
+                and _seq_key(self.numCTASplit) == _seq_key(other.numCTASplit)
+                and _seq_key(self.numCTAOrder) == _seq_key(other.numCTAOrder))
+
+    def __hash__(self):
+        return hash((type(self).__name__, self.vectorSize, self.perPhase, self.maxPhase,
+                     _seq_key(self.order), _seq_key(self.numCTAs), _seq_key(self.numCTAsPerCGA),
+                     _seq_key(self.numCTASplit), _seq_key(self.numCTAOrder)))
+
 
 class tensor_memory_layout(shared_layout):
 
@@ -395,6 +427,16 @@ class tensor_memory_layout(shared_layout):
             self.CTASplitN,
             self.twoCTAs,
         )
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.blockM == other.blockM
+                and self.blockN == other.blockN and self.colStride == other.colStride
+                and self.CTASplitM == other.CTASplitM and self.CTASplitN == other.CTASplitN
+                and self.twoCTAs == other.twoCTAs)
+
+    def __hash__(self):
+        return hash((type(self).__name__, self.blockM, self.blockN, self.colStride,
+                     self.CTASplitM, self.CTASplitN, self.twoCTAs))
 
 
 class nv_mma_shared_layout(shared_layout):
@@ -469,6 +511,14 @@ class nv_mma_shared_layout(shared_layout):
                 and self.elemType == other.elemType and self.numCTAsPerCGA == other.numCTAsPerCGA
                 and self.numCTASplit == other.numCTASplit and self.numCTAOrder == other.numCTAOrder
                 and self.fp4Padded == other.fp4Padded and self.swizzled == other.swizzled)
+
+    def __hash__(self):
+        # Keep hashable alongside __eq__ so layout objects can be used as
+        # dict/set keys. Sequence fields go through _seq_key to stay consistent
+        # with equality (lists in make_default, tuples in make_permute).
+        return hash((type(self).__name__, _seq_key(self.shape), _seq_key(self.order), self.elemType,
+                     _seq_key(self.numCTAsPerCGA), _seq_key(self.numCTASplit), _seq_key(self.numCTAOrder),
+                     self.fp4Padded, self.swizzled))
 
 
 def _drop_leading_dim_order(order):

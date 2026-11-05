@@ -22,7 +22,10 @@ from triton.backends.compiler import GPUTarget
 from triton._internal_testing import is_ampere_or_newer
 from triton.language.core import base_value
 from triton.runtime.jit import MockTensor
-from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
+from triton.experimental.tle.language.gpu.core import (
+    _deduplicate_warp_specialize_captures,
+    _resolve_sharding_placement,
+)
 from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
 import triton._C.libtriton as libtriton
 
@@ -519,6 +522,15 @@ class TestBufferedTensor:
         def __str__(self):
             return "tensor<4xi32>"
 
+    class _FakeHandle:
+        """Allocation handle that records the attributes alloc() stamps on it."""
+
+        def __init__(self):
+            self.attrs = {}
+
+        def set_attr(self, name, value):
+            self.attrs[name] = value
+
     class _FakeBuilder:
 
         def __init__(self):
@@ -529,12 +541,25 @@ class TestBufferedTensor:
             self.pipe_create_args = None
             self.tma_copy_args = None
             self.pipe_ops = []
+            self.local_alloc_args = None
+            self.local_alloc_handle = None
+
+        def get_int64_ty(self):
+            return "i64"
 
         def get_half_ty(self):
             return "fp16"
 
-        def get_int64_ty(self):
-            return "i64"
+        def create_local_alloc(self, shape, element_ty, layout):
+            self.local_alloc_args = (list(shape), element_ty, layout)
+            self.local_alloc_handle = TestBufferedTensor._FakeHandle()
+            return self.local_alloc_handle
+
+        def get_bool_attr(self, value):
+            return ("bool", bool(value))
+
+        def get_string_attr(self, value):
+            return ("str", str(value))
 
         def make_swizzled_shared_encoding_attr(self, vector_size, per_phase, max_phase, order, ctas_per_cga,
                                                cta_split_num, cta_order):
@@ -716,6 +741,83 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match="out of range"):
             buffer.subslice(start, length, dim, _semantic=semantic)
+
+
+class TestAllocSharding:
+    """alloc(sharding=...) turns a tle.sharding spec into cluster placement attrs."""
+
+    MESH = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 3)]})
+
+    def _alloc(self, sharding=None):
+        semantic = TestBufferedTensor._FakeSemantic()
+        buffer = tle.gpu.alloc(
+            [4, 16],
+            dtype=tl.float16,
+            layout=None,
+            scope=tle.gpu.smem,
+            nv_mma_shared_layout=False,
+            sharding=sharding,
+            _semantic=semantic,
+        )
+        return buffer, semantic.builder.local_alloc_handle
+
+    def test_split_axis_records_mesh_share_and_axis(self):
+        buffer, handle = self._alloc(tle.sharding(self.MESH, split=(("cluster_y",), [])))
+
+        assert isinstance(buffer, tle.gpu.buffered_tensor)
+        assert buffer.shape == [4, 16]
+        assert handle.attrs["ttg.local_alloc.mesh_share"] == ("bool", True)
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_y")
+
+    def test_no_split_axis_records_single_shared_copy(self):
+        _, handle = self._alloc(tle.sharding(self.MESH))
+
+        assert handle.attrs["ttg.local_alloc.mesh_share"] == ("bool", True)
+        assert "ttg.local_alloc.mesh_axis" not in handle.attrs
+
+    def test_without_sharding_keeps_cta_private(self):
+        _, handle = self._alloc()
+
+        assert handle.attrs == {}
+
+    def test_sharding_accepts_constexpr_mesh_and_language_tuple(self):
+        # Inside a kernel the mesh is a constexpr and tuple literals are
+        # language.tuple, so sharding() has to normalize both.
+        split = tl.tuple([tl.tuple([tl.constexpr("cluster_y")]), tl.tuple([])])
+        spec = tle.sharding(tl.constexpr(self.MESH), split=split)
+
+        _, handle = self._alloc(spec)
+
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_y")
+
+    def test_sharding_is_registered_as_builtin(self):
+        # The JIT dependency finder rejects plain Python callables referenced
+        # from a kernel, so tle.sharding must carry the builtin flag.
+        assert getattr(tle.sharding, "__triton_builtin__", False)
+
+    def test_rejects_partial(self):
+        with pytest.raises(RuntimeError, match="cannot be partial"):
+            self._alloc(tle.sharding(self.MESH, partial=["cluster_x"]))
+
+    def test_rejects_multiple_split_axes(self):
+        with pytest.raises(RuntimeError, match="at most one split axis"):
+            self._alloc(tle.sharding(self.MESH, split=(("cluster_x", "cluster_y"), [])))
+
+    def test_rejects_non_cluster_axis(self):
+        block_mesh = tle.device_mesh({"block": [("block_x", 2)]})
+
+        with pytest.raises(RuntimeError, match="must be one of"):
+            self._alloc(tle.sharding(block_mesh, split=(("block_x",), [])))
+
+    def test_rejects_axis_missing_from_mesh(self):
+        with pytest.raises(ValueError, match="unknown mesh axis"):
+            tle.sharding(self.MESH, split=(("cluster_z",), []))
+
+    def test_resolver_rejects_non_smem_storage(self):
+        spec = tle.sharding(self.MESH, split=(("cluster_y",), []))
+
+        with pytest.raises(ValueError, match="only supported for tle.gpu.smem"):
+            _resolve_sharding_placement(spec, tle.gpu.tmem, None)
 
 
 class TestCachePolicyFrontend:
@@ -916,11 +1018,27 @@ class TestPipeFrontend:
         assert pipe.type.one_shot is False
         assert semantic.builder.pipe_create_args == (["base", "base"], 4, "cta", "ab", ["a", "b"], [], False)
 
-    def test_pipe_rejects_non_cta_scope(self):
+    def test_pipe_rejects_invalid_scope(self):
         a, semantic = self._make_buffer([4, 16])
 
-        with pytest.raises(ValueError, match="scope='cta'"):
+        with pytest.raises(ValueError, match="scope must be one of"):
             tle.pipe(capacity=4, scope="device", a=a, _semantic=semantic)
+
+    def test_pipe_dsm_scope_check_is_deferred_to_backend(self):
+        a, semantic = self._make_buffer([4, 16])
+
+        # The frontend accepts a CTA-private field here: cluster sharing is not
+        # declared by the caller. The backend promotes every local allocation to
+        # the DSM-shared form once the module has a tle.remote_pointers op, and
+        # the pipe-lowering pass (TleLowerPipeToGcuws::verifyClusterPipeFields)
+        # validates the resulting IR.
+        pipe = tle.pipe(capacity=4, scope="cluster", name="ab", a=a, _semantic=semantic)
+
+        assert isinstance(pipe, tle.pipe_value)
+        assert pipe.scope == "cluster"
+        assert pipe.type.scope == "cluster"
+        assert pipe.fields == {"a": a}
+        assert semantic.builder.pipe_create_args == (["base"], 4, "cluster", "ab", ["a"], [], False)
 
     def test_pipe_rejects_dynamic_or_invalid_capacity(self):
         a, semantic = self._make_buffer([4, 16])
