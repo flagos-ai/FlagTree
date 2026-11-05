@@ -30,7 +30,7 @@
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #ifdef __PPU__
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
-#endif
+#endif // __PPU__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -620,11 +620,13 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       unsigned groupThreads = triton::gpu::lookupNumWarps(op) *
                               triton::gpu::TritonGPUDialect::getThreadsPerWarp(
                                   op->getParentOfType<ModuleOp>());
-      // A named wait whose count covers this partition is taken as a wait of
-      // every warp in it: it already orders their shared-memory accesses,
-      // including reads before a pipe refill. A wait that only some warps of
-      // the partition execute, with the rest of the count from other groups,
-      // is not a group-wide synchronization.
+      // Control flow is uniform within a partition (the barriers this
+      // analysis inserts rest on that premise, and TLE exposes no warp
+      // index), so every warp of the partition reaches a named wait, and a
+      // count of at least the partition's threads makes it a wait of all of
+      // them: it already orders their shared-memory accesses, including the
+      // reads before a pipe refill. A smaller count pairs a subset of the
+      // partition with other groups and is not a group-wide synchronization.
       if (value && value.getInt() >= groupThreads) {
         blockInfo->sync();
         return;
@@ -639,7 +641,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       op->hasAttr(triton::tle::kTlePipeWaitAttr) && target &&
       target.getValue().starts_with("ppu:"))
     return;
-#endif
+#endif // __PPU__ && __TLE__
 
   if (isa<triton::gpu::AsyncWaitOp, triton::nvidia_gpu::TMAStoreWaitOp>(op) &&
       !isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op->getNextNode())) {

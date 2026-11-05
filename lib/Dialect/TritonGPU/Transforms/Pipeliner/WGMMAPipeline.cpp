@@ -34,7 +34,7 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #ifdef __PPU__
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
-#endif
+#endif // __PPU__
 #endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
@@ -74,7 +74,7 @@ static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
   // The PPU pipe lowering sets the wait distance of its own copies.
   if (waitOp->hasAttr(mlir::triton::tle::kTlePipeWaitAttr))
     return true;
-#endif
+#endif // __PPU__
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))

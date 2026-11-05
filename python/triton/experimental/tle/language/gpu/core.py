@@ -746,7 +746,17 @@ def alloc_barriers(
     _semantic: TLESemantic | None = None,
     _generator=None,
 ) -> tle.barrier:
-    """Allocate a TLE GPU barrier array."""
+    """Allocate a TLE GPU barrier array.
+
+    A barrier with ``init=PENDING`` and no ``expect_bytes`` can be used as a
+    hardware named barrier (``barrier_wait``/``barrier_arrive`` without
+    ``phaseIdx``); ``init=READY`` or ``expect_bytes`` select the mbarrier
+    forms.
+
+    PPU: only the named form exists; the compiler rejects an allocation with
+    ``init=READY`` or ``expect_bytes``. See ``barrier_wait`` for what a named
+    barrier orders on PPU.
+    """
     _mark_wgmma_user_promise(_semantic, _generator)
 
     num_barriers = _require_barrier_int(num_barriers, "num_barriers")
@@ -795,7 +805,7 @@ def alloc_barrier(
     _semantic: TLESemantic | None = None,
     _generator=None,
 ) -> tle.barrier:
-    """Allocate a single TLE GPU barrier."""
+    """Allocate a single TLE GPU barrier; see ``alloc_barriers``."""
     return alloc_barriers(
         1,
         arrive_count,
@@ -808,7 +818,19 @@ def alloc_barrier(
 
 @tl.builtin
 def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None, _generator=None) -> None:
-    """Wait on a TLE GPU barrier slot."""
+    """Wait on a TLE GPU barrier slot.
+
+    Without ``phaseIdx`` the slot is a hardware named barrier (``bar.sync`` on
+    NVIDIA); with ``phaseIdx`` it is an mbarrier.
+
+    PPU: only the named form exists, and it orders shared memory between the
+    warp groups, not global memory (``bar.sync`` orders both): the arriving
+    warps drain their shared-memory accesses before signalling, their global
+    stores may still be in flight when the wait returns. Data handed to
+    another group through global memory must be ordered by the kernel, for
+    example with ``tl.debug_barrier()`` in the writing group before it
+    arrives, which drains that group's global accesses.
+    """
     slot = _barrier_slot(barr, _semantic)
     if phaseIdx is None:
         if slot.expect_bytes is not None:
@@ -830,7 +852,15 @@ def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None, _gen
 
 @tl.builtin
 def barrier_arrive(barr, arrive_count=1, phaseIdx=None, _semantic: TLESemantic | None = None, _generator=None) -> None:
-    """Arrive on a TLE GPU barrier slot."""
+    """Arrive on a TLE GPU barrier slot.
+
+    Without ``phaseIdx`` the slot is a hardware named barrier (``bar.arrive``
+    on NVIDIA); with ``phaseIdx`` it is an mbarrier.
+
+    PPU: only the named form exists, and it publishes the arriving warps'
+    shared-memory accesses only, not their global stores; see
+    ``barrier_wait`` for how to order data handed over through global memory.
+    """
     slot = _barrier_slot(barr, _semantic)
     arrive_count = _require_barrier_int(arrive_count, "arrive_count")
     if arrive_count <= 0:
