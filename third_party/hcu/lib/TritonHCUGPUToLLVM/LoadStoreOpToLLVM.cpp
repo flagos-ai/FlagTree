@@ -14,6 +14,7 @@
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -29,6 +30,21 @@ using ::mlir::triton::gpu::getTotalElemsPerThread;
 using ::mlir::triton::HCU::ISAFamily;
 
 namespace {
+
+LogicalResult validateCacheControls(Operation *op, bool isLoad) {
+  if (triton::isL1Eviction(triton::getEvictionPolicy(op)) ||
+      triton::isL2Eviction(triton::getEvictionPolicy(op)))
+    return op->emitError(
+        "NVIDIA eviction scope is unsupported on this backend");
+  using triton::CacheModifier;
+  auto cache = triton::getCacheModifier(op);
+  if (cache == CacheModifier::NONE || cache == CacheModifier::CG ||
+      cache == CacheModifier::CS ||
+      (isLoad ? cache == CacheModifier::CA || cache == CacheModifier::CV
+              : cache == CacheModifier::WB || cache == CacheModifier::WT))
+    return success();
+  return op->emitError("unsupported HCU cache modifier for this direction");
+}
 
 std::optional<const char *> getHCUGPUMemScopeStr(MemSyncScope scope) {
   switch (scope) {
@@ -620,6 +636,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(validateCacheControls(op, true)))
+      return failure();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     // original values
@@ -693,6 +711,25 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
             rewriter, this->getTypeConverter(), loc, cast<VectorType>(vecTy),
             otherElems, vecStart);
 
+      if ((cacheMod == CacheModifier::CG || cacheMod == CacheModifier::CS) &&
+          targetInfo.getArch() == "gfx936" &&
+          cast<LLVM::LLVMPointerType>(ptr.getType()).getAddressSpace() == 1) {
+        // gfx936 LLVM can scalarize uniform non-temporal loads to s_load,
+        // losing their cache controls. A tied VGPR address keeps this one
+        // hinted access on the global vector path without adding volatility.
+        // The empty asm is a pure register constraint: LLVM cannot see
+        // through it, and leaving it side-effect free keeps the address
+        // computation eligible for LICM/CSE in loops.
+        Value address = b.ptrtoint(i64_ty, ptr);
+        auto vectorAddress = LLVM::InlineAsmOp::create(
+            rewriter, loc, i64_ty, ValueRange{address}, "", "=v,0",
+            /*hasSideEffects=*/false, /*isAlignStack=*/false,
+            LLVM::TailCallKind::None,
+            LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                      LLVM::AsmDialect::AD_ATT),
+            ArrayAttr::get(rewriter.getContext(), {}));
+        ptr = b.inttoptr(ptr.getType(), vectorAddress.getRes());
+      }
       Value loadVal = llLoad(rewriter, loc, ptr, vecTy, pred, falseVal,
                              multicastMask, cacheMod, op.getIsVolatile());
       for (size_t ii = 0; ii < vec; ++ii) {
@@ -725,6 +762,8 @@ struct BufferLoadOpConversion
   LogicalResult
   matchAndRewrite(triton::hcugpu::BufferLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(validateCacheControls(op, true)))
+      return failure();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     LLVM::HCU::BufferEmitter bufferEmitter(rewriter, loc, targetInfo);
@@ -735,6 +774,11 @@ struct BufferLoadOpConversion
     Value mask = op.getMask();
     Value other = op.getOther();
     auto cacheMod = op.getCache();
+    if (targetInfo.getArch() == "gfx936")
+      triton::remarkCacheControlConversion(
+          op, "HCU gfx936 buffer memory operation", triton::CacheModifier::NONE,
+          triton::EvictionPolicy::NORMAL,
+          "the existing target mapping emits zero cache-control bits");
 
     // Converted values
     Value llPtr = adaptor.getPtr();
@@ -812,7 +856,14 @@ struct BufferLoadToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::hcugpu::BufferLoadToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(validateCacheControls(op, true)))
+      return failure();
     auto loc = op->getLoc();
+    if (targetInfo.getArch() == "gfx936")
+      triton::remarkCacheControlConversion(
+          op, "HCU gfx936 buffer memory operation", triton::CacheModifier::NONE,
+          triton::EvictionPolicy::NORMAL,
+          "the existing target mapping emits zero cache-control bits");
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     LLVM::HCU::BufferEmitter bufferEmitter(rewriter, loc, targetInfo);
 
@@ -979,6 +1030,15 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(validateCacheControls(op, true)))
+      return failure();
+    triton::remarkCacheControlConversion(
+        op, "HCU direct-to-LDS copy",
+        targetInfo.getArch() == "gfx936" ? triton::CacheModifier::NONE
+                                         : op.getCache(),
+        triton::EvictionPolicy::NORMAL,
+        "use the existing target cache-bit mapping; gfx936 has no mapped hint "
+        "bits");
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 
@@ -1273,6 +1333,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(validateCacheControls(op, false)))
+      return failure();
     Value ptr = op.getPtr();
     Value value = op.getValue();
     Value mask = op.getMask();
@@ -1611,6 +1673,8 @@ struct BufferStoreOpConversion
   LogicalResult
   matchAndRewrite(triton::hcugpu::BufferStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(validateCacheControls(op, false)))
+      return failure();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     LLVM::HCU::BufferEmitter bufferEmitter(rewriter, loc, targetInfo);
@@ -1621,6 +1685,11 @@ struct BufferStoreOpConversion
     Value mask = op.getMask();
     Value data = op.getValue();
     auto cacheMod = op.getCache();
+    if (targetInfo.getArch() == "gfx936")
+      triton::remarkCacheControlConversion(
+          op, "HCU gfx936 buffer memory operation", triton::CacheModifier::NONE,
+          triton::EvictionPolicy::NORMAL,
+          "the existing target mapping emits zero cache-control bits");
 
     Value llPtr = adaptor.getPtr();
     Value llOffset = adaptor.getOffsets();

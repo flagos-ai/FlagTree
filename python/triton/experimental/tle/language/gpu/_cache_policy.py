@@ -47,6 +47,9 @@ _BACKEND_POLICIES = {
         POINTER: ("LSUCachePolicy", ),
         DESCRIPTOR: ("TMECachePolicy", ),
     }),
+    "hcu": (".hcu", {
+        POINTER: ("CachePolicy", ),
+    }),
 }
 
 _NOT_SUPPORTED = "copy cache_policy is not supported by this backend/path"
@@ -86,10 +89,10 @@ def _expected_policy_types(backend, path):
 
 def _check_architecture(backend, semantic):
     """Reject a policy whose backend name matches but whose target does not."""
-    if backend != "nvidia":
-        return
     arch = getattr(getattr(semantic.builder, "options", None), "arch", None)
-    if arch is not None and not (isinstance(arch, int) or str(arch).startswith("sm")):
+    if backend == "hcu" and arch != "gfx936":
+        raise ValueError("HCU cache_policy requires gfx936")
+    if backend == "nvidia" and arch is not None and not (isinstance(arch, int) or str(arch).startswith("sm")):
         raise ValueError("NVIDIA copy cache policy requires a CUDA compilation target")
 
 
