@@ -21,6 +21,12 @@
 name: Enflame3.6-GCU400-Build-And-Test
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Source commit for the GCU400 import and full-suite control
+        required: true
+        default: 65094ea8defe55d449b759130fd71da7dcaf07b6
   schedule:
     - cron: '40 20 * * *'
   push:
@@ -40,7 +46,10 @@ concurrency:
 jobs:
   enflame36x-gcu400-unit-test:
     runs-on: "enflame3.6-gcu400"
-    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    env:
+      PYTHONFAULTHANDLER: '1'
+      PYTHONUNBUFFERED: '1'
     steps:
       - name: Setup environment
         shell: bash
@@ -48,10 +57,10 @@ jobs:
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
-      - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+      - name: Checkout control source
+        uses: actions/checkout@v7
         with:
-          checkout_version: 'v6'
+          ref: ${{ inputs.source_ref }}
 
       - name: Check if backend-relevant files changed
         id: check_backend
@@ -64,17 +73,9 @@ jobs:
         if: steps.check_backend.outputs.should_skip != 'true'
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
-      - name: Detect Target Branch
+      - name: Set control target branch
         shell: bash
-        run: |
-          set -x
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET_BRANCH="${{ github.base_ref }}"
-          else
-            TARGET_BRANCH="${{ github.ref_name }}"
-          fi
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
-          echo "TARGET_BRANCH=$TARGET_BRANCH"
+        run: echo 'TARGET_BRANCH=main' >> "$GITHUB_ENV"
 
       - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -93,6 +94,23 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: enflame
+
+      - name: Diagnose normal Python imports
+        shell: bash
+        run: |
+          python3 -X faulthandler -u - <<'PY'
+          import sys
+          print("IMPORT_CONTROL", sys.version, flush=True)
+          print("IMPORT_TORCH_BEGIN", flush=True)
+          import torch
+          print("IMPORT_TORCH_OK", torch.__version__, flush=True)
+          print("IMPORT_TRITON_BEGIN", flush=True)
+          import triton
+          print("IMPORT_TRITON_OK", triton.__version__, flush=True)
+          print("IMPORT_CORE_BEGIN", flush=True)
+          import triton._C.libtriton
+          print("IMPORT_CORE_OK", flush=True)
+          PY
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
