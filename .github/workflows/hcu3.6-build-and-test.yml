@@ -86,7 +86,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-          export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
+          export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-188a510-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
           python3 -m pytest -s third_party/hcu/python/test/unit
           python3 -m pytest -s python/test/tle/integration/test_tle_local_store.py
           python3 -m pytest -s python/test/tle/integration/test_tle_gemm.py
