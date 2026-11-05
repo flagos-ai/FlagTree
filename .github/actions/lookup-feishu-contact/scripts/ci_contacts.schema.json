@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "Maps a GitHub login to the Feishu user to notify, one row per person.",
+    "",
+    "This lives in the Bitable rather than the repository on purpose: it is",
+    "organisation data, not code. Nobody should have to open a PR to add a new",
+    "colleague, the people who know the mapping are not always the people who",
+    "send patches, and putting colleagues' Feishu ids in a public repository",
+    "would publish them.",
+    "",
+    "A login with no row here is simply not notified. There is no fallback to",
+    "a group chat: a message about someone else's failing PR is noise to",
+    "everyone who receives it.",
+    "",
+    "Types: 1=text 7=checkbox.",
+    "",
+    "github_login   exactly as GitHub spells it, e.g. 'liuhaoyutz'. The lookup",
+    "               is case-insensitive, since GitHub treats logins that way",
+    "               while this table stores whatever was typed.",
+    "open_id        Feishu user id, 'ou_...'. Application-scoped: it is only",
+    "               valid for the app whose credentials the CI uses, so",
+    "               replacing the app means refilling this column.",
+    "name           for humans reading the table. Never used for routing, so a",
+    "               typo here is harmless.",
+    "enabled        unchecked pauses notifications for this person without",
+    "               losing their mapping."
+  ],
+  "table_name": "ci_contacts",
+  "dedup_field": "github_login",
+  "fields": [
+    {
+      "field_name": "github_login",
+      "type": 1
+    },
+    {
+      "field_name": "open_id",
+      "type": 1
+    },
+    {
+      "field_name": "name",
+      "type": 1
+    },
+    {
+      "field_name": "enabled",
+      "type": 7
+    }
+  ]
+}

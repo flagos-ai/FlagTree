@@ -125,7 +125,9 @@ class range(_tl_range):
     :param reorder: If ``True`` (and ``loop_unroll_factor`` is set), instructs the
         FlagTree ``reorder-loop-loads`` optimization to cluster loads produced by the
         unrolled loop body ahead of the remaining ops, improving memory-latency hiding.
-        Requires a FlagTree build with ``__FLAGTREE_REORDER_LOOP_LOADS__`` enabled.
+        Requires a FlagTree build with ``__FLAGTREE_REORDER_LOOP_LOADS__`` enabled;
+        ``FLAGTREE_REORDER_LOOP_LOADS=0`` (``knobs.language.reorder_loop_loads``)
+        drops the hint at run time.
     :type reorder: bool
     """
 

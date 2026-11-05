@@ -58,8 +58,12 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MANIFEST_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 _MANIFEST_MAX_MEMBER_BYTES = 4 * 1024 * 1024
 _DEFAULT_MANIFEST_TTL = 24 * 60 * 60
+# FlagGems ships its versioned Manifest locally. Keep the standalone default
+# on the published legacy index; catalog changes do not publish remote files.
 _DEFAULT_MANIFEST_URL = ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
                          "flagtune-xgb-manifest-v1.0.0.tar.gz")
+_MANIFEST_FAILURE_RETRY_SECONDS = 60
+_MANIFEST_FAILURES = {}
 
 
 @dataclass(frozen=True)
@@ -328,7 +332,21 @@ def _load_manifest() -> Dict[str, Any]:
         raise ManifestFetchError(
             f"FLAGTUNE_MANIFEST_URL is not configured and no cached FlagTune Manifest exists at {path}")
 
-    data, manifest_bytes, source_url = _fetch_remote_manifest()
+    failure_key = (str(path), remote_url)
+    failure = _MANIFEST_FAILURES.get(failure_key)
+    if failure is not None and not _environment_switch("FLAGTUNE_MANIFEST_REFRESH"):
+        retry_at, error_type, message = failure
+        if time.monotonic() < retry_at:
+            raise error_type(message)
+    try:
+        data, manifest_bytes, source_url = _fetch_remote_manifest()
+    except ManifestContractError as exc:
+        # Cache the diagnostic, not the traceback or response. AUTO callers can
+        # fall back without retrying the same failed source for every variant;
+        # direct/strict callers still receive the original error category.
+        _MANIFEST_FAILURES[failure_key] = (time.monotonic() + _MANIFEST_FAILURE_RETRY_SECONDS, type(exc), str(exc))
+        raise
+    _MANIFEST_FAILURES.pop(failure_key, None)
     _atomic_write(path, manifest_bytes)
     metadata = {
         "source": "remote",
