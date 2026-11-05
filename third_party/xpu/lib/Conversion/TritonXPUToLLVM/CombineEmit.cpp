@@ -4,10 +4,10 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // dragon-style macros, XPU only
-#include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/LLVMXPU/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -21,10 +21,10 @@ bool isSupportedCombineOp(Operation *op) {
   return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
              arith::MaxNumFOp, arith::MinNumFOp, arith::OrIOp, arith::XOrIOp,
              arith::AndIOp, arith::CmpFOp, arith::CmpIOp, arith::AddIOp,
-             arith::SubIOp, arith::MulIOp, arith::MaxSIOp,
-             arith::MinSIOp, arith::MaxUIOp, arith::MinUIOp,
-             arith::MaximumFOp, arith::MinimumFOp, arith::DivSIOp,
-             arith::DivUIOp, arith::SelectOp, arith::ConstantOp>(op);
+             arith::SubIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,
+             arith::MaxUIOp, arith::MinUIOp, arith::MaximumFOp,
+             arith::MinimumFOp, arith::DivSIOp, arith::DivUIOp, arith::SelectOp,
+             arith::ConstantOp>(op);
 }
 
 bool isUniformConstant(Value v) {
@@ -157,7 +157,8 @@ Value emitCombineOp(ConversionPatternRewriter &rewriter, Location loc,
       .Case<arith::SubFOp>([&](auto) -> Value {
         return rewriter.create<LLVM::FSubOp>(loc, args[0], args[1]);
       })
-      .Case<arith::MulFOp>([&](auto) -> Value { return fmul(args[0], args[1]); })
+      .Case<arith::MulFOp>(
+          [&](auto) -> Value { return fmul(args[0], args[1]); })
       .Case<arith::DivFOp>([&](auto) -> Value {
         return rewriter.create<LLVM::FDivOp>(loc, args[0], args[1]);
       })
@@ -219,9 +220,8 @@ Value emitCombineOp(ConversionPatternRewriter &rewriter, Location loc,
       .Case<arith::DivUIOp>([&](auto) -> Value {
         return rewriter.create<LLVM::UDivOp>(loc, args[0], args[1]);
       })
-      .Case<arith::SelectOp>([&](auto) -> Value {
-        return select(args[0], args[1], args[2]);
-      })
+      .Case<arith::SelectOp>(
+          [&](auto) -> Value { return select(args[0], args[1], args[2]); })
       .Case<arith::ConstantOp>([&](arith::ConstantOp cstOp) -> Value {
         return materializeConstant(rewriter, loc, cstOp, width);
       })
@@ -229,7 +229,8 @@ Value emitCombineOp(ConversionPatternRewriter &rewriter, Location loc,
 }
 
 void interpretCombine(ConversionPatternRewriter &rewriter, Location loc,
-                      Region &combine, SmallVector<Value> &acc, ValueRange cur) {
+                      Region &combine, SmallVector<Value> &acc,
+                      ValueRange cur) {
   Block &block = combine.front();
   assert(block.getNumArguments() == acc.size() + cur.size() &&
          "combine arity does not match the accumulator");

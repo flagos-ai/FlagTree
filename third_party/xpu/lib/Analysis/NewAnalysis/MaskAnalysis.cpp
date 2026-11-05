@@ -347,7 +347,8 @@ LogicalResult MaskState::parseExtSI(arith::ExtSIOp op, const Location loc,
 //
 // The predicate decides only which SIDE of the range the bound is on.  It never
 // decides which operand is the range: `idx > N` and `idx >= N` put the range on
-// the left exactly like `idx < N` does, and exchanging the operands by predicate
+// the left exactly like `idx < N` does, and exchanging the operands by
+// predicate
 // -- which this used to do -- is what made those legal forms fail the
 // scalar-bound check in parseOrderedCmp.  triton_shared's parseCmp selects the
 // range side by the operand for the same reason.
@@ -409,8 +410,8 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
     InFlightDiagnostic diag = emitError(loc) << "Unsupported cmpi";
     return failure();
   }
-  return parseOrderedCmp(cmpOp.getLhs(), cmpOp.getRhs(), upperBound, adjustBound,
-                         loc, builder);
+  return parseOrderedCmp(cmpOp.getLhs(), cmpOp.getRhs(), upperBound,
+                         adjustBound, loc, builder);
 }
 
 LogicalResult MaskState::parseCmp(arith::CmpFOp cmpOp, const Location loc,
@@ -420,8 +421,8 @@ LogicalResult MaskState::parseCmp(arith::CmpFOp cmpOp, const Location loc,
     InFlightDiagnostic diag = emitError(loc) << "Unsupported cmpf";
     return failure();
   }
-  return parseOrderedCmp(cmpOp.getLhs(), cmpOp.getRhs(), upperBound, adjustBound,
-                         loc, builder);
+  return parseOrderedCmp(cmpOp.getLhs(), cmpOp.getRhs(), upperBound,
+                         adjustBound, loc, builder);
 }
 LogicalResult MaskState::parseOrderedCmp(Value lowerValue, Value upperValue,
                                          bool upperBound, bool adjustBound,
@@ -516,7 +517,8 @@ LogicalResult MaskState::parseOrderedCmp(Value lowerValue, Value upperValue,
     newDim = subOFRs(rangeState->end, newStart, loc, builder);
   }
 
-  SmallVector<OpFoldResult> rangeOffsets = rangeState->getWindowOffsets(builder);
+  SmallVector<OpFoldResult> rangeOffsets =
+      rangeState->getWindowOffsets(builder);
   for (int32_t i = 0; i < rangeState->getRank(); i++) {
     if (i == cmpDim) {
       this->dims.push_back(newDim);

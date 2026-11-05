@@ -22,9 +22,10 @@ unsigned getVectorWidth(Type elemTy) {
 }
 
 // The integer combine ops (int arithmetic / compares in combine regions --
-// integer max via select(cmp), int sums) are admitted for every kernel, not only TLE ones. They were gated to TLE kernels while the
-// non-TLE parity surface was unverified; that gate is lifted here -- integer
-// reductions vectorize wherever their combine region is interpretable.
+// integer max via select(cmp), int sums) are admitted for every kernel, not
+// only TLE ones. They were gated to TLE kernels while the non-TLE parity
+// surface was unverified; that gate is lifted here -- integer reductions
+// vectorize wherever their combine region is interpretable.
 
 namespace {
 // Shared region-admission walk for reduce and scan combines. The two callers
@@ -44,9 +45,9 @@ bool regionCombineIsVectorizableImpl(Region &combine) {
                  : !isa<REDUCE_COMBINE_OP>(op))
         return false;
       // A value captured from outside the region is not retyped when Vectorize
-      // retypes the region, so it would leave a vector op with a scalar operand.
-      // Constants are the exception: Vectorize rematerializes those as in-region
-      // splats.
+      // retypes the region, so it would leave a vector op with a scalar
+      // operand. Constants are the exception: Vectorize rematerializes those as
+      // in-region splats.
       for (Value operand : op.getOperands())
         if (operand.getParentBlock() != &block &&
             !operand.getDefiningOp<arith::ConstantOp>())
@@ -99,9 +100,10 @@ bool scanCombineIsVectorizable(triton::xpu::ScanOp scanOp) {
   // mulf (cumprod; interpretCombine carry). Multi-operand or non-arith combines
   // (linear_recurrence, roll, get_first_element) computed wrong results once
   // admitted (test_scan2d f32 regression), so they stay scalar -- same
-  // discipline as reduceCombineIsVectorizable. Gated to f32 (svsllp_f/vvor_f_mh,
-  // 16 lanes) / f16 (svsllp_hf/vvor_hf_mh, 32 lanes); bf16/i32/i64/f64 or a
-  // value+index pair (mixed width) would feed svsllp a wrong-width vector.
+  // discipline as reduceCombineIsVectorizable. Gated to f32
+  // (svsllp_f/vvor_f_mh, 16 lanes) / f16 (svsllp_hf/vvor_hf_mh, 32 lanes);
+  // bf16/i32/i64/f64 or a value+index pair (mixed width) would feed svsllp a
+  // wrong-width vector.
   Block &body = scanOp.getCombineOp().front();
   if (std::distance(body.without_terminator().begin(),
                     body.without_terminator().end()) != 1 ||
@@ -113,9 +115,6 @@ bool scanCombineIsVectorizable(triton::xpu::ScanOp scanOp) {
       return false;
   return regionCombineIsVectorizableImpl(scanOp.getCombineOp());
 }
-
-
-
 
 bool hasVectorForm(Operation *op) {
   if (!op)
@@ -560,8 +559,7 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         // F32, i32 (the last is max-reduce's INT_MIN-fill masked select). bf16
         // rides the f32 promotion; i8/i16 have no vector select and abort
         // lowering, so they stay scalar. (Formerly f16/f32-only outside TLE.)
-        bool elemOK =
-            tType.isF16() || tType.isF32() || tType.isInteger(32);
+        bool elemOK = tType.isF16() || tType.isF32() || tType.isInteger(32);
         isVectorized = (tType == fType && elemOK &&
                         binLikeOpVectorize(tv, fv, visited, vectorizedOps));
       })
@@ -714,9 +712,10 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         Type inTy = getElementTypeOrSelf(unaryOp.getIn().getType());
         Type outTy = getElementTypeOrSelf(unaryOp.getResult().getType());
         // Same in/out gating as ExtF/TruncF below: VSIToFPOpConversion only
-        // lowers i32 -> f32 (one 16-lane VREG each). i32 -> f16/bf16 has no pack
-        // primitive (16 int lanes vs 32 narrow-float lanes) and would emit an
-        // invalid `sitofp vector<16xi32> to vector<32xf16>`, so it stays scalar.
+        // lowers i32 -> f32 (one 16-lane VREG each). i32 -> f16/bf16 has no
+        // pack primitive (16 int lanes vs 32 narrow-float lanes) and would emit
+        // an invalid `sitofp vector<16xi32> to vector<32xf16>`, so it stays
+        // scalar.
         isVectorized = inTy.isInteger(32) && outTy.isF32() &&
                        vectorize(unaryOp.getOperand().getDefiningOp(), visited,
                                  vectorizedOps);

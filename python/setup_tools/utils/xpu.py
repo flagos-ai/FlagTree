@@ -39,7 +39,7 @@ BACKEND_ROOT = "third_party/xpu/backend"
 # public `llvm_trust` tarball -- and the public LLVM 22 frontend knows no
 # `llvm.xcn.*` / `llvm.xpu.*` names at all, so there is no public counterpart to
 # decode either.  Both tables therefore travel pre-decoded in the compiled
-# Python package (`xpu-python-impl-so`), and this build only checks they arrived.
+# Python package (`xpu-python-impl-so_v0.3.6.9.0`), and this build only checks they arrived.
 _TABLE_TAGS = ("l19", "l22")
 
 FLAGTREE_PYTHON_ROOT = "python"
@@ -102,7 +102,7 @@ def generate_intrinsic_tables():
         dest = backends_dir / "_tables" / f"{tag}.json"
         if not dest.is_file():
             raise RuntimeError(f"XPU {tag} intrinsic table is missing: {dest}. It ships in the "
-                               f"compiled Python package (xpu-python-impl-so) and this build "
+                               f"compiled Python package (xpu-python-impl-so_v0.3.6.9.0) and this build "
                                f"staged none; without it the intrinsic gates judge nothing.")
         table = decoder.load(dest)
         if table.tag != tag:
@@ -974,10 +974,10 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         # Only the first 8 hex chars of the digest are compared (see
         # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
         # (an ETag prefixed with '-' is not the file md5).
-        md5_digest="f125a682", version="v0.3.6.9.1",
+        md5_digest="bf4a67e0", version="v0.3.6.9.1",
         post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
-        file="xpu-python-impl-so", condition=is_xpu,
+        file="xpu-python-impl-so_v0.3.6.9.0", condition=is_xpu,
         # The XPU Python implementation, compiled to extension modules.  abi3
         # (`Py_LIMITED_API`) is what makes this shippable as a prebuilt artifact
         # at all: one `.so` serves every CPython >= 3.8, so the package does not
@@ -1008,7 +1008,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         url=
         "https://klx-sdk-release-public.su.bcebos.com/xtdk_llvm19/trust/20261013/xtdk-llvm19-ubuntu2004_x86_64.tar.gz",
         md5_digest="d1eb1e77",
-        version="20260916",
+        version="20261013",
     )
     cache.store(
         file="xtdk-llvm19-printf",

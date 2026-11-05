@@ -81,8 +81,8 @@ class TritonSemantic(Generic[TensorTy]):
             # the comparison and the surrounding select in the same (f32) domain,
             # which the XPU SDNN select lowering requires. This is only needed on
             # TRITON_XPU_ARCH == 3 (SDNN), hence the arch gate below.
-            float_scalar_vs_float_tensor = (get_xpu_arch(3) == 3
-                                            and scalar_ty.is_floating() and tensor_ty.is_floating())
+            float_scalar_vs_float_tensor = (get_xpu_arch(3) == 3 and scalar_ty.is_floating()
+                                            and tensor_ty.is_floating())
             if (scalar_ty.kind().value <= tensor_ty.kind().value and not float_scalar_vs_float_tensor):
                 # Upcast because of 3) and 4) below!
                 if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
