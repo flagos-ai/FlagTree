@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Final, List, Optional, Sequence, Tuple
 
+from triton.experimental.tle.raw.runtime import RawJITFunction
+
 # This module must stay importable on non-Ascend builds: nothing here may
 # import triton.language.extra.cann at module level. CANN-specific imports are
 # deferred to CANNJITFunction construction / bitcode resolution time, which
@@ -34,6 +36,23 @@ _DEFAULT_PIPELINE: Final[Dict[str, str]] = {
 _BITCODE_FORMATS = ("bitcode", "bc")
 _SOURCE_FORMATS = (None, "", "source", "cpp")
 
+# Sibling BCs for cann source-JIT (e.g. custom_ops.mix.bc). Always late-linked
+# via --link-aicore-bitcode; plain/mix are never llvm-linked into one module.
+_op_extra_link_bcs: List[str] = []
+
+
+def add_op_extra_link_bitcode(path: str) -> None:
+    """Register an extra --link-aicore-bitcode path for a cann source-JIT op."""
+    global _op_extra_link_bcs
+    resolved = str(Path(path).resolve())
+    if resolved not in _op_extra_link_bcs:
+        _op_extra_link_bcs.append(resolved)
+
+
+def get_op_extra_link_bitcodes() -> List[str]:
+    """Op-local split BC siblings (plain is on the custom-op bitcode attr)."""
+    return list(_op_extra_link_bcs)
+
 
 @functools.lru_cache(maxsize=None)
 def _find_ccec() -> str:
@@ -53,19 +72,6 @@ def _find_ccec() -> str:
     raise RuntimeError("ccec not found: source the CANN environment first, or set $CCEC / $TRITON_NPU_COMPILER_PATH")
 
 
-def _find_llvm_link(ccec: str) -> str:
-    env = os.getenv("LLVM_LINK")
-    if env and Path(env).is_file():
-        return str(Path(env).resolve())
-    sibling = Path(ccec).parent / "llvm-link"
-    if sibling.is_file():
-        return str(sibling.resolve())
-    which = shutil.which("llvm-link")
-    if which:
-        return str(Path(which).resolve())
-    raise RuntimeError("llvm-link not found next to ccec; set $LLVM_LINK")
-
-
 @functools.lru_cache(maxsize=None)
 def _ccec_version(ccec: str) -> str:
     try:
@@ -76,35 +82,45 @@ def _ccec_version(ccec: str) -> str:
 
 
 def _template_include_dirs(extra: Sequence[Path] = ()) -> List[str]:
-    dirs = []
+    dirs: List[Path] = []
     env = os.getenv("TLE_CANN_TEMPLATE_INCLUDE")
     if env:
         dirs.append(Path(env))
     else:
         import triton
-        # triton.__file__ = <repo>/python/triton/__init__.py under an editable
-        # install; the AscendC Template headers live in the source tree.
-        default = (Path(triton.__file__).resolve().parent.parent.parent / "third_party" / "ascend" / "AscendNPU-IR" /
-                   "bishengir" / "lib" / "Template" / "include")
-        if default.is_dir():
-            dirs.append(default)
+        triton_root = Path(triton.__file__).resolve().parent  # .../triton
+        candidates = [
+            # Editable / in-tree: <repo>/python/triton -> <repo>/third_party/...
+            triton_root.parent.parent / "third_party" / "ascend" / "AscendNPU-IR" / "bishengir" / "lib" / "Template" /
+            "include",
+            # Some installs keep AscendNPU-IR next to the package.
+            triton_root / "backends" / "ascend" / "AscendNPU-IR" / "bishengir" / "lib" / "Template" / "include",
+        ]
+        # Source checkout used by this workspace when triton is a site-packages install.
+        flash = os.getenv("FLAGTREE_ROOT")
+        if flash:
+            candidates.append(
+                Path(flash) / "third_party" / "ascend" / "AscendNPU-IR" / "bishengir" / "lib" / "Template" / "include")
+        for default in candidates:
+            if default.is_dir():
+                dirs.append(default)
+                break
     dirs.extend(Path(p) for p in extra)
     return [str(d.resolve()) for d in dirs if d.is_dir()]
 
 
 def _compile_bitcode(src: Path, arch: str, includes: Sequence[str]) -> str:
-    """JIT-compile an AscendC source file to bitcode with ccec.
+    """JIT-compile AscendC to plain + mix bitcode; late-link both (never merge).
 
-    Mirrors custom_ops/build_custom_ops.sh: compile the source twice (plain
-    and -cce-enable-mix variants) and llvm-link both into a single .bc, then
-    store it in the Triton cache keyed by (source content, arch, includes,
-    ccec path + version). Returns the cached .bc path.
+    Returns the plain .bc path (custom-op ``bitcode`` attr). The mix sibling is
+    registered via ``add_op_extra_link_bitcode`` for ``--link-aicore-bitcode``.
     """
     from triton.runtime.cache import get_cache_manager
 
     ccec = _find_ccec()
     key_payload = "\x00".join([
         "cann-jit",
+        "split-plain-mix",
         hashlib.sha256(src.read_bytes()).hexdigest(),
         arch,
         ccec,
@@ -113,9 +129,11 @@ def _compile_bitcode(src: Path, arch: str, includes: Sequence[str]) -> str:
     ])
     key = hashlib.sha256(key_payload.encode()).hexdigest()
     cache = get_cache_manager(key)
-    cached = cache.get_file("custom_ops.bc")
-    if cached is not None:
-        return cached
+    cached_plain = cache.get_file("custom_ops.bc")
+    cached_mix = cache.get_file("custom_ops.mix.bc")
+    if cached_plain is not None and cached_mix is not None:
+        add_op_extra_link_bitcode(cached_mix)
+        return cached_plain
 
     common = [
         "-O2",
@@ -137,7 +155,6 @@ def _compile_bitcode(src: Path, arch: str, includes: Sequence[str]) -> str:
     with tempfile.TemporaryDirectory(prefix="tle-cann-jit-") as tmp:
         plain_bc = Path(tmp) / "op.bc"
         mix_bc = Path(tmp) / "op.mix.bc"
-        linked_bc = Path(tmp) / "custom_ops.bc"
         variants = [([], plain_bc), (["-cce-enable-mix", "-mllvm", "-enable-mix=true"], mix_bc)]
         for extra_args, out_bc in variants:
             cmd = [ccec, *common, *extra_args, str(src), "-emit-llvm", "-c", "-o", str(out_bc)]
@@ -146,17 +163,13 @@ def _compile_bitcode(src: Path, arch: str, includes: Sequence[str]) -> str:
                 raise RuntimeError("ccec failed\n"
                                    f"cmd: {' '.join(cmd)}\n"
                                    f"stderr:  {build.stderr.decode(errors='replace')}")
-        llvm_link = _find_llvm_link(ccec)
-        cmd = [llvm_link, str(plain_bc), str(mix_bc), "-o", str(linked_bc)]
-        build = subprocess.run(cmd, capture_output=True)
-        if build.returncode != 0:
-            raise RuntimeError("llvm-link failed\n"
-                               f"cmd: {' '.join(cmd)}\n"
-                               f"stderr:  {build.stderr.decode(errors='replace')}")
-        return cache.put(linked_bc.read_bytes(), "custom_ops.bc", binary=True)
+        plain_path = cache.put(plain_bc.read_bytes(), "custom_ops.bc", binary=True)
+        mix_path = cache.put(mix_bc.read_bytes(), "custom_ops.mix.bc", binary=True)
+        add_op_extra_link_bitcode(mix_path)
+        return plain_path
 
 
-class CANNJITFunction(object):
+class CANNJITFunction(RawJITFunction):
     """CANN custom op bound by @dialect(name="cann", ...).
 
     The instance duck-types the custom-op attribute interface consumed by
@@ -179,21 +192,35 @@ class CANNJITFunction(object):
     is omitted the file is treated as AscendC source and JIT-compiled to
     bitcode with ccec on first use; the produced bitcode is cached under the
     Triton cache directory (~/.triton/cache).
+
+    Pass library=\"cannshmem\" for official cann/shmem headers (aclshmem_*
+    inlined into the op BC).
+    Pass library=\"hccl\" for AscendC device HCCL headers (Hccl::AllReduce /
+    Commit; header-inline, no separate device bc).
     """
 
     def __init__(self, fn: Any, file, format: Optional[str] = None, extern_func_name: str = "",
                  pipeline: Optional[Dict[str, str]] = None, arch: Optional[str] = None, includes: Sequence = (),
-                 extra_buffers=None, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.fn: Final[Any] = fn
+                 extra_buffers=None, **kwargs) -> None:
+        kwargs.setdefault("extern_func_name", extern_func_name)
+        super().__init__(fn, **kwargs)
         self.format: Final[Optional[str]] = format
         self.symbol: Final[str] = extern_func_name or fn.__name__
         self.name: Final[str] = fn.__name__
         self.arch: Final[Optional[str]] = arch
         self._extra_includes: Final[Tuple[Path, ...]] = tuple(Path(p) for p in includes)
-        self.__triton_builtin__: Final[bool] = True
         if extra_buffers is not None:
             self.extra_buffers = extra_buffers
+
+        if self.library == "cannshmem":
+            from triton.experimental.tle.raw.cann.cannshmem.utils import enable_cannshmem
+            enable_cannshmem(True)
+        elif self.library == "hccl":
+            from triton.experimental.tle.raw.cann.hccl.utils import enable_hccl
+            enable_hccl(True)
+        elif self.library:
+            raise ValueError(f"unsupported @dialect(name='cann') library: {self.library!r} "
+                             f"(expected '', 'cannshmem', or 'hccl')")
 
         if self.format not in _BITCODE_FORMATS and self.format not in _SOURCE_FORMATS:
             raise ValueError(f"unsupported @dialect(name='cann') format: {self.format!r} "
@@ -249,6 +276,12 @@ class CANNJITFunction(object):
                 raise ValueError(f"cannot infer ccec aicore arch for core={self.core.name!r}; "
                                  "pass arch=... explicitly")
         includes = _template_include_dirs(self._extra_includes)
+        if self.library == "cannshmem":
+            from triton.experimental.tle.raw.cann.cannshmem.utils import get_cannshmem_include_dirs
+            includes = list(includes) + get_cannshmem_include_dirs()
+        elif self.library == "hccl":
+            from triton.experimental.tle.raw.cann.hccl.utils import get_hccl_include_dirs
+            includes = list(includes) + get_hccl_include_dirs()
         return _compile_bitcode(self.file, arch, includes)
 
     @property
