@@ -407,9 +407,8 @@ def alloc(
     alias_offset_bytes = tl._unwrap_if_constexpr(alias_offset_bytes)
     alignment_bytes = tl._unwrap_if_constexpr(alignment_bytes)
     if alignment_bytes is not None:
-        if (isinstance(alignment_bytes, bool) or not isinstance(alignment_bytes, int)
-                or alignment_bytes <= 0 or alignment_bytes & (alignment_bytes - 1)
-                or alignment_bytes > (1 << 30)):
+        if (isinstance(alignment_bytes, bool) or not isinstance(alignment_bytes, int) or alignment_bytes <= 0
+                or alignment_bytes & (alignment_bytes - 1) or alignment_bytes > (1 << 30)):
             raise ValueError("alignment_bytes must be a positive power of two fitting signed i32")
         if alias is not None or scope is not tle.smem:
             raise ValueError("alignment_bytes is valid only for a new Shared allocation, not an alias")
@@ -471,8 +470,8 @@ def alloc(
             mthreads_buffer.validate_shape(unwrapped_shape)
         # A plain linear MemDesc describes a physical arena, not a logical
         # matrix. Its byte extent need not fit a ranked register tensor.
-        physical_buffer = (len(unwrapped_shape) == 1 and not nv_mma_shared_layout) or (
-            isinstance(layout, tle.shared_layout) and all(dim & (dim - 1) == 0 for dim in unwrapped_shape[1:]))
+        physical_buffer = (len(unwrapped_shape) == 1 and not nv_mma_shared_layout) or (isinstance(
+            layout, tle.shared_layout) and all(dim & (dim - 1) == 0 for dim in unwrapped_shape[1:]))
         non_power_payload_axes = ([] if use_mthreads_buffer or physical_buffer else
                                   [axis for axis, dim in enumerate(payload_shape, payload_offset) if dim & (dim - 1)])
         if len(non_power_payload_axes) > 1:
@@ -608,8 +607,8 @@ def alloc(
                 # layouts require 16 B. An explicit arena requirement is a
                 # lower bound, never an override that weakens either layout.
                 layout_alignment = 1024 if isinstance(layout, tle.nv_mma_shared_layout) else 16
-                tensor_handle.set_attr("alignment", _semantic.builder.get_int32_attr(
-                    max(alignment_bytes, layout_alignment)))
+                tensor_handle.set_attr("alignment",
+                                       _semantic.builder.get_int32_attr(max(alignment_bytes, layout_alignment)))
             if mthreads_auto_sqmma_shared_layout and alias is None:
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
             if logical_candidate:
