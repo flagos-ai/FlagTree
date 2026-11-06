@@ -92,6 +92,21 @@ jobs:
           source ~/env.sh
           export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-188a510-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
           cd third_party/hcu/python/tutorials/tle/raw/dushmem
-          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port=29500 01-simple-shift/simple-shift.py
-          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port=29500 02-allgather-gemm/ag-gemm.py
-          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port=29500 03-gemm-allreduce/gemm-ar.py
+          # Avoid default 29500 collisions on shared self-hosted runners.
+          # Same strategy as nvidia3.6-single-dist-test.yml / python/test/tle/unit/test_tle_*.sh:
+          # probe with ss, then +2.
+          pick_free_master_port() {
+            local port="${1:-29500}"
+            while ss -ltn | grep -q ":${port} "; do
+              echo "Port ${port} is occupied, trying next..." >&2
+              port=$((port + 2))
+            done
+            echo "Using master_port=${port}" >&2
+            printf '%s' "${port}"
+          }
+          master_port="$(pick_free_master_port 29500)"
+          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port="${master_port}" 01-simple-shift/simple-shift.py
+          master_port="$(pick_free_master_port $((master_port + 2)))"
+          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port="${master_port}" 02-allgather-gemm/ag-gemm.py
+          master_port="$(pick_free_master_port $((master_port + 2)))"
+          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port="${master_port}" 03-gemm-allreduce/gemm-ar.py
