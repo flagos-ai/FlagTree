@@ -1076,6 +1076,11 @@ struct TritonMUSAGPUTLELowerSqmmaPass
           musa::SquadDotWaitOp::create(builder, wait.getLoc(), nativeInputs);
       nativeWait->setAttr(musa_tle::kMUSATLEExplicitSqmmaAttr,
                           builder.getUnitAttr());
+      // Explicit SQMMA waits lower to tce.wait.group(pendings).  Only waits
+      // sharing one pending count were merged above, so the group count of
+      // the first one describes the whole batch.
+      nativeWait->setAttr(musa_tle::kMUSATLEExplicitSqmmaPendingsAttr,
+                          builder.getI32IntegerAttr(wait.getPendings()));
       for (auto [nativeResult, adjacentWait] :
            llvm::zip_equal(nativeWait.getOutputs(), adjacentWaits)) {
         Value released = nativeResult;
