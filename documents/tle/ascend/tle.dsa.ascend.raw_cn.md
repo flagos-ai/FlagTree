@@ -4,23 +4,53 @@
 
 昇腾 NPU 的 Ascend C 提供了大量 Triton 语言层无法直接表达的硬件能力：Vector 单元的 `Sort32` / `MrgSort` / `GatherMask` / `PairReduceSum` / `Duplicate` 等带 repeat/stride 语义的 SIMD 指令、MTE2 上按离散索引搬运行数据并顺带完成 ND2NZ 转换的能力、以及 SIMT 模板形式的 gather/scatter 访存。这些操作要么在 Triton 里没有对应算子，要么经过通用 lowering 后无法达到手写 Ascend C 的性能。
 
-`tle.dsa.ascend.raw` 是 TLE 提供的 **通用定制算子（custom op）调用入口**：按名字调用一个已注册的定制算子，把参数直接映射为 `hivm.hir.custom` 的操作数，由 bishengir-compile 链接到对应的设备侧实现（内置模板或 bitcode 中的 C++ 函数）。它是 `triton.language.extra.cann.extension.custom`（社区 `al.custom`）的别名：
+TLE 提供 **通用定制算子（custom op）调用入口**：按名字调用一个已注册的定制算子，把参数直接映射为 `hivm.hir.custom` 的操作数，由 bishengir-compile 链接到对应的设备侧实现（内置模板或 bitcode 中的 C++ 函数）。
+
+## 1.1 推荐入口：`tle_raw.call`
+
+**新代码请用统一入口 `tle_raw.call`**，op 名带 `ascend_` 前缀：
+
+```python
+import triton.experimental.tle.language.raw as tle_raw
+
+dst = tle_raw.call("ascend_sort32", value, index, repeat_times, out=dst)
+```
+
+它按第一个下划线前的前缀分发（当前支持 `ascend`），剥去前缀后转发到后端定制算子注册表。同一入口还承担算子层面混合语言编程（`@dialect(name="cann")` + `output_indices=`），详见 `custom_ops/CUSTOM_OP_USAGE_cn.md`。
+
+## 1.2 旧入口：`tle.dsa.ascend.raw`
+
+旧入口仍然可用，是 `triton.language.extra.cann.extension.custom`（社区 `al.custom`）的别名：
 
 ```python
 # python/triton/experimental/tle/language/dsa/ascend/core.py
 from triton.language.extra.cann.extension import compile_hint, custom as raw, multibuffer
 ```
 
-通过 `raw` 可调用的算子分为两类：
+本文档正文统一用新入口书写，**唯一的行为差异**见下表：
+
+| | `tle_raw.call(op, *args, out=, output_indices=)` | `tle.dsa.ascend.raw(name, *args, out=, **kwargs)` |
+|---|---|---|
+| op 名 | 带 `ascend_` 前缀 | 不带前缀 |
+| 关键字操作数 | **不支持**，签名里没有 `**kwargs` | 支持 |
+| 混合语言编程 | 支持（传 `@dialect` 函数对象 + `output_indices=`） | 不支持 |
+
+关键字操作数这一条只影响 4 个 `__builtin_*` 算子的习惯写法（它们参数多、社区用例历来用关键字传）。这些算子都是已注册算子、有完整 `__init__` 签名，**改为按签名顺序传位置参数即可**，见 4.3 节。
+
+通过 custom op 入口可调用的算子分为两类：
 
 | 类别 | 名字特征 | 设备侧实现来源 | 数量 |
 |------|----------|----------------|------|
 | 编译器内置模板算子 | 以 `__builtin_` 开头 | bishengir-compile 自带的 SIMT 模板库，无需 `symbol` / `bitcode` | 4 |
-| TLE 随包 bitcode 算子 | 普通名字 | `custom_ops/custom_ops.bc`，由 `registry.py` 提供 `symbol` | 13 |
+| TLE 随包 bitcode 算子 | 普通名字 | `custom_ops/custom_ops.bc`，由 `registry.py` 提供 `symbol` | 17 |
 
 # 2. 接口说明
 
 ```python
+# 推荐（python/triton/experimental/tle/language/raw/core.py）
+def call(op, *args, output_indices=None, out=()):
+
+# 旧入口（python/triton/experimental/tle/language/dsa/ascend/core.py）
 def raw(name: str, *args, out=None, **kwargs):
 ```
 
@@ -28,9 +58,10 @@ def raw(name: str, *args, out=None, **kwargs):
 
 | 参数名 | 类型 | 必需 | 说明 |
 |-------|-----|-----|------|
-| name  | str / tl.constexpr | 是 | 定制算子名。先在注册表中查找；查不到时必须以 `__builtin_`开头，否则断言失败`Custom Op 'xxx' not registered.`|
-| *args / **kwargs | tensor / int / float / bool / tuple | 视算子而定 | 算子入参，按注册类`__init__`的签名顺序绑定后展开为`hivm.hir.custom`的 ins 操作数。tuple/list 会按元素逐个展开（如`src_stride=(4, 1)`展开为两个标量操作数）。 |
+| op / name | str / tl.constexpr | 是 | 定制算子名。`tle_raw.call` 需带 `ascend_` 前缀，剥前缀后的名字先在注册表中查找；查不到时必须以 `__builtin_`开头，否则断言失败`Custom Op 'xxx' not registered.`|
+| *args | tensor / int / float / bool / tuple | 视算子而定 | 算子入参，按注册类`__init__`的签名顺序绑定后展开为`hivm.hir.custom`的 ins 操作数。tuple/list 会按元素逐个展开（如`(4, 1)`展开为两个标量操作数）。`tle_raw.call` 只接受位置参数；旧入口额外支持 `**kwargs` 按名绑定。 |
 | out | tensor 或 tensor 列表 | 视算子而定 | 调用前由使用方分配好的输出 buffer，作为 outs 操作数传入；设备侧直接写入该 buffer，Python 侧按同样的类型返回。多输出算子传 list/tuple。 |
+| output_indices | int 列表 | 否 | 仅用于混合语言编程（传 `@dialect` 函数对象时），按位置标记哪些操作数是输出/别名。调用注册表算子时不用。 |
 
 
 ## 2.2 返回值
@@ -46,20 +77,20 @@ def raw(name: str, *args, out=None, **kwargs):
 ```python
 # 单输出
 pair = tl.zeros([64], dtype=tl.float32)
-pair = tle.dsa.ascend.raw("sort32", value, index, repeat_times, out=pair)
+pair = tle_raw.call("ascend_sort32", value, index, repeat_times, out=pair)
 
 # 双输出
 dval = tl.zeros([16], dtype=tl.float32)
 didx = tl.zeros([16], dtype=tl.int32)
-dval, didx = tle.dsa.ascend.raw("unpack_sort", props, 16, out=[dval, didx])
+dval, didx = tle_raw.call("ascend_unpack_sort", props, 16, out=[dval, didx])
 
 # 无输出（原地写 GM）
-tle.dsa.ascend.raw("__builtin_scatter_store", out_ptr, value, index, 1, 0, (1, ), (2, ), (1, ))
+tle_raw.call("ascend___builtin_scatter_store", out_ptr, value, index, 1, 0, (1, ), (2, ), (1, ))
 ```
 
 ## 2.3 name 解析规则
 
-`_get_op_class(name)` 的行为决定了「支持哪些 op」：
+`tle_raw.call` 先剥掉 `ascend_` 前缀（前缀不是 `ascend` 则 `ValueError: unknown raw backend prefix`），再把剩下的名字交给 `_get_op_class(name)`。该函数的行为决定了「支持哪些 op」：
 
 1. 名字在 `_custom_op_registry` 中：使用注册类的 `core` / `pipe` / `mode` 和 `__init__` 签名，参数按签名绑定并做全部 assert 校验。
 2. 名字不在注册表中但以 `__builtin_` 开头：构造一个**匿名 dummy 类**，默认 `CORE.VECTOR` / `PIPE.PIPE_V` / `MODE.SIMT`，`signature` 为空，**不做任何参数校验**，参数按实际书写顺序（先 `*args` 再 `**kwargs` 的插入顺序）展开为操作数。
@@ -86,7 +117,7 @@ tle.dsa.ascend.raw("__builtin_scatter_store", out_ptr, value, index, 1, 0, (1, )
 
 ## 3.1 总览
 
-当前仓库（`python/triton`）注册表共 17 个算子：
+当前仓库（`python/triton`）注册表共 21 个算子：
 
 | 算子名 | core | pipe | mode | 实现来源 | 输出个数 |
 |--------|------|------|------|----------|----------|
@@ -107,6 +138,10 @@ tle.dsa.ascend.raw("__builtin_scatter_store", out_ptr, value, index, 1, 0, (1, )
 | `unpack_sort` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 2 |
 | `compare_scalar` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 1 |
 | `cast_int4_to_fp16` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 1 |
+| `mul_add_dst` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 1 |
+| `fused_mul_add` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 1 |
+| `mul_add_relu` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 1 |
+| `axpy` | VECTOR | PIPE_V | SIMD | `custom_ops.bc` | 1 |
 
 可在运行时自行确认当前环境实际注册了哪些算子：
 
@@ -178,7 +213,7 @@ __builtin_scatter_store(dst, value, index, bound: tl.int64, dim, dst_stride: tl.
 
 ## 3.3 TLE 随包 bitcode 算子
 
-这 13 个算子在 `python/triton/experimental/tle/language/dsa/ascend/custom_ops/registry.py` 注册，设备侧 C++ 实现统一编译进 `custom_ops.bc`，每个算子的 `symbol` 指向其中的函数。参数语义、逐算子的详细数值约束和更多示例见同目录下的 `CUSTOM_OP_USAGE.md`，此处仅给出签名与关键约束。
+这 17 个算子在 `python/triton/experimental/tle/language/dsa/ascend/custom_ops/registry.py` 注册，设备侧 C++ 实现统一编译进 `custom_ops.bc`，每个算子的 `symbol` 指向其中的函数。参数语义、逐算子的详细数值约束和更多示例见同目录下的 `CUSTOM_OP_USAGE_cn.md`，此处仅给出签名与关键约束。
 
 | 算子名 | 签名（省略 `out`） | symbol | 关键约束 |
 |--------|--------------------|--------|----------|
@@ -195,6 +230,10 @@ __builtin_scatter_store(dst, value, index, bound: tl.int64, dim, dst_stride: tl.
 | `unpack_sort` | `(src_proposals, topk)` | `custom_unpack_sort_float` | 把紧凑 proposal 拆为值和索引；`out=[dst_value(fp32), dst_index(int32)]` |
 | `compare_scalar` | `(src, scalar, cmpMode, count)` | `custom_compare_scalar_{half,float}[_mask32]` | `cmpMode` 为 CANN CMPMODE：0=LT 1=GT 2=EQ 3=LE 4=GE 5=NE；`count` 须等于源长度；`out` 为 `uint16[N/16]` 或（仅 fp32）`uint32[N/32]`；size 为 2 的幂，fp32 ∈ [256, 4096]，fp16 ∈ [256, 32768] |
 | `cast_int4_to_fp16` | `(src, roundMode, count)` | `custom_cast_int4_to_fp16` | `src` 为 1D uint8，字节数为 2 的幂 ∈ [32, 8192]；`roundMode` 只支持 0（`CAST_NONE`）；`out` 为 `float16[2*N]`，`count == 2*N`；低 nibble 先输出 |
+| `mul_add_dst` | `(src0, src1, count)` | `custom_mul_add_dst_{half,float,fmix}` | 对应 `MulAddDst`（`vmla`）：`dst = src0*src1 + dst`；**`out` 入值是加数**；(f16,f16)/(f32,f32)/(f16,f32) |
+| `fused_mul_add` | `(src0, src1, count)` | `custom_fused_mul_add_{half,float}` | 对应 `FusedMulAdd`（`vmadd`）：`dst = src0*dst + src1`；**`out` 入值是被乘数**；f16/f32，无混合形态 |
+| `mul_add_relu` | `(src0, src1, count)` | `custom_mul_add_relu_{half,float}` | 对应 `MulAddRelu`（`vmaddrelu`）：`dst = relu(src0*dst + src1)`；约束同 `fused_mul_add` |
+| `axpy` | `(src, scalar, count)` | `custom_axpy_{half,float,fmix}` | 对应 `Axpy`（`vaxpy`）：`dst = src*scalar + dst`；**`out` 入值是加数**；`scalar` 以 f32 传入并窄化到源 dtype |
 
 `sort_1d_pack` 的 `sort_impl` 取值（`tle.dsa.ascend.custom_ops` 导出的 constexpr）：
 
@@ -217,7 +256,7 @@ def sort32_kernel(score_ptr, index_ptr, out_ptr):
   score = tl.load(score_ptr + offs)
   index = tl.load(index_ptr + offs).to(tl.uint32)
   dst = tl.full((64, ), 0.0, tl.float32) # 32 个 [value, index] 对
-  dst = tle.dsa.ascend.raw("sort32", score, index, 1, out=dst)
+  dst = tle_raw.call("ascend_sort32", score, index, 1, out=dst)
   tl.store(out_ptr + tl.arange(0, 64), dst)
 ```
 
@@ -246,7 +285,7 @@ def unpack_kernel(prop_ptr, val_ptr, idx_ptr, TOPK: tl.constexpr):
   prop = tl.load(prop_ptr + tl.arange(0, 2 * TOPK))
   dval = tl.zeros([TOPK], dtype=tl.float32)
   didx = tl.zeros([TOPK], dtype=tl.int32)
-  dval, didx = tle.dsa.ascend.raw("unpack_sort", prop, TOPK, out=[dval, didx])
+  dval, didx = tle_raw.call("ascend_unpack_sort", prop, TOPK, out=[dval, didx])
   tl.store(val_ptr + tl.arange(0, TOPK), dval)
   tl.store(idx_ptr + tl.arange(0, TOPK), didx)
 ```
@@ -265,6 +304,8 @@ def unpack_kernel(prop_ptr, val_ptr, idx_ptr, TOPK: tl.constexpr):
 
 ## 4.3 `__builtin_*` 算子写法
 
+这 4 个算子参数多，社区用例历来用关键字传参。`tle_raw.call` 没有 `**kwargs`，用关键字会直接 `TypeError: call() got an unexpected keyword argument 'bound'`，须按 `__init__` 签名顺序改成位置参数（签名见 3.2 节各小节）。
+
 以 `__builtin_gather_load` 为例（社区用例 `third_party/ascend/unittest/custom_op/test_gather_load.py`）：
 
 ```python
@@ -276,23 +317,27 @@ def gather_load_kernel(src_ptr, index_ptr, out_ptr):
   index = tl.load(index_ptr + rows * 2 + cols, mask)
 
   dst = tl.full(index.shape, 0, tl.float32)
-  gathered = tle.dsa.ascend.raw("__builtin_gather_load", src_ptr, index,
-  bound=4, dim=0, src_stride=(2, 1),
-  index_shape=(2, 2), offsets=(0, 0), out=dst)
+  # 签名：(src, index, bound, dim, src_stride, index_shape, offsets, out=None)
+  gathered = tle_raw.call("ascend___builtin_gather_load", src_ptr, index,
+  4, 0, (2, 1), (2, 2), (0, 0), out=dst)
   tl.store(out_ptr + rows * 2 + cols, gathered, mask)
 
 # src = [[1., 2.], [3., 4.], [5., 6.], [7., 8.]], index = [[0, 1], [2, 3]]
 # 期望输出：[[1., 4.], [5., 8.]]
 ```
 
+上面这段与旧入口的关键字写法生成完全相同的 `hivm.hir.custom`（已实测 `operandSegmentSizes = array<i32: 10, 1, 0>` 及各操作数类型一致），随后同样失败于 5.1 节的 verifier 问题——与入口无关。需要关键字写法时仍可用旧入口。
+
 `__builtin_index_select` 的用法类似（`test_index_select.py`）：`src` 为 4x4 fp32、`index = [2, 0]`、`end_offset=(2, 2)`、`start_offset=(0, 0)`、`src_stride=(4, 1)`，等价于 `torch.index_select(src, 0, index)[:, :2]`，期望输出 `[[30., 31.], [10., 11.]]`。
 
 `__builtin_index_put` / `__builtin_scatter_store` 无返回值，直接丢弃返回：
 
 ```python
-tle.dsa.ascend.raw("__builtin_index_put", x_ptr, index, value, dim=0, bound=12,
-dst_shape=(1, 2, 3), dst_offset=(4, 5, 6), dst_stride=(8, 4, 1))
-tle.dsa.ascend.raw("__builtin_scatter_store", out_ptr, value, index, 1, 0, (1, ), (2, ), (1, ))
+# 签名：(dst, index, value, dim, bound, dst_shape, dst_offset, dst_stride)
+tle_raw.call("ascend___builtin_index_put", x_ptr, index, value, 0, 12,
+(1, 2, 3), (4, 5, 6), (8, 4, 1))
+# 签名：(dst, value, index, bound, dim, dst_stride, index_shape, offsets)
+tle_raw.call("ascend___builtin_scatter_store", out_ptr, value, index, 1, 0, (1, ), (2, ), (1, ))
 ```
 
 ## 4.4 MTE2 gather 算子需要额外的 launch 选项
@@ -374,14 +419,14 @@ AssertionError: Provided bitcode (bitcode) not exist
 
 ## 5.5 其它
 
-- `out` buffer 必须由调用方在 kernel 内先分配（`tl.zeros` / `tl.full` / `tle.dsa.alloc` + `tle.dsa.to_tensor`），`raw` 不会替你创建输出。
+- `out` buffer 必须由调用方在 kernel 内先分配（`tl.zeros` / `tl.full` / `tle.dsa.alloc` + `tle.dsa.to_tensor`），入口不会替你创建输出。
 - 未注册且不以 `__builtin_` 开头的名字直接断言失败，不存在「按字符串试探」的调用方式。
-- 各算子的 UB 对齐、size 为 2 的幂、输入输出不重叠等数值约束由注册类的 assert 在编译期检查，详见 `registry.py` 与 `CUSTOM_OP_USAGE.md`。
+- 各算子的 UB 对齐、size 为 2 的幂、输入输出不重叠等数值约束由注册类的 assert 在编译期检查，详见 `registry.py` 与 `CUSTOM_OP_USAGE_cn.md`。
 - 算子本身不插入流水同步（`compare_scalar` / `cast_int4_to_fp16` 明确说明），跨算子的读写顺序由调用方负责。
 
 # 6. 扩展：注册新的定制算子
 
-若需新增 `raw` 可调用的算子，用 `al.register_custom_op` 装饰一个类，必填 `core` / `pipe` / `mode`，并在 `__init__` 中完成参数校验和 `symbol` / `bitcode` 赋值：
+若需新增可调用的定制算子，用 `al.register_custom_op` 装饰一个类，必填 `core` / `pipe` / `mode`，并在 `__init__` 中完成参数校验和 `symbol` / `bitcode` 赋值：
 
 
 ```python
