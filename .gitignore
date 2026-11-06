@@ -158,3 +158,16 @@ third_party/tsingmicro/backend/lib/
 third_party/flir
 tsingmicro_launch.log
 python/tsingmicro_launch.log
+
+# "build-*/" above also catches packaging/debian/build-helpers, so new
+# helpers there would be silently untracked.
+!packaging/debian/build-helpers/
+
+# Where the packaging helpers drop the built .deb / .rpm.
+/dist/
+/dist-rpm/
+
+# Rendered by packaging/debian/build-helpers/render-packaging.sh from
+# control.in / lintian-overrides.in for one backend.
+packaging/debian/control
+packaging/debian/python3-flagtree-*.lintian-overrides
