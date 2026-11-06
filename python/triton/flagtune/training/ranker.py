@@ -399,6 +399,11 @@ def prepare_ranking_data(
     labels = np.empty(row_count, dtype=np.float32)
     group_sizes: List[int] = []
     offset = 0
+    # The contract is fixed for this preparation pass. Index an explicit
+    # domain once instead of scanning every candidate for every training row.
+    param_space = variant.param_space
+    explicit_keys = ({param_space.config_key(config)
+                      for config in param_space.explicit_configs} if param_space.explicit_configs is not None else None)
 
     for group_index, (_key, records) in enumerate(_group_records(path)):
         finite = [(line_number, record, latency)
@@ -433,7 +438,15 @@ def prepare_ranking_data(
                 raise TrainingDataError(f"ranking group contains inconsistent inputs at line {line_number}")
             if not isinstance(config, Mapping):
                 raise TrainingDataError(f"benchmark data line {line_number} has no config mapping")
-            if not variant.param_space.validate(dict(config)):
+            if explicit_keys is None:
+                valid = param_space.validate(dict(config))
+            else:
+                try:
+                    valid = param_space.config_key(dict(config)) in explicit_keys
+                except TypeError:
+                    # Preserve validation errors for records with non-scalar values.
+                    valid = param_space.validate(dict(config))
+            if not valid:
                 raise TrainingDataError(f"benchmark data line {line_number} has a config outside "
                                         f"{variant.op_id}/{variant.name}'s parameter space")
             configs.append(config)
