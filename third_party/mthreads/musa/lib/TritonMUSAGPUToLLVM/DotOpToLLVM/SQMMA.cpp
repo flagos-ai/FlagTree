@@ -15,7 +15,9 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <string>
@@ -599,6 +601,17 @@ getDotAccumulationMode(triton::mtgpu::SqmmaOp op) {
       static_cast<int>(op.getAccMode()));
 }
 
+#ifdef __TLE__
+static unsigned getDotInstructionK(triton::DotOp,
+                                   MUSASqmmaEncodingAttr encoding) {
+  return encoding.getInstrShape()[2];
+}
+template <typename DotLikeOp>
+static unsigned getDotInstructionK(DotLikeOp op, MUSASqmmaEncodingAttr) {
+  return op.getK();
+}
+#endif // __TLE__
+
 template <typename DotLikeOp, typename DotLikeAdaptor>
 LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
                                   const LLVMTypeConverter *typeConverter,
@@ -631,8 +644,13 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
 
   const unsigned instM = instrShape[0];
   const unsigned instN = instrShape[1];
-  const unsigned encodedInstK = instrShape[2];
-  unsigned instK = encodedInstK;
+#ifdef __TLE__
+  // A reused FP32 accumulator may retain a preceding dtype's encoding K.
+  const unsigned instructionK = getDotInstructionK(op, mmaEnc);
+#else
+  const unsigned instructionK = instrShape[2];
+#endif // __TLE__
+  unsigned instK = instructionK;
 
   Value opA = getDotOperandA(op);
   Value opB = getDotOperandB(op);
@@ -681,14 +699,14 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
     elemBytes = 1;
 
   const bool splitNarrowK128 = sqTraits->arch == triton::musa::MusaArch::PH1 &&
-                               encodedInstK == 128 && eltTypeA == eltTypeB &&
+                               instructionK == 128 && eltTypeA == eltTypeB &&
                                (eltTypeA == triton::musa::SQMMAEltType::f16 ||
                                 eltTypeA == triton::musa::SQMMAEltType::bf16);
   if (splitNarrowK128)
     instK = 64;
 
   if (!isSupportedSqmmaWithK128Compatibility(
-          eltTypeA, eltTypeB, eltTypeC, instM, instN, encodedInstK, *sqTraits,
+          eltTypeA, eltTypeB, eltTypeC, instM, instN, instructionK, *sqTraits,
           layoutA, layoutB, elemBytes, true, true))
     return op.emitError("MUSA SQMMA: unsupported shape or element type");
   std::string sqmmaIntrinsic =
