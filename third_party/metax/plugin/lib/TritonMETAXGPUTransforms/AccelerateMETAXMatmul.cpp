@@ -4,11 +4,13 @@
  */
 #include "TritonMETAXGPUTransforms/MACACommon.h"
 #include "TritonMETAXGPUTransforms/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
@@ -16,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <optional>
 
 #define DEBUG_TYPE "TritonMETAXGPUAccelerateMatmulPass"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -32,6 +35,160 @@ using triton::gpu::ConvertLayoutOp;
 using triton::gpu::DotOperandEncodingAttr;
 using triton::gpu::SliceEncodingAttr;
 using triton::gpu::SwizzledSharedEncodingAttr;
+
+class DecomposeMETAXScaledBlocked final : public ttg::DecomposeScaledBlocked {
+public:
+  using DecomposeScaledBlocked::DecomposeScaledBlocked;
+  using TensorValue = TypedValue<RankedTensorType>;
+
+  LogicalResult matchAndRewrite(tt::DotScaledOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getAElemType() != tt::ScaleDotElemType::E2M1 &&
+        op.getBElemType() != tt::ScaleDotElemType::E2M1)
+      return failure();
+    if (!op.getLhsKPack() || !op.getRhsKPack() || op.getType().getRank() != 2)
+      return failure();
+    op.emitWarning("using non-native FP4 dot_scaled on MetaX: GPU software "
+                   "decoding/scaling followed by BF16/FP16 MMA with FP32 "
+                   "accumulation");
+    return DecomposeScaledBlocked::matchAndRewrite(op, rewriter);
+  }
+
+protected:
+  TensorValue scaleArg(PatternRewriter &rewriter, tt::DotScaledOp op, int opIdx,
+                       FloatType computeType) const override {
+    TensorValue value = opIdx == 0 ? op.getA() : op.getB();
+    TensorValue scale = opIdx == 0 ? op.getAScale() : op.getBScale();
+    auto elemType = opIdx == 0 ? op.getAElemType() : op.getBElemType();
+    auto loc = op.getLoc();
+    int kDim = opIdx == 0 ? 1 : 0;
+    bool isFp4 = elemType == tt::ScaleDotElemType::E2M1;
+    if (isFp4 && scale) {
+      auto inputTy = value.getType();
+      if (opIdx == 1)
+        scale = tt::TransOp::create(rewriter, loc, scale, getTransposeOrder(2));
+      auto infer =
+          inputTy.getEncoding()
+              .getDialect()
+              .getRegisteredInterface<triton::DialectInferLayoutInterface>();
+      auto shape = llvm::to_vector(inputTy.getShape());
+      shape[kDim] /= 16;
+      shape.insert(shape.begin() + kDim + 1, 16);
+      Attribute expandedEncoding;
+      auto reshaped = infer->inferReshapeOpEncoding(
+          inputTy.getShape(), inputTy.getEncoding(), shape, expandedEncoding,
+          loc);
+      assert(succeeded(reshaped));
+      // Project the packed data layout onto groups before loading scales.
+      // Broadcasting in an unrelated layout and then converting the full
+      // tensor creates unnecessary cross-warp shared-memory traffic.
+      auto slice = ttg::SliceEncodingAttr::get(
+          rewriter.getContext(), kDim + 1,
+          cast<ttg::DistributedEncodingTrait>(expandedEncoding));
+      scale = ConvertLayoutOp::create(
+          rewriter, loc, scale.getType().cloneWithEncoding(slice), scale);
+      auto expanded = tt::ExpandDimsOp::create(rewriter, loc, scale, kDim + 1);
+      auto broadcast = tt::BroadcastOp::create(
+          rewriter, loc, expanded.getType().clone(shape), expanded);
+      auto packed =
+          tt::ReshapeOp::create(rewriter, loc, inputTy.getShape(), broadcast);
+      scale = ConvertLayoutOp::create(rewriter, loc, inputTy, packed);
+
+      auto outputShape = llvm::to_vector(inputTy.getShape());
+      outputShape[kDim] *= 2;
+      auto outputTy = RankedTensorType::get(outputShape, computeType);
+      Attribute outputEncoding;
+      auto result = infer->inferFp4ToFpScaledOpEncoding(
+          outputShape, kDim, inputTy.getEncoding(), outputEncoding,
+          /*fwdInference=*/true, loc, outputTy);
+      assert(succeeded(result));
+      auto decoded = tt::Fp4ToFpScaledOp::create(
+          rewriter, loc, outputTy.cloneWithEncoding(outputEncoding), value,
+          scale, rewriter.getI32IntegerAttr(kDim));
+      decoded->setAttr("maca.keep_fp4_decode_layout", rewriter.getUnitAttr());
+      decoded->setAttr("maca.fp4_dot_fused", rewriter.getUnitAttr());
+      TensorValue output = decoded.getOutput();
+      if (auto blocked =
+              dyn_cast<ttg::BlockedEncodingAttr>(inputTy.getEncoding())) {
+        auto size = llvm::to_vector(blocked.getSizePerThread());
+        size[kDim] *= 2;
+        auto coalesced = ttg::BlockedEncodingAttr::get(
+            rewriter.getContext(), size, blocked.getThreadsPerWarp(),
+            blocked.getWarpsPerCTA(), blocked.getOrder(),
+            blocked.getCTALayout());
+        if (coalesced != outputEncoding)
+          output = ConvertLayoutOp::create(
+              rewriter, loc, outputTy.cloneWithEncoding(coalesced), output);
+        output.getDefiningOp()->setAttr("maca.keep_fp4_decode_layout",
+                                        rewriter.getUnitAttr());
+      }
+      return output;
+    }
+    if (isFp4) {
+      value = ttg::Fp4ToFpOp::create(rewriter, loc, value, computeType, kDim);
+      value.getDefiningOp()->setAttr("maca.keep_fp4_decode_layout",
+                                     rewriter.getUnitAttr());
+    }
+    if (!scale && value.getType().getElementType() == computeType)
+      return value;
+
+    auto fp32Ty = rewriter.getF32Type();
+    if (elemType == tt::ScaleDotElemType::E4M3 ||
+        elemType == tt::ScaleDotElemType::E5M2)
+      // The legacy direct E5M2 -> BF16 cast does not preserve Inf/NaN.
+      value = cast<TensorValue>(
+          tt::FpToFpOp::create(rewriter, loc, value.getType().clone(fp32Ty),
+                               value)
+              .getResult());
+    else
+      value = cast<TensorValue>(
+          arith::ExtFOp::create(rewriter, loc, value.getType().clone(fp32Ty),
+                                value)
+              .getResult());
+    auto narrow = [&](Value v) {
+      auto result = cast<TensorValue>(
+          tt::FpToFpOp::create(
+              rewriter, loc, value.getType().clone(computeType), v,
+              tt::RoundingModeAttr::get(rewriter.getContext(),
+                                        tt::RoundingMode::RTNE))
+              .getResult());
+      result.getDefiningOp()->setAttr("maca.keep_fp4_decode_layout",
+                                      rewriter.getUnitAttr());
+      return result;
+    };
+    if (!scale)
+      return narrow(value);
+
+    // Scale in FP32 before narrowing. Casting E8M0 to FP16/BF16 first loses
+    // small scales and can overflow even when the final product fits.
+    if (opIdx == 1)
+      scale = tt::TransOp::create(rewriter, loc, scale, getTransposeOrder(2));
+    auto intTy = scale.getType().clone(rewriter.getI32Type());
+    auto codes = arith::ExtUIOp::create(rewriter, loc, intTy, scale);
+    auto constant = [&](uint32_t bits) {
+      return arith::ConstantOp::create(
+          rewriter, loc, intTy, DenseElementsAttr::get(intTy, APInt(32, bits)));
+    };
+    Value bits = arith::ShLIOp::create(rewriter, loc, codes, constant(23));
+    auto isZero = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                        codes, constant(0));
+    bits = arith::SelectOp::create(rewriter, loc, isZero, constant(0x400000),
+                                   bits);
+    auto isNaN = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                       codes, constant(255));
+    bits = arith::SelectOp::create(rewriter, loc, isNaN, constant(0x7fc00000),
+                                   bits);
+    TensorValue factor = cast<TensorValue>(
+        tt::BitcastOp::create(rewriter, loc, scale.getType().clone(fp32Ty),
+                              bits)
+            .getResult());
+    factor = broadcastScale(rewriter, op, op->getParentOfType<ModuleOp>(),
+                            factor, kDim);
+    factor = ConvertLayoutOp::create(rewriter, loc, value.getType(), factor);
+    auto product = arith::MulFOp::create(rewriter, loc, value, factor);
+    return narrow(product.getResult());
+  }
+};
 
 int computeCapabilityToMMAVersion(int computeCapability) {
   if (computeCapability < 70) {
@@ -153,6 +310,58 @@ public:
 
     // for FMA, should retain the blocked layout.
     int versionMajor = computeCapabilityToMMAVersion(computeCapability);
+    auto aType = dotOp.getA().getType();
+    auto bType = dotOp.getB().getType();
+    bool isFp8 =
+        isa<Float8E4M3FNType, Float8E5M2Type>(aType.getElementType()) &&
+        isa<Float8E4M3FNType, Float8E5M2Type>(bType.getElementType());
+    if (isFp8 && (!supportMMA(dotOp, versionMajor, computeCapability % 10) ||
+                  aType.getElementType() != bType.getElementType())) {
+      // All finite E4M3FN/E5M2 values are exactly representable in FP16.
+      // Use the existing FP16 MMA path on older targets and for mixed FP8.
+      dotOp.emitWarning("using non-native FP8 dot on MetaX target ")
+          << computeCapability << ": converting " << aType.getElementType()
+          << " x " << bType.getElementType()
+          << " to f16 x f16 with f32 accumulation";
+      bool keepPackedOperands = isa<Float8E5M2Type>(bType.getElementType());
+      auto promote = [&](Value operand) -> Value {
+        auto operandType = cast<RankedTensorType>(operand.getType());
+        Value src = operand;
+        auto layout = operand.getDefiningOp<ConvertLayoutOp>();
+        if (layout && !keepPackedOperands &&
+            isa<BlockedEncodingAttr>(layout.getSrc().getType().getEncoding()))
+          src = layout.getSrc();
+        // Decode FP8 before duplicating values into the dot layout.
+        // Keeping ConvertLayoutOp next to dot also enables FP16 MMA matching.
+        // Keep E5M2 RHS operands packed to avoid regressions with some tiles.
+        auto srcType = cast<RankedTensorType>(src.getType());
+        Value value = rewriter.create<triton::FpToFpOp>(
+            dotOp.getLoc(),
+            srcType.cloneWith(std::nullopt, rewriter.getF16Type()), src);
+        if (src != operand) {
+          value.getDefiningOp()->setAttr("maca.keep_fp8_decode_layout",
+                                         rewriter.getUnitAttr());
+          // Retain the existing schedule for two E4M3FN decoders and for
+          // larger warp counts; prefetching regresses measured C550 tiles.
+          if (aType.getElementType() != bType.getElementType() &&
+              triton::gpu::lookupNumWarps(dotOp) == 4)
+            value.getDefiningOp()->setAttr("maca.pipeline_fp8_decode",
+                                           rewriter.getUnitAttr());
+          value = rewriter.create<ConvertLayoutOp>(
+              dotOp.getLoc(),
+              operandType.cloneWith(std::nullopt, rewriter.getF16Type()),
+              value);
+        }
+        return value;
+      };
+      Value a = promote(dotOp.getA());
+      Value b = promote(dotOp.getB());
+      rewriter.modifyOpInPlace(dotOp, [&] {
+        dotOp->setOperand(0, a);
+        dotOp->setOperand(1, b);
+      });
+      return success();
+    }
     if (!supportMMA(dotOp, versionMajor, computeCapability % 10))
       return failure();
 
@@ -331,6 +540,7 @@ public:
         mlir::IntegerAttr::get(mlir::IntegerType::get(m.getContext(), 32), 0));
 
     mlir::RewritePatternSet patterns(context);
+    patterns.add<DecomposeMETAXScaledBlocked>(context, /*benefit=*/1);
     // TODO: support chain dot & multi dot
     patterns.add<::BlockedToMMA>(context, computeCapability, /*dot_cut=*/1,
                                  numStages, disablePrefetch, storeCoalesce);

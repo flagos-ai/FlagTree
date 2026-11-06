@@ -1746,6 +1746,35 @@ SmallVector<Operation *> genDotDeps(
     return genDeps;
   }
   for (Operation *op : dotsDeps) {
+    if (forOp->hasAttr("maca.pipeline_fp4")) {
+      // FP4 scaling contains rank-changing views and multiple load inputs.
+      // Their layouts are already selected; preserve them when staging the
+      // pure expression graph instead of retyping each op as a dot operand.
+      auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(op);
+      auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+      if (cvt && type && isa<ttg::DotOperandEncodingAttr>(type.getEncoding())) {
+        Value src = cvt.getSrc();
+        Value buffer = cvtStageBuffer[cvt.getResult()];
+        auto bufferTy = cast<ttg::MemDescType>(buffer.getType());
+        auto viewTy = ttg::MemDescType::get(
+            bufferTy.getShape().drop_front(), bufferTy.getElementType(),
+            bufferTy.getEncoding(), bufferTy.getMemorySpace(), true);
+        auto view = builder.create<ttg::MemDescIndexOp>(
+            op->getLoc(), viewTy, buffer, extractSliceIdx);
+        auto store = builder.create<ttg::LocalStoreOp>(
+            op->getLoc(), nextMapping.lookupOrDefault(src), view, true);
+        genDeps.push_back(view);
+        genDeps.push_back(store);
+        cvtsExtract[cvt.getResult()] = src;
+        nextMapping.map(src, view.getResult());
+      } else {
+        Operation *clone = builder.clone(*op, nextMapping);
+        nextMapping.map(op->getResult(0), clone->getResult(0));
+        mapping.map(op->getResult(0), clone->getResult(0));
+        genDeps.push_back(clone);
+      }
+      continue;
+    }
     // skip TransOp
     if (auto trans = dyn_cast<triton::TransOp>(op)) {
       Value src = trans.getSrc();
@@ -1991,7 +2020,7 @@ SmallVector<Operation *> genDotDeps(
       genDeps.push_back(newOp);
     }
   }
-  if (!multiDot) {
+  if (!multiDot && !forOp->hasAttr("maca.pipeline_fp4")) {
     bool needIterCheck = true;
     while (needIterCheck) {
       auto iters = removeReplicateOps(genDeps);
@@ -2201,7 +2230,8 @@ int getMmaInstNum(Type type) {
     return 8;
   } else if (type.isF16() || type.isBF16()) {
     return 4;
-  } else if (type.isSignlessInteger(8)) {
+  } else if (type.isSignlessInteger(8) ||
+             isa<Float8E4M3FNType, Float8E5M2Type>(type)) {
     return 2;
   } else {
     assert(false && "invalid dtype for mma");

@@ -7,7 +7,9 @@ import pytest
 import triton
 import triton.language as tl
 
-from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_gfx12
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna2, is_hip_cdna3, is_hip_cdna4, is_hip_gfx12, is_interpreter
+from triton._C.libtriton import ir
+from triton.runtime.interpreter import _decode_float_to_fp64, _encode_fp64_to_float
 
 
 def matching_int(dtype):
@@ -32,11 +34,189 @@ def type_convert_triton(src, dst, rounding : tl.constexpr, BLOCK_SIZE : tl.const
     tl.store(dst + idxs, y)
 
 
-def launch_type_convert_triton(src, src_dtype, dst_dtype, device, rounding=None, BLOCK_SIZE=4096):
+def launch_type_convert_triton(src, src_dtype, dst_dtype, device, rounding=None, BLOCK_SIZE=4096, num_warps=4):
 
     dst = torch.empty(src.shape, dtype=matching_int(dst_dtype), device=device)
-    type_convert_triton[(src.shape[0] // BLOCK_SIZE,)](triton.reinterpret(src, src_dtype), triton.reinterpret(dst, dst_dtype), rounding, BLOCK_SIZE)
+    type_convert_triton[(src.shape[0] // BLOCK_SIZE,)](triton.reinterpret(src, src_dtype), triton.reinterpret(dst, dst_dtype), rounding, BLOCK_SIZE, num_warps=num_warps)
     return dst
+
+
+@triton.jit
+def _metax_fp8_zero_memory(X, Y, KIND: tl.constexpr, ZERO: tl.constexpr = 0):
+    i = tl.arange(0, 512)
+    if KIND == "load":
+        value = tl.load(X + i, i < 256, other=ZERO)
+        tl.store(Y + i, value)
+    elif KIND == "scalar":
+        tl.store(Y, ZERO)
+    elif KIND == "block":
+        block = tl.make_block_ptr(Y, (512,), (1,), (0,), (512,), (0,))
+        tl.store(block, ZERO)
+    elif KIND == "masked_store":
+        tl.store(Y + i, ZERO, i < 259)
+    elif KIND == "local":
+        zero = 0
+        tl.store(Y + i, zero)
+    elif KIND == "tensor":
+        zero = tl.full((512,), 0, tl.int32)
+        tl.store(Y + i, zero)
+    else:
+        tl.store(Y + i, ZERO)
+
+
+@pytest.mark.interpreter
+@pytest.mark.parametrize("dtype", [tl.float8e4nv, tl.float8e5])
+@pytest.mark.parametrize("kind", ["load", "scalar", "block", "masked_store", "store", "local"])
+def test_metax_fp8_zero_memory(dtype, kind, device):
+    if not is_interpreter() and triton.runtime.driver.active.get_current_target().backend != "maca":
+        pytest.skip("requires the MetaX backend")
+    source = torch.arange(256, dtype=torch.int64).to(torch.uint8)
+    x = source.to(device)
+    raw = torch.full((576,), 165, dtype=torch.uint8, device=device)
+    _metax_fp8_zero_memory[(1,)](triton.reinterpret(x, dtype), triton.reinterpret(raw[32:544], dtype), kind)
+    expected = torch.full((576,), 165, dtype=torch.uint8)
+    n = 1 if kind == "scalar" else 259 if kind == "masked_store" else 512
+    expected[32:32+n] = 0
+    if kind == "load":
+        expected[32:288] = source
+    np.testing.assert_array_equal(raw.cpu().numpy(), expected.numpy())
+
+
+@pytest.mark.interpreter
+@pytest.mark.parametrize("dtype", [tl.float8e4nv, tl.float8e5])
+def test_metax_fp8_zero_integer_tensor(dtype, device):
+    if not is_interpreter() and triton.runtime.driver.active.get_current_target().backend != "maca":
+        pytest.skip("requires the MetaX backend")
+    raw = torch.full((576,), 165, dtype=torch.uint8, device=device)
+    value = triton.reinterpret(raw[32:544], dtype)
+    _metax_fp8_zero_memory[(1,)](value, value, "tensor")
+    expected = torch.full((576,), 165, dtype=torch.uint8)
+    expected[32:544] = 0
+    np.testing.assert_array_equal(raw.cpu().numpy(), expected.numpy())
+
+
+@pytest.mark.parametrize("dtype", [tl.float8e4nv, tl.float8e5])
+def test_metax_fp8_nonzero_integer_rejected(dtype):
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    source = ASTSource(_metax_fp8_zero_memory, {"X": f"*{dtype}", "Y": f"*{dtype}"},
+                       constexprs={"KIND": "store", "ZERO": 1})
+    with pytest.raises(triton.CompilationError, match="cannot cast"):
+        triton.compile(source, target=GPUTarget("maca", 80, 64), options={"num_warps": 4})
+
+
+def _metax_cast_bits(bits, src_dtype, dst_dtype, device, rounding=None, num_warps=4):
+    # Transfer integer storage so signaling NaNs reach the kernel unchanged.
+    src = torch.from_numpy(bits.view(getattr(np, f"int{bits.dtype.itemsize * 8}")))
+    padded = torch.zeros((triton.cdiv(src.numel(), 4096) * 4096,), dtype=src.dtype)
+    padded[:src.numel()] = src
+    result = launch_type_convert_triton(padded.to(device), src_dtype, dst_dtype, device, rounding, num_warps=num_warps)
+    return result.cpu().numpy()[:src.numel()].view(getattr(np, f"uint{dst_dtype.primitive_bitwidth}"))
+
+
+@pytest.mark.parametrize("num_warps", [1, 4])
+def test_metax_int32_to_bf16_rtne(num_warps, metax_device):
+    # Include both sides of every integer BF16 midpoint, exponent carries,
+    # zero and INT_MIN. A BF16 reference through FP32 would hide this bug.
+    values = [0, -2**31, -2**31 + 1, 2**31 - 2, 2**31 - 1]
+    values += list(range(-256, 257))
+    values += [sign * ((2 * mantissa + 1) * 2**(exponent - 8) + delta)
+               for exponent in range(8, 31) for mantissa in range(128, 256)
+               for delta in (-2, -1, 0, 1, 2) for sign in (-1, 1)]
+    values += [sign * (2**exponent + delta) for exponent in range(32)
+               for delta in (-2, -1, 0, 1, 2) for sign in (-1, 1)
+               if -2**31 <= sign * (2**exponent + delta) < 2**31]
+    rng = np.random.default_rng(20261028)
+    values = np.concatenate((np.array(values, dtype=np.int32),
+                             rng.integers(-2**31, 2**31, size=32768, dtype=np.int32)))
+    size = triton.cdiv(values.size, 4096) * 4096
+    padded = torch.zeros(size, dtype=torch.int32)
+    padded[:values.size] = torch.from_numpy(values)
+    output = torch.full((size + 64,), 0x5a5a, dtype=torch.int16, device=metax_device)
+    type_convert_triton[(size // 4096,)](padded.to(metax_device), triton.reinterpret(output[32:-32], tl.bfloat16),
+                                         None, 4096, num_warps=num_warps)
+    expected = np.full(size + 64, 0x5a5a, dtype=np.uint16)
+    expected[32:-32] = 0
+    expected[32:32 + values.size] = _encode_fp64_to_float(values.astype(np.float64), tl.bfloat16,
+                                                        ir.ROUNDING_MODE.RTNE)
+    np.testing.assert_array_equal(output.cpu().numpy().view(np.uint16), expected)
+
+
+@pytest.mark.parametrize("num_warps", [1, 4])
+def test_metax_uint8_to_bf16(num_warps, metax_device):
+    values = np.resize(np.arange(256, dtype=np.uint8), 4096)
+    output = torch.full((4160,), 0x5a5a, dtype=torch.int16, device=metax_device)
+    type_convert_triton[(1,)](torch.from_numpy(values).to(metax_device),
+                                triton.reinterpret(output[32:-32], tl.bfloat16), None, 4096,
+                                num_warps=num_warps)
+    expected = np.full(4160, 0x5a5a, dtype=np.uint16)
+    expected[32:-32] = _encode_fp64_to_float(values.astype(np.float64), tl.bfloat16, ir.ROUNDING_MODE.RTNE)
+    np.testing.assert_array_equal(output.cpu().numpy().view(np.uint16), expected)
+
+
+def _metax_fp8_boundary_values(dtype, np_type):
+    max_code = 0x7e if dtype == tl.float8e4nv else 0x7b
+    representable = _decode_float_to_fp64(np.arange(max_code + 1, dtype=np.uint8), dtype)
+    midpoints = (representable[:-1] + representable[1:]) / 2
+    anchors = np.concatenate((representable, midpoints)).astype(np_type)
+    positive = np.concatenate((np.nextafter(anchors, np_type(-np.inf)), anchors,
+                               np.nextafter(anchors, np_type(np.inf))))
+    special = np.array([0., -0., np.inf, -np.inf, np.nan, np.finfo(np_type).max,
+                        -np.finfo(np_type).max, np.finfo(np_type).tiny], dtype=np_type)
+    rng = np.random.default_rng(20261023)
+    uint_type = np.uint32 if np_type == np.float32 else np.uint64
+    random_bits = rng.integers(0, np.iinfo(uint_type).max, size=32768, dtype=uint_type)
+    values = np.concatenate((positive, -positive, special)).view(uint_type)
+    # Include NaNs whose payload is entirely below the FP32 mantissa.
+    nan_bits = np.array([0x7ff0000000000001, 0xfff0000000000001], dtype=np.uint64)
+    if np_type == np.float64:
+        values = np.concatenate((values, nan_bits))
+    return np.concatenate((values, random_bits))
+
+
+def _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, device, rounding, num_warps=4):
+    result = _metax_cast_bits(bits, src_dtype, dst_dtype, device, rounding, num_warps)
+    with np.errstate(invalid="ignore"):
+        values = _decode_float_to_fp64(bits, src_dtype)
+    # MetaX's existing FP8 conversions use satfinite for both formats.
+    max_finite = 448. if dst_dtype == tl.float8e4nv else 57344.
+    mode = ir.ROUNDING_MODE.RTZ if rounding == "rtz" else ir.ROUNDING_MODE.RTNE
+    expected = _encode_fp64_to_float(np.clip(values, -max_finite, max_finite), dst_dtype, mode)
+    is_nan = np.isnan(values)
+    np.testing.assert_array_equal(result[~is_nan], expected[~is_nan])
+    assert np.isnan(_decode_float_to_fp64(result[is_nan], dst_dtype)).all()
+
+
+@pytest.mark.parametrize("src_dtype", [tl.float16, tl.bfloat16, tl.float32])
+@pytest.mark.parametrize("dst_dtype", [tl.float8e4nv, tl.float8e5])
+@pytest.mark.parametrize("rounding", [None, "rtne", "rtz"])
+@pytest.mark.parametrize("num_warps", [1, 4])
+def test_metax_fp8_downcast(src_dtype, dst_dtype, rounding, num_warps, metax_device):
+    bits = (np.arange(65536, dtype=np.uint16) if src_dtype != tl.float32 else
+            np.concatenate((_metax_fp8_boundary_values(dst_dtype, np.float32),
+                            np.array([0x7f800001, 0x7fbfffff, 0xff800001, 0xffbfffff], dtype=np.uint32))))
+    _metax_assert_fp8_conversion(bits, src_dtype, dst_dtype, metax_device, rounding, num_warps)
+
+
+@pytest.mark.parametrize("src_dtype", [tl.float8e4nv, tl.float8e5])
+@pytest.mark.parametrize("dst_dtype,np_type,uint_type", [(tl.float16, np.float16, np.uint16),
+                                                        (tl.float64, np.float64, np.uint64)])
+def test_metax_fp8_upcast(src_dtype, dst_dtype, np_type, uint_type, metax_device):
+    # Include every adjacent pair to detect interference between packed lanes.
+    bits = np.arange(65536, dtype=np.uint16).view(np.uint8)
+    result = _metax_cast_bits(bits, src_dtype, dst_dtype, metax_device).view(np_type)
+    expected = _decode_float_to_fp64(bits, src_dtype).astype(np_type)
+    is_nan = np.isnan(expected)
+    np.testing.assert_array_equal(result[~is_nan].view(uint_type), expected[~is_nan].view(uint_type))
+    assert np.isnan(result[is_nan]).all()
+
+
+@pytest.mark.parametrize("dst_dtype", [tl.float8e4nv, tl.float8e5])
+@pytest.mark.parametrize("rounding", [None, "rtne", "rtz"])
+def test_metax_fp64_to_fp8(dst_dtype, rounding, metax_device):
+    bits = _metax_fp8_boundary_values(dst_dtype, np.float64)
+    _metax_assert_fp8_conversion(bits, tl.float64, dst_dtype, metax_device, rounding)
 
 
 @triton.jit

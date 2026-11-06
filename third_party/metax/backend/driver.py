@@ -1,6 +1,7 @@
 import functools
 import os
 import hashlib
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -102,37 +103,59 @@ _BASE_ARGS_FORMAT = "iiiKKOOOOOO"
 _BASE_ARGS_FORMAT_LEN = len(_BASE_ARGS_FORMAT)
 
 
+def _flatten_signature(sig, output):
+    if isinstance(sig, tuple):
+        for item in sig:
+            _flatten_signature(item, output)
+    else:
+        output.append(sig)
+
+
+def _wrap_tensor_descriptors(launcher, signature):
+    flat_signature = []
+    _flatten_signature(tuple(signature.values()), flat_signature)
+    if not any(ty.startswith("tensordesc") for ty in flat_signature):
+        return launcher
+
+    def expand(args, types):
+        if len(args) != len(types):
+            raise TypeError(f"MetaX launcher expected {len(types)} arguments, got {len(args)}")
+        output = []
+        for arg, ty in zip(args, types):
+            if isinstance(ty, tuple):
+                output.append(tuple(expand(arg, ty)))
+            elif ty.startswith("tensordesc"):
+                # The frontend also passes shape/strides for descriptor properties.
+                output.extend([arg.base, *arg.shape, *arg.strides, arg.padding == "nan", *arg.shape, *arg.strides])
+            else:
+                output.append(arg)
+        return output
+
+    def inner(*args):
+        metadata = args[:_BASE_ARGS_FORMAT_LEN]
+        kernel_args = expand(args[_BASE_ARGS_FORMAT_LEN:], tuple(signature.values()))
+        return launcher(*metadata, *kernel_args)
+
+    return inner
+
+
 def make_launcher(constants, signature, ids):
 
     def _expand_signature(signature):
         output = []
-        tensordesc_idx = 0
-        # Expand tensor descriptor arguments into either nvTmaDesc, shape and
-        # strides, or base pointer, shape and strides depending on whether the
-        # kernel was lowered to use the nvTmaDesc or not.
         for sig in signature:
-            if isinstance(sig, str) and sig.startswith("tensordesc"):
-                meta = tensordesc_meta[tensordesc_idx] if tensordesc_meta else None
-                tensordesc_idx += 1
-
+            if isinstance(sig, tuple):
+                output.append(tuple(_expand_signature(sig)))
+            elif sig.startswith("tensordesc"):
                 match = re.match("tensordesc<([^[>]*)\\[([^]]*)\\]", sig)
                 dtype = match.group(1)
                 shape = match.group(2)
                 ndim = shape.count(",") + 1
 
-                if meta is None:
-                    output.append("*" + dtype)
-                    # Currently the host side tensor descriptors get passed in as a
-                    # tensor desc, shape, and strides. We have no way to use these
-                    # shape and strides when processing tensor descriptors which is
-                    # why we provide our own decomposition above. Sadly this means
-                    # we have to pass the shape and strides twice.
-                    for _ in range(2 * ndim):
-                        output.append("i64")
-                    output.append("i1")
-                else:
-                    output.append("nvTmaDesc")
-
+                # Match RewriteTensorDescriptorToPointer's software descriptor.
+                output.append("*" + dtype)
+                output.extend(["i64"] * (2 * ndim))
+                output.append("i1")
                 for _ in range(ndim):
                     output.append("i32")
                 for _ in range(ndim):
@@ -140,16 +163,7 @@ def make_launcher(constants, signature, ids):
             else:
                 output.append(sig)
 
-        # assert not tensordesc_meta or tensordesc_idx == len(tensordesc_meta)
         return output
-
-    def _flatten_signature(sig, output):
-        # Flatten tuples
-        if isinstance(sig, tuple):
-            for x in sig:
-                _flatten_signature(x, output)
-        else:
-            output.append(sig)
 
     def _extracted_type(ty):
         if isinstance(ty, tuple):
@@ -467,7 +481,7 @@ class MacaLauncher(object):
             include_dirs=hdrmaca_dirs(),
             libraries=libraries,
         )
-        self.launch = mod.launch
+        self.launch = _wrap_tensor_descriptors(mod.launch, signature)
         self.global_scratch_size = metadata.global_scratch_size
         self.global_scratch_align = metadata.global_scratch_align
         self.profile_scratch_size = metadata.profile_scratch_size

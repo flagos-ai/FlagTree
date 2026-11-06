@@ -1,9 +1,12 @@
 import expecttest
 import importlib.util
 import itertools
+import json
 import os
 import shutil
 import pathlib
+import subprocess
+import sys
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 
 import pytest
@@ -12,6 +15,57 @@ import torch
 import triton
 import triton.language as tl
 from triton._internal_testing import is_hip
+
+
+@pytest.mark.parametrize("source", ["core", "semantic", "standard", "driver"])
+def test_metax_provider_source_invalidates_cache(source, tmp_path):
+    package = pathlib.Path(triton.__file__).parent
+    runtime = tmp_path / "runtime" / "triton"
+    shutil.copytree(package, runtime, ignore=shutil.ignore_patterns("_C", "__pycache__"), symlinks=True)
+    (runtime / "_C").symlink_to(package / "_C", target_is_directory=True)
+    provider = runtime / "spec" / "metax" / "triton" / ("runtime"
+                                                        if source == "driver" else "language") / f"{source}.py"
+    original = provider.read_text()
+    if source == "core":
+        old = 'def fp_to_fp4(src, axis=-1, fp_downcast_rounding="rtne", _semantic=None):'
+        new = old.replace('"rtne"', '"rtz"')
+    elif source == "semantic":
+        old = "(.25, .75, 1.25, 1.75, 2.5, 3.5, 5.)"
+        new = "(.25, 1., 1.25, 1.75, 2.5, 3.5, 5.)"
+    elif source == "standard":
+        old = "return (x + (div - 1)) // div"
+        new = old + " + 1"
+    else:
+        old = "def reset_active(self) -> None:\n        self._active = self.default"
+        new = old.replace("self.default", "None")
+    assert original.count(old) == 1
+    probe = tmp_path / "probe.py"
+    probe.write_text('''import hashlib, json
+import triton
+import triton.language as tl
+from triton.backends.compiler import GPUTarget
+from triton.backends.metax.compiler import MACABackend
+from triton.compiler import ASTSource
+@triton.jit
+def encode(Y):
+    packed = tl.fp_to_fp4(tl.full((16,), .75, tl.float32))
+    tl.store(Y + tl.arange(0, 8) + tl.cdiv(0, 1), packed)
+target = GPUTarget("maca", 80, 64)
+kernel = triton.compile(ASTSource(encode, {"Y": "*u8"}), target=target)
+print(json.dumps([MACABackend(target).hash(), kernel.hash, hashlib.sha256(kernel.asm["ttir"].encode()).hexdigest()]))
+''')
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+        (str(runtime.parent), os.environ.get("PYTHONPATH", ""))), PYTHONDONTWRITEBYTECODE="1",
+               TRITON_CACHE_DIR=str(tmp_path / "cache"), CUDA_VISIBLE_DEVICES="", MACA_VISIBLE_DEVICES="")
+    before = json.loads(subprocess.check_output([sys.executable, str(probe)], env=env, text=True))
+    provider.write_text(original.replace(old, new))
+    after = json.loads(subprocess.check_output([sys.executable, str(probe)], env=env, text=True))
+    assert before[0] != after[0]
+    assert before[1] != after[1]
+    if source == "driver":
+        assert before[2] == after[2]
+    else:
+        assert before[2] != after[2]
 
 
 @triton.jit
