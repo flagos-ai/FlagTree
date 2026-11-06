@@ -132,7 +132,7 @@ def _get_cache_environment():
 
     active = driver.active
     di = active.get_device_interface()
-    device = active.get_active_torch_device()
+    device = active.get_active_torch_device()   # 
     target = active.get_current_target()
     hardware = {"device": str(device), "target": vars(target), "driver": type(active).__module__}
     if hasattr(di, "get_device_name"):
@@ -243,7 +243,7 @@ class AutoTuner:
                 except OSError:
                     pass
 
-    def _local_cache_identity(self, key, kwargs):
+    def _local_cache_identity(self, key, kwargs, tuned_names):
         try:
             function = _function_identity(self.fn)
             prune = _function_identity(self.prune_fn) if self.prune_fn is not None else "no_pruning"
@@ -255,7 +255,6 @@ class AutoTuner:
                 _logger.debug("Autotune environment unavailable: %s", exc)
                 environment = None
                 persist = False
-            tuned_names = {name for name in self.config_space[0]}
             identity = {
                 "schema": _CACHE_SCHEMA,
                 "mode": "local",
@@ -283,9 +282,10 @@ class AutoTuner:
     def __call__(self, *args, autotune=True, autotune_allow_arg_overwrite=False,
                  autotune_pg: torch.distributed.ProcessGroup | None = None, **kwargs):
         if autotune_pg is not None:
-            return self._call_distributed(autotune_pg, autotune, *args, **kwargs)
+            return self._call_distributed(autotune_pg, autotune, *args,
+                                          autotune_allow_arg_overwrite=autotune_allow_arg_overwrite, **kwargs)
 
-        tuned_names = {name for name in self.config_space[0]}
+        tuned_names = {name for config in self.config_space for name in config}
         conflicts = tuned_names.intersection(kwargs)
         if conflicts:
             if not autotune_allow_arg_overwrite:
@@ -307,7 +307,7 @@ class AutoTuner:
 
         # Derive identity from workload/configuration/context metadata, cache_key from its SHA-256 digest,
         # and persist from function/prune identity and environment availability.
-        identity, cache_key, persist = self._local_cache_identity(key, kwargs)
+        identity, cache_key, persist = self._local_cache_identity(key, kwargs, tuned_names)
         best_config = self.best_configs.get(key)
         if best_config is not None and not any(best_config is config for config in self.config_space):
             best_config = None
@@ -337,7 +337,7 @@ class AutoTuner:
         return self.fn(*args, **{**best_config, **kwargs})
 
     # "group" is autotune_pg; all members align candidates even when tuning is disabled.
-    def _call_distributed(self, group, autotune_enabled, *args, **kwargs):
+    def _call_distributed(self, group, autotune_enabled, *args, autotune_allow_arg_overwrite=False, **kwargs):
         import torch
         import torch.distributed as dist
 
@@ -350,15 +350,24 @@ class AutoTuner:
         local_configs = {}
         error = None
         tune_enabled = None
+        tune_enabled = bool(autotune_enabled)
         try:
-            tune_enabled = bool(autotune_enabled)
+            # Match local override rules, but report failures collectively before any rank exits.
+            tuned_names = {name for config in self.config_space for name in config}
+            conflicts = tuned_names.intersection(kwargs)
+            if conflicts:
+                if not autotune_allow_arg_overwrite:
+                    raise ValueError(f"Arguments are also supplied by config_space: {', '.join(sorted(conflicts))}")
+                warnings.warn(
+                    "Duplicate keyword arguments, but autotune_allow_arg_overwrite is True, will use the argument provided by the user."
+                )
             for config in self.get_pruned_config(*args, **kwargs):
                 local_configs.setdefault(_config_key(config), config)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
 
         # Intersect original pruned candidates before applying caller overrides.
-        # Every member participates even if its pruning or encoding failed.
+        # Every member participates even if its override check, pruning or encoding failed.
         reports = [None] * dist.get_world_size(group=group)
         dist.all_gather_object(reports, (error, list(local_configs), tune_enabled), group=group)
         errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
@@ -401,7 +410,7 @@ class AutoTuner:
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
 
-        # Overriding is allowed, but ranks must still execute the same effective configs.
+        # Allowed overrides must still produce the same effective configs across ranks.
         # inputs may differ across ranks.
         dist.all_gather_object(reports, (error, effective_keys), group=group)
         errors = [f"group rank {i}: {report[0]}" for i, report in enumerate(reports) if report[0] is not None]
