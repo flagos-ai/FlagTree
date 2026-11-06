@@ -327,6 +327,7 @@ static LogicalResult updateOperandLayout(
                             rootTy.getMutableMemory(), rootTy.getAllocShape());
   auto [rootIt, inserted] =
       physicalRootTypes.try_emplace(root.getOperation(), newRootTy);
+  // Require identical root types, not merely equivalent address mappings.
   if (!inserted && rootIt->second != newRootTy)
     return op.emitOpError(
         "SQMMA consumers require incompatible physical shared layouts");
@@ -352,24 +353,7 @@ static LogicalResult updateOperandLayout(
   landing.setType(landingTy);
   operand.setType(desiredTy);
 
-  // Explicit warp-specialize captures are represented by operands on the
-  // isolated partitions container and corresponding block arguments in every
-  // partition. Changing the captured root value type does not update those
-  // block arguments automatically, so keep the isolation boundary consistent
-  // with the inferred TME/SQMMA layout.
   SmallVector<Value, 4> rootAliases{root.getResult()};
-  root->getParentOfType<tt::FuncOp>().walk(
-      [&](ttg::WarpSpecializePartitionsOp partitions) {
-        for (auto [index, capture] :
-             llvm::enumerate(partitions.getExplicitCaptures())) {
-          if (capture != root.getResult())
-            continue;
-          for (Region &partition : partitions.getPartitionRegions()) {
-            partition.getArgument(index).setType(newRootTy);
-            rootAliases.push_back(partition.getArgument(index));
-          }
-        }
-      });
 
   bool rowMajor = inferLayout(desiredTy) == musa::SQMMALayout::row;
   auto checkAndSet = [&](Operation *target) -> LogicalResult {
@@ -407,6 +391,28 @@ static LogicalResult updateOperandLayout(
         changed = true;
       }
     });
+    // A captured stage view changes when its root layout is inferred. Every
+    // partition argument must follow it, including workers that do not use it.
+    root->getParentOfType<tt::FuncOp>().walk(
+        [&](ttg::WarpSpecializePartitionsOp partitions) {
+          for (auto [index, capture] :
+               llvm::enumerate(partitions.getExplicitCaptures())) {
+            if (findRootAlloc(capture) != root)
+              continue;
+            for (Region &partition : partitions.getPartitionRegions()) {
+              auto argument = partition.getArgument(index);
+              if (argument.getType() != capture.getType()) {
+                argument.setType(capture.getType());
+                changed = true;
+              }
+              if (llvm::is_contained(rootAliases, capture) &&
+                  !llvm::is_contained(rootAliases, argument)) {
+                rootAliases.push_back(argument);
+                changed = true;
+              }
+            }
+          }
+        });
   }
   return success();
 }
