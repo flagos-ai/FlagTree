@@ -1313,6 +1313,17 @@ void init_triton_tle(py::module &&m) {
 #endif // __FLAGTREE_COMMON_IR__
   });
 
+  // Whether this build contains the reorder-loop-loads step of LoopUnroll, so
+  // that the frontend does not emit the tt.reorder hint a build without it
+  // would ignore. Consumed by python/triton/compiler/code_generator.py.
+  m.def("is_reorder_loop_loads_enabled", []() {
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+    return true;
+#else  // __FLAGTREE_REORDER_LOOP_LOADS__
+    return false;
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
+  });
+
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
