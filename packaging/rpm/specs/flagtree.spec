@@ -132,6 +132,10 @@ sed -i "1s|^#!.*python3$|#!%{__python3}|" %{buildroot}%{_bindir}/proton*
 # RECORD references absolute paths under --target which become wrong after
 # rpmbuild relocates them. Drop it; pip doesn't need RECORD to function.
 rm -f "$PYDIR"/flagtree-*.dist-info/RECORD
+# The wheel bundles CUPTI's static archives next to the shared ones. Only a
+# linker reads a .a; nothing in the installed tree does, and they are 73 MB
+# unpacked.
+rm -f "$PYDIR"/triton/backends/nvidia/lib/cupti/*.a
 # triton hashes _C/libtriton.so for its compile-cache key (triton_key); make
 # sure the module carries that name whatever suffix the wheel build used.
 if [ ! -e "$PYDIR"/triton/_C/libtriton.so ]; then
