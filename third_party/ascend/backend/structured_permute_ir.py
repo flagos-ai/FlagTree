@@ -4,6 +4,7 @@ Input must be the installed CANN optimizer's generic assembly. No layout,
 allocation or synchronization is changed here: only the private operation's
 calling convention is expanded, after CANN has scheduled it as a PIPE_V op.
 """
+import json
 import re
 
 
@@ -33,6 +34,62 @@ def split_fields(text):
     if quoted or stack:
         raise ValueError('Unbalanced MLIR assembly')
     return fields + [text[start:].strip()]
+
+
+def lower_unit_collapses(text):
+    """Express proven leading-unit drops with a version-neutral subview.
+
+    CANN's LLVM 18 and the optimization tool's LLVM 22 disagree on the stride
+    inferred for collapse_shape of [1, ?, ...]. Dropping that unit dimension
+    is an equivalent subview with the original sizes, strides and offset.
+    Genuine dimension products and mismatched result layouts stay untouched.
+    """
+    prefix = 'flagtree_unit_view_'
+    while '%' + prefix in text:
+        prefix += '_'
+    output, serial = [], 0
+    for line in text.splitlines():
+        match = re.fullmatch(
+            r'(\s*)(%[\w.$-]+) = "memref\.collapse_shape"\((%[\w.$-]+)\)'
+            r'\s*(.*?) : \((memref<.*>)\) -> (memref<.*>)\s*', line)
+        if not match:
+            output.append(line)
+            continue
+        indent, result, source, attrs, src_type, dst_type = match.groups()
+        association = re.fullmatch(r'<?\{\s*reassociation = (\[.*\])\s*\}>?', attrs)
+        if not association:
+            output.append(line)
+            continue
+        src, dst = split_fields(src_type[7:-1]), split_fields(dst_type[7:-1])
+        shape = re.fullmatch(r'((?:(?:\d+|\?)x)+)(\w+)', src[0])
+        layout = re.fullmatch(r'strided<\[([^]]+)\](, offset: [^>]+)?>', src[1]) if len(src) > 1 else None
+        if not shape or not layout:
+            output.append(line)
+            continue
+        dims = shape[1][:-1].split('x')
+        strides = [v.strip() for v in layout[1].split(',')]
+        groups = json.loads(association[1])
+        expected_groups = [[0, 1]] + [[i] for i in range(2, len(dims))]
+        expected_shape = 'x'.join(dims[1:] + [shape[2]])
+        expected_layout = 'strided<[' + ', '.join(strides[1:]) + ']' + (layout[2] or '') + '>'
+        if (len(dims) < 2 or dims[0] != '1' or groups != expected_groups or len(strides) != len(dims)
+                or dst != [expected_shape, expected_layout, *src[2:]]):
+            output.append(line)
+            continue
+        sizes = ['1']
+        for axis, dim in enumerate(dims[1:], 1):
+            if dim == '?':
+                index, size = f'%{prefix}{serial}_axis', f'%{prefix}{serial}_size'
+                serial += 1
+                output.append(f'{indent}{index} = arith.constant {axis} : index')
+                output.append(f'{indent}{size} = memref.dim {source}, {index} : {src_type}')
+                sizes.append(size)
+            else:
+                sizes.append(dim)
+        zeros, ones = ', '.join(['0'] * len(dims)), ', '.join(['1'] * len(dims))
+        output.append(f'{indent}{result} = memref.subview {source}[{zeros}] '
+                      f'[{", ".join(sizes)}] [{ones}] : {src_type} to {dst_type}')
+    return '\n'.join(output) + ('\n' if text.endswith('\n') else '')
 
 
 def _canonical_memref(typ, rank=1, space='ub'):

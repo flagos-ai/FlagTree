@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-from structured_permute_ir import lower_private_ops
+from structured_permute_ir import lower_private_ops, lower_unit_collapses
 
 
 def main():
@@ -52,6 +52,7 @@ def main():
         if env.get("FLAGTREE_PERMUTE_STORE_SYNC") == "1":
             optimizations.append("--coalesce-structured-store-sync")
         if (optimizations and '"scf.for"' in calls and "func.call @custom_flagtree_stride_gather_" in calls):
+            calls = lower_unit_collapses(calls)
             # DLTI target-system assembly changed between LLVM versions. Keep
             # this metadata opaque during optimization, then restore it exactly.
             prefix = "flagtree_opaque_dlti"
