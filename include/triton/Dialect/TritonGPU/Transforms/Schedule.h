@@ -65,6 +65,30 @@ bool pipelineTMAStores(scf::ForOp forOp);
 // wait modeling is problematic.
 void asyncLaunchDots(scf::ForOp forOp);
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+// flagtree pipeline enhance: attributes the loop lowering leaves on the
+// memdesc_index views of a multi-buffered load so that the wgmma scheduling
+// below can tell which slot a copy writes and which slot a dot reads.
+//   flagtree.ring_insert = s   view written by the async copy
+//   flagtree.ring_extract = s  view read by the users of the load
+// `s` is the number of slots the ring has beyond the load distance: with s >= 1
+// the slot written in an iteration is never the slot read in the same
+// iteration.
+constexpr llvm::StringLiteral kFlagTreeRingInsertAttr = "flagtree.ring_insert";
+constexpr llvm::StringLiteral kFlagTreeRingExtractAttr =
+    "flagtree.ring_extract";
+
+/// Same as asyncLaunchDots, with the loop-carried accumulator groups kept in
+/// flight across the back-edge when `wgmmaCarry` is set and the loop allows
+/// it. Returns true when the carry was applied.
+bool asyncLaunchDots(scf::ForOp forOp, bool wgmmaCarry);
+
+/// Move the prefetch of the next block (async copies and the pure ops they
+/// need) in front of the in-loop `warp_group_dot_wait {pendings = 0}` they do
+/// not depend on, so the copy overlaps the wgmma instead of waiting for it.
+void hoistAsyncCopiesBeforeWgmmaWait(scf::ForOp forOp);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+
 /// Post process the pipelined loop by updating the wait ops with the right
 /// number of groups in flight.
 void updateWaits(ModuleOp module);
