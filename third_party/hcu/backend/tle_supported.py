@@ -13,4 +13,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "remote",
     "signal",
     "signal_wait",
+    "raw.call",
+    "raw.call_smem",
 ]

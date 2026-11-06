@@ -27,7 +27,7 @@
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
@@ -74,9 +74,7 @@ namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 #ifdef __FLAGTREE_COMMON_IR__
 namespace tile = triton::tile;
-#endif
 
-#ifdef __FLAGTREE_COMMON_IR__
 static std::string attrToLowerString(Attribute attr) {
   if (!attr)
     return "";
@@ -102,7 +100,7 @@ static tile::MemorySpace attrToCommonIRMemorySpace(Attribute attr) {
     return tile::MemorySpace::Local;
   return tile::MemorySpace::Shared;
 }
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 
 extern std::vector<int64_t>
 computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
@@ -594,7 +592,7 @@ void init_triton_tle_ir(py::module &&m) {
                                            strideValues)
                  .getResult();
            })
-#endif
+#endif // __FLAGTREE_COMMON_IR__
       .def("create_memdesc_index",
            [](TritonOpBuilder &self, Type resultType, Value src,
               Value index) -> Value {
@@ -1310,9 +1308,9 @@ void init_triton_tle(py::module &&m) {
   m.def("is_common_ir_enabled", []() {
 #ifdef __FLAGTREE_COMMON_IR__
     return true;
-#else
+#else  // __FLAGTREE_COMMON_IR__
     return false;
-#endif
+#endif // __FLAGTREE_COMMON_IR__
   });
 
   // load dialects
@@ -1322,6 +1320,7 @@ void init_triton_tle(py::module &&m) {
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
+
 #ifdef __FLAGTREE_COMMON_IR__
   m.def("load_tile_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
@@ -1329,7 +1328,7 @@ void init_triton_tle(py::module &&m) {
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 
   init_triton_tle_attr(m.def_submodule("attr"));
   init_triton_tle_utils(m.def_submodule("utils"));

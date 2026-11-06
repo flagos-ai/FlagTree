@@ -21,6 +21,7 @@
 #ifdef __TLE__
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #ifdef FLAGCX_ENABLED
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxBarrierOpToLLVM.h"
@@ -31,6 +32,7 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
 #endif
+#include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #endif
@@ -277,6 +279,12 @@ struct ConvertTritonHCUGPUToLLVM
           typeConverter, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
 #endif
+      mlir::triton::tle::populateExtractOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populatePackOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
         return signalPassFailure();
