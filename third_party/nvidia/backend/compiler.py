@@ -496,13 +496,9 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
-        from .deferred_raw import (
-            finish_deferred_raw_materialize,
-            deferred_raw_materialize,
-        )
+        from .deferred_raw import deferred_raw_materialize
         deferred_raw_materialize(pm, mod)
-        # Inline TLE DSL regions before TritonGPU->LLVM lowering so no
-        # `tle.dsl_region` op survives into the conversion pipeline.
+        # Inline non-deferred TLE DSL regions before TritonGPU->LLVM lowering.
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         # Keep this as an idempotent guard for externally provided TTGIR.
         tle.passes.add_allocate_named_barriers(pm)
@@ -527,7 +523,6 @@ class CUDABackend(BaseBackend):
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
         pm.run(mod, 'make_llir')
-        finish_deferred_raw_materialize()
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it

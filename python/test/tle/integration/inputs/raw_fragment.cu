@@ -13,9 +13,11 @@
     for (int64_t i = 0; i < n && i < m; ++i)                                   \
       dst[i] = src[i];                                                         \
   }                                                                            \
-  DEVICE void Scalar_##NAME(TYPE *dst, int64_t n, TYPE value) {                \
+  DEVICE void Scalar_##NAME(TYPE *f, int64_t n, TYPE value, GLOBAL TYPE *s) {  \
+    __syncthreads();                                                           \
     for (int64_t i = 0; i < n; ++i)                                            \
-      dst[i] = value;                                                          \
+      f[i] = value;                                                            \
+    s[threadIdx.x] = value;                                                    \
   }
 
 ABI_CASE(Bool, bool)

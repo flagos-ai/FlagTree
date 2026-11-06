@@ -13,7 +13,6 @@ from triton._C.libtriton import hcu, llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
 from triton.backends.hcu.compiler import HIPBackend
 from triton.experimental.tle.raw.runtime import RawJITFunction
-from triton.experimental.tle.raw.source_store import register_source
 
 from triton.experimental.tle.raw.cuda.runtime import register_kernel_init_hook
 from triton.experimental.tle.raw.hcu.dushmem import (
@@ -314,11 +313,12 @@ def _clang_flags(library: str | None = None) -> list[str]:
 
 
 class HCUJITFunction(RawJITFunction):
-    """Compile CUDA/HIP-compatible device source into an eager raw region."""
+    """Compile CUDA/HIP-compatible device source for raw regions."""
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
 
+        file = Path(file).resolve()
         self.code: Final[str] = file.read_text()
         self.source_file: Final[str] = str(file)
 
@@ -429,57 +429,34 @@ class HCUJITFunction(RawJITFunction):
                 semantic.builder.get_string_attr(",".join(sorted(hook_names))),
             )
 
-    def register_pending_source(self, *, hint: str = "") -> str:
+    def create_region_deferred(self, builder, handles, alias_indices, hint: str = "", arg_info_list=None):
         if not self.extern_func_name:
             raise RuntimeError("Deferred TLE-Raw HCU requires "
                                "extern_func_name= to identify the device "
                                "function in the HIP/CUDA source")
 
-        return register_source(
-            region_dialect=self.region_dialect,
-            extern_func_name=self.extern_func_name,
-            source=self.code,
-            hint=hint,
-            extra={
-                "source_file": self.source_file,
-                "opt_level": self.opt_level,
-                "library": self.library,
-            },
-        )
-
-    def create_region_deferred(
-        self,
-        builder,
-        source_id: str,
-        handles,
-        alias_indices,
-        hint: str = "",
-    ):
         return builder.create_tle_raw_region_deferred(
-            source_id,
             self.region_dialect,
             self.arg_dialect,
             handles,
             alias_indices,
-            hint,
+            hint=hint,
+            dsl_file_name=self.source_file,
+            extern_func_name=self.extern_func_name,
+            compile_options={"opt_level": self.opt_level, "library": self.library},
+            arg_info_list=arg_info_list,
         )
 
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
-    source_text = entry["source"]
-
-    class _HCUSourceFile:
-
-        def read_text(self):
-            return source_text
-
+    options = entry["compile_options"]
     hcu_fn = HCUJITFunction(
         fn=None,
-        file=_HCUSourceFile(),
-        extern_func_name=entry.get("extern_func_name", ""),
+        file=Path(entry["dsl_file_name"]),
+        extern_func_name=entry["extern_func_name"],
         deferred=True,
-        opt_level=entry.get("opt_level", "-O3"),
-        library=entry.get("library", ""),
+        opt_level=options["opt_level"],
+        library=options["library"],
     )
 
     llvm_ir = hcu_fn.make_llvm(context)

@@ -30,6 +30,10 @@
 #include "tle/utils/include/AnalyzeReturnType.h"
 #include "tle/utils/include/TleRawMaterialize.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/raw_ostream.h"
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -145,11 +149,11 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
 }
 
 tle::DSLRegionOp createTLERawRegionDeferred(
-    TritonOpBuilder &self, std::string_view sourceId,
-    std::string_view regionDialect, std::string_view argDialect,
-    const std::vector<Value> &args,
+    TritonOpBuilder &self, std::string_view regionDialect,
+    std::string_view argDialect, const std::vector<Value> &args,
     const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
     std::string_view dsl_file_name, std::string_view extern_func_name,
+    std::optional<std::map<std::string, std::string>> compile_options,
     std::optional<std::vector<std::string>> arg_info_list) {
 
   OpBuilder &builder = self.getBuilder();
@@ -158,11 +162,34 @@ tle::DSLRegionOp createTLERawRegionDeferred(
         return args[idx].getType();
       });
   SmallVector<Value> operands(args.begin(), args.end());
+
   tle::DSLRegionOp dslRegionOp =
       createDSLRegionOp(self, outputTys, operands, regionDialect, argDialect,
                         aliasOperandIndices, hint);
-  setDeferredMetadataAttrs(dslRegionOp, builder, sourceId, dsl_file_name,
-                           extern_func_name);
+
+  SmallVector<NamedAttribute> options;
+  if (compile_options.has_value()) {
+    for (const auto &[key, value] : *compile_options)
+      options.emplace_back(builder.getStringAttr(key),
+                           builder.getStringAttr(value));
+    dslRegionOp->setAttr("tle_raw.compile_options",
+                         builder.getDictionaryAttr(options));
+  }
+
+  auto source = builder.getArrayAttr({dslRegionOp.getRegionDialectAttr(),
+                                      builder.getStringAttr(dsl_file_name),
+                                      builder.getStringAttr(extern_func_name),
+                                      builder.getDictionaryAttr(options)});
+  std::string serialized;
+  llvm::raw_string_ostream stream(serialized);
+  source.print(stream);
+  llvm::SHA256 hasher;
+  hasher.update(serialized);
+  hasher.update(compile_options.has_value() ? "1" : "0");
+
+  setDeferredMetadataAttrs(dslRegionOp, builder, llvm::toHex(hasher.final()),
+                           dsl_file_name, extern_func_name);
+
   if (arg_info_list.has_value()) {
     SmallVector<StringRef> argInfos;
     argInfos.reserve(arg_info_list.value().size());

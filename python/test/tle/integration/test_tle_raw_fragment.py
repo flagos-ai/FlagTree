@@ -71,62 +71,73 @@ TYPES = [
 ]
 
 
-def storage_bits(name, width):
+def special_bit_patterns(name, width):
+    if width == 1:
+        return [0, 1]
+    values = [0, 1, (1 << (width - 1)), (1 << width) - 1, (1 << (width - 1)) - 1, (1 << (width - 1)) + 1]
+    special = {
+        "float16": [0x0400, 0x7bff, 0x7c00, 0xfc00, 0x7e55, 0x3555],
+        "bfloat16": [0x0080, 0x7f7f, 0x7f80, 0xff80, 0x7fc5, 0x3eab],
+        "float32": [0x00800000, 0x7f7fffff, 0x7f800000, 0xff800000, 0x7fc01234, 0x3eaaaaab],
+        "float64": [
+            0x0010000000000000, 0x7fefffffffffffff, 0x7ff0000000000000, 0xfff0000000000000, 0x7ff8123456789abc,
+            0x3fd5555555555555
+        ],
+    }
+    return values + special.get(name, [])
+
+
+def bits_tensor_int(name, width):
     if width == 1:
         return torch.tensor([False, True] * 128, device="cuda")
     if width == 8:
         values = list(range(256))
     else:
-        values = [0, 1, (1 << (width - 1)), (1 << width) - 1, (1 << (width - 1)) - 1, (1 << (width - 1)) + 1]
-        special = {
-            "float16": [0x0400, 0x7bff, 0x7c00, 0xfc00, 0x7e55, 0x3555],
-            "bfloat16": [0x0080, 0x7f7f, 0x7f80, 0xff80, 0x7fc5, 0x3eab],
-            "float32": [0x00800000, 0x7f7fffff, 0x7f800000, 0xff800000, 0x7fc01234, 0x3eaaaaab],
-            "float64": [
-                0x0010000000000000, 0x7fefffffffffffff, 0x7ff0000000000000, 0xfff0000000000000, 0x7ff8123456789abc,
-                0x3fd5555555555555
-            ],
-        }
-        values += special.get(name, [])
+        values = special_bit_patterns(name, width)
         values = (values * (256 // len(values) + 1))[:256]
     signed = [v if v < (1 << (width - 1)) else v - (1 << width) for v in values]
     return torch.tensor(signed, device="cuda", dtype=getattr(torch, f"int{width}"))
 
 
-PARAMS = [pytest.param(name, symbol, width, id=name) for name, symbol, width in TYPES]
+ABI_TEST_PARAMS = []
+for name, symbol, width in TYPES:
+    ABI_TEST_PARAMS.append(pytest.param(name, symbol, width, None, id=f"fragment-{name}"))
+    for bits in special_bit_patterns(name, width):
+        ABI_TEST_PARAMS.append(
+            pytest.param(name, symbol, width, bits, id=f"scalar-{name}-0x{bits:0{max(1, width // 4)}x}"))
+
 BOUNDARIES = [1, 31, 32, 33, 127, 128, 129, 1023, 1024, 1025, 4095, 4096, 4097, 16384]
 
 
-@pytest.mark.parametrize("name,symbol,width", PARAMS)
-@pytest.mark.parametrize("scalar_index", [None, 0, 2, 3],
-                         ids=["fragment", "scalar_zero", "scalar_sign", "scalar_allbits"])
-def test_bit_exact_abi(name, symbol, width, scalar_index):
+@pytest.mark.parametrize("name,symbol,width,scalar_bits", ABI_TEST_PARAMS)
+def test_bit_exact_abi(name, symbol, width, scalar_bits):
     target = tl.int1 if name == "bool" else getattr(tl, name)
-    x = storage_bits(name, width)
+    x = bits_tensor_int(name, width)
     original = x.clone()
-    # Both ends are guarded; compare original integer storage, including NaN payloads.
     backing = torch.full((x.numel() + 32, ), 1, dtype=x.dtype, device="cuda")
     y = backing[16:-16]
-    index = scalar_index or 0
-    if width == 8 and scalar_index in (2, 3):
-        index = 128 if scalar_index == 2 else 255
-    scalar = x[index:index + 1]
-    function = SCALARS[symbol] if scalar_index is not None else COPIES[symbol]
-    abi_kernel[(1, )](triton.reinterpret(x, target), triton.reinterpret(y, target), triton.reinterpret(scalar, target),
-                      x.numel(), 256, function, SCALAR=scalar_index is not None, num_warps=4)
-    torch.testing.assert_close(y, scalar.expand_as(y) if scalar_index is not None else x, rtol=0, atol=0)
+    v = scalar_bits if scalar_bits is not None else 0
+    v = v if width == 1 or v < (1 << (width - 1)) else v - (1 << width)
+    scalar = torch.tensor([v], dtype=x.dtype, device="cuda")
+    s = torch.tensor([v] * 128, dtype=x.dtype, device="cuda")
+    function = SCALARS[symbol] if scalar_bits is not None else COPIES[symbol]
+
+    abi_kernel[(1, )](triton.reinterpret(s, target), triton.reinterpret(x, target), triton.reinterpret(y, target),
+                      x.numel(), BLOCK=256, FN=function, SCALAR=scalar_bits is not None, num_warps=4)
+
+    torch.testing.assert_close(s, scalar.expand_as(s))
     torch.testing.assert_close(x, original, rtol=0, atol=0)
+    torch.testing.assert_close(y, scalar.expand_as(y) if scalar_bits is not None else x, rtol=0, atol=0)
     assert torch.all(backing[:16] == 1) and torch.all(backing[-16:] == 1)
 
 
 @triton.jit
-def abi_kernel(X, Y, S, N: tl.constexpr, BLOCK: tl.constexpr, FN: tl.constexpr, SCALAR: tl.constexpr = False):
+def abi_kernel(S, X, Y, N: tl.constexpr, BLOCK: tl.constexpr, FN: tl.constexpr, SCALAR: tl.constexpr = False):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    # ABI cases use full tiles and compare raw storage, including NaN payloads.
     x = tl.load(X + offsets)
     dst = tl.full((BLOCK, ), 0, x.dtype)
     if SCALAR:
-        result = raw.call(FN, (raw.fragment(dst), tl.load(S)), output_indices=[0])
+        result = raw.call(FN, (raw.fragment(dst), tl.load(S), S), output_indices=[0])
     else:
         result = raw.call(FN, (raw.fragment(dst), raw.fragment(x)), output_indices=[0])
     tl.store(Y + offsets, result, offsets < N)

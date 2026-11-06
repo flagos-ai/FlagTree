@@ -65,6 +65,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <map>
+#include <stdexcept>
 
 namespace py = pybind11;
 using namespace mlir;
@@ -116,11 +118,11 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
                              std::string_view hint, std::string_view funcName);
 
 extern tle::DSLRegionOp createTLERawRegionDeferred(
-    TritonOpBuilder &self, std::string_view sourceId,
-    std::string_view regionDialect, std::string_view argDialect,
-    const std::vector<Value> &args,
+    TritonOpBuilder &self, std::string_view regionDialect,
+    std::string_view argDialect, const std::vector<Value> &args,
     const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
     std::string_view dsl_file_name, std::string_view extern_func_name,
+    std::optional<std::map<std::string, std::string>> compile_options,
     std::optional<std::vector<std::string>> arg_info_list);
 
 static Value resolveWarpSpecializeCapture(Value value) {
@@ -1268,14 +1270,79 @@ void init_tle_raw_ir(py::module &&m) {
                    py::arg("hint") = "", py::arg("func_name") = "");
   builder_cls->def(
       "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
-      py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
-      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "",
+      py::arg("region_dialect"), py::arg("arg_dialect"), py::arg("args"),
+      py::arg("output_operand_indices"), py::arg("hint") = "",
       py::arg("dsl_file_name") = "", py::arg("extern_func_name") = "",
+      py::arg("compile_options") = py::none(),
       py::arg("arg_info_list") = py::none());
   builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 
 void init_tle_raw_passes(py::module &&m) {
+  m.def(
+      "collect_pending_sources",
+      [](mlir::ModuleOp &module) {
+        py::dict sources;
+        module.walk([&](mlir::triton::tle::DSLRegionOp op) {
+          if (!op.getBody().empty())
+            return;
+          auto sourceAttr = op->getAttr("tle_raw.source_id");
+          if (!sourceAttr)
+            return;
+          auto sourceId = mlir::dyn_cast<mlir::StringAttr>(sourceAttr);
+          if (!sourceId)
+            throw py::type_error("tle_raw.source_id must be a string");
+          py::str key(sourceId.getValue().str());
+          py::dict sourceInfo;
+
+          // Preserve attribute presence; the collector does not supply
+          // defaults.
+          for (llvm::StringRef name :
+               {"region_dialect", "tle_raw.dsl_file_name",
+                "tle_raw.extern_func_name"}) {
+            auto attr = op->getAttr(name);
+            if (!attr)
+              continue;
+            auto value = mlir::dyn_cast<mlir::StringAttr>(attr);
+            if (!value)
+              throw py::type_error("raw source " + sourceId.getValue().str() +
+                                   ": " + name.str() + " must be a string");
+            name.consume_front("tle_raw.");
+            sourceInfo[py::str(name.str())] = value.getValue().str();
+          }
+          if (auto attr = op->getAttr("tle_raw.compile_options")) {
+            auto options = mlir::dyn_cast<mlir::DictionaryAttr>(attr);
+            if (!options)
+              throw py::type_error(
+                  "raw source " + sourceId.getValue().str() +
+                  ": tle_raw.compile_options must be a dictionary");
+            py::dict values;
+            for (auto option : options) {
+              auto value = mlir::dyn_cast<mlir::StringAttr>(option.getValue());
+              if (!value)
+                throw py::type_error("raw source " + sourceId.getValue().str() +
+                                     ": tle_raw.compile_options." +
+                                     option.getName().str() +
+                                     " must be a string");
+              values[py::str(option.getName().str())] = value.getValue().str();
+            }
+            sourceInfo["compile_options"] = values;
+          }
+
+          if (sources.contains(key)) {
+            py::dict existing = sources[key].cast<py::dict>();
+            if (!existing.equal(sourceInfo))
+              throw std::runtime_error(
+                  "raw source " + sourceId.getValue().str() +
+                  " has inconsistent compilation attributes");
+          } else {
+            sources[key] = sourceInfo;
+          }
+        });
+        return sources;
+      },
+      py::arg("module"));
+
   ADD_PASS_WRAPPER_0("add_tle_convert_arg_to_memdesc",
                      mlir::triton::tle::createTleConvertArgToMemDesc);
   ADD_PASS_WRAPPER_0("add_tle_remove_redundant_copy",

@@ -28,7 +28,6 @@ from typing import Any, Final
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.runtime import RawJITFunction
-from triton.experimental.tle.raw.source_store import register_source
 
 # TODO: Temporarily shell out to clang; replace with LLVM Python bindings later.
 CLANG = os.getenv("CLANG", "clang")
@@ -48,28 +47,26 @@ class PPUJITFunction(RawJITFunction):
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
+        file = Path(file).resolve()
         self.code: Final[str] = file.read_text()
         self.region_dialect: Final[str] = "ppu"
         self.lowered_region_dialect: Final[str] = "llvm"
         self.arg_dialect: Final[str] = "llvm"
         self.source_file: Final[str] = str(file)
 
-    def register_pending_source(self, *, hint: str = "") -> str:
+    def create_region_deferred(self, builder, handles, alias_indices, hint: str = "", arg_info_list=None):
         if not self.extern_func_name:
-            raise RuntimeError("deferred tle_raw PPU source requires extern_func_name= "
-                               "(the device function symbol in the .cu file)")
-        return register_source(
-            region_dialect=self.region_dialect,
-            extern_func_name=self.extern_func_name,
-            source=self.code,
+            raise RuntimeError(f"deferred tle_raw {self.region_dialect} requires extern_func_name=")
+        return builder.create_tle_raw_region_deferred(
+            self.region_dialect,
+            self.arg_dialect,
+            handles,
+            alias_indices,
             hint=hint,
-            extra={"source_file": self.source_file},
+            dsl_file_name=self.source_file,
+            extern_func_name=self.extern_func_name,
+            arg_info_list=arg_info_list,
         )
-
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = "",
-                               arg_info_list=None):
-        return builder.create_tle_raw_region_deferred(source_id, self.region_dialect, self.arg_dialect, handles,
-                                                      alias_indices, hint=hint, arg_info_list=arg_info_list)
 
     def make_llvm(self, mlir_context) -> str:
         build = subprocess.run(

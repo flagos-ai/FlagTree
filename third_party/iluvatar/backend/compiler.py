@@ -430,17 +430,15 @@ class CorexBackend(BaseBackend):
             # Call ConcurrencySanitizerPass here, before allocating global scratch memory but after allocating tensor and shared
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
+
         # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
         if has_tle_pass("deferred_raw_materialize"):
-            from .deferred_raw import (
-                finish_deferred_raw_materialize,
-                deferred_raw_materialize,
-            )
+            from .deferred_raw import deferred_raw_materialize
             deferred_raw_materialize(pm, mod)
-        # Inline TLE DSL regions before TritonGPU->LLVM lowering so no
-        # `tle.dsl_region` op survives into the conversion pipeline.
+        # Inline all TLE DSL regions before TritonGPU->LLVM lowering.
         if has_tle_pass("add_tle_dsl_region_inline"):
             tle.raw_passes.add_tle_dsl_region_inline(pm)
+
         if CorexBackend.instrumentation:
             CorexBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
         proc = sm_arch_from_capability(capability)
@@ -462,8 +460,6 @@ class CorexBackend(BaseBackend):
             CorexBackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
         pm.run(mod, 'make_llir')
-        if has_tle_pass("deferred_raw_materialize"):
-            finish_deferred_raw_materialize()
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it

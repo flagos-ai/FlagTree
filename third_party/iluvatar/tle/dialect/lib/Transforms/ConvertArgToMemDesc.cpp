@@ -106,7 +106,7 @@ TleArgConversion::matchAndRewrite(iluvatar_tle::DSLRegionOp op,
   if (needSync) {
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(op);
-    rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
+    rewriter.create<ttg::LocalBarrierOp>(op.getLoc());
   }
   iluvatar_tle::DSLRegionOp newOp = rewriter.create<iluvatar_tle::DSLRegionOp>(
       op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),

@@ -11,7 +11,7 @@
 #include "nvidia/hopper/include/Transforms/Passes.h"
 #include "nvidia/include/Dialect/NVWS/Transforms/Passes.h"
 #ifdef __TLE__
-#include "nvidia/tle_raw/include/DeferredRawSourceRegistry.h"
+#include "nvidia/tle_raw/include/CompiledRaw.h"
 #include "nvidia/tle_raw/include/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
@@ -162,30 +162,32 @@ static void checkMatmulConstraints(const std::string &A_dtype,
 }
 
 #ifdef __TLE__
-static void setDeferredRawPendingSources(py::dict sources) {
-  mlir::triton::nvidia::tle_raw::clearDeferredRawSourceRegistry();
+static llvm::StringMap<mlir::triton::nvidia::tle_raw::CompiledRaw>
+convertCompiledRawSources(py::dict sources) {
+
+  llvm::StringMap<mlir::triton::nvidia::tle_raw::CompiledRaw> compiled;
   for (auto item : sources) {
     std::string key = py::cast<std::string>(item.first);
     py::dict entry = py::cast<py::dict>(item.second);
-
-    mlir::triton::nvidia::tle_raw::DeferredRawSourceEntry rawEntry;
-    rawEntry.sourceId = key;
-    rawEntry.regionDialect = entry["region_dialect"].cast<std::string>();
+    mlir::triton::nvidia::tle_raw::CompiledRaw source;
+    source.regionDialect = entry["region_dialect"].cast<std::string>();
     if (entry.contains("extern_func_name") &&
         !entry["extern_func_name"].is_none()) {
-      rawEntry.externFuncName = entry["extern_func_name"].cast<std::string>();
+      source.externFuncName = entry["extern_func_name"].cast<std::string>();
     }
-    rawEntry.source = entry["source"].cast<std::string>();
     if (entry.contains("llvm_ir"))
-      rawEntry.llvmIr = entry["llvm_ir"].cast<std::string>();
-    if (entry.contains("hint"))
-      rawEntry.hint = entry["hint"].cast<std::string>();
-    mlir::triton::nvidia::tle_raw::getDeferredRawSourceRegistry()[key] =
-        std::move(rawEntry);
+      source.llvmIr = entry["llvm_ir"].cast<std::string>();
+    compiled[key] = std::move(source);
   }
+  return compiled;
 }
 
 void init_nvidia_tle_raw_passes(py::module &&m) {
+  m.def("deferred_raw_materialize",
+        [](py::dict sources, mlir::PassManager &pm) {
+          pm.addPass(mlir::createNvidiaMaterializeDeferredRaw(
+              convertCompiledRawSources(sources)));
+        });
   m.def("register_raw_wrappers", [](mlir::ModuleOp &module) {
     using namespace mlir;
     py::object dumps = py::module_::import("json").attr("dumps");
@@ -263,11 +265,6 @@ void init_nvidia_tle_raw_passes(py::module &&m) {
     });
     return wrappers;
   });
-  m.def("deferred_raw_materialize",
-        [](py::dict sources, mlir::PassManager &pm) {
-          setDeferredRawPendingSources(sources);
-          pm.addPass(mlir::createNvidiaMaterializeDeferredRaw());
-        });
 }
 #endif
 
