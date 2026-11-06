@@ -6,6 +6,8 @@ skip_operators:
   - weight_norm
   - weight_norm_interface
   - weight_norm_interface_backward
+  - celu
+  - celu_
 
 # Skip specific test functions
 skip_test_patterns:
@@ -16,7 +18,6 @@ skip_test_patterns:
   #- test_scaled_dot_product_flash_attention
   #- test_scaled_softmax_forward
   #- test_scaled_softmax_backward
-  - test_celu
 
 # Skip entire test files
 skip_test_files:
