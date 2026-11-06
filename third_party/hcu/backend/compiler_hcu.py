@@ -791,12 +791,14 @@ class HIPBackend(BaseBackend):
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
 
+            aillvm_path = HIPBackend.path_to_rocm_clang()
+            aillvm_args = HIPBackend._get_clang_args(metadata, options) + flags
             if use_dcc:
                 clang_path = dcc
                 clang_args = ["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
             else:
-                clang_path = HIPBackend.path_to_rocm_clang()
-                clang_args = HIPBackend._get_clang_args(metadata, options) + flags
+                clang_path = aillvm_path
+                clang_args = aillvm_args
 
             # Fixme: link it before run llvm.optimize_module()
             if metadata['use_dushmem']:
@@ -814,17 +816,30 @@ class HIPBackend(BaseBackend):
                 subprocess.run(link_command, check=True, capture_output=True, text=True)
                 llir_file = linked_file
 
-            # Compile to ASM
+            # Compile to ASM. Prefer dcc when selected; fall back to aillvm on failure.
             asm_command = [clang_path] + clang_args + [llir_file, "-S", "-o", asm_file]
-            result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
+            result = subprocess.run(asm_command, capture_output=True, text=True)
+            if result.returncode != 0 and use_dcc:
+                print(
+                    f"[hcu_raw_dcc] dcc failed for {metadata.get('name')}; "
+                    f"falling back to aillvm\n{result.stderr}",
+                    flush=True,
+                )
+                metadata["hcu_raw_dcc"] = False
+                clang_path = aillvm_path
+                asm_command = [aillvm_path] + aillvm_args + [llir_file, "-S", "-o", asm_file]
+                result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
+            elif result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, asm_command, result.stdout,
+                                                    result.stderr)
             if options.wdra_enabled:
                 log = result.stdout + result.stderr
                 print(log, flush=True)
             if os.environ.get("HCU_RAW_DCC_TRACE"):
                 print(
                     f"[hcu_raw_dcc] name={metadata.get('name')} "
-                    f"tle_raw={metadata.get('hcu_tle_raw')} use_dcc={use_dcc} "
-                    f"clang={clang_path}",
+                    f"tle_raw={metadata.get('hcu_tle_raw')} "
+                    f"use_dcc={metadata.get('hcu_raw_dcc')} clang={clang_path}",
                     flush=True,
                 )
 
