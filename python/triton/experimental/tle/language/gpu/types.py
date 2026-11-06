@@ -142,6 +142,60 @@ class BlockEncoding(distributed_encoding):
                      tuple(self.order), tuple(tuple(basis) for basis in self.cga_layout)))
 
 
+def _linear_layout_bases(bases, rank):
+    bases = [[tl._unwrap_if_constexpr(x) for x in tl._unwrap_if_constexpr(basis)]
+             for basis in tl._unwrap_if_constexpr(bases)]
+    if any(len(basis) != rank for basis in bases):
+        raise ValueError("linear layout bases must have a consistent rank")
+    if any(type(x) is not int or x < 0 or x >= (1 << 30) for basis in bases for x in basis):
+        raise ValueError("linear layout bases must contain non-negative integers below 2**30")
+    return bases
+
+
+class DistributedLinearLayout(distributed_encoding):
+    """Explicit register/lane/warp/block bases for ``set_layout``.
+
+    Arguments follow Gluon's DistributedLinearLayout. Target constraints are
+    checked by the backend; currently connected on the MetaX CommonIR path.
+    """
+
+    def __init__(self, reg_bases, lane_bases, warp_bases, block_bases, shape):
+        self.shape = [tl._unwrap_if_constexpr(x) for x in tl._unwrap_if_constexpr(shape)]
+        if not self.shape or any(type(x) is not int or x <= 0 or x >= (1 << 31) or x & (x - 1)
+                                 for x in self.shape):
+            raise ValueError("distributed linear layout shape must contain positive int32 powers of two")
+        self.reg_bases = _linear_layout_bases(reg_bases, self.rank)
+        self.lane_bases = _linear_layout_bases(lane_bases, self.rank)
+        self.warp_bases = _linear_layout_bases(warp_bases, self.rank)
+        self.block_bases = _linear_layout_bases(block_bases, self.rank)
+        bases = self.reg_bases + self.lane_bases + self.warp_bases + self.block_bases
+        if any(x >= size for basis in bases for x, size in zip(basis, self.shape)):
+            raise ValueError("distributed linear layout bases must be smaller than shape")
+        if len(bases) > 64 or sum(x.bit_length() - 1 for x in self.shape) > 64:
+            raise ValueError("linear layout supports at most 64 input and output bits")
+
+    @property
+    def rank(self):
+        return len(self.shape)
+
+    def to_ir(self, builder):
+        return builder.get_distributed_linear_layout(
+            self.reg_bases, self.lane_bases, self.warp_bases, self.block_bases, self.shape)
+
+    def __repr__(self):
+        return (f"DistributedLinearLayout(reg_bases={self.reg_bases}, lane_bases={self.lane_bases}, "
+                f"warp_bases={self.warp_bases}, block_bases={self.block_bases}, shape={self.shape})")
+
+    def __eq__(self, other):
+        return (type(self) is type(other) and self.reg_bases == other.reg_bases
+                and self.lane_bases == other.lane_bases and self.warp_bases == other.warp_bases
+                and self.block_bases == other.block_bases and self.shape == other.shape)
+
+    def __hash__(self):
+        return hash((tuple(map(tuple, self.reg_bases)), tuple(map(tuple, self.lane_bases)),
+                     tuple(map(tuple, self.warp_bases)), tuple(map(tuple, self.block_bases)), tuple(self.shape)))
+
+
 class MmaEncoding(distributed_encoding):
     """Explicit #ttg.nvidia_mma encoding for a dot result or accumulator."""
 
@@ -307,6 +361,41 @@ class _shared_linear_layout(shared_layout):
         return (type(self) is type(other) and self.offset_bases == other.offset_bases
                 and self.block_bases == other.block_bases and self.alignment == other.alignment
                 and self.rank == other.rank)
+
+
+class SharedLinearLayout(_shared_linear_layout):
+    """Explicit shared-memory offset/block bases for ``alloc(layout=...)``.
+
+    Arguments follow Gluon's SharedLinearLayout. MetaX currently supports
+    ordinary buffer loads/stores and contiguous slots; async copy is not supported.
+    """
+
+    def __init__(self, offset_bases, block_bases=None, alignment=16):
+        offset_bases = tl._unwrap_if_constexpr(offset_bases)
+        if not offset_bases:
+            raise ValueError("shared linear layout offset_bases must not be empty")
+        rank = len(tl._unwrap_if_constexpr(offset_bases[0]))
+        offset_bases = _linear_layout_bases(offset_bases, rank)
+        block_bases = _linear_layout_bases([] if block_bases is None else block_bases, rank)
+        alignment = tl._unwrap_if_constexpr(alignment)
+        if type(alignment) is not int:
+            raise ValueError("shared linear layout alignment must be an integer")
+        bases = offset_bases + block_bases
+        if len(bases) > 64 or sum(max(b[i] for b in bases).bit_length() for i in range(rank)) > 64:
+            raise ValueError("linear layout supports at most 64 input and output bits")
+        super().__init__(offset_bases, block_bases, alignment, rank)
+
+    def make_permute(self, dims):
+        return SharedLinearLayout(
+            [[basis[dim] for dim in dims] for basis in self.offset_bases],
+            [[basis[dim] for dim in dims] for basis in self.block_bases], self.alignment)
+
+    def __repr__(self):
+        return (f"SharedLinearLayout(offset_bases={self.offset_bases}, "
+                f"block_bases={self.block_bases}, alignment={self.alignment})")
+
+    def __hash__(self):
+        return hash((tuple(map(tuple, self.offset_bases)), tuple(map(tuple, self.block_bases)), self.alignment))
 
 
 class swizzled_shared_layout(shared_layout):
@@ -479,7 +568,34 @@ def _drop_leading_dim_values(values):
     return list(values[1:])
 
 
-def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int]) -> shared_layout:
+def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int], *, source_shape=None,
+                      element_bytes=1) -> shared_layout:
+    if isinstance(src_layout, _shared_linear_layout):
+        if source_shape is None or src_layout.rank != len(source_shape) or list(source_shape[1:]) != slot_shape:
+            raise ValueError("SharedLinearLayout slot requires a matching full-buffer shape")
+        if src_layout.block_bases:
+            raise ValueError("SharedLinearLayout slot currently requires a single CTA")
+        bases = src_layout.offset_bases
+        layout_shape = [1 << max((basis[d].bit_length() for basis in bases), default=0)
+                        for d in range(src_layout.rank)]
+        if layout_shape != list(source_shape):
+            raise ValueError("SharedLinearLayout slot layout shape must match the full buffer")
+
+        # memdesc_index advances by index * product(slot_shape) elements.
+        # Low offset bits must stay within one slot; high bits must map to
+        # the stage index in order, without also permuting the payload.
+        slot_bits = math.prod(slot_shape).bit_length() - 1
+        stage_bits = source_shape[0].bit_length() - 1
+        expected_stage_bases = [[1 << bit] + [0] * len(slot_shape) for bit in range(stage_bits)]
+        if (len(bases) != slot_bits + stage_bits or any(basis[0] != 0 for basis in bases[:slot_bits])
+                or bases[slot_bits:] != expected_stage_bases):
+            raise ValueError("SharedLinearLayout slot requires contiguous stages in index order "
+                             "with identical layouts within each stage")
+
+        alignment = math.gcd(src_layout.alignment, math.prod(slot_shape) * element_bytes)
+        slot_bases = [basis[1:] for basis in bases[:slot_bits]]
+        # A zero basis preserves the rank of a one-element slot in textual IR.
+        return SharedLinearLayout(slot_bases or [[0] * len(slot_shape)], alignment=alignment)
     if isinstance(src_layout, swizzled_shared_layout):
         return type(src_layout)(
             src_layout.vectorSize,
@@ -633,13 +749,16 @@ class buffered_tensor(tl.base_value):
         # local_alloc and propagated through memdesc_index in TTIR.
         slot_shape = list(self.shape[1:])
         is_subview = self.type.alloc_shape != list(self.shape)
+        if isinstance(self.type.layout, _shared_linear_layout) and is_subview:
+            raise ValueError("SharedLinearLayout slot currently requires a full buffer, not a subview")
         # A slot of a subview must retain the complete allocation shape.  The
         # extra leading dimension records the ring-buffer allocation while
         # the trailing dimensions provide the physical stride of one stage.
         # Root allocations keep the legacy compact slot type.
         slot_alloc_shape = list(self.type.alloc_shape if is_subview else slot_shape)
         physical_slot_shape = list(self.type.alloc_shape[-len(slot_shape):])
-        slot_layout = _make_slot_layout(self.type.layout, physical_slot_shape)
+        slot_layout = _make_slot_layout(self.type.layout, physical_slot_shape, source_shape=list(self.shape),
+                                        element_bytes=max(1, self.dtype.primitive_bitwidth // 8))
         slot_ty = buffered_tensor_type(self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
                                        alloc_shape=slot_alloc_shape)
         offsets = [stage_tensor]
