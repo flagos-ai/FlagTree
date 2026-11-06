@@ -73,7 +73,17 @@ jobs:
         shell: bash
         run: |
           set -x
+          source ~/env.sh
           export FLAGTREE_BACKEND=hcu
+          export USE_FLAGCX=ON
+          export FLAGCX_RECOMPILE=ON
+          export COMPILE_KERNEL=1
+          export DEVICE_HOME=/opt/dtk
+          export CCL_HOME=/opt/dtk
+          export USE_SHCA=1
+          export USE_UCX=0
+          export SHCA_INCLUDE=/opt/shca-userspace/include
+          export SHCA_LIB=/opt/shca-userspace
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
@@ -118,3 +128,36 @@ jobs:
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/03-matrix-multiplication.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/04-hello-world.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
+
+      - name: Distributed Test
+        if: steps.check_backend.outputs.should_skip != 'true'
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -ex
+          source ~/env.sh
+          export USE_FLAGCX=ON
+          export NODE_RANK=0
+          # Keep runner-specific network settings (e.g. FLAGCX_IB_HCA) from env.sh.
+          export FLAGCX_USE_HETERO_COMM="${FLAGCX_USE_HETERO_COMM:-1}"
+          export FLAGCX_MEM_ENABLE="${FLAGCX_MEM_ENABLE:-1}"
+          export FLAGCX_VMM_ENABLE="${FLAGCX_VMM_ENABLE:-0}"
+          export FLAGCX_P2P_DISABLE="${FLAGCX_P2P_DISABLE:-1}"
+
+          python3 - <<'PYTHON'
+          import torch
+          assert torch.version.hip, "Distributed tests require HIP PyTorch on HCU"
+          assert torch.cuda.device_count() >= 2, "Distributed tests require two visible HCU devices"
+          PYTHON
+
+          # Reuse the NVIDIA TLE cases, without its hard-coded network adapters.
+          # A standalone rendezvous selects a free port for each test invocation.
+          for test in \
+            test_tle_distributed_d2d \
+            test_tle_get_local_pe \
+            test_tle_d2d_barrier \
+            test_tle_signal \
+            test_tle_signal_wait; do
+            python3 -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=2 \
+              "python/test/tle/unit/${test}.py"
+          done

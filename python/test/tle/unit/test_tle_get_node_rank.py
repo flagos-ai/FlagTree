@@ -7,6 +7,8 @@ import triton
 import triton.experimental.tle.language as tle
 import triton.language as tl
 
+DEVICE = tle.device_type
+
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "0"))
 if LOCAL_WORLD_SIZE <= 0 or WORLD_SIZE % LOCAL_WORLD_SIZE != 0:
@@ -25,10 +27,10 @@ def _tle_node_rank_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr
 @pytest.mark.skip_if_tle_unsupported("shard_id")
 def test_tle_get_node_rank():
     grid = 2
-    with torch.cuda.use_mem_pool(tle.get_mem_pool()):
-        source = torch.empty((1, ), dtype=torch.float32, device="cuda")
+    with torch.get_device_module(DEVICE).use_mem_pool(tle.get_mem_pool()):
+        source = torch.empty((1, ), dtype=torch.float32, device=DEVICE)
     device_dptr = tle.create_dist_tensor(source)
-    node_rank_out = torch.empty((grid, ), dtype=torch.int32, device="cuda")
+    node_rank_out = torch.empty((grid, ), dtype=torch.int32, device=DEVICE)
 
     compiled = _tle_node_rank_kernel.warmup(
         out_ptr=node_rank_out,
@@ -40,15 +42,15 @@ def test_tle_get_node_rank():
     )
     assert "get_world_rank" in compiled.asm["ttgir"]
     assert "get_num_pes" in compiled.asm["ttgir"]
-    assert "flagcxDevCommGetRank" in compiled.asm["ptx"]
-    assert "flagcxDevCommGetIntraSize" in compiled.asm["ptx"]
+    assert "flagcxDevCommGetRank" in compiled.asm.get("ptx", compiled.asm["llir"])
+    assert "flagcxDevCommGetIntraSize" in compiled.asm.get("ptx", compiled.asm["llir"])
 
     _tle_node_rank_kernel[(grid, )](
         out_ptr=node_rank_out,
         device_dptr=device_dptr,
         mesh=DEVICE_MESH,
     )
-    torch.cuda.synchronize()
+    torch.get_device_module(DEVICE).synchronize()
 
     rank = dist.get_rank()
     expected_node_rank = rank // LOCAL_WORLD_SIZE
