@@ -653,12 +653,24 @@ class SpecPackageHelper:
         spec_install_dir = os.path.join("python", "triton", "spec")
         yield "triton.spec", spec_install_dir
 
-        spec_dirs = sorted(
-            (entry for entry in os.scandir(spec_install_dir) if entry.is_dir() and entry.name != "__pycache__"),
-            key=lambda entry: entry.name)
-        for spec_dir in spec_dirs:
-            name = spec_dir.name
-            source_dir = spec_dir.path
+        spec_dirs = {
+            entry.name: entry.path
+            for entry in os.scandir(spec_install_dir)
+            if entry.is_dir() and entry.name != "__pycache__"
+        }
+
+        # Backend spec trees live under third_party/<backend>/spec.  Package
+        # discovery must not require a source-tree symlink under
+        # python/triton/spec; build-time linking is handled by setup.py's
+        # add_links() hook.  Use the backend tree directly when the link is
+        # absent, while preserving the existing mapping for other backends.
+        if flagtree_backend:
+            backend_spec_dir = os.path.join("third_party", flagtree_backend, "spec")
+            if os.path.isdir(backend_spec_dir) and flagtree_backend not in spec_dirs:
+                spec_dirs[flagtree_backend] = backend_spec_dir
+
+        for name in sorted(spec_dirs):
+            source_dir = spec_dirs[name]
             for root, dirs, _files in os.walk(source_dir):
                 dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
                 relative_dir = os.path.relpath(root, source_dir)
@@ -673,11 +685,18 @@ class SpecPackageHelper:
 
 
 def get_spec_packages():
+    excluded_packages = SpecPackageHelper.get_excluded_packages()
+    exclude_hook = get_hook_instance("get_excluded_python_packages")
+    if exclude_hook:
+        excluded_packages += exclude_hook()
     yield from find_packages(
         where="python",
         include=["triton", "triton.*"],
-        exclude=SpecPackageHelper.get_excluded_packages(),
+        exclude=excluded_packages,
     )
+
+    for package, _source_dir in get_backend_python_packages():
+        yield package
 
     for package, _source_dir in SpecPackageHelper.get_spec_packages():
         yield package
@@ -688,7 +707,7 @@ def get_spec_packages():
     yield "triton.tools.triton_to_gluon_translater"
 
     tle_include_dir = Path("python/triton/experimental/tle/language/include")
-    if tle_include_dir.is_dir():
+    if tle_include_dir.is_dir() and "triton.experimental.tle" not in excluded_packages:
         # FlagCX headers are copied here while setup.py is running. The
         # directory intentionally has no __init__.py, so find_packages cannot
         # discover it even though setuptools includes it as package data.
@@ -696,6 +715,12 @@ def get_spec_packages():
 
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
+
+
+def get_backend_python_packages():
+    hook = get_hook_instance("get_python_packages")
+    if hook:
+        yield from hook()
 
 
 def generate_backend_intrinsic_tables():

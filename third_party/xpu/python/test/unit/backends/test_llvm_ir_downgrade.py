@@ -18,9 +18,10 @@ import pytest
 
 # Import the module directly from the source tree so the test does not depend
 # on triton being installed (it has no triton imports of its own).
-#   .../triton/python/test/unit/backends/test_llvm_ir_downgrade.py
-#   parents[0]=backends  [1]=unit  [2]=test  [3]=python  [4]=<repo root>
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+#   .../triton/third_party/xpu/python/test/unit/backends/test_llvm_ir_downgrade.py
+#   parents[0]=backends  [1]=unit  [2]=test  [3]=python  [4]=xpu
+#   [5]=third_party  [6]=<repo root>
+_REPO_ROOT = Path(__file__).resolve().parents[6]
 _BACKENDS_DIR = _REPO_ROOT / "python" / "triton" / "backends"
 sys.path.insert(0, str(_BACKENDS_DIR))
 import llvm_ir_downgrade as dg  # noqa: E402

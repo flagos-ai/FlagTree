@@ -21,15 +21,11 @@
 import os
 import sys
 import shutil
-import inspect
 import subprocess
 import importlib.machinery
 import importlib.util
 from pathlib import Path
 
-from setuptools import find_packages
-
-XPU_PYTHON_ROOT = "third_party/xpu/python"
 BACKEND_ROOT = "third_party/xpu/backend"
 # Intrinsic tables: `python/triton/backends/_tables/<tag>.json`.
 #
@@ -43,6 +39,7 @@ BACKEND_ROOT = "third_party/xpu/backend"
 _TABLE_TAGS = ("l19", "l22")
 
 FLAGTREE_PYTHON_ROOT = "python"
+XPU_TLE_ROOT = "third_party/xpu/tle"
 # Package-level metadata that must **never** be staged into the tree.  It
 # travels *inside the tarball* (MIT: "shall be included in all copies") but it
 # describes the **package**, not the tree: the repository root already carries
@@ -52,9 +49,6 @@ FLAGTREE_PYTHON_ROOT = "python"
 # flattened installers, into `triton/backends/` and `TritonSDNN/IR/`), where
 # nothing tracked them and a `git add -A` would sweep them into a commit.
 _PKG_METADATA_FILES = frozenset({"LICENSE", "PROVENANCE", "PROVENANCE.json"})
-# The XPU overlay ships its own `triton.experimental.tle`; see
-# _merge_xpu_packages for why the main-tree one is not merged in.
-TLE_PACKAGE = "triton.experimental.tle"
 
 
 def _use_xtdk_frontend():
@@ -78,7 +72,7 @@ def generate_intrinsic_tables():
     They still have to be checked: the intrinsic gates load them, and a build
     that ships none used to report every gate green while judging nothing.
     """
-    backends_dir = Path(XPU_PYTHON_ROOT) / "triton" / "backends"
+    backends_dir = Path(FLAGTREE_PYTHON_ROOT) / "triton" / "backends"
     # The decoder ships compiled in a wheel and as plain `.py` in a checkout.
     # Which one is used is reported below: a build that succeeds on the `.py`
     # fallback must not read the same as one that used the compiled form.
@@ -120,110 +114,23 @@ def get_package_data_tools():
     return ["compile_xpu.h", "compile_xpu.c"]
 
 
-def skip_package_dir(package):
-    return package == "triton" or package.startswith("triton.")
+def get_excluded_python_packages():
+    # XPU's typed-raw-op TLE is an independent extension, not the shared TLE.
+    return ["triton.experimental.tle", "triton.experimental.tle.*"]
 
 
-def get_package_dir():
-    return {
-        "": XPU_PYTHON_ROOT,
-    }
-
-
-def _is_backend_package(package):
-    return package == "triton.backends" or package.startswith("triton.backends.")
-
-
-def _is_language_extra_package(package):
-    return package == "triton.language.extra" or package.startswith("triton.language.extra.")
-
-
-def _merge_xpu_packages(existing_packages):
-    packages = []
-    seen = set()
-
-    def add(package):
-        if package not in seen:
-            packages.append(package)
-            seen.add(package)
-
-    # The XPU backend ships a complete `triton.*` python tree under
-    # third_party/xpu/python/triton. It overlays the main tree so the
-    # backend-specific tweaks (and XPU-only modules such as triton.ops and
-    # triton.language.extra.xpu) live with the backend instead of polluting
-    # the main Triton tree.
-    for package in find_packages(where=XPU_PYTHON_ROOT, include=["triton", "triton.*"]):
-        add(package)
-
-    # TLE: the XPU overlay carries its own `triton.experimental.tle` (typed raw
-    # ops on the XPU dialects + an xpu-clang payload pipeline), which the loop
-    # above already picked up. The main tree's TLE is a same-origin fork with an
-    # incompatible mechanism (multi-backend regions), so it must NOT be added on
-    # top -- two sources for one package makes build_py copy whichever runs last.
-    # Non-XPU builds go through default.py and keep the main-tree version.
-
-    for package in existing_packages:
-        if (not package.startswith("triton.") or _is_backend_package(package) or _is_language_extra_package(package)
-                or package == "triton.profiler" or package.startswith("triton.profiler.")
-                or package == "triton.tools.triton_to_gluon_translater"):
-            add(package)
-
-    return packages
-
-
-def _merge_xpu_package_dir(existing_package_dir):
-    package_dir = dict(existing_package_dir or {})
-    package_dir[""] = XPU_PYTHON_ROOT
-
-    for package in find_packages(where=XPU_PYTHON_ROOT, include=["triton", "triton.*"]):
-        rel_package_path = package.replace(".", "/")
-        package_dir[package] = f"{XPU_PYTHON_ROOT}/{rel_package_path}"
-
-    # Packages that `_merge_xpu_packages` pulls in from the **main tree** (e.g.
-    # `triton.backends.nvidia` / `triton.backends.amd`, which the XPU overlay does
-    # not carry) have no directory under XPU_PYTHON_ROOT.  Without an explicit
-    # entry setuptools falls back to `package_dir[""]` and aborts with
-    #     error: package directory
-    #     'third_party/xpu/python/triton/backends/nvidia' does not exist
-    # Point them at the main tree explicitly so the merged install resolves.
-    for package in find_packages(where=FLAGTREE_PYTHON_ROOT, include=["triton", "triton.*"]):
-        if package in package_dir:
+def get_python_packages():
+    # Select this one extension at build time. Do not redirect triton or
+    # experimental.__path__, or copy the main tree's TLE-only packages.
+    for root, dirs, files in os.walk(XPU_TLE_ROOT):
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
+        if "__init__.py" not in files:
             continue
-        rel_package_path = package.replace(".", "/")
-        if os.path.isdir(os.path.join(FLAGTREE_PYTHON_ROOT, rel_package_path)):
-            package_dir[package] = f"{FLAGTREE_PYTHON_ROOT}/{rel_package_path}"
-
-    # No main-tree TLE entry here either: see _merge_xpu_packages.
-
-    return package_dir
-
-
-def _patch_xpu_cmdclass(existing_cmdclass):
-    cmdclass = dict(existing_cmdclass or {})
-    original_build_py = cmdclass.get("build_py")
-    if original_build_py is None:
-        return cmdclass
-
-    class XpuBuildPy(original_build_py):
-
-        def find_data_files(self, package, src_dir):
-            # setuptools >= 79 can include symlink directories themselves in the
-            # manifest file list (SOURCES.txt), which then causes build_py to
-            # attempt to copy a directory as if it were a regular file and fail
-            # with "can't copy '...': doesn't exist or not a regular file".
-            # Filter out anything that is not a regular file so that only actual
-            # .py / binary files are passed to the copy step.
-            return [path for path in super().find_data_files(package, src_dir) if Path(path).is_file()]
-
-        def run(self):
-            self.force = True
-            build_triton_dir = Path(self.build_lib) / "triton"
-            if build_triton_dir.exists():
-                shutil.rmtree(build_triton_dir)
-            return super().run()
-
-    cmdclass["build_py"] = XpuBuildPy
-    return cmdclass
+        relative_dir = os.path.relpath(root, XPU_TLE_ROOT)
+        package = "triton.experimental.tle"
+        if relative_dir != ".":
+            package += "." + relative_dir.replace(os.sep, ".")
+        yield package, root
 
 
 def _patch_llvm_exports():
@@ -352,8 +259,9 @@ def install_python_impl(cached_path, flagtree_dir):
     """Stage the compiled XPU Python implementation into the tree.
 
     The package mirrors the installed layout under `python/`, so this is a
-    straight overlay onto `third_party/xpu/python/`.  Two kinds of file travel
-    in it: the compiled modules, and the decoded intrinsic tables
+    staging into the main `python/` tree, except the independent XPU TLE
+    extension, whose sources and binaries must share `third_party/xpu/tle`.
+    Two kinds of file travel in it: the compiled modules, and the decoded intrinsic tables
     (`triton/backends/_tables/*.json`), which cannot be decoded at build time
     (see `_TABLE_TAGS`).
 
@@ -365,7 +273,7 @@ def install_python_impl(cached_path, flagtree_dir):
     src_root = os.path.join(str(cached_path), "python")
     if not os.path.isdir(src_root):
         raise RuntimeError(f"[XPU] incomplete python-impl artifact: missing {src_root}")
-    dst_root = os.path.join(flagtree_dir, "third_party", "xpu", "python")
+    dst_root = os.path.join(flagtree_dir, FLAGTREE_PYTHON_ROOT)
     suffixes = tuple(s for s in importlib.machinery.EXTENSION_SUFFIXES if s != ".so")
     tables_rel = os.path.join("triton", "backends", "_tables")
     staged = []
@@ -385,10 +293,25 @@ def install_python_impl(cached_path, flagtree_dir):
 
     _remove_restored_source_modules(dst_root)
     _sweep_stale_python_impl_modules(dst_root, package_modules)
+    tle_modules = {
+        Path(*rel.parts[3:])
+        for rel in package_modules
+        if rel.parts[:3] == ("triton", "experimental", "tle")
+    }
+    _sweep_stale_python_impl_modules(os.path.join(flagtree_dir, XPU_TLE_ROOT), tle_modules)
 
     modules = tables = 0
+    tle_prefix = os.path.join("triton", "experimental", "tle") + os.sep
     for source, rel, is_module, is_table in staged:
-        dst = os.path.join(dst_root, rel)
+        if rel.startswith(tle_prefix):
+            dst = os.path.join(flagtree_dir, XPU_TLE_ROOT, rel[len(tle_prefix):])
+        else:
+            dst = os.path.join(dst_root, rel)
+        # The artifact also contains compiled package initializers, named
+        # e.g. gpu.abi3.so. Keep the source package entry point instead.
+        module_name = os.path.basename(dst).split(".", 1)[0]
+        if is_module and os.path.isfile(os.path.join(os.path.dirname(dst), module_name, "__init__.py")):
+            continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(source, dst)
         modules += is_module
@@ -762,9 +685,13 @@ def _compiled_python_packages():
     matching those would name packages that hold no Python module at all.
     """
     suffixes = tuple(s for s in importlib.machinery.EXTENSION_SUFFIXES if s != ".so")
-    # Both roots are walked down to the package root itself, so `relative_to`
+    # Each root is walked down to the package root itself, so `relative_to`
     # yields a package-relative path that the prefix can be joined onto.
-    roots = ((Path(XPU_PYTHON_ROOT) / "triton", "triton"), (Path(BACKEND_ROOT), "triton.backends.xpu"))
+    roots = (
+        (Path(FLAGTREE_PYTHON_ROOT) / "triton", "triton"),
+        (Path(BACKEND_ROOT), "triton.backends.xpu"),
+        (Path(XPU_TLE_ROOT), "triton.experimental.tle"),
+    )
     for root, prefix in roots:
         if not root.is_dir():
             continue
@@ -778,6 +705,14 @@ def _compiled_python_packages():
                 continue
             rel = so.parent.relative_to(root)
             yield prefix if str(rel) == "." else f"{prefix}.{str(rel).replace(os.sep, '.')}"
+
+
+def _add_compiled_python_package_data(package_data):
+    """Register compiled XPU modules after build_ext has staged them."""
+    for package in _compiled_python_packages():
+        package_data.setdefault(package, [])
+        if "*.so" not in package_data[package]:
+            package_data[package].append("*.so")
 
 
 def get_package_data(backends):
@@ -803,10 +738,7 @@ def get_package_data(backends):
             break
     # Compiled XPU Python implementation: `.so` files sit where the `.py`
     # modules used to, and only `package_data` copies them into the wheel.
-    for package in _compiled_python_packages():
-        package_data.setdefault(package, [])
-        if "*.so" not in package_data[package]:
-            package_data[package].append("*.so")
+    _add_compiled_python_package_data(package_data)
     return package_data
 
 
@@ -835,6 +767,7 @@ def overlay_runtime_so(cache, build_py_command=None, backends=None):
     if build_py_command is None or backends is None:
         return
     build_py_command.distribution.package_data = build_py_command.distribution.package_data or {}
+    _add_compiled_python_package_data(build_py_command.distribution.package_data)
     for backend in backends:
         if backend.name == "xpu":
             ensure_xpu_launch_static_lib(backend)
@@ -1127,42 +1060,3 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     )
     if is_xpu:
         overlay_runtime_so(cache)
-
-
-def _wrap_setup(original_setup):
-    if getattr(original_setup, "_xpu_python_root_patched", False):
-        return original_setup
-
-    def setup_with_xpu_python_root(*args, **kwargs):
-        kwargs["packages"] = _merge_xpu_packages(kwargs.get("packages", []))
-        kwargs["package_dir"] = _merge_xpu_package_dir(kwargs.get("package_dir", {}))
-        kwargs["cmdclass"] = _patch_xpu_cmdclass(kwargs.get("cmdclass", {}))
-        return original_setup(*args, **kwargs)
-
-    setup_with_xpu_python_root._xpu_python_root_patched = True
-    setup_with_xpu_python_root._xpu_original_setup = original_setup
-    return setup_with_xpu_python_root
-
-
-def _patch_setup_for_xpu_python_root():
-    patched = False
-
-    frame = inspect.currentframe()
-    while frame is not None:
-        setup_func = frame.f_globals.get("setup")
-        if callable(setup_func):
-            frame.f_globals["setup"] = _wrap_setup(setup_func)
-            patched = True
-        frame = frame.f_back
-
-    main_module = sys.modules.get("__main__")
-    if main_module is not None and hasattr(main_module, "setup"):
-        main_module.setup = _wrap_setup(main_module.setup)
-        patched = True
-
-    main_file = getattr(main_module, "__file__", "") if main_module is not None else ""
-    if not patched and os.path.basename(main_file) == "setup.py":
-        raise RuntimeError("xpu setup hook could not find setup() to patch")
-
-
-_patch_setup_for_xpu_python_root()

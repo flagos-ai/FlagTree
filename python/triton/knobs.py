@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from typing import cast, Any, Callable, Generator, Generic, Optional, Protocol, Type, TypeVar, TypedDict, TYPE_CHECKING, Union
 
 from triton._C.libtriton import getenv, getenv_bool  # type: ignore
+from ._flagtree_spec import spec_call
 
 if TYPE_CHECKING:
     from .runtime.cache import CacheManager, RemoteCacheBackend
@@ -732,3 +733,7 @@ proton = proton_knobs()
 def refresh_knobs():
     runtime.debug = env_bool("TRITON_DEBUG").get()
     compilation.instrumentation_mode = env_str("TRITON_INSTRUMENTATION_MODE", "").get()
+
+
+# flagtree backend call specialization
+spec_call("knobs_extend_globals", globals())

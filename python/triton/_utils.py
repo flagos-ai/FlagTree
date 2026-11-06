@@ -165,5 +165,6 @@ def is_namedtuple(val):
 
 
 # flagtree backend func specialization
+validate_block_shape = spec_func("validate_block_shape") or validate_block_shape
 apply_with_path = spec_func("apply_with_path")
 _tuple_create = spec_func("_tuple_create")
