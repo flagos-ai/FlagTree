@@ -571,6 +571,9 @@ class HIPBackend(BaseBackend):
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
         from .deferred_raw import (deferred_raw_materialize, finish_deferred_raw_materialize)
         deferred_raw_materialize(mod, pm)
+        # Kernel-level breadcrumb for make_amdgcn: prefer dcc for tle.raw when safe.
+        # Must be recorded before dsl_region_inline removes the ops.
+        metadata["hcu_tle_raw"] = "tle.dsl_region" in str(mod)
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         kernel_name = mod.get_entry_func_name()
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
@@ -775,15 +778,25 @@ class HIPBackend(BaseBackend):
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
+        kernel_ir = str(src)
+        dcc = os.environ.get("TRITON_HIP_DCC_PATH", "/opt/dtk/dcc/bin/dcc")
+        # call_smem / Triton buffer rsrc is rejected by dcc; keep aillvm there.
+        use_dcc = (bool(metadata.get("hcu_tle_raw")) and os.path.isfile(dcc)
+                   and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
+        metadata["hcu_raw_dcc"] = use_dcc
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
-                f.write(str(src))
+                f.write(kernel_ir)
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
 
-            clang_path = HIPBackend.path_to_rocm_clang()
-            clang_args = HIPBackend._get_clang_args(metadata, options) + flags
+            if use_dcc:
+                clang_path = dcc
+                clang_args = ["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
+            else:
+                clang_path = HIPBackend.path_to_rocm_clang()
+                clang_args = HIPBackend._get_clang_args(metadata, options) + flags
 
             # Fixme: link it before run llvm.optimize_module()
             if metadata['use_dushmem']:
@@ -807,6 +820,13 @@ class HIPBackend(BaseBackend):
             if options.wdra_enabled:
                 log = result.stdout + result.stderr
                 print(log, flush=True)
+            if os.environ.get("HCU_RAW_DCC_TRACE"):
+                print(
+                    f"[hcu_raw_dcc] name={metadata.get('name')} "
+                    f"tle_raw={metadata.get('hcu_tle_raw')} use_dcc={use_dcc} "
+                    f"clang={clang_path}",
+                    flush=True,
+                )
 
             with open(asm_file, "r") as fd_out:
                 amdgcn = fd_out.read()
