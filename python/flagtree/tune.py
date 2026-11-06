@@ -89,11 +89,11 @@ def _config_key(value, *, workload=False):
             Config = None
         if Config is not None and value_type is Config:
             if value.pre_hook is not None:
-                raise TypeError("Distributed tuning does not support triton.Config pre_hook")
+                raise TypeError("Tuning does not support triton.Config pre_hook")
             if value.ir_override is not None or value.kwargs.get("ir_override") is not None:
-                raise TypeError("Distributed tuning does not support triton.Config ir_override")
+                raise TypeError("Tuning does not support triton.Config ir_override")
             return ["triton.Config", encode(vars(value))]
-        raise TypeError(f"Unsupported distributed configuration value: {value_type.__name__}")
+        raise TypeError(f"Unsupported configuration value: {value_type.__name__}")
 
     return json.dumps(encode(value), separators=(",", ":"), ensure_ascii=True)
 
