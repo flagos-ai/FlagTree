@@ -151,6 +151,10 @@ def _cuda_backend_available():
 class TestLayoutEncoding:
     """Test layout encoding"""
 
+    def test_layout_attachment_uses_existing_gpu_api(self):
+        assert callable(tle.gpu.set_layout)
+        assert not hasattr(tle, "encoding")
+
     def test_swizzled_shared_layout_default(self):
         """Test default swizzled shared layout creation"""
         layout = tle.gpu.swizzled_shared_layout.make_default(2)
@@ -633,6 +637,7 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, '_flatten_ir')
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
+        assert hasattr(tle.gpu.buffered_tensor, 'subslice')
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot")
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
@@ -716,6 +721,36 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match="out of range"):
             buffer.subslice(start, length, dim, _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
+
+        assert view.handle == "subslice_handle"
+        assert view.shape == [8, 1024]
+        assert view.type.alloc_shape == [32, 1024]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
+            "base",
+            [16, 0],
+        )
+
+    @pytest.mark.parametrize(
+        ("offsets", "shape", "message"),
+        [
+            ((0, ), (8, 1024), "match the buffer rank"),
+            ((25, 0), (8, 1024), "outside extent"),
+            ((4, 0), (8, 1024), "aligned power-of-two"),
+            ((0, 0), (6, 1024), "aligned power-of-two"),
+        ],
+    )
+    def test_buffered_tensor_subslice_rejects_invalid_static_views(self, offsets, shape, message):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        with pytest.raises(ValueError, match=message):
+            buffer.subslice(offsets, shape, _semantic=semantic)
 
 
 class TestCachePolicyFrontend:
@@ -1115,6 +1150,7 @@ class TestIntegration:
         assert hasattr(tle.gpu, 'READY')
         assert not hasattr(tle.gpu, 'barrier_expect_bytes')
         assert "barrier" in inspect.signature(tle.gpu.copy).parameters
+        assert "shape" in inspect.signature(tle.gpu.local_ptr).parameters
 
     def test_tle_functions_have_docstrings(self):
         """Test TLE functions have docstrings"""
