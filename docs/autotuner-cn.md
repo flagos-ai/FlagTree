@@ -19,6 +19,7 @@ def autotune(
     config_space,
     key_fn,
     prune_fn=None,
+    *,
     cache_dir=None,
     cache_version: str | None = None,
 ):
@@ -31,7 +32,7 @@ def autotune(
 | `key_fn` | 必选参数：接受与被装饰函数相同参数的函数，返回用于缓存的可哈希 key |
 | `prune_fn` | 可选参数：可选的候选裁剪函数；返回真值保留候选，返回假值丢弃候选。 |
 | `cache_dir` | 可选参数：磁盘缓存目录。默认读取环境变量或使用默认路径；传入 `False` 关闭磁盘缓存。 |
-| `cache_version` | 可选参数：字符串或 `None`。用于区分需要重新调优的实现，传入自定义值字符串值可以丢弃旧缓存。 |
+| `cache_version` | 可选参数：字符串或 `None`。用于区分需要重新调优的实现，传入自定义值字符串值可以强制生成新的磁盘缓存。 |
 
 ## 2. 基本用法
 
