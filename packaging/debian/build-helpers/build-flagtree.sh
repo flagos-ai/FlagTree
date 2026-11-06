@@ -16,8 +16,8 @@ set -euo pipefail
 
 BACKEND="${1:-nvidia}"
 
-HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=./backends.sh
+HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../build-helpers" && pwd)"
+# shellcheck source=../../build-helpers/backends.sh
 . "${HELPERS_DIR}/backends.sh"
 
 # Every per-backend fact comes from packaging/backends.conf; an unlisted
@@ -26,6 +26,11 @@ WHEEL_SOURCE="$(backend_field "$BACKEND" wheel)"
 case "$WHEEL_SOURCE" in
     source) WHEEL_STAGE=wheel-builder ;;
     index)  WHEEL_STAGE=wheel-index ;;
+    "")
+        echo "ERROR: backend '$BACKEND' has an empty wheel column in packaging/backends.conf:"
+        echo "       the deb line does not package it (no ubuntu release's python3 matches its wheel)"
+        exit 1
+        ;;
     *)
         echo "ERROR: backend '$BACKEND' has wheel='$WHEEL_SOURCE'; expected source or index"
         exit 1
@@ -56,7 +61,7 @@ DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-auto}"
 SHLIBDEPS_EXCLUDE="${SHLIBDEPS_EXCLUDE:-$(backend_field "$BACKEND" excludes)}"
 FLAGTREE_SMOKE="${FLAGTREE_SMOKE:-$(backend_field "$BACKEND" smoke)}"
 FLAGTREE_SMOKE="${FLAGTREE_SMOKE:-import}"
-# Only consulted for wheel=index backends; see build-helpers/fetch-wheel.sh.
+# Only consulted for wheel=index backends; see packaging/build-helpers/fetch-wheel.sh.
 FLAGTREE_PYPI_INDEX="${FLAGTREE_PYPI_INDEX:-}"
 FLAGTREE_WHEEL_LOCAL="${FLAGTREE_WHEEL_LOCAL:-}"
 
