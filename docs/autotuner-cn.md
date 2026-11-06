@@ -114,7 +114,7 @@ result = process_data(
 
 **`batch_size` 固定为 64，`kernel_config` 继续参与调优。** 正式执行最佳配置时，也使用 `batch_size=64`。
 
-省略 `autotune_allow_arg_overwrite=True` 时则会报参数冲突；允许覆盖时会产生一条 Python warning。
+省略 `autotune_allow_arg_overwrite=True` 时则会报参数冲突。
 
 分布式调用在显式覆盖时也需要设置 `autotune_allow_arg_overwrite=True`。任一 rank 未允许覆盖却传入冲突参数时，错误会在准备阶段收集，并由全组统一报错；
 
