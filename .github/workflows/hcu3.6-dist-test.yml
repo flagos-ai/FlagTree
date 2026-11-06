@@ -90,8 +90,10 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-          # Silence ProcessGroupNCCL INFO spam (I.... ProcessGroupNCCL.cpp:...).
-          export TORCH_CPP_LOG_LEVEL=ERROR
+          # Silence ProcessGroupNCCL INFO (LOG(INFO) via glog). HCU torch is
+          # built with C10_USE_GLOG; TORCH_CPP_LOG_LEVEL cannot raise glog's
+          # minloglevel (UpdateLoggingLevelsFromFlags only std::min's it).
+          export GLOG_minloglevel=2
           export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-188a510-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
           cd third_party/hcu/python/tutorials/tle/raw/dushmem
           # Avoid default 29500 collisions on shared self-hosted runners.
