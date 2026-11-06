@@ -70,7 +70,7 @@ def process_data(x, *, kernel_config: triton.Config, batch_size: int):
 result = process_data(x)
 ```
 
-没有缓存时，调优器测试上述两个候选组合，选出更快的一组。有缓存且缓存的配置在 config_space 里则复用缓存，否则进行调优。 
+没有缓存时，调优器测试上述两个候选组合，选出更快的一组。有缓存且缓存的配置在 config_space 里则复用缓存，否则进行调优。
 
 | 调用参数 | 默认值 | 行为 |
 | --- | --- | --- |
