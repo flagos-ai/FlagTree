@@ -77,6 +77,20 @@ def _validate_reader_names(readers):
     return tuple(names)
 
 
+# Pipe scope strings. "cta" restricts the pipe to a single CTA (default);
+# "cluster" places the pipe payload buffers in distributed shared memory shared
+# across the CTA cluster, so producer/consumer partitions on peer CTAs can
+# access slots remotely through tle.remote pointers.
+_VALID_PIPE_SCOPES = ("cta", "cluster")
+
+
+def _validate_pipe_scope(scope):
+    scope = _unwrap_pipe_constexpr(scope)
+    if scope not in _VALID_PIPE_SCOPES:
+        raise ValueError(f"tle.pipe scope must be one of {_VALID_PIPE_SCOPES}, got {scope!r}")
+    return scope
+
+
 @tl.builtin
 def pipe(
     *,
@@ -107,11 +121,20 @@ def pipe(
     proven disjoint, are rejected. A single producer continues to use the
     ordinary SPSC lowering.
 
+    scope="cta" (default) creates a pipe private to a single CTA. scope="cluster"
+    creates a distributed shared memory pipe: the payload buffers become visible
+    to the whole CTA cluster so partitions on peer CTAs can read/write slots
+    through ``tle.remote`` pointers. Cluster sharing is not declared by the
+    caller: the backend promotes every local allocation to the DSM-shared form
+    once the module contains a ``tle.remote_pointers`` op. Use
+    ``tle.gpu.alloc(..., sharding=...)`` only when the payload is deduplicated
+    along one mesh axis, so the backend can size the cluster consumers.
+
     one_shot=True models a single ready/full edge. The writer still commits and
     readers still wait, but acquire/release/close are not part of the contract.
     """
     capacity = _unwrap_pipe_constexpr(capacity)
-    scope = _unwrap_pipe_constexpr(scope)
+    scope = _validate_pipe_scope(scope)
     name = _unwrap_pipe_constexpr(name)
     one_shot = _unwrap_pipe_constexpr(one_shot)
     reader_names = _validate_reader_names(readers)
@@ -120,8 +143,6 @@ def pipe(
         raise ValueError(f"tle.pipe capacity must be a compile-time int, got {type(capacity).__name__}")
     if capacity <= 0:
         raise ValueError(f"tle.pipe capacity must be positive, got {capacity}")
-    if scope != "cta":
-        raise ValueError(f"tle.pipe MVP supports only scope='cta', got {scope!r}")
     if name is not None and not isinstance(name, str):
         raise ValueError(f"tle.pipe name must be a string or None, got {type(name).__name__}")
     if not isinstance(one_shot, bool):

@@ -151,8 +151,21 @@ class WarpSpecializeCallerContext:
         fn.set_attr("ttg.num-warps", builder.get_int32_attr(self.num_warps))
 
 
+def _unwrap_ws_value(value):
+    """Unwrap a single constexpr layer without rebuilding containers.
+
+    ``tl._unwrap_if_constexpr`` recursively rebuilds ``language.tuple`` values,
+    which retypes every element and therefore requires each element to expose
+    ``.type``. Compile-time objects such as ``tle.device_mesh`` are deliberately
+    carried as constexpr (see ``_as_call_args``); a recursive unwrap would drop
+    that wrapper and retyping would fail with
+    ``'device_mesh' object has no attribute 'type'``.
+    """
+    return value.value if isinstance(value, constexpr) else value
+
+
 def _as_call_args(args):
-    args = tl._unwrap_if_constexpr(args)
+    args = _unwrap_ws_value(args)
     if isinstance(args, tl.tuple):
         args = tuple(args.values)
     elif isinstance(args, tuple):
@@ -164,20 +177,26 @@ def _as_call_args(args):
         if isinstance(arg, (tl.dtype, float, int, bool, str, tuple)) or isinstance(getattr(arg, "type", None),
                                                                                    tl.constexpr_type):
             return tl.constexpr(arg)
+        # Compile-time objects that are not triton IR values (e.g. tle.device_mesh)
+        # must be carried as constexpr so call_JitFunction routes them through the
+        # constexpr arg channel (args_cst) instead of flatten_values_to_ir, which
+        # would otherwise treat them as IR values and require .type/_flatten_ir.
+        if not isinstance(arg, tl.base_value) and not isinstance(arg, constexpr):
+            return tl.constexpr(arg)
         return arg
 
     return tuple(normalize(arg) for arg in args)
 
 
 def _as_warp_specialize_entry(entry, index: int):
-    entry = tl._unwrap_if_constexpr(entry)
+    entry = _unwrap_ws_value(entry)
     if isinstance(entry, tl.tuple):
         entry = tuple(entry.values)
     if not isinstance(entry, tuple):
         raise ValueError(f"warp_specialize entry {index} must be a tuple, got {type(entry).__name__}")
     if len(entry) != 2:
         raise ValueError(f"warp_specialize entry {index} must be (fn, args); pass cid as a normal constexpr arg")
-    if not isinstance(tl._unwrap_if_constexpr(entry[1]), (tuple, tl.tuple)):
+    if not isinstance(_unwrap_ws_value(entry[1]), (tuple, tl.tuple)):
         raise ValueError(f"warp_specialize entry {index} args must be a tuple")
     return entry
 
@@ -236,7 +255,7 @@ def warp_specialize(
     """
     if _generator is None:
         raise ValueError("warp_specialize requires a Triton code generator")
-    functions_and_args = tl._unwrap_if_constexpr(functions_and_args)
+    functions_and_args = _unwrap_ws_value(functions_and_args)
     mthreads_enabled = mthreads_common.enabled()
     if mthreads_enabled:
         worker_num_warps, worker_num_regs = mthreads_warp_specialize.normalize_config(worker_num_warps, worker_num_regs)
@@ -332,6 +351,49 @@ def memory_space(input, space, _builder=None, _semantic: TLESemantic | None = No
     return input
 
 
+_VALID_MESH_AXES = {"cluster_x", "cluster_y", "cluster_z"}
+
+
+def _resolve_sharding_placement(sharding, storage, _semantic):
+    """Map a ``tle.sharding(...)`` spec to this buffer's cluster placement.
+
+    Returns the mesh axis that indexes the physical replicas, or ``None`` when
+    the spec declares no split axis (a single copy shared by the whole cluster).
+
+    The spec describes the logical tile while the buffer may carry an extra
+    leading pipeline-stage dimension, so the split/buffer rank correspondence is
+    intentionally not checked; only the set of split axes matters.
+
+    Raises:
+        ValueError: when the spec is partial, splits along more than one axis,
+            names a non-cluster axis, or is used for a non-SMEM allocation.
+    """
+    if storage is not tle.smem:
+        raise ValueError("sharding is only supported for tle.gpu.smem allocations")
+
+    split = getattr(sharding, "split", None)
+    partial = getattr(sharding, "partial", None)
+    if split is None or partial is None:
+        raise TypeError(f"sharding must be a tle.sharding(...) spec, got {type(sharding).__name__}")
+    if partial:
+        raise ValueError(f"alloc sharding cannot be partial, got {list(partial)}")
+
+    axes = {axis for dim_axes in split for axis in dim_axes}
+    if len(axes) > 1:
+        raise ValueError(f"alloc sharding supports at most one split axis, got {sorted(axes)}")
+    axis = next(iter(axes), None)
+    if axis is not None and axis not in _VALID_MESH_AXES:
+        raise ValueError(f"alloc sharding split axis must be one of {sorted(_VALID_MESH_AXES)}, got {axis!r}")
+
+    # Make the launch cluster dimensions available even when the kernel never
+    # calls tle.remote(..., scope=mesh). Imported lazily to avoid a module cycle.
+    mesh = getattr(sharding, "mesh", None)
+    if mesh is not None and _semantic is not None:
+        from ..distributed import _apply_mesh_cluster_launch
+        _apply_mesh_cluster_launch(mesh, _semantic)
+    return axis
+
+
 @tl.builtin
 def alloc(
     shape: tuple,
@@ -342,6 +404,7 @@ def alloc(
     alias: Optional[tle.buffered_tensor] = None,
     alias_offset_bytes: int = 0,
     nv_mma_shared_layout=True,
+    sharding=None,
     _semantic: TLESemantic | None = None,
 ) -> tle.buffered_tensor:
     """
@@ -371,6 +434,16 @@ def alloc(
             when the tile is a TCU-eligible 2D operand; otherwise it uses the
             generic swizzled encoding. An explicit ``nv_mma_shared_layout``
             object is still rejected.
+        sharding: Optional ``tle.sharding(...)`` spec declaring the cluster
+            placement of this buffer:
+              * one split axis  -> cluster-shared, one replica per coordinate on
+                that axis (records the low-level ``mesh_axis`` attribute);
+              * no split axis   -> cluster-shared, a single replica reused by the
+                whole cluster;
+              * omitted         -> CTA-private, one replica per CTA.
+            Partial specs and specs splitting more than one axis are rejected.
+            The spec's rank is not checked because the buffer may carry an extra
+            leading pipeline-stage dimension.
         _semantic: Semantic analyzer (internal use)
 
     Returns:
@@ -601,6 +674,19 @@ def alloc(
                 layout,
                 _semantic,
             )
+        # Cluster placement of this buffer. Three states, all expressed through
+        # ttg.local_alloc.mesh_share / mesh_axis:
+        #   sharding with one split axis -> mesh_share, mesh_axis=<that axis>
+        #                                   (one replica per axis coordinate)
+        #   sharding with no split axis  -> mesh_share only
+        #                                   (one replica for the whole cluster)
+        #   no sharding                  -> CTA-private (one replica per CTA)
+        sharding = tl._unwrap_if_constexpr(sharding)
+        if sharding is not None:
+            mesh_axis = _resolve_sharding_placement(sharding, storage, _semantic)
+            tensor_handle.set_attr("ttg.local_alloc.mesh_share", _semantic.builder.get_bool_attr(True))
+            if mesh_axis is not None:
+                tensor_handle.set_attr("ttg.local_alloc.mesh_axis", _semantic.builder.get_string_attr(mesh_axis))
         return tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
 
     except Exception as e:
