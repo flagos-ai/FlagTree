@@ -90,6 +90,8 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          # Silence ProcessGroupNCCL INFO spam (I.... ProcessGroupNCCL.cpp:...).
+          export TORCH_CPP_LOG_LEVEL=ERROR
           export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-188a510-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
           cd third_party/hcu/python/tutorials/tle/raw/dushmem
           # Avoid default 29500 collisions on shared self-hosted runners.
