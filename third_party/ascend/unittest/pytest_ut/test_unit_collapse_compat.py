@@ -51,6 +51,17 @@ def test_static_sizes_and_ssa_collision():
 
 
 @pytest.mark.parametrize('text', [
+    _module(shape='1x1x?', strides='128, 128, 1', output='?', output_strides='1').replace(
+        '[[0, 1], [2]]', '[[0, 1, 2]]'),
+    _module(shape='?x1x?', strides='725760, 512, 1'),
+])
+def test_multiple_or_interior_unit_axes(text):
+    result = late.lower_unit_collapses(text)
+    assert 'memref.collapse_shape' not in result
+    assert 'memref.subview' in result
+
+
+@pytest.mark.parametrize('text', [
     _module(shape='2x?x?'),
     _module(output_strides='123, 1'),
     _module().replace('[[0, 1], [2]]', '[[0], [1, 2]]'),
@@ -72,8 +83,19 @@ def test_native_verifiers(tmp_path):
         pytest.skip('Requires the two recorded MLIR toolchains, no NPU required')
     before, after = tmp_path / 'before.mlir', tmp_path / 'after.mlir'
     before.write_text(_module())
-    after.write_text(late.lower_unit_collapses(before.read_text()))
-    for tool, accepted in [(old, before), (old, after), (new, after)]:
+    variants = [
+        _module(),
+        _module(shape='1x1x?', strides='128, 128, 1', output='?',
+                output_strides='1').replace('[[0, 1], [2]]', '[[0, 1, 2]]'),
+        _module(shape='?x1x?', strides='725760, 512, 1')
+    ]
+    for text in variants:
+        after.write_text(late.lower_unit_collapses(text))
+        for tool in (old, new):
+            run = subprocess.run([str(tool), str(after), '--allow-unregistered-dialect', '-o', os.devnull],
+                                 capture_output=True, text=True)
+            assert run.returncode == 0, run.stderr
+    for tool, accepted in [(old, before)]:
         run = subprocess.run([str(tool), str(accepted), '--allow-unregistered-dialect', '-o', os.devnull],
                              capture_output=True, text=True)
         assert run.returncode == 0, run.stderr

@@ -37,7 +37,7 @@ def split_fields(text):
 
 
 def lower_unit_collapses(text):
-    """Express proven leading-unit drops with a version-neutral subview.
+    """Express proven unit-dimension drops with a version-neutral subview.
 
     CANN's LLVM 18 and the optimization tool's LLVM 22 disagree on the stride
     inferred for collapse_shape of [1, ?, ...]. Dropping that unit dimension
@@ -69,15 +69,23 @@ def lower_unit_collapses(text):
         dims = shape[1][:-1].split('x')
         strides = [v.strip() for v in layout[1].split(',')]
         groups = json.loads(association[1])
-        expected_groups = [[0, 1]] + [[i] for i in range(2, len(dims))]
-        expected_shape = 'x'.join(dims[1:] + [shape[2]])
-        expected_layout = 'strided<[' + ', '.join(strides[1:]) + ']' + (layout[2] or '') + '>'
-        if (len(dims) < 2 or dims[0] != '1' or groups != expected_groups or len(strides) != len(dims)
-                or dst != [expected_shape, expected_layout, *src[2:]]):
+        if (len(strides) != len(dims) or not groups or len(groups) >= len(dims)
+                or [axis for group in groups for axis in group] != list(range(len(dims)))):
             output.append(line)
             continue
-        sizes = ['1']
-        for axis, dim in enumerate(dims[1:], 1):
+        kept = []
+        for group in groups:
+            nonunit = [axis for axis in group if dims[axis] != '1']
+            if not group or len(nonunit) > 1:
+                break
+            kept.append(nonunit[0] if nonunit else group[-1])
+        expected_shape = 'x'.join([dims[i] for i in kept] + [shape[2]])
+        expected_layout = 'strided<[' + ', '.join(strides[i] for i in kept) + ']' + (layout[2] or '') + '>'
+        if len(kept) != len(groups) or dst != [expected_shape, expected_layout, *src[2:]]:
+            output.append(line)
+            continue
+        sizes = []
+        for axis, dim in enumerate(dims):
             if dim == '?':
                 index, size = f'%{prefix}{serial}_axis', f'%{prefix}{serial}_size'
                 serial += 1
