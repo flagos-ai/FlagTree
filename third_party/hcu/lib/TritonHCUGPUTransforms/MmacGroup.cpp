@@ -145,6 +145,16 @@ MfmaDatabase::MfmaDatabase(MLIRContext *context) {
     }                                                                          \
   }
 
+// Macro for MMAC intrinsics that have no ROCDL dialect op (e.g. the fp64 one).
+// The value is the LLVM intrinsic name itself; the lowering emits an
+// llvm.call_intrinsic with it instead of a ROCDL operation.
+#define TRITON_MMAC_INTRINSIC(m, n, aET, bET, intrinsicName, k, kBase)         \
+  {                                                                            \
+    /*key=*/{3, m, n, aET.getTypeID(), bET.getTypeID()}, /*value=*/{           \
+      {StringRef(intrinsicName), k, kBase},                                    \
+    }                                                                          \
+  }
+
   Builder b(context);
   auto f64T = b.getF64Type();
   auto f32T = b.getF32Type();
@@ -159,6 +169,13 @@ MfmaDatabase::MfmaDatabase(MLIRContext *context) {
   auto fp4T = b.getType<Float4E2M1FNType>();
 
   mfmaMap = {
+      // f64 inputs
+      // mmac.f64.16x16x4f64
+      // HCU has no ROCDL op for the fp64 matrix core, so reference the LLVM
+      // intrinsic directly.
+      TRITON_MMAC_INTRINSIC(16, 16, f64T, f64T, "llvm.hcu.mmac.16x16x4.f64", 4,
+                            1),
+
       // f32 inputs
       // mmac_f32_16x16x8f32
       TRITON_MMAC(16, 16, f32T, f32T, mmac_f32_16x16x8f32, 8, 2),
