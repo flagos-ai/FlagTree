@@ -709,12 +709,6 @@ class CUDABackend(BaseBackend):
                 if knobs.nvidia.dump_ptxas_log:
                     with open(flog.name) as log_file:
                         print(log_file.read())
-                # begin flagtree pipeline enhance: the register spills ptxas -v
-                # reports, read by the wgmma carry guard (_make_cubin_with_carry_guard)
-                with open(flog.name) as log_file:
-                    metadata["ptxas_spill_bytes"] = sum(
-                        int(n) for n in re.findall(r"(\d+) bytes spill stores", log_file.read()))
-                # end flagtree pipeline enhance
 
                 if os.path.exists(fsrc.name):
                     os.remove(fsrc.name)
@@ -755,18 +749,30 @@ please share the reproducer above with Triton project.
         return cubin
 
     # begin flagtree pipeline enhance
+    @staticmethod
+    def _ptxas_spill_bytes(metadata):
+        """The spill traffic ptxas -v reports: store and load bytes together.
+
+        parse_ptxas_resource_usage (make_cubin) records both. A spilled value
+        is stored once and may be reloaded at several uses, so the loads are
+        the part a loop pays for on every iteration; the sum is what the wgmma
+        carry guard compares.
+        """
+        return metadata.get("ptxas_spill_store_bytes", 0) + metadata.get("ptxas_spill_load_bytes", 0)
+
     def _make_cubin_with_carry_guard(self, src, metadata, options, capability, source_ir):
         """Assemble, and revert the wgmma carry when it adds spills.
 
         Keeping the accumulator in flight across the iterations can raise the
         register pressure of large tiles; ptxas then spills and the kernel gets
-        slower. When the carry was applied and ptxas reports spills, the kernel
-        is lowered once more without the carry; if that spills less, that
-        lowering replaces this one (ReplaceLowering), so the kernel is lowered
-        twice in that case and never a third time.
+        slower. When the carry was applied and ptxas reports spills (store and
+        load bytes, _ptxas_spill_bytes), the kernel is lowered once more
+        without the carry; if that spills less, that lowering replaces this
+        one (ReplaceLowering), so the kernel is lowered twice in that case and
+        never a third time.
         """
         cubin = self.make_cubin(src, metadata, options, self.target.arch)
-        spills = metadata.get("ptxas_spill_bytes", 0)
+        spills = self._ptxas_spill_bytes(metadata)
         if not metadata.get("pipeline_wgmma_carry_applied") or spills == 0 or "ttir" not in source_ir:
             return cubin
         # An overridden IR does not come from the TTIR the probe would lower, and
@@ -795,12 +801,12 @@ please share the reproducer above with Triton project.
         llir = self.make_llir(mod, probe_metadata, probe_options, capability)
         ptx = self.make_ptx(llir, probe_metadata, probe_options, self.target.arch)
         probe_cubin = self.make_cubin(ptx, probe_metadata, probe_options, self.target.arch)
-        probe_spills = probe_metadata.get("ptxas_spill_bytes", 0)
+        probe_spills = self._ptxas_spill_bytes(probe_metadata)
         if probe_spills < spills:
             probe_metadata.update(probe_options.__dict__)
             products = {"ttgir": parse_module(ttgir, ".ttgir"), "llir": llir, "ptx": ptx, "cubin": probe_cubin}
             raise ReplaceLowering(products, probe_metadata,
-                                  f"wgmma carry spills {spills} bytes, {probe_spills} without it")
+                                  f"wgmma carry spills {spills} bytes (stores and loads), {probe_spills} without it")
         return cubin
 
     # end flagtree pipeline enhance
