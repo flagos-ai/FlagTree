@@ -132,6 +132,11 @@ bool vectorFitsRoot(Type rootOpTy);
 // E-dependent only through the layout CoreTiling leaves behind.
 bool vectorFitsReduceOperand(triton::xpu::ReduceOp redOp, Type operandTy);
 
+// ScanOp counterpart: the scan axis must be a whole number of vectors wide.
+// The predicate mirrors the reduce's on purpose -- same shape question, same
+// divisibility answer -- so the two stay in sync by construction.
+bool vectorFitsScanOperand(triton::xpu::ScanOp scanOp, Type operandTy);
+
 // The real fit oracle handed to `VectorizabilityAnalysis` (step 1.5b): answers
 // the three footprint questions the closure walk used to answer inline by
 // calling `getTotalElemsPerThread` itself. E-dependent, hence here; never
