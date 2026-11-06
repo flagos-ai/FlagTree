@@ -30,7 +30,7 @@ def _strided_shared_load(source, output, STEP: tl.constexpr):
 
 
 @pytest.mark.parametrize("step", [1, 2, 3])
-@pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr", "gpu.set_layout")
 def test_shared_vector_load_requires_pointer_contiguity(step):
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")

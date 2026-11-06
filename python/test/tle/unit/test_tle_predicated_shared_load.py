@@ -25,7 +25,7 @@ def _repeated_softmax(source, output, ROWS: tl.constexpr):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.require_tle("gpu.set_layout")
+@pytest.mark.skip_if_tle_unsupported("gpu.set_layout")
 @pytest.mark.parametrize("warps", (4, 8))
 def test_predicated_reduction_load_has_no_live_in_register(warps):
     if torch.cuda.get_device_capability() != (9, 0):
