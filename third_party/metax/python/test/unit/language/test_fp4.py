@@ -485,6 +485,8 @@ def test_metax_fp4_dot_scaled_pipeline(block, k, scenario, fa, fb, metax_device)
         assert torch.equal(actual[-32:], torch.full((32, ), 11.)), iteration
         assert torch.all((actual[32:-32].reshape(m, n).double() - expected).abs() <= bound), iteration
     assert "llvm.mxc.mma.f32." in kernel.asm["llir"]
+    if warps > 4 and k > step:
+        assert "memdesc<2x" in kernel.asm["ttgir"]
 
 
 @triton.jit

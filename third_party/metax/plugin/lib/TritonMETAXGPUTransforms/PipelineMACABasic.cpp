@@ -666,10 +666,6 @@ LogicalResult LoopPipeliner::collectFp4Graph(SetVector<Operation *> &ops) {
   auto dots = llvm::to_vector(forOp.getBody()->getOps<triton::DotOp>());
   if (dots.size() != 1 || isSingleShm)
     return failure();
-  // Larger warp groups can corrupt prefetched FP4 operand tiles even with two
-  // stages. Keep the original loop until their graph scheduling is corrected.
-  if (ttg::lookupNumWarps(dots.front()) > 4)
-    return failure();
   for (Operation &op : forOp.getBody()->without_terminator()) {
     if (auto load = dyn_cast<triton::LoadOp>(&op)) {
       if (load.getIsVolatile())
@@ -1047,6 +1043,11 @@ void LoopPipeliner::emitPrologue() {
   // %1 = other blocked ops %0
   // %2 = local_store %1
   Value zero = builder.create<arith::ConstantIntOp>(forOp.getLoc(), 0, 32);
+  // Membar skips the intrinsic local_store ops emitted below, so nothing else
+  // orders them after earlier shared-memory reads. The allocator may place the
+  // stage buffers over scratch still being read by other warps (for example
+  // the pre-loop accumulator convert_layout), so wait for all warps first.
+  builder.create<ttg::BarrierSharedOp>(forOp.getLoc());
   // set cvtMapping of dotsDeps.
   genDotDeps(builder, forOp, validLoads, prefetchMapping, prefetchMapping,
              loadsMapping, elemsMapping, dotsDeps, nextDotOperands,

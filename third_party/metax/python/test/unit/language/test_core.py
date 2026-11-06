@@ -5771,6 +5771,39 @@ def test_metax_int8_dot_invalid_accumulator(dtype, metax_device):
                                num_stages=1)
 
 
+@triton.jit
+def _metax_pipelined_dot_with_acc(A, B, C, Y, M: tl.constexpr, N: tl.constexpr, BK: tl.constexpr, K: tl.constexpr):
+    r, c, k = tl.arange(0, M), tl.arange(0, N), tl.arange(0, BK)
+    # Converting the loaded accumulator to the MMA layout goes through shared
+    # memory. The pipeline prologue then stores the first operand tiles, and the
+    # allocator may place them over that scratch while other warps still read it.
+    acc = tl.load(C + r[:, None] * N + c[None, :])
+    for start in range(0, K, BK):
+        a = tl.load(A + r[:, None] * K + start + k[None, :])
+        b = tl.load(B + (start + k[:, None]) * N + c[None, :])
+        acc = tl.dot(a, b, acc)
+    tl.store(Y + r[:, None] * N + c[None, :], acc)
+
+
+@pytest.mark.parametrize("warps,stages,m,n,k", [(8, 3, 32, 32, 96), (8, 4, 32, 32, 96), (8, 3, 64, 64, 128),
+                                                (8, 3, 64, 32, 128), (4, 3, 64, 64, 128)])
+def test_metax_pipelined_dot_prologue_barrier(warps, stages, m, n, k, metax_device):
+    torch.manual_seed(1493)
+    a = torch.randint(-4, 5, (m, k), device=metax_device).to(torch.bfloat16)
+    b = torch.randint(-4, 5, (k, n), device=metax_device).to(torch.bfloat16)
+    acc = (torch.arange(m * n, dtype=torch.float32).reshape(m, n).remainder(13) / 8).to(metax_device)
+    expected = a.double() @ b.double() + acc.double()
+    # FP32 accumulation error, relative to the sum of absolute products.
+    bound = (k + 2) * 2**-24 * (a.double().abs() @ b.double().abs() + acc.double().abs())
+    out = torch.empty((m, n), dtype=torch.float32, device=metax_device)
+    # The race is intermittent: reuse the same inputs and compiled kernel.
+    for iteration in range(500):
+        kernel = _metax_pipelined_dot_with_acc[(1, )](a, b, acc, out, m, n, 32, k, num_warps=warps, num_stages=stages)
+        assert torch.all((out.double() - expected).abs() <= bound), iteration
+    # Guard against the loop silently falling back to the unpipelined schedule.
+    assert "memdesc<2x" in kernel.asm["ttgir"]
+
+
 _metax_fp8_pairs = list(itertools.product([tl.float8e4nv, tl.float8e5], repeat=2))
 
 
