@@ -1,0 +1,144 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Look up a Feishu contact'
+description: >-
+  Resolve a GitHub login to the Feishu user to notify, and check whether a
+  workflow's failures are on the skip list. Both tables live in the Bitable,
+  so adding a colleague or silencing a broken backend needs no PR.
+
+inputs:
+  login:
+    description: >-
+      GitHub login(s) to resolve, space or comma separated. Several are
+      allowed because one failure can concern more than one person, such as a
+      merge, which is both the author's change and the maintainer's push.
+    required: false
+    default: ''
+  workflow:
+    description: >-
+      Workflow name to check against the skip list. Use the workflow's
+      `name:` field, not its file name.
+    required: false
+    default: ''
+  create-missing:
+    description: >-
+      Create either table when it does not exist yet. Safe to leave on: the
+      tables are created empty, and an empty table notifies nobody.
+    required: false
+    default: 'true'
+  app-id:
+    description: 'Feishu app id. The lookup is skipped when empty.'
+    required: false
+    default: ''
+  app-secret:
+    description: 'Feishu app secret. The lookup is skipped when empty.'
+    required: false
+    default: ''
+  app-token:
+    description: 'Bitable app token, the /base/<app_token> part of the URL'
+    required: false
+    default: ''
+  python:
+    description: 'Python interpreter to use'
+    required: false
+    default: 'python3'
+
+outputs:
+  open-ids:
+    description: >-
+      Comma separated Feishu open_ids to notify, de-duplicated. Empty when no
+      login had a usable row or the lookup could not run -- gate the notify
+      step on this being non-empty.
+    value: ${{ steps.lookup.outputs.open-ids }}
+  names:
+    description: 'Display names from the table, for log lines'
+    value: ${{ steps.lookup.outputs.names }}
+  skip:
+    description: "'true' when this workflow's failures should not notify"
+    value: ${{ steps.lookup.outputs.skip }}
+  skip-reason:
+    description: 'Why it is skipped, when it is'
+    value: ${{ steps.lookup.outputs.skip-reason }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Look up contact
+      id: lookup
+      shell: bash
+      env:
+        # Secrets travel as env vars, never on the command line, since argv is
+        # visible via `ps` on a shared self-hosted runner.
+        FEISHU_APP_ID: ${{ inputs.app-id }}
+        FEISHU_APP_SECRET: ${{ inputs.app-secret }}
+        FEISHU_BITABLE_APP_TOKEN: ${{ inputs.app-token }}
+        LOGIN: ${{ inputs.login }}
+        WORKFLOW: ${{ inputs.workflow }}
+        CREATE_MISSING: ${{ inputs.create-missing }}
+        PYTHON: ${{ inputs.python }}
+      run: |
+        set -uo pipefail
+
+        # Defaults that mean "notify nobody, skip nothing", so every failure
+        # path below leaves the caller with usable outputs.
+        {
+          echo "open-ids="
+          echo "names="
+          echo "skip=false"
+          echo "skip-reason="
+        } >> "$GITHUB_OUTPUT"
+
+        if [[ -z "${LOGIN}" && -z "${WORKFLOW}" ]]; then
+          echo "Nothing to look up."
+          exit 0
+        fi
+
+        if [[ -z "${FEISHU_APP_ID}" || -z "${FEISHU_APP_SECRET}" || -z "${FEISHU_BITABLE_APP_TOKEN}" ]]; then
+          echo "Feishu credentials not configured, skipping lookup."
+          exit 0
+        fi
+
+        # feishu_client.py lives with report-feishu rather than being copied
+        # here. GitHub checks out the whole repository when it fetches an
+        # action, so a sibling action's directory is reachable and stays in
+        # step with this one.
+        CLIENT_DIR="${GITHUB_ACTION_PATH}/../report-feishu/scripts"
+        if [[ ! -f "${CLIENT_DIR}/feishu_client.py" ]]; then
+          echo "::warning::lookup-feishu-contact: feishu_client.py not found at ${CLIENT_DIR}"
+          exit 0
+        fi
+        export PYTHONPATH="${CLIENT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+
+        # Proxy settings live on the runner, not in the repo
+        if [[ -f ~/env.sh ]]; then
+          # shellcheck disable=SC1090
+          source ~/env.sh || true
+        fi
+
+        args=()
+        [[ -n "${LOGIN}" ]] && args+=(--login "${LOGIN}")
+        [[ -n "${WORKFLOW}" ]] && args+=(--workflow "${WORKFLOW}")
+        [[ "${CREATE_MISSING}" == "true" ]] && args+=(--create-missing)
+
+        # Looking up is not a gate: a lookup that fails must leave the
+        # defaults above in place rather than fail the job.
+        "${PYTHON}" "${GITHUB_ACTION_PATH}/scripts/lookup_contact.py" "${args[@]}" \
+          || echo "::warning::lookup-feishu-contact: lookup failed, notifying nobody"
