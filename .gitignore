@@ -29,6 +29,12 @@ third_party/xpu/python/triton/_C/*.so
 third_party/xpu/python/triton/FileCheck
 third_party/xpu/python/triton/instrumentation/*.so
 third_party/xpu/python/*.egg-info
+third_party/xpu/python/triton/experimental/tle/language/flagcx_wrapper.py
+third_party/xpu/python/triton/experimental/tle/language/include/
+third_party/xpu/backend/flagcx_wrapper.py
+third_party/xpu/backend/lib/libflagcx.so
+third_party/xpu/backend/lib/libflagcx_device.bc
+third_party/xpu/tle/third_party
 third_party/nvidia/backend/flagcx*
 third_party/nvidia/backend/lib/libflagcx*
 

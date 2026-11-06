@@ -93,6 +93,9 @@ void init_llvm_xpu_passes_transform(py::module &&m) {
 }
 
 void init_triton_xpu_passes_transform(py::module &&m) {
+  m.def("add_params_for_distribution", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPUAddDistributedParams());
+  });
   // Function Pass
   m.def("add_tritonxpu_gm2lm_pass",
         [](mlir::PassManager &self, uint32_t xpu_arch, bool atomicSim,
@@ -537,7 +540,11 @@ void init_triton_xpu(py::module &&m) {
       auto name = op->getName().getStringRef();
       if (name == "ttg.local_alloc" || name == "triton_xpu.tle_copy_g2l" ||
           name == "triton_xpu.tle_copy_l2g" ||
-          name == "triton_xpu.tle_local_ptr") {
+          name == "triton_xpu.tle_local_ptr" ||
+          name == "triton_xpu.get_device_id" ||
+          name == "triton_xpu.get_num_pes" ||
+          name == "triton_xpu.distributed_barrier" ||
+          name == "triton_xpu.remote_pointer") {
         hasTLEOp = true;
       }
     });

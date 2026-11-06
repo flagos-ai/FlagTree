@@ -7,6 +7,11 @@ add_triton_library(TritonXPUToLLVM
   LoadStoreOpToLLVM.cpp
   MakeRangeOpToLLVM.cpp
   RawOpToLLVM.cpp
+  RemotePointerOpToLLVM.cpp
+  FlagCxOpToLLVM/FlagCxOpToLLVM.cpp
+  FlagCxOpToLLVM/GetLocalRankOpToLLVM.cpp
+  GetDeviceIdToFlagCX.cpp
+  FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.cpp
   ReduceOpToLLVM.cpp
   ScanOpToLLVM.cpp
   SPMDOpToLLVM.cpp

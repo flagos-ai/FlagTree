@@ -41,6 +41,11 @@ def TritonXPUTLELegalize : Pass<"tritonxpu-tle-legalize", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
 }
 
+def TritonXPUAddDistributedParams
+    : Pass<"tritonxpu-add-distributed-params", "mlir::ModuleOp"> {
+  let summary = "Add FlagCX communicator and memory parameters to TLE kernels.";
+}
+
 def TritonXPULegalize : Pass<"tritonxpu-legalize", "mlir::ModuleOp"> {
   let summary = "Legalize for XPU.";
 
