@@ -95,11 +95,91 @@ static bool crossWriteSideEffectingOp(Operation *start, Operation *end) {
   return true;
 }
 
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+// Address space of a tt.ptr of global memory; the pointers of
+// tle.local_pointers are in the shared address space (3), and its verifier
+// accepts no other.
+static constexpr int kGlobalMemoryAddressSpace = 1;
+
+// The local_alloc a shared memory descriptor is a view of, or null when the
+// descriptor cannot be traced to one: a block argument, or a view whose first
+// operand is not its source descriptor. The shared memory alias analysis
+// reads the source of a view from its first operand too.
+static triton::gpu::LocalAllocOp findViewedAlloc(Value memDesc) {
+  while (Operation *def = memDesc.getDefiningOp()) {
+    if (auto alloc = dyn_cast<triton::gpu::LocalAllocOp>(def))
+      return alloc;
+    if (!def->hasTrait<OpTrait::MemDescViewTrait>() ||
+        def->getNumOperands() == 0 ||
+        !isa<triton::gpu::MemDescType>(def->getOperand(0).getType()))
+      return nullptr;
+    memDesc = def->getOperand(0);
+  }
+  return nullptr;
+}
+
+// Whether an effect may write the shared memory of `alloc` (null when the
+// buffer read is not known). A write through a descriptor of another local
+// allocation, or of another memory space, is of a different buffer. A write
+// through a pointer is of shared memory in the shared address space and of
+// global memory in the global one; a pointer of any other address space, and
+// a write without a value, may be of anything.
+static bool mayWriteSharedAlloc(const MemoryEffects::EffectInstance &effect,
+                                triton::gpu::LocalAllocOp alloc) {
+  if (isa<MemoryEffects::Read, MemoryEffects::Allocate, MemoryEffects::Free>(
+          effect.getEffect()))
+    return false;
+  Value value = effect.getValue();
+  if (!value)
+    return true;
+  Type type = value.getType();
+  if (auto memDescTy = dyn_cast<triton::gpu::MemDescType>(type)) {
+    if (!isa_and_nonnull<triton::gpu::SharedMemorySpaceAttr>(
+            memDescTy.getMemorySpace()))
+      return false;
+    auto written = findViewedAlloc(value);
+    return !alloc || !written || written == alloc;
+  }
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    type = tensorTy.getElementType();
+  if (auto ptrTy = dyn_cast<triton::PointerType>(type))
+    return ptrTy.getAddressSpace() != kGlobalMemoryAddressSpace;
+  return true;
+}
+
+// Whether an op between `start` and `end` (start dominates end) may write the
+// shared memory of `alloc`, with an op whose effects are unknown counted as a
+// write: a load of mutable shared memory must not move past anything that may
+// write the buffer it reads.
+static bool crossMayWriteSideEffectingOp(Operation *start, Operation *end,
+                                         triton::gpu::LocalAllocOp alloc) {
+  auto ancestor = start->getBlock()->findAncestorOpInBlock(*end);
+  if (!ancestor)
+    return true;
+  for (Operation *op = start->getNextNode(); op; op = op->getNextNode()) {
+    auto effects = getEffectsRecursively(op);
+    if (!effects || llvm::any_of(*effects, [&](const auto &effect) {
+          return mayWriteSharedAlloc(effect, alloc);
+        }))
+      return true;
+    if (op == ancestor)
+      return false;
+  }
+  assert(false && "op doesn't dominate other");
+  return true;
+}
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
+
 class TritonGPUReorderInstructionsPass
     : public impl::TritonGPUReorderInstructionsBase<
           TritonGPUReorderInstructionsPass> {
 public:
   TritonGPUReorderInstructionsPass() = default;
+
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+  using impl::TritonGPUReorderInstructionsBase<
+      TritonGPUReorderInstructionsPass>::TritonGPUReorderInstructionsBase;
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
 
   Operation *getFirstUse(Operation *op) {
     std::vector<Operation *> users;
@@ -142,6 +222,16 @@ public:
       if (user_begin->getParentOfType<scf::ForOp>() ==
           op->getParentOfType<scf::ForOp>())
         return;
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+      // A load of mutable shared memory must not move past a write that may
+      // change what it reads (e.g. a buffer refilled inside the loop).
+      if (keepSmemReadOrder)
+        if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op))
+          if (load.getSrc().getType().getMutableMemory() &&
+              crossMayWriteSideEffectingOp(op, *user_begin,
+                                           findViewedAlloc(load.getSrc())))
+            return;
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
       opToMove.insert({op, *user_begin});
     });
     for (auto &kv : opToMove)

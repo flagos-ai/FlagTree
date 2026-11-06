@@ -28,6 +28,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/ExactSMEM.h"
+#ifdef __PPU__
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#endif // __PPU__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -606,6 +609,39 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     blockInfo->sync();
     return;
   }
+
+#if defined(__PPU__) && defined(__TLE__)
+  auto target =
+      op->getParentOfType<ModuleOp>()->getAttrOfType<StringAttr>("ttg.target");
+  if (auto wait = dyn_cast<triton::nvidia_gpu::NamedBarrierWaitOp>(op);
+      wait && target && target.getValue().starts_with("ppu:")) {
+    if (auto count = wait.getNumThreads().getDefiningOp<arith::ConstantOp>()) {
+      auto value = dyn_cast<IntegerAttr>(count.getValue());
+      unsigned groupThreads = triton::gpu::lookupNumWarps(op) *
+                              triton::gpu::TritonGPUDialect::getThreadsPerWarp(
+                                  op->getParentOfType<ModuleOp>());
+      // Control flow is uniform within a partition (the barriers this
+      // analysis inserts rest on that premise, and TLE exposes no warp
+      // index), so every warp of the partition reaches a named wait, and a
+      // count of at least the partition's threads makes it a wait of all of
+      // them: it already orders their shared-memory accesses, including the
+      // reads before a pipe refill. A smaller count pairs a subset of the
+      // partition with other groups and is not a group-wide synchronization.
+      if (value && value.getInt() >= groupThreads) {
+        blockInfo->sync();
+        return;
+      }
+    }
+  }
+  // Pipe lowering places its own group barrier before local consumption, or
+  // publishes to a peer that waits on a named barrier. Keep tracking pending
+  // memory effects here; the rendezvous belongs at consumption, not at the
+  // per-thread completion wait.
+  if (isa<triton::gpu::AsyncWaitOp>(op) &&
+      op->hasAttr(triton::tle::kTlePipeWaitAttr) && target &&
+      target.getValue().starts_with("ppu:"))
+    return;
+#endif // __PPU__ && __TLE__
 
   if (isa<triton::gpu::AsyncWaitOp, triton::nvidia_gpu::TMAStoreWaitOp>(op) &&
       !isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op->getNextNode())) {
