@@ -7,10 +7,17 @@
 
 template <typename T>
 __aiv__ __attribute__((always_inline)) void
-copy_gm_to_ub_b16(__gm__ T *gm_ptr, __ubuf__ T *ub_ptr, uint16_t burst_cnt,
-                  uint32_t burst_len, uint32_t src_gap, uint32_t dst_gap) {
-  INTRINSIC(copy_gm_to_ubuf_align_b16, ub_ptr, gm_ptr, 0, burst_cnt, burst_len,
-            0, 0, src_gap, dst_gap);
+copy_gm_to_ub_burst(__gm__ T *gm_ptr, __ubuf__ T *ub_ptr, uint16_t burst_cnt,
+                    uint32_t burst_len, uint32_t src_gap, uint32_t dst_gap) {
+  // burst_len is a byte count either way; the intrinsic differs only in the
+  // alignment it assumes, so a 1-byte element type needs the b8 form.
+  if constexpr (sizeof(T) == 1) {
+    INTRINSIC(copy_gm_to_ubuf_align_b8, ub_ptr, gm_ptr, 0, burst_cnt, burst_len,
+              0, 0, src_gap, dst_gap);
+  } else {
+    INTRINSIC(copy_gm_to_ubuf_align_b16, ub_ptr, gm_ptr, 0, burst_cnt,
+              burst_len, 0, 0, src_gap, dst_gap);
+  }
 }
 
 // Generic row gather: out row i <- src row index[i]. Both src rows and the
@@ -38,12 +45,12 @@ gather_gm_to_ub_impl(memref_t<__gm__ T, 2> *src,
 
     if (i + 1 < tile_size &&
         static_cast<int64_t>(gm_idx[(i + 1) * idx_stride]) == row + 1) {
-      copy_gm_to_ub_b16(src_row, dst_row, 2, row_bytes, 0, dst_gap);
+      copy_gm_to_ub_burst(src_row, dst_row, 2, row_bytes, 0, dst_gap);
       i += 2;
       continue;
     }
 
-    copy_gm_to_ub_b16(src_row, dst_row, 1, row_bytes, 0, 0);
+    copy_gm_to_ub_burst(src_row, dst_row, 1, row_bytes, 0, 0);
     i += 1;
   }
 }
@@ -56,6 +63,17 @@ _mlir_ciface_custom_gather_gm_to_ub_half(memref_t<__gm__ half, 2> *src,
                                          int64_t tile_size, int64_t cols,
                                          memref_t<__ubuf__ half, 2> *dst) {
   gather_gm_to_ub_impl<half>(src, index, tile_size, cols, dst);
+}
+
+// uint8 rows, which is what a packed low-precision cache needs: a record of
+// several hundred bytes becomes one burst per row, where a Triton kernel has
+// to issue one load per group of columns.
+__aiv__ __attribute__((always_inline)) void
+_mlir_ciface_custom_gather_gm_to_ub_u8(memref_t<__gm__ uint8_t, 2> *src,
+                                       memref_t<__gm__ int32_t, 2> *index,
+                                       int64_t tile_size, int64_t cols,
+                                       memref_t<__ubuf__ uint8_t, 2> *dst) {
+  gather_gm_to_ub_impl<uint8_t>(src, index, tile_size, cols, dst);
 }
 
 __aiv__ __attribute__((always_inline)) void

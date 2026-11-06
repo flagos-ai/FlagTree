@@ -7,6 +7,10 @@ import triton.language.extra.cann.extension as al
 CUSTOM_OPS_BITCODE = str(Path(__file__).with_name("custom_ops.bc").resolve())
 
 _GATHER_SUFFIX_BY_DTYPE = {tl.float16: "half", tl.bfloat16: "bf16"}
+# gather_gm_to_ub also moves raw bytes, which a packed low-precision
+# cache needs; gather_gm_to_l1 has no uint8 variant because its ND2NZ
+# conversion is defined for 16-bit elements.
+_GATHER_UB_SUFFIX_BY_DTYPE = {**_GATHER_SUFFIX_BY_DTYPE, tl.uint8: "u8"}
 
 
 def _element_dtype(value):
@@ -18,10 +22,12 @@ def _element_dtype(value):
     return dtype
 
 
-def _gather_dtype_suffix(value, op_name):
+def _gather_dtype_suffix(value, op_name, table=None):
+    table = table if table is not None else _GATHER_SUFFIX_BY_DTYPE
     dtype = _element_dtype(value)
-    suffix = _GATHER_SUFFIX_BY_DTYPE.get(dtype)
-    assert suffix is not None, (f"{op_name} only supports fp16/bf16, got {dtype}")
+    suffix = table.get(dtype)
+    assert suffix is not None, (f"{op_name} only supports "
+                                f"{'/'.join(str(d) for d in table)}, got {dtype}")
     return suffix
 
 
@@ -114,23 +120,30 @@ class gather_gm_to_ub:
     """
     /*
      * Function:
-     *   On the VECTOR core, gather fp16/bf16 rows from a row-contiguous 2D
-     *   GM tensor by index and write them into a UB tensor. Output row i
+     *   On the VECTOR core, gather fp16/bf16/uint8 rows from a row-contiguous
+     *   2D GM tensor by index and write them into a UB tensor. Output row i
      *   comes from source row index[i]; adjacent indices
      *   (index[i + 1] == index[i] + 1) are merged into a single two-row DMA
      *   copy.
      *
+     *   A row is moved in whole 32-byte DMA blocks, so D elements must be a
+     *   multiple of 32 bytes. A narrower or unaligned row faults the vector
+     *   core (507035) rather than returning an error, which is why it is
+     *   rejected here: measured, 32/64/576 uint8 and 16/32/64/576 fp16 rows
+     *   are exact, while 16/24/48/80 uint8 and 4/8/12/24 fp16 rows fault.
+     *
      * Inputs:
-     *   src: row-contiguous 2D fp16/bf16 source tensor in GM.
+     *   src: row-contiguous 2D fp16/bf16/uint8 source tensor in GM.
      *   index: 2D int32 index tensor in GM (shape (N, 1), stride (1, 1));
      *     output row i takes its data from source row index[i] (0-based row
      *     number); the starting offset of the indices is expressed through
      *     the block ptr offsets, so no extra parameter is needed.
      *   tile_size: number of data rows to gather.
-     *   D: number of fp16/bf16 elements copied from each source row.
+     *   D: number of elements copied from each source row; D elements must
+     *     be a multiple of 32 bytes.
      *
      * Outputs:
-     *   out: required 2D UB fp16/bf16 destination tensor (same dtype as
+     *   out: required 2D UB fp16/bf16/uint8 destination tensor (same dtype as
      *     src), corresponding to dst in the C++ ABI; the stride of the first
      *     dimension must be no smaller than D. The gathered result is
      *     written into this tensor directly and it is returned on the
@@ -149,7 +162,14 @@ class gather_gm_to_ub:
             f"to match src dtype ({_element_dtype(src)})")
         assert _element_dtype(index) == tl.int32, (f"gather_gm_to_ub requires int32 index, "
                                                    f"got {_element_dtype(index)}")
-        self.symbol = ("custom_gather_gm_to_ub_" + _gather_dtype_suffix(src, "gather_gm_to_ub"))
+        # A row that is not a whole number of 32-byte DMA blocks faults the
+        # vector core instead of failing, so it is caught here.
+        width = getattr(out.shape[1], "value", out.shape[1])
+        row_bytes = width * _element_dtype(out).primitive_bitwidth // 8
+        assert row_bytes % 32 == 0, (f"gather_gm_to_ub copies whole 32-byte blocks, so a row of "
+                                     f"{width} elements ({row_bytes} bytes) is not supported")
+        self.symbol = ("custom_gather_gm_to_ub_" +
+                       _gather_dtype_suffix(src, "gather_gm_to_ub", _GATHER_UB_SUFFIX_BY_DTYPE))
         self.bitcode = CUSTOM_OPS_BITCODE
 
 
@@ -621,4 +641,169 @@ class cast_int4_to_fp16:
         self.arg_type["roundMode"] = tl.int32
         self.arg_type["count"] = tl.int32
         self.symbol = "custom_cast_int4_to_fp16"
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
+class dequant_e4m3_ue8m0_rows:
+    """
+    /*
+     * Function:
+     *   Dequantise rows of a paged FP8 KV cache into a BF16 tile in GM. The
+     *   record format is fixed: 448 e4m3 values, then 64 BF16 values copied
+     *   through untouched, for 512 output columns per row. A page holds
+     *   page_slots records of record_bytes each, followed at scale_offset by
+     *   eight bytes per token: seven ue8m0 group scales and one pad byte, one
+     *   scale per 64 e4m3 values. Only the page geometry is parameterised, so
+     *   one operator serves any paged cache packing that record.
+     *
+     *   The row map is passed rather than resolved addresses because the run
+     *   length of each physical run is folded into its slot's high bits
+     *   (run = location / page_slots): one run becomes one DMA burst, so a
+     *   sixteen-row tile of consecutive slots issues one copy instead of
+     *   sixteen. Resolving the map outside the operator would lose that.
+     *
+     * Inputs:
+     *   win_pool: GM pool the leading win_count rows index.
+     *   cmp_pool: GM pool the trailing rows index; may alias win_pool.
+     *   pages: GM 2D int32 page numbers, shape (N, 1).
+     *   slots: GM 2D int32 slot numbers with the run length in the high bits,
+     *     shape (N, 1).
+     *   first_row: first logical row of this tile.
+     *   win_count: rows before the pool switch.
+     *   count: valid rows; rows at or past it are zeroed.
+     *   page_stride: bytes per page.
+     *   record_bytes: bytes per token record.
+     *   scale_offset: byte offset of the scale block inside a page.
+     *   page_slots: records per page.
+     *   window_extent: logical rows the window region spans in the map.
+     *
+     * Outputs:
+     *   dst: GM 2D bf16 tile, (rows, 512), written in place. It is a block
+     *     pointer into GM rather than a returned tensor, so it is a trailing
+     *     positional operand and not an `out=` entry.
+     *   scratch: UB 2D bf16 workspace, (rows, 832). It is the operator's
+     *     working storage rather than a result, and its contents are not
+     *     defined on return; the caller passes it because the caller owns the
+     *     UB allocation.
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_MTE3
+    mode = al.MODE.SIMD
+
+    def __init__(self, win_pool, cmp_pool, pages, slots, first_row: tl.int64, win_count: tl.int64, count: tl.int64,
+                 page_stride: tl.int64, record_bytes: tl.int64, scale_offset: tl.int64, page_slots: tl.int64,
+                 window_extent: tl.int64, dst=None, scratch=None):
+        assert dst is not None, "dequant_e4m3_ue8m0_rows requires a destination tile"
+        assert scratch is not None, "dequant_e4m3_ue8m0_rows requires a UB scratch tensor"
+        assert _element_dtype(dst) == tl.bfloat16, (
+            f"dequant_e4m3_ue8m0_rows only supports bf16 out[0], got {_element_dtype(dst)}")
+        assert _element_dtype(scratch) == tl.bfloat16, (
+            f"dequant_e4m3_ue8m0_rows only supports bf16 out[1], got {_element_dtype(scratch)}")
+        assert _element_dtype(pages) == tl.int32 and _element_dtype(slots) == tl.int32, (
+            "dequant_e4m3_ue8m0_rows requires int32 page and slot maps")
+        # The scale reduction compacts eight rows per issue, and the scratch
+        # holds 512 output columns, 16 scale slots and the packed record.
+        rows = scratch.shape[0]
+        assert rows % 8 == 0, (f"dequant_e4m3_ue8m0_rows needs a row count that is a multiple "
+                               f"of eight, got {rows}")
+        assert scratch.shape[1] == 832, (f"dequant_e4m3_ue8m0_rows requires a 832-column scratch, "
+                                         f"got {scratch.shape[1]}")
+        self.symbol = "custom_dequant_e4m3_ue8m0_rows_bf16"
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
+class mma_m64_tile:
+    """
+    /*
+     * Function:
+     *   One M64 MMA per call, with both operands double-buffered in L1.
+     *   kind 0 multiplies a [64, 512] A tile by a [n, 512] B tile transposed;
+     *   kind 1 multiplies a [64, n] A tile by the B tile already resident in
+     *   L1, so a tile crosses GM once for both products. M is 64 and K is
+     *   512: both are woven into the L0 capacity arithmetic and the L1
+     *   offsets. n must be a multiple of 16.
+     *
+     * Inputs:
+     *   a: GM 2D bf16 left operand.
+     *   b: GM 2D bf16 right operand; read on kind 0 and reused on kind 1.
+     *   n: tile length.
+     *   kind: 0 for the transposed product, 1 for the resident one.
+     *   step: selects the L1 bank pair, so the caller can overlap tiles.
+     *   final_step: non-zero drains the mailbox on the last call.
+     *
+     * Outputs:
+     *   out: GM 2D fp32 result, written in place. It is a block pointer into
+     *     GM rather than a returned tensor, so it is a trailing positional
+     *     operand and not an `out=` entry.
+     *
+     */
+    """
+
+    core = al.CORE.CUBE
+    pipe = al.PIPE.PIPE_M
+    mode = al.MODE.SIMD
+
+    def __init__(self, a, b, n: tl.int64, kind: tl.int64, step: tl.int64, final_step: tl.int64, out=None):
+        assert out is not None, "mma_m64_tile requires a destination buffer"
+        assert kind in (0, 1), f"mma_m64_tile kind must be 0 or 1, got {kind}"
+        assert _element_dtype(a) == tl.bfloat16 and _element_dtype(b) == tl.bfloat16, (
+            "mma_m64_tile requires bf16 operands")
+        assert _element_dtype(out) == tl.float32, (f"mma_m64_tile accumulates in fp32, got {_element_dtype(out)}")
+        self.symbol = "custom_mma_m64_tile_bf16"
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
+class mma_m64_resident:
+    """
+    /*
+     * Function:
+     *   M64 MMA keeping persistent_cols output columns resident in L0C across
+     *   a queue of tiles, so a running sum is never written to GM and read
+     *   back. kind 0 multiplies a [64, 512] A tile by a [bn, 512] B tile
+     *   transposed; kind 1 multiplies a [64, bn] A tile by the resident B
+     *   tile, accumulating the first persistent_cols columns into the bank
+     *   that survives the call and sending the remaining 512 -
+     *   persistent_cols columns out through the per-tile mailbox. M is 64 and
+     *   K is 512, as for mma_m64_tile; bn and persistent_cols must be
+     *   multiples of 16.
+     *
+     * Inputs:
+     *   a: GM 2D bf16 left operand.
+     *   b: GM 2D bf16 right operand for this tile.
+     *   next_b: GM 2D bf16 right operand for the following tile; read only
+     *     when the prefetch bit is set.
+     *   bn: tile length.
+     *   kind: 0 for the transposed product, 1 for the resident one.
+     *   tile: queue position; selects the L1 bank.
+     *   flags: bit 0 final tile of the queue (drain the mailbox), bit 1 first
+     *     tile of a request (reload A and initialize), bit 2 last tile of a
+     *     request (flush the resident columns), bit 3 prefetch next_b into
+     *     the following L1 bank.
+     *   persistent_cols: resident width.
+     *
+     * Outputs:
+     *   out: GM 2D fp32 result, written in place. It is a block pointer into
+     *     GM rather than a returned tensor, so it is a trailing positional
+     *     operand and not an `out=` entry.
+     *
+     */
+    """
+
+    core = al.CORE.CUBE
+    pipe = al.PIPE.PIPE_M
+    mode = al.MODE.SIMD
+
+    def __init__(self, a, b, next_b, bn: tl.int64, kind: tl.int64, tile: tl.int64, flags: tl.int64,
+                 persistent_cols: tl.int64, out=None):
+        assert out is not None, "mma_m64_resident requires a destination buffer"
+        assert kind in (0, 1), f"mma_m64_resident kind must be 0 or 1, got {kind}"
+        assert _element_dtype(a) == tl.bfloat16 and _element_dtype(b) == tl.bfloat16, (
+            "mma_m64_resident requires bf16 operands")
+        assert _element_dtype(out) == tl.float32, (f"mma_m64_resident accumulates in fp32, got {_element_dtype(out)}")
+        self.symbol = "custom_mma_m64_resident_bf16"
         self.bitcode = CUSTOM_OPS_BITCODE
