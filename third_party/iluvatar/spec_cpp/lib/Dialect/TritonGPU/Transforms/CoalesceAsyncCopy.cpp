@@ -41,6 +41,10 @@ struct ClipAsyncCopySizePerThread
 
   LogicalResult matchAndRewrite(AsyncCopyGlobalToLocalOp copyOp,
                                 PatternRewriter &rewriter) const override {
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(copyOp, explicitEncoding)) ||
+        explicitEncoding)
+      return failure();
     if (copyOp.getInputStride())
       return rewriter.notifyMatchFailure(
           copyOp, "SME async copy uses fixed hardware tiling");
