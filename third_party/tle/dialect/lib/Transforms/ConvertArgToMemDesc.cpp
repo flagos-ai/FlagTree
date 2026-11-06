@@ -122,7 +122,7 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   if (needSync) {
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(op);
-    rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
+    rewriter.create<ttg::LocalBarrierOp>(op.getLoc());
   }
   SmallVector<Type> newRetTys;
   for (auto [i, result] : llvm::enumerate(op.getResults())) {

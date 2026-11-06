@@ -892,7 +892,7 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
 #endif
 #ifdef __FLAGTREE_COMMON_IR__
       GenericOpPattern<triton::gpu::AsyncCopyGlobalToLocalOp>,
-#endif
+#endif // __FLAGTREE_COMMON_IR__
       TritonExpandDimsPattern,
       TritonTransPattern,
       TritonDotPattern,
@@ -1295,7 +1295,7 @@ public:
 #ifdef __FLAGTREE_COMMON_IR__
     target.addDynamicallyLegalOp<triton::gpu::AsyncCopyGlobalToLocalOp>(
         [&](Operation *op) { return typeConverter.isLegal(op); });
-#endif
+#endif // __FLAGTREE_COMMON_IR__
     // rewrite patterns
     RewritePatternSet patterns(context);
     // add rules
