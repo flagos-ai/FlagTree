@@ -27,6 +27,7 @@ from typing import Any, Final, List, Optional
 import hashlib
 from triton._C.libtriton import llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
+
 from triton.experimental.tle.raw.runtime import RawJITFunction
 
 
@@ -82,8 +83,10 @@ class TOPSJITFunction(RawJITFunction):
 
         if file is not None:
             if hasattr(file, "read_text") and not isinstance(file, Path):
-                file_name = getattr(file, "name", "<deferred>")
+                name = getattr(file, "name", None)
+                file_name = str(Path(name).resolve()) if name is not None else "<deferred>"
             else:
+                file = Path(file).resolve()
                 file_name = str(file)
         else:
             file_name = "<inline>"
@@ -197,23 +200,18 @@ class TOPSJITFunction(RawJITFunction):
                               extern_func_name: str = ""):
         return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
-    def register_pending_source(self, *, hint: str = "") -> str:
+    def create_region_deferred(self, builder, handles, alias_indices, hint: str = "", arg_info_list=None):
         if not self.extern_func_name:
-            raise RuntimeError("enflame only support deferred tops tle_raw requires extern_func_name "
-                               "(the device function symbol in the .tops file)")
-        payload = f"{self.region_dialect}\0{self.extern_func_name or ''}\0{self.file_name}".encode()
-        return hashlib.sha256(payload).hexdigest()
-
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
+            raise RuntimeError(f"deferred tle_raw {self.region_dialect} requires extern_func_name=")
         return builder.create_tle_raw_region_deferred(
-            source_id,
             self.region_dialect,
             self.arg_dialect,
             handles,
             alias_indices,
-            hint,
-            self.file_name,
-            self.extern_func_name,
+            hint=hint,
+            dsl_file_name=self.file_name,
+            extern_func_name=self.extern_func_name,
+            arg_info_list=arg_info_list,
         )
 
     def make_llvm(self, mlir_context) -> str:

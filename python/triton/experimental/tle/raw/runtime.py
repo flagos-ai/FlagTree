@@ -31,7 +31,7 @@ class RawJITFunction:
     def __init__(self, fn: Any, **kwargs) -> None:
         self.fn = fn
         self.extern_func_name = kwargs.get("extern_func_name", "")
-        self.deferred = kwargs.get("deferred", False)
+        self.deferred = kwargs.get("deferred", None)
         self.library = kwargs.get("library", "") or ""
         self.__triton_builtin__ = True
 

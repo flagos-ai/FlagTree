@@ -569,8 +569,8 @@ class HIPBackend(BaseBackend):
         passes.convert.add_index_to_llvmir(pm)
 
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
-        from .deferred_raw import (deferred_raw_materialize, finish_deferred_raw_materialize)
-        deferred_raw_materialize(mod, pm)
+        from .deferred_raw import deferred_raw_materialize
+        deferred_raw_materialize(pm, mod)
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         kernel_name = mod.get_entry_func_name()
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
@@ -622,8 +622,6 @@ class HIPBackend(BaseBackend):
         # TritonDistributed Extension: libdevice -> llvm
         distributed.passes.ttgpuir.hcu.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod, 'make_llir')
-
-        finish_deferred_raw_materialize()
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it

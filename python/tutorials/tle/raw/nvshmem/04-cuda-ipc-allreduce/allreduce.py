@@ -80,7 +80,6 @@ def ipc_oneshot_fp16_2_kernel(
     tle_raw.call(
         IPC_ONESHOT_FP16_2,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -89,7 +88,6 @@ def ipc_oneshot_fp16_4_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP16_4,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -98,7 +96,6 @@ def ipc_oneshot_fp16_6_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP16_6,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -107,7 +104,6 @@ def ipc_oneshot_fp16_8_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP16_8,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -116,7 +112,6 @@ def ipc_twoshot_fp16_2_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP16_2,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -125,7 +120,6 @@ def ipc_twoshot_fp16_4_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP16_4,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -134,7 +128,6 @@ def ipc_twoshot_fp16_6_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP16_6,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -143,7 +136,6 @@ def ipc_twoshot_fp16_8_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP16_8,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -152,7 +144,6 @@ def ipc_oneshot_bf16_2_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_BF16_2,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -161,7 +152,6 @@ def ipc_oneshot_bf16_4_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_BF16_4,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -170,7 +160,6 @@ def ipc_oneshot_bf16_6_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_BF16_6,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -179,7 +168,6 @@ def ipc_oneshot_bf16_8_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_BF16_8,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -188,7 +176,6 @@ def ipc_twoshot_bf16_2_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_BF16_2,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -197,7 +184,6 @@ def ipc_twoshot_bf16_4_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_BF16_4,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -206,7 +192,6 @@ def ipc_twoshot_bf16_6_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_BF16_6,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -215,7 +200,6 @@ def ipc_twoshot_bf16_8_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_BF16_8,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -224,7 +208,6 @@ def ipc_oneshot_fp32_2_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP32_2,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -233,7 +216,6 @@ def ipc_oneshot_fp32_4_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP32_4,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -242,7 +224,6 @@ def ipc_oneshot_fp32_6_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP32_6,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -251,7 +232,6 @@ def ipc_oneshot_fp32_8_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_ONESHOT_FP32_8,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -260,7 +240,6 @@ def ipc_twoshot_fp32_2_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP32_2,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -269,7 +248,6 @@ def ipc_twoshot_fp32_4_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP32_4,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -278,7 +256,6 @@ def ipc_twoshot_fp32_6_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP32_6,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
@@ -287,7 +264,6 @@ def ipc_twoshot_fp32_8_kernel(output, input_pointer_table, signal_pointer_table,
     tle_raw.call(
         IPC_TWOSHOT_FP32_8,
         [output, input_pointer_table, signal_pointer_table, rank, numel],
-        output_indices=[0],
     )
 
 
