@@ -132,7 +132,7 @@ def _get_cache_environment():
 
     active = driver.active
     di = active.get_device_interface()
-    device = active.get_active_torch_device()   # 
+    device = active.get_active_torch_device()  #
     target = active.get_current_target()
     hardware = {"device": str(device), "target": vars(target), "driver": type(active).__module__}
     if hasattr(di, "get_device_name"):
