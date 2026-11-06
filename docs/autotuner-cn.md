@@ -7,7 +7,7 @@
 - 用字典列表定义候选参数，支持 `key_fn` 和 `prune_fn`。
 - 本地调优与指定通信组内的联合调优。
 - 分布式候选参数列表取交集、执行参数一致性检查和统一缓存命中决策。
-- 自动缓存调优结果到 FLAGTREE_AUTOTUNE_CACHE_DIR 环境变量指定的目录或者调优器参数 cache_dir 指定的目录，默认为 ~/.flagtree/autotune/local | distributed/
+- 自动缓存调优结果到 FLAGTREE_AUTOTUNE_CACHE_DIR 环境变量指定的目录或者调优器参数 cache_dir 指定的目录，默认为 ~/.flagtree/autotune/local 或者 ~/.flagtree/autotune/distributed
 
 调优器不会自动识别函数是否包含分布式通信。函数涉及多个 rank 协作时，必须显式传入 `autotune_pg` 进程组参数进行分布式调优。
 
@@ -35,7 +35,7 @@ def autotune(
 
 ## 2. 基本用法
 
-假设有一个处理数据的 GPU 函数 `process_data`，需要选择两个参数：
+假设有一个处理数据的主机端 python 函数 `process_data`，需要选择两个参数：
 
 - `kernel_config`：一个 `triton.Config`，指定 kernel 的配置。
 - `batch_size`：每批处理多少行数据。
@@ -70,7 +70,7 @@ def process_data(x, *, kernel_config: triton.Config, batch_size: int):
 result = process_data(x)
 ```
 
-没有缓存时，调优器测试上述两个候选组合，选出更快的一组。
+没有缓存时，调优器测试上述两个候选组合，选出更快的一组。有缓存且缓存的配置在 config_space 里则复用缓存，否则进行调优。 
 
 | 调用参数 | 默认值 | 行为 |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ result = process_data(x)
 这些是调优器保留的调用参数，不会转发给原函数。其余参数按原函数签名传递。
 
 
-### 禁用调优
+### 3.1 禁用调优
 
 ```python
 result = process_data(x, autotune=False)
@@ -93,7 +93,7 @@ result = process_data(x, autotune=False)
 | 分布式 | 仍执行参数覆盖权限检查、各 rank 的剪枝，之后对各 rank 剪枝后的 config_space 取交集候选交集，使用交集规范化排序后的`config_space[0]`；不测速、不查询调优缓存。 |
 
 
-### 显式覆盖候选参数
+### 3.2 显式覆盖候选参数
 
 如果希望每批固定处理 64 行，只需显式传入第二个调优参数 `batch_size=64`，并允许覆盖：
 
@@ -125,6 +125,6 @@ result = process_data(
 ### 使用条件
 
 - 在调用之前初始化 `torch.distributed` 通信组，并设置各进程使用的设备( 目前 tle.get_mem_pool() 已经完成了这项操作 )。
-- 组内所有 rank 必须按相同顺序进入被装饰函数，且使用相同的 `autotune` 开关。
+- 组内所有 rank 必须使用相同的 `autotune` 开关。
 - `autotune_pg` 应覆盖实际参与算子通信的进程( 通常可以传：dist.group.WORLD )；。
 - 开启分布式调优时需要有效的 `LOCAL_WORLD_SIZE`。通过 `torchrun` 启动会提供该环境变量。
