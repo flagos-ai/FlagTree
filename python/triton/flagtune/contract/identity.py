@@ -53,6 +53,18 @@ _DTYPE_ALIASES = {
     "int16": "i16",
     "int32": "i32",
     "int64": "i64",
+    "float8_e4m3fn": "f8e4m3fn",
+    "float8e4nv": "f8e4m3fn",
+    "fp8e4nv": "f8e4m3fn",
+    "float8_e4m3fnuz": "f8e4m3fnuz",
+    "float8e4b8": "f8e4m3fnuz",
+    "fp8e4b8": "f8e4m3fnuz",
+    "float8_e5m2": "f8e5m2",
+    "float8e5": "f8e5m2",
+    "fp8e5": "f8e5m2",
+    "float8_e5m2fnuz": "f8e5m2fnuz",
+    "float8e5b16": "f8e5m2fnuz",
+    "fp8e5b16": "f8e5m2fnuz",
     "float16": "f16",
     "half": "f16",
     "bfloat16": "bf16",
@@ -61,9 +73,9 @@ _DTYPE_ALIASES = {
     "float64": "f64",
     "double": "f64",
 }
-# TODO: Add explicit, backend-neutral aliases for FP8, FP6, FP4, and related
-# low-precision formats once their canonical names and artifact compatibility
-# policy are defined.  Do not silently collapse distinct FP8/FP4 encodings.
+# FP8 aliases match triton._utils.type_canonicalisation_dict. Keep each encoding,
+# including FN/FNUZ, distinct in artifact keys; no generic "fp8" alias is safe.
+# Other low-precision formats require explicit identities before they are accepted.
 _DTYPE_CANONICAL = {
     "bool": "bool",
     "u8": "uint8",
@@ -71,6 +83,10 @@ _DTYPE_CANONICAL = {
     "i16": "int16",
     "i32": "int32",
     "i64": "int64",
+    "f8e4m3fn": "float8_e4m3fn",
+    "f8e4m3fnuz": "float8_e4m3fnuz",
+    "f8e5m2": "float8_e5m2",
+    "f8e5m2fnuz": "float8_e5m2fnuz",
     "f16": "float16",
     "bf16": "bfloat16",
     "f32": "float32",
