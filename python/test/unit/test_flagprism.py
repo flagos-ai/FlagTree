@@ -198,6 +198,7 @@ def test_build_helper_prefers_resolved_source_root(build_helper, monkeypatch, tm
         ("iluvatar", True),
         # FlagPrism: Enflame now enables the integrated tools by default.
         ("enflame", True),
+        ("hcu", True),
         ("tsingmicro", False),
         ("cambricon", False),
         ("aipu", False),
@@ -244,7 +245,7 @@ def test_nvidia_can_explicitly_enable_flagprism_without_flagtree_backend(flagpri
 
 
 # FlagPrism: explicit opt-out preserves Proton settings on every supported backend.
-@pytest.mark.parametrize("backend", ("ascend", "iluvatar", "mthreads", "enflame"))
+@pytest.mark.parametrize("backend", ("ascend", "iluvatar", "mthreads", "enflame", "hcu"))
 def test_supported_backend_can_disable_flagprism_without_changing_proton(flagprism_setup_factory, monkeypatch, backend):
     create, downloads = flagprism_setup_factory
     monkeypatch.setenv("TRITON_BUILD_FLAGPRISM", "OFF")
@@ -258,7 +259,7 @@ def test_supported_backend_can_disable_flagprism_without_changing_proton(flagpri
 
 
 # FlagPrism: resolve relative source overrides from the project, not the cwd.
-@pytest.mark.parametrize("backend", ("mthreads", "enflame"))
+@pytest.mark.parametrize("backend", ("mthreads", "enflame", "hcu"))
 def test_setup_resolves_relative_source_override_from_project_root(flagprism_setup_factory, monkeypatch, tmp_path,
                                                                    backend):
     create, downloads = flagprism_setup_factory
@@ -287,7 +288,7 @@ def test_setup_resolves_relative_source_override_from_project_root(flagprism_set
 
 
 # FlagPrism: reject invalid overrides without downloading another checkout.
-@pytest.mark.parametrize("backend", ("mthreads", "enflame"))
+@pytest.mark.parametrize("backend", ("mthreads", "enflame", "hcu"))
 @pytest.mark.parametrize("source_kind", ("missing", "incomplete"))
 def test_setup_rejects_invalid_source_override(flagprism_setup_factory, monkeypatch, tmp_path, source_kind, backend):
     create, downloads = flagprism_setup_factory
@@ -318,7 +319,7 @@ def test_unsupported_backend_rejected_before_side_effects(flagprism_setup_factor
 
 
 # FlagPrism: enforce Proton mutual exclusion for all supported integrations.
-@pytest.mark.parametrize("backend", ("ascend", "iluvatar", "mthreads", "enflame"))
+@pytest.mark.parametrize("backend", ("ascend", "iluvatar", "mthreads", "enflame", "hcu"))
 def test_supported_backend_rejects_flagprism_and_proton_together(flagprism_setup_factory, monkeypatch, backend):
     create, downloads = flagprism_setup_factory
     monkeypatch.delenv("TRITON_BUILD_FLAGPRISM", raising=False)

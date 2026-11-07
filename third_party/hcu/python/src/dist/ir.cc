@@ -36,7 +36,11 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
+#ifdef __FLAGPRISM__
+#include "Dialect/Proton/IR/Dialect.h"
+#else
 #include "third_party/proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
+#endif
 #include "triton/Dialect/Distributed/IR/Dialect.h"
 #include "triton/Dialect/SIMT/IR/Dialect.h"
 

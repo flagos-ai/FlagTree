@@ -1,11 +1,14 @@
 #pragma once
+#ifdef __FLAGPRISM__
+#include "FlagPrism/Profiler/Dialect/include/Integration/Registration.h"
+#endif
 #include "hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "hcu/include/TritonHCUGPUTransforms/Passes.h"
 #ifdef __NVIDIA__
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #endif
-#ifdef __PROTON__
+#if defined(__PROTON__) && !defined(__FLAGPRISM__)
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonHCUGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
@@ -73,7 +76,7 @@ void registerTestLoopPeelingPass();
 void registerHCUTestAlignmentPass();
 void registerTestHCUGPUMembarPass();
 void registerTestTritonHCUGPURangeAnalysis();
-#ifdef __PROTON__
+#if defined(__PROTON__) && !defined(__FLAGPRISM__)
 namespace proton {
 void registerTestScopeIdAllocationPass();
 } // namespace proton
@@ -159,8 +162,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerNVHopperTransformsPasses();
 #endif
 
+#ifdef __FLAGPRISM__
+  mlir::triton::proton::registerFlagTreeProtonPassesAndDialects(registry);
+  mlir::triton::proton::registerFlagTreeProtonTestPasses();
+#endif
   // Proton passes
-#ifdef __PROTON__
+#if defined(__PROTON__) && !defined(__FLAGPRISM__)
   mlir::test::proton::registerTestScopeIdAllocationPass();
   mlir::triton::proton::registerConvertProtonToProtonGPU();
   mlir::triton::proton::gpu::registerConvertProtonNvidiaGPUToLLVM();
@@ -186,7 +193,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
 #endif
       mlir::triton::hcugpu::TritonHCUGPUDialect,
-#ifdef __PROTON__
+#if defined(__PROTON__) && !defined(__FLAGPRISM__)
       mlir::triton::proton::ProtonDialect,
       mlir::triton::proton::gpu::ProtonGPUDialect,
 #endif

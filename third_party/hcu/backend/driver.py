@@ -1,3 +1,4 @@
+from flagtree import _flagprism
 import functools
 import os
 import subprocess
@@ -826,6 +827,10 @@ class HIPLauncher(object):
         arg_idx = lambda x: (src.fn.arg_names.index(x), ) if isinstance(x, str) else x
         constants = {arg_idx(idx): value for idx, value in constants.items()}
         signature = {idx: value for idx, value in src.signature.items()}
+        self.metadata = metadata
+        self.user_arg_count = len(signature)
+        if getattr(metadata, "debug_launch_hidden_arg", False):
+            signature[len(signature)] = "*i8"
         tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
         src = make_launcher(constants, signature, metadata.warp_size, tensordesc_meta)
         mod = compile_module_from_src(src=src, name="__triton_launcher", include_dirs=include_dirs)
@@ -847,7 +852,15 @@ class HIPLauncher(object):
         profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
                                            _allocation._profile_allocator)
 
-        self.launch(self.launch_cooperative_grid, gridX, gridY, gridZ, stream, function, profile_scratch, *args)
+        if not getattr(self.metadata, "debug_enabled", False):
+            return self.launch(self.launch_cooperative_grid, gridX, gridY, gridZ, stream, function, profile_scratch,
+                               *args)
+        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
+        launch_metadata = args[1] if len(args) > 1 else None
+        with _flagprism.debugger_launch_context("hip", self.metadata, (gridX, gridY, gridZ), stream, launch_metadata,
+                                                user_args) as hidden_args:
+            return self.launch(self.launch_cooperative_grid, gridX, gridY, gridZ, stream, function, profile_scratch,
+                               *args, *hidden_args)
 
 
 class HIPDriver(GPUDriver):

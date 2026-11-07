@@ -120,7 +120,7 @@ endmacro()
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
   # FlagPrism: enable the external tools for supported backends.
-  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax|hcu)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -130,10 +130,10 @@ macro(flagtree_configure_flagprism)
   if(TRITON_BUILD_FLAGPRISM)
     # FlagPrism: allow the default NVIDIA build and supported named backends.
     if(FLAGTREE_BACKEND AND
-       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
+       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax|hcu)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, or metax.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, metax, or hcu.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
@@ -299,6 +299,12 @@ function(flagtree_add_distributed_plugin)
     target_link_libraries(
       TritonDistributed
       PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
+    if(TRITON_BUILD_FLAGPRISM)
+      target_include_directories(TritonDistributed PRIVATE
+        "${FLAGPRISM_SOURCE_DIR}/Profiler/Dialect/include"
+        "${FLAGPRISM_SOURCE_DIR}"
+        "${PROJECT_BINARY_DIR}/third_party/FlagPrism")
+    endif()
   endif()
 endfunction()
 
@@ -368,7 +374,11 @@ macro(flagtree_configure_python_plugins)
   # FlagPrism: its external component supplies ProtonIR and dialect registration.
   # if(FLAGTREE_BACKEND STREQUAL "hcu")
   if(TRITON_BUILD_FLAGPRISM)
-    # FlagPrism supplies the ProtonIR target and dialect registration.
+    # FlagPrism supplies ProtonIR; HCU still uses shared NVIDIA IR/lowering
+    # libraries in its compiler independently of the profiler implementation.
+    if(FLAGTREE_BACKEND STREQUAL "hcu")
+      add_subdirectory(third_party/nvidia)
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")

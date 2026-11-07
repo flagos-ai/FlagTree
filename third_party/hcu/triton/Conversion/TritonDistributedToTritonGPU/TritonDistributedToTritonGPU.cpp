@@ -30,7 +30,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#ifdef __FLAGPRISM__
+#include "Dialect/Proton/IR/Dialect.h"
+#else
 #include "third_party/proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
+#endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -46,8 +50,6 @@
 #define GEN_PASS_CLASSES
 #include "triton/Conversion/TritonDistributedToTritonGPU/Passes.h.inc"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-
-#include "third_party/proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 
 #define DEBUG_TYPE "convert-triton-to-tritongpu"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")

@@ -20,6 +20,12 @@ set(TRITON_LIBRARIES
   TritonTLETransforms
 )
 
+if(TRITON_BUILD_FLAGPRISM)
+  list(APPEND TRITON_LIBRARIES
+    ProtonIR ProtonGPUIR ProtonGPUTransforms ProtonToProtonGPU
+    ProtonRegistration TritonInstrumentTransforms)
+endif()
+
 add_llvm_executable(triton-opt triton-opt.cpp PARTIAL_SOURCES_INTENDED)
 
 # TODO: what's this?
