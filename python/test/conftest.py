@@ -3,6 +3,7 @@ import tempfile
 
 
 def pytest_configure(config):
+    config.addinivalue_line("markers", "remote_integration: external service tests requiring explicit opt-in")
     config.addinivalue_line("markers", "interpreter: indicate whether interpreter supports the test")
 
 
