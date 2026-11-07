@@ -7,13 +7,13 @@ from triton.experimental.gluon._runtime import GluonASTSource
 
 if not hasattr(libtriton, "hcu"):
     pytest.skip("HCU compiler bindings are required", allow_module_level=True)
-pytest.importorskip("triton.experimental.gluon.language.hcu.raw_window")
+pytest.importorskip("triton.experimental.gluon.language.hcu")
 
 from triton.experimental import gluon as g
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.amd import AMDMFMALayout
 from triton.experimental.gluon.language.amd.cdna3 import buffer_load, buffer_store, mfma
-from triton.experimental.gluon.language.hcu.raw_window import raw_warp_group_id
+from triton.experimental.gluon.language.hcu import warp_group_id
 from triton.language import range as pipeline_range
 from triton.runtime.jit import constexpr_function
 
@@ -125,7 +125,7 @@ def _wave_private_control(A, B, C, M: gl.constexpr, N: gl.constexpr, K: gl.const
     cs = gl.allocate_shared_memory(gl.float32, [4, BM, BN], pc)
     cs.store(acc)
     gl.thread_barrier()
-    wave = raw_warp_group_id(1)
+    wave = warp_group_id(1)
     if wave == 0:
         # batch=1 makes the MFMA warp bits redundant. All C coordinates live
         # in wave0, with exactly the same native register/lane mapping.

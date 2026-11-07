@@ -987,7 +987,14 @@ LogicalResult WarpSpecializeOp::verify() {
   }
 
   std::optional<int> numWarps = maybeLookupNumWarps(*this);
-  if (numWarps && *numWarps % 4 != 0) {
+  auto module = (*this)->getParentOfType<ModuleOp>();
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  bool explicitWave64 = target && target.getValue() == "hip:gfx936";
+  if (explicitWave64 && numWarps &&
+      (*numWarps <= 0 || !llvm::isPowerOf2_32(*numWarps))) {
+    return emitOpError("gfx936 default partition requires a positive power-of-two wave count");
+  }
+  if (!explicitWave64 && numWarps && *numWarps % 4 != 0) {
     return mlir::emitError(getLoc()) << "warp-specialized kernels requires "
                                         "num_warps to be a multiple of 4";
   }

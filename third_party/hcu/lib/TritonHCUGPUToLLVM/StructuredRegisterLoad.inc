@@ -8,11 +8,11 @@ constexpr llvm::StringLiteral StructuredRegisterWidth="hcu.structured_register.i
 // branches. In particular warp_group_id is never a valid descriptor operand.
 static bool structuredRegisterDataUniform(Value v) {
   llvm::SmallPtrSet<void *,32> seen;
-  return packetUniformValue(v,seen);
+  return mlir::triton::HCU::memory_analysis::uniformValue(v,seen);
 }
 // EXECUTION CONTROL may differ between waves but must agree across all lanes
 // of each wave. Keep this local to explicit structured-register loads; neither
-// packetUniformValue/packetUniform nor rawUniform acquire a new authority.
+// the ordinary descriptor-uniformity proof acquires no new authority.
 static bool structuredRegisterWaveControl(Value v,llvm::SmallPtrSetImpl<void *>& seen) {
   if(!v.getType().isIntOrIndex())return false;
   if(!seen.insert(v.getAsOpaquePointer()).second)return true;
@@ -133,7 +133,7 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
     auto legal=[&](unsigned width) {
       if(ll.getInDimSize(reg)%width || *K%width || structuredRegisterAlignment(op.getBase())<2*width)return false;
       llvm::SmallPtrSet<void *,32> seen;
-      if(!packetMultiple(op.getIndices()[1],width,seen))return false;
+      if(!mlir::triton::HCU::memory_analysis::multipleOf(op.getIndices()[1],width,seen))return false;
       for(unsigned r=0;r<ll.getInDimSize(reg);r+=width)for(unsigned w=0;w<ll.getInDimSize(warp);++w)for(unsigned l=0;l<64;++l) {
         auto xy=at(r,l,w);
         if(xy[1].second%width || xy[1].second+width>t.getShape()[1])return false;
@@ -177,7 +177,7 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     // column. The descriptor base then has no effective memory access.
     // No inbounds/nowrap promises are added to its integer/pointer math.
     Value colBase=unclampedAttr&&unclampedAttr.getValue()?C:b.select(validK,C,b.i32_val(0));
-    Value remaining=packetUniformSaturatingSub(loc,rw,safeM,rowBase);
+    Value remaining=mlir::triton::HCU::memory_analysis::uniformSaturatingSub(loc,rw,safeM,rowBase);
     Value enabled=b.and_(validK,b.icmp_ne(a.getIndices()[2],b.i32_val(0)));
     Value records=b.select(enabled,remaining,b.i32_val(0));
     Value baseOffset=b.sub(b.add(b.mul(b.zext(i64_ty,rowBase),b.i64_val(K)),b.zext(i64_ty,colBase)),b.i64_val(8));

@@ -1,5 +1,4 @@
 #include <stack>
-#include "llvm/ADT/SmallPtrSet.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -47,12 +46,6 @@ public:
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size());
   }
-
-  Value getBase() const { return base; }
-  ArrayRef<Value> getShape() const { return shape; }
-  ArrayRef<Value> getStrides() const { return strides; }
-  ArrayRef<int64_t> getTensorShape() const { return tensorShape; }
-  ArrayRef<Value> getStaticOffsets() const { return offsets; }
 
   unsigned int length() const { return shape.size(); }
 

@@ -134,7 +134,6 @@ Value convertAndCastTensor(OpBuilder &builder, Value value,
   return convertedTensor;
 }
 
-
 struct MlsEncodingInsertion : public OpRewritePattern<triton::MatrixLoadOp> {
 public:
   MlsEncodingInsertion(MLIRContext *context) : OpRewritePattern(context, 1) {}

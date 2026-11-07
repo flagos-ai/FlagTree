@@ -627,10 +627,13 @@ void init_gluon_ir(py::module &&m) {
              ValueRange tokens;
              self.create<ttg::AsyncCommitGroupOp>(tokens);
            })
+      .def("get_async_token_ty", [](GluonOpBuilder &self) -> Type {
+        return ttg::AsyncTokenType::get(self.getContext());
+      })
       .def("create_async_wait_group",
-           [](GluonOpBuilder &self, int num) {
+           [](GluonOpBuilder &self, int num) -> Value {
              ValueRange tokens;
-             self.create<ttg::AsyncWaitOp>(tokens, num);
+             return self.create<ttg::AsyncWaitOp>(tokens, num).getResult();
            })
       .def("create_convert_layout",
            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
@@ -651,6 +654,11 @@ void init_gluon_ir(py::module &&m) {
       .def("create_local_load",
            [](GluonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
              return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
+           })
+      .def("create_local_load",
+           [](GluonOpBuilder &self, Type resultTy, Value memDesc,
+              Value token) -> Value {
+             return self.create<ttg::LocalLoadOp>(resultTy, memDesc, token);
            })
       .def("get_shared_bank_conflicts",
            [](GluonOpBuilder &self, Attribute regLayoutAttr,

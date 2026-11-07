@@ -1460,7 +1460,12 @@ struct BufferLoadToLocalOpConversion
 
     SmallVector<Value> offsetElems = unpackLLElements(loc, llOffset, rewriter);
     SmallVector<Value> otherElems;
-    if (llOther)
+    // gfx936 raw.ptr G2L writes zero for the emitter's OOB sentinel, even
+    // when the destination slot held nonzero data. Explicit +0 therefore
+    // needs neither conditional DMA nor a second LDS zero store. Preserve
+    // all other bit patterns (including -0), and other architectures.
+    if (llOther && !(targetInfo.getArch() == "gfx936" &&
+                     isAllZeroBitsConstant(op.getOther())))
       otherElems = unpackLLElements(loc, llOther, rewriter);
 
     auto dstTy = op.getDest().getType();

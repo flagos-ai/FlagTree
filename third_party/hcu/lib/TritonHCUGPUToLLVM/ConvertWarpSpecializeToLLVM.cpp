@@ -15,6 +15,8 @@
 #include <climits>
 #include <cstdlib>
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_HCUGPUCONVERTWARPSPECIALIZETOLLVM
@@ -597,8 +599,7 @@ lowerWarpSpecialize(LLVM::LLVMFuncOp func, const HCU::TargetInfo &targetInfo,
   return success();
 }
 
-// Raw-window proof v5 also validates explicit staggered wave-group traces.
-#include "RawWindowWS.inc"
+#include "ManualWarpSpecialize.inc"
 
 //===----------------------------------------------------------------------===//
 // Pass Definition
@@ -626,22 +627,16 @@ struct HCUGPUConvertWarpSpecializeToLLVM
     ModuleOp mod = getOperation();
 
     HCU::TargetInfo targetInfo(this->arch.getValue());
-    auto rawRequest = mod->getAttrOfType<IntegerAttr>(rawws::Request);
-    bool raw936 = targetInfo.getGPUKind() == llvm::AMDGPU::GK_GFX936 &&
-                  rawRequest && rawRequest.getInt() == 1;
-    if (raw936) {
+    bool manual936 = targetInfo.getGPUKind() == llvm::AMDGPU::GK_GFX936;
+    if (manual936) {
       bool highLevel = false;
       mod.walk([&](triton::FuncOp) { highLevel = true; });
       if (highLevel) {
-        llvm::errs() << "[rawws-v15] wrapper early-call begin\n";
-        LogicalResult rawEarlyResult=rawws::early(mod, this->wdraEnabled);
-        llvm::errs() << "[rawws-v15] wrapper early-call end failed=" << failed(rawEarlyResult) << "\n";
-        if (failed(rawEarlyResult))
-          return signalPassFailure();
-        return; // Assign producer IDs before relative-thread lowering.
+        if (failed(manualws::early(mod))) return signalPassFailure();
+        return;
       }
     }
-    if (!raw936 && targetInfo.getGPUKind() != llvm::AMDGPU::GK_GFX946) {
+    if (!manual936 && targetInfo.getGPUKind() != llvm::AMDGPU::GK_GFX946) {
       mod.emitError("wasp unsupported target: '")
           << this->arch.getValue() << "'";
       return signalPassFailure();
@@ -669,8 +664,8 @@ struct HCUGPUConvertWarpSpecializeToLLVM
     }
 
     for (LLVM::LLVMFuncOp kernel : kernels) {
-      if (raw936) {
-        if (failed(rawws::late(kernel))) return signalPassFailure();
+      if (manual936) {
+        if (failed(manualws::late(kernel))) return signalPassFailure();
       } else if (failed(lowerWarpSpecialize(
               kernel, targetInfo, this->waspNumLoadWarps, this->waspNumMmaWarps,
               this->wdraEnabled, this->wdraNumLoadRegs,
@@ -678,11 +673,20 @@ struct HCUGPUConvertWarpSpecializeToLLVM
         return signalPassFailure();
     }
 
-    if (raw936 && rawws::proofs.count(mod.getOperation())) {
-      rawws::proofs.erase(mod.getOperation());
-      mod->removeAttr(rawws::Witness);
-      mod.emitError("raw-window-ws: verified WS was not consumed by late lowering");
-      return signalPassFailure();
+    if (manual936) {
+      SmallVector<triton::gpu::LocalBarrierOp> localCta;
+      bool malformed = false;
+      mod.walk([&](triton::gpu::LocalBarrierOp op) {
+        if (auto request = op->getAttr("hcu.cta_scope")) {
+          malformed |= !isa<UnitAttr>(request);
+          localCta.push_back(op);
+        }
+      });
+      if (malformed) {
+        mod.emitError("CTA LDS barrier request must be a unit attribute");
+        return signalPassFailure();
+      }
+      for (auto barrier : localCta) manualws::localCtaBarrier(barrier);
     }
 
     // Convert GPU dialect to ROCDL dialect

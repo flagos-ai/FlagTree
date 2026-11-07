@@ -1,5 +1,3 @@
-#include "WholePacketFrontendBindings.inc"
-#include "RawWindowFrontendBindings.inc"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TritonHCUGPUToLLVM/Passes.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
@@ -9,6 +7,10 @@
 #include "lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "lld/Common/Driver.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/IR/Builders.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
@@ -707,32 +709,81 @@ struct LdsOffsetRange {
   uint64_t high;
 };
 
-// Lane layouts build OR trees of masked bitfields. Recurse through a bounded
-// OR tree before querying LLVM so reassociation does not consume the generic
-// ValueTracking depth budget. Use standard KnownBits transfer/union operations;
-// incomplete walks retain the original conservative result.
+// Layout addresses combine masked bitfields and fragment additions. Recurse
+// through a bounded OR/add/sub tree before generic ValueTracking exhausts its
+// depth budget. KnownBits transfers model modular arithmetic; no no-wrap flags,
+// launch assumptions or frontend witnesses are required. Unknown expressions
+// and exhausted budgets retain their original conservative facts.
+static llvm::KnownBits getLdsIndexKnownBitsImpl(
+    llvm::Value *value, const llvm::DataLayout &layout, unsigned &budget) {
+  auto known = llvm::computeKnownBits(value, layout);
+  // A bound inside all LDS can still cross a smaller physical object.
+  // Refine nonconstant expressions within the node budget before partitioning.
+  if (!budget || known.isConstant())
+    return known;
+  --budget;
+  auto *op = llvm::dyn_cast<llvm::Operator>(value);
+  if (!op)
+    return known;
+  unsigned code = op->getOpcode();
+  if (code == llvm::Instruction::Mul) {
+    // Multiplication by a constant can hide disjoint shifted bitfields.
+    // Sum its set-bit shifts in modular arithmetic, without no-wrap flags.
+    auto *constant = llvm::dyn_cast<llvm::ConstantInt>(op->getOperand(1));
+    llvm::Value *input = op->getOperand(0);
+    if (!constant) {
+      constant = llvm::dyn_cast<llvm::ConstantInt>(op->getOperand(0));
+      input = op->getOperand(1);
+    }
+    if (!constant)
+      return known;
+    auto lhs = getLdsIndexKnownBitsImpl(input, layout, budget);
+    unsigned width = lhs.getBitWidth();
+    llvm::SmallVector<unsigned, 8> shifts;
+    for (unsigned bit = 0; bit < width; ++bit)
+      if (constant->getValue()[bit]) {
+        shifts.push_back(bit);
+        if (shifts.size() > budget)
+          return known;
+      }
+    budget -= shifts.size();
+    llvm::KnownBits product(width);
+    product.Zero.setAllBits();
+    for (unsigned shift : shifts) {
+      auto term = lhs;
+      term.Zero = (lhs.Zero << shift) |
+                  llvm::APInt::getLowBitsSet(width, shift);
+      term.One = lhs.One << shift;
+      product = llvm::KnownBits::computeForAddSub(
+          true, false, false, product, term);
+    }
+    return known.unionWith(product);
+  }
+  if (code != llvm::Instruction::Or && code != llvm::Instruction::And &&
+      code != llvm::Instruction::Xor && code != llvm::Instruction::Add &&
+      code != llvm::Instruction::Sub)
+    return known;
+  auto lhs = getLdsIndexKnownBitsImpl(op->getOperand(0), layout, budget);
+  auto rhs = getLdsIndexKnownBitsImpl(op->getOperand(1), layout, budget);
+  auto refined = lhs;
+  if (code == llvm::Instruction::Or)
+    refined |= rhs;
+  else if (code == llvm::Instruction::And) {
+    refined.Zero = lhs.Zero | rhs.Zero;
+    refined.One = lhs.One & rhs.One;
+  } else if (code == llvm::Instruction::Xor) {
+    refined.Zero = (lhs.Zero & rhs.Zero) | (lhs.One & rhs.One);
+    refined.One = (lhs.Zero & rhs.One) | (lhs.One & rhs.Zero);
+  } else
+    refined = llvm::KnownBits::computeForAddSub(
+        code == llvm::Instruction::Add, false, false, lhs, rhs);
+  return known.unionWith(refined);
+}
+
 static llvm::KnownBits getLdsIndexKnownBits(llvm::Value *value,
                                            const llvm::DataLayout &layout) {
-  auto known = llvm::computeKnownBits(value, layout);
-  if (known.Zero.isSignBitSet() && known.getMaxValue().getActiveBits() <= 16)
-    return known;
-  llvm::SmallVector<llvm::Value *, 8> pending{value};
-  llvm::KnownBits combined(known.getBitWidth());
-  combined.setAllZero();
-  unsigned visited = 0;
-  while (!pending.empty()) {
-    if (++visited > 31)
-      return known;
-    auto *next = pending.pop_back_val();
-    auto *op = llvm::dyn_cast<llvm::Operator>(next);
-    if (op && op->getOpcode() == llvm::Instruction::Or) {
-      pending.push_back(op->getOperand(0));
-      pending.push_back(op->getOperand(1));
-    } else {
-      combined |= llvm::computeKnownBits(next, layout);
-    }
-  }
-  return known.unionWith(combined);
+  unsigned budget = 31;
+  return getLdsIndexKnownBitsImpl(value, layout, budget);
 }
 
 static std::optional<LdsOffsetRange>
@@ -815,16 +866,21 @@ static unsigned annotateLdsObjectScopes(llvm::Module *module,
         auto *callee = call ? call->getCalledFunction() : nullptr;
         llvm::Value *pointer = nullptr;
         uint64_t bytes = 0;
-        bool copy = callee && callee->getName() ==
-                                  "llvm.amdgcn.raw.ptr.buffer.load.lds";
+        bool raw = callee && callee->getName() ==
+                                  "llvm.amdgcn.raw.ptr.buffer.load.lds" &&
+                   call->arg_size() == 7;
+        bool structured = callee && callee->getName() ==
+                                  "llvm.amdgcn.struct.ptr.buffer.load.lds" &&
+                          call->arg_size() == 8;
+        bool copy = raw || structured;
         if (copy) {
           if (!hasHcuAliasScope(inst.getMetadata(llvm::LLVMContext::MD_alias_scope),
-                                "hcug.AsyncCopies") ||
-              call->arg_size() != 7)
+                                "hcug.AsyncCopies"))
             continue;
           auto *size = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
-          if (!size || (size->getZExtValue() != 8 && size->getZExtValue() != 16))
-            continue;
+          if (!size || (size->getZExtValue() != 8 && size->getZExtValue() != 16) ||
+              (structured && size->getZExtValue() != 16))
+            continue; // Structured hardware footprint is verified for16B only.
           pointer = call->getArgOperand(1);
           // Byte width is per lane, as in AMD BufferEmitter::emitLoadToLds.
           // The scalar dst selects a complete wave packet.
@@ -841,15 +897,20 @@ static unsigned annotateLdsObjectScopes(llvm::Module *module,
             if (size.isScalable() || size.getFixedValue() > 16)
               continue;
             bytes = size.getFixedValue();
-          } else if (callee && callee->getName() ==
-                                    "llvm.hcu.ds.read.m32x16.b16.v4i32.p3") {
+          } else if (callee && (callee->getName() ==
+                                    "llvm.hcu.ds.read.m32x16.b16.v4i32.p3" ||
+                                callee->getName() ==
+                                    "llvm.hcu.ds.read.m32x16.b16.alt.v4i32.p3")) {
             if (call->arg_size() != 2)
               continue;
             auto *mode = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(1));
             if (!mode || !mode->isZero())
               continue;
             pointer = call->getArgOperand(0);
-            // Each returned half is from a lane's address plus [0,14].
+            // Normal and ALT both gather halfwords within an issuing
+            // lane's 16-byte row (the finite-read planner proves the
+            // distinct cross-lane permutations). Bound the union of all
+            // issuing-lane addresses plus [0,14].
             // The range bounds all lanes, including native cross-lane reads.
             bytes = 16;
           }
@@ -1028,8 +1089,78 @@ static unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
 }
 
 void init_triton_hcu(py::module &&m) {
-  initWholePacketFrontendBindings(m);
-  initRawWindowFrontendBindings(m);
+  m.def("create_local_memory_wait", [](mlir::OpBuilder &builder,
+                                        mlir::Location loc) {
+    // Reuse the target counter operation so native wait insertion recognizes
+    // the completed LDS responses; an opaque asm leaves redundant waits.
+    builder.create<mlir::triton::hcugpu::MemoryCounterWaitOp>(
+        loc, /*load=*/nullptr, /*store=*/nullptr,
+        /*ds=*/builder.getI32IntegerAttr(0));
+  });
+  m.def("has_warp_specialize", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod.walk([&](mlir::triton::gpu::WarpSpecializeOp) { found = true; });
+    return found;
+  });
+  m.def("has_cta_barrier", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod.walk([&](mlir::triton::gpu::LocalBarrierOp op) {
+      found |= op->hasAttr("hcu.cta_scope");
+    });
+    return found;
+  });
+  m.def("create_cta_barrier", [](mlir::OpBuilder &builder, mlir::Location loc) {
+    // GPU dialect's adjacent-barrier folding is invalid for independently
+    // phased WS actors. The standard TTG local barrier retains each rendezvous.
+    auto barrier = builder.create<mlir::triton::gpu::LocalBarrierOp>(loc);
+    barrier->setAttr("hcu.cta_scope", builder.getUnitAttr());
+  });
+  m.def("create_warp_group_id", [](mlir::OpBuilder &builder, mlir::Location loc,
+                                    int32_t size) -> mlir::Value {
+    if (size <= 0 || !llvm::isPowerOf2_32(size))
+      throw std::invalid_argument("warp group size must be a positive power of two");
+    return builder.create<mlir::triton::hcugpu::WarpGroupIdOp>(
+        loc, builder.getI32Type(), builder.getI32IntegerAttr(size)).getResult();
+  });
+  // Target scheduling boundary, independent of any shared-memory protocol.
+  m.def("create_sched_barrier", [](mlir::OpBuilder &builder, mlir::Location loc,
+                                    int32_t mask) {
+    if (mask < 0)
+      throw std::invalid_argument("scheduler barrier mask must be nonnegative");
+    mlir::ROCDL::SchedBarrier::create(builder, loc, mask);
+  }, py::arg("builder"), py::arg("loc"), py::arg("mask") = 0);
+  using namespace mlir;
+  namespace tt = mlir::triton;
+  namespace tg = mlir::triton::gpu;
+  auto scalarTypes = [](ValueRange values, unsigned width, unsigned count) {
+    if (values.size() != count)
+      throw std::invalid_argument("structured register coordinate/extent/stride count mismatch");
+    for (Value value : values)
+      if (!value || !value.getType().isInteger(width))
+        throw std::invalid_argument("structured register coordinate/extent/stride has wrong scalar type");
+  };
+  m.def("create_structured_register_load",[scalarTypes](OpBuilder &b,Location loc,Value base,
+      Type resultType,const std::vector<Value> &shape,
+      const std::vector<Value> &strides,const std::vector<Value> &indices)->Value {
+    auto result=dyn_cast<RankedTensorType>(resultType);
+    auto ptr=dyn_cast<tt::PointerType>(base.getType());
+    if(!result || result.getRank()!=2 ||
+       !(result.getElementType().isF16() || result.getElementType().isBF16()) ||
+       !isa<tg::DistributedEncodingTrait>(result.getEncoding()) || !ptr ||
+       ptr.getAddressSpace()!=1 || ptr.getPointeeType()!=result.getElementType())
+      throw std::invalid_argument("structured register load needs matching AS1 f16/bf16 pointer and rank-two distributed result");
+    scalarTypes(shape,32,2);scalarTypes(strides,64,2);scalarTypes(indices,32,3);
+    SmallVector<int32_t> tile;
+    for(int64_t d:result.getShape()) {
+      if(d<1 || d>INT32_MAX) throw std::invalid_argument("invalid structured register tile");
+      tile.push_back(int32_t(d));
+    }
+    auto op=b.create<tt::MatrixLoadOp>(loc,resultType,base,shape,strides,tile,
+        indices,ArrayRef<int32_t>{},tt::CacheModifier::NONE,
+        tt::EvictionPolicy::NORMAL,false);
+    op->setAttr("hcu.structured_register",b.getUnitAttr());
+    return op.getResult();
+  });
   // Reuse MLIR's standard LLVM loop metadata, as other backends do. Preserve
   // other loop annotations; explicit LLVM unroll hints take precedence.
   m.def("disable_llvm_loop_unroll", [](mlir::ModuleOp mod) {

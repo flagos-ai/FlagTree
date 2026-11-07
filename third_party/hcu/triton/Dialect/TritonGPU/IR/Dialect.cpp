@@ -206,8 +206,8 @@ SmallVector<unsigned> getOrder(SharedEncodingTrait layout,
   if (auto sharedLayout = dyn_cast<AMDRotatingSharedEncodingAttr>(layout)) {
     return llvm::to_vector(sharedLayout.getOrder());
   }
-  if (auto packet = dyn_cast<HCUMlsSharedEncodingAttr>(layout))
-    return llvm::to_vector(packet.getOrder());
+  if (auto mls = dyn_cast<HCUMlsSharedEncodingAttr>(layout))
+    return llvm::to_vector(mls.getOrder());
   llvm::report_fatal_error("Unimplemented usage of getOrder for MemDescType");
   return {};
 }
@@ -827,7 +827,7 @@ Attribute HCUMlsSharedEncodingAttr::parse(AsmParser &parser, Type type) {
   auto scalar = [&](StringRef key) -> std::optional<unsigned> {
     auto a = dict.getAs<IntegerAttr>(key);
     if (!a || a.getValue().isNegative() || !a.getValue().isIntN(32)) {
-      parser.emitError(parser.getNameLoc(), "missing/invalid unsigned packet field: ") << key;
+      parser.emitError(parser.getNameLoc(), "missing/invalid unsigned MLS field: ") << key;
       return std::nullopt;
     }
     return unsigned(a.getValue().getZExtValue());
@@ -839,16 +839,16 @@ Attribute HCUMlsSharedEncodingAttr::parse(AsmParser &parser, Type type) {
   for (NamedAttribute attr : dict) {
     StringRef key=attr.getName().strref();
     if (key=="mlsTile") {
-      if (failed(parseIntArrayAttr(parser,attr,tile,"logical packet tile"))) return {};
+      if (failed(parseIntArrayAttr(parser,attr,tile,"MLS tile"))) return {};
     } else if (key=="order") {
-      if (failed(parseIntArrayAttr(parser,attr,order,"logical packet order"))) return {};
+      if (failed(parseIntArrayAttr(parser,attr,order,"MLS order"))) return {};
     } else if (key=="CGALayout") cta=attr.getValue();
     else if (key!="opIdx" && key!="elemBitWidth" && key!="alt2Kind" && key!="version") {
-      parser.emitError(parser.getNameLoc(),"unexpected opaque packet key: ")<<key;return {};
+      parser.emitError(parser.getNameLoc(),"unexpected MLS encoding key: ")<<key;return {};
     }
   }
   if (tile.empty() || order.size()!=tile.size()) {
-    parser.emitError(parser.getNameLoc(),"packet tile/order rank mismatch");return {};
+    parser.emitError(parser.getNameLoc(),"MLS tile/order rank mismatch");return {};
   }
   auto layout=parseCTAAttr(parser,cta,tile.size());
   if (!layout) return {};

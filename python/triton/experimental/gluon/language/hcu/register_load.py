@@ -2,7 +2,16 @@
 from triton._C.libtriton import hcu
 from triton.experimental.gluon.language import _core as core
 from triton.experimental.gluon.language._core import builtin,_unwrap_if_constexpr
-from .packet import _builder,_integer
+def _builder(semantic):
+    return semantic.builder.get_op_builder(), semantic.builder.get_loc()
+
+
+def _integer(semantic, value, dtype):
+    value = semantic.to_tensor(_unwrap_if_constexpr(value))
+    assert value.type.scalar.is_int()
+    assert not value.type.is_block(), "extent/stride/origin must be scalar"
+    return semantic.cast(value, dtype).handle
+
 
 @builtin
 def structured_register_load(base,shape,strides,indices,tile_shape,layout,_semantic=None):

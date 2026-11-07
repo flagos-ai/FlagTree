@@ -114,11 +114,11 @@ _REPLAY_IMPLEMENTATIONS = {
     "triton.backends.amd.driver": "triton_hip_graph_replay_v1",
     "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
     "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
-    "triton.backends.mthreads.driver": "triton_musa_graph_replay_v1",
+    "triton.backends.mthreads.driver": "triton_musa_graph_replay_adaptivewarmup_v2",
     # Caller-stream replay has different selection/timing semantics from v2,
     # which allocated a new side stream for every helper call. Namespace both
     # persistent best-config and per-config benchmark caches through this key.
-    "triton.backends.hcu.driver": "triton_hcu_graph_calibrated_currentstream_v3",
+    "triton.backends.hcu.driver": "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v4",
 }
 _OFFICIAL_TRITON_REPLAY_COUNT = 10
 

@@ -38,7 +38,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 namespace mlir::triton::HCU {
-LogicalResult verifyPacketMemoryOperations(ModuleOp mod, StringRef arch);
+LogicalResult verifyTargetMemoryOperations(ModuleOp mod, StringRef arch);
 }
 
 namespace mlir::triton {
@@ -49,8 +49,8 @@ namespace mlir::triton {
 using namespace mlir;
 
 #include "WavePrivateSyncStaging.h"
-#include "WholePacketRegions.h"
-#include "CompactPrefixOwner.h"
+#include "PhysicalSharedRegions.h"
+#include "MatrixSharedCopy.h"
 #include "TerminalReadonlyPublication.h"
 
 namespace {
@@ -69,6 +69,7 @@ public:
     addLegalOp<triton::gpu::WarpYieldOp>();
     addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
     addLegalOp<triton::gpu::WarpReturnOp>();
+    addLegalOp<triton::gpu::LocalBarrierOp>();
   }
 };
 
@@ -82,6 +83,9 @@ public:
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
+    // Target memory ops must be legalized here. Partial conversion otherwise
+    // permits an unsupported HCU op to survive until LLVM translation.
+    addIllegalDialect<triton::hcugpu::TritonHCUGPUDialect>();
 #ifdef __TLE__
     addIllegalDialect<triton::tle::TleDialect>();
 #endif
@@ -94,6 +98,9 @@ public:
     addLegalOp<triton::gpu::WarpYieldOp>();
     addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
     addLegalOp<triton::gpu::WarpReturnOp>();
+    addDynamicallyLegalOp<triton::gpu::LocalBarrierOp>([](triton::gpu::LocalBarrierOp op) {
+      return bool(op->getAttrOfType<UnitAttr>("hcu.cta_scope"));
+    });
   }
 };
 
@@ -164,7 +171,7 @@ struct ConvertTritonHCUGPUToLLVM
       return signalPassFailure();
     }
 
-    if (failed(triton::HCU::verifyPacketMemoryOperations(mod, targetInfo.getArch())))
+    if (failed(triton::HCU::verifyTargetMemoryOperations(mod, targetInfo.getArch())))
       return signalPassFailure();
 
     mlir::LowerToLLVMOptions option(context);
@@ -176,17 +183,7 @@ struct ConvertTritonHCUGPUToLLVM
     int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(mod);
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
-    // Owner-global prefix proof must finish before shared allocation.
-    unsigned compactedOwners = HCU::compactPrefixOwners(mod, targetInfo.getArch());
-
-    // Allocate shared memory and set barrier
-    ModuleAllocation allocation(
-        mod, compactedOwners ? HCU::HCUAllocationAnalysisScratchSizeFn
-                             : triton::defaultAllocationAnalysisScratchSizeFn);
-    // An earlier allocation pass emitted sizes/offsets for the old geometry.
-    // Refresh all roots and temporary buffers using the standard allocator.
-    if (compactedOwners)
-      triton::gpu::attachAllocationSizeAndOffsetAttr(mod, allocation);
+    ModuleAllocation allocation(mod, triton::defaultAllocationAnalysisScratchSizeFn);
     if (targetInfo.requiresAliasInfoForAsyncOps())
       HCU::annotateLocalLoadsSyncedViaAsyncWait(mod);
 
@@ -199,9 +196,11 @@ struct ConvertTritonHCUGPUToLLVM
       twoSlotWAR = HCU::prepareTwoSlotPrefetchWAR(mod);
       asyncSlotWAR = HCU::prepareAsyncSlotPrefetchWAR(mod);
     }
-    HCU::WholePacketRegions packetRegions(mod, allocation, targetInfo.getArch());
+    HCU::PhysicalSharedRegions sharedRegions(mod, allocation);
+    HCU::MatrixSharedCopies sharedCopies(mod, sharedRegions, targetInfo.getArch());
+    if (!sharedCopies.isValid()) return signalPassFailure();
     auto membarFilter = [&](Operation *before, Operation *after) {
-      if (packetRegions.disjoint(before, after))
+      if (sharedRegions.disjoint(before, after))
         return true;
       // The helper proves these exact main-body pairs immediately above;
       // membar only inserts barriers and leaves their operands unchanged.
@@ -325,7 +324,7 @@ struct ConvertTritonHCUGPUToLLVM
                                             HCUBenefit);
     HCUBenefit += 1;
     HCU::populateMLSOpToLLVMPatterns(typeConverter, targetInfo, patterns,
-                                     axisInfoAnalysis, HCUBenefit);
+                                     axisInfoAnalysis, HCUBenefit, sharedCopies);
 
     populatePatterns7(mlir::triton::populateReduceOpToLLVMPatterns,
                       commonBenefit);

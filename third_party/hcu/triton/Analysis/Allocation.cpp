@@ -1,3 +1,4 @@
+#include "TritonHCUGPUTransforms/ExplicitWarpSpecialize.h"
 /*
  * Copyright 2018-2020 Philippe Tillet
  * Copyright 2020-2022 OpenAI
@@ -213,8 +214,9 @@ private:
     bool scalarPure = scalar &&
         (op->getName().getStringRef().starts_with("arith.") ||
          isa<AddPtrOp>(op)) && isPure(op);
-    bool descriptorIndex = isa<gpu::MemDescIndexOp>(op);
-    if (!scalarPure && !descriptorIndex) return false;
+    bool descriptorView = isa<gpu::MemDescIndexOp, gpu::MemDescSubsliceOp,
+                              gpu::MemDescReinterpretOp>(op);
+    if (!scalarPure && !descriptorView) return false;
     return llvm::all_of(op->getOperands(), [&](Value input) {
       return isUniformCTACapture(input, function);
     });
@@ -225,20 +227,13 @@ private:
     auto target = mod->getAttrOfType<StringAttr>("ttg.target");
     auto ctas = mod->getAttrOfType<IntegerAttr>("ttg.num-ctas");
     auto wave = mod->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-    auto rawProtocol = mod->getAttrOfType<IntegerAttr>("ttg.hcu.raw_window_ws");
-    // The raw-window backend runs its finite SCF proof before allocation.
-    // Its same-process Distinct token remains live until late capture elision;
-    // the late verifier independently rejects imported/unissued witnesses.
-    bool rawVerified = rawProtocol && rawProtocol.getInt() == 1 &&
-        mod->getAttrOfType<DistinctAttr>("ttg.hcu.raw_window_ws.internal_witness");
+    // The explicit terminal lowering rematerializes uniform captures and
+    // branches directly to its partitions. Derive eligibility from actual IR;
+    // no RawWindow marker, version or imported witness grants scratch elision.
     if (!target || target.getValue() != "hip:gfx936" ||
-        !rawVerified ||
         !ctas || ctas.getInt() != 1 || !wave || wave.getInt() != 64 ||
-        ws.getNumResults() || ws.getPartitionRegions().size() != 1)
+        !mlir::triton::HCU::terminalWarpDomain(ws, 16))
       return false;
-    unsigned count = 0;
-    mod.walk([&](gpu::WarpSpecializeOp) { ++count; });
-    if (count != 1) return false;
     auto function = ws->getParentOfType<FunctionOpInterface>();
     return function && llvm::all_of(ws.getExplicitCaptures(), [&](Value capture) {
       return isUniformCTACapture(capture, function.getOperation());

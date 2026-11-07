@@ -1,6 +1,6 @@
 """Standalone LGKM waits: strengthen first/min, remove later waits in one BB.
 
-Only the existing packet model's PURE instructions may separate the waits.
+Only the shared native classifier's PURE instructions may separate the waits.
 Memory, CTA, CFG, unknown and non-standalone waits end a segment. No assumption
 about completion cycles/FIFO is used. A later assembler/readiness check remains
 mandatory; this module never assembles, dispatches, or claims hardware validity.

@@ -13,6 +13,7 @@ NATIVE_READINESS_CAPABILITIES = frozenset({
     "gfx936.v_xad_u32.single_dst_3src",
     "gfx936.v_perm_b32.single_dst_3src",
     "gfx936.s_setprio.literal_0_1",
+    "gfx936.scalar_bitset.sgpr_read_modify_write",
 })
 
 
@@ -44,20 +45,43 @@ def _xad_u32_effects(operands):
     return _registers(",".join(operands[1:])), _registers(operands[0])
 
 
+def _scalar_source_registers(source):
+    if re.fullmatch(r"s[0-9]+", source):
+        return _registers(source)
+    if not re.fullmatch(r"-?(?:0[xX][0-9a-fA-F]{1,8}|[0-9]{1,10})", source):
+        return None
+    value = int(source, 16 if "x" in source.lower() else 10)
+    return set() if -(1 << 31) <= value < (1 << 32) else None
+
+
 def _sext_i32_i16_effects(operands):
     # Vega SOP1 S_SEXT_I32_I16: one synchronous 32-bit SGPR result;
     # D={16{S0[15]},S0[15:0]}, SCC is not written. No queue completion.
     if len(operands) != 2 or not re.fullmatch(r"s[0-9]+", operands[0]):
         return None
-    source = operands[1]
-    if not re.fullmatch(r"s[0-9]+", source):
-        if not re.fullmatch(r"-?(?:0[xX][0-9a-fA-F]{1,8}|[0-9]{1,10})", source):
+    reads = _scalar_source_registers(operands[1])
+    return None if reads is None else (reads, _registers(operands[0]))
+
+
+def _bitset_effects(op, operands):
+    # SOP1 bit set/reset preserves all other destination bits: the old
+    # destination is an input, including BOTH SGPRs of a 64-bit pair.
+    # The bit index is a 32-bit scalar source (low5/low6 bits are used).
+    # No memory event or async completion is introduced. Special registers
+    # and malformed operands retain the conservative native fallback.
+    match = re.fullmatch(r"s_bitset[01]_b(32|64)", op)
+    if match is None or len(operands) != 2:
+        return None
+    if match[1] == "32":
+        if not re.fullmatch(r"s[0-9]+", operands[0]):
             return None
-        value = int(source, 16 if "x" in source.lower() else 10)
-        if not -(1 << 31) <= value < (1 << 32):
+    else:
+        pair = re.fullmatch(r"s\[(\d+):(\d+)\]", operands[0])
+        if pair is None or int(pair[1]) % 2 or int(pair[2]) != int(pair[1]) + 1:
             return None
-    # Explicit source read is retained even when source equals destination.
-    return _registers(source), _registers(operands[0])
+    reads = _scalar_source_registers(operands[1])
+    dest = _registers(operands[0])
+    return None if reads is None else (reads | dest, dest)
 
 
 def check_native_readiness(assembly, name, max_states=100000):
@@ -124,6 +148,11 @@ def check_native_readiness(assembly, name, max_states=100000):
                 effects = _sext_i32_i16_effects(operands)
                 if effects is None:
                     return reject("unsupported s_sext_i32_i16 operands", native_line=line_number, op=op)
+                reads, writes = effects
+            elif re.fullmatch(r"s_bitset[01]_b(?:32|64)", op):
+                effects = _bitset_effects(op, operands)
+                if effects is None:
+                    return reject("unsupported scalar bitset operands", native_line=line_number, op=op)
                 reads, writes = effects
             elif op == "s_setprio":
                 # The generated priority controls neither define data registers

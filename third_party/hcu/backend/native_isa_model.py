@@ -116,6 +116,8 @@ def classify_instruction(inst):
         return 'OTHER_VM'
     # Register permutation does not issue a memory event. Use its exact opcode,
     # leaving unknown variants conservative rather than accepting a prefix.
+    if re.fullmatch(r's_bitset[01]_b(?:32|64)', op):
+        return 'PURE'
     if op == 'v_perm_b32':
         return 'PURE'
     if op == 's_nop' or op.startswith(_SCALAR + _VECTOR):

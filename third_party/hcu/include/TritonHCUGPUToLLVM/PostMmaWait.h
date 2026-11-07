@@ -1,5 +1,5 @@
-#ifndef TRITON_HCU_PACKET_POST_MMA_WAIT_H
-#define TRITON_HCU_PACKET_POST_MMA_WAIT_H
+#ifndef TRITON_HCU_POST_MMA_WAIT_H
+#define TRITON_HCU_POST_MMA_WAIT_H
 #include <string>
 namespace llvm { class Module; }
 namespace flagtree::hcu {
@@ -11,11 +11,11 @@ struct PostMmaWaitOptions {
   unsigned modelIterations = 3;
 };
 struct PostMmaWaitStats {
-  unsigned considered = 0, rotated = 0, groups = 0, modelEvents = 0;
+  unsigned considered = 0, transformed = 0, groups = 0, modelEvents = 0;
   unsigned tightenedVMWaits = 0, movedCopies = 0;
   std::string reason;
 };
-PostMmaWaitStats rotatePacketPostMmaWaits(llvm::Module &, const std::string &arch,
+PostMmaWaitStats placePostMmaWaits(llvm::Module &, const std::string &arch,
                                    const PostMmaWaitOptions &);
 }
 #endif

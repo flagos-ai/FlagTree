@@ -1,6 +1,7 @@
-#include "PacketDrainSuffix.h"
+#include "SharedAddressEvaluator.h"
+#include "MemoryDrainSuffix.h"
 #include "RegisterIdentityFence.h"
-#include "TritonHCUGPUToLLVM/PacketWaitRotation.h"
+#include "TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/ADT/DenseMap.h"
@@ -16,6 +17,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include <deque>
+#include <iterator>
 #include <optional>
 #include <vector>
 using namespace llvm;
@@ -55,87 +57,7 @@ bool uniform(Value *v,SmallPtrSetImpl<Value *> &active) {
   }
   active.erase(v);return ok;
 }
-// Only bit-accurate integer/AS3 address conversions are modeled. In
-// particular FP casts and addrspacecast must never become integer identity.
-bool addressCast(unsigned opcode, Type *from, Type *to) {
-  auto as3=[](Type *t) {auto *p=dyn_cast<PointerType>(t);return p && p->getAddressSpace()==3;};
-  switch(opcode) {
-  case Instruction::Trunc: case Instruction::ZExt: case Instruction::SExt:
-    return from->isIntegerTy() && to->isIntegerTy();
-  case Instruction::PtrToInt:return as3(from) && to->isIntegerTy();
-  case Instruction::IntToPtr:return from->isIntegerTy() && as3(to);
-  case Instruction::BitCast:return as3(from) && as3(to);
-  default:return false;
-  }
-}
-// Exact finite evaluation of the address-only slice. No loaded value, loop IV,
-// resource descriptor, unknown call or user certificate supplies an address.
-struct Eval {
-  const DataLayout &dl; GlobalVariable *shared; unsigned threads;
-  std::optional<uint64_t> operator()(Value *v,unsigned tid,unsigned depth=0) {
-    if(depth>160)return std::nullopt;
-    if(auto *c=dyn_cast<ConstantInt>(v))return c->getValue().zextOrTrunc(64).getZExtValue();
-    if(v==shared)return uint64_t(0);
-    if(auto *g=dyn_cast<GEPOperator>(v)) {
-      auto b=(*this)(g->getPointerOperand(),tid,depth+1);if(!b)return std::nullopt;
-#if LLVM_VERSION_MAJOR >= 22
-      SmallMapVector<Value *,APInt,4> variables;
-#else
-      MapVector<Value *,APInt> variables;
-#endif
-      APInt constant(32,0);
-      if(!g->collectOffset(dl,32,variables,constant))return std::nullopt;
-      uint64_t result=*b+constant.sextOrTrunc(64).getZExtValue();
-      for(auto &x:variables) {auto n=(*this)(x.first,tid,depth+1);if(!n)return std::nullopt;result+=*n*x.second.sextOrTrunc(64).getZExtValue();}
-      return result&0xffffffffu;
-    }
-    if(auto *c=dyn_cast<ConstantExpr>(v)) {
-      if(c->isCast()) {
-        if(!addressCast(c->getOpcode(),c->getOperand(0)->getType(),c->getType()))return std::nullopt;
-        auto x=(*this)(c->getOperand(0),tid,depth+1);if(!x)return std::nullopt;
-        unsigned bits=c->getType()->isIntegerTy()?c->getType()->getIntegerBitWidth():32;
-        unsigned src=c->getOperand(0)->getType()->isIntegerTy()?c->getOperand(0)->getType()->getIntegerBitWidth():32;
-        APInt a(src,*x);return (c->getOpcode()==Instruction::SExt?a.sextOrTrunc(bits):a.zextOrTrunc(bits)).zextOrTrunc(64).getZExtValue();
-      }
-      return std::nullopt;
-    }
-    auto *i=dyn_cast<Instruction>(v);if(!i)return std::nullopt;
-    if(named(i,"llvm.amdgcn.workitem.id.x"))return tid;
-    if(named(i,"llvm.amdgcn.readfirstlane."))return (*this)(cast<CallBase>(i)->getArgOperand(0),(tid/64)*64,depth+1);
-    // The existing LDS-DMA alias workaround intentionally hides pointer
-    // provenance with one empty tied VGPR identity. It changes no address bit,
-    // including packed m0 rotation fields. Do not infer identity for untied,
-    // side-effecting, bundled, wider or otherwise opaque assembly.
-    if(auto *c=dyn_cast<CallInst>(i))if(auto *a=assembly(i))
-      if(a->getAsmString().empty() && a->getConstraintString()=="=v,0" &&
-         !a->hasSideEffects() && !c->getNumOperandBundles() &&
-         c->arg_size()==1 && c->getType()->isIntegerTy(32) &&
-         c->getArgOperand(0)->getType()->isIntegerTy(32))
-        return (*this)(c->getArgOperand(0),tid,depth+1);
-
-    unsigned bits=i->getType()->isIntegerTy()?i->getType()->getIntegerBitWidth():32;
-    if(bits>64)return std::nullopt;
-    auto get=[&](Value *x){return (*this)(x,tid,depth+1);};
-    if(auto *c=dyn_cast<CastInst>(i)) {
-      if(!addressCast(c->getOpcode(),c->getSrcTy(),c->getDestTy()))return std::nullopt;
-      auto x=get(c->getOperand(0));if(!x)return std::nullopt;
-      unsigned src=c->getSrcTy()->isIntegerTy()?c->getSrcTy()->getIntegerBitWidth():32;
-      APInt a(src,*x);return (c->getOpcode()==Instruction::SExt?a.sextOrTrunc(bits):a.zextOrTrunc(bits)).zextOrTrunc(64).getZExtValue();
-    }
-    if(auto *b=dyn_cast<BinaryOperator>(i)) {
-      auto x=get(b->getOperand(0)),y=get(b->getOperand(1));if(!x||!y)return std::nullopt;
-      APInt a(bits,*x),c(bits,*y),r(bits,0);switch(b->getOpcode()) {
-        case Instruction::Add:r=a+c;break;case Instruction::Sub:r=a-c;break;case Instruction::Mul:r=a*c;break;
-        case Instruction::And:r=a&c;break;case Instruction::Or:r=a|c;break;case Instruction::Xor:r=a^c;break;
-        case Instruction::Shl:if(*y>=bits)return std::nullopt;r=a.shl(*y);break;
-        case Instruction::LShr:if(*y>=bits)return std::nullopt;r=a.lshr(*y);break;
-        case Instruction::AShr:if(*y>=bits)return std::nullopt;r=a.ashr(*y);break;
-        default:return std::nullopt;
-      }return r.zextOrTrunc(64).getZExtValue();
-    }
-    return std::nullopt;
-  }
-};
+using Eval = memory_schedule::SharedAddressEvaluator;
 enum Kind {Noop,Copy,Read,VMWait,LDSZero,CTA};
 struct Event {Kind kind;uint64_t mask=0;unsigned count=0;};
 struct Events {
@@ -161,7 +83,11 @@ struct Events {
         auto p=eval(c->getArgOperand(1),t);if(!p)return std::nullopt;
         uint64_t low=*p&65535,high=*p&~uint64_t(65535);unsigned pw=(low%8192)/1024;
         uint64_t expected=uint64_t(pw&(raw?1:3))<<(raw?18:16);
-        if(low%1024 || high!=expected || low+1024>sharedBytes)return std::nullopt;
+        // A complete16B wave covers the same1KiB region for ordinary
+        // zero-control placement and the legacy within-region rotation.
+        // Both maps have independent full LDS readback evidence; this model
+        // needs their footprint, not the payload's source ownership.
+        if(low%1024 || (high!=0 && high!=expected) || low+1024>sharedBytes)return std::nullopt;
         if(t%64==0) {
           waveBase=*p;uint64_t bit=uint64_t(1)<<(low/1024);
           if(occupied&bit)return std::nullopt;occupied|=bit;
@@ -186,7 +112,7 @@ struct Events {
         // The normal matrix gather selects a source lane in the same wave
         // and adds 2*(outputLane&7). Union over ALL lane pointers plus 16B
         // therefore contains every implicit read. Ordinary loads use their
-        // actual byte width. Keep a conservative 1KB packet cover, rather
+        // actual byte width. Keep a conservative 1KB physical-byte cover, rather
         // than invent reads of unwritten padding in a partial role region.
         unsigned first=lo/1024,last=(lo+bytes-1)/1024;
         for(unsigned chunk=first;chunk<=last;++chunk)
@@ -204,11 +130,11 @@ struct Events {
   }
 };
 struct State {
-  std::deque<uint64_t> dma;uint64_t ready=0,completed=0,reads=0;
-  bool operator==(const State &x)const{return dma==x.dma&&ready==x.ready&&completed==x.completed&&reads==x.reads;}
-  bool step(Event e) {
+  std::deque<uint64_t> dma;uint64_t ready=0,completed=0,reads=0,retiredReads=0;
+  bool operator==(const State &x)const{return dma==x.dma&&ready==x.ready&&completed==x.completed&&reads==x.reads&&retiredReads==x.retiredReads;}
+  bool step(Event e,bool allowPendingCTA=false) {
     if(e.kind==Copy) {
-      if(reads&e.mask)return false;
+      if((reads|(allowPendingCTA?retiredReads:0))&e.mask)return false;
       for(uint64_t p:dma)if(p&e.mask)return false;
       ready&=~e.mask;dma.push_back(e.mask);
     } else if(e.kind==Read) {
@@ -217,16 +143,27 @@ struct State {
       reads|=e.mask;
     } else if(e.kind==VMWait) {
       while(dma.size()>e.count){completed|=dma.front();dma.pop_front();}
-    } else if(e.kind==LDSZero)reads=0;
-    else if(e.kind==CTA) {if(reads)return false;ready|=completed;completed=0;}
+    } else if(e.kind==LDSZero) {
+      // A wait completes this wave only. Until the next common CTA, another
+      // wave can still be using these addresses while a fast wave advances.
+      if(allowPendingCTA)retiredReads|=reads;reads=0;
+    }
+    else if(e.kind==CTA) {
+      // A barrier publishes completed DMA but does not complete unrelated LDS
+      // reads. Pending reads may cross only if publication writes disjoint
+      // physical regions. Copy and Read retain their original WAR/RAW checks.
+      if(reads && (!allowPendingCTA || (completed&reads)))return false;
+      ready|=completed;completed=0;retiredReads=0;
+    }
     return true;
   }
 };
-struct Group {SmallVector<Instruction *> fence;Instruction *mma=nullptr;};
+struct Group {SmallVector<Instruction *> fence,copies;Instruction *mma=nullptr,*lastMma=nullptr;};
 }
-WaitRotationStats rotatePacketWaits(Module &m,const std::string &arch,const WaitRotationOptions &o) {
-  WaitRotationStats s;
-  auto skip=[&](StringRef why){s.reason=why.str();return s;};
+PostMmaWaitStats placePostMmaWaits(Module &m,const std::string &arch,const PostMmaWaitOptions &o) {
+  PostMmaWaitStats s;
+  std::string failedEvent;
+  auto skip=[&](StringRef why){s.reason=why.str();if(!failedEvent.empty())s.reason+="; "+failedEvent;return s;};
   if(arch!="gfx936" || m.getDataLayout().getPointerSizeInBits(3)!=32)return skip("unsupported target/address ABI");
   if(!o.threads || o.threads%64 || o.threads>1024 || !o.sharedBytes || o.sharedBytes>65536 || o.sharedBytes%8192 || o.modelIterations<3)return skip("invalid exact ABI/domain options");
   GlobalVariable *shared=nullptr;
@@ -267,12 +204,18 @@ WaitRotationStats rotatePacketWaits(Module &m,const std::string &arch,const Wait
     for(auto *i=begin;i!=end;i=i->getNextNode()) {
       if(!i)return skip("group does not close");
       auto e=event(i);if(!e)return skip("unknown group memory/event");
-      if(mma(i)){if(!seenMma)groups[n].mma=i;seenMma=true;++nm;}
+      if(mma(i)){if(!seenMma)groups[n].mma=i;groups[n].lastMma=i;seenMma=true;++nm;}
       if(e->kind==Read){if(seenMma)return skip("interleaved LDS after first MMA");++nr;}
-      if(e->kind==Copy){if(seenMma)return skip("copy after first MMA");++nc;}
+      if(e->kind==Copy){if(seenMma)return skip("copy after first MMA");groups[n].copies.push_back(i);++nc;}
       if(e->kind==VMWait||e->kind==LDSZero||e->kind==CTA)return skip("extra queue fence in group");
     }
     if(!nr||!nc||!nm)return skip("not readNext/copyFuture/currentMMA group");
+    // Moving M newest DMA issues past this VM wait preserves its original
+    // FIFO completion frontier exactly when C>=M: wait(C) after append(M)
+    // equals wait(C-M) before append(M). Never derive M from shape/stages.
+    for(auto *i:groups[n].fence)if(auto w=wait(i))
+      if(w->vm<63 && w->vm<groups[n].copies.size())
+        return skip("VM threshold cannot retain moved DMA copies");
   }
   // A preexisting rotated body has a read/copy before its first fence. Never
   // rotate that source again, even if later waits happen to be full-zero.
@@ -280,15 +223,23 @@ WaitRotationStats rotatePacketWaits(Module &m,const std::string &arch,const Wait
     auto e=event(i);if(!e||e->kind!=Noop)return skip("memory before first fence: already rotated or unsupported");
   }
   SmallPtrSet<Instruction *,32> removed;
-  for(auto &g:groups)for(auto *i:g.fence)removed.insert(i);
+  for(auto &g:groups){for(auto *i:g.fence)removed.insert(i);for(auto *i:g.copies)removed.insert(i);}
   std::vector<Event> prefix,prime,rotated;
   for(auto &i:*pre) {if(i.isTerminator())break;auto e=event(&i);if(!e)return skip("unknown preheader memory/event");prefix.push_back(*e);}
   for(auto *i:groups[0].fence){auto e=event(i);if(!e)return skip("unknown prime event");prime.push_back(*e);}
   for(auto &i:*body) {
-    for(auto &g:groups)if(&i==g.mma)for(auto *j:g.fence){auto e=event(j);if(!e)return skip("unknown relocated fence");rotated.push_back(*e);}
+    for(auto &g:groups)if(&i==g.mma) {
+      for(auto *j:g.fence){auto e=event(j);if(!e)return skip("unknown relocated fence");
+        if(e->kind==VMWait)e->count-=g.copies.size();
+        if(e->kind!=LDSZero)rotated.push_back(*e);
+      }
+      // The common CTA has now discharged other waves' retired-read epoch.
+      for(auto *j:g.copies){auto e=event(j);if(!e)return skip("unknown relocated copy");rotated.push_back(*e);}
+    }
     if(!removed.contains(&i)){auto e=event(&i);if(!e)return skip("unknown loop event");rotated.push_back(*e);}
+    for(auto &g:groups)if(&i==g.lastMma)for(auto *j:g.fence)if(auto w=wait(j))if(w->lgkm==0)rotated.push_back(Event{LDSZero});
   }
-  State state;auto run=[&](const std::vector<Event> &events){for(auto e:events){++s.modelEvents;if(!state.step(e))return false;}return true;};
+  State state;auto run=[&](const std::vector<Event> &events,bool allowPendingCTA=false){for(auto e:events){++s.modelEvents;if(!state.step(e,allowPendingCTA)){failedEvent="event="+std::to_string(unsigned(e.kind))+",mask="+std::to_string(e.mask)+",reads="+std::to_string(state.reads)+",retiredReads="+std::to_string(state.retiredReads);return false;}}return true;};
   std::vector<Event> original;
   for(auto &i:*body){auto e=event(&i);if(!e)return skip("unknown original loop event");original.push_back(*e);}
   if(!run(prefix))return skip("original prefix FIFO/publication proof failed");
@@ -298,8 +249,11 @@ WaitRotationStats rotatePacketWaits(Module &m,const std::string &arch,const Wait
   }
   state=State{};
   if(!run(prefix)||!run(prime))return skip("prime FIFO/publication/read WAR proof failed");
+  // The prime has no retired reads; one mandatory first iteration reaches
+  // the loop-cut state containing the last group's cross-wave read epoch.
+  if(!run(rotated,true))return skip("first-iteration read/DMA WAR or publication proof failed");
   State fixed=state;
-  for(unsigned k=0;k<o.modelIterations;++k) {if(!run(rotated))return skip("ring read/DMA WAR or publication proof failed");if(!(state==fixed))return skip("ring state does not return to prime fixed point");}
+  for(unsigned k=1;k<o.modelIterations;++k) {if(!run(rotated,true))return skip("ring read/DMA WAR or publication proof failed");if(!(state==fixed))return skip("ring state does not return to post-wait fixed point");}
   auto *exit=loop->getUniqueExitBlock();
   if(!exit)return skip("no unique unchanged drain");
   // Every additional block must be an acyclic global-store-only suffix.
@@ -320,14 +274,42 @@ WaitRotationStats rotatePacketWaits(Module &m,const std::string &arch,const Wait
   // final barrier; all pending writes are already non-overlapping and unchanged.
 #if LLVM_VERSION_MAJOR >= 22
   for(auto *i:groups[0].fence)i->clone()->insertBefore(pre->getTerminator()->getIterator());
-  for(auto &g:groups)for(auto *i:g.fence)i->moveBefore(g.mma->getIterator());
 #else
   for(auto *i:groups[0].fence)i->clone()->insertBefore(pre->getTerminator());
-  for(auto &g:groups)for(auto *i:g.fence)i->moveBefore(g.mma);
 #endif
+  for(auto &g:groups) {
+    Instruction *post=g.lastMma;
+    for(auto *i:g.fence) {
+      auto w=wait(i);bool after=w && w->lgkm==0;
+#if LLVM_VERSION_MAJOR >= 22
+      if(after)i->moveBefore(std::next(post->getIterator()));else i->moveBefore(g.mma->getIterator());
+#else
+      if(after)i->moveAfter(post);else i->moveBefore(g.mma);
+#endif
+      if(after)post=i;
+      if(w && w->vm<63) {
+        auto *call=cast<CallBase>(i);auto *old=cast<ConstantInt>(call->getArgOperand(0));
+        uint64_t count=w->vm-g.copies.size();
+        uint64_t encoded=(old->getZExtValue()&~uint64_t(0xc00f))|
+                         (count&15)|((count&48)<<10);
+        call->setArgOperand(0,ConstantInt::get(old->getType(),encoded));
+        ++s.tightenedVMWaits;
+      }
+    }
+    // All descriptor/address operands dominate the original earlier void
+    // call; moving only the copy later in this same block preserves SSA.
+    for(auto *copy:g.copies) {
+#if LLVM_VERSION_MAJOR >= 22
+      copy->moveBefore(g.mma->getIterator());
+#else
+      copy->moveBefore(g.mma);
+#endif
+      ++s.movedCopies;
+    }
+  }
   // A marker requests mandatory native validation on imported/cached IR; it
   // is never an input proof or a reason to bypass the structural checks.
-  kernel->addFnAttr("hcu.packet.wait.rotation","lgkm0");
-  s.rotated=1;s.groups=groups.size();s.reason="PASS_LGKM0_PRIME_AND_THREE_FIXED_POINT_RING_ITERATIONS";return s;
+  kernel->addFnAttr("hcu.memory.post_mma_wait","post-mma-lgkm0-copy-after-cta");
+  s.transformed=1;s.groups=groups.size();s.reason="PASS_POST_MMA_FULL_LGKM0_COPY_AFTER_CTA_AND_CROSS_WAVE_FIXED_POINT";return s;
 }
 }

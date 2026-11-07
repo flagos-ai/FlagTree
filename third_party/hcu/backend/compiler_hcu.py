@@ -3,7 +3,7 @@ from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
-from .packet_schedule import PacketSchedulePolicy, prepare_packet_schedule
+from .memory_schedule import MemorySchedulePolicy, prepare_memory_schedule
 from typing import Any, Dict, Optional, Tuple
 from types import ModuleType
 import hashlib
@@ -17,9 +17,6 @@ from pathlib import Path
 
 
 _REGISTER_OWNER_DEFAULT_POLICY = "gfx936_optimize_epilogue_register_owner_shared_vector_v1"
-
-
-import re
 
 
 def _priority_after_first_mmac(assembly, kernel_name):
@@ -151,24 +148,15 @@ class HIPOptions:
     # Keep wave-private synchronous staging in the operator tuning space.
     wave_private_sync: bool = False
     # Coalesce proved terminal read-only LDS publication; diagnostic opt-in.
-    compact_packet_owner: bool = False
     terminal_readonly_publication: bool = False
     combine_shifted_disjoint_or: bool = False
     # Proved loop-carried readonly global refill after its matching LDS store.
     loop_carried_store_refill: bool = False
     # Experimental wave-group MMA motion; native completion check is required.
     mma_phase_schedule: bool = False
-    # Experimental proved whole-packet FIFO/publication wait rotation.
-    packet_wait_rotation: bool = False
-    # Explicit diagnostic: native readiness is checked; cross-wave WAR is unproven.
-    packet_operand_overlap_diagnostic: bool = False
-    # Diagnostic precopy wait insertion after fresh packet rotation.
-    packet_reuse_wait: str = "none"
-    # Eliminate LGKM waits only with a same-block no-new-event bound.
-    packet_redundant_lgkm_cleanup: bool = False
     coalesce_lgkm_waits: bool = False
     # Experimental full LDS wait after compute; proves cross-wave WAR release.
-    packet_post_mma_wait: bool = False
+    post_mma_wait: bool = False
     # Preserve proved LDS-DMA alias metadata through native lowering.
     lds_dma_alias_workaround: bool = False
     # Rebase proved uniform store offsets; dynamic guards may increase pressure.
@@ -186,8 +174,6 @@ class HIPOptions:
     interleave_global_lds_reads_fences: bool = False
     # Keep register-preserving fences in four-float tuples for MMAC allocation.
     tupled_register_fences: bool = False
-    # Finite legal matrix register-bit partitions; structural bank-pressure rank.
-    packet_matrix_read_partition: bool = False
     # Explicit local-span byte addressing for proved structured register loads.
     structured_register_flat_addressing: bool = False
     structured_register_prepack_address: bool = False
@@ -296,7 +282,7 @@ class HIPOptions:
             raise ValueError("prefetch_read_first_fence requires async_local_prefetch")
         if self.async_local_prefetch and (self.arch != "gfx936" or self.num_stages not in (3, 4, 5)):
             raise ValueError("async_local_prefetch experiment requires gfx936 and 3 to 5 stages")
-        PacketSchedulePolicy.from_options(self)
+        MemorySchedulePolicy.from_options(self)
         if type(self.structured_register_flat_addressing) is not bool:
             raise ValueError("structured_register_flat_addressing must be boolean")
         if self.structured_register_flat_addressing and self.arch != "gfx936":
@@ -313,10 +299,6 @@ class HIPOptions:
             raise ValueError("priority_after_first_mmac must be boolean")
         if self.priority_after_first_mmac and self.arch != "gfx936":
             raise ValueError("priority_after_first_mmac requires gfx936")
-        if type(self.packet_matrix_read_partition) is not bool:
-            raise ValueError("packet_matrix_read_partition must be boolean")
-        if self.packet_matrix_read_partition and self.arch != "gfx936":
-            raise ValueError("packet_matrix_read_partition requires gfx936")
         if type(self.loop_carried_store_refill) is not bool:
             raise ValueError("loop_carried_store_refill must be boolean")
         if self.loop_carried_store_refill and self.arch != "gfx936":
@@ -325,10 +307,6 @@ class HIPOptions:
             raise ValueError("combine_shifted_disjoint_or must be boolean")
         if self.combine_shifted_disjoint_or and self.arch != "gfx936":
             raise ValueError("combine_shifted_disjoint_or requires gfx936")
-        if type(self.compact_packet_owner) is not bool:
-            raise ValueError("compact_packet_owner must be boolean")
-        if self.compact_packet_owner and self.arch != "gfx936":
-            raise ValueError("compact_packet_owner requires gfx936")
         if type(self.terminal_readonly_publication) is not bool:
             raise ValueError("terminal_readonly_publication must be boolean")
         if self.terminal_readonly_publication and self.arch != "gfx936":
@@ -912,9 +890,6 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
-        if options.compact_packet_owner:
-            mod.set_attr("ttg.hcu.compact_packet_owner",
-                         ir.builder(mod.context).get_bool_attr(True))
         if options.terminal_readonly_publication:
             mod.set_attr("ttg.hcu.terminal_readonly_publication",
                          ir.builder(mod.context).get_bool_attr(True))
@@ -922,11 +897,11 @@ class HIPBackend(BaseBackend):
         if options.wave_private_sync:
             mod.set_attr("ttg.hcu.wave_private_sync",
                          ir.builder(mod.context).get_int32_attr(1))
-        raw_window_ws = (options.arch == "gfx936" and
-                         mod.get_int_attr("ttg.hcu.raw_window_ws") == 1)
-        raw_base_warps = mod.get_int_attr("ttg.num-warps") if raw_window_ws else 0
-        if raw_window_ws and (options.wasp_enabled or options.wdra_enabled):
-            raise ValueError("raw-window WS cannot mix with automatic WASP or WDRA")
+        manual_ws = (options.arch == "gfx936" and
+                     not options.wasp_enabled and not options.wdra_enabled and
+                     (hcu.has_warp_specialize(mod) or hcu.has_cta_barrier(mod)))
+        explicit_ws = manual_ws
+        base_warps = mod.get_int_attr("ttg.num-warps") if explicit_ws else 0
         if options.structured_register_flat_addressing:
             mod.set_attr("ttg.hcu.structured_register_flat_addressing",
                          ir.builder(mod.context).get_bool_attr(True))
@@ -951,9 +926,6 @@ class HIPBackend(BaseBackend):
         if options.buffer_store_preserve_masked_base:
             mod.set_attr("ttg.hcu.buffer_store_preserve_masked_base",
                          ir.builder(mod.context).get_bool_attr(True))
-        if options.packet_matrix_read_partition:
-            mod.set_attr("ttg.hcu.packet_matrix_read_partition",
-                         ir.builder(mod.context).get_int32_attr(1))
         if options.fragment_dot_k:
             # Independent late invocation through the existing binding. The TU
             # consumes this private marker before any other optimization.
@@ -986,10 +958,10 @@ class HIPBackend(BaseBackend):
         # LDS size is determined by provided arch name.
         custom_lds_size = 0
         hcu.passes.ttgpuir.add_optimize_lds_usage(pm, options.arch, custom_lds_size)
-        if raw_window_ws:
+        if explicit_ws:
             # Fresh SCF trace and producer start IDs precede type/thread lowering.
             hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
-                pm, options.arch, 4, raw_base_warps, False, 0, 0, 0)
+                pm, options.arch, 4, base_warps, False, 0, 0, 0)
         passes.convert.add_scf_to_cf(pm)
         if options.arch == "gfx936" and (
             options.loop_unroll_stage == "post-pipeline" or options.wave_private_sync
@@ -1028,10 +1000,10 @@ class HIPBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
 
-        if raw_window_ws:
+        if explicit_ws:
             # Consume the same-process pre-CF proof and flatten verified regions.
             hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
-                pm, options.arch, 4, raw_base_warps, False, 0, 0, 0)
+                pm, options.arch, 4, base_warps, False, 0, 0, 0)
             passes.convert.add_arith_to_llvmir(pm)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
@@ -1066,8 +1038,6 @@ class HIPBackend(BaseBackend):
         if options.register_batch_owner_shared_vector:
             metadata["hcu_register_batch_owner_shared_vector_count"] = (
                 mod.get_int_attr("ttg.hcu.register_batch_owner_shared_vector_count") or 0)
-        if options.compact_packet_owner:
-            metadata["hcu_compact_packet_owner_count"] = mod.get_int_attr("ttg.hcu.compact_packet_owner_count")
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it
@@ -1109,10 +1079,11 @@ class HIPBackend(BaseBackend):
         # WarpSpecialize Passes would set this attribute
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         total_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
-        if raw_window_ws:
-            if total_num_warps != raw_base_warps + 4:
-                raise RuntimeError("raw-window WS total launch warp contract mismatch")
+        if manual_ws:
+            if not base_warps <= total_num_warps <= 16:
+                raise RuntimeError("explicit warp-specialize launch exceeds the actual CTA domain")
             metadata["num_warps"] = total_num_warps
+            metadata["hcu_manual_warp_specialize"] = True
 
         # Set kernel attributes first given this may affect later optimizations.
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
@@ -1121,7 +1092,7 @@ class HIPBackend(BaseBackend):
             fns[0].add_fn_attr("hcu-wdra-waves-per-tg", str(total_num_warps))
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(hcu.CALLING_CONV_AMDGPU_KERNEL)
-        launch_warps = total_num_warps if raw_window_ws else options.num_warps
+        launch_warps = total_num_warps if explicit_ws else options.num_warps
         fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{launch_warps*options.warp_size}")
         if "memory-bound-attention" in options.schedule_hint.split(','):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
@@ -1227,8 +1198,8 @@ class HIPBackend(BaseBackend):
 
     ## TODO: [HCU] integrate with rocshmem
     @staticmethod
-    def make_amdgcn(src, metadata, options, _skip_mma_phase=False):
-        amdgcn=HIPBackend._make_amdgcn_with_schedules(src,metadata,options,_skip_mma_phase)
+    def make_amdgcn(src, metadata, options, _skip_schedules=False):
+        amdgcn=HIPBackend._make_amdgcn_with_schedules(src,metadata,options,_skip_schedules)
         if options.priority_after_first_mmac:
             original=amdgcn
             try:
@@ -1265,49 +1236,31 @@ class HIPBackend(BaseBackend):
         return amdgcn
 
     @staticmethod
-    def _make_amdgcn_with_schedules(src, metadata, options, _skip_mma_phase=False):
+    def _make_amdgcn_with_schedules(src, metadata, options, _skip_schedules=False):
         # Scheduling preparations are late: cached LLIR stays exact, and all paths
         # (including LLVM FileSource) use the same native completion check.
         stage_original = src
         schedule_original = None
+        # Retired experiment IR cannot recover its pre-schedule source and
+        # operand-overlap did not prove cross-wave WAR. Do not silently accept
+        # those old private attributes under a different scheduling policy.
+        if any(marker in src for marker in (
+                "hcu.packet.wait.rotation", "hcu.packet.post_mma_wait",
+                "hcu.packet.operand_overlap.experimental")):
+            raise HSACOError("Retired experimental schedule IR; recompile the unscheduled source")
         imported_schedule = any(marker in src for marker in
-                                ("hcu.mma.phase.loop", "hcu.packet.wait.rotation",
-                                 "hcu.packet.post_mma_wait",
-                                 "hcu.packet.operand_overlap.experimental"))
+                                ("hcu.mma.phase.loop", "hcu.memory.post_mma_wait"))
         validate_imported_schedule = imported_schedule
-        if options.packet_reuse_wait != "none" and imported_schedule:
-            raise HSACOError("packet_reuse_wait requires fresh unscheduled source, not imported schedule IR")
-        if (options.packet_operand_overlap_diagnostic or
-                "hcu.packet.operand_overlap.experimental" in src):
-            metadata["hcu_packet_operand_overlap_risk"] = "CROSS_WAVE_WAR_UNPROVEN_DIAGNOSTIC_ONLY"
 
         def fallback_schedules(reason):
-            # Keep this private argument name compatible with the phase-only
-            # backend; True disables all scheduling preparations.
-            if options.packet_reuse_wait != "none":
-                metadata["hcu_packet_reuse_wait_result"] = "fallback: " + reason
-                metadata["hcu_packet_reuse_wait_groups"] = 0
-                metadata["hcu_packet_reuse_wait_loops"] = 0
-            if options.packet_redundant_lgkm_cleanup:
-                metadata["hcu_packet_redundant_lgkm_result"] = "fallback: " + reason
-                metadata["hcu_packet_redundant_lgkm_removed_waits"] = 0
-            if options.packet_operand_overlap_diagnostic:
-                metadata["hcu_packet_operand_overlap_result"] = "fallback: " + reason
-                metadata["hcu_packet_operand_overlap_loops"] = 0
-                metadata["hcu_packet_operand_overlap_removed_waits"] = 0
-                metadata["hcu_packet_operand_overlap_rotation_loops"] = 0
-                metadata["hcu_packet_operand_overlap_groups"] = 0
-            if options.packet_wait_rotation:
-                metadata["hcu_packet_wait_rotation_result"] = "fallback: " + reason
-                metadata["hcu_packet_wait_rotation_loops"] = 0
-            if options.packet_post_mma_wait:
-                metadata["hcu_packet_post_mma_wait_result"] = "fallback: " + reason
-                metadata["hcu_packet_post_mma_wait_loops"] = 0
+            if options.post_mma_wait:
+                metadata["hcu_post_mma_wait_result"] = "fallback: " + reason
+                metadata["hcu_post_mma_wait_loops"] = 0
             if options.mma_phase_schedule:
                 metadata["hcu_mma_phase_result"] = "fallback: " + reason
                 metadata["hcu_mma_phase_loops"] = 0
             result = HIPBackend._make_amdgcn_with_schedules(stage_original, metadata, options,
-                                           _skip_mma_phase=True)
+                                           _skip_schedules=True)
             # An imported already-scheduled FileSource has no earlier source
             # to recover. Never let recursive fallback bypass its native guard.
             if imported_schedule:
@@ -1317,10 +1270,10 @@ class HIPBackend(BaseBackend):
                     raise HSACOError("Imported schedule IR failed native completion: " + audit["reason"])
             return result
 
-        if options.arch == "gfx936" and not _skip_mma_phase:
+        if options.arch == "gfx936" and not _skip_schedules:
             try:
-                src, prepared = prepare_packet_schedule(
-                    src, metadata, PacketSchedulePolicy.from_options(options),
+                src, prepared = prepare_memory_schedule(
+                    src, metadata, MemorySchedulePolicy.from_options(options),
                     llvm, options.arch, options.num_warps)
                 if prepared:
                     schedule_original = stage_original
@@ -1393,63 +1346,17 @@ class HIPBackend(BaseBackend):
                 if schedule_original is not None:
                     return fallback_schedules("native checker: " + str(error))
                 raise HSACOError("Imported schedule native checker failed: " + str(error)) from error
-            if options.packet_operand_overlap_diagnostic:
-                metadata["hcu_packet_operand_overlap_result"] = audit["reason"]
-                metadata["hcu_packet_operand_overlap_risk"] = "CROSS_WAVE_WAR_UNPROVEN_DIAGNOSTIC_ONLY"
-            if options.packet_wait_rotation:
-                metadata["hcu_packet_wait_rotation_result"] = audit["reason"]
-            if options.packet_post_mma_wait:
-                metadata["hcu_packet_post_mma_wait_result"] = audit["reason"]
+            # Readiness of the final native code is separate from whether
+            # each requested IR scheduling preparation actually applied.
+            metadata["hcu_schedule_native_readiness"] = audit
+            if options.post_mma_wait and metadata.get("hcu_post_mma_wait_loops", 0):
+                metadata["hcu_post_mma_wait_result"] = audit["reason"]
             if options.mma_phase_schedule:
                 metadata["hcu_mma_phase_result"] = audit["reason"]
             if not audit["accepted"]:
                 if schedule_original is None:
                     raise HSACOError("Imported schedule IR failed native completion: " + audit["reason"])
                 return fallback_schedules("native completion: " + audit["reason"])
-        if not _skip_mma_phase and (options.packet_reuse_wait != "none" or
-                                   options.packet_redundant_lgkm_cleanup):
-            # Never use imported attributes as a proof for a fresh reuse schedule.
-            # Failed native preparation recovers the complete pre-schedule stage.
-            original_native = amdgcn
-
-            def native_fallback(reason):
-                if schedule_original is not None:
-                    return fallback_schedules("native reuse/cleanup: " + reason)
-                if options.packet_redundant_lgkm_cleanup:
-                    metadata["hcu_packet_redundant_lgkm_result"] = "fallback: " + reason
-                    metadata["hcu_packet_redundant_lgkm_removed_waits"] = 0
-                return original_native
-
-            try:
-                from .packet_reuse import prepare_packet_reuse, cleanup_redundant_lgkm
-                if options.packet_reuse_wait != "none":
-                    groups = int(metadata.get("hcu_packet_operand_overlap_groups", 0))
-                    if imported_schedule or schedule_original is None or groups <= 0:
-                        return fallback_schedules("native reuse requires freshly modeled packet groups")
-                    candidate, reuse = prepare_packet_reuse(
-                        amdgcn, metadata["name"], options.packet_reuse_wait, groups)
-                    if not reuse["accepted"]:
-                        return fallback_schedules("native reuse: " + reuse["reason"])
-                    amdgcn = candidate
-                    metadata["hcu_packet_reuse_wait_result"] = reuse["reason"]
-                    metadata["hcu_packet_reuse_wait_groups"] = reuse["native_total_groups"]
-                    metadata["hcu_packet_reuse_wait_loops"] = reuse["native_loops"]
-                    metadata["hcu_packet_reuse_wait_phase_changed_groups"] = reuse["phase_changed_groups"]
-                    metadata["hcu_packet_reuse_wait_risk"] = "CROSS_WAVE_WAR_UNPROVEN_DIAGNOSTIC_ONLY"
-                if options.packet_redundant_lgkm_cleanup:
-                    candidate, cleanup = cleanup_redundant_lgkm(amdgcn, metadata["name"])
-                    if not cleanup["accepted"]:
-                        return native_fallback("LGKM cleanup: " + cleanup["reason"])
-                    amdgcn = candidate
-                    metadata["hcu_packet_redundant_lgkm_result"] = cleanup["reason"]
-                    metadata["hcu_packet_redundant_lgkm_removed_waits"] = cleanup["deleted_count"]
-                if schedule_original is not None or validate_imported_schedule:
-                    from .mma_phase import check_native_readiness
-                    audit = check_native_readiness(amdgcn, metadata["name"])
-                    if not audit["accepted"]:
-                        return native_fallback("completion: " + audit["reason"])
-            except Exception as error:
-                return native_fallback(str(error))
         if knobs.hcu.dump_amdgcn:
             print("// -----// HCUGCN Dump //----- //")
             print(amdgcn)

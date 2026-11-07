@@ -81,6 +81,12 @@ public:
     addLegalOp<triton::gpu::WarpYieldOp>();
     addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
     addLegalOp<triton::gpu::WarpReturnOp>();
+    // Preserve CTA rendezvous until the specialization regions are flattened.
+    // Lowering here loses the scope distinction between a source CTA barrier
+    // and a barrier inserted for a partition-local layout conversion.
+    addDynamicallyLegalOp<triton::gpu::LocalBarrierOp>([](triton::gpu::LocalBarrierOp op) {
+      return bool(op->getAttrOfType<UnitAttr>("hcu.cta_scope"));
+    });
   }
 };
 

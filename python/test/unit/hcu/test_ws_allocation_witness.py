@@ -10,13 +10,13 @@ if not hasattr(libtriton, "hcu"):
 compiler = pytest.importorskip("triton.backends.hcu.compiler")
 
 
-def allocation_size(tmp_path, extra_attributes):
+def allocation_size(tmp_path, extra_attributes, terminal=True):
     source = tmp_path / "warp-scratch.mlir"
     extra = ", " + extra_attributes if extra_attributes else ""
     source.write_text('''module attributes {"ttg.num-warps" = 4 : i32,
       "ttg.num-ctas" = 1 : i32, "ttg.threads-per-warp" = 64 : i32,
       ttg.target = "hip:gfx936"EXTRA} {
-      tt.func public @capture(%input: i32) {
+      tt.func public @capture(%input: i32, %out: !tt.ptr<i32>) {
         ttg.warp_specialize(%input)
         default {
           ttg.warp_yield
@@ -24,10 +24,11 @@ def allocation_size(tmp_path, extra_attributes):
         partition0(%captured: i32) num_warps(4) {
           ttg.warp_return
         } : (i32) -> ()
+        EXIT
         tt.return
       }
     }
-    '''.replace("EXTRA", extra))
+    '''.replace("EXTRA", extra).replace("EXIT", "" if terminal else "tt.store %out, %input : !tt.ptr<i32>"))
     context = libtriton.ir.context()
     libtriton.ir.load_dialects(context)
     compiler.HIPBackend(GPUTarget("hip", "gfx936", 64)).load_dialects(context)
@@ -46,7 +47,10 @@ def allocation_size(tmp_path, extra_attributes):
     "ttg.hcu.raw_window_ws = 1 : i32",
     "ttg.hcu.raw_window_ws = 1 : i32, ttg.hcu.raw_window_ws.internal_witness",
 ])
-def test_unissued_markers_keep_generic_scratch(tmp_path, attributes):
-    normal = allocation_size(tmp_path, "")
-    assert normal > 0
-    assert allocation_size(tmp_path, attributes) == normal
+@pytest.mark.parametrize("terminal", [True, False])
+def test_unissued_markers_do_not_override_actual_domain(tmp_path, attributes, terminal):
+    normal = allocation_size(tmp_path, "", terminal)
+    # Actual terminal uniform-capture IR uses direct partition branches and
+    # needs no scratch. A store after WS defeats that proof and must retain it.
+    assert normal == 0 if terminal else normal > 0
+    assert allocation_size(tmp_path, attributes, terminal) == normal

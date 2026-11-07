@@ -584,6 +584,9 @@ void init_gluon_ir(py::module &&m) {
              return self.create<ttg::AsyncCommitGroupOp>(ValueRange(tokens))
                  .getResult();
            }, py::arg("tokens") = std::vector<Value>{})
+      .def("get_async_token_ty", [](GluonOpBuilder &self) -> Type {
+        return ttg::AsyncTokenType::get(self.getContext());
+      })
       .def("create_async_wait_group",
            [](GluonOpBuilder &self, int num,
               std::vector<Value> tokens) -> Value {
@@ -609,6 +612,11 @@ void init_gluon_ir(py::module &&m) {
       .def("create_local_load",
            [](GluonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
              return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
+           })
+      .def("create_local_load",
+           [](GluonOpBuilder &self, Type resultTy, Value memDesc,
+              Value token) -> Value {
+             return self.create<ttg::LocalLoadOp>(resultTy, memDesc, token);
            })
       .def("get_shared_bank_conflicts",
            [](GluonOpBuilder &self, Attribute regLayoutAttr,
@@ -833,6 +841,23 @@ void init_gluon_ir(py::module &&m) {
              return self.create<ttag::BufferAtomicRMWOp>(
                  value.getType(), op, ptr, offsets, value, Value() /*stride*/,
                  sem, scope, mask);
+           })
+      .def("create_matrix_load_to_shared",
+           [](GluonOpBuilder &self, Value dest, Value base,
+              std::vector<Value> &shape, std::vector<Value> &strides,
+              std::vector<Value> &indices) -> Value {
+             auto type = dyn_cast<ttg::MemDescType>(dest.getType());
+             if (!type || type.getRank() != 2 || shape.size() != 2 ||
+                 strides.size() != 2 || indices.size() != 3)
+               throw std::invalid_argument("matrix shared copy requires rank-two shape/strides/origins");
+             SmallVector<int32_t> tile;
+             for (int64_t d : type.getShape()) {
+               if (d < 1 || d > INT32_MAX) throw std::invalid_argument("invalid matrix shared tile extent");
+               tile.push_back(int32_t(d));
+             }
+             return self.create<ttag::MatrixLoadToLocalOp>(base, shape, strides,
+                 tile, indices, ArrayRef<int32_t>{}, tt::CacheModifier::NONE,
+                 tt::EvictionPolicy::NORMAL, false, dest).getToken();
            })
       .def("create_buffer_load_to_local",
            [](GluonOpBuilder &self, Value dest, Value ptr, Value offsets,

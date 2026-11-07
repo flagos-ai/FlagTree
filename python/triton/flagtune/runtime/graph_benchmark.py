@@ -29,10 +29,21 @@ def _timed_warmup(fn: Callable[[], Any], warmup_ms: float, device_interface: Any
         return
     device_interface.synchronize()
     deadline = time.perf_counter() + warmup_ms / 1000.0
+    batch = 1
     while time.perf_counter() < deadline:
-        for _ in range(50):
+        started = time.perf_counter()
+        for _ in range(batch):
             fn()
         device_interface.synchronize()
+        finished = time.perf_counter()
+        elapsed = finished - started
+        # Include asynchronous device execution before sizing the next batch.
+        # Starting with one launch avoids submitting 50 very slow candidates
+        # when the requested warmup is only a few milliseconds.
+        if elapsed > 0:
+            batch = max(1, min(50, int((deadline - finished) * batch / elapsed)))
+        else:
+            batch = 50
 
 
 def do_bench_musa_graph(

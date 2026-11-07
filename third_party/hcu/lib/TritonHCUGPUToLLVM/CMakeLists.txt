@@ -48,9 +48,7 @@ add_triton_library(TritonHCUGPUToLLVM
     ConvertWarpSpecializeToLLVM.cpp
     SetFuncInlineAttrs.cpp
     MmaPhaseScheduling.cpp
-    PacketWaitRotation.cpp
-    PacketOperandOverlap.cpp
-    PacketPostMmaWait.cpp
+    PostMmaWait.cpp
 
     DEPENDS
     TritonHCUGPUConversionPassIncGen

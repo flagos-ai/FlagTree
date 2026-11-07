@@ -1,4 +1,3 @@
-#include "Dialect/TritonHCUGPU/IR/WholePacketLayout.h"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/Utility.h"
@@ -78,42 +77,6 @@ int getNumberOfLoadInstructions(RankedTensorType srcTy, ttg::MemDescType dstTy,
   return loadInstructionCount;
 }
 
-// The complete v256 producer emits exactly one 16B DMA for each 512-element
-// physical packet-wave. Predicate-false requests still zero-fill LDS. The
-// finite chart is checked here and again with ownership/extents in lowering.
-int getWholePacketLoadInstructionCount(hcugpu::MatrixLoadToLocalOp copy,
-                                       const HCU::TargetInfo &targetInfo) {
-  if (targetInfo.getArch() != "gfx936") return 0;
-  auto type=copy.getDest().getType();
-  auto enc=dyn_cast<ttg::HCUMlsSharedEncodingAttr>(type.getEncoding());
-  auto mod=copy->getParentOfType<ModuleOp>();
-  auto warps=mod->getAttrOfType<IntegerAttr>("ttg.num-warps");
-  auto basis=copy->getAttrOfType<DenseI32ArrayAttr>("hcu.packet.source_basis");
-  if (!enc || !triton::hcugpu::wholepacket::PacketSemantics::get(enc.getVersion(),enc.getOpIdx(),enc.getAlt2Kind()) || enc.getOpIdx()>1 || type.getRank()!=2 ||
-      type.getElementType().getIntOrFloatBitWidth()!=16 || !warps ||
-      warps.getInt()<1 || warps.getInt()>8 || (warps.getInt()&(warps.getInt()-1)) ||
-      !basis || basis.size()!=12 || copy.getTensorShape().size()!=2 ||
-      copy.getTensorShape()[0]!=type.getShape()[0] ||
-      copy.getTensorShape()[1]!=type.getShape()[1]) return 0;
-  std::array<unsigned,12> chart{};
-  for (unsigned i=0;i<12;++i) {
-    if (basis[i]<0 || basis[i]>=4096) return 0;
-    chart[i]=unsigned(basis[i]);
-  }
-  auto semantics=*triton::hcugpu::wholepacket::PacketSemantics::get(
-      enc.getVersion(),enc.getOpIdx(),enc.getAlt2Kind());
-  if (semantics.prefix) {
-    if (type.getShape()[0]<1 || type.getShape()[0]>4096 ||
-        type.getShape()[1]<1 || type.getShape()[1]>4096) return 0;
-    auto source=triton::hcugpu::wholepacket::SourceLayout::getActivePrefix(
-        semantics.storageRows(type.getShape()[0],type.getShape()[1]),semantics.storageColumns(type.getShape()[0],type.getShape()[1]),unsigned(warps.getInt()),chart);
-    return source?source->copiesPerWave():0;
-  }
-  auto source=triton::hcugpu::wholepacket::SourceLayout::get(
-      type.getShape()[0],type.getShape()[1],unsigned(warps.getInt()),chart);
-  return source?8/unsigned(warps.getInt()):0;
-}
-
 // Return the number of generated intrinsics for async ops; 0 otherwise
 // If emitRemarkOnNonAsyncOp is set for any non async op having a side effect on
 // GlobalMemory an performance remark will be emitted
@@ -122,8 +85,18 @@ int getOpNumberOfAsyncLoadInstructions(Operation *op,
                                        ModuleAxisInfoAnalysis &axisInfo,
                                        bool emitRemarkOnNonAsyncOp) {
   if (auto matrixOp = dyn_cast<hcugpu::MatrixLoadToLocalOp>(op)) {
-    if (int count = getWholePacketLoadInstructionCount(matrixOp, targetInfo))
-      return count;
+    auto type = matrixOp.getDest().getType();
+    if (targetInfo.getArch() == "gfx936" &&
+        isa<ttg::SharedLinearEncodingAttr>(type.getEncoding()) &&
+        type.getRank() == 2 && type.getElementTypeBitWidth() == 16) {
+      unsigned waves = ttg::lookupNumWarps(matrixOp);
+      uint64_t elements = uint64_t(type.getShape()[0]) * type.getShape()[1];
+      // Lowering independently validates complete wave payloads and emits this
+      // many 16B intrinsics in every wave. Unsupported charts fail compilation.
+      if (waves && elements <= (uint64_t(1) << 20) && elements % (512 * waves) == 0)
+        return elements / (512 * waves);
+      return 0; // Never overestimate an unproven per-wave instruction count.
+    }
   }
   if (auto copyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
     int contig = LLVM::HCU::getVectorSize(copyOp.getSrc(), axisInfo);

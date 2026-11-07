@@ -1,25 +1,20 @@
-#ifndef TRITON_HCU_WHOLE_PACKET_CONSUMER_PLAN_H
-#define TRITON_HCU_WHOLE_PACKET_CONSUMER_PLAN_H
-#include "Dialect/TritonHCUGPU/IR/WholePacketLayout.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "triton/Dialect/TritonGPU/IR/Attributes.h"
-#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "triton/Tools/LinearLayout.h"
+#ifndef TRITON_HCU_FINITE_SHARED_READ_PLAN_H
+#define TRITON_HCU_FINITE_SHARED_READ_PLAN_H
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include <array>
+#include "llvm/Support/MathExtras.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <utility>
 
 namespace mlir::triton::HCU {
-namespace whole_packet_consumer_detail {
-namespace wp = triton::hcugpu::wholepacket;
+namespace finite_shared_read_detail {
 struct Plan {
-  using MatrixGroup = SmallVector<unsigned,8>;
-  using MatrixGroups = SmallVector<MatrixGroup>;
+  using MatrixGroup = llvm::SmallVector<unsigned,8>;
+  using MatrixGroups = llvm::SmallVector<MatrixGroup>;
   unsigned registers = 0, width = 1;
   bool matrix = false, matrixAlt = false, repartition = false;
   // Only the optional instruction/group optimization budget can fall back to
@@ -28,100 +23,45 @@ struct Plan {
   bool optimizationBudgetExceeded = false;
   std::array<unsigned,3> registerAxes{0,1,2};
   MatrixGroups matrixByAnchor;
-  SmallVector<unsigned> groups, representatives, deltas, unique;
+  llvm::SmallVector<unsigned> groups, representatives, deltas, unique;
 };
-} // namespace whole_packet_consumer_detail
-
-// Pure and immutable: no Operation mutation, LLVM builder, rw, allocation,
-// imported witness, shape-name selector or emission. The same plan feeds the
-// owner preflight and consumer lowering. All addresses are role-relative words.
-inline std::optional<whole_packet_consumer_detail::Plan>
-planWholePacketConsumer(RankedTensorType resultType,
-    const triton::hcugpu::wholepacket::PacketSemantics &semantics,
-    const triton::hcugpu::wholepacket::SourceLayout &source,
-    unsigned role, unsigned packetVersion, bool partitionRequested,
+} // namespace finite_shared_read_detail
+// Instruction selection from an exhaustive, role-independent 16-bit address
+// relation. Table order is (register, warp, lane). The caller proves allocation
+// origin/alignment and builds this table from its actual shared-memory chart.
+// No packet encoding, tensor shape, source role, or frontend hint is authority.
+inline std::optional<finite_shared_read_detail::Plan>
+planFiniteSharedReads(unsigned registers, unsigned warps, unsigned elements,
+    llvm::ArrayRef<unsigned> physicalTable, bool allowMatrix,
+    bool partitionRequested, bool allowWideVector,
     uint64_t optimizationBudget = uint64_t(1) << 26) {
-  namespace wp = triton::hcugpu::wholepacket;
-  using Plan = whole_packet_consumer_detail::Plan;
-  if (!resultType || resultType.getRank()!=2 || !resultType.hasStaticShape() ||
-      !resultType.getElementType().isIntOrFloat() ||
-      resultType.getElementType().getIntOrFloatBitWidth()!=16 || role>1 ||
-      (packetVersion!=256 && packetVersion!=257 && packetVersion!=258) ||
-      !source.rows || source.rows>wp::Elements || !source.columns ||
-      source.columns>wp::Elements || !source.warps || source.warps>8 || (source.warps & (source.warps-1)) ||
-      (source.rows & (source.rows-1)) || (source.columns & (source.columns-1)) ||
-      source.activeElements()>wp::Elements ||
-      semantics.storageRows(resultType.getShape()[0],resultType.getShape()[1])!=source.rows ||
-      semantics.storageColumns(resultType.getShape()[0],resultType.getShape()[1])!=source.columns)
+  using Plan = finite_shared_read_detail::Plan;
+  uint64_t points = uint64_t(registers) * 64 * warps;
+  if (!registers || !warps || !elements || points > (uint64_t(1) << 20) ||
+      points != physicalTable.size() ||
+      llvm::any_of(physicalTable, [=](unsigned x) { return x >= elements; }))
     return std::nullopt;
-  auto encoding=resultType.getEncoding();
-  if (!encoding || !isa<triton::gpu::DotOperandEncodingAttr,
-                         triton::gpu::LinearEncodingAttr>(encoding))
-    return std::nullopt;
-  auto *ctx=resultType.getContext();
-  auto reg=StringAttr::get(ctx,"register"),lane=StringAttr::get(ctx,"lane"),warp=StringAttr::get(ctx,"warp");
-  auto logical=triton::gpu::toLinearLayout(resultType);
-  if (!logical.hasInDim(reg) || !logical.hasInDim(lane) ||
-      !logical.hasInDim(warp) || logical.getNumOutDims()!=2)
-    return std::nullopt;
-  for (auto name:logical.getInDimNames())
-    if (name!=reg && name!=lane && name!=warp && logical.getInDimSize(name)!=1)
-      return std::nullopt;
-  unsigned dim=0;
-  for (auto name:logical.getOutDimNames())
-    if (logical.getOutDimSize(name)!=resultType.getShape()[dim++])
-      return std::nullopt;
-  logical=logical.sublayout({reg,lane,warp},llvm::to_vector(logical.getOutDimNames()));
-  unsigned registers=logical.getInDimSize(reg);
-  if (!registers || logical.getInDimSize(lane)!=64 ||
-      logical.getInDimSize(warp)!=source.warps)
-    return std::nullopt;
-  // Mandatory whole-result proof is independently bounded before allocating.
-  // Unsupported enormous layouts retain the old owner (and fail closed if
-  // later requested as an opaque consumer); they never obtain a compact view.
-  uint64_t points=uint64_t(registers)*64*source.warps;
-  if (points>(uint64_t(1)<<20)) return std::nullopt;
-  const auto *p=&source;
-  SmallVector<unsigned> physicalTable;
-  physicalTable.reserve(points);
-  for (unsigned r=0;r<registers;++r)for (unsigned w=0;w<p->warps;++w)
-    for (unsigned l=0;l<64;++l) {
-      auto xy=logical.apply({{reg,int32_t(r)},{lane,int32_t(l)},{warp,int32_t(w)}});
-      if (xy.size()!=2 || xy[0].second<0 || xy[1].second<0 ||
-          xy[0].second>=resultType.getShape()[0] ||
-          xy[1].second>=resultType.getShape()[1]) return std::nullopt;
-      unsigned row=semantics.transpose?xy[1].second:xy[0].second;
-      unsigned col=semantics.transpose?xy[0].second:xy[1].second;
-      unsigned coord=row*p->columns+col;
-      if (coord>=p->activeElements() || p->ordinal(coord)>=p->activeElements() ||
-          p->logical(p->ordinal(coord))!=coord) return std::nullopt;
-      unsigned address=p->physical(semantics.transfer,coord);
-      if (address>=p->activeElements()) return std::nullopt;
-      physicalTable.push_back(address);
-    }
   uint64_t visits=0;
   bool exhausted=false;
   auto physicalAt=[&](unsigned r,unsigned l,unsigned w)->unsigned {
-    if (++visits>optimizationBudget || r>=registers || l>=64 || w>=p->warps) {
+    if (++visits>optimizationBudget || r>=registers || l>=64 || w>=warps) {
       exhausted=true;return 0x3fffffffu;
     }
-    return physicalTable[(uint64_t(r)*p->warps+w)*64+l];
+    return physicalTable[(uint64_t(r)*warps+w)*64+l];
   };
-  bool structured=semantics.transfer==wp::Role::StructuredRows;
   // Normal matrix-read's actual implicit per-lane gather. Validate the entire
   // finite destination layout; neither MFMA warp geometry nor tensor shape is
   // a selection condition. Any unsupported ownership retains tracked loads.
   auto matrixLegal=[&]() {
-    if(structured || role!=1 || registers%8 || logical.getInDimSize(lane)!=64 ||
-        logical.getInDimSize(warp)!=p->warps)return false;
+    if(!allowMatrix || registers%8)return false;
     constexpr unsigned sources[8]={0,4,8,12,2,6,10,14};
-    for(unsigned r=0;r<registers;r+=8)for(unsigned w=0;w<p->warps;++w)
+    for(unsigned r=0;r<registers;r+=8)for(unsigned w=0;w<warps;++w)
       for(unsigned l=0;l<64;++l)for(unsigned j=0;j<8;++j) {
         unsigned sourceLane=(l&~15u)+sources[j]+((l>>3)&1);
         unsigned sourceReg=((sourceLane>>2)&3)|(((sourceLane>>1)&1)<<2);
         unsigned readLane=(sourceLane&48)|((sourceLane&1)<<3);
         unsigned base=physicalAt(r+sourceReg,readLane,w);
-        if(base%8 || base+7>=p->activeElements() || base+(l&7)!=physicalAt(r+j,l,w))return false;
+        if(base%8 || base+7>=elements || base+(l&7)!=physicalAt(r+j,l,w))return false;
       }
     return true;
   };
@@ -130,12 +70,11 @@ planWholePacketConsumer(RankedTensorType resultType,
   // complete register/lane/warp chart. Absent/false keeps the original path.
   bool repartition=false;
   std::array<unsigned,3> registerAxes{0,1,2};
-  using MatrixGroup=SmallVector<unsigned,8>;
-  using MatrixGroups=SmallVector<MatrixGroup>;
+  using MatrixGroup=llvm::SmallVector<unsigned,8>;
+  using MatrixGroups=llvm::SmallVector<MatrixGroup>;
   MatrixGroups matrixByAnchor(registers);
-  if(partitionRequested && !structured && role==1 && registers>=8 &&
-      !(registers&(registers-1)) && logical.getInDimSize(lane)==64 &&
-      logical.getInDimSize(warp)==p->warps) {
+  if(partitionRequested && allowMatrix && registers>=8 &&
+      !(registers&(registers-1))) {
     auto groupsFor=[&](const std::array<unsigned,3> &axes) {
       MatrixGroups result;
       unsigned mask=(1u<<axes[0])|(1u<<axes[1])|(1u<<axes[2]);
@@ -157,7 +96,7 @@ planWholePacketConsumer(RankedTensorType resultType,
     };
     auto groupsLegal=[&](const MatrixGroups &groups) {
       if(groups.size()*8!=registers)return false;
-      SmallVector<bool> seen(registers,false);
+      llvm::SmallVector<bool> seen(registers,false);
       for(const auto &g:groups) {
         if(g.size()!=8)return false;
         for(unsigned r:g) {
@@ -165,11 +104,11 @@ planWholePacketConsumer(RankedTensorType resultType,
           seen[r]=true;
         }
         constexpr unsigned sourceLanes[8]={0,4,8,12,2,6,10,14};
-        for(unsigned w=0;w<p->warps;++w)for(unsigned l=0;l<64;++l)
+        for(unsigned w=0;w<warps;++w)for(unsigned l=0;l<64;++l)
           for(unsigned j=0;j<8;++j) {
             unsigned sl=(l&~15u)+sourceLanes[j]+((l>>3)&1);
             unsigned base=groupReadPhysicalAt(g,sl,w);
-            if(base%8 || base+7>=p->activeElements() ||
+            if(base%8 || base+7>=elements ||
                 base+(l&7)!=physicalAt(g[j],l,w))return false;
           }
       }
@@ -180,9 +119,9 @@ planWholePacketConsumer(RankedTensorType resultType,
     // same-word broadcasts, then count distinct-word bank fan-in.
     auto bankScore=[&](const MatrixGroups &groups) {
       uint64_t excess=0;unsigned maximum=0;
-      for(const auto &g:groups)for(unsigned w=0;w<p->warps;++w)
+      for(const auto &g:groups)for(unsigned w=0;w<warps;++w)
         for(unsigned first=0;first<64;first+=8) {
-          std::array<SmallVector<unsigned,4>,32> banks;
+          std::array<llvm::SmallVector<unsigned,4>,32> banks;
           for(unsigned l=first;l<first+8;++l) {
             unsigned word=groupReadPhysicalAt(g,l,w)/2;
             for(unsigned q=0;q<4;++q) {
@@ -223,10 +162,9 @@ planWholePacketConsumer(RankedTensorType resultType,
   // alignment and bounds of each issuing lane. Normal matrix reads keep
   // their existing selection and register partition unchanged.
   bool matrixAlt=false;
-  if(!matrix && !structured && role==1 && registers>=8 &&
-      !(registers&(registers-1)) && logical.getInDimSize(lane)==64 &&
-      logical.getInDimSize(warp)==p->warps) {
-    unsigned bits=logical.getInDimSizeLog2(reg);
+  if(!matrix && allowMatrix && registers>=8 &&
+      !(registers&(registers-1))) {
+    unsigned bits=llvm::Log2_32(registers);
     for(unsigned chosen=2;chosen<bits && !matrixAlt;++chosen) {
       unsigned mask=3u|(1u<<chosen);
       MatrixGroups candidates;
@@ -235,11 +173,11 @@ planWholePacketConsumer(RankedTensorType resultType,
         MatrixGroup g;
         for(unsigned j=0;j<8;++j)
           g.push_back(base|(j&3u)|((j>>2)<<chosen));
-        for(unsigned w=0;w<p->warps && legal;++w)
+        for(unsigned w=0;w<warps && legal;++w)
           for(unsigned l=0;l<64 && legal;++l)
             for(unsigned j=0;j<8;++j) {
               unsigned address=physicalAt(g[j&3u],l&~3u,w);
-              if(address%8 || address+7>=p->activeElements() ||
+              if(address%8 || address+7>=elements ||
                   address+(j>>2)+2*(l&3u)!=physicalAt(g[j],l,w)) {
                 legal=false;break;
               }
@@ -255,35 +193,35 @@ planWholePacketConsumer(RankedTensorType resultType,
   }
   auto vectorLegal=[&](unsigned width) {
     if(registers%width)return false;
-    for(unsigned r=0;r<registers;r+=width)for(unsigned w=0;w<p->warps;++w)
+    for(unsigned r=0;r<registers;r+=width)for(unsigned w=0;w<warps;++w)
       for(unsigned l=0;l<64;++l) {
         unsigned base=physicalAt(r,l,w);
-        if(base%width || base+width>p->activeElements())return false;
+        if(base%width || base+width>elements)return false;
         for(unsigned j=1;j<width;++j)if(physicalAt(r+j,l,w)!=base+j)return false;
       }
     return true;
   };
-  unsigned width=matrix?8:(packetVersion==258 && vectorLegal(8))?8:vectorLegal(4)?4:vectorLegal(2)?2:1;
+  unsigned width=matrix?8:(allowWideVector && vectorLegal(8))?8:vectorLegal(4)?4:vectorLegal(2)?2:1;
   auto readPhysicalAt=[&](unsigned r,unsigned l,unsigned w) {
     if(!matrix)return physicalAt(r,l,w);
     unsigned sourceReg=matrixAlt?((l>>2)&3):((l>>2)&3)|(((l>>1)&1)<<2);
     unsigned sourceLane=(l&48)|(matrixAlt?((l&3)<<2):((l&1)<<3));
     return physicalAt(repartition?matrixByAnchor[r][sourceReg]:r+sourceReg,sourceLane,w);
   };
-  SmallVector<unsigned> groups;
+  llvm::SmallVector<unsigned> groups;
   if(repartition) {
     for(unsigned r=0;r<registers;++r)if(!matrixByAnchor[r].empty())groups.push_back(r);
   } else for(unsigned r=0;r<registers;r+=width)groups.push_back(r);
   llvm::sort(groups,[&](unsigned x,unsigned y){return readPhysicalAt(x,0,0)<readPhysicalAt(y,0,0);});
-  SmallVector<unsigned> representatives(registers),deltas(registers);
-  SmallVector<unsigned> unique;
+  llvm::SmallVector<unsigned> representatives(registers),deltas(registers);
+  llvm::SmallVector<unsigned> unique;
   for(unsigned r:groups) {
     bool found=false;
     for(unsigned rep:unique) {
       int delta=int(readPhysicalAt(r,0,0))-int(readPhysicalAt(rep,0,0));
       if(delta<0 || 2*delta>65535)continue;
       bool equal=true;
-      for(unsigned w=0;w<p->warps && equal;++w)for(unsigned l=0;l<64;++l)
+      for(unsigned w=0;w<warps && equal;++w)for(unsigned l=0;l<64;++l)
         equal&=int(readPhysicalAt(r,l,w))-int(readPhysicalAt(rep,l,w))==delta;
       if(equal){representatives[r]=rep;deltas[r]=delta;found=true;break;}
     }
@@ -306,7 +244,7 @@ planWholePacketConsumer(RankedTensorType resultType,
   // representative+immediate form, independently of the selection heuristics.
   if (!width || registers%width || groups.size()!=registers/width)
     return std::nullopt;
-  SmallVector<bool> covered(registers,false);
+  llvm::SmallVector<bool> covered(registers,false);
   for (unsigned r:groups) {
     if (r>=registers || representatives[r]>=registers ||
         !llvm::is_contained(unique,representatives[r]) ||
@@ -317,12 +255,12 @@ planWholePacketConsumer(RankedTensorType resultType,
       if(output>=registers || covered[output]) return std::nullopt;
       covered[output]=true;
     }
-    for (unsigned w=0;w<p->warps;++w)for(unsigned l=0;l<64;++l) {
+    for (unsigned w=0;w<warps;++w)for(unsigned l=0;l<64;++l) {
       // Lookup is over the same complete result chart; do not consume any
       // optional-search budget when checking the final safety obligation.
       auto at=[&](unsigned rr,unsigned ll)->unsigned {
         if(rr>=registers || ll>=64) return 0x3fffffffu;
-        return physicalTable[(uint64_t(rr)*p->warps+w)*64+ll];
+        return physicalTable[(uint64_t(rr)*warps+w)*64+ll];
       };
       auto issuing=[&](unsigned anchor)->unsigned {
         if(!matrix) return at(anchor,l);
@@ -333,9 +271,9 @@ planWholePacketConsumer(RankedTensorType resultType,
         return at(repartition?matrixByAnchor[anchor][sr]:anchor+sr,sl);
       };
       unsigned address=issuing(r),representative=issuing(representatives[r]);
-      if(address%width || uint64_t(address)+width>p->activeElements() ||
+      if(address%width || uint64_t(address)+width>elements ||
           uint64_t(representative)+deltas[r]!=address ||
-          uint64_t(representative)+deltas[r]+width>p->activeElements())
+          uint64_t(representative)+deltas[r]+width>elements)
         return std::nullopt;
     }
   }

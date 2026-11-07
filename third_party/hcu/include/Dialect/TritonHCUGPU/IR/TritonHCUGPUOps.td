@@ -972,30 +972,6 @@ def AsyncCopyMbarrierArriveOp : TT_HCUGPU_Op<"async_copy_mbarrier_arrive"> {
 }
 
 
-// An honest flat 32KiB physical allocation. Logical/subtile charts are carried
-// by the operations; no fictitious swizzle or GF(2) shared encoding is used.
-def RawWindowCopyOp : TT_HCUGPU_Op<"raw_window_copy"> {
-  let summary = "Copy one complete four-wave raw 32KiB packet window";
-  let arguments = (ins
-    Arg<TT_Ptr, "Row-major scalar source", [MemRead<GlobalMemory>]>:$base,
-    Arg<TTG_MemDescType, "Complete physical window", [MemWrite<SharedMemory>]>:$dest,
-    I32:$rows, I32:$rowOrigin, I32:$columnOrigin, I1:$enabled,
-    I32Attr:$pitch, DenseI32ArrayAttr:$storageShape, DenseI32ArrayAttr:$basis);
-  let results = (outs TTG_AsyncToken:$token);
-}
-def RawWindowReadOp : TT_HCUGPU_Op<"raw_window_read"> {
-  let summary = "Read a logical distributed subtile from a raw physical window";
-  let arguments = (ins
-    Arg<TTG_MemDescType, "Whole window alias coverage", [MemRead<SharedMemory>]>:$source,
-    DenseI32ArrayAttr:$storageShape, DenseI32ArrayAttr:$basis,
-    DenseI32ArrayAttr:$origin, DenseI32ArrayAttr:$order);
-  let results = (outs TT_Tensor:$result);
-}
-def RawWindowWaitOp : TT_HCUGPU_Op<"raw_window_wait", [MemoryEffects<[MemRead<SharedMemory>,MemWrite<SharedMemory>]>]> {
-  let summary = "Wait for raw packet VM operations, without an implicit CTA barrier";
-  let arguments = (ins TTG_AsyncToken:$token);
-}
-
 // Partition-relative wave group query. No speculative movement across a WS
 // region is allowed: its relative coordinate is defined by that region.
 def WarpGroupIdOp : TT_HCUGPU_Op<"warp_group_id", [NoMemoryEffect]> {

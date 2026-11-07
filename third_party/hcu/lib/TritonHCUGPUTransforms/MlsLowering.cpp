@@ -1,7 +1,6 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "Utility.h"
 #include "mlir/Analysis/SliceAnalysis.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"

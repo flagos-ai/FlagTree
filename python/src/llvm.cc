@@ -25,9 +25,7 @@
 
 #ifdef __HCU__
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
-#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PacketWaitRotation.h"
-#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PacketOperandOverlap.h"
-#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PacketPostMmaWait.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/ShiftedDisjointOr.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/LoopCarriedStoreRefill.h"
 #endif
@@ -478,56 +476,21 @@ void init_triton_llvm(py::module &&m) {
           module->print(stream, nullptr);
           return py::make_tuple(result, stats.combined, stats.reason);
         });
-  m.def("prepare_hcu_packet_operand_overlap_diagnostic",
-        [](const std::string &source, const std::string &arch,
-           unsigned threads, unsigned sharedBytes) -> py::tuple {
-          flagtree::hcu::OperandOverlapOptions options;
-          options.threads = threads;
-          options.sharedBytes = sharedBytes;
-          auto result = flagtree::hcu::preparePacketOperandOverlapDiagnostic(
-              source, arch, options);
-          return py::make_tuple(result.source, result.transformed,
-                                result.removedWaits, result.reason);
-        });
-  m.def("prepare_hcu_packet_wait_rotation",
-        [](const std::string &source, const std::string &arch,
-           unsigned threads, unsigned sharedBytes) -> py::tuple {
-          llvm::LLVMContext context;
-          llvm::SMDiagnostic diagnostic;
-          auto module = llvm::parseIR(llvm::MemoryBufferRef(source, "packet_wait_rotation"),
-                                      diagnostic, context);
-          if (!module)
-            throw std::invalid_argument("Invalid LLVM IR for packet wait rotation");
-          flagtree::hcu::WaitRotationOptions options;
-          options.threads = threads;
-          options.sharedBytes = sharedBytes;
-          auto stats = flagtree::hcu::rotatePacketWaits(*module, arch, options);
-          if (!stats.rotated)
-            return py::make_tuple(source, 0u, stats.reason);
-          std::string errors;
-          llvm::raw_string_ostream errorStream(errors);
-          if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("Packet wait SSA verification failed: " + errors);
-          std::string result;
-          llvm::raw_string_ostream stream(result);
-          module->print(stream, nullptr);
-          return py::make_tuple(result, stats.rotated, stats.reason);
-        });
-  m.def("prepare_hcu_packet_post_mma_wait",
+  m.def("prepare_hcu_post_mma_wait",
         [](const std::string &source, const std::string &arch,
            unsigned threads, unsigned sharedBytes) -> py::tuple {
           llvm::LLVMContext context;
           llvm::SMDiagnostic diagnostic;
           auto module = llvm::parseIR(
-              llvm::MemoryBufferRef(source, "packet_post_mma_wait"),
+              llvm::MemoryBufferRef(source, "post_mma_wait"),
               diagnostic, context);
           if (!module)
-            throw std::invalid_argument("Invalid LLVM IR for packet post-MMA wait");
+            throw std::invalid_argument("Invalid LLVM IR for post-MMA wait");
           flagtree::hcu::PostMmaWaitOptions options;
           options.threads = threads;
           options.sharedBytes = sharedBytes;
-          auto stats = flagtree::hcu::rotatePacketPostMmaWaits(*module, arch, options);
-          if (!stats.rotated)
+          auto stats = flagtree::hcu::placePostMmaWaits(*module, arch, options);
+          if (!stats.transformed)
             return py::make_tuple(source, 0u, stats.reason);
           std::string errors;
           llvm::raw_string_ostream errorStream(errors);
@@ -536,7 +499,7 @@ void init_triton_llvm(py::module &&m) {
           std::string result;
           llvm::raw_string_ostream stream(result);
           module->print(stream, nullptr);
-          return py::make_tuple(result, stats.rotated, stats.reason);
+          return py::make_tuple(result, stats.transformed, stats.reason);
         });
   m.def("prepare_hcu_mma_phase_loops",
         [](const std::string &source, const std::string &arch,

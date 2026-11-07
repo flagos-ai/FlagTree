@@ -225,7 +225,7 @@ def test_musa_graph_helper_uses_bounded_repeat_for_invalid_calibration():
         (
             "triton.backends.hcu.driver",
             "hip",
-            "triton_hcu_graph_calibrated_currentstream_v3",
+            "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v4",
         ),
     ],
 )
@@ -305,7 +305,7 @@ def test_mthreads_replay_uses_flagtune_musa_graph_helper(monkeypatch):
     assert resolved.protocol.as_dict() == {
         "requested_mode": "replay",
         "resolved_mode": "replay",
-        "implementation": "triton_musa_graph_replay_v1",
+        "implementation": "triton_musa_graph_replay_adaptivewarmup_v2",
         "cache_policy": "warm_l2",
         "warmup_ms": 25,
         "measurement_ms": 100,
@@ -314,7 +314,7 @@ def test_mthreads_replay_uses_flagtune_musa_graph_helper(monkeypatch):
         "fallback_reason": None,
     }
     assert resolved.protocol.cache_key() == (
-        "triton_musa_graph_replay_v1",
+        "triton_musa_graph_replay_adaptivewarmup_v2",
         25,
         100,
         10,
@@ -548,7 +548,7 @@ def test_hcu_currentstream_protocol_isolates_legacy_selection_and_timing_cache(m
     protocol = resolved.protocol
     current = protocol.cache_key()
     legacy = replace(protocol, implementation="triton_hcu_graph_calibrated_v2").cache_key()
-    assert current == ("triton_hcu_graph_calibrated_currentstream_v3", 5, measurement_ms, 10,
+    assert current == ("triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v4", 5, measurement_ms, 10,
                        measurement_ms / 10.0)
     assert current[1:] == legacy[1:]
 
