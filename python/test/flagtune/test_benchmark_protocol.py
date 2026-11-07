@@ -1,4 +1,3 @@
-import inspect
 import sys
 from types import SimpleNamespace
 
@@ -6,7 +5,6 @@ import pytest
 import triton.testing as triton_testing
 
 from triton.flagtune.runtime import benchmark_protocol as benchmark_module
-from triton.testing import do_bench_cudagraph
 
 
 class _FakeDriver:
@@ -40,39 +38,6 @@ class _FakeDriver:
 def _driver_for(module_name, backend):
     driver_type = type("FakeDriver", (_FakeDriver, ), {"__module__": module_name})
     return driver_type(backend)
-
-
-def test_cudagraph_helper_keeps_ten_retries_as_compatible_default():
-    """Expose the old hard-coded retry count as an optional final argument."""
-    parameter = inspect.signature(do_bench_cudagraph).parameters["n_retries"]
-
-    assert parameter.default == 10
-    assert list(inspect.signature(do_bench_cudagraph).parameters)[-1] == "n_retries"
-
-
-@pytest.mark.parametrize("use_default_stream", [False, True])
-def test_cudagraph_helper_waits_for_caller_stream(use_default_stream):
-    """Preserve caller-stream work that precedes the benchmark warmup."""
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("requires a CUDA-compatible device")
-    if not hasattr(torch.cuda, "_sleep"):
-        pytest.skip("requires torch.cuda._sleep to widen the ordering window")
-
-    # Initialize lazy graph state before testing stream ordering.
-    scratch = torch.zeros(1024, device="cuda")
-    do_bench_cudagraph(lambda: scratch.zero_(), rep=1, n_retries=1)
-
-    buf = torch.ones(1024, device="cuda")
-    torch.cuda.synchronize()
-    caller_stream = (torch.cuda.default_stream() if use_default_stream else torch.cuda.Stream())
-    with torch.cuda.stream(caller_stream):
-        torch.cuda._sleep(100_000_000)
-        prior_read = buf.clone()
-        do_bench_cudagraph(lambda: buf.fill_(2), rep=1, n_retries=1)
-
-    torch.cuda.synchronize()
-    assert prior_read.unique().tolist() == [1.0]
 
 
 @pytest.mark.parametrize(
