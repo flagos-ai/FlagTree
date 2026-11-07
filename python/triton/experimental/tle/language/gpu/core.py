@@ -119,8 +119,12 @@ class range(_tl_range):
     """
     FlagTree/TLE extension of :func:`triton.language.range`.
 
-    Behaves exactly like ``tl.range`` but adds the ``reorder`` hint, a TLE-specific
-    extension that is intentionally kept out of the upstream Triton primitive.
+    Behaves exactly like ``tl.range`` but adds the ``reorder`` and
+    ``loop_vectorize_factor`` hints, TLE-specific extensions that are intentionally
+    kept out of the upstream Triton primitive.
+
+    :param loop_vectorize_factor: Number of independent iterations to vectorize
+        together. Must be a power of two.
 
     :param reorder: If ``True`` (and ``loop_unroll_factor`` is set), instructs the
         FlagTree ``reorder-loop-loads`` optimization to cluster loads produced by the
@@ -133,9 +137,10 @@ class range(_tl_range):
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
                  disallow_acc_multi_buffer=False, flatten=False, warp_specialize=False, disable_licm=False,
-                 reorder=False):
+                 loop_vectorize_factor=None, reorder=False):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor, disallow_acc_multi_buffer, flatten,
                          warp_specialize, disable_licm)
+        self.loop_vectorize_factor = loop_vectorize_factor
         self.reorder = reorder
 
 

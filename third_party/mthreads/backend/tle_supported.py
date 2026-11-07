@@ -1,4 +1,6 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    "range",
+    "gpu.range",
     "load",
     "extract_tile",
     "insert_tile",
