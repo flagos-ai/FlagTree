@@ -2098,10 +2098,17 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     the other input is also upcasted to :code:`fp16` element type instead.
     This behavior is experimental and may be subject to change in the future.
 
-    HCU also supports :code:`int4` and :code:`int8` operand formats with FP32
-    scales for groups of 32 logical K elements. Packed INT4 uses uint8 storage.
-    With both integer scales set to None, :code:`out_dtype=int32` selects an
-    unscaled integer dot with INT32 accumulation and output.
+    HCU also accepts :code:`int4` and :code:`int8` formats. Scaled integer dot
+    uses FP32 scales of shapes :code:`[M,K/32]` and :code:`[N,K/32]`. INT4
+    stores two values per uint8, low nibble first, packed along K. With both
+    scales set to None, :code:`out_dtype=int32` selects an unscaled integer dot
+    with INT32 accumulation and output and permits INT4 packing along M or N.
+
+    .. code-block:: python
+
+       scaled = tl.dot_scaled(a4, sa, "int4", b8, sb, "int8")
+       integer = tl.dot_scaled(a4, None, "int4", b4, None, "int4",
+                               acc=acc_i32, out_dtype=tl.int32)
 
     :param lhs: The first tensor to be multiplied.
     :type lhs: 2D tensor representing fp4, fp8 or bf16 elements. Fp4 elements are packed into uint8 inputs with the first element in lower bits. Fp8 are stored as uint8 or the corresponding fp8 type.

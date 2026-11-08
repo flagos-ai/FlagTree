@@ -1,5 +1,11 @@
+import json
 import math
+import os
+from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
 import traceback
 import warnings
 from types import SimpleNamespace
@@ -10,9 +16,11 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._C.libtriton import ir
 from triton.backends.compiler import DotCap, DotSupport, GPUTarget
 from triton.compiler import ASTSource
 from triton.language.semantic import TritonSemantic
+from triton.runtime.interpreter import _encode_fp64_to_float
 
 
 @triton.jit
@@ -1102,3 +1110,165 @@ def test_hcu_scaled_precision_values(format_a, format_b, scale_mode, col_b, geom
                                 n, k, format_a, format_b, lhs_k_pack, rhs_k_pack, num_warps=4, num_stages=1)
     torch.testing.assert_close(output[16:-16].reshape(m, n).cpu(), expected, rtol=0, atol=0)
     assert torch.all(output[:16] == 1234.5) and torch.all(output[-16:] == 1234.5)
+
+
+@pytest.mark.parametrize("integer", [torch.int8, torch.int32])
+@pytest.mark.parametrize("floating", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+@pytest.mark.parametrize("to_float", [False, True])
+def test_hcu_standard_integer_cast_values(integer, floating, to_float, device):
+    if to_float:
+        source = (torch.arange(-128, 128).to(integer) if integer == torch.int8 else torch.tensor(
+            [-(2**31), 2**31 - 1, -16777217, 16777217, -65521, 65521, -128, 127, -1, 0, 1], dtype=integer))
+        expected = source.to(floating)
+        output = torch.full((source.numel() + 32, ), 42, dtype=floating, device=device)
+    else:
+        source = torch.tensor([
+            -2147483520., -65504., -128.75, -128., -127.5, -1.5, -.75, -0., 0., .75, 1.5, 126.75, 127.5, 128., 65504.,
+            2147483520.
+        ], dtype=floating)
+        truncated = source.double().trunc()
+        valid = source.isfinite() & (truncated >= torch.iinfo(integer).min) & (truncated <= torch.iinfo(integer).max)
+        source = source[valid]
+        expected = source.to(integer)
+        output = torch.full((source.numel() + 32, ), 42, dtype=integer, device=device)
+    precision_cast[(triton.cdiv(source.numel(), 256), )](source.to(device), output[16:-16], source.numel(), 256)
+    torch.testing.assert_close(output[16:-16].cpu(), expected, rtol=0, atol=0)
+    assert torch.all(output[:16] == 42) and torch.all(output[-16:] == 42)
+
+
+@pytest.mark.parametrize("to_int8", [False, True])
+def test_hcu_integer_width_cast_values(to_int8, device):
+    source = (torch.tensor([-(2**31), 2**31 - 1, -257, -256, -129, -128, 127, 128, 255, 256], dtype=torch.int32)
+              if to_int8 else torch.arange(-128, 128, dtype=torch.int8))
+    destination = torch.int8 if to_int8 else torch.int32
+    expected = source.to(destination)
+    output = torch.full((source.numel() + 32, ), 42, dtype=destination, device=device)
+    precision_cast[(triton.cdiv(source.numel(), 256), )](source.to(device), output[16:-16], source.numel(), 256)
+    torch.testing.assert_close(output[16:-16].cpu(), expected, rtol=0, atol=0)
+    assert torch.all(output[:16] == 42) and torch.all(output[-16:] == 42)
+
+
+@pytest.mark.parametrize("source", ["fp16", "bf16", "fp32", "fp64"])
+@pytest.mark.parametrize("destination", ["fp8e4nv", "fp8e5"])
+@pytest.mark.parametrize("rounding", [None, "rtne", "rtz"])
+def test_hcu_fp8_downcast_compile(source, destination, rounding, fresh_triton_cache):
+    triton.compile(
+        ASTSource(precision_cast, {"X": "*" + source, "Y": "*" + destination},
+                  constexprs={"N": 513, "ROUND": rounding, "BLOCK": 256}), target=GPUTarget("hip", "gfx936", 64),
+        options={"num_warps": 4})
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+@pytest.mark.parametrize("destination", [torch.float8_e4m3fn, torch.float8_e5m2])
+@pytest.mark.parametrize("rounding", [None, "rtne", "rtz"])
+def test_hcu_fp8_downcast_values(dtype, destination, rounding, device):
+    levels = torch.arange(128).to(torch.uint8).view(destination).double()
+    levels = levels[levels.isfinite()]
+    boundaries = ((levels[:-1] + levels[1:]) / 2).tolist() + [450., 464., 465., 57344., 61440., 65504.]
+    source = conversion_source_values(dtype, boundaries)
+    limit = 448 if destination == torch.float8_e4m3fn else 57344
+    clipped = source.double().clamp(-limit, limit)
+    fmt = tl.float8e4nv if destination == torch.float8_e4m3fn else tl.float8e5
+    mode = ir.ROUNDING_MODE.RTZ if rounding == "rtz" else ir.ROUNDING_MODE.RTNE
+    expected = torch.from_numpy(_encode_fp64_to_float(clipped.numpy(), fmt, mode))
+    output = torch.full((source.numel() + 32, ), 165, dtype=torch.uint8, device=device).view(destination)
+    precision_cast[(triton.cdiv(source.numel(), 256), )](source.to(device), output[16:-16], source.numel(), 256,
+                                                         rounding)
+    actual = output[16:-16].cpu()
+    assert torch.equal(actual.isnan(), source.isnan())
+    not_nan = ~source.isnan()
+    torch.testing.assert_close(actual.view(torch.uint8)[not_nan], expected[not_nan], rtol=0, atol=0)
+    assert torch.all(output[:16].view(torch.uint8) == 165) and torch.all(output[-16:].view(torch.uint8) == 165)
+
+
+@pytest.mark.parametrize("source_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+@pytest.mark.parametrize("destination", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+def test_hcu_fp8_upcast_values(source_dtype, destination, device):
+    source = torch.arange(256).to(torch.uint8).view(source_dtype)
+    expected = source.to(destination)
+    output = torch.full((256 + 32, ), 42, dtype=destination, device=device)
+    precision_cast[(1, )](source.to(device), output[16:-16], 256, 256)
+    actual = output[16:-16].cpu()
+    assert torch.equal(actual.isnan(), expected.isnan())
+    torch.testing.assert_close(actual[~expected.isnan()], expected[~expected.isnan()], rtol=0, atol=0)
+    assert torch.equal(torch.signbit(actual[~expected.isnan()]), torch.signbit(expected[~expected.isnan()]))
+    assert torch.all(output[:16] == 42) and torch.all(output[-16:] == 42)
+
+
+@pytest.mark.parametrize("integer", [torch.int8, torch.int32])
+@pytest.mark.parametrize("fp8", [torch.float8_e4m3fn, torch.float8_e5m2])
+@pytest.mark.parametrize("to_fp8", [False, True])
+def test_hcu_fp8_integer_values(integer, fp8, to_fp8, device):
+    if to_fp8:
+        source = (torch.arange(-128, 128).to(integer) if integer == torch.int8 else torch.tensor(
+            [-(2**31), 2**31 - 1, -16842753, 16842753, -57345, 57345, -449, 449, -1, 0, 1], dtype=integer))
+        limit = 448 if fp8 == torch.float8_e4m3fn else 57344
+        expected = source.float().clamp(-limit, limit).to(fp8).view(torch.uint8)
+        output = torch.full((source.numel() + 32, ), 165, dtype=torch.uint8, device=device).view(fp8)
+    else:
+        source = torch.arange(256).to(torch.uint8).view(fp8)
+        values = source.double()
+        valid = values.isfinite() & (values >= torch.iinfo(integer).min) & (values <= torch.iinfo(integer).max)
+        # Index raw bytes: PyTorch 2.4 has no CPU FP8 masked-index kernel.
+        source = source.view(torch.uint8)[valid].view(fp8)
+        expected = source.double().trunc().to(integer)
+        output = torch.full((source.numel() + 32, ), 42, dtype=integer, device=device)
+    precision_cast[(triton.cdiv(source.numel(), 256), )](source.to(device), output[16:-16], source.numel(), 256)
+    torch.testing.assert_close(output[16:-16].cpu().view(expected.dtype), expected, rtol=0, atol=0)
+    guard = output.view(torch.uint8) if to_fp8 else output
+    assert torch.all(guard[:16] == (165 if to_fp8 else 42)) and torch.all(guard[-16:] == (165 if to_fp8 else 42))
+
+
+@pytest.mark.parametrize("source", ["core", "semantic", "standard", "driver", "hip_utils"])
+def test_hcu_provider_source_invalidates_cache(source, tmp_path):
+    package = Path(triton.__file__).parent
+    runtime = tmp_path / "runtime/triton"
+    shutil.copytree(package, runtime, ignore=shutil.ignore_patterns("_C", "__pycache__"), symlinks=True)
+    (runtime / "_C").symlink_to(package / "_C", target_is_directory=True)
+    if source == "hip_utils":
+        provider = runtime / "language/extra/hip/utils.py"
+        old = "(.25, .75, 1.25, 1.75, 2.5, 3.5, 5.)"
+        new = "(.25, 1., 1.25, 1.75, 2.5, 3.5, 5.)"
+    elif source == "driver":
+        provider = runtime / "runtime/driver.py"
+        old = "def reset_active(self) -> None:\n        self._active = self.default"
+        new = old.replace("self.default", "None")
+    else:
+        provider = runtime / "language" / (source + ".py")
+        if source == "core":
+            old = "return _semantic.full(shape, value, dtype)"
+            new = "return _semantic.full(shape, value + 1, dtype)"
+        elif source == "semantic":
+            old = "return self.splat(self.make_scalar(value, dtype), shape)"
+            new = "return self.splat(self.make_scalar(value + 1, dtype), shape)"
+        else:
+            old = "return (x + (div - 1)) // div"
+            new = old + " + 1"
+    assert provider.resolve().is_relative_to(runtime.resolve())
+    original = provider.read_text()
+    assert original.count(old) == 1
+    probe = tmp_path / "probe.py"
+    probe.write_text('''import hashlib, json
+from pathlib import Path
+import triton
+import triton.language as tl
+from triton.backends.compiler import GPUTarget
+from triton.backends.hcu.compiler_hcu import HIPBackend
+from triton.compiler import ASTSource
+assert Path(triton.__file__).is_relative_to(Path(__file__).parent / "runtime")
+@triton.jit
+def encode(Y):
+    packed = tl.ext.fp_to_fp4(tl.full((16,), .75, tl.float32))
+    tl.store(Y + tl.arange(0, 8) + tl.cdiv(0, 1), packed)
+target = GPUTarget("hip", "gfx936", 64)
+kernel = triton.compile(ASTSource(encode, {"Y": "*u8"}), target=target)
+print(json.dumps([HIPBackend(target).hash(), kernel.hash, hashlib.sha256(kernel.asm["ttir"].encode()).hexdigest()]))
+''')
+    env = dict(os.environ, PYTHONPATH=str(runtime.parent), PYTHONDONTWRITEBYTECODE="1",
+               TRITON_CACHE_DIR=str(tmp_path / "cache"), HIP_VISIBLE_DEVICES="", CUDA_VISIBLE_DEVICES="")
+    before = json.loads(subprocess.check_output([sys.executable, str(probe)], env=env, text=True, timeout=120))
+    provider.write_text(original.replace(old, new))
+    after = json.loads(subprocess.check_output([sys.executable, str(probe)], env=env, text=True, timeout=120))
+    assert before[0] != after[0]
+    assert before[1] != after[1]
+    assert (before[2] == after[2]) == (source == "driver")
