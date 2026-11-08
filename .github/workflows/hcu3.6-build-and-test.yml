@@ -80,10 +80,16 @@ jobs:
           export COMPILE_KERNEL=1
           export DEVICE_HOME=/opt/dtk
           export CCL_HOME=/opt/dtk
-          export USE_SHCA=1
+          # Configure SHCA per runner in ~/env.sh; ordinary runners default to off.
+          export USE_SHCA="${USE_SHCA:-0}"
           export USE_UCX=0
-          export SHCA_INCLUDE=/opt/shca-userspace/include
-          export SHCA_LIB=/opt/shca-userspace
+          if [ "$USE_SHCA" = "1" ]; then
+            export SHCA_INCLUDE="${SHCA_INCLUDE:-${SHCA_HOME:-/usr}/include}"
+            if [ ! -f "$SHCA_INCLUDE/infiniband/shca_17b_types.h" ]; then
+              echo "USE_SHCA=1 requires $SHCA_INCLUDE/infiniband/shca_17b_types.h; check this runner's SHCA development package and ~/env.sh"
+              exit 1
+            fi
+          fi
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
