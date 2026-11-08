@@ -51,7 +51,7 @@ def precision_cast(X, Y, N: tl.constexpr, BLOCK: tl.constexpr, ROUND: tl.constex
 def precision_fp4_encode(X, Y, N: tl.constexpr, ROUND: tl.constexpr, BLOCK: tl.constexpr = 512):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     values = tl.load(X + offsets, offsets < N, other=0)
-    packed = tle.fp_to_fp4(values, fp_downcast_rounding=ROUND)
+    packed = tl.fp_to_fp4(values, fp_downcast_rounding=ROUND)
     out_offsets = tl.program_id(0) * (BLOCK // 2) + tl.arange(0, BLOCK // 2)
     tl.store(Y + out_offsets, packed, out_offsets * 2 < N)
 
@@ -63,7 +63,7 @@ def precision_fp4_decode(X, S, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
     scale = None
     if S is not None:
         scale = tl.load(S + offsets, offsets < N, other=127)
-    values = tle.fp4_to_fp_scaled(packed, scale, Y.dtype.element_ty)
+    values = tl.fp4_to_fp_scaled(packed, scale, Y.dtype.element_ty, axis=-1)
     out_offsets = tl.program_id(0) * (BLOCK * 2) + tl.arange(0, BLOCK * 2)
     tl.store(Y + out_offsets, values, out_offsets < N * 2)
 
@@ -1230,8 +1230,8 @@ def test_hcu_provider_source_invalidates_cache(source, tmp_path):
         new = "(.25, 1., 1.25, 1.75, 2.5, 3.5, 5.)"
     elif source == "tle_core":
         provider = runtime / "experimental/tle/language/core.py"
-        old = "return lower(src, axis, fp_downcast_rounding, _semantic=_semantic)"
-        new = 'return lower(src, axis, "rtz", _semantic=_semantic)'
+        old = "return _generator.call_JitFunction(lower, (values, axis), kwargs={})"
+        new = "return _generator.call_JitFunction(lower, (tl.add(values, 1, _semantic=_semantic), axis), kwargs={})"
     elif source == "driver":
         provider = runtime / "runtime/driver.py"
         old = "def reset_active(self) -> None:\n        self._active = self.default"
@@ -1261,11 +1261,12 @@ from triton.backends.hcu.compiler_hcu import HIPBackend
 from triton.compiler import ASTSource
 assert Path(triton.__file__).is_relative_to(Path(__file__).parent / "runtime")
 @triton.jit
-def encode(Y):
-    packed = tle.fp_to_fp4(tl.full((16,), .75, tl.float32))
+def encode(Y, Z):
+    packed = tl.fp_to_fp4(tl.full((16,), .75, tl.float32))
     tl.store(Y + tl.arange(0, 8) + tl.cdiv(0, 1), packed)
+    tl.store(Z + tl.arange(0, 8), tle.pack_int4(tl.full((16,), 1, tl.int8)))
 target = GPUTarget("hip", "gfx936", 64)
-kernel = triton.compile(ASTSource(encode, {"Y": "*u8"}), target=target)
+kernel = triton.compile(ASTSource(encode, {"Y": "*u8", "Z": "*u8"}), target=target)
 print(json.dumps([HIPBackend(target).hash(), kernel.hash, hashlib.sha256(kernel.asm["ttir"].encode()).hexdigest()]))
 ''')
     env = dict(os.environ, PYTHONPATH=str(runtime.parent), PYTHONDONTWRITEBYTECODE="1",

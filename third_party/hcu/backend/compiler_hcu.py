@@ -256,8 +256,8 @@ class HIPBackend(BaseBackend):
             "resolve_dot": _make_resolve_dot(options.arch),
             "resolve_dot_scaled": _make_resolve_dot_scaled(options.arch),
             "get_dot_scaled_lowering": utils._get_dot_scaled_lowering,
-            "tle.fp_to_fp4": utils.fp_to_fp4,
-            "tle.fp4_to_fp_scaled": utils.fp4_to_fp_scaled,
+            "fp_to_fp4": utils.fp_to_fp4,
+            "fp4_to_fp_scaled": utils.fp4_to_fp_scaled,
             "tle.pack_int4": utils.pack_int4,
             "tle.unpack_int4": utils.unpack_int4,
         }

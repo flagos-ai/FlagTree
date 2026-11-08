@@ -2145,6 +2145,32 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
                                 rhs_k_pack, out_dtype)
 
 
+@builtin
+def fp_to_fp4(src, axis=-1, fp_downcast_rounding="rtne", _semantic=None):
+    """Encode FP16/BF16/FP32/FP64 as packed E2M1 with RTNE or RTZ.
+
+    Two values along the even-sized packing axis become one uint8, with
+    the first value in the low nibble.
+    """
+    lower = _semantic.builder.codegen_fns.get("fp_to_fp4")
+    if lower is None:
+        raise NotImplementedError("tl.fp_to_fp4 is not supported by this backend")
+    return lower(src, axis, fp_downcast_rounding, _semantic=_semantic)
+
+
+@builtin
+def fp4_to_fp_scaled(src, scale, elem_type, axis, _semantic=None, _generator=None):
+    """Decode packed E2M1 with E8M0 scale to FP16 or BF16.
+
+    The packing axis doubles in size. HCU accepts None, one scale byte per
+    packed pair, or one scale byte per 32 logical values.
+    """
+    lower = _semantic.builder.codegen_fns.get("fp4_to_fp_scaled")
+    if lower is None:
+        raise NotImplementedError("tl.fp4_to_fp_scaled is not supported by this backend")
+    return _generator.call_JitFunction(lower, (src, scale, elem_type, axis), kwargs={})
+
+
 # -----------------------
 # Non-Atomic Memory Operations
 # -----------------------

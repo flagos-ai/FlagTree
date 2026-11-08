@@ -48,28 +48,6 @@ def _get_packed_conversion(name, _semantic):
 
 
 @tl.builtin
-def fp_to_fp4(src, axis=-1, fp_downcast_rounding="rtne", _semantic: TLESemantic | None = None):
-    """Encode floating inputs as packed E2M1, two values per uint8.
-
-    The even-sized packing axis is halved, with the first value in the low
-    nibble. HCU supports FP16/BF16/FP32/FP64 inputs and RTNE or RTZ.
-    """
-    lower = _get_packed_conversion("fp_to_fp4", _semantic)
-    return lower(src, axis, fp_downcast_rounding, _semantic=_semantic)
-
-
-@tl.builtin
-def fp4_to_fp_scaled(src, scale, elem_type, axis=-1, _semantic: TLESemantic | None = None, _generator=None):
-    """Decode packed E2M1 with optional E8M0 scale to FP16 or BF16.
-
-    The packing axis doubles in size. HCU accepts None, one scale byte per
-    packed pair, or one scale byte per 32 logical values.
-    """
-    lower = _get_packed_conversion("fp4_to_fp_scaled", _semantic)
-    return _generator.call_JitFunction(lower, (src, scale, elem_type, axis), kwargs={})
-
-
-@tl.builtin
 def pack_int4(values, axis=-1, _semantic: TLESemantic | None = None, _generator=None):
     """Pack the low four bits of each signed INT8/INT32 value, low nibble first."""
     lower = _get_packed_conversion("pack_int4", _semantic)

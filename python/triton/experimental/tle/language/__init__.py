@@ -25,8 +25,6 @@ from typing import TYPE_CHECKING
 from .core import (
     cumsum,
     extract_tile,
-    fp_to_fp4,
-    fp4_to_fp_scaled,
     insert_tile,
     load,
     pack_int4,
@@ -106,8 +104,6 @@ __all__ = [
     "cumsum",
     "extract_tile",
     "insert_tile",
-    "fp_to_fp4",
-    "fp4_to_fp_scaled",
     "pack_int4",
     "unpack_int4",
     "MeshConfig",
