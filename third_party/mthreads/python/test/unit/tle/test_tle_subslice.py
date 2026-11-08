@@ -3,12 +3,17 @@
 import pytest
 import torch
 import triton
+import triton.experimental.tle as tle_api
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
 from test_tle_utils import compile_musa, compile_to_ttir, require_mthreads_libtriton
 
 require_mthreads_libtriton()
+
+
+def test_tle_buffered_tensor_subslice_is_advertised():
+    assert tle_api.is_tle_supported("gpu.buffered_tensor.subslice")
 
 
 @triton.jit
