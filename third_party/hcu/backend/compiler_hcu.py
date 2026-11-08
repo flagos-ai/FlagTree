@@ -4,7 +4,7 @@ from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 import hashlib
 import inspect
 import tempfile
@@ -167,13 +167,6 @@ class HIPOptions:
 
 class HIPBackend(BaseBackend):
 
-    @classmethod
-    def get_language_extension(cls):
-        from triton.language.extra.hip import utils
-
-        return SimpleNamespace(fp_to_fp4=utils.fp_to_fp4, fp4_to_fp_scaled=utils.fp4_to_fp_scaled,
-                               pack_int4=utils.pack_int4, unpack_int4=utils.unpack_int4)
-
     instrumentation = None
     supports_native_tensor_specialization = False
 
@@ -255,14 +248,18 @@ class HIPBackend(BaseBackend):
         )
 
     def get_codegen_implementation(self, options):
-        from triton.language.extra.hip.utils import _convert_fp8, _get_dot_scaled_lowering
+        from triton.language.extra.hip import utils
 
         return {
-            "convert_custom_types": _convert_fp8,
+            "convert_custom_types": utils._convert_fp8,
             "min_dot_size": get_min_dot_size(self.target),
             "resolve_dot": _make_resolve_dot(options.arch),
             "resolve_dot_scaled": _make_resolve_dot_scaled(options.arch),
-            "get_dot_scaled_lowering": _get_dot_scaled_lowering,
+            "get_dot_scaled_lowering": utils._get_dot_scaled_lowering,
+            "tle.fp_to_fp4": utils.fp_to_fp4,
+            "tle.fp4_to_fp_scaled": utils.fp4_to_fp_scaled,
+            "tle.pack_int4": utils.pack_int4,
+            "tle.unpack_int4": utils.unpack_int4,
         }
 
     def get_module_map(self) -> Dict[str, ModuleType]:
@@ -884,6 +881,7 @@ class HIPBackend(BaseBackend):
     @functools.lru_cache()
     def hash(self):
         version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding='utf-8')
+        from triton.experimental.tle.language import core as tle_core
         from triton.language import core, standard
         from triton.language.semantic import TritonSemantic
         from triton.runtime.driver import DriverConfig
@@ -891,7 +889,7 @@ class HIPBackend(BaseBackend):
 
         # Include actual bound providers, including spec overlays and runtime
         # driver sources outside the compiler/language package scan.
-        providers = (inspect.unwrap(core.dot), TritonSemantic.dot, standard, DriverConfig, utils)
+        providers = (inspect.unwrap(core.dot), TritonSemantic.dot, standard, DriverConfig, utils, tle_core)
         sources = hashlib.sha256()
         for provider in providers:
             sources.update(Path(inspect.getfile(provider)).read_bytes())

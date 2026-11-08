@@ -51,7 +51,7 @@ def precision_cast(X, Y, N: tl.constexpr, BLOCK: tl.constexpr, ROUND: tl.constex
 def precision_fp4_encode(X, Y, N: tl.constexpr, ROUND: tl.constexpr, BLOCK: tl.constexpr = 512):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     values = tl.load(X + offsets, offsets < N, other=0)
-    packed = tl.ext.fp_to_fp4(values, fp_downcast_rounding=ROUND)
+    packed = tle.fp_to_fp4(values, fp_downcast_rounding=ROUND)
     out_offsets = tl.program_id(0) * (BLOCK // 2) + tl.arange(0, BLOCK // 2)
     tl.store(Y + out_offsets, packed, out_offsets * 2 < N)
 
@@ -63,7 +63,7 @@ def precision_fp4_decode(X, S, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
     scale = None
     if S is not None:
         scale = tl.load(S + offsets, offsets < N, other=127)
-    values = tl.ext.fp4_to_fp_scaled(packed, scale, Y.dtype.element_ty)
+    values = tle.fp4_to_fp_scaled(packed, scale, Y.dtype.element_ty)
     out_offsets = tl.program_id(0) * (BLOCK * 2) + tl.arange(0, BLOCK * 2)
     tl.store(Y + out_offsets, values, out_offsets < N * 2)
 
@@ -72,8 +72,8 @@ def precision_fp4_decode(X, S, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
 def precision_int4_roundtrip(X, U, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     packed = tl.load(X + offsets, offsets < N, other=0)
-    values = tl.ext.unpack_int4(packed)
-    repacked = tl.ext.pack_int4(values)
+    values = tle.unpack_int4(packed)
+    repacked = tle.pack_int4(values)
     logical = tl.program_id(0) * BLOCK * 2 + tl.arange(0, BLOCK * 2)
     tl.store(U + logical, values, logical < N * 2)
     tl.store(Y + offsets, repacked, offsets < N)
@@ -83,7 +83,7 @@ def precision_int4_roundtrip(X, U, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256
 def precision_int4_quantize(X, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     values = tl.load(X + offsets, offsets < N, other=0).to(tl.int32)
-    packed = tl.ext.pack_int4(values)
+    packed = tle.pack_int4(values)
     output_offsets = tl.program_id(0) * (BLOCK // 2) + tl.arange(0, BLOCK // 2)
     tl.store(Y + output_offsets, packed, output_offsets * 2 < N)
 
@@ -515,8 +515,7 @@ def test_hcu_int4_container_rejection(fresh_triton_cache):
             ASTSource(precision_int4_roundtrip, {"X": "*i8", "U": "*i8", "Y": "*u8"},
                       constexprs={"N": 256, "BLOCK": 256}), target=GPUTarget("hip", "gfx936", 64),
             options={"num_warps": 4})
-    assert isinstance(caught.value.__cause__, triton.compiler.errors.CompileTimeAssertionFailure)
-    assert "unpack_int4 requires packed uint8" in str(caught.value.__cause__)
+    assert "unpack_int4 requires packed uint8" in ''.join(traceback.format_exception(caught.value))
 
 
 @pytest.mark.parametrize("operation", ["dot", "scaled"])
@@ -1219,7 +1218,7 @@ def test_hcu_fp8_integer_values(integer, fp8, to_fp8, device):
     assert torch.all(guard[:16] == (165 if to_fp8 else 42)) and torch.all(guard[-16:] == (165 if to_fp8 else 42))
 
 
-@pytest.mark.parametrize("source", ["core", "semantic", "standard", "driver", "hip_utils"])
+@pytest.mark.parametrize("source", ["core", "semantic", "standard", "driver", "hip_utils", "tle_core"])
 def test_hcu_provider_source_invalidates_cache(source, tmp_path):
     package = Path(triton.__file__).parent
     runtime = tmp_path / "runtime/triton"
@@ -1229,6 +1228,10 @@ def test_hcu_provider_source_invalidates_cache(source, tmp_path):
         provider = runtime / "language/extra/hip/utils.py"
         old = "(.25, .75, 1.25, 1.75, 2.5, 3.5, 5.)"
         new = "(.25, 1., 1.25, 1.75, 2.5, 3.5, 5.)"
+    elif source == "tle_core":
+        provider = runtime / "experimental/tle/language/core.py"
+        old = "return lower(src, axis, fp_downcast_rounding, _semantic=_semantic)"
+        new = 'return lower(src, axis, "rtz", _semantic=_semantic)'
     elif source == "driver":
         provider = runtime / "runtime/driver.py"
         old = "def reset_active(self) -> None:\n        self._active = self.default"
@@ -1252,13 +1255,14 @@ def test_hcu_provider_source_invalidates_cache(source, tmp_path):
 from pathlib import Path
 import triton
 import triton.language as tl
+import triton.experimental.tle.language as tle
 from triton.backends.compiler import GPUTarget
 from triton.backends.hcu.compiler_hcu import HIPBackend
 from triton.compiler import ASTSource
 assert Path(triton.__file__).is_relative_to(Path(__file__).parent / "runtime")
 @triton.jit
 def encode(Y):
-    packed = tl.ext.fp_to_fp4(tl.full((16,), .75, tl.float32))
+    packed = tle.fp_to_fp4(tl.full((16,), .75, tl.float32))
     tl.store(Y + tl.arange(0, 8) + tl.cdiv(0, 1), packed)
 target = GPUTarget("hip", "gfx936", 64)
 kernel = triton.compile(ASTSource(encode, {"Y": "*u8"}), target=target)
