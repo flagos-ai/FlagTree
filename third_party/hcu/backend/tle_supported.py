@@ -6,6 +6,10 @@ TLE_SUPPORTED_PRIMITIVES = [
 
     ## TLE-Lite
     "extract_tile",
+    "fp_to_fp4",
+    "fp4_to_fp_scaled",
+    "pack_int4",
+    "unpack_int4",
     "cumsum",
 
     ## TLE-Struct GPU
