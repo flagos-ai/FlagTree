@@ -1,4 +1,4 @@
-"""GPU software operations for packed formats, exported through ``tl.ext``."""
+"""HCU packed conversions and software lowering for integer scaled dot."""
 import warnings
 from typing import TYPE_CHECKING, Optional
 
@@ -171,65 +171,73 @@ def fp4_to_fp_scaled(src: tl.tensor, scale: "Optional[tl.tensor]", elem_type: tl
 
 
 @triton.jit
-def dot_int4(lhs: tl.tensor, rhs: tl.tensor, acc: "Optional[tl.tensor]" = None, lhs_axis: tl.constexpr = 1,
-             rhs_axis: tl.constexpr = 0) -> tl.tensor:
-    """Decode signed packed INT4 on GPU, then INT8 dot with INT32 accumulation.
+def _dot_scaled_integer(lhs: tl.tensor, lhs_scale: "Optional[tl.tensor]", lhs_format: tl.constexpr, rhs: tl.tensor,
+                        rhs_scale: "Optional[tl.tensor]", rhs_format: tl.constexpr, acc: "Optional[tl.tensor]",
+                        lhs_k_pack: tl.constexpr, rhs_k_pack: tl.constexpr, out_dtype: tl.constexpr) -> tl.tensor:
+    """Lower HCU integer formats from the standard tl.dot_scaled entry point.
 
-    Accumulation wraps modulo 2**32. The INT8 lowering selects matrix, vector
-    or scalar instructions according to the actual logical shape.
-    """
-    _software_warning("HCU INT4 dot uses GPU software unpacking and INT8 dot (native=false)")
-    return tl.dot(unpack_int4(lhs, lhs_axis), unpack_int4(rhs, rhs_axis), acc=acc, out_dtype=tl.int32)
-
-
-@triton.jit
-def dot_scaled_integer(lhs: tl.tensor, lhs_scale: "Optional[tl.tensor]", lhs_format: tl.constexpr, rhs: tl.tensor,
-                       rhs_scale: "Optional[tl.tensor]", rhs_format: tl.constexpr, acc: "Optional[tl.tensor]" = None,
-                       group_size: tl.constexpr = 32) -> tl.tensor:
-    """Groupwise signed integer dot, FP32 scales, FP32 output and accumulator.
-
-    INT4 inputs are uint8 packed along K, low nibble first. INT8 uses signed
-    storage. Per group, integer products and INT32 accumulation wrap
+    Scaled INT4 uses K-packed uint8, low nibble first. Each 32-element
+    group's integer products and INT32 accumulation wrap
     modulo 2**32, then convert to FP32, multiply lhs scale then rhs scale, and
     add to the FP32 accumulator once. Scale shapes are [M,G] and [N,G]. None
-    means one. G=K/group_size; K must be divisible by power-of-two group_size.
+    means one. Unscaled integer dot with INT32 output also supports M/N packing.
     """
     tl.static_assert((lhs_format == "int4" or lhs_format == "int8") and (rhs_format == "int4" or rhs_format == "int8"),
                      "integer operand formats must be int4/int8; INT32 is for accumulation/output")
     tl.static_assert(len(lhs.shape) == 2 and len(rhs.shape) == 2, "integer scaled dot requires 2D operands")
-    tl.static_assert(group_size > 0 and group_size & (group_size - 1) == 0, "group_size must be a power of two")
-    _software_warning("HCU integer scaled dot uses GPU groupwise integer dot and FP32 scaling (native=false)")
     if lhs_format == "int4":
-        lhs = unpack_int4(lhs, 1)
+        lhs = unpack_int4(lhs, 1 if lhs_k_pack else 0)
     else:
-        tl.static_assert(lhs.dtype == tl.int8, "lhs format/storage mismatch")
+        tl.static_assert(lhs.dtype == tl.int8 and lhs_k_pack,
+                         "INT8 lhs requires signed INT8 storage and lhs_k_pack=True")
     if rhs_format == "int4":
-        rhs = unpack_int4(rhs, 0)
+        rhs = unpack_int4(rhs, 0 if rhs_k_pack else 1)
     else:
-        tl.static_assert(rhs.dtype == tl.int8, "rhs format/storage mismatch")
-    M: tl.constexpr = lhs.shape[0]
-    K: tl.constexpr = lhs.shape[1]
-    N: tl.constexpr = rhs.shape[1]
-    tl.static_assert(rhs.shape[0] == K and K % group_size == 0, "logical K mismatch or incomplete group")
-    G: tl.constexpr = K // group_size
-    if lhs_scale is not None:
-        tl.static_assert(lhs_scale.dtype == tl.float32 and lhs_scale.shape == [M, G], "lhs scales must be FP32 [M,G]")
-    if rhs_scale is not None:
-        tl.static_assert(rhs_scale.dtype == tl.float32 and rhs_scale.shape == [N, G], "rhs scales must be FP32 [N,G]")
-    if acc is None:
-        result = tl.full((M, N), 0, tl.float32)
+        tl.static_assert(rhs.dtype == tl.int8 and rhs_k_pack,
+                         "INT8 rhs requires signed INT8 storage and rhs_k_pack=True")
+    if out_dtype == tl.int32:
+        tl.static_assert(lhs_scale is None and rhs_scale is None,
+                         "INT32 output requires both integer scales to be None")
+        if lhs_format == "int4" or rhs_format == "int4":
+            _software_warning("HCU INT4 dot uses GPU software unpacking and INT8 dot (native=false)")
+        return tl.dot(lhs, rhs, acc=acc, out_dtype=tl.int32)
     else:
-        tl.static_assert(acc.dtype == tl.float32 and acc.shape == [M, N], "acc must be FP32 [M,N]")
-        result = acc
-    a = lhs.reshape((M, G, group_size))
-    b = rhs.reshape((G, group_size, N))
-    for group in tl.static_range(G):
-        ag = tl.gather(a, tl.full((M, 1, group_size), group, tl.int32), 1).reshape((M, group_size))
-        bg = tl.gather(b, tl.full((1, group_size, N), group, tl.int32), 0).reshape((group_size, N))
-        partial = tl.dot(ag, bg, out_dtype=tl.int32).to(tl.float32)
+        tl.static_assert(out_dtype == tl.float32, "integer scaled dot requires FP32 output")
+        tl.static_assert(lhs_k_pack and rhs_k_pack, "integer scaled dot requires K-packed operands")
+        _software_warning("HCU integer scaled dot uses GPU groupwise integer dot and FP32 scaling (native=false)")
+        group_size: tl.constexpr = 32
+        M: tl.constexpr = lhs.shape[0]
+        K: tl.constexpr = lhs.shape[1]
+        N: tl.constexpr = rhs.shape[1]
+        tl.static_assert(rhs.shape[0] == K and K % group_size == 0, "logical K mismatch or incomplete group")
+        G: tl.constexpr = K // group_size
         if lhs_scale is not None:
-            partial = partial * tl.gather(lhs_scale, tl.full((M, 1), group, tl.int32), 1)
+            tl.static_assert(lhs_scale.dtype == tl.float32 and lhs_scale.shape == [M, G],
+                             "lhs scales must be FP32 [M,G]")
         if rhs_scale is not None:
-            partial = partial * tl.gather(rhs_scale, tl.full((N, 1), group, tl.int32), 1).T
-        result = result + partial
-    return result
+            tl.static_assert(rhs_scale.dtype == tl.float32 and rhs_scale.shape == [N, G],
+                             "rhs scales must be FP32 [N,G]")
+        if acc is None:
+            result = tl.full((M, N), 0, tl.float32)
+        else:
+            tl.static_assert(acc.dtype == tl.float32 and acc.shape == [M, N], "acc must be FP32 [M,N]")
+            result = acc
+        a = lhs.reshape((M, G, group_size))
+        b = rhs.reshape((G, group_size, N))
+        for group in tl.static_range(G):
+            ag = tl.gather(a, tl.full((M, 1, group_size), group, tl.int32), 1).reshape((M, group_size))
+            bg = tl.gather(b, tl.full((1, group_size, N), group, tl.int32), 0).reshape((group_size, N))
+            partial = tl.dot(ag, bg, out_dtype=tl.int32).to(tl.float32)
+            if lhs_scale is not None:
+                partial = partial * tl.gather(lhs_scale, tl.full((M, 1), group, tl.int32), 1)
+            if rhs_scale is not None:
+                partial = partial * tl.gather(rhs_scale, tl.full((N, 1), group, tl.int32), 1).T
+            result = result + partial
+        return result
+
+
+def _get_dot_scaled_lowering(lhs_format: str, rhs_format: str):
+    integer_formats = ("int4", "int8", "int32")
+    if lhs_format in integer_formats or rhs_format in integer_formats:
+        return _dot_scaled_integer
+    return None

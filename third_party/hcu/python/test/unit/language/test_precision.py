@@ -1,5 +1,6 @@
 import math
 import re
+import traceback
 import warnings
 from types import SimpleNamespace
 
@@ -93,7 +94,8 @@ def precision_int4_dot(A, B, ACC, C, M: tl.constexpr, N: tl.constexpr, K: tl.con
     acc = None
     if ACC is not None:
         acc = tl.load(ACC + rows[:, None] * N + cols[None, :])
-    result = tl.ext.dot_int4(a, b, acc=acc, lhs_axis=AXIS_A, rhs_axis=AXIS_B)
+    result = tl.dot_scaled(a, None, "int4", b, None, "int4", acc=acc, lhs_k_pack=AXIS_A == 1, rhs_k_pack=AXIS_B == 0,
+                           out_dtype=tl.int32)
     tl.store(C + rows[:, None] * N + cols[None, :], result)
 
 
@@ -141,7 +143,7 @@ def precision_shared_copy(X, Y, N: tl.constexpr, COPY: tl.constexpr, BLOCK: tl.c
 
 @triton.jit
 def precision_integer_scaled(A, SA, B, SB, ACC, C, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
-                             FORMAT_A: tl.constexpr, FORMAT_B: tl.constexpr):
+                             FORMAT_A: tl.constexpr, FORMAT_B: tl.constexpr, OUT_DTYPE: tl.constexpr = tl.float32):
     rows = tl.arange(0, M)
     cols = tl.arange(0, N)
     ka = tl.arange(0, K // (2 if FORMAT_A == "int4" else 1))
@@ -156,7 +158,7 @@ def precision_integer_scaled(A, SA, B, SB, ACC, C, M: tl.constexpr, N: tl.conste
     if SB is not None:
         scale_b = tl.load(SB + cols[:, None] * (K // 32) + groups[None, :])
     acc = tl.load(ACC + rows[:, None] * N + cols[None, :])
-    result = tl.ext.dot_scaled_integer(a, scale_a, FORMAT_A, b, scale_b, FORMAT_B, acc=acc)
+    result = tl.dot_scaled(a, scale_a, FORMAT_A, b, scale_b, FORMAT_B, acc=acc, out_dtype=OUT_DTYPE)
     tl.store(C + rows[:, None] * N + cols[None, :], result)
 
 
@@ -592,9 +594,10 @@ def test_hcu_integer_scaled_compile(format_a, format_b, fresh_triton_cache):
     }
     with pytest.warns(UserWarning, match="groupwise integer dot"):
         triton.compile(
-            ASTSource(precision_integer_scaled, signature,
-                      constexprs={"M": 16, "N": 16, "K": 64, "FORMAT_A": format_a, "FORMAT_B": format_b}),
-            target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "enable_fp_fusion": False})
+            ASTSource(
+                precision_integer_scaled, signature, constexprs={
+                    "M": 16, "N": 16, "K": 64, "FORMAT_A": format_a, "FORMAT_B": format_b, "OUT_DTYPE": tl.float32
+                }), target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "enable_fp_fusion": False})
 
 
 @pytest.mark.parametrize("format_a,format_b", [("int32", "int8"), ("int8", "int32"), ("int32", "int32")])
@@ -607,10 +610,19 @@ def test_hcu_integer_scaled_int32_operands_rejected(format_a, format_b, fresh_tr
         triton.compile(
             ASTSource(
                 precision_integer_scaled, signature, constexprs={
-                    "SA": None, "SB": None, "M": 16, "N": 16, "K": 64, "FORMAT_A": format_a, "FORMAT_B": format_b
+                    "SA": None, "SB": None, "M": 16, "N": 16, "K": 64, "FORMAT_A": format_a, "FORMAT_B": format_b,
+                    "OUT_DTYPE": tl.float32
                 }), target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
-    assert isinstance(caught.value.__cause__, triton.compiler.errors.CompileTimeAssertionFailure)
-    assert "integer operand formats must be int4/int8" in str(caught.value.__cause__)
+    assert "integer operand formats must be int4/int8" in ''.join(traceback.format_exception(caught.value))
+
+
+def test_hcu_integer_scaled_rejects_int32_output_with_scale(fresh_triton_cache):
+    signature = {"A": "*i8", "B": "*i8", "SA": "*fp32", "ACC": "*i32", "C": "*i32"}
+    constants = {"SB": None, "M": 16, "N": 16, "K": 64, "FORMAT_A": "int8", "FORMAT_B": "int8", "OUT_DTYPE": tl.int32}
+    with pytest.raises(triton.CompilationError) as caught:
+        triton.compile(ASTSource(precision_integer_scaled, signature, constexprs=constants),
+                       target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
+    assert "INT32 output requires both integer scales to be None" in ''.join(traceback.format_exception(caught.value))
 
 
 @pytest.mark.parametrize("dtype", ["i32", "i8", "u8", "fp8e4nv"])
