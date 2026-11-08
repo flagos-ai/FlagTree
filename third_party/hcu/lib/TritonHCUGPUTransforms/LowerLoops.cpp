@@ -1,4 +1,4 @@
-#include "TritonHCUGPUTransforms/DotDiagnostics.h"
+#include "Dialect/TritonHCUGPU/Utility/CommonUtils.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "Utility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"

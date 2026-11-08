@@ -4,7 +4,7 @@ from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import hashlib
 import inspect
 import tempfile
@@ -169,9 +169,10 @@ class HIPBackend(BaseBackend):
 
     @classmethod
     def get_language_extension(cls):
-        from triton.backends.hcu import precision
+        from triton.language.extra.hip import utils
 
-        return precision
+        return SimpleNamespace(fp_to_fp4=utils.fp_to_fp4, fp4_to_fp_scaled=utils.fp4_to_fp_scaled,
+                               pack_int4=utils.pack_int4, unpack_int4=utils.unpack_int4)
 
     instrumentation = None
     supports_native_tensor_specialization = False
@@ -254,7 +255,7 @@ class HIPBackend(BaseBackend):
         )
 
     def get_codegen_implementation(self, options):
-        from triton.backends.hcu.precision import _convert_fp8, _get_dot_scaled_lowering
+        from triton.language.extra.hip.utils import _convert_fp8, _get_dot_scaled_lowering
 
         return {
             "convert_custom_types": _convert_fp8,
@@ -886,11 +887,11 @@ class HIPBackend(BaseBackend):
         from triton.language import core, standard
         from triton.language.semantic import TritonSemantic
         from triton.runtime.driver import DriverConfig
-        from triton.backends.hcu import precision
+        from triton.language.extra.hip import utils
 
         # Include actual bound providers, including spec overlays and runtime
         # driver sources outside the compiler/language package scan.
-        providers = (inspect.unwrap(core.dot), TritonSemantic.dot, standard, DriverConfig, precision)
+        providers = (inspect.unwrap(core.dot), TritonSemantic.dot, standard, DriverConfig, utils)
         sources = hashlib.sha256()
         for provider in providers:
             sources.update(Path(inspect.getfile(provider)).read_bytes())

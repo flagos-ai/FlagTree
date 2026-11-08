@@ -1,5 +1,5 @@
 #include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
-#include "TritonHCUGPUTransforms/DotDiagnostics.h"
+#include "Dialect/TritonHCUGPU/Utility/CommonUtils.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Types.h"

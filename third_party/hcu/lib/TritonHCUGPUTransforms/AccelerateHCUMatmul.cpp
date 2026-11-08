@@ -1,5 +1,5 @@
+#include "Dialect/TritonHCUGPU/Utility/CommonUtils.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
-#include "TritonHCUGPUTransforms/DotDiagnostics.h"
 #include "TritonHCUGPUTransforms/MfmaGroup.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "TritonHCUGPUTransforms/WmmaGroup.h"
