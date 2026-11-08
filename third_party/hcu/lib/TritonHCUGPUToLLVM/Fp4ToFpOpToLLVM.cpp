@@ -16,14 +16,9 @@ using ::mlir::LLVM::HCU::upcast8xMxfp4_SW;
 namespace {
 
 class Fp4ToFpOpPattern : public ConvertOpToLLVMPattern<Fp4ToFpOp> {
-private:
-  const HCU::TargetInfo &targetInfo;
-
 public:
-  Fp4ToFpOpPattern(LLVMTypeConverter &typeConverter,
-                   const HCU::TargetInfo &targetInfo, PatternBenefit benefit)
-      : ConvertOpToLLVMPattern<Fp4ToFpOp>(typeConverter, benefit),
-        targetInfo(targetInfo) {}
+  Fp4ToFpOpPattern(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<Fp4ToFpOp>(typeConverter, benefit) {}
 
   LogicalResult
   matchAndRewrite(Fp4ToFpOp op, OpAdaptor adaptor,
@@ -38,18 +33,17 @@ public:
 
     SmallVector<Value> results;
     results.reserve(xVals.size() * 2);
-    assert(xVals.size() % 4 == 0);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     for (int i = 0; i < xVals.size(); i += 4) {
+      unsigned count = std::min<size_t>(4, xVals.size() - i);
       Value packedVec = b.undef(vec_ty(i8_ty, 4));
       for (int j : llvm::seq(4)) {
-        Value v = xVals[i + j];
+        Value v = j < count ? xVals[i + j] : b.i8_val(0);
         packedVec = b.insert_element(packedVec, v, b.i32_val(j));
       }
-      auto isa = targetInfo.getISAFamily();
       SmallVector<Value> upcast =
-          upcast8xMxfp4_SW(rewriter, op, toFp16, packedVec, isa);
-      results.append(upcast.begin(), upcast.end());
+          upcast8xMxfp4_SW(rewriter, op, toFp16, packedVec);
+      results.append(upcast.begin(), upcast.begin() + 2 * count);
     }
 
     Value result = packLLElements(loc, getTypeConverter(), results, rewriter,
@@ -62,6 +56,6 @@ public:
 
 void mlir::triton::HCU::populateFp4ToFpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    const TargetInfo &targetInfo, PatternBenefit benefit) {
-  patterns.add<Fp4ToFpOpPattern>(typeConverter, targetInfo, benefit);
+    const TargetInfo &, PatternBenefit benefit) {
+  patterns.add<Fp4ToFpOpPattern>(typeConverter, benefit);
 }

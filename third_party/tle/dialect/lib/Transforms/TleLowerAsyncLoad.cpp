@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -164,6 +165,11 @@ class TritonTleLowerAsyncLoadPass
 
     auto localLoadOp = builder.create<triton::gpu::LocalLoadOp>(
         loc, type, localAllocOp, token);
+    // Preserve loop membership for backends that lower SCF before protecting
+    // this shared buffer's lifetime across loop iterations.
+    if (localLoadOp->getParentOfType<LoopLikeOpInterface>())
+      localLoadOp->setAttr("tle.explicit_async_loop_load",
+                           builder.getUnitAttr());
     return localLoadOp;
   }
 };

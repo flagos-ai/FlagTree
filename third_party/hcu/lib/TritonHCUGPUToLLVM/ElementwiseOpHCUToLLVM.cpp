@@ -841,15 +841,122 @@ static SmallVector<Value> Fp8E5M2_to_Fp32(Location loc,
                                                          v[1]);
 }
 
-// Fp32 -> OCP Fp8 (RTNZ)
+template <typename DstFPType>
+static SmallVector<Value>
+Fp32_to_Fp8_RTZ_SW(Location loc, ConversionPatternRewriter &rewriter,
+                   const SmallVector<Value> &values) {
+  static_assert(std::is_same_v<DstFPType, Float8E4M3FNType> ||
+                std::is_same_v<DstFPType, Float8E5M2Type>);
+  constexpr bool isE4M3 = std::is_same_v<DstFPType, Float8E4M3FNType>;
+  constexpr unsigned mantissaBits = isE4M3 ? 3 : 2;
+  constexpr unsigned exponentBias = isE4M3 ? 7 : 15;
+  constexpr unsigned maxFinite = isE4M3 ? 0x7e : 0x7b;
+  constexpr unsigned quietNaN = isE4M3 ? 0x7f : 0x7e;
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  SmallVector<Value> result;
+  for (Value value : values) {
+    Value bits = b.bitcast(value, i32_ty);
+    Value sign = b.and_(b.lshr(bits, b.i32_val(24)), b.i32_val(0x80));
+    Value magnitude = b.and_(bits, b.i32_val(0x7fffffff));
+    Value isNaN = b.icmp_ugt(magnitude, b.i32_val(0x7f800000));
+    Value exponent =
+        b.sub(b.lshr(magnitude, b.i32_val(23)), b.i32_val(127 - exponentBias));
+    Value shift = b.sub(b.i32_val(1), exponent);
+    shift = b.select(b.icmp_sgt(shift, b.i32_val(0)), shift, b.i32_val(0));
+    // A shift of 24 discards the entire FP32 significand, including
+    // its implicit leading bit, for values below the FP8 subnormal range.
+    shift = b.add(b.umin(shift, b.i32_val(mantissaBits + 1)),
+                  b.i32_val(23 - mantissaBits));
+    Value significand =
+        b.or_(b.and_(magnitude, b.i32_val(0x7fffff)), b.i32_val(0x800000));
+    Value kept = b.lshr(significand, shift);
+    Value normal = b.sub(b.add(b.shl(exponent, b.i32_val(mantissaBits)), kept),
+                         b.i32_val(1U << mantissaBits));
+    Value code = b.select(b.icmp_sge(exponent, b.i32_val(1)), normal, kept);
+    code = b.umin(code, b.i32_val(maxFinite));
+    code = b.select(isNaN, b.i32_val(quietNaN), code);
+    result.push_back(b.trunc(i8_ty, b.or_(code, sign)));
+  }
+  return result;
+}
+
+static Value convertFp64ToFp32ForFp8(Location loc,
+                                     ConversionPatternRewriter &rewriter,
+                                     Value value) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value bits = b.bitcast(value, i64_ty);
+  Value sign = b.and_(b.trunc(i32_ty, b.lshr(bits, b.i64_val(32))),
+                      b.i32_val(0x80000000));
+  Value exponent =
+      b.and_(b.trunc(i32_ty, b.lshr(bits, b.i64_val(52))), b.i32_val(0x7ff));
+  Value fraction = b.and_(bits, b.i64_val((1ULL << 52) - 1));
+  Value isNaN = b.and_(b.icmp_eq(exponent, b.i32_val(0x7ff)),
+                       b.icmp_ne(fraction, b.i64_val(0)));
+  // Round to odd instead of RTNE: the sticky bit preserves which side of
+  // an FP8 midpoint the FP64 source occupies, avoiding double rounding.
+  Value sticky =
+      b.icmp_ne(b.and_(fraction, b.i64_val((1ULL << 29) - 1)), b.i64_val(0));
+  Value mantissa = b.or_(b.trunc(i32_ty, b.lshr(fraction, b.i64_val(29))),
+                         b.zext(i32_ty, sticky));
+  Value adjustedExponent = b.sub(exponent, b.i32_val(1023 - 127));
+  Value narrowed = b.or_(b.shl(adjustedExponent, b.i32_val(23)), mantissa);
+  narrowed = b.select(b.icmp_sge(adjustedExponent, b.i32_val(255)),
+                      b.i32_val(0x7f800000), narrowed);
+  // This intermediate is only used for FP8. Values below the FP32 normal
+  // range are below half the smallest FP8 subnormal and round to zero.
+  narrowed = b.select(b.icmp_sle(adjustedExponent, b.i32_val(0)), b.i32_val(0),
+                      narrowed);
+  narrowed = b.select(isNaN, b.i32_val(0x7fc00000), narrowed);
+  return b.bitcast(b.or_(narrowed, sign), f32_ty);
+}
+
+template <typename DstFPType>
+static SmallVector<Value>
+Fp32_to_Fp8_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
+                    const SmallVector<Value> &v) {
+  static_assert(std::is_same_v<DstFPType, Float8E4M3FNType> ||
+                std::is_same_v<DstFPType, Float8E5M2Type>);
+  constexpr bool isE4M3 = std::is_same_v<DstFPType, Float8E4M3FNType>;
+  constexpr unsigned mantissaBits = isE4M3 ? 3 : 2;
+  constexpr unsigned exponentBias = isE4M3 ? 7 : 15;
+  constexpr unsigned mantissaShift = 23 - mantissaBits;
+  constexpr unsigned maxFinite = isE4M3 ? 0x7e : 0x7b;
+  constexpr unsigned quietNaN = isE4M3 ? 0x7f : 0x7e;
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  SmallVector<Value> result;
+  for (Value value : v) {
+    Value bits = b.bitcast(value, i32_ty);
+    Value sign = b.and_(b.lshr(bits, b.i32_val(24)), b.i32_val(0x80));
+    Value magnitude = b.and_(bits, b.i32_val(0x7fffffff));
+
+    Value normal = b.sub(magnitude, b.i32_val((127 - exponentBias) << 23));
+    Value odd = b.and_(b.lshr(normal, b.i32_val(mantissaShift)), b.i32_val(1));
+    normal = b.lshr(
+        b.add(normal, b.add(b.i32_val((1U << (mantissaShift - 1)) - 1), odd)),
+        b.i32_val(mantissaShift));
+    normal = b.umin(normal, b.i32_val(maxFinite));
+
+    // The FP32 ULP at this power of two equals one FP8 subnormal step.
+    // One RTNE add replaces the dependent midpoint selects; the constant's
+    // low byte is zero, so truncation extracts the rounded code.
+    Value subnormal = b.bitcast(b.fadd(f32_ty, b.bitcast(magnitude, f32_ty),
+                                       b.f32_val(isE4M3 ? 0x1p+14 : 0x1p+7)),
+                                i32_ty);
+    Value code =
+        b.select(b.icmp_ult(magnitude, b.i32_val((128 - exponentBias) << 23)),
+                 subnormal, normal);
+    code = b.select(b.icmp_ugt(magnitude, b.i32_val(0x7f800000)),
+                    b.i32_val(quietNaN), code);
+    result.push_back(b.trunc(i8_ty, b.or_(code, sign)));
+  }
+  return result;
+}
+
+// Fp32 -> OCP Fp8 (RTNE)
 static SmallVector<Value>
 Fp32_to_Fp8E4M3FN_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
                           const SmallVector<Value> &v) {
-  SmallVector<Value> result(2);
-  for (size_t i = 0; i < 2; i++)
-    result[i] = downcastToFp8_RTNE_oneValue<Float32Type, Float8E4M3FNType>(
-        loc, rewriter, v[i]);
-  return result;
+  return Fp32_to_Fp8_RTNE_SW<Float8E4M3FNType>(loc, rewriter, v);
 }
 
 // Convert Fp32 to OCP Fp8 on CDNA4
@@ -872,78 +979,7 @@ static ConverterT Fp32_to_Fp8E4M3FN_RTNE(HCU::ISAFamily isaFamily,
 static SmallVector<Value>
 Fp32_to_Fp8E5M2_RTNE_SW(Location loc, ConversionPatternRewriter &rewriter,
                         const SmallVector<Value> &v) {
-  assert(v.size() == 2);
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-
-  SmallVector<Value> result(2);
-  for (size_t i = 0; i < 2; ++i) {
-    Value fp32 = v[i];
-    Value i32 = b.bitcast(fp32, i32_ty);
-
-    Value s = b.and_(i32_ty, i32, b.i32_val(0x80000000));
-    Value exp =
-        b.and_(i32_ty, b.lshr(i32_ty, i32, b.i32_val(23)), b.i32_val(0xFF));
-    Value man = b.and_(i32_ty, i32, b.i32_val(0x007FFFFF));
-
-    // Convert 8-bit exponent to 5-bit
-    Value exp5 = b.select(b.icmp_ult(exp, b.i32_val(0x71)), b.i32_val(0),
-                          b.sub(i32_ty, exp, b.i32_val(0x70)));
-
-    // Handle subnormal values (exp5 = 0)
-    // - exp <  0x6e: mantissa = 0x00000000 (0)
-    // - exp == 0x6e: mantissa = 0x00000000 (0),
-    //                           0x00200000 (1/4)
-    // - exp == 0x6f: mantissa = 0x00200000 (1/4),
-    //                           0x00400000 (1/2)
-    // - exp == 0x70: mantissa = 0x00400000 (1/2),
-    //                           0x00600000 (3/4),
-    //                           0x00800000 (1)
-    man = b.select(b.icmp_ult(exp, b.i32_val(0x6e)), b.i32_val(0), man);
-    man = b.select(b.icmp_eq(exp, b.i32_val(0x6e)),
-                   b.select(b.icmp_ne(man, b.i32_val(0)), b.i32_val(0x00200000),
-                            b.i32_val(0)),
-                   man);
-    man = b.select(b.icmp_eq(exp, b.i32_val(0x6f)),
-                   b.select(b.icmp_uge(man, b.i32_val(0x00400000)),
-                            b.i32_val(0x00400000), b.i32_val(0x00200000)),
-                   man);
-    man = b.select(
-        b.icmp_eq(exp, b.i32_val(0x70)),
-        b.select(b.icmp_ugt(man, b.i32_val(0x00200000)),
-                 b.select(b.icmp_uge(man, b.i32_val(0x00600000)),
-                          b.i32_val(0x00800000), b.i32_val(0x00600000)),
-                 b.i32_val(0x00400000)),
-        man);
-
-    // Round 23-bit mantissa to 2-bit nearest, ties to even
-    Value sig = b.or_(i32_ty, b.shl(i32_ty, exp5, b.i32_val(23)), man);
-    Value bias =
-        b.add(i32_ty,
-              b.lshr(i32_ty, b.and_(i32_ty, sig, b.i32_val(0x00200000)),
-                     b.i32_val(21)),
-              b.i32_val(0x000FFFFF));
-    i32 = b.add(i32_ty, sig, bias);
-
-    // Handle overflow using saturation mode, by setting sig to be the max.
-    // Overflow will happe for the following cases:
-    // - Any number equal or larger than 0x0F700000 after rounding
-    // - Exponent larged than 0x8E (including infinite 0xFF)
-    i32 = b.select(b.or_(b.icmp_ugt(exp, b.i32_val(0x8E)),
-                         b.icmp_uge(sig, b.i32_val(0x0F700000))),
-                   b.i32_val(0x0F7FFFFF), i32);
-
-    // Handle NaN value by keeping it Nan
-    i32 = b.select(
-        b.and_(b.icmp_eq(exp, b.i32_val(0xFF)), b.icmp_ne(man, b.i32_val(0x0))),
-        b.i32_val(0x0FC00000), i32);
-
-    // Add sign bit
-    i32 = b.or_(i32_ty, b.lshr(i32_ty, s, b.i32_val(3)), i32);
-
-    // Truncate to 8-bit
-    result[i] = b.trunc(i8_ty, b.lshr(i32_ty, i32, b.i32_val(21)));
-  }
-  return result;
+  return Fp32_to_Fp8_RTNE_SW<Float8E5M2Type>(loc, rewriter, v);
 }
 
 static SmallVector<Value>
@@ -1372,6 +1408,26 @@ Fp32_to_F16_RTNE(Location loc, ConversionPatternRewriter &rewriter,
 //                                             : Fp8E5M2FNUZ_to_Fp16_SW;
 // }
 
+template <typename SrcFPType>
+static Value preserveFp8SpecialsInBf16(Location loc,
+                                       ConversionPatternRewriter &rewriter,
+                                       Value input, Value output) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value magnitude = b.and_(input, b.i8_val(0x7f));
+  Value sign =
+      b.shl(b.zext(i16_ty, b.and_(input, b.i8_val(0x80))), b.i16_val(8));
+  Value special, bits;
+  if constexpr (std::is_same_v<SrcFPType, Float8E4M3FNType>) {
+    special = b.icmp_eq(magnitude, b.i8_val(0x7f));
+    bits = b.i16_val(0x7fc0);
+  } else {
+    special = b.icmp_uge(magnitude, b.i8_val(0x7c));
+    bits = b.select(b.icmp_ugt(magnitude, b.i8_val(0x7c)), b.i16_val(0x7fc0),
+                    b.i16_val(0x7f80));
+  }
+  return b.select(special, b.bitcast(b.or_(bits, sign), bf16_ty), output);
+}
+
 // OCP Bf8/Fp8 -> Bf16
 template <typename SrcFPType>
 static SmallVector<Value> OcpF8_to_Bf16_SW(Location loc,
@@ -1442,10 +1498,14 @@ static SmallVector<Value> OcpF8_to_Bf16_SW(Location loc,
   out0 = b.bitcast(out0, bf16x2VecTy);
   out1 = b.bitcast(out1, bf16x2VecTy);
 
-  return {b.extract_element(bf16_ty, out0, b.i32_val(0)),
-          b.extract_element(bf16_ty, out0, b.i32_val(1)),
-          b.extract_element(bf16_ty, out1, b.i32_val(0)),
-          b.extract_element(bf16_ty, out1, b.i32_val(1))};
+  SmallVector<Value> result = {b.extract_element(bf16_ty, out0, b.i32_val(0)),
+                               b.extract_element(bf16_ty, out0, b.i32_val(1)),
+                               b.extract_element(bf16_ty, out1, b.i32_val(0)),
+                               b.extract_element(bf16_ty, out1, b.i32_val(1))};
+  for (unsigned index = 0; index < result.size(); ++index)
+    result[index] = preserveFp8SpecialsInBf16<SrcFPType>(
+        loc, rewriter, v[index], result[index]);
+  return result;
 }
 
 static SmallVector<Value>
@@ -1621,8 +1681,12 @@ Fp8E4M3FN_to_Bf16_SW(Location loc, ConversionPatternRewriter &rewriter,
 
   auto bf16x2VecTy = vec_ty(bf16_ty, 2);
   out0 = b.bitcast(out0, bf16x2VecTy);
-  return {b.extract_element(bf16_ty, out0, b.i32_val(0)),
-          b.extract_element(bf16_ty, out0, b.i32_val(1))};
+  SmallVector<Value> result = {b.extract_element(bf16_ty, out0, b.i32_val(0)),
+                               b.extract_element(bf16_ty, out0, b.i32_val(1))};
+  for (unsigned index = 0; index < result.size(); ++index)
+    result[index] = preserveFp8SpecialsInBf16<Float8E4M3FNType>(
+        loc, rewriter, v[index], result[index]);
+  return result;
 }
 
 static SmallVector<Value>
@@ -1914,60 +1978,58 @@ struct FpToFpOpConversion
 
     auto undefRounding = static_cast<RoundingMode>(-1);
 
-    static DenseMap<std::tuple<TypeID, TypeID, RoundingMode>, ConverterT>
-        srcMap = {
-            // F8 -> F16
-            // {{F8E4M3FNUZTyID, F16TyID, undefRounding},
-            //  Fp8E4M3FNUZ_to_Fp16(isaFamily)},
-            {{F8E4M3FNTyID, F16TyID, undefRounding},
-             Fp8E4M3FN_to_Fp16(isaFamily, capFP8FP16)},
-            // {{F8E5M2FNUZTyID, F16TyID, undefRounding},
-            //  Fp8E5M2FNUZ_to_Fp16(isaFamily)},
-            {{F8E5M2TyID, F16TyID, undefRounding},
-             Fp8E5M2_to_Fp16(isaFamily, capFP8FP16)},
-            // F16 -> F8
-            {{F16TyID, F8E4M3FNTyID, RoundingMode::RTNE},
-             Fp16_to_Fp8E4M3FN_RTNE(isaFamily, capFP8FP16)},
-            // {{F16TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
-            //  Fp16_to_Fp8E5M2FNUZ(isaFamily)},
-            // {{F16TyID, F8E4M3FNUZTyID, RoundingMode::RTNE},
-            //  Fp16_to_Fp8E4M3FNUZ(isaFamily)},
-            {{F16TyID, F8E5M2TyID, RoundingMode::RTNE},
-             Fp16_to_Fp8E5M2_RTNE(isaFamily, capFP8FP16)},
-            {{F16TyID, F8E5M2TyID, RoundingMode::RTZ}, Fp16_to_Fp8E5M2_RTZ},
-            // F8 -> BF16
-            {{F8E5M2TyID, BF16TyID, undefRounding}, Fp8E5M2_to_Bf16(isaFamily)},
-            // {{F8E5M2FNUZTyID, BF16TyID, undefRounding}, Fp8E5M2FNUZ_to_Bf16},
-            {{F8E4M3FNTyID, BF16TyID, undefRounding},
-             Fp8E4M3FN_to_Bf16(isaFamily)},
-            // {{F8E4M3FNUZTyID, BF16TyID, undefRounding},
-            //  Fp8E4M3FNUZ_to_Bf16(isaFamily)},
-            // BF16 -> F8
-            {{BF16TyID, F8E5M2TyID, RoundingMode::RTNE},
-             Bf16_to_Fp8E5M2(isaFamily, capFP8FP16)},
-            {{BF16TyID, F8E4M3FNTyID, RoundingMode::RTNE},
-             Bf16_to_Fp8E4M3FN(isaFamily, capFP8FP16)},
-            // {{BF16TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
-            //  Bf16_to_Fp8E5M2FNUZ},
-            // {{BF16TyID, F8E4M3FNUZTyID, RoundingMode::RTNE},
-            //  Bf16_to_Fp8E4M3FNUZ},
-            // F32 <-> F8
-            // {{F32TyID, F8E4M3FNUZTyID, RoundingMode::RTNE},
-            //  Fp32_to_Fp8E4M3FNUZ},
-            // {{F32TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
-            //  Fp32_to_Fp8E5M2FNUZ},
-            {{F32TyID, F8E4M3FNTyID, RoundingMode::RTNE},
-             Fp32_to_Fp8E4M3FN_RTNE(isaFamily, capFP8F32)},
-            {{F32TyID, F8E5M2TyID, RoundingMode::RTNE},
-             Fp32_to_Fp8E5M2_RTNE(isaFamily, capFP8F32)},
-            {{F32TyID, F8E5M2TyID, RoundingMode::RTZ}, Fp32_to_Fp8E5M2_RTZ},
-            // {{F8E4M3FNUZTyID, F32TyID, undefRounding}, Fp8E4M3FNUZ_to_Fp32},
-            // {{F8E5M2FNUZTyID, F32TyID, undefRounding}, Fp8E5M2FNUZ_to_Fp32},
-            {{F8E4M3FNTyID, F32TyID, undefRounding}, Fp8E4M3FN_to_Fp32},
-            {{F8E5M2TyID, F32TyID, undefRounding}, Fp8E5M2_to_Fp32},
-            // F32 -> F16 with RTZ
-            {{F32TyID, F16TyID, RoundingMode::RTZ}, convertFp32ToFp16RTZ},
-        };
+    DenseMap<std::tuple<TypeID, TypeID, RoundingMode>, ConverterT> srcMap = {
+        // F8 -> F16
+        // {{F8E4M3FNUZTyID, F16TyID, undefRounding},
+        //  Fp8E4M3FNUZ_to_Fp16(isaFamily)},
+        {{F8E4M3FNTyID, F16TyID, undefRounding},
+         Fp8E4M3FN_to_Fp16(isaFamily, capFP8FP16)},
+        // {{F8E5M2FNUZTyID, F16TyID, undefRounding},
+        //  Fp8E5M2FNUZ_to_Fp16(isaFamily)},
+        {{F8E5M2TyID, F16TyID, undefRounding},
+         Fp8E5M2_to_Fp16(isaFamily, capFP8FP16)},
+        // F16 -> F8
+        {{F16TyID, F8E4M3FNTyID, RoundingMode::RTNE},
+         Fp16_to_Fp8E4M3FN_RTNE(isaFamily, capFP8FP16)},
+        // {{F16TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
+        //  Fp16_to_Fp8E5M2FNUZ(isaFamily)},
+        // {{F16TyID, F8E4M3FNUZTyID, RoundingMode::RTNE},
+        //  Fp16_to_Fp8E4M3FNUZ(isaFamily)},
+        {{F16TyID, F8E5M2TyID, RoundingMode::RTNE},
+         Fp16_to_Fp8E5M2_RTNE(isaFamily, capFP8FP16)},
+        {{F16TyID, F8E5M2TyID, RoundingMode::RTZ}, Fp16_to_Fp8E5M2_RTZ},
+        // F8 -> BF16
+        {{F8E5M2TyID, BF16TyID, undefRounding}, Fp8E5M2_to_Bf16(isaFamily)},
+        // {{F8E5M2FNUZTyID, BF16TyID, undefRounding}, Fp8E5M2FNUZ_to_Bf16},
+        {{F8E4M3FNTyID, BF16TyID, undefRounding}, Fp8E4M3FN_to_Bf16(isaFamily)},
+        // {{F8E4M3FNUZTyID, BF16TyID, undefRounding},
+        //  Fp8E4M3FNUZ_to_Bf16(isaFamily)},
+        // BF16 -> F8
+        {{BF16TyID, F8E5M2TyID, RoundingMode::RTNE},
+         Bf16_to_Fp8E5M2(isaFamily, capFP8FP16)},
+        {{BF16TyID, F8E4M3FNTyID, RoundingMode::RTNE},
+         Bf16_to_Fp8E4M3FN(isaFamily, capFP8FP16)},
+        // {{BF16TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
+        //  Bf16_to_Fp8E5M2FNUZ},
+        // {{BF16TyID, F8E4M3FNUZTyID, RoundingMode::RTNE},
+        //  Bf16_to_Fp8E4M3FNUZ},
+        // F32 <-> F8
+        // {{F32TyID, F8E4M3FNUZTyID, RoundingMode::RTNE},
+        //  Fp32_to_Fp8E4M3FNUZ},
+        // {{F32TyID, F8E5M2FNUZTyID, RoundingMode::RTNE},
+        //  Fp32_to_Fp8E5M2FNUZ},
+        {{F32TyID, F8E4M3FNTyID, RoundingMode::RTNE},
+         Fp32_to_Fp8E4M3FN_RTNE(isaFamily, capFP8F32)},
+        {{F32TyID, F8E5M2TyID, RoundingMode::RTNE},
+         Fp32_to_Fp8E5M2_RTNE(isaFamily, capFP8F32)},
+        {{F32TyID, F8E5M2TyID, RoundingMode::RTZ}, Fp32_to_Fp8E5M2_RTZ},
+        // {{F8E4M3FNUZTyID, F32TyID, undefRounding}, Fp8E4M3FNUZ_to_Fp32},
+        // {{F8E5M2FNUZTyID, F32TyID, undefRounding}, Fp8E5M2FNUZ_to_Fp32},
+        {{F8E4M3FNTyID, F32TyID, undefRounding}, Fp8E4M3FN_to_Fp32},
+        {{F8E5M2TyID, F32TyID, undefRounding}, Fp8E5M2_to_Fp32},
+        // F32 -> F16 with RTZ
+        {{F32TyID, F16TyID, RoundingMode::RTZ}, convertFp32ToFp16RTZ},
+    };
     std::tuple<TypeID, TypeID, RoundingMode> key = {
         srcTy.getTypeID(), dstTy.getTypeID(),
         roundingMode.value_or(undefRounding)};
@@ -1985,6 +2047,93 @@ struct FpToFpOpConversion
     auto dstElementType = getElementType(op.getResult());
 
     auto roundingMode = op.getRounding();
+    bool ocpSource = isa<Float8E4M3FNType, Float8E5M2Type>(srcElementType);
+    bool ocpDestination = isa<Float8E4M3FNType, Float8E5M2Type>(dstElementType);
+    if (ocpDestination) {
+      if (auto func = op->getParentOfType<LLVM::LLVMFuncOp>()) {
+        using attrType = triton::hcugpu::SetFP8ClampingAttr;
+        if (!func->hasAttrOfType<attrType>(attrType::getMnemonic()))
+          func->setAttr(attrType::getMnemonic(),
+                        attrType::get(op.getContext()));
+      }
+    }
+    if (ocpSource && capFP8F32 &&
+        (dstElementType.isF16() || dstElementType.isBF16())) {
+      auto b = TritonLLVMOpBuilder(loc, rewriter);
+      unsigned actual = std::min<size_t>(2, operands.size());
+      SmallVector<Value> values;
+      for (unsigned index = 0; index < actual; ++index)
+        values.push_back(operands[index][0]);
+      values.resize(2, b.undef(i8_ty));
+      values = isa<Float8E4M3FNType>(srcElementType)
+                   ? Fp8E4M3FN_to_Fp32(loc, rewriter, values)
+                   : Fp8E5M2_to_Fp32(loc, rewriter, values);
+      values.resize(actual);
+      for (Value &value : values)
+        value = dstElementType.isF16()
+                    ? cvtFp32ToFp16(loc, rewriter, value, RoundingMode::RTNE)
+                    : convertFp32ToBf16(loc, rewriter, value,
+                                        RoundingMode::RTNE, capBF16F32);
+      return values;
+    }
+    if (ocpSource && dstElementType.isF64()) {
+      auto b = TritonLLVMOpBuilder(loc, rewriter);
+      bool e4m3 = isa<Float8E4M3FNType>(srcElementType);
+      unsigned count = !e4m3 && !capFP8F32 && !capFP8FP16 ? 4 : 2;
+      unsigned actual = std::min<size_t>(count, operands.size());
+      SmallVector<Value> values;
+      for (unsigned index = 0; index < actual; ++index)
+        values.push_back(operands[index][0]);
+      values.resize(count, b.undef(i8_ty));
+      if (capFP8F32) {
+        values = e4m3 ? Fp8E4M3FN_to_Fp32(loc, rewriter, values)
+                      : Fp8E5M2_to_Fp32(loc, rewriter, values);
+      } else {
+        auto converter = e4m3 ? Fp8E4M3FN_to_Fp16(isaFamily, capFP8FP16)
+                              : Fp8E5M2_to_Fp16(isaFamily, capFP8FP16);
+        values = converter(loc, rewriter, values);
+        for (Value &value : values)
+          value = convertFp16ToFp32(loc, rewriter, value);
+      }
+      values.resize(actual);
+      for (Value &value : values)
+        value = LLVM::FPExtOp::create(rewriter, loc, f64_ty, value);
+      return values;
+    }
+    bool standardSource = srcElementType.isF16() || srcElementType.isBF16() ||
+                          srcElementType.isF32() || srcElementType.isF64();
+    bool softwareDowncast =
+        ocpDestination && standardSource &&
+        (srcElementType.isF64() || roundingMode == RoundingMode::RTZ ||
+         (!capFP8F32 && !capFP8FP16));
+    if (softwareDowncast) {
+      auto b = TritonLLVMOpBuilder(loc, rewriter);
+      unsigned actual = std::min<size_t>(2, operands.size());
+      SmallVector<Value> values;
+      for (unsigned index = 0; index < actual; ++index) {
+        Value value = operands[index][0];
+        if (srcElementType.isF64())
+          value = convertFp64ToFp32ForFp8(loc, rewriter, value);
+        else if (srcElementType.isF16())
+          value = convertFp16ToFp32(loc, rewriter, value);
+        else if (srcElementType.isBF16())
+          value = convertBf16ToFp32(loc, rewriter, value, capBF16F32);
+        values.push_back(value);
+      }
+      values.resize(2, b.undef(f32_ty));
+      bool e4m3 = isa<Float8E4M3FNType>(dstElementType);
+      if (roundingMode == RoundingMode::RTZ)
+        values =
+            e4m3 ? Fp32_to_Fp8_RTZ_SW<Float8E4M3FNType>(loc, rewriter, values)
+                 : Fp32_to_Fp8_RTZ_SW<Float8E5M2Type>(loc, rewriter, values);
+      else
+        values = e4m3 ? Fp32_to_Fp8E4M3FN_RTNE(isaFamily,
+                                               capFP8F32)(loc, rewriter, values)
+                      : Fp32_to_Fp8E5M2_RTNE(isaFamily,
+                                             capFP8F32)(loc, rewriter, values);
+      values.resize(actual);
+      return values;
+    }
     if (srcElementType.isF32() && dstElementType.isF16()) {
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->fp16 conversion");
@@ -2108,16 +2257,6 @@ struct FpToFpOpConversion
       for (Value &v : inVals)
         v = isSrcBF16 ? convertBf16ToFp32(loc, rewriter, v, capBF16F32)
                       : convertFp16ToFp32(loc, rewriter, v);
-
-    if (dstType.isFloat() && (dstType.getIntOrFloatBitWidth() == 8)) {
-      auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
-      if (func) {
-        using attrType = triton::hcugpu::SetFP8ClampingAttr;
-        auto attrName = attrType::getMnemonic();
-        if (!func->hasAttrOfType<attrType>(attrName))
-          func->setAttr(attrName, attrType::get(op->getContext()));
-      }
-    }
 
     TritonLLVMOpBuilder b(loc, rewriter);
     inVals.resize(numElements, b.undef(typeConverter->convertType(srcType)));
@@ -2282,7 +2421,34 @@ struct SIToFPOpConversion
                                    Location loc) const {
     Type inElemTy = getElementType(op.getIn());
     Type outElemTy = getElementType(op.getOut());
-    if (outElemTy.isBF16() && inElemTy.isInteger(8) && operands.size() >= 4) {
+    if (outElemTy.isBF16() && inElemTy.isInteger(32)) {
+      auto b = TritonLLVMOpBuilder(loc, rewriter);
+      Value value = operands[0][0];
+      Value sign = b.and_(b.lshr(value, b.i32_val(16)), b.i32_val(0x8000));
+      // Wrapping negation preserves INT_MIN's unsigned magnitude.
+      Value magnitude = b.select(b.icmp_slt(value, b.i32_val(0)),
+                                 b.sub(b.i32_val(0), value), value);
+      Value leading =
+          LLVM::CountLeadingZerosOp::create(rewriter, loc, magnitude, false);
+      // ctlz(0) is 32; keep its shift defined before selecting zero below.
+      Value normalized = b.shl(magnitude, b.and_(leading, b.i32_val(31)));
+      Value kept = b.lshr(normalized, b.i32_val(24));
+      Value remainder = b.and_(normalized, b.i32_val(0xffffff));
+      Value roundUp =
+          b.or_(b.icmp_ugt(remainder, b.i32_val(0x800000)),
+                b.and_(b.icmp_eq(remainder, b.i32_val(0x800000)),
+                       b.icmp_ne(b.and_(kept, b.i32_val(1)), b.i32_val(0))));
+      // The retained leading bit supplies one exponent unit. Addition carries
+      // a rounded 0xff significand into the next exponent without FP32
+      // rounding.
+      Value exponent = b.sub(b.i32_val(157), leading);
+      Value bits = b.add(b.shl(exponent, b.i32_val(7)),
+                         b.add(kept, b.zext(i32_ty, roundUp)));
+      bits = b.select(b.icmp_eq(magnitude, b.i32_val(0)), b.i32_val(0),
+                      b.or_(sign, bits));
+      return {b.bitcast(b.trunc(i16_ty, bits), elemTy)};
+    } else if (outElemTy.isBF16() && inElemTy.isInteger(8) &&
+               operands.size() >= 4) {
       SmallVector<Value> inVals = {operands[0][0], operands[1][0],
                                    operands[2][0], operands[3][0]};
       auto outVals = S8_to_Bf16(loc, rewriter, inVals);
