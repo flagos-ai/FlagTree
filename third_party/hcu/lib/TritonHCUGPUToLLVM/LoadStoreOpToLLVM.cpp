@@ -979,6 +979,13 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // The gfx936 DTK compiler crashes in its hazard recognizer for the global
+    // LDS intrinsic. Buffer-compatible copies use BufferLoadToLocal instead.
+    if (targetInfo.getGPUKind() == llvm::AMDGPU::GK_GFX936)
+      return op.emitError(
+          "gfx936 native async copies require buffer-compatible pointers with "
+          "a proven offset range; the current DTK compiler cannot lower global "
+          "LDS loads. Use is_async=False for unbounded/gather pointers");
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 

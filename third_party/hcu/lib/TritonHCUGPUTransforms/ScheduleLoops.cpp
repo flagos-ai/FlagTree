@@ -1,6 +1,8 @@
+#include "TritonHCUGPUTransforms/DotDiagnostics.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/TargetInfo.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
 #include "third_party/hcu/lib/TritonHCUGPUTransforms/PipelineUtility.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -101,6 +103,63 @@ getIndirectLevel(triton::HCU::ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                              axisInfoAnalysis, numStages,
                                              filterSmallVectors);
 
+  // Packed FP4 loads and their decode graphs need not satisfy the generic
+  // async-copy heuristic: synchronous register/LDS prefetch is still useful.
+  if (!forOp->hasAttr(triton::HCU::FP4DotLoop))
+    return loadOpToIndLevel;
+  auto dots = llvm::to_vector(forOp.getBody()->getOps<tt::DotOp>());
+  if (dots.size() != 1)
+    return loadOpToIndLevel;
+  SmallVector<tt::LoadOp> loads;
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (auto load = dyn_cast<tt::LoadOp>(op)) {
+      auto ptrTy = dyn_cast<RankedTensorType>(load.getPtr().getType());
+      if (!ptrTy || load.getIsVolatile() ||
+          cast<tt::PointerType>(ptrTy.getElementType()).getAddressSpace() != 1)
+        return loadOpToIndLevel;
+      SmallVector<Value> pending{load.getPtr()};
+      DenseSet<Value> seen;
+      while (!pending.empty()) {
+        Value value = pending.pop_back_val();
+        if (!seen.insert(value).second)
+          continue;
+        if (auto arg = dyn_cast<BlockArgument>(value)) {
+          if (arg.getOwner() == forOp.getBody() && arg.getArgNumber() != 0)
+            return loadOpToIndLevel;
+        } else if (Operation *def = value.getDefiningOp();
+                   def && def->getBlock() == forOp.getBody()) {
+          if (isa<tt::LoadOp>(def))
+            return loadOpToIndLevel;
+          llvm::append_range(pending, def->getOperands());
+        }
+      }
+      loads.push_back(load);
+      continue;
+    }
+    if (op.getNumRegions() != 0)
+      return loadOpToIndLevel;
+    if (isa<ttg::LocalAllocOp, ttg::LocalLoadOp, ttg::LocalDeallocOp>(op))
+      continue;
+    if (!isMemoryEffectFree(&op))
+      return loadOpToIndLevel;
+  }
+  // Only prefetch data feeding the MMA operands. E8M0 scales applied after
+  // the dot need no shared stage buffers or extra loop-carried registers.
+  DenseSet<Operation *> operandDefs;
+  SmallVector<Value> pending{dots.front().getA(), dots.front().getB()};
+  while (!pending.empty()) {
+    auto def = pending.pop_back_val().getDefiningOp();
+    if (def && def->getBlock() == forOp.getBody() &&
+        operandDefs.insert(def).second)
+      llvm::append_range(pending, def->getOperands());
+  }
+  for (auto load : loads) {
+    if (!operandDefs.count(load))
+      continue;
+    loadOpToIndLevel[load] = {0, dots.front()};
+    load->setAttr(triton::HCU::FP4DecodeLoad,
+                  UnitAttr::get(forOp.getContext()));
+  }
   return loadOpToIndLevel;
 }
 

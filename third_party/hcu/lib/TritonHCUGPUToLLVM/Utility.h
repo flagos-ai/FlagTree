@@ -119,14 +119,9 @@ bool isChainDotHead(mlir::triton::DotOpInterface dotOp, unsigned opIdx = 0);
 // in the same region
 bool isChainDotTail(mlir::triton::DotOpInterface dotOp);
 
-// Software implementation of converting an 8-element vector of MXFP4 elements
-// to a wider type: BF16 or FP16 for target before CDNA4.
-// for CDNA3, we have optimized sequence that can combine scale during the
-// conversion
+// Decode eight E2M1 values using integer operations, without FP8 instructions.
 SmallVector<Value> upcast8xMxfp4_SW(RewriterBase &rewriter, Operation *op,
-                                    bool toFp16, Value packedVec,
-                                    mlir::triton::HCU::ISAFamily isaFamily,
-                                    Value scale = nullptr);
+                                    bool toFp16, Value packedVec);
 
 template <typename ConvertOp>
 SmallVector<Value, 4>

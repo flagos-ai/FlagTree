@@ -49,7 +49,9 @@ class DotCap:
     """Answer to a backend `resolve_dot(a_dtype, b_dtype, acc_dtype, M, N, K)` /
     `resolve_dot_scaled(lhs_format, rhs_format)` codegen-function query: the
     semantic layer rejects UNSUPPORTED combinations with `diag` as the error
-    message and emits `diag` as a compile-time warning for NON_NATIVE ones."""
+    message and emits `diag` as a compile-time warning for NON_NATIVE ones.
+    A query may return None to defer native-path classification until backend
+    lowering, where the backend must emit the applicable diagnostics."""
     support: DotSupport
     diag: Optional[str] = None
 

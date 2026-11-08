@@ -1,3 +1,4 @@
+#include "TritonHCUGPUTransforms/DotDiagnostics.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "hcu/lib/TritonHCUGPUTransforms/PipelineUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
@@ -112,6 +113,10 @@ struct PipelinePass : impl::TritonHCUGPUPipelineBase<PipelinePass> {
       tt::combineRedundantWaitOps(waitOps);
     }
 
+    moduleOp.walk([](Operation *op) {
+      op->removeAttr(triton::HCU::FP4DotLoop);
+      op->removeAttr(triton::HCU::FP4DecodeLoad);
+    });
     tt::removePipeliningAttributes(moduleOp);
   }
 };

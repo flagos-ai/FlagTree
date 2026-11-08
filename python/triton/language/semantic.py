@@ -1569,9 +1569,9 @@ class TritonSemantic(Generic[TensorTy]):
             # queried after the legacy e4b15/fnuz upcasts above so rules see the effective dtypes
             dot_cap = resolve_dot(lhs.dtype.name, rhs.dtype.name, out_dtype.name, lhs.shape[-2].value,
                                   rhs.shape[-1].value, lhs.shape[-1].value)
-            if not dot_cap.supported:
+            if dot_cap is not None and not dot_cap.supported:
                 raise ValueError(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not supported on this product")
-            if not dot_cap.native:
+            if dot_cap is not None and not dot_cap.native:
                 warnings.warn(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not native on this "
                               "product: non-native path (native=false)")
         min_dot_size = self.builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
@@ -1682,10 +1682,10 @@ class TritonSemantic(Generic[TensorTy]):
         resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
         if resolve_dot_scaled is not None:
             scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)
-            if not scaled_cap.supported:
+            if scaled_cap is not None and not scaled_cap.supported:
                 raise ValueError(scaled_cap.diag
                                  or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on this product")
-            if not scaled_cap.native:
+            if scaled_cap is not None and not scaled_cap.native:
                 warnings.warn(scaled_cap.diag or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not native "
                               "on this product: decomposed to a non-native path (native=false)")
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
