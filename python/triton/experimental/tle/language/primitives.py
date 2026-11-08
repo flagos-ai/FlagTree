@@ -25,8 +25,6 @@ TLE_PRIMITIVES = frozenset({
 
     ## TLE-Lite
     "load",
-    "pack_int4",
-    "unpack_int4",
     "extract_tile",
     "insert_tile",
     "range",

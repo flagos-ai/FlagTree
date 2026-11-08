@@ -69,11 +69,19 @@ def precision_fp4_decode(X, S, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
 
 
 @triton.jit
+def _pack_int4(values):
+    low, high = tl.split(tl.reshape(values, (values.shape[0] // 2, 2)))
+    return ((low & 15) | ((high & 15) << 4)).to(tl.uint8)
+
+
+@triton.jit
 def precision_int4_roundtrip(X, U, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     packed = tl.load(X + offsets, offsets < N, other=0)
-    values = tle.unpack_int4(packed)
-    repacked = tle.pack_int4(values)
+    low = (packed << 4).to(tl.int8, bitcast=True) >> 4
+    high = packed.to(tl.int8, bitcast=True) >> 4
+    values = tl.interleave(low, high)
+    repacked = _pack_int4(values)
     logical = tl.program_id(0) * BLOCK * 2 + tl.arange(0, BLOCK * 2)
     tl.store(U + logical, values, logical < N * 2)
     tl.store(Y + offsets, repacked, offsets < N)
@@ -83,7 +91,7 @@ def precision_int4_roundtrip(X, U, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256
 def precision_int4_quantize(X, Y, N: tl.constexpr, BLOCK: tl.constexpr = 256):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     values = tl.load(X + offsets, offsets < N, other=0).to(tl.int32)
-    packed = tle.pack_int4(values)
+    packed = _pack_int4(values)
     output_offsets = tl.program_id(0) * (BLOCK // 2) + tl.arange(0, BLOCK // 2)
     tl.store(Y + output_offsets, packed, output_offsets * 2 < N)
 
@@ -512,10 +520,10 @@ def test_hcu_fp4_encoding_rejection(dtype, block, message, fresh_triton_cache):
 def test_hcu_int4_container_rejection(fresh_triton_cache):
     with pytest.raises(triton.CompilationError) as caught:
         triton.compile(
-            ASTSource(precision_int4_roundtrip, {"X": "*i8", "U": "*i8", "Y": "*u8"},
-                      constexprs={"N": 256, "BLOCK": 256}), target=GPUTarget("hip", "gfx936", 64),
-            options={"num_warps": 4})
-    assert "unpack_int4 requires packed uint8" in ''.join(traceback.format_exception(caught.value))
+            ASTSource(precision_int4_dot, {"A": "*i8", "B": "*u8", "C": "*i32"},
+                      constexprs={"ACC": None, "M": 16, "N": 16, "K": 32, "AXIS_A": 1, "AXIS_B": 0}),
+            target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
+    assert "INT4 operands require packed uint8" in ''.join(traceback.format_exception(caught.value))
 
 
 @pytest.mark.parametrize("operation", ["dot", "scaled"])
@@ -1230,8 +1238,8 @@ def test_hcu_provider_source_invalidates_cache(source, tmp_path):
         new = "(.25, 1., 1.25, 1.75, 2.5, 3.5, 5.)"
     elif source == "tle_core":
         provider = runtime / "experimental/tle/language/core.py"
-        old = "return _generator.call_JitFunction(lower, (values, axis), kwargs={})"
-        new = "return _generator.call_JitFunction(lower, (tl.add(values, 1, _semantic=_semantic), axis), kwargs={})"
+        old = 'x.handle.set_attr("tt.load.async", _semantic.builder.get_bool_attr(is_async))\n    return x'
+        new = old.replace("return x", "return tl.add(x, 1, _semantic=_semantic)")
     elif source == "driver":
         provider = runtime / "runtime/driver.py"
         old = "def reset_active(self) -> None:\n        self._active = self.default"
@@ -1261,12 +1269,13 @@ from triton.backends.hcu.compiler_hcu import HIPBackend
 from triton.compiler import ASTSource
 assert Path(triton.__file__).is_relative_to(Path(__file__).parent / "runtime")
 @triton.jit
-def encode(Y, Z):
+def encode(X, Y, Z):
+    offsets = tl.arange(0, 8)
     packed = tl.fp_to_fp4(tl.full((16,), .75, tl.float32))
-    tl.store(Y + tl.arange(0, 8) + tl.cdiv(0, 1), packed)
-    tl.store(Z + tl.arange(0, 8), tle.pack_int4(tl.full((16,), 1, tl.int8)))
+    tl.store(Y + offsets + tl.cdiv(0, 1), packed)
+    tl.store(Z + offsets, tle.load(X + offsets))
 target = GPUTarget("hip", "gfx936", 64)
-kernel = triton.compile(ASTSource(encode, {"Y": "*u8", "Z": "*u8"}), target=target)
+kernel = triton.compile(ASTSource(encode, {"X": "*u8", "Y": "*u8", "Z": "*u8"}), target=target)
 print(json.dumps([HIPBackend(target).hash(), kernel.hash, hashlib.sha256(kernel.asm["ttir"].encode()).hexdigest()]))
 ''')
     env = dict(os.environ, PYTHONPATH=str(runtime.parent), PYTHONDONTWRITEBYTECODE="1",

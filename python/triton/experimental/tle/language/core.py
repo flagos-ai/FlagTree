@@ -40,27 +40,6 @@ def _tle_pick_sum_dtype(in_dtype, dtype):
     return None
 
 
-def _get_packed_conversion(name, _semantic):
-    lower = _semantic.builder.codegen_fns.get(f"tle.{name}")
-    if lower is None:
-        raise NotImplementedError(f"tle.{name} is not supported by this backend")
-    return lower
-
-
-@tl.builtin
-def pack_int4(values, axis=-1, _semantic: TLESemantic | None = None, _generator=None):
-    """Pack the low four bits of each signed INT8/INT32 value, low nibble first."""
-    lower = _get_packed_conversion("pack_int4", _semantic)
-    return _generator.call_JitFunction(lower, (values, axis), kwargs={})
-
-
-@tl.builtin
-def unpack_int4(packed, axis=-1, _semantic: TLESemantic | None = None, _generator=None):
-    """Unpack uint8 nibbles as signed INT8 values, low nibble first."""
-    lower = _get_packed_conversion("unpack_int4", _semantic)
-    return _generator.call_JitFunction(lower, (packed, axis), kwargs={})
-
-
 # -----------------------
 # Non-Atomic Memory Operations
 # -----------------------
