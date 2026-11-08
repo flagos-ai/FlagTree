@@ -122,40 +122,22 @@ def _software_warning(message, _semantic=None):
 
 
 @triton.constexpr_function
-def _pair_layout(shape, axis, unpack):
+def _unpack_layout(shape, axis):
     rank = len(shape)
-    if unpack:
-        order = tuple(range(axis + 1)) + (rank, ) + tuple(range(axis + 1, rank))
-        result = tuple(shape[:axis]) + (shape[axis] * 2, ) + tuple(shape[axis + 1:])
-    else:
-        order = tuple(range(axis + 1)) + tuple(range(axis + 2, rank + 1)) + (axis + 1, )
-        result = tuple(shape[:axis]) + (shape[axis] // 2, 2) + tuple(shape[axis + 1:])
+    order = tuple(range(axis + 1)) + (rank, ) + tuple(range(axis + 1, rank))
+    result = tuple(shape[:axis]) + (shape[axis] * 2, ) + tuple(shape[axis + 1:])
     return order, result
 
 
 @triton.jit
-def unpack_int4(packed: core.tensor, axis: core.constexpr = -1) -> core.tensor:
-    """Decode signed two's-complement nibbles to INT8, low nibble first."""
-    tl.static_assert(packed.dtype == tl.uint8, "unpack_int4 requires packed uint8")
-    tl.static_assert(-len(packed.shape) <= axis and axis < len(packed.shape), "invalid packing axis")
-    packing_axis: core.constexpr = axis % len(packed.shape)
+def _unpack_int4(packed: core.tensor, axis: core.constexpr) -> core.tensor:
+    """Decode signed packed INT4 operands to INT8 for integer dot."""
+    tl.static_assert(packed.dtype == tl.uint8, "INT4 operands require packed uint8")
     low = (packed << 4).to(tl.int8, bitcast=True) >> 4
     high = packed.to(tl.int8, bitcast=True) >> 4
     paired = tl.join(low, high)
-    layout: core.constexpr = _pair_layout(packed.shape, packing_axis, True)
+    layout: core.constexpr = _unpack_layout(packed.shape, axis)
     return tl.permute(paired, layout[0]).reshape(layout[1])
-
-
-@triton.jit
-def pack_int4(values: core.tensor, axis: core.constexpr = -1) -> core.tensor:
-    """Pack INT8/INT32 modulo 16, low nibble first; no saturation or scaling."""
-    tl.static_assert(values.dtype == tl.int8 or values.dtype == tl.int32, "pack_int4 requires signed INT8/INT32")
-    tl.static_assert(-len(values.shape) <= axis and axis < len(values.shape), "invalid packing axis")
-    packing_axis: core.constexpr = axis % len(values.shape)
-    tl.static_assert(values.shape[packing_axis] % 2 == 0, "packing axis must be even")
-    layout: core.constexpr = _pair_layout(values.shape, packing_axis, False)
-    low, high = tl.split(tl.permute(values.reshape(layout[1]), layout[0]))
-    return ((low & 15) | ((high & 15) << 4)).to(tl.uint8)
 
 
 @triton.jit
@@ -176,7 +158,7 @@ def fp4_to_fp_scaled(src: core.tensor, scale: "Optional[core.tensor]", elem_type
     low = (src & 15).to(tl.uint16)
     high = (src >> 4).to(tl.uint16)
     paired = tl.join(low, high)
-    layout: core.constexpr = _pair_layout(src.shape, packing_axis, True)
+    layout: core.constexpr = _unpack_layout(src.shape, packing_axis)
     shape: core.constexpr = layout[1]
     nibbles = tl.permute(paired, layout[0]).reshape(shape)
     sign = (nibbles & 8) << 12
@@ -223,12 +205,12 @@ def _dot_scaled_integer(lhs: core.tensor, lhs_scale: "Optional[core.tensor]", lh
                      "integer operand formats must be int4/int8; INT32 is for accumulation/output")
     tl.static_assert(len(lhs.shape) == 2 and len(rhs.shape) == 2, "integer scaled dot requires 2D operands")
     if lhs_format == "int4":
-        lhs = unpack_int4(lhs, 1 if lhs_k_pack else 0)
+        lhs = _unpack_int4(lhs, 1 if lhs_k_pack else 0)
     else:
         tl.static_assert(lhs.dtype == tl.int8 and lhs_k_pack,
                          "INT8 lhs requires signed INT8 storage and lhs_k_pack=True")
     if rhs_format == "int4":
-        rhs = unpack_int4(rhs, 0 if rhs_k_pack else 1)
+        rhs = _unpack_int4(rhs, 0 if rhs_k_pack else 1)
     else:
         tl.static_assert(rhs.dtype == tl.int8 and rhs_k_pack,
                          "INT8 rhs requires signed INT8 storage and rhs_k_pack=True")

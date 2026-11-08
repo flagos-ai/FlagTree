@@ -27,8 +27,6 @@ from .core import (
     extract_tile,
     insert_tile,
     load,
-    pack_int4,
-    unpack_int4,
 )
 from .pipe import (
     pipe,
@@ -142,8 +140,6 @@ __all__ = [
     "cumsum",
     "extract_tile",
     "insert_tile",
-    "pack_int4",
-    "unpack_int4",
     "MeshConfig",
     "pipe",
     "pipe_reader",
