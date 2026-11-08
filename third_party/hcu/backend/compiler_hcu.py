@@ -254,13 +254,14 @@ class HIPBackend(BaseBackend):
         )
 
     def get_codegen_implementation(self, options):
-        from triton.backends.hcu.precision import _convert_fp8
+        from triton.backends.hcu.precision import _convert_fp8, _get_dot_scaled_lowering
 
         return {
             "convert_custom_types": _convert_fp8,
             "min_dot_size": get_min_dot_size(self.target),
             "resolve_dot": _make_resolve_dot(options.arch),
             "resolve_dot_scaled": _make_resolve_dot_scaled(options.arch),
+            "get_dot_scaled_lowering": _get_dot_scaled_lowering,
         }
 
     def get_module_map(self) -> Dict[str, ModuleType]:

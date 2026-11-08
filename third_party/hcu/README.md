@@ -29,7 +29,7 @@ input requirements.
 INT32-to-BF16 constructs the rounded bits directly, avoiding FP32 double
 rounding. For example, `16842753` produces BF16 `0x4b81` (`16908288`).
 
-The HCU backend exposes these additional operations through the existing
+The HCU backend exposes these packed conversions through the existing
 `tl.ext` mechanism:
 
 | API | Contract |
@@ -38,8 +38,6 @@ The HCU backend exposes these additional operations through the existing
 | `tl.ext.fp4_to_fp_scaled(x, scale, elem_type, axis=-1)` | Decode packed E2M1, apply E8M0 scale in FP32, narrow to FP16/BF16 with RTNE; scale may be None, expanded per pair, or grouped per 32 logical values |
 | `tl.ext.unpack_int4(x, axis=-1)` | Packed uint8 to signed INT8 in [-8,7] |
 | `tl.ext.pack_int4(x, axis=-1)` | INT8/INT32 to packed bytes, modulo 16, without saturation or scaling |
-| `tl.ext.dot_int4(a, b, acc=None, lhs_axis=1, rhs_axis=0)` | Signed INT4 dot, INT32 accumulator/output; supports K or M/N packing |
-| `tl.ext.dot_scaled_integer(a, sa, "int4", b, sb, "int8", acc=None, group_size=32)` | Explicit INT4/INT8 operand formats, INT32 group accumulation and FP32 scaling |
 
 For floating-to-INT4 modulo packing, explicitly convert finite representable
 values to INT32 with `.to(tl.int32)`, then call `pack_int4`.
@@ -65,11 +63,24 @@ result is added to the FP32 accumulator. This avoids materializing scaled
 BF16 subnormal operands or overflowing each scale separately. The underlying
 MMA dtype's behavior still applies to original BF16/FP16 operands.
 
-Integer scaled dot uses **FP32 scales**, not E8M0 bytes. INT4 inputs are packed
-along K; scales have shapes `[M,G]` and `[N,G]`, with `G=K/group_size`. Each
-group's products and sum wrap modulo 2**32, convert to FP32, multiply by the
-left and right scales, then add to the FP32 result. None means unit scale.
-FP32 arithmetic follows the caller's `enable_fp_fusion` option.
+HCU accepts `"int4"` and `"int8"` in `tl.dot_scaled`. With FP32 output,
+integer inputs use **FP32 scales** with shapes `[M,K/32]` and `[N,K/32]`.
+K is divisible by 32 and INT4 inputs are packed along K. Each group's
+integer result wraps modulo 2**32, converts to FP32, and is multiplied by
+the left and right scales before being added to the FP32 accumulator.
+None means unit scale. FP32 arithmetic follows `enable_fp_fusion`.
+
+With both scales set to None, `out_dtype=tl.int32` selects unscaled integer
+dot. Packed INT4 supports K or M/N packing through `lhs_k_pack` and
+`rhs_k_pack` in this mode.
+
+```python
+# K-packed INT4 and signed INT8 with FP32 group scales.
+scaled = tl.dot_scaled(a_packed, a_scale, "int4", b_int8, b_scale, "int8")
+# Packed INT4 dot with an INT32 accumulator and output.
+integer = tl.dot_scaled(a_packed, None, "int4", b_packed, None, "int4",
+                        acc=acc_i32, out_dtype=tl.int32)
+```
 
 Compile-time Python `UserWarning` identifies software matrix paths. Native
 classification follows actual HCU lowering, rather than an architecture
