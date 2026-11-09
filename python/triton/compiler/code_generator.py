@@ -54,9 +54,9 @@ def _reorder_loop_loads_supported() -> bool:
     carry the hint down to TTGIR. A vendor build may omit the TLE plugin or the
     query; both read as off.
     """
-    from .._C.libtriton import tle as _tle  # noqa: PLC0415
+    from .._C import libtriton  # noqa: PLC0415
 
-    query = getattr(_tle, "is_reorder_loop_loads_enabled", None)
+    query = getattr(getattr(libtriton, "tle", None), "is_reorder_loop_loads_enabled", None)
     return query is not None and query()
 
 

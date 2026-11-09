@@ -147,8 +147,8 @@ class range(_tl_range):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor, disallow_acc_multi_buffer, flatten,
                          warp_specialize, disable_licm)
         reorder = tl._unwrap_if_constexpr(reorder)
-        if not isinstance(reorder, builtins.int) or (reorder is not True and reorder is not False and reorder < 0):
-            raise ValueError(f"tle.range: reorder must be a bool or a non-negative int, got {reorder!r}")
+        if not (isinstance(reorder, builtins.bool) or (isinstance(reorder, builtins.int) and reorder >= 1)):
+            raise ValueError(f"tle.range: reorder must be a bool or an int >= 1, got {reorder!r}")
         self.reorder = reorder
 
 
