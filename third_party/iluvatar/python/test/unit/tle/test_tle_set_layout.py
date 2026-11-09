@@ -57,7 +57,7 @@ def iluvatar_backend():
     assert hasattr(libtriton.iluvatar, "tle"), "Iluvatar build is missing native TLE bindings"
     assert hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
     assert hasattr(libtriton.ir.builder, "create_tle_gpu_set_layout")
-    assert "gpu.set_layout" in get_supported_primitives("iluvatar")
+    assert "gpu.set_layout" in get_supported_primitives()
     backend = make_backend(TARGET)
     assert type(backend).__name__ == "CorexBackend"
     assert backend.binary_ext == "cubin"
