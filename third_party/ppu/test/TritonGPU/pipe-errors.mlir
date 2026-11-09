@@ -217,6 +217,48 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
 
 // -----
 
+// A pipe whose writer and reader sit in the partitions of two different
+// warp_specialize ops: those partitions never run at the same time, so the
+// hand-over barriers would count threads that never arrive.
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @endpoints_in_two_warp_specializes(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
+    // expected-error @below {{hands over between the partitions of two warp_specialize ops}}
+    tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    // expected-note @below {{one endpoint runs here}}
+    ttg.warp_specialize(%ring)
+    default {
+      ttg.warp_yield
+    }
+    partition0(%writer: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %stage = arith.constant 0 : i32
+      %parity = arith.constant false
+      tle.pipe.writer_acquire %writer[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.writer_commit %writer[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
+    // expected-note @below {{reader '' here}}
+    ttg.warp_specialize(%ring)
+    default {
+      ttg.warp_yield
+    }
+    partition0(%reader: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %stage = arith.constant 0 : i32
+      %parity = arith.constant false
+      %closed = tle.pipe.reader_wait %reader[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.reader_release %reader[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
+    tt.return
+  }
+}
+
+// -----
+
 // Two creates of the same capacity, scope, name and fields are one pipe. Pipes
 // on one allocation differ by name or by the stages they ring through.
 

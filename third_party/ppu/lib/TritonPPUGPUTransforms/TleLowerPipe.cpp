@@ -471,10 +471,26 @@ static LogicalResult checkRunsOnce(Pipe &pipe) {
   auto inLoop = [](Operation *op) {
     return op->getParentOfType<LoopLikeOpInterface>() != nullptr;
   };
+  // Every endpoint in a partition belongs to the same warp_specialize: the
+  // partitions of two of them never run at the same time, so a hand-over
+  // barrier between them would count threads that never arrive. The loop the
+  // rule below looks at is the one around that single op.
   Operation *ws = getWarpSpecialize(*pipe.writer);
-  for (auto &[name, reader] : pipe.readers)
-    if (Operation *readerWs = getWarpSpecialize(reader))
-      ws = readerWs;
+  for (auto &[name, reader] : pipe.readers) {
+    Operation *readerWs = getWarpSpecialize(reader);
+    if (!readerWs)
+      continue;
+    if (ws && ws != readerWs) {
+      InFlightDiagnostic diag = pipe.create.emitOpError(
+          "hands over between the partitions of two warp_specialize ops, "
+          "which never run at the same time, so the hand-over barriers would "
+          "wait for threads that never arrive");
+      diag.attachNote(ws->getLoc()) << "one endpoint runs here";
+      diag.attachNote(readerWs->getLoc()) << "reader '" << name << "' here";
+      return diag;
+    }
+    ws = readerWs;
+  }
   if (!inLoop(pipe.create) && !(ws && inLoop(ws)))
     return success();
   return pipe.create.emitOpError(
