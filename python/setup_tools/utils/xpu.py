@@ -39,7 +39,9 @@ BACKEND_ROOT = "third_party/xpu/backend"
 _TABLE_TAGS = ("l19", "l22")
 
 FLAGTREE_PYTHON_ROOT = "python"
-XPU_TLE_ROOT = "third_party/xpu/tle"
+# TLE/RAW are excluded from ordinary Python specialization. Keep their
+# original XPU package root and build-time packaging behavior unchanged.
+XPU_TLE_ROOT = "third_party/xpu/python/triton/experimental/tle"
 # Package-level metadata that must **never** be staged into the tree.  It
 # travels *inside the tarball* (MIT: "shall be included in all copies") but it
 # describes the **package**, not the tree: the repository root already carries
@@ -120,8 +122,8 @@ def get_excluded_python_packages():
 
 
 def get_python_packages():
-    # Select this one extension at build time. Do not redirect triton or
-    # experimental.__path__, or copy the main tree's TLE-only packages.
+    # TLE/RAW are not spec modules. Select the original XPU TLE package at
+    # build time without redirecting triton or experimental.__path__.
     for root, dirs, files in os.walk(XPU_TLE_ROOT):
         dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
         if "__init__.py" not in files:
@@ -259,8 +261,8 @@ def install_python_impl(cached_path, flagtree_dir):
     """Stage the compiled XPU Python implementation into the tree.
 
     The package mirrors the installed layout under `python/`, so this is a
-    staging into the main `python/` tree, except the independent XPU TLE
-    extension, whose sources and binaries must share `third_party/xpu/tle`.
+    staging into the main `python/` tree, except XPU TLE/RAW, whose sources
+    and binaries remain under their original backend package root.
     Two kinds of file travel in it: the compiled modules, and the decoded intrinsic tables
     (`triton/backends/_tables/*.json`), which cannot be decoded at build time
     (see `_TABLE_TAGS`).

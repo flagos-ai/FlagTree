@@ -63,9 +63,9 @@ def layout(tmp_path, monkeypatch):
             "python/triton/experimental/tle/language/main_only/__init__.py",
             "python/triton/spec/__init__.py",
             "third_party/xpu/spec/triton/__init__.py",
-            "third_party/xpu/tle/__init__.py",
-            "third_party/xpu/tle/language/__init__.py",
-            "third_party/xpu/tle/language/gpu/__init__.py",
+            "third_party/xpu/python/triton/experimental/tle/__init__.py",
+            "third_party/xpu/python/triton/experimental/tle/language/__init__.py",
+            "third_party/xpu/python/triton/experimental/tle/language/gpu/__init__.py",
     ):
         write(tmp_path / name)
     write(tmp_path / "python/triton/experimental/tle/language/include/flagcx.h")
@@ -94,7 +94,8 @@ def test_discover_without_source_symlink(layout, xpu):
     assert "triton.experimental.tle.language.main_only" not in packages
     assert "triton.experimental.tle.language.include" not in packages
     assert not (layout / "python/triton/spec/xpu").exists()
-    assert not (layout / "third_party/xpu/python/triton").exists()
+    assert (layout / "third_party/xpu/python/triton/experimental/tle").is_dir()
+    assert not (layout / "third_party/xpu/spec/triton/experimental/tle").exists()
 
 
 def test_other_backend_keeps_main_tle(layout, xpu):
