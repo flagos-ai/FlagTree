@@ -1605,6 +1605,98 @@ struct BufferAtomicCASOpConversion
   }
 };
 
+struct BufferStoreLdsOpConversion
+    : public ConvertOpToLLVMPattern<triton::hcugpu::BufferStoreLdsOp>,
+      public LoadStoreConversionBase {
+  BufferStoreLdsOpConversion(LLVMTypeConverter &converter,
+                             const HCU::TargetInfo &targetInfo,
+                             ModuleAxisInfoAnalysis &axisInfo,
+                             PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::hcugpu::BufferStoreLdsOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto srcTy = cast<MemDescType>(op.getSrc().getType());
+    Type elemTy = getTypeConverter()->convertType(srcTy.getElementType());
+    unsigned elemsPerDword =
+        32 / srcTy.getElementType().getIntOrFloatBitWidth();
+    auto pointers = unpackLLElements(loc, adaptor.getPtr(), rewriter);
+    auto shared = LLVM::getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
+                                                        elemTy, rewriter);
+    Value base =
+        b.ptrtoint(i32_ty, shared.getShmemAffineBase(loc, rewriter, srcTy));
+    auto [lane, warp] = getLaneAndWarpId(rewriter, loc);
+    auto uniform = [&](Value v) {
+      return LLVM::createLLVMIntrinsicCallOp(
+                 rewriter, loc, "llvm.amdgcn.readfirstlane", {i32_ty}, {v})
+          .getResult(0);
+    };
+    Value waveOffset = b.mul(uniform(warp), b.i32_val(256));
+    unsigned numWarps = lookupNumWarps(op);
+    auto ptrTy = cast<RankedTensorType>(op.getPtr().getType());
+    auto indices = emitIndices(loc, rewriter, targetInfo, ptrTy.getEncoding(),
+                               ptrTy, false);
+    Value firstIndex = uniform(indices.front().front());
+    Value byteOffset = b.mul(firstIndex, b.i32_val(4 / elemsPerDword));
+    // Recover the tile base without converting the entire pointer tensor's
+    // layout through LDS. Each wave then starts at its own 256-byte chunk.
+    Value address = b.add(
+        b.sub(b.ptrtoint(i64_ty, pointers.front()), b.zext(i64_ty, byteOffset)),
+        b.zext(i64_ty, waveOffset));
+    Value low = uniform(b.trunc(i32_ty, address));
+    Value high = uniform(b.trunc(i32_ty, b.lshr(address, b.i64_val(32))));
+    // GFX9 buffer addressing: STRIDE=4, ADD_TID_ENABLE=1, ATC=0.
+    // ATC-enabled LDS DMA is explicitly avoided by AMD's GFX9 trap handler.
+    auto descriptorTy = vec_ty(i32_ty, 4);
+    Value descriptor = b.undef(descriptorTy);
+    descriptor = b.insert_element(descriptorTy, descriptor, low, b.i32_val(0));
+    descriptor =
+        b.insert_element(descriptorTy, descriptor,
+                         b.or_(high, b.i32_val(4 << 16)), b.i32_val(1));
+    descriptor = b.insert_element(
+        descriptorTy, descriptor,
+        b.i32_val(product(srcTy.getShape()) * 4 / elemsPerDword), b.i32_val(2));
+    descriptor = b.insert_element(descriptorTy, descriptor,
+                                  b.i32_val(0x00807fac), b.i32_val(3));
+    SmallVector<Value> args{descriptor, b.add(base, waveOffset)};
+    std::string assembly =
+        "s_mov_b32 $0, m0\ns_mov_b32 $1, 0\ns_mov_b32 m0, $3\ns_nop 0\n";
+    unsigned chunks =
+        product(srcTy.getShape()) / elemsPerDword / (numWarps * 64);
+    for (unsigned i = 0; i < chunks; ++i) {
+      assembly += "buffer_store_lds_dword $2, $1 lds\n";
+      if (i + 1 < chunks) {
+        std::string step = std::to_string(numWarps * 256);
+        assembly += "s_add_u32 m0, m0, " + step + "\ns_add_u32 $1, $1, " +
+                    step + "\ns_nop 0\n";
+      }
+    }
+    assembly += "s_waitcnt vmcnt(0)\ns_mov_b32 m0, $0";
+    std::string constraints = "=&s,=&s,s,s,~{m0},~{scc},~{memory}";
+    // The existing copy contract permits immediate LDS reuse after return.
+    // Complete every producer before DMA and every reader before reuse.
+    GCNBuilder wait;
+    wait.create("s_waitcnt lgkmcnt(0)")->operator()();
+    wait.launch(rewriter, loc, void_ty(rewriter.getContext()));
+    b.barrier();
+    rewriter.create<LLVM::InlineAsmOp>(
+        loc,
+        LLVM::LLVMStructType::getLiteral(rewriter.getContext(),
+                                         {i32_ty, i32_ty}),
+        args, assembly, constraints, true, false, LLVM::TailCallKind::None,
+        LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                  LLVM::AsmDialect::AD_ATT),
+        ArrayAttr::get(rewriter.getContext(), {}));
+    b.barrier();
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct BufferStoreOpConversion
     : public ConvertOpToLLVMPattern<triton::hcugpu::BufferStoreOp>,
       public LoadStoreConversionBase {
@@ -2193,14 +2285,14 @@ void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                        RewritePatternSet &patterns,
                                        ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                        PatternBenefit benefit) {
-  patterns
-      .add<AtomicCASOpConversion, AtomicRMWOpConversion, LoadOpConversion,
-           StoreOpConversion, BufferLoadOpConversion,
-           BufferLoadToLocalOpConversion, BufferStoreOpConversion,
-           BufferAtomicRMWOpConversion, AsyncCopyGlobalToLocalOpConversion,
-           BufferAtomicCASOpConversion, AsyncTDMCopyGlobalToLocalOpConversion,
-           AsyncTDMCopyLocalToGlobalOpConversion>(typeConverter, targetInfo,
-                                                  axisInfoAnalysis, benefit);
+  patterns.add<AtomicCASOpConversion, AtomicRMWOpConversion, LoadOpConversion,
+               StoreOpConversion, BufferLoadOpConversion,
+               BufferLoadToLocalOpConversion, BufferStoreOpConversion,
+               BufferStoreLdsOpConversion, BufferAtomicRMWOpConversion,
+               AsyncCopyGlobalToLocalOpConversion, BufferAtomicCASOpConversion,
+               AsyncTDMCopyGlobalToLocalOpConversion,
+               AsyncTDMCopyLocalToGlobalOpConversion>(
+      typeConverter, targetInfo, axisInfoAnalysis, benefit);
   patterns.add<AsyncWaitOpConversion>(typeConverter, targetInfo, benefit);
   patterns.add<AsyncTDMWaitConversion>(typeConverter, benefit);
   patterns.add<AsyncCommitGroupOpConversion>(typeConverter, benefit);

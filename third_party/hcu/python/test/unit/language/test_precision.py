@@ -158,6 +158,30 @@ def precision_shared_copy(X, Y, N: tl.constexpr, COPY: tl.constexpr, BLOCK: tl.c
 
 
 @triton.jit
+def precision_reverse_copy(X, Y, N: tl.constexpr, STRIDE: tl.constexpr = 1, OFFSET: tl.constexpr = 0,
+                           BLOCK: tl.constexpr = 1024, OVERWRITE: tl.constexpr = False):
+    local = tl.arange(0, BLOCK)
+    offsets = tl.program_id(0) * BLOCK + local
+    shared = tle.gpu.alloc((BLOCK, ), X.dtype.element_ty, nv_mma_shared_layout=False)
+    # Two different tiles exercise immediate LDS reuse after the first copy.
+    for phase in tl.static_range(2):
+        permuted = tl.program_id(0) * BLOCK + (local ^ 64)
+        value = tl.load(X + phase * N + permuted, permuted < N, other=0)
+        tl.store(tle.gpu.local_ptr(shared, (local ^ 64, )), value)
+        tl.debug_barrier()
+        destination = Y + OFFSET + (phase * N + offsets) * STRIDE
+        if OVERWRITE:
+            saved = tl.load(tle.gpu.local_ptr(shared, (local, )))
+            tl.store(tle.gpu.local_ptr(shared, (local, )), tl.full((BLOCK, ), 0, X.dtype.element_ty))
+            tl.store(destination, saved, offsets < N)
+        elif N % BLOCK == 0:
+            tle.gpu.copy(shared, destination, (BLOCK, ))
+        else:
+            tle.gpu.copy(shared, destination, (BLOCK, ), mask=offsets < N)
+        tl.debug_barrier()
+
+
+@triton.jit
 def precision_integer_scaled(A, SA, B, SB, ACC, C, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
                              FORMAT_A: tl.constexpr, FORMAT_B: tl.constexpr, OUT_DTYPE: tl.constexpr = tl.float32):
     rows = tl.arange(0, M)
@@ -692,6 +716,41 @@ def test_hcu_shared_copy_compile(dtype, copy, fresh_triton_cache):
     assert re.search(r"\bds_(?:write|store)\w*", compiled.asm["amdgcn"])
 
 
+@pytest.mark.parametrize("dtype", ["u8", "i8", "fp8e4nv", "fp16", "bf16", "i32", "fp32"])
+@pytest.mark.parametrize("warps", [1, 4, 8])
+def test_hcu_reverse_copy_compile(dtype, warps, fresh_triton_cache):
+    compiled = triton.compile(
+        ASTSource(precision_reverse_copy, {"X": "*" + dtype, "Y": "*" + dtype},
+                  constexprs={"N": 4096, "BLOCK": 2048, "STRIDE": 1, "OFFSET": 0, "OVERWRITE":
+                              False}, attrs={(1, ): [("tt.divisibility", 16)]}), target=GPUTarget("hip", "gfx936", 64),
+        options={"num_warps": warps, "num_stages": 1})
+    assert compiled.asm["ttgir"].count("hcug.buffer_store_lds") == 2
+    assert "ttg.local_load" not in compiled.asm["ttgir"]
+    assert "buffer_store_lds_dword" in compiled.asm["amdgcn"]
+    # Producer permutations may use LDS layout scratch. The two copies must
+    # consume the memdesc directly, without loading their payload into tensors.
+    assert "s_waitcnt vmcnt(0)" in compiled.asm["amdgcn"]
+
+
+@pytest.mark.parametrize("constants,arch,dtype", [
+    ({"STRIDE": 2}, "gfx936", "u8"),
+    ({"OFFSET": 1}, "gfx936", "u8"),
+    ({"N": 4093}, "gfx936", "u8"),
+    ({"BLOCK": 256}, "gfx936", "u8"),
+    ({"OVERWRITE": True}, "gfx936", "i32"),
+    ({}, "gfx936", "fp64"),
+    ({}, "gfx938", "u8"),
+])
+def test_hcu_reverse_copy_fallback_compile(constants, arch, dtype, fresh_triton_cache):
+    constants = dict({"N": 4096, "BLOCK": 1024, "STRIDE": 1, "OFFSET": 0, "OVERWRITE": False}, **constants)
+    compiled = triton.compile(
+        ASTSource(precision_reverse_copy, {"X": "*" + dtype, "Y": "*" + dtype}, constexprs=constants,
+                  attrs={(1, ): [("tt.divisibility", 16)]}), target=GPUTarget("hip", arch, 64),
+        options={"num_warps": 4, "num_stages": 1})
+    assert "buffer_store_lds" not in compiled.asm["ttgir"]
+    assert "buffer_store_lds_dword" not in compiled.asm["amdgcn"]
+
+
 def test_hcu_unbounded_async_diagnostic(fresh_triton_cache, capfd):
     # A pointer range is deliberately absent, so buffer conversion is illegal.
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
@@ -976,6 +1035,40 @@ def test_hcu_shared_copy_values(dtype, copy, device):
                                                         num_stages=1)
         torch.testing.assert_close(output[16:-16].cpu().view(storage), host[16:-16], rtol=0, atol=0)
         assert torch.all(output[:16].view(storage) == 42) and torch.all(output[-16:].view(storage) == 42)
+
+
+@pytest.mark.parametrize(
+    "dtype", [torch.uint8, torch.int8, torch.float8_e4m3fn, torch.float16, torch.bfloat16, torch.int32, torch.float32])
+@pytest.mark.parametrize("warps", [1, 4, 8])
+def test_hcu_reverse_copy_values(dtype, warps, device):
+    n, repeats = 4096, 500
+    width = torch.empty((), dtype=dtype).element_size()
+    host = torch.randint(0, 256, (2 * n * width, ), dtype=torch.uint8, generator=torch.Generator().manual_seed(1493))
+    source = host.to(device).view(dtype)
+    span = 2 * n + 32
+    output = torch.full((repeats * span * width, ), 42, dtype=torch.uint8, device=device)
+    for repeat in range(repeats):
+        compiled = precision_reverse_copy[(2, )](source, output.view(dtype)[repeat * span + 16:], n, BLOCK=2048,
+                                                 num_warps=warps, num_stages=1)
+    expected = torch.full((repeats, span * width), 42, dtype=torch.uint8)
+    expected[:, 16 * width:(16 + 2 * n) * width] = host
+    torch.testing.assert_close(output.cpu().reshape_as(expected), expected, rtol=0, atol=0)
+    arch = triton.runtime.driver.active.get_current_target().arch.split(":")[0].lower()
+    assert ("buffer_store_lds_dword" in compiled.asm["amdgcn"]) == (arch == "gfx936")
+
+
+@pytest.mark.parametrize("stride,offset,n,block,overwrite", [(2, 0, 4096, 1024, False), (1, 1, 4096, 1024, False),
+                                                             (1, 0, 4093, 1024, False), (1, 0, 4096, 256, False),
+                                                             (1, 0, 4096, 1024, True)])
+def test_hcu_reverse_copy_fallback_values(stride, offset, n, block, overwrite, device):
+    host = torch.randint(0, 256, (2 * n, ), dtype=torch.uint8, generator=torch.Generator().manual_seed(1493))
+    output = torch.full((2 * n * stride + 64, ), 42, dtype=torch.uint8, device=device)
+    compiled = precision_reverse_copy[(triton.cdiv(n, block), )](host.to(device), output[16:], n, stride, offset, block,
+                                                                 overwrite, num_warps=4, num_stages=1)
+    expected = torch.full_like(output.cpu(), 42)
+    expected[16 + offset:16 + offset + 2 * n * stride:stride] = host
+    torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+    assert "buffer_store_lds_dword" not in compiled.asm["amdgcn"]
 
 
 @pytest.mark.parametrize("format_a", ["int4", "int8"])

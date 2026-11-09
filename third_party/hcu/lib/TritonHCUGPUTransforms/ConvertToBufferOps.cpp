@@ -661,16 +661,21 @@ struct ConvertTritonStoreToBufferStore
   ConvertTritonStoreToBufferStore(
       mlir::MLIRContext *context,
       DenseMap<Value, SetVector<Operation *>> &assumptions,
-      std::shared_ptr<DataFlowSolver> solver, bool analyzeSmallTensorOfst_)
+      std::shared_ptr<DataFlowSolver> solver, bool analyzeSmallTensorOfst_,
+      HCU::ModuleAxisInfoAnalysis &axisInfo, bool enableLdsStore)
       : mlir::OpRewritePattern<triton::StoreOp>(context),
         assumptions(assumptions), solver(std::move(solver)),
-        analyzeSmallTensorOfst(analyzeSmallTensorOfst_) {}
+        analyzeSmallTensorOfst(analyzeSmallTensorOfst_), axisInfo(axisInfo),
+        enableLdsStore(enableLdsStore) {}
 
   mlir::LogicalResult
   matchAndRewrite(triton::StoreOp op,
                   PatternRewriter &rewriter) const override {
     LDBG("Try to convert: " << op);
     Value ptr = op.getPtr();
+
+    if (enableLdsStore && succeeded(convertLdsStore(op, rewriter)))
+      return success();
 
     if (canUseBufferOps(ptr, assumptions, solver, analyzeSmallTensorOfst)) {
       auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
@@ -692,10 +697,52 @@ struct ConvertTritonStoreToBufferStore
   }
 
 private:
+  LogicalResult convertLdsStore(triton::StoreOp op,
+                                PatternRewriter &rewriter) const {
+    if (!isa<tt::FuncOp>(op->getParentOp()) ||
+        (op.getMask() && !isSplatOneConstTensor(op.getMask())) ||
+        op.getCache() != triton::CacheModifier::NONE ||
+        op.getEvict() != triton::EvictionPolicy::NORMAL)
+      return failure();
+    Value value = op.getValue();
+    while (auto cvt = value.getDefiningOp<ttg::ConvertLayoutOp>())
+      value = cvt.getSrc();
+    auto load = value.getDefiningOp<ttg::LocalLoadOp>();
+    if (!load || load->getBlock() != op->getBlock())
+      return failure();
+    // Reading at the store must not observe a newer LDS value than the load.
+    for (Operation *next = load->getNextNode(); next != op;
+         next = next->getNextNode())
+      if (!next || !isMemoryEffectFree(next))
+        return failure();
+    auto srcTy = cast<ttg::MemDescType>(load.getSrc().getType());
+    auto ptrTy = cast<RankedTensorType>(op.getPtr().getType());
+    auto globalPtrTy = cast<triton::PointerType>(ptrTy.getElementType());
+    auto enc = dyn_cast<ttg::SwizzledSharedEncodingAttr>(srcTy.getEncoding());
+    unsigned bits = srcTy.getElementType().getIntOrFloatBitWidth();
+    unsigned numWarps = ttg::lookupNumWarps(op);
+    auto *info = axisInfo.getAxisInfo(op.getPtr());
+    auto numElements = product(srcTy.getShape());
+    if (globalPtrTy.getAddressSpace() != 1 ||
+        globalPtrTy.getPointeeType() != srcTy.getElementType() ||
+        srcTy.getRank() != 1 || srcTy.getAllocShape().size() != 1 ||
+        ptrTy.getShape() != srcTy.getShape() || !enc ||
+        enc.getMaxPhase() != 1 || ttg::getNumCTAs(enc) != 1 ||
+        !llvm::is_contained({8u, 16u, 32u}, bits) || !info ||
+        info->getContiguity(0) < numElements || info->getDivisibility(0) < 4 ||
+        numElements * bits % (numWarps * 64 * 32) != 0)
+      return failure();
+    rewriter.replaceOpWithNewOp<triton::hcugpu::BufferStoreLdsOp>(
+        op, load.getSrc(), op.getPtr());
+    return success();
+  }
+
   // Assumptions collected through the function
   DenseMap<Value, SetVector<Operation *>> assumptions;
   std::shared_ptr<DataFlowSolver> solver;
   bool analyzeSmallTensorOfst;
+  HCU::ModuleAxisInfoAnalysis &axisInfo;
+  bool enableLdsStore;
 };
 
 } // anonymous namespace
@@ -726,9 +773,13 @@ struct TritonHCUGPUConvertToBufferOpsPass
       return signalPassFailure();
 
     HCU::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
-    patterns.add<ConvertTritonLoadToBufferLoad<tt::LoadOp>,
-                 ConvertTritonStoreToBufferStore>(context, assumptions, solver,
-                                                  this->analyzeSmallTensorOfst);
+    patterns.add<ConvertTritonLoadToBufferLoad<tt::LoadOp>>(
+        context, assumptions, solver, this->analyzeSmallTensorOfst);
+    // Other architectures retain their existing path until validated on
+    // hardware.
+    patterns.add<ConvertTritonStoreToBufferStore>(
+        context, assumptions, solver, this->analyzeSmallTensorOfst,
+        axisInfoAnalysis, archGenerationName == "gfx936");
     // BufferLoadToLds is only supported on CDNA3 and CDNA4
     if (llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
                            targetInfo.getISAFamily())) {
