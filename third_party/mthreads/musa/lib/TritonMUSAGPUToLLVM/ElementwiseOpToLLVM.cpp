@@ -545,6 +545,7 @@ struct SIToFPOpConversion
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
     // Pre-PH1 cannot select a bare bf16 cvt; detour through f32 explicitly.
+    Type inElemTy = getElementType(op.getIn());
     Type outElemTy = getElementType(op.getOut());
     if (auto widthAttr = op->getAttrOfType<IntegerAttr>(
             "ttg.rlc-preserve-int-to-fp-vector-width")) {
