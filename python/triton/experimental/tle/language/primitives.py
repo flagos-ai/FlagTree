@@ -84,6 +84,17 @@ TLE_PRIMITIVES = frozenset({
     "dsa.insert_slice",
     "dsa.extract_element",
     "dsa.subview",
+    "dsa.tile_alloc",
+    "dsa.tile_copy",
+    "dsa.tile_subview",
+    "dsa.tile_to_tensor",
+    "dsa.tile_set_flag",
+    "dsa.tile_wait_flag",
+    "dsa.tile_pipe_barrier",
+    "dsa.tile_gm_offset",
+    "dsa.tile_cube_launch",
+    "dsa.tile_cube_wait",
+    "dsa.workspace",
 
     ## TLE-Struct DSA (tsingmicro)
     "dsa.tsingmicro.randgen",
