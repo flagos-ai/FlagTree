@@ -497,6 +497,22 @@ def test_hcu_dot_accumulator_dtype(dtype, accumulator, fresh_triton_cache):
                        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
 
 
+@pytest.mark.parametrize("arch", ["gfx936", "gfx938"])
+@pytest.mark.parametrize("a,b", [("fp8e4nv", "fp8e4nv"), ("fp8e4nv", "fp8e5"), ("fp8e5", "fp8e4nv"),
+                                 ("fp8e5", "fp8e5")])
+def test_hcu_fp8_dot_target_paths(arch, a, b, fresh_triton_cache):
+    signature = {"A": "*" + a, "B": "*" + b, "C": "*fp32"}
+    constants = {"ACC": None, "M": 16, "N": 16, "K": 32, "B_COLUMN": False}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = triton.compile(ASTSource(precision_dot, signature, constexprs=constants),
+                                  target=GPUTarget("hip", arch, 64), options={"num_warps": 4, "num_stages": 1})
+    software = arch == "gfx936"
+    instruction_types = "f16" if software else "(?:fp8|bf8)"
+    assert re.search(r"\bv_mmac_.*" + instruction_types + r"\b", compiled.asm["amdgcn"])
+    assert any(re.search(r"tl.dot.*native=false", str(item.message)) for item in caught) == software
+
+
 @pytest.mark.parametrize("a,b", [("u8", "u8"), ("i16", "i16"), ("i32", "i8"), ("i8", "i32"), ("i32", "i32"),
                                  ("fp16", "bf16")])
 def test_hcu_dot_format_rejection(a, b, fresh_triton_cache):
@@ -717,7 +733,7 @@ def test_hcu_integer_dot_values(inner, with_acc, overflow, device):
 @pytest.mark.parametrize("inner", [32, 64])
 @pytest.mark.parametrize("with_acc", [False, True])
 @pytest.mark.parametrize("column_b", [False, True])
-def test_hcu_fp8_dot_values(dtype_a, dtype_b, inner, with_acc, column_b, device):
+def test_hcu_fp8_dot_values(dtype_a, dtype_b, inner, with_acc, column_b, device, fresh_triton_cache):
     generator = torch.Generator().manual_seed(1493)
     a = (torch.randint(-8, 9, (16, inner), generator=generator).double() / 2).to(dtype_a)
     b = (torch.randint(-8, 9, (inner, 16), generator=generator).double() / 2).to(dtype_b)
@@ -725,10 +741,16 @@ def test_hcu_fp8_dot_values(dtype_a, dtype_b, inner, with_acc, column_b, device)
     expected = (a.double() @ b.double() + (acc.double() if with_acc else 0)).float()
     physical_b = b.T.contiguous() if column_b else b
     output = torch.full((256 + 32, ), 1234.5, device=device)
-    with pytest.warns(UserWarning, match="tl.dot.*native=false"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         compiled = precision_dot[(1, )](a.to(device), physical_b.to(device), acc.to(device) if with_acc else None,
                                         output[16:-16], 16, 16, inner, column_b, num_warps=4, num_stages=1)
-    assert re.search(r"\bv_mmac_.*f16\b", compiled.asm["amdgcn"])
+    arch = triton.runtime.driver.active.get_current_target().arch.split(":")[0].lower()
+    # gfx936 decodes to FP16; BW1100/gfx938 can execute FP8 MMAC directly.
+    software = arch not in ("gfx938", "gfx92a", "gfx946")
+    instruction_types = "f16" if software else "(?:fp8|bf8)"
+    assert re.search(r"\bv_mmac_.*" + instruction_types + r"\b", compiled.asm["amdgcn"])
+    assert any(re.search(r"tl.dot.*native=false", str(item.message)) for item in caught) == software
     torch.testing.assert_close(output[16:-16].reshape(16, 16).cpu(), expected, rtol=0, atol=0)
     assert torch.all(output[:16] == 1234.5) and torch.all(output[-16:] == 1234.5)
 
