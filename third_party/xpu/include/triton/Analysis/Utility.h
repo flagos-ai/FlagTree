@@ -139,7 +139,7 @@ public:
 
   void setSMOffsets(unsigned _reduceId, SmallVector<int64_t> &_offsets) {
     // Store the local footprint. The lowering uses the previous reduction's
-    // endOffset as the base, matching internal Triton's scratch reuse policy.
+    // endOffset as the base, matching the sync source's scratch reuse policy.
     reduceSMOffsetMap[_reduceId] =
         std::make_unique<redSMOffsetInfo>(0, _offsets);
   }
@@ -312,7 +312,7 @@ public:
 
   void setSMOffsets(unsigned _scanId, SmallVector<int64_t> &_offsets) {
     // Store the local footprint. The lowering uses the previous scan's
-    // endOffset as the base, matching internal Triton's scratch reuse policy.
+    // endOffset as the base, matching the sync source's scratch reuse policy.
     scanSMOffsetMap[_scanId] = std::make_unique<redSMOffsetInfo>(0, _offsets);
   }
 

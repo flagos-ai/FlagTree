@@ -29,7 +29,40 @@ struct Candidate {
   unsigned iterArgIdx;
   triton::musa::SquadDotOp sqmma;
   triton::mtgpu::SqmmaAccumulatorType carrierType;
+  // Direct loop yields have no in-loop completion boundary. They are only
+  // accepted for a dot immediately followed by scf.yield; a final wait is
+  // then materialized after the loop.
+  bool directYield = false;
 };
+
+// SCF builders in the supported MLIR revisions are inconsistent about whether
+// `skipRegionBuilder=true` seeds an implicit scf.yield. Keep that terminator in
+// place when present and update its operands after cloning the body.
+static void setOrCreateScfYield(Block &block, Location loc, ValueRange operands,
+                                RewriterBase &rewriter) {
+  if (!block.empty()) {
+    if (auto yield = dyn_cast<scf::YieldOp>(&block.back())) {
+      yield->setOperands(operands);
+      return;
+    }
+  }
+  rewriter.setInsertionPointToEnd(&block);
+  scf::YieldOp::create(rewriter, loc, operands);
+}
+
+static void setInsertionPointBeforeScfTerminator(Block &block,
+                                                 RewriterBase &rewriter) {
+  if (!block.empty() && isa<scf::YieldOp>(&block.back())) {
+    rewriter.setInsertionPoint(&block.back());
+    return;
+  }
+  rewriter.setInsertionPointToEnd(&block);
+}
+
+// Values which carry an asynchronous SQMMA accumulator through an SCF region
+// have to use the opaque native carrier type after conversion.
+using CarrierValueSet = llvm::SmallDenseSet<Value, 16>;
+using TensorMaterializationMap = DenseMap<Value, DenseMap<Block *, Value>>;
 
 static triton::musa::SquadDotWaitOp getCanonicalExternalFinalWait(
     scf::ForOp forOp, const llvm::SmallDenseSet<unsigned> &candidateIdxs) {
@@ -57,6 +90,114 @@ static Value unwrapYieldedSqmmaValue(Value value) {
   return idx < wait.getInputs().size() ? wait.getInputs()[idx] : value;
 }
 
+// Return true when `value` is on a loop-carried SQMMA path rooted at
+// `iterArg`. An scf.if result is accepted only when every present branch
+// yields a value on that path. This keeps conversion fail-closed.
+static bool markCarrierPath(Value value, Value iterArg,
+                            CarrierValueSet &carrierIfResults,
+                            llvm::SmallPtrSetImpl<void *> &visited) {
+  if (!value || !visited.insert(value.getAsOpaquePointer()).second)
+    return false;
+  if (value == iterArg)
+    return true;
+
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return false;
+  Operation *def = result.getOwner();
+  if (auto dot = dyn_cast<triton::musa::SquadDotOp>(def)) {
+    if (dot->getOperand(2) == iterArg)
+      return true;
+    return markCarrierPath(dot->getOperand(2), iterArg, carrierIfResults,
+                           visited);
+  }
+
+  if (auto wait = dyn_cast<triton::musa::SquadDotWaitOp>(def)) {
+    unsigned idx = result.getResultNumber();
+    return idx < wait.getInputs().size() &&
+           markCarrierPath(wait.getInputs()[idx], iterArg, carrierIfResults,
+                           visited);
+  }
+
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    unsigned idx = result.getResultNumber();
+    bool found = false;
+    auto markRegion = [&](Region &region) {
+      if (region.empty())
+        return true;
+      auto yield = dyn_cast<scf::YieldOp>(region.front().getTerminator());
+      if (!yield || idx >= yield.getNumOperands())
+        return false;
+      llvm::SmallPtrSet<void *, 16> branchVisited;
+      if (!markCarrierPath(yield.getOperand(idx), iterArg, carrierIfResults,
+                           branchVisited))
+        return false;
+      found = true;
+      return true;
+    };
+    if (!markRegion(ifOp.getThenRegion()) ||
+        (ifOp.elseBlock() && !markRegion(ifOp.getElseRegion())))
+      return false;
+    if (found)
+      carrierIfResults.insert(value);
+    return found;
+  }
+
+  // Do not treat arbitrary one-input/one-result tensor operations as carrier
+  // preserving. Most such operations require an unpacked tensor and cannot
+  // legally yield the opaque accumulator type through SCF.
+  return false;
+}
+
+static std::optional<triton::musa::SquadDotOp>
+findSqmmaOnCarrierPath(Value value, Value iterArg,
+                       llvm::SmallPtrSetImpl<void *> &visited) {
+  if (!value || !visited.insert(value.getAsOpaquePointer()).second)
+    return std::nullopt;
+  if (value == iterArg)
+    return std::nullopt;
+  auto result = dyn_cast<OpResult>(value);
+  if (!result)
+    return std::nullopt;
+  Operation *def = result.getOwner();
+  if (auto dot = dyn_cast<triton::musa::SquadDotOp>(def)) {
+    if (dot->getOperand(2) == iterArg)
+      return std::optional<triton::musa::SquadDotOp>(dot);
+    return findSqmmaOnCarrierPath(dot->getOperand(2), iterArg, visited);
+  }
+  if (auto wait = dyn_cast<triton::musa::SquadDotWaitOp>(def)) {
+    unsigned idx = result.getResultNumber();
+    return idx < wait.getInputs().size()
+               ? findSqmmaOnCarrierPath(wait.getInputs()[idx], iterArg, visited)
+               : std::nullopt;
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    unsigned idx = result.getResultNumber();
+    std::optional<triton::musa::SquadDotOp> found;
+    auto findRegion = [&](Region &region) {
+      if (region.empty())
+        return true;
+      auto yield = dyn_cast<scf::YieldOp>(region.front().getTerminator());
+      if (!yield || idx >= yield.getNumOperands())
+        return false;
+      llvm::SmallPtrSet<void *, 16> branchVisited;
+      auto branchDot =
+          findSqmmaOnCarrierPath(yield.getOperand(idx), iterArg, branchVisited);
+      if (branchDot) {
+        if (found && found != branchDot)
+          return false;
+        found = branchDot;
+      }
+      return true;
+    };
+    if (!findRegion(ifOp.getThenRegion()) ||
+        (ifOp.elseBlock() && !findRegion(ifOp.getElseRegion())))
+      return std::nullopt;
+    return found;
+  }
+  return std::nullopt;
+}
+
 static triton::mtgpu::SQMMAEltType
 convertEltType(triton::musa::SQMMAEltType type) {
   return static_cast<triton::mtgpu::SQMMAEltType>(static_cast<int>(type));
@@ -73,8 +214,9 @@ convertAccumulationMode(triton::musa::SQMMAAccumulationMode mode) {
       static_cast<int>(mode));
 }
 
-static std::optional<Candidate> getCandidateForIterArg(scf::ForOp forOp,
-                                                       unsigned iterArgIdx) {
+static std::optional<Candidate>
+getCandidateForIterArg(scf::ForOp forOp, unsigned iterArgIdx,
+                       CarrierValueSet &carrierIfResults) {
   Value iterArg = forOp.getRegionIterArg(iterArgIdx);
   auto tensorTy = getSqmmaAccumulatorTensorType(iterArg.getType());
   if (!tensorTy)
@@ -84,19 +226,39 @@ static std::optional<Candidate> getCandidateForIterArg(scf::ForOp forOp,
   if (!yieldOp || iterArgIdx >= yieldOp.getNumOperands())
     return std::nullopt;
 
-  Value yieldedValue = unwrapYieldedSqmmaValue(yieldOp.getOperand(iterArgIdx));
+  Value originalYieldedValue = yieldOp.getOperand(iterArgIdx);
+  Value yieldedValue = unwrapYieldedSqmmaValue(originalYieldedValue);
   auto sqmma = yieldedValue.getDefiningOp<triton::musa::SquadDotOp>();
-  if (!sqmma || sqmma.getC() != iterArg)
+  if (!sqmma) {
+    llvm::SmallPtrSet<void *, 16> visited;
+    auto nested =
+        findSqmmaOnCarrierPath(originalYieldedValue, iterArg, visited);
+    if (!nested)
+      return std::nullopt;
+    sqmma = *nested;
+  }
+  if (!sqmma)
     return std::nullopt;
 
+  // Validate the complete yielded path even for the direct dot/wait(dot)
+  // fast path. Otherwise an unrelated dot could be rebound to this loop's
+  // initial accumulator solely because it happens to be yielded at the same
+  // result index.
+  llvm::SmallPtrSet<void *, 16> pathVisited;
+  if (!markCarrierPath(originalYieldedValue, iterArg, carrierIfResults,
+                       pathVisited))
+    return std::nullopt;
+
+  bool directYield = originalYieldedValue == yieldedValue;
   return Candidate{
       iterArgIdx, sqmma,
-      triton::mtgpu::SqmmaAccumulatorType::get(forOp.getContext(), tensorTy)};
+      triton::mtgpu::SqmmaAccumulatorType::get(forOp.getContext(), tensorTy),
+      directYield};
 }
 
 static Value materializeTensorAccumulatorForUse(
     Value original, Location loc, IRMapping &mapping,
-    DenseMap<Value, Value> &tensorMaterializations, RewriterBase &rewriter) {
+    TensorMaterializationMap &tensorMaterializations, RewriterBase &rewriter) {
   Value mapped = mapping.lookupOrDefault(original);
   if (!mapped || mapped.getType() == original.getType())
     return mapped;
@@ -106,13 +268,17 @@ static Value materializeTensorAccumulatorForUse(
       !isa<triton::mtgpu::SqmmaAccumulatorType>(mapped.getType()))
     return mapped;
 
-  auto it = tensorMaterializations.find(original);
-  if (it != tensorMaterializations.end())
+  Block *insertionBlock = rewriter.getInsertionBlock();
+  if (!insertionBlock)
+    return mapped;
+  auto &byBlock = tensorMaterializations[original];
+  auto it = byBlock.find(insertionBlock);
+  if (it != byBlock.end())
     return it->second;
 
   Value unpacked = triton::mtgpu::UnpackSqmmaAccumulatorOp::create(
       rewriter, loc, originalTensorTy, mapped);
-  tensorMaterializations[original] = unpacked;
+  byBlock[insertionBlock] = unpacked;
   return unpacked;
 }
 
@@ -180,7 +346,7 @@ static void materializeNestedTensorAccumulatorUses(Operation *root,
 }
 
 static Operation *cloneSqmmaOp(triton::musa::SquadDotOp op, IRMapping &mapping,
-                               DenseMap<Value, Value> &tensorMaterializations,
+                               TensorMaterializationMap &tensorMaterializations,
                                RewriterBase &rewriter) {
   auto lookupOrDefault = [&](Value value) -> Value {
     return value ? mapping.lookupOrDefault(value) : Value();
@@ -191,7 +357,11 @@ static Operation *cloneSqmmaOp(triton::musa::SquadDotOp op, IRMapping &mapping,
   };
   Value mappedA = materializeTensorOperand(op.getA());
   Value mappedB = materializeTensorOperand(op.getB());
-  Value mappedC = lookupOrDefault(op.getC());
+  // Read C through the generic operand list. A loop cloned by an earlier
+  // fixed-point iteration may already expose the opaque carrier on C; the
+  // generated typed accessor only accepts ranked tensor values.
+  Value originalC = op->getOperand(2);
+  Value mappedC = lookupOrDefault(originalC);
   Value mappedUseC = lookupOrDefault(op.getUseC());
   if (auto carrierTy =
           dyn_cast<triton::mtgpu::SqmmaAccumulatorType>(mappedC.getType())) {
@@ -228,11 +398,129 @@ static Operation *cloneSqmmaWaitOp(triton::musa::SquadDotWaitOp op,
   return newOp;
 }
 
+static Operation *
+cloneNestedSqmmaOperation(Operation &op, IRMapping &mapping,
+                          TensorMaterializationMap &tensorMaterializations,
+                          const CarrierValueSet &carrierIfResults,
+                          RewriterBase &rewriter);
+
+static LogicalResult
+cloneSqmmaIfRegion(Region &oldRegion, Region &newRegion, IRMapping &mapping,
+                   TensorMaterializationMap &tensorMaterializations,
+                   const CarrierValueSet &carrierIfResults,
+                   RewriterBase &rewriter) {
+  if (oldRegion.empty() || newRegion.empty())
+    return success();
+
+  Block &oldBlock = oldRegion.front();
+  Block &newBlock = newRegion.front();
+  for (auto [oldArg, newArg] :
+       llvm::zip(oldBlock.getArguments(), newBlock.getArguments()))
+    mapping.map(oldArg, newArg);
+
+  for (Operation &oldOp : oldBlock.without_terminator()) {
+    setInsertionPointBeforeScfTerminator(newBlock, rewriter);
+    Operation *newOp = cloneNestedSqmmaOperation(
+        oldOp, mapping, tensorMaterializations, carrierIfResults, rewriter);
+    if (!newOp)
+      return failure();
+    for (auto [oldResult, newResult] :
+         llvm::zip(oldOp.getResults(), newOp->getResults()))
+      mapping.map(oldResult, newResult);
+  }
+
+  auto oldYield = dyn_cast<scf::YieldOp>(oldBlock.getTerminator());
+  if (!oldYield)
+    return failure();
+  SmallVector<Value> newYieldOperands;
+  newYieldOperands.reserve(oldYield.getNumOperands());
+  for (Value operand : oldYield.getOperands()) {
+    Value mapped = mapping.lookupOrDefault(operand);
+    if (!mapped)
+      return failure();
+    newYieldOperands.push_back(mapped);
+  }
+  setOrCreateScfYield(newBlock, oldYield.getLoc(), newYieldOperands, rewriter);
+  return success();
+}
+
+static Operation *
+cloneNestedSqmmaOperation(Operation &op, IRMapping &mapping,
+                          TensorMaterializationMap &tensorMaterializations,
+                          const CarrierValueSet &carrierIfResults,
+                          RewriterBase &rewriter) {
+  if (auto sqmma = dyn_cast<triton::musa::SquadDotOp>(&op))
+    return cloneSqmmaOp(sqmma, mapping, tensorMaterializations, rewriter);
+  if (auto wait = dyn_cast<triton::musa::SquadDotWaitOp>(&op))
+    return cloneSqmmaWaitOp(wait, mapping, rewriter);
+
+  if (auto ifOp = dyn_cast<scf::IfOp>(&op)) {
+    bool carriesAccumulator =
+        llvm::any_of(ifOp.getResults(), [&](Value result) {
+          return carrierIfResults.contains(result);
+        });
+    if (carriesAccumulator) {
+      SmallVector<Type> resultTypes;
+      resultTypes.reserve(ifOp.getNumResults());
+      for (Value result : ifOp.getResults()) {
+        if (!carrierIfResults.contains(result)) {
+          resultTypes.push_back(result.getType());
+          continue;
+        }
+        auto tensorTy = getSqmmaAccumulatorTensorType(result.getType());
+        if (!tensorTy)
+          return nullptr;
+        resultTypes.push_back(triton::mtgpu::SqmmaAccumulatorType::get(
+            rewriter.getContext(), tensorTy));
+      }
+
+      Value cond = mapping.lookupOrDefault(ifOp.getCondition());
+      auto newIf =
+          scf::IfOp::create(rewriter, ifOp.getLoc(), resultTypes, cond,
+                            /*withElseRegion=*/ifOp.elseBlock() != nullptr,
+                            /*skipRegionBuilder=*/true);
+      newIf->setAttrs(ifOp->getAttrs());
+      if (newIf.getThenRegion().empty())
+        newIf.getThenRegion().push_back(new Block);
+      if (ifOp.elseBlock() && newIf.getElseRegion().empty())
+        newIf.getElseRegion().push_back(new Block);
+
+      if (failed(cloneSqmmaIfRegion(ifOp.getThenRegion(), newIf.getThenRegion(),
+                                    mapping, tensorMaterializations,
+                                    carrierIfResults, rewriter)))
+        return nullptr;
+      if (ifOp.elseBlock() &&
+          failed(cloneSqmmaIfRegion(ifOp.getElseRegion(), newIf.getElseRegion(),
+                                    mapping, tensorMaterializations,
+                                    carrierIfResults, rewriter)))
+        return nullptr;
+      return newIf.getOperation();
+    }
+  }
+
+  IRMapping opMapping(mapping);
+  for (Value operand : op.getOperands()) {
+    Value remapped = materializeTensorAccumulatorForUse(
+        operand, op.getLoc(), mapping, tensorMaterializations, rewriter);
+    if (remapped != mapping.lookupOrDefault(operand))
+      opMapping.map(operand, remapped);
+  }
+  Operation *newOp = rewriter.clone(op, opMapping);
+  materializeNestedTensorAccumulatorUses(newOp, rewriter);
+  return newOp;
+}
+
 static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
                                                RewriterBase &rewriter) {
+  CarrierValueSet carrierIfResults;
   SmallVector<Candidate> candidates;
   for (unsigned idx = 0; idx < forOp.getNumRegionIterArgs(); ++idx) {
-    if (auto candidate = getCandidateForIterArg(forOp, idx))
+    // A loop converted by an earlier fixed-point iteration already exposes
+    // opaque result and iter-arg types and must not be reconsidered.
+    if (!isa<RankedTensorType>(forOp.getResult(idx).getType()) ||
+        !isa<RankedTensorType>(forOp.getRegionIterArg(idx).getType()))
+      continue;
+    if (auto candidate = getCandidateForIterArg(forOp, idx, carrierIfResults))
       candidates.push_back(*candidate);
   }
   if (candidates.empty())
@@ -243,17 +531,22 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
     candidateIdxs.insert(candidate.iterArgIdx);
   triton::musa::SquadDotWaitOp externalFinalWait =
       getCanonicalExternalFinalWait(forOp, candidateIdxs);
+  bool hasDirectYield =
+      llvm::any_of(candidates, [](const Candidate &candidate) {
+        return candidate.directYield;
+      });
 
   Location loc = forOp.getLoc();
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(forOp);
 
   SmallVector<Value> initArgs(forOp.getInitArgs());
+  SmallVector<Operation *> initPacks;
   for (const Candidate &candidate : candidates) {
-    initArgs[candidate.iterArgIdx] =
-        triton::mtgpu::PackSqmmaAccumulatorOp::create(
-            rewriter, loc, candidate.carrierType,
-            initArgs[candidate.iterArgIdx]);
+    auto pack = triton::mtgpu::PackSqmmaAccumulatorOp::create(
+        rewriter, loc, candidate.carrierType, initArgs[candidate.iterArgIdx]);
+    initArgs[candidate.iterArgIdx] = pack;
+    initPacks.push_back(pack.getOperation());
   }
 
   scf::ForOp newFor =
@@ -267,10 +560,13 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
 
   Block &oldBody = forOp.getRegion().front();
   Block &newBody = newFor.getRegion().front();
-  rewriter.setInsertionPointToStart(&newBody);
-  DenseMap<Value, Value> tensorMaterializations;
+  setInsertionPointBeforeScfTerminator(newBody, rewriter);
+  TensorMaterializationMap tensorMaterializations;
 
   for (Operation &op : oldBody.without_terminator()) {
+    // Recursive cloning may leave the insertion point in a nested region.
+    // Restore it before each top-level sibling.
+    setInsertionPointBeforeScfTerminator(newBody, rewriter);
     if (auto sqmma = dyn_cast<triton::musa::SquadDotOp>(op)) {
       Operation *newOp =
           cloneSqmmaOp(sqmma, mapping, tensorMaterializations, rewriter);
@@ -285,15 +581,15 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
       continue;
     }
 
-    IRMapping opMapping(mapping);
-    for (Value operand : op.getOperands()) {
-      Value remapped = materializeTensorAccumulatorForUse(
-          operand, op.getLoc(), mapping, tensorMaterializations, rewriter);
-      if (remapped != mapping.lookupOrDefault(operand))
-        opMapping.map(operand, remapped);
+    Operation *newOp = cloneNestedSqmmaOperation(
+        op, mapping, tensorMaterializations, carrierIfResults, rewriter);
+    if (!newOp) {
+      newFor->dropAllReferences();
+      rewriter.eraseOp(newFor);
+      for (Operation *pack : llvm::reverse(initPacks))
+        rewriter.eraseOp(pack);
+      return false;
     }
-    Operation *newOp = rewriter.clone(op, opMapping);
-    materializeNestedTensorAccumulatorUses(newOp, rewriter);
     for (auto [oldResult, newResult] :
          llvm::zip_equal(op.getResults(), newOp->getResults()))
       mapping.map(oldResult, newResult);
@@ -302,63 +598,80 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
   auto oldYield = cast<scf::YieldOp>(oldBody.getTerminator());
   SmallVector<Value> newYieldOperands;
   newYieldOperands.reserve(oldYield.getNumOperands());
-  for (auto [idx, operand] : llvm::enumerate(oldYield.getOperands())) {
-    Value mappedOperand = mapping.lookupOrDefault(operand);
-    Type expectedType = newFor.getRegionIterArg(idx).getType();
-    if (mappedOperand.getType() != expectedType) {
-      mappedOperand = materializeTensorAccumulatorForUse(
-          operand, oldYield.getLoc(), mapping, tensorMaterializations,
-          rewriter);
-    }
-    newYieldOperands.push_back(mappedOperand);
-  }
-  scf::YieldOp::create(rewriter, oldYield.getLoc(), newYieldOperands);
+  for (Value operand : oldYield.getOperands())
+    newYieldOperands.push_back(mapping.lookupOrDefault(operand));
+  setOrCreateScfYield(newBody, oldYield.getLoc(), newYieldOperands, rewriter);
 
   rewriter.setInsertionPointAfter(newFor);
   DenseMap<Value, Value> externalWaitUnpacks;
-  if (externalFinalWait) {
+  llvm::SmallDenseMap<unsigned, Value> waitedDirectResults;
+  if (externalFinalWait || hasDirectYield) {
     auto oldWait = externalFinalWait;
     SmallVector<Value> newInputs;
-    newInputs.reserve(oldWait.getInputs().size());
-    for (Value input : oldWait.getInputs()) {
-      Value newInput = input;
-      if (auto result = dyn_cast<OpResult>(input)) {
-        if (result.getOwner() == forOp.getOperation()) {
-          newInput = newFor.getResult(result.getResultNumber());
-        } else {
-          Value remapped = mapping.lookupOrDefault(input);
-          if (remapped)
-            newInput = remapped;
-        }
-      }
-      newInputs.push_back(newInput);
-    }
-
-    auto newWait = triton::mtgpu::SqmmaWaitOp::create(
-        rewriter, oldWait.getLoc(), newInputs);
-    newWait->setAttrs(oldWait->getAttrs());
-
-    for (unsigned idx = 0; idx < oldWait.getNumResults(); ++idx) {
-      Value oldResult = oldWait.getResult(idx);
-      Value newResult = newWait.getResult(idx);
-      Value replacement = newResult;
-      if (auto oldInput = dyn_cast<OpResult>(oldWait.getInputs()[idx])) {
-        if (oldInput.getOwner() == forOp.getOperation() &&
-            candidateIdxs.contains(oldInput.getResultNumber())) {
-          auto it = externalWaitUnpacks.find(newResult);
-          if (it == externalWaitUnpacks.end()) {
-            replacement = triton::mtgpu::UnpackSqmmaAccumulatorOp::create(
-                rewriter, oldWait.getLoc(), oldResult.getType(), newResult);
-            externalWaitUnpacks[newResult] = replacement;
+    llvm::SmallDenseMap<unsigned, unsigned> directWaitResultIndices;
+    if (externalFinalWait) {
+      newInputs.reserve(oldWait.getInputs().size());
+      for (auto [inputIndex, input] : llvm::enumerate(oldWait.getInputs())) {
+        Value newInput = input;
+        if (auto result = dyn_cast<OpResult>(input)) {
+          if (result.getOwner() == forOp.getOperation()) {
+            newInput = newFor.getResult(result.getResultNumber());
+            if (candidateIdxs.contains(result.getResultNumber()))
+              directWaitResultIndices[result.getResultNumber()] = inputIndex;
           } else {
-            replacement = it->second;
+            Value remapped = mapping.lookupOrDefault(input);
+            if (remapped)
+              newInput = remapped;
           }
         }
+        newInputs.push_back(newInput);
       }
-      rewriter.replaceAllUsesWith(oldResult, replacement);
     }
 
-    rewriter.eraseOp(oldWait);
+    // Directly yielded carriers have no old wait to clone. Append them to the
+    // final wait, including loops that mix direct and explicit-wait carriers.
+    for (const Candidate &candidate : candidates) {
+      if (candidate.directYield &&
+          !directWaitResultIndices.contains(candidate.iterArgIdx)) {
+        directWaitResultIndices[candidate.iterArgIdx] = newInputs.size();
+        newInputs.push_back(newFor.getResult(candidate.iterArgIdx));
+      }
+    }
+
+    Location waitLoc = externalFinalWait ? oldWait.getLoc() : forOp.getLoc();
+    auto newWait =
+        triton::mtgpu::SqmmaWaitOp::create(rewriter, waitLoc, newInputs);
+    if (externalFinalWait)
+      newWait->setAttrs(oldWait->getAttrs());
+
+    for (const Candidate &candidate : candidates)
+      if (candidate.directYield)
+        waitedDirectResults[candidate.iterArgIdx] =
+            newWait->getResult(directWaitResultIndices[candidate.iterArgIdx]);
+
+    if (externalFinalWait) {
+      for (unsigned idx = 0; idx < oldWait.getNumResults(); ++idx) {
+        Value oldResult = oldWait.getResult(idx);
+        Value newResult = newWait.getResult(idx);
+        Value replacement = newResult;
+        if (auto oldInput = dyn_cast<OpResult>(oldWait.getInputs()[idx])) {
+          if (oldInput.getOwner() == forOp.getOperation() &&
+              candidateIdxs.contains(oldInput.getResultNumber())) {
+            auto it = externalWaitUnpacks.find(newResult);
+            if (it == externalWaitUnpacks.end()) {
+              replacement = triton::mtgpu::UnpackSqmmaAccumulatorOp::create(
+                  rewriter, oldWait.getLoc(), oldResult.getType(), newResult);
+              externalWaitUnpacks[newResult] = replacement;
+            } else {
+              replacement = it->second;
+            }
+          }
+        }
+        rewriter.replaceAllUsesWith(oldResult, replacement);
+      }
+
+      rewriter.eraseOp(oldWait);
+    }
     rewriter.setInsertionPointAfter(newWait);
   }
 
@@ -367,13 +680,30 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
   for (unsigned idx = 0; idx < forOp.getNumResults(); ++idx) {
     Value result = newFor.getResult(idx);
     if (candidateIdxs.contains(idx)) {
+      if (auto waited = waitedDirectResults.find(idx);
+          waited != waitedDirectResults.end())
+        result = waited->second;
       auto tensorTy = cast<RankedTensorType>(forOp.getResult(idx).getType());
       result = triton::mtgpu::UnpackSqmmaAccumulatorOp::create(
           rewriter, loc, tensorTy, result);
     }
     replacements.push_back(result);
   }
-  rewriter.replaceOp(forOp, replacements);
+  // Replace externally visible results and drop dead source-region references
+  // before erasing the old parent. Cross-region RAUW is invalid for nested
+  // async dots still referenced by their source SCF yields.
+  for (auto [oldResult, replacement] :
+       llvm::zip(forOp.getResults(), replacements))
+    oldResult.replaceAllUsesWith(replacement);
+  forOp->walk([&](Operation *oldOp) {
+    if (oldOp != forOp.getOperation()) {
+      oldOp->dropAllUses();
+      oldOp->dropAllReferences();
+    }
+  });
+  forOp->dropAllUses();
+  forOp->dropAllReferences();
+  rewriter.eraseOp(forOp);
   return true;
 }
 

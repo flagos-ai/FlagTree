@@ -89,6 +89,12 @@ class BaseBackend(metaclass=ABCMeta):
         """Create the initial IR module for this backend."""
         return src.make_ir(self.target, options, codegen_fns, module_map, context)
 
+    # flagtree tileir: allow backend-specific TensorDescriptor cache specialization.
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        """Return backend-specific TensorDescriptor cache-key attributes."""
+        return None
+
     @staticmethod
     @abstractmethod
     def supports_target(target: GPUTarget):

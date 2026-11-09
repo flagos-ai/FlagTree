@@ -21,6 +21,26 @@ unsigned getVectorWidth(Type elemTy) {
   return 512 / elemTy.getIntOrFloatBitWidth();
 }
 
+// TLE kernels admit the COMBINE_OP_TLE_EXT kinds (int arithmetic / compares in
+// combine regions -- integer max via select(cmp), int sums). The generic path
+// keeps the historical list: widening it there changes which reduces of
+// non-TLE kernels vectorize, and the reference kernels ams tests compile with
+// are part of the parity surface. Same op-name test as the `is_tle_kernel`
+// binding, so the two can never drift apart.
+static bool moduleHasTLEOp(Operation *anyOp) {
+  ModuleOp mod = anyOp->getParentOfType<ModuleOp>();
+  if (!mod)
+    return false;
+  bool has = false;
+  mod.walk([&](Operation *op) {
+    auto name = op->getName().getStringRef();
+    if (name == "ttg.local_alloc" || name == "triton_xpu.tle_copy_g2l" ||
+        name == "triton_xpu.tle_copy_l2g" || name == "triton_xpu.tle_local_ptr")
+      has = true;
+  });
+  return has;
+}
+
 bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
   // The region lowering emits the combine region op by op
   // (ReduceOpToLLVM::interpretCombine) instead of applying the single defining
@@ -28,11 +48,13 @@ bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
   // and Vectorize's retyping must widen together: that TypeSwitch ends in
   // llvm_unreachable, it does not fall back.
   bool region = reduceCombineRegionEnabled();
+  bool tleAdmit = moduleHasTLEOp(redOp.getOperation());
   for (Block &block : redOp.getCombineOp().getBlocks())
     for (auto &op : block) {
       if (region ? !isa<REDUCE_COMBINE_REGION_OP>(op)
                  : !isa<REDUCE_COMBINE_OP>(op))
-        return false;
+        if (!(tleAdmit && isa<COMBINE_OP_TLE_EXT>(op)))
+          return false;
       // A value captured from outside the region is not retyped when Vectorize
       // retypes the region, so it would leave a vector op with a scalar
       // operand. Constants are the exception: Vectorize rematerializes those as
@@ -56,7 +78,8 @@ bool hasVectorForm(Operation *op) {
   return false;
 }
 
-VecTyCoverage processOpVecTyCoverage(Operation *op) {
+VecTyCoverage processOpVecTyCoverage(Operation *op, bool allowSmemVec,
+                                     bool allowTleVec) {
   if (!op)
     return VecTyCoverage::None;
   // Order matters: the two conditional kinds must be tested before the blanket
@@ -77,6 +100,50 @@ VecTyCoverage processOpVecTyCoverage(Operation *op) {
     return (elemTy.isF16() || elemTy.isF32()) ? VecTyCoverage::Full
                                               : VecTyCoverage::Conditional;
   }
+  // The second instance-aware arm, same shape as the select above. `tt.load` is
+  // only rewritable where the TLE path put it -- pointer produced by a
+  // `tle_local_ptr` over an `ttg.local_alloc` buffer, which is what `tle_vload`
+  // addresses -- so a global-pointer load gets the honest `None`. Classifying
+  // per instance is what lets `cutVectorSegment` keep its `Full`-only rule.
+  // An SM buffer additionally has to have an index `tle_vload` can address, or
+  // the read stays on the scalar SM path.
+  if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
+    if (!allowTleVec)
+      return VecTyCoverage::None;
+    auto lp = triton::xpu::getTLELocalPtrThroughCvt(loadOp.getPtr());
+    Value smOff;
+    return (lp && (triton::xpu::tleSmemSliceOffset(lp, smOff, allowSmemVec) ||
+                   (allowSmemVec && triton::xpu::tleSmemGather(lp))))
+               ? VecTyCoverage::Full
+               : VecTyCoverage::None;
+  }
+  // The TLE store, mirror of the load arm above: rewritable exactly where the
+  // pointer comes from a `tle_local_ptr`, because `tle_vstore` addresses that
+  // buffer and nothing else. A `tt.store` through a global pointer has no such
+  // buffer, so `None` is again the honest answer.
+  if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
+    if (!allowTleVec)
+      return VecTyCoverage::None;
+    auto lp = storeOp.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>();
+    // Writing a cluster-shared buffer has no ownership rule, so it is not a
+    // vectorizable store no matter what the value chain looks like.
+    if (lp && triton::xpu::tleBufferIsSmem(lp.getBuffer()))
+      return VecTyCoverage::None;
+    // A bf16 memory boundary (`xpu.lm_bf16`) is written by the paired f32 ->
+    // bf16 forms, which fold TWO f32 registers into one bf16 register, so the
+    // f32 element count has to be an even number of 16-lane registers. An odd
+    // count has no such form; the store stays scalar rather than reaching the
+    // lowering's assert.
+    // A TLE store's value type is unencoded (the tle_local_ptr it writes
+    // through is), so the per-core count has to be asked of the encoded sibling
+    // -- `getTotalElemsPerThread` on an unencoded type trips a dyn_cast assert.
+    if (lp && storeOp->hasAttr("xpu.lm_bf16") &&
+        (getTotalElemsPerThread(
+             triton::xpu::tleEncodedFacingType(storeOp.getValue())) %
+         (2 * (512 / 32))) != 0)
+      return VecTyCoverage::None;
+    return lp ? VecTyCoverage::Full : VecTyCoverage::None;
+  }
   if (hasVectorForm(op) || isa<TTX_VECTORIZE_RETYPE_OPS>(op))
     return VecTyCoverage::Full;
   return VecTyCoverage::None;
@@ -95,7 +162,7 @@ const char *toString(VecTyCoverage coverage) {
 }
 
 bool vecReportEnabled() {
-  return mlir::triton::tools::getBoolEnvXPU("TRITONXPU_VEC_REPORT");
+  return mlir::triton::tools::getBoolEnv("TRITONXPU_VEC_REPORT");
 }
 
 void reportVecRoot(const char *stage, const char *site, Operation *root,
@@ -161,13 +228,22 @@ bool VectorizabilityAnalysis::binLikeOpVectorize(Value lhs, Value rhs,
                   getElementTypeOrSelf(rhs.getType()).isF32();
   bool isFP16Ty = getElementTypeOrSelf(lhs.getType()).isF16() &&
                   getElementTypeOrSelf(rhs.getType()).isF16();
+  // bf16 shares f16's vector form -- `getVectorType` maps it to a 32-lane bf16
+  // vector and the VV lowering has a bf16 arm -- but the table below listed
+  // every other width and not this one, so `test_tle_vector_add_1d[bfloat16]`
+  // stayed scalar while its f16 and f32 siblings vectorized. VV only: admitting
+  // bf16 here is what makes the SV element-type guard in `collectVUser`
+  // load-bearing, the SV lowering having no bf16 asm string.
+  bool isBF16Ty = getElementTypeOrSelf(lhs.getType()).isBF16() &&
+                  getElementTypeOrSelf(rhs.getType()).isBF16();
   bool isINT32Ty = getElementTypeOrSelf(lhs.getType()).isInteger(32) &&
                    getElementTypeOrSelf(rhs.getType()).isInteger(32);
   bool isINT16Ty = getElementTypeOrSelf(lhs.getType()).isInteger(16) &&
                    getElementTypeOrSelf(rhs.getType()).isInteger(16);
   bool isINT8Ty = getElementTypeOrSelf(lhs.getType()).isInteger(8) &&
                   getElementTypeOrSelf(rhs.getType()).isInteger(8);
-  if (!isFP32Ty && !isFP16Ty && !isINT32Ty && !isINT16Ty && !isINT8Ty) {
+  if (!isFP32Ty && !isFP16Ty && !isBF16Ty && !isINT32Ty && !isINT16Ty &&
+      !isINT8Ty) {
     return false;
   }
 
@@ -237,6 +313,44 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         isVectorized = vectorize(storeOp.getValue().getDefiningOp(), visited,
                                  vectorizedOps);
       })
+      // The TLE store, paired with the TLE leaf load below. Body is the xpu
+      // store's, verbatim -- a store carries no footprint question of its own,
+      // it just asks whether the value it writes can be produced in vector
+      // form. The added guard is again the pointer's producer: without a
+      // `tle_local_ptr` there is no per-core LM buffer for `tle_vstore` to
+      // address, so the walk must veto instead of claiming the chain.
+      .Case<triton::StoreOp>([&](triton::StoreOp storeOp) {
+        if (!this->tleVec)
+          return;
+        auto lpS = storeOp.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>();
+        if (!lpS || triton::xpu::tleBufferIsSmem(lpS.getBuffer()))
+          return;
+        isVectorized = vectorize(storeOp.getValue().getDefiningOp(), visited,
+                                 vectorizedOps);
+      })
+      // The TLE leaf load. On that path there is no GM2LM/xpu.load pair: the
+      // pointer comes straight from a `tle_local_ptr` over an `ttg.local_alloc`
+      // buffer and the `tt.load` survives into the compute segment, so without
+      // a Case here the walk vetoes on it and takes the whole chain down. Body
+      // is the xpu load's verbatim -- the footprint question is all there is --
+      // plus a guard on the pointer's producer, mirroring
+      // processOpVecTyCoverage.
+      .Case<triton::LoadOp>([&](triton::LoadOp loadOp) {
+        if (!this->tleVec)
+          return;
+        auto lp = triton::xpu::getTLELocalPtrThroughCvt(loadOp.getPtr());
+        Value smOff;
+        if (!lp ||
+            !(triton::xpu::tleSmemSliceOffset(lp, smOff, this->tleSmemVec) ||
+              (this->tleSmemVec && triton::xpu::tleSmemGather(lp))))
+          return;
+        Type elemTy = getElementTypeOrSelf(loadOp.getType());
+        if (!elemTy.isIntOrFloat())
+          return;
+        auto vectorWidth = 512 / elemTy.getIntOrFloatBitWidth();
+        isVectorized = askFit(loadOp.getResult(), FitQuery::WholeVectors,
+                              vectorWidth) != Fit::No;
+      })
       .Case<triton::xpu::ReduceOp>([&](auto reduceOp) {
         if (ReduceVec) {
           isVectorized = true;
@@ -262,6 +376,10 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         } else {
           isVectorized = false;
         }
+      })
+      .Case<triton::xpu::UnpackOp>([&](auto unpackOp) {
+        // The closure stops at the vector-to-scalar boundary.
+        isVectorized = true;
       })
       .Case<triton::xpu::ExtractOp>([&](auto extractOp) {
         isVectorized = vectorize(extractOp.getTensor().getDefiningOp(), visited,
@@ -332,7 +450,17 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         if (!cvtResTy)
           return;
         auto cvtOpResEncoding = cvtResTy.getEncoding();
-        if (isa<triton::xpu::ClusterLayoutAttr>(cvtOpResEncoding)) {
+        // A missing encoding is looked through like a cluster layout: the
+        // explicit null arm is what admits it, because `isa_and_nonnull` on its
+        // own rejects null. The TLE type conversion emits exactly this shape
+        // to hand a value to `tt.store` (`convert_layout tensor<64x256xf16,
+        // #cluster1> -> tensor<64x256xf16>`): no per-core reshuffle, only the
+        // layout dropped so a plain triton op can take it. Vetoing there would
+        // take the whole TLE store chain down, and it is not the case the guard
+        // is aimed at -- that is a cvt into a *different* layout, which is a
+        // real reshuffle.
+        if (!cvtOpResEncoding ||
+            isa_and_nonnull<triton::xpu::ClusterLayoutAttr>(cvtOpResEncoding)) {
           isVectorized = vectorize(cvtOp.getOperand().getDefiningOp(), visited,
                                    vectorizedOps);
         }
@@ -342,7 +470,14 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
         auto fv = selectOp.getFalseValue();
         auto tType = getElementTypeOrSelf(tv.getType());
         auto fType = getElementTypeOrSelf(fv.getType());
-        isVectorized = (tType == fType && (tType.isF16() || tType.isF32()) &&
+        // Element gate widened from a stale f16/f32-only subset to the
+        // canonical predicate -- but only for TLE kernels: an i32 masked select
+        // (max-reduce's INT_MIN fill) is just as vectorizable there. The
+        // generic path keeps the f16/f32 gate so non-TLE kernels are unchanged.
+        bool elemOK = moduleHasTLEOp(selectOp.getOperation())
+                          ? vectorizedTyValid(tType)
+                          : (tType.isF16() || tType.isF32());
+        isVectorized = (tType == fType && elemOK &&
                         binLikeOpVectorize(tv, fv, visited, vectorizedOps));
       })
       .Case<arith::CmpIOp>([&](auto cmpIOp) {
@@ -496,6 +631,27 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
                        vectorize(unaryOp.getOperand().getDefiningOp(), visited,
                                  vectorizedOps);
       })
+      // The two lane-count-changing casts. `VExtF` turns one vector<32xf16>
+      // into two vector<16xf32> and `VTruncF` folds the pair back, so the two
+      // sides agree on the scalar element count and nothing else -- fine here
+      // because processOpVecTy derives each op's vector type from its own
+      // result type. The element-type pairs are what the two lowerings assert
+      // on, so a wider pair admitted here would reach those asserts instead of
+      // staying scalar.
+      .Case<arith::ExtFOp>([&](arith::ExtFOp castOp) {
+        Type inTy = getElementTypeOrSelf(castOp.getIn().getType());
+        Type outTy = getElementTypeOrSelf(castOp.getResult().getType());
+        isVectorized = (inTy.isF16() || inTy.isBF16()) && outTy.isF32() &&
+                       vectorize(castOp.getOperand().getDefiningOp(), visited,
+                                 vectorizedOps);
+      })
+      .Case<arith::TruncFOp>([&](arith::TruncFOp castOp) {
+        Type inTy = getElementTypeOrSelf(castOp.getIn().getType());
+        Type outTy = getElementTypeOrSelf(castOp.getResult().getType());
+        isVectorized = inTy.isF32() && outTy.isF16() &&
+                       vectorize(castOp.getOperand().getDefiningOp(), visited,
+                                 vectorizedOps);
+      })
       .Case<ARITH_BINARY_FLOAT_OP>([&](auto binOp) {
         auto lhs = binOp.getLhs();
         auto rhs = binOp.getRhs();
@@ -568,7 +724,7 @@ const char *toString(VState state) {
 }
 
 bool vflowReportEnabled() {
-  return mlir::triton::tools::getBoolEnvXPU("TRITONXPU_VFLOW_REPORT");
+  return mlir::triton::tools::getBoolEnv("TRITONXPU_VFLOW_REPORT");
 }
 
 namespace {
@@ -727,6 +883,50 @@ void VectorFlowAnalysis::visit(Operation *op) {
       })
       .Case<triton::xpu::StoreOp>(
           [&](auto storeOp) { pin(storeOp.getValue(), VState::Vector); })
+      // The TLE store, seeded like the xpu store above so `cutVectorSegment`
+      // can end a segment at it. A non-TLE `tt.store` gets nothing pinned:
+      // there is no rewrite for it, and pinning its operand Vector would invite
+      // the segment to end at an op that cannot consume a vector.
+      .Case<triton::StoreOp>([&](triton::StoreOp storeOp) {
+        auto lpS = storeOp.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>();
+        if (!this->tleVec || !lpS ||
+            triton::xpu::tleBufferIsSmem(lpS.getBuffer())) {
+          pin(storeOp.getValue(), VState::Scalar);
+          return;
+        }
+        pin(storeOp.getValue(), VState::Vector);
+      })
+      // The TLE leaf load, seeded like the xpu load above. Non-TLE `tt.load` is
+      // pinned Scalar rather than left Unset: `.Default` would have done that
+      // anyway, and being explicit keeps the guard here the same shape as the
+      // one in the closure walk and in processOpVecTyCoverage. All three have
+      // to agree on which instances are rewritable.
+      .Case<triton::LoadOp>([&](triton::LoadOp loadOp) {
+        Value result = loadOp.getResult();
+        if (!this->tleVec) {
+          pin(result, VState::Scalar);
+          return;
+        }
+        auto lp = triton::xpu::getTLELocalPtrThroughCvt(loadOp.getPtr());
+        Value smOff;
+        if (!lp ||
+            !(triton::xpu::tleSmemSliceOffset(lp, smOff, this->tleSmemVec) ||
+              (this->tleSmemVec && triton::xpu::tleSmemGather(lp)))) {
+          pin(result, VState::Scalar);
+          return;
+        }
+        Type elemTy = getElementTypeOrSelf(result.getType());
+        if (!elemTy.isIntOrFloat() || !vectorizedTyValid(elemTy)) {
+          pin(result, VState::Scalar);
+          return;
+        }
+        unsigned width = getVectorWidth(elemTy);
+        Fit fit = fitOracle(result, FitQuery::WholeVectors, width);
+        if (fit == Fit::Yes)
+          pin(result, VState::Vector);
+        else if (fit == Fit::No)
+          pin(result, VState::Scalar);
+      })
       .Case<triton::xpu::ReduceOp>([&](auto reduceOp) {
         // The transfer function of step 2.2 (§3.1): operands may be Vector, the
         // entry is a boundary, the results are Scalar.
@@ -757,6 +957,14 @@ void VectorFlowAnalysis::visit(Operation *op) {
         // Vector. That disagreement is the modelled boundary; VFlow's per-root
         // line classifies it as `kind=boundary` rather than folding it into
         // agree=1.
+      })
+      .Case<triton::xpu::UnpackOp>([&](auto unpackOp) {
+        pin(unpackOp.getSrc(), VState::Vector);
+        pin(unpackOp.getResult(), VState::Scalar);
+      })
+      .Case<triton::xpu::PackOp>([&](auto packOp) {
+        pin(packOp.getSrc(), VState::Scalar);
+        pin(packOp.getResult(), VState::Vector);
       })
       .Case<triton::xpu::BroadcastOp>([&](auto bcOp) {
         // A broadcast that replicates along the innermost (vectorized) axis is

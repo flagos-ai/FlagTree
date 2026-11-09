@@ -9,7 +9,7 @@ add_xpu_sdnn_object(TritonSDNNTransforms
   ${CMAKE_CURRENT_SOURCE_DIR}/CombinePatterns.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/CombineBefore.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/ResolveLayoutConflict.cpp.o
-  # internal d116bdf4: Combine.cpp removed; new Transforms added
+  # sync source d116bdf4: Combine.cpp removed; new Transforms added
   ${CMAKE_CURRENT_SOURCE_DIR}/FlattenMxScale.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/LowerDotScaled.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MxTmLayout.cpp.o
@@ -30,7 +30,6 @@ add_xpu_sdnn_object(TritonSDNNTransforms
   ${CMAKE_CURRENT_SOURCE_DIR}/OptimizeRcLayout.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/LowerRcSubview.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/KLoopAccModification.cpp.o
-  ${CMAKE_CURRENT_SOURCE_DIR}/MaterializeDeferredRaw.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Utility.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/SchedulePrintOp.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/RemoveDsOp.cpp.o

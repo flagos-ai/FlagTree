@@ -69,13 +69,24 @@ jobs:
         shell: bash
         run: |
           set -x
-          source ~/env-3.6.sh
-          /usr/local/cuda/bin/tileiras --version
+          source ~/env.sh
           export FLAGTREE_BACKEND=tileir
           export CMAKE_BUILD_PARALLEL_LEVEL=32
           export TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas"
           export TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell"
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+          TILEIRAS_PATH=$(python3 -c 'from triton.backends.tileir.conf import TileIREnvConf; print(TileIREnvConf.get_tileiras_path())')
+          "$TILEIRAS_PATH" --version | tee /tmp/flagtree_tileiras_version.txt
+          grep -F 'V13.4.59' /tmp/flagtree_tileiras_version.txt
+
+      - name: TileIR Lowering Tests
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          BUILD_DIR=$(find build -maxdepth 1 -type d -name 'cmake.*' -print -quit)
+          lit -sv "$BUILD_DIR/third_party/tileir/test"
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -85,12 +96,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: tileir
 
-      - name: Unit Test
+      - name: TileIR End-to-End Tests
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
           source ~/env.sh
+          python3 -m pytest python/test/tle/unit/test_tileir_router.py
           rm -rf /tmp/flagtree_tileir_ci_01_cache /tmp/flagtree_tileir_ci_02_cache
           TRITON_CACHE_DIR=/tmp/flagtree_tileir_ci_01_cache \
             python3 python/tutorials/tileir/01-load-view-token-ordering.py

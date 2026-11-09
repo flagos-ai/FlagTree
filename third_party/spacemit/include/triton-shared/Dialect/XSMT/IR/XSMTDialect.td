@@ -13,6 +13,7 @@ def XSMT_Dialect : Dialect {
 
   let extraClassDeclaration = [{
     void registerTypes();
+    void registerAttrs();
   }];
 
   let dependentDialects = [
@@ -21,6 +22,7 @@ def XSMT_Dialect : Dialect {
   ];
 
   let useDefaultTypePrinterParser = 1;
+  let useDefaultAttributePrinterParser = 1;
 }
 
 #endif

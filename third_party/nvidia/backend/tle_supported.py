@@ -37,4 +37,5 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.wgmma",
     "gpu.wgmma_wait",
     "gpu.range",
+    "gpu.pipeline",
 ]

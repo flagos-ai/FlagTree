@@ -9,7 +9,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Analysis/TileAnalysis.h"
 #include "triton/Analysis/VectorizabilityAnalysis.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -172,7 +172,11 @@ struct TritonXPUVectorizePass
 
   RankedTensorType getVectorType(Type tensorType, unsigned _elemWidth = 0,
                                  bool useElemTy = false) {
-    unsigned numElems = getTotalElemsPerThread(tensorType);
+    // A TLE tensor can arrive with no encoding at all; `withTLEDefaultEncoding`
+    // supplies the reading the lowering gives it, so the count asked for here
+    // is the same one `TypeConverter` will hand the emitted code.
+    unsigned numElems =
+        getTotalElemsPerThread(withTLEDefaultEncoding(tensorType));
     Type elemTy = getElementTypeOrSelf(tensorType);
     auto elemWidth =
         _elemWidth == 0 ? elemTy.getIntOrFloatBitWidth() : _elemWidth;
@@ -193,19 +197,29 @@ struct TritonXPUVectorizePass
       newShape[rank - 1] /= vectorWidth;
 
       // Step 3. getEncoding
-      auto oriEncoding =
-          mlir::cast<triton::xpu::ClusterLayoutAttr>(oriTensorTy.getEncoding());
-      auto sizePerCore = oriEncoding.getSizePerCore().vec();
-      auto corePerGroup = oriEncoding.getCoresPerGroup().vec();
-      auto groupsPerCluster = oriEncoding.getGroupsPerCluster().vec();
-      auto order = oriEncoding.getOrder().vec();
+      //
+      // TLE IR carries unencoded tensors: the TLE type conversion leaves LM
+      // ptr-tensors unencoded, so the value crossing into a `tt.store` gets a
+      // `convert_layout tensor<64x256xf16, #cluster1> -> tensor<64x256xf16>`.
+      // There is no per-core split to rewrite in that case -- the shape math
+      // above is a tensor-level property -- so the absent encoding stays absent
+      // rather than being invented.
+      Attribute newEncoding;
+      if (auto oriEncoding =
+              mlir::dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(
+                  oriTensorTy.getEncoding())) {
+        auto sizePerCore = oriEncoding.getSizePerCore().vec();
+        auto corePerGroup = oriEncoding.getCoresPerGroup().vec();
+        auto groupsPerCluster = oriEncoding.getGroupsPerCluster().vec();
+        auto order = oriEncoding.getOrder().vec();
 
-      sizePerCore[rank - 1] =
-          std::max(1, int(sizePerCore[rank - 1] / vectorWidth));
+        sizePerCore[rank - 1] =
+            std::max(1, int(sizePerCore[rank - 1] / vectorWidth));
 
-      auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
-          tensorType.getContext(), sizePerCore, corePerGroup, groupsPerCluster,
-          order);
+        newEncoding = triton::xpu::ClusterLayoutAttr::get(
+            tensorType.getContext(), sizePerCore, corePerGroup,
+            groupsPerCluster, order);
+      }
 
       // Step 4. create RankedTensorType
       newTensorTy =
@@ -217,7 +231,8 @@ struct TritonXPUVectorizePass
       VectorType newVectorType = mlir::VectorType::get(1, elemTy);
       // Step 2. getEncoding
       auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
-          tensorType.getContext(), {1}, {4}, {16}, {0});
+          tensorType.getContext(), ArrayRef<unsigned>{1}, ArrayRef<unsigned>{4},
+          ArrayRef<unsigned>{16}, ArrayRef<unsigned>{0});
       // Step 3. create RankedTensorType
       newTensorTy = useElemTy
                         ? RankedTensorType::get(1, elemTy, newEncoding)
@@ -230,13 +245,12 @@ struct TritonXPUVectorizePass
   }
 
   // `getVectorType`'s precondition, asked *before* calling it. That function
-  // reads the element type's bit width unconditionally (:174) and casts the
-  // encoding unconditionally (:193), so a `!tt.ptr<f16>` element -- which
-  // reaches the boundary check as a loop-carried `addptr` result, findings
-  // 1.69 -- trips an MLIR assertion, and a per-core count that is neither 1
-  // nor a multiple of the lane count ends in the `llvm_unreachable` at :222.
-  // All three mean "no vector form", which is exactly what the callers want to
-  // reject, so none of them may be reached by making the call.
+  // reads the element type's bit width unconditionally, so a `!tt.ptr<f16>`
+  // element -- which reaches the boundary check as a loop-carried `addptr`
+  // result, findings 1.69 -- trips an MLIR assertion, and a per-core count that
+  // is neither 1 nor a multiple of the lane count ends in its
+  // `llvm_unreachable`. Both mean "no vector form", which is exactly what the
+  // callers want to reject, so none of them may be reached by making the call.
   bool vectorFormExists(RankedTensorType tensorTy) {
     if (tensorTy.getRank() == 0)
       return false;
@@ -246,13 +260,19 @@ struct TritonXPUVectorizePass
     unsigned width = elemTy.getIntOrFloatBitWidth();
     if (width == 0 || width > 512)
       return false;
-    unsigned numElems = getTotalElemsPerThread(tensorTy);
+    unsigned numElems =
+        getTotalElemsPerThread(withTLEDefaultEncoding(Type(tensorTy)));
     if (numElems == 1)
       return true;
     if (numElems == 0 || numElems % (512 / width) != 0)
       return false;
-    return !!mlir::dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(
-        tensorTy.getEncoding());
+    // An absent encoding is admissible -- `getVectorType` leaves it absent and
+    // reads the count through `withTLEDefaultEncoding`, which is how a TLE
+    // store-facing tensor is carried. A *present* encoding that is not a
+    // cluster layout is not: `getVectorType` would drop it silently.
+    Attribute encoding = tensorTy.getEncoding();
+    return !encoding ||
+           !!mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(encoding);
   }
 
   // Returns false without touching the IR when some member of the set has no
@@ -274,7 +294,8 @@ struct TritonXPUVectorizePass
     // this report plus scalar code rather than as wrong code; drift the other
     // way still reaches the `.Default` assertion.
     for (Operation *op : vectorizedOps) {
-      if (processOpVecTyCoverage(op) != VecTyCoverage::None)
+      if (processOpVecTyCoverage(op, this->tleSmemVec, this->tleVec) !=
+          VecTyCoverage::None)
         continue;
       if (vecReportEnabled())
         llvm::errs() << "[VecTyRefuse] set=" << vectorizedOps.size()
@@ -297,6 +318,150 @@ struct TritonXPUVectorizePass
           .Case<triton::xpu::LM2GMMaskOp>(
               [&](auto lm2gmmaskOp) { (void)lm2gmmaskOp; })
           .Case<triton::xpu::StoreOp>([&](auto storeOp) { (void)storeOp; })
+          // The TLE leaf load. Its vector form addresses the whole per-core LM
+          // buffer, so the per-element pointer tensor goes away with the scalar
+          // load -- slot i of the result is LM[i*W : (i+1)*W], the contract
+          // XPUTLELocalPtrOpConversion already hands out (`lmBase + i`, indices
+          // ignored) and `test_tle_vector_add_1d` guards numerically. The
+          // `tle_local_ptr` is left alone: the ams kernels point several loads
+          // and a store at one buffer, so canonicalize drops it once the other
+          // uses are gone.
+          .Case<triton::LoadOp>([&](triton::LoadOp loadOp) {
+            auto lp = getTLELocalPtrThroughCvt(loadOp.getPtr());
+            if (!lp)
+              llvm::report_fatal_error(
+                  "tt.load reached processOpVecTy without a tle_local_ptr "
+                  "producer; the coverage predicate and this dispatch "
+                  "disagree");
+            // SM gather (non-slice index into a cluster-shared buffer): keep it
+            // a vector tt.load with a marker, like the bf16 leaf below, and let
+            // XPUTLETritonLoadOpConversion emit one SM vgather (`vgathers`) per
+            // result vector with the index as a per-lane offset. This keeps the
+            // affine chain vector -- the gather was the one op forcing it
+            // scalar. The index stays scalar per register; the lowering builds
+            // the offset vector from it.
+            if (tleSmemGather(lp)) {
+              Type facingSegTy = tleEncodedFacingTypeOrNull(loadOp.getResult());
+              if (!facingSegTy)
+                llvm::report_fatal_error(
+                    "TLE SM gather has no encoded sibling to size it");
+              auto segVecTy = getVectorType(facingSegTy);
+              OpBuilder segBuilder(loadOp);
+              Value segPtr = makeVectorTLELocalPtr(
+                  segBuilder, lp, cast<RankedTensorType>(segVecTy));
+              auto segLd = segBuilder.create<triton::LoadOp>(
+                  loadOp.getLoc(), segPtr, loadOp.getCache(), loadOp.getEvict(),
+                  loadOp.getIsVolatile());
+              segLd->setAttr("xpu.sm_gather", segBuilder.getUnitAttr());
+              loadOp.getResult().replaceAllUsesWith(segLd.getResult());
+              loadOp.erase();
+              return;
+            }
+            // An SM buffer holds the whole array once per cluster, so its index
+            // tensor is what selects the elements: `tleSmemSliceOffset` is the
+            // shared admission check (the coverage predicate asks the same one)
+            // and hands back the uniform addend, which becomes the op's element
+            // offset. LM buffers get a null offset -- the lowering ignores
+            // their indices because the staging DMA already placed this core's
+            // slice.
+            Value smOff;
+            if (!tleSmemSliceOffset(lp, smOff, this->tleSmemVec))
+              llvm::report_fatal_error(
+                  "TLE vload on a scope=smem buffer whose index is not "
+                  "[uniform +] arange(0, n); the coverage predicate and this "
+                  "dispatch disagree");
+            // Mirror of the store side below: an output buffer's
+            // `tle_local_ptr` is unencoded, so `tt.load` off it has an
+            // unencoded result, and the default reading of that splits the
+            // *last* dim across the cores -- once that dim has been divided by
+            // the vector width it reports the whole tile per core. The encoding
+            // on the cvt the TLE type conversion left next to the load is what
+            // sizes the `tle_vload` (XPUTLEVLoadOpConversion reads the
+            // converted type); no sibling means no size to trust, so stop
+            // rather than let `withTLEDefaultEncoding` guess one.
+            Type facingTy = tleEncodedFacingTypeOrNull(loadOp.getResult());
+            if (!facingTy)
+              llvm::report_fatal_error(
+                  "TLE vload has no encoded sibling to size it: the TLE type "
+                  "conversion materializes a convert_layout next to every "
+                  "unencoded TLE tensor, and the vector width is read off it");
+            auto newVectorizedTensorTy = getVectorType(facingTy);
+            OpBuilder builder(loadOp);
+            // A bf16 buffer read into f32 registers (`xpu.lm_bf16`, stamped by
+            // tritonxpu-tle-dtype-convert) has to stay a tt.load, retyped per
+            // vector slot: the placement is bit arithmetic XPU3 has no
+            // instruction for, so XPUTLETritonLoadOpConversion fuses it into
+            // the load with VecBF16ToFP32{,Unordered}. `tle_vload` cannot
+            // express it -- its result type is the buffer's, i.e. bf16 -- so
+            // converting one would read the bf16 bytes as f32 and be silently
+            // wrong. smem buffers keep the tle_vload form.
+            if (loadOp->hasAttr("xpu.lm_bf16") &&
+                !tleBufferIsSmem(lp.getBuffer())) {
+              Value vecPtr = makeVectorTLELocalPtr(
+                  builder, lp, cast<RankedTensorType>(newVectorizedTensorTy));
+              auto newLd = builder.create<triton::LoadOp>(
+                  loadOp.getLoc(), vecPtr, loadOp.getCache(), loadOp.getEvict(),
+                  loadOp.getIsVolatile());
+              newLd->setAttr("xpu.lm_bf16", builder.getUnitAttr());
+              loadOp.getResult().replaceAllUsesWith(newLd.getResult());
+              loadOp.erase();
+              return;
+            }
+            auto vload = builder.create<triton::xpu::TLEVLoadOp>(
+                loadOp.getLoc(), newVectorizedTensorTy, lp.getBuffer(),
+                /*loopIndex=*/Value(), /*smElemOffset=*/smOff);
+            loadOp.getResult().replaceAllUsesWith(vload.getResult());
+            loadOp.erase();
+          })
+          // The TLE store, mirror of the leaf load above. Unlike
+          // `xpu::StoreOp`, which already is the final op and simply takes a
+          // vector operand, this one has to be rewritten: only `tle_vstore`
+          // addresses the buffer as whole vectors, writing slot i to LM[i*W :
+          // (i+1)*W] -- the same slot numbering `tle_vload` reads by, which
+          // `tleSlotIndex` is the single place to turn into an LM index.
+          .Case<triton::StoreOp>([&](triton::StoreOp storeOp) {
+            auto lp =
+                storeOp.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>();
+            if (!lp || tleBufferIsSmem(lp.getBuffer()))
+              llvm::report_fatal_error(
+                  "tt.store reached processOpVecTy without a per-core "
+                  "tle_local_ptr producer; the coverage predicate and this "
+                  "dispatch disagree (a scope=smem buffer has no store form)");
+            // Past the encoding-stripping convert_layout:
+            // XPUTLEVStoreOpConversion sizes the write from the value's own
+            // type, and only the encoded one carries the per-core split. Taking
+            // the unencoded result of that cvt would make it write the whole
+            // tile per core.
+            Value value = storeOp.getValue();
+            while (auto cvt = dyn_cast_or_null<triton::xpu::ConvertLayoutOp>(
+                       value.getDefiningOp())) {
+              if (!cast<RankedTensorType>(cvt.getResult().getType())
+                       .getEncoding())
+                value = cvt.getOperand();
+              else
+                break;
+            }
+            OpBuilder builder(storeOp);
+            // Symmetric to the bf16 load leaf: keep a vector tt.store so
+            // XPUTLETritonStoreOpConversion can fuse the f32 -> bf16 placement
+            // with VecFP32ToBF16{,Unordered,Slow}. The coverage predicate
+            // already refused the odd register counts the paired forms cannot
+            // express, so no store reaching here needs a second check.
+            if (storeOp->hasAttr("xpu.lm_bf16")) {
+              auto vecTy = cast<RankedTensorType>(value.getType());
+              Value vecPtr = makeVectorTLELocalPtr(builder, lp, vecTy);
+              auto newSt = builder.create<triton::StoreOp>(
+                  storeOp.getLoc(), vecPtr, value, storeOp.getCache(),
+                  storeOp.getEvict());
+              newSt->setAttr("xpu.lm_bf16", builder.getUnitAttr());
+              storeOp.erase();
+              return;
+            }
+            builder.create<triton::xpu::TLEVStoreOp>(storeOp.getLoc(),
+                                                     lp.getBuffer(), value,
+                                                     /*loopIndex=*/Value());
+            storeOp.erase();
+          })
           .Case<ARITH_BINARY_FLOAT_OP>([&](auto binOp) {
             auto newVectorizedTensorTy =
                 getVectorType(binOp.getResult().getType());
@@ -326,6 +491,24 @@ struct TritonXPUVectorizePass
                 createUnaryVectorizedOp(unaryOp, newVectorizedTensorTy);
             unaryOp.replaceAllUsesWith(newUnaryOp.getResult());
             unaryOp.erase();
+          })
+          // Same body as SIToFPOp, but worth its own Case for the way the type
+          // is derived: `getVectorType` is applied to this op's own result
+          // type, so an f16 -> f32 extf becomes tensor<Nxvector<16xf32>> from a
+          // tensor<N/2xvector<32xf16>> operand. The lane counts differ on
+          // purpose -- VExtFOpConversion splits each input vector into a
+          // low/high pair -- and only the scalar element count survives the
+          // cast. Without a Case here both would land on the `.Default`
+          // llvm_unreachable, since `VOp<arith::ExtFOp>` is in
+          // TTX_SCALAR_TO_VECTOR_OPS and the coverage guard at the top of this
+          // function therefore lets them through.
+          .Case<arith::ExtFOp, arith::TruncFOp>([&](auto castOp) {
+            auto newVectorizedTensorTy =
+                getVectorType(castOp.getResult().getType());
+            auto newCastOp =
+                createUnaryVectorizedOp(castOp, newVectorizedTensorTy);
+            castOp.replaceAllUsesWith(newCastOp.getResult());
+            castOp.erase();
           })
           .Case<arith::ConstantOp>([&](auto constOp) {
             auto newVectorizedTensorTy =
@@ -519,7 +702,7 @@ struct TritonXPUVectorizePass
   // Default off: the model can only ever refuse a vectorization the pass would
   // otherwise perform, so leaving it off keeps the emitted code unchanged.
   bool vecCostModelEnabled() {
-    return mlir::triton::tools::getBoolEnvXPU("TRITONXPU_VEC_COST");
+    return mlir::triton::tools::getBoolEnv("TRITONXPU_VEC_COST");
   }
 
   // Whether retyping `vectorizedOps` to vectors executes fewer operations than
@@ -607,7 +790,8 @@ struct TritonXPUVectorizePass
                                         Type rootOpTy, std::string logMessage,
                                         triton::xpu::ReduceOp redOp = {}) {
     VectorizabilityAnalysis analysis(ReduceVec, dumpFlag,
-                                     vectorFitsReduceOperand, vectorFitsValue);
+                                     vectorFitsReduceOperand, vectorFitsValue,
+                                     this->tleSmemVec, this->tleVec);
     if (!vectorFitsRoot(rootOpTy)) {
       if (vecReportEnabled() && !rootOps.empty())
         reportVecRoot("in-vectorize", "reduce-operand-shared", rootOps.front(),
@@ -645,11 +829,14 @@ struct TritonXPUVectorizePass
                                   triton::xpu::ReduceOp redOp = {}) {
     // Derived, not passed in: the only two call sites are the store walk and
     // the reduce-operand loop, and the root op kind already tells them apart.
-    const char *site = isa_and_nonnull<triton::xpu::StoreOp>(rootOp)
-                           ? "store"
-                           : "reduce-operand";
+    // The TLE store walk joins the first: same site, different store op.
+    const char *site =
+        isa_and_nonnull<triton::xpu::StoreOp, triton::StoreOp>(rootOp)
+            ? "store"
+            : "reduce-operand";
     VectorizabilityAnalysis analysis(ReduceVec, dumpFlag,
-                                     vectorFitsReduceOperand, vectorFitsValue);
+                                     vectorFitsReduceOperand, vectorFitsValue,
+                                     this->tleSmemVec, this->tleVec);
     if (!vectorFitsRoot(rootOpTy)) {
       if (vecReportEnabled() && rootOp) {
         reportVecRoot("in-vectorize", site, rootOp, rootOpTy,
@@ -730,7 +917,7 @@ struct TritonXPUVectorizePass
     if (!keyValue)
       return closure;
 
-    VectorFlowAnalysis vflow(vectorFitsValue);
+    VectorFlowAnalysis vflow(vectorFitsValue, this->tleSmemVec, this->tleVec);
     vflow.run(funcOp);
     decisionDomain = buildVecSetDomain(keyValue, vflow, closure);
     bool equivalent = sameActingSet(closure, decisionDomain.term);
@@ -786,7 +973,7 @@ struct TritonXPUVectorizePass
     Type elemTy = getElementTypeOrSelf(tensorTy);
     if (mlir::isa<mlir::VectorType>(elemTy) || !elemTy.isIntOrFloat())
       return 0;
-    int64_t n = getTotalElemsPerThread(tensorTy);
+    int64_t n = getTotalElemsPerThread(withTLEDefaultEncoding(Type(tensorTy)));
     int64_t w = 512 / elemTy.getIntOrFloatBitWidth();
     if (n == 0 || w == 0 || n % w != 0)
       return 0;
@@ -1012,7 +1199,7 @@ struct TritonXPUVectorizePass
     if (!funcOp || !keyValue)
       return false;
 
-    VectorFlowAnalysis vflow(vectorFitsValue);
+    VectorFlowAnalysis vflow(vectorFitsValue, this->tleSmemVec, this->tleVec);
     vflow.run(funcOp);
     OperationTree noClosure;
     VecSetDomain domain = buildVecSetDomain(keyValue, vflow, noClosure);
@@ -1045,7 +1232,8 @@ struct TritonXPUVectorizePass
     for (Operation *op : segment) {
       if (reject)
         break;
-      if (processOpVecTyCoverage(op) != VecTyCoverage::Full)
+      if (processOpVecTyCoverage(op, this->tleSmemVec, this->tleVec) !=
+          VecTyCoverage::Full)
         reject = "coverage";
       else if (isa<triton::xpu::StoreOp, triton::xpu::LM2GMOp,
                    triton::xpu::LM2GMMaskOp>(op)) {
@@ -1239,7 +1427,7 @@ struct TritonXPUVectorizePass
     Value keyValue = decisionKeyValue(rootOp);
     if (!funcOp || !keyValue)
       return;
-    VectorFlowAnalysis vflow(vectorFitsValue);
+    VectorFlowAnalysis vflow(vectorFitsValue, this->tleSmemVec, this->tleVec);
     vflow.run(funcOp);
     OperationTree noClosure;
     VecSetDomain domain = buildVecSetDomain(keyValue, vflow, noClosure);
@@ -1402,6 +1590,35 @@ struct TritonXPUVectorizePass
     for (auto user : users) {
       TypeSwitch<const Operation *>(user)
           .Case<XPU_VVECTORIZED_BINARY_OP>([&](auto vBinOp) {
+            // The SV form is an inline asm string picked per element type, and
+            // XPUSVBinaryOpConversion only has f32/i32 (`SVOp2Str`) and f16
+            // (`SVOp2StrFP16`); everything else reaches its `llvm_unreachable`.
+            // svxori is the exception: BitwiseCastToI32Pattern repacks it into
+            // i32 lanes at the end of this pass, so a narrower integer is fine
+            // there once the vector is a whole number of i32 lanes. Declining
+            // is not free -- a VV integer op with a constant operand reaches
+            // LLVM as a plain `xor`, instcombine folds the bitcasts back into
+            // it, and 16-bit lanes are then miscompiled (flaggems bitwise_not
+            // on i16 read every other element) -- so decline only what really
+            // cannot be lowered.
+            using VBinTy = std::decay_t<decltype(vBinOp)>;
+            constexpr bool isXorI =
+                std::is_same_v<VBinTy, triton::xpu::VvxorIOp>;
+            Type resTy = vBinOp.getType();
+            auto svVecTy = dyn_cast<VectorType>(getElementTypeOrSelf(resTy));
+            Type svElemTy = getElementTypeOrSelf(getElementTypeOrSelf(resTy));
+            bool svLowerable = svElemTy.isF32() || svElemTy.isF16() ||
+                               svElemTy.isSignlessInteger(32);
+            if (!svLowerable && isXorI && svVecTy &&
+                svElemTy.isSignlessInteger() &&
+                (svVecTy.getNumElements() * svElemTy.getIntOrFloatBitWidth()) %
+                        32 ==
+                    0)
+              svLowerable = true;
+            if (!svLowerable) {
+              canSVOpt = false;
+              return;
+            }
             auto lDefineOp =
                 vBinOp.getLhs().getDefiningOp(); // getLhs define op
             auto rDefineOp = vBinOp.getRhs().getDefiningOp();
@@ -1707,12 +1924,29 @@ struct TritonXPUVectorizePass
 
     mod.walk([&](triton::xpu::StoreOp storeOp) {
       Value val = storeOp.getValue();
-      Type valTy = val.getType();
-      Type valElemTy = getElementTypeOrSelf(valTy);
-      if (bf16Tofp32Unordered && mlir::isa<VectorType>(valElemTy)) {
-        if (findDefOpBwd<triton::xpu::MakeRangeOp>(val)) {
+      if (!bf16Tofp32Unordered)
+        return;
+      // The check must not filter on the store value's type: a
+      // reduce's final store carries the de-vectorized result, but the
+      // permutation happens at the LOAD and is consumed long before the
+      // store. Relaxation: only a chain carrying a bf16 -> f32 load can
+      // hold permuted registers, so only those need the arange check --
+      // an unrelated index-derived store no longer vetoes the module. A
+      // f32->bf16 store whose chain holds NO such load has nothing to
+      // cancel its own permutation, so it turns the placement off.
+      Type ptrElemTy = getElementTypeOrSelf(storeOp.getPtr().getType());
+      Type ptrDataTy = mlir::cast<PointerType>(ptrElemTy).getPointeeType();
+      Type valElemTy = getElementTypeOrSelf(val.getType());
+      Type valScalarTy = getElementTypeOrSelf(valElemTy);
+      DenseSet<Operation *> visitedLoad;
+      if (!sliceHasBf16ToF32Load(val, visitedLoad)) {
+        if (valScalarTy.isF32() && ptrDataTy.isBF16())
           bf16Tofp32Unordered &= false;
-        }
+        return;
+      }
+      DenseSet<Operation *> visited;
+      if (tleDependsOnLaneIndex(val, visited)) {
+        bf16Tofp32Unordered &= false;
       }
     });
 
@@ -1732,138 +1966,6 @@ struct TritonXPUVectorizePass
       LLVM_DEBUG(
           llvm::dbgs()
           << "[Vectorization]: Apply BF16ToFP32VecUnordered Optimization.\n");
-    }
-  }
-
-  // ---- TLE compute-segment vectorization (scheme A) ----
-  // The interior elementwise ops reuse the shared VOp<T> table (same mapping
-  // the normal path uses in processOpVecTy), so add/sub/mul/div/max/min, the
-  // integer binaries, and the elementwise-preserving unary math ops are all
-  // supported. Only the load/store boundary is TLE-specific: tt.load/tt.store
-  // on a tle_local_ptr are replaced by tle_vload/tle_vstore (which carry no
-  // pointee-type constraint), and triton_xpu.convert_layout nodes are looked
-  // through. This is NOT folded directly into vectorize()/processOpVecTy
-  // because the TLE convert_layout juggles encoded<->unencoded types (the
-  // store-side cvt has an unencoded result) which would crash the shared
-  // getVectorType-based retype; keeping it separate leaves the normal path
-  // untouched while still reusing the VOp<T> table and vector-op lowering.
-
-  // Build a vectorized binary op from already-vectorized operands (reuse VOp).
-  template <typename T> Value buildVVBin(T op, Type vecTy, Value l, Value r) {
-    OpBuilder b(op);
-    return b.create<typename VOp<T>::type>(op.getLoc(), vecTy, l, r)
-        .getResult();
-  }
-
-  // Build a vectorized unary op from an already-vectorized operand (reuse VOp).
-  template <typename T> Value buildVVUnary(T op, Type vecTy, Value x) {
-    OpBuilder b(op);
-    return b.create<typename VOp<T>::type>(op.getLoc(), vecTy, x).getResult();
-  }
-
-  // Recursively vectorize the value feeding a TLE store. `vecTy` is the shared
-  // vectorized tensor type for the whole homogeneous elementwise chain. Looks
-  // through triton_xpu.convert_layout. Returns a null Value if unsupported.
-  Value vectorizeTLEChain(Value v, Type vecTy,
-                          SmallVectorImpl<Operation *> &dead) {
-    // Look through convert_layout.
-    Value cur = v;
-    while (auto cvt = dyn_cast_or_null<triton::xpu::ConvertLayoutOp>(
-               cur.getDefiningOp())) {
-      dead.push_back(cvt);
-      cur = cvt.getOperand();
-    }
-    Operation *def = cur.getDefiningOp();
-    if (!def)
-      return Value();
-
-    // Leaf: tt.load from a tle_local_ptr -> tle_vload.
-    if (auto ld = dyn_cast<triton::LoadOp>(def)) {
-      auto lp = ld.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>();
-      if (!lp)
-        return Value();
-      OpBuilder b(ld);
-      auto vl =
-          b.create<triton::xpu::TLEVLoadOp>(ld.getLoc(), vecTy, lp.getBuffer());
-      dead.push_back(ld);
-      dead.push_back(lp);
-      return vl.getResult();
-    }
-
-    // Interior: elementwise ops that preserve element type (reuse VOp<T>).
-    return TypeSwitch<Operation *, Value>(def)
-        .Case<ARITH_BINARY_FLOAT_OP, ARITH_BINARY_INT_OP>(
-            [&](auto binOp) -> Value {
-              Value l = vectorizeTLEChain(binOp.getLhs(), vecTy, dead);
-              Value r = vectorizeTLEChain(binOp.getRhs(), vecTy, dead);
-              if (!l || !r)
-                return Value();
-              dead.push_back(binOp);
-              return buildVVBin(binOp, vecTy, l, r);
-            })
-        .Case<math::ExpOp, math::LogOp, math::SqrtOp, math::SinOp, math::CosOp,
-              math::AbsFOp>([&](auto unOp) -> Value {
-          Value x = vectorizeTLEChain(unOp.getOperand(), vecTy, dead);
-          if (!x)
-            return Value();
-          dead.push_back(unOp);
-          return buildVVUnary(unOp, vecTy, x);
-        })
-        .Default([](Operation *) -> Value { return Value(); });
-  }
-
-  void vectorizeTLE(ModuleOp &mod) {
-    SmallVector<triton::StoreOp> stores;
-    mod.walk([&](triton::StoreOp st) { stores.push_back(st); });
-    for (auto storeOp : stores) {
-      auto lpStore =
-          storeOp.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>();
-      if (!lpStore)
-        continue;
-
-      // Find the encoded elementwise-root type (through convert_layout) to
-      // derive the shared vectorized type.
-      Value encoded = storeOp.getValue();
-      while (auto cvt = dyn_cast_or_null<triton::xpu::ConvertLayoutOp>(
-                 encoded.getDefiningOp()))
-        encoded = cvt.getOperand();
-      auto rootTy = dyn_cast<RankedTensorType>(encoded.getType());
-      if (!rootTy || !rootTy.getEncoding())
-        continue;
-      Type elemTy = getElementTypeOrSelf(rootTy);
-      if (!elemTy.isIntOrFloat() || !vectorizedTyValid(elemTy))
-        continue;
-      unsigned numElems = getTotalElemsPerThread(rootTy);
-      unsigned vectorWidth = 512 / elemTy.getIntOrFloatBitWidth();
-      if (numElems == 0 || numElems < vectorWidth ||
-          numElems % vectorWidth != 0)
-        continue;
-      Type vecTy = getVectorType(rootTy);
-
-      SmallVector<Operation *> dead;
-      Value vecVal = vectorizeTLEChain(storeOp.getValue(), vecTy, dead);
-      if (!vecVal)
-        continue;
-
-      OpBuilder builder(storeOp);
-      builder.create<triton::xpu::TLEVStoreOp>(storeOp.getLoc(),
-                                               lpStore.getBuffer(), vecVal);
-      storeOp.erase();
-      dead.push_back(lpStore);
-
-      // Erase the dead scalar chain to fixpoint (handles dependency order and
-      // aliasing from buffer reuse); leave ops that still have live uses.
-      bool changed = true;
-      while (changed) {
-        changed = false;
-        for (Operation *&o : dead) {
-          if (o && o->use_empty()) {
-            o->erase();
-            o = nullptr;
-            changed = true;
-          }
-        }
-      }
     }
   }
 
@@ -1912,14 +2014,12 @@ struct TritonXPUVectorizePass
   // filler at all, which is the direct measurement of the intercept the fit
   // extrapolates to. Both unset leaves the IR untouched.
   bool probeActive() {
-    std::string side =
-        mlir::triton::tools::getStrEnvXPU("TRITONXPU_PROBE_SIDE");
+    std::string side = mlir::triton::tools::getStrEnv("TRITONXPU_PROBE_SIDE");
     return side == "vec" || side == "scalar";
   }
 
   unsigned probeFillerCount() {
-    std::string s =
-        mlir::triton::tools::getStrEnvXPU("TRITONXPU_PROBE_BOUNDARY");
+    std::string s = mlir::triton::tools::getStrEnv("TRITONXPU_PROBE_BOUNDARY");
     unsigned n = 0;
     if (s.empty() || llvm::StringRef(s).getAsInteger(10, n))
       return 0;
@@ -1927,8 +2027,7 @@ struct TritonXPUVectorizePass
   }
 
   bool probeScalarSide() {
-    return mlir::triton::tools::getStrEnvXPU("TRITONXPU_PROBE_SIDE") ==
-           "scalar";
+    return mlir::triton::tools::getStrEnv("TRITONXPU_PROBE_SIDE") == "scalar";
   }
 
   // Inverse of getVectorType for the types this pass produces: undo the
@@ -2033,15 +2132,362 @@ struct TritonXPUVectorizePass
     mod->emitRemark(msg);
   }
 
+  // Collapse a scalar TLE parameter chain into the vector load it already is.
+  //
+  // triton_xpu.broadcast is the vector/scalar boundary (processOpVecTy retypes
+  // only its result), so XPUBroadcastOpConversion packs each output vector lane
+  // by lane, a vmmov + vor.u.mh apiece because xpu3 has no cross-lane permute.
+  // The scalar source is a contiguous LM read -- tt.load on a tle_local_ptr,
+  // optionally widened by arith.extf -- which is one tle_vload, so the
+  // broadcast goes away with it. Runs after the store walk, where a vectorized
+  // result over a scalar source is exactly that boundary.
+  // A `tle_local_ptr` retyped one pointer per VECTOR slot. tt.load/tt.store
+  // require "value type == pointee type", and a bf16 memory boundary keeps the
+  // memory op as a tt.load/tt.store (see the `xpu.lm_bf16` branches), so the
+  // pointer tensor has to be widened together with the value.
+  Value makeVectorTLELocalPtr(OpBuilder &b, triton::xpu::TLELocalPtrOp lp,
+                              RankedTensorType vecTy) {
+    auto oriTy = cast<RankedTensorType>(lp.getResult().getType());
+    auto oriPtrTy = cast<triton::PointerType>(oriTy.getElementType());
+    Type newPtrTy = triton::PointerType::get(vecTy.getElementType(),
+                                             oriPtrTy.getAddressSpace());
+    auto newTy =
+        RankedTensorType::get(vecTy.getShape(), newPtrTy, vecTy.getEncoding());
+    return b
+        .create<triton::xpu::TLELocalPtrOp>(lp.getLoc(), newTy, lp.getBuffer(),
+                                            lp.getIndices(), lp.getLoopIndex())
+        .getResult();
+  }
+
+  // What a region can feed the enclosing op's results flows out through
+  // block terminators (scf yields), so walking the terminator operands is
+  // sufficient for structured control flow -- and avoids dragging in values
+  // that never reach the result (e.g. an arange used only to compute load
+  // addresses inside the loop). Region ops outside the modeled set keep the
+  // conservative full scan, so the walk never wrongly permits.
+  template <typename Recurse>
+  static bool walkRegionDeps(Operation *def, DenseSet<Operation *> &visited,
+                             Recurse &&recurse) {
+    if (isa<scf::ForOp, scf::IfOp, scf::WhileOp, scf::ExecuteRegionOp>(def)) {
+      for (Region &region : def->getRegions())
+        for (Block &block : region)
+          if (Operation *term = block.getTerminator())
+            for (Value operand : term->getOperands())
+              if (recurse(operand, visited))
+                return true;
+      return false;
+    }
+    for (Region &region : def->getRegions())
+      for (Block &block : region)
+        for (Operation &op : block)
+          for (Value operand : op.getOperands())
+            if (recurse(operand, visited))
+              return true;
+    return false;
+  }
+
+  // Does a stored value depend on which lane an element sits in? Ported from
+  // the private chain: the cheap bf16 placement permutes elements inside each
+  // register pair, and load and store cancel only if nothing in between cares
+  // about the lane order.
+  static bool tleDependsOnLaneIndex(Value v, DenseSet<Operation *> &visited) {
+    Operation *def = v.getDefiningOp();
+    if (!def || isa<triton::LoadOp, triton::xpu::TLEVLoadOp>(def))
+      return false;
+    if (isa<triton::xpu::MakeRangeOp, triton::MakeRangeOp>(def))
+      return true;
+    if (!visited.insert(def).second)
+      return false;
+    // A loop's result comes from its BODY (the yield chain), not just from
+    // the iter-arg init values the plain operand walk would follow. A
+    // k29-style `acc = scf.for(...)` hides the whole compute tree --
+    // including the lane-index-derived mask feeding a select -- inside the
+    // region, and skipping it wrongly let the bf16 unordered (lane-
+    // permuting) placement through: the mask's bits no longer lined up
+    // with the permuted lanes, so `where` replaced 4 valid lanes (max
+    // column 56-59 of 60) with the constant. Iter-arg back edges are
+    // covered because the yield operands are walked themselves.
+    if (walkRegionDeps(def, visited, tleDependsOnLaneIndex))
+      return true;
+    for (Value operand : def->getOperands())
+      if (tleDependsOnLaneIndex(operand, visited))
+        return true;
+    return false;
+  }
+
+  // A load whose result registers the unordered placement permutes (f32
+  // result over bf16 memory). A chain without one of these keeps original
+  // lane order throughout.
+  static bool isBf16ToF32Load(Operation *def) {
+    auto loadOp = dyn_cast<triton::xpu::LoadOp>(def);
+    if (!loadOp)
+      return false;
+    Type ptrElemTy = getElementTypeOrSelf(loadOp.getPtr().getType());
+    Type ptrDataTy = mlir::cast<PointerType>(ptrElemTy).getPointeeType();
+    Type resElemTy = getElementTypeOrSelf(loadOp.getResult().getType());
+    Type resScalarTy = getElementTypeOrSelf(resElemTy);
+    return resScalarTy.isF32() && ptrDataTy.isBF16();
+  }
+
+  // Does the chain carry registers converted at a bf16 -> f32 load? Only
+  // those registers are lane-permuted, so only such chains can pair a
+  // lane-ordered value with permuted data.
+  static bool sliceHasBf16ToF32Load(Value v, DenseSet<Operation *> &visited) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return false;
+    if (isBf16ToF32Load(def))
+      return true;
+    if (isa<triton::LoadOp, triton::xpu::TLEVLoadOp>(def))
+      return false;
+    if (!visited.insert(def).second)
+      return false;
+    if (walkRegionDeps(def, visited, sliceHasBf16ToF32Load))
+      return true;
+    for (Value operand : def->getOperands())
+      if (sliceHasBf16ToF32Load(operand, visited))
+        return true;
+    return false;
+  }
+
+  // The bf16 <-> f32 placement has a cheaper form (masked loads / masked stores
+  // instead of the vmerge and vscatter pairs) that permutes the elements inside
+  // each register pair. Load and store permute the same way, so the permutation
+  // cancels in memory -- but only if nothing in between depends on which lane
+  // an element sits in. Mirrors BF16ToFP32VecOptimize on the GM staging path,
+  // with the TLE-specific conditions:
+  //   * no plain (non-bf16) vectorized TLE load/store is left. Those registers
+  //     are NOT permuted, so mixing one in -- e.g. an f32 gamma column
+  //     broadcast against a permuted bf16 tile -- would pair up the wrong
+  //     elements.
+  //   * no tl.arange-derived value reaches a stored value: a lane index means
+  //     the lane order is the result.
+  void decideTLEBf16Unordered(ModuleOp &mod) {
+    bool unordered = true;
+    unsigned bf16Ops = 0;
+    mod.walk([&](Operation *op) {
+      if (isa<triton::xpu::TLEVLoadOp, triton::xpu::TLEVStoreOp>(op)) {
+        unordered = false;
+        return;
+      }
+      if (!op->hasAttr("xpu.lm_bf16"))
+        return;
+      ++bf16Ops;
+      if (auto st = dyn_cast<triton::StoreOp>(op)) {
+        DenseSet<Operation *> visited;
+        if (tleDependsOnLaneIndex(st.getValue(), visited))
+          unordered = false;
+      }
+    });
+    if (!unordered || bf16Ops == 0)
+      return;
+    OpBuilder b(mod);
+    mod.walk([&](Operation *op) {
+      if (op->hasAttr("xpu.lm_bf16"))
+        op->setAttr("xpu.bf16_unordered", b.getUnitAttr());
+    });
+    LLVM_DEBUG(llvm::dbgs() << "[Vectorization]: Apply TLE BF16<->FP32 "
+                               "unordered placement.\n");
+  }
+
+  void collapseTLEBroadcastSource(ModuleOp &mod) {
+    SmallVector<triton::xpu::BroadcastOp> bcOps;
+    mod.walk([&](triton::xpu::BroadcastOp bcOp) { bcOps.push_back(bcOp); });
+
+    SmallVector<Operation *> dead;
+    for (auto bcOp : bcOps) {
+      auto resTy = dyn_cast<RankedTensorType>(bcOp.getResult().getType());
+      if (!resTy || !isa<VectorType>(resTy.getElementType()))
+        continue;
+      auto srcTy = dyn_cast<RankedTensorType>(bcOp.getSrc().getType());
+      if (!srcTy || isa<VectorType>(srcTy.getElementType()))
+        continue;
+      // Only [1xN] -> [MxN]. The [Mx1] form broadcasts one scalar per row and
+      // has no vector in the buffer to read: that one is a genuine splat.
+      if (srcTy.getRank() != 2 || srcTy.getShape()[0] != 1)
+        continue;
+
+      // expand_dims and convert_layout are reshapes of the same values, and
+      // they appear on both sides of the widening cast: the TLE type conversion
+      // leaves one between the load and the extf, and the expand_dims path adds
+      // another between the extf and the broadcast. So the strip runs on both
+      // sides.
+      auto stripReshapes = [&](Value v) {
+        while (true) {
+          Operation *def = v.getDefiningOp();
+          if (auto expandOp = dyn_cast_or_null<triton::ExpandDimsOp>(def)) {
+            dead.push_back(expandOp);
+            v = expandOp.getSrc();
+          } else if (auto cvtOp =
+                         dyn_cast_or_null<triton::xpu::ConvertLayoutOp>(def)) {
+            dead.push_back(cvtOp);
+            v = cvtOp.getOperand();
+          } else {
+            return v;
+          }
+        }
+      };
+      Value cur = stripReshapes(bcOp.getSrc());
+
+      // The buffer may hold f16 that the compute chain wants as f32, which is
+      // what vextf does on the 2-D input path.
+      bool needsExtF = false;
+      if (auto extFOp = dyn_cast_or_null<arith::ExtFOp>(cur.getDefiningOp())) {
+        needsExtF = true;
+        dead.push_back(extFOp);
+        cur = stripReshapes(extFOp.getIn());
+      }
+      auto loadOp = dyn_cast_or_null<triton::LoadOp>(cur.getDefiningOp());
+      if (!loadOp) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[TLE Broadcast Source] not a tt.load after the "
+                      "reshapes: "
+                   << (cur.getDefiningOp()
+                           ? cur.getDefiningOp()->getName().getStringRef()
+                           : llvm::StringRef("block-arg"))
+                   << " needsExtF=" << needsExtF << " res=" << resTy << "\n");
+        continue;
+      }
+      auto lpOp = getTLELocalPtrThroughCvt(loadOp.getPtr());
+      if (!lpOp) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[TLE Broadcast Source] tt.load ptr is not a "
+                      "tle_local_ptr, res="
+                   << resTy << "\n");
+        continue;
+      }
+      // A `scope=smem` buffer is shared by the whole cluster, so its index
+      // tensor selects the elements and only `[uniform +] arange(0, n)` has a
+      // vector form (same admission check as the leaf-load case). Refusing here
+      // leaves the scalar SM read, which honors the indices element by element.
+      Value smOff;
+      if (!tleSmemSliceOffset(lpOp, smOff, this->tleSmemVec)) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[TLE Broadcast Source] smem index has no vector form, "
+                      "res="
+                   << resTy << "\n");
+        continue;
+      }
+
+      // Derive the loaded type through getVectorType so the slot width and the
+      // trailing-dim division stay this pass's own convention rather than a
+      // second copy of it: undo the vectorization of the broadcast's result to
+      // get the scalar shape, put the buffer's element type on it, vectorize
+      // that. Without a cast the result type is already what to read.
+      auto memDescTy =
+          cast<triton::gpu::MemDescType>(lpOp.getBuffer().getType());
+      Type bufElemTy = memDescTy.getElementType();
+      RankedTensorType loadVecTy = resTy;
+      if (needsExtF) {
+        auto scalarResTy = getScalarTypeOrNull(resTy);
+        if (!scalarResTy) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "[TLE Broadcast Source] no exact scalar inverse for "
+                     << resTy << "\n");
+          continue;
+        }
+        auto narrowTy = RankedTensorType::get(scalarResTy.getShape(), bufElemTy,
+                                              scalarResTy.getEncoding());
+        loadVecTy = dyn_cast<RankedTensorType>(getVectorType(narrowTy));
+        if (!loadVecTy) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "[TLE Broadcast Source] no vector type for " << narrowTy
+                     << "\n");
+          continue;
+        }
+        if (!isa<VectorType>(loadVecTy.getElementType())) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "[TLE Broadcast Source] getVectorType left " << narrowTy
+                     << " scalar\n");
+          continue;
+        }
+      }
+      // A bf16 buffer whose registers are f32 is the fused memory boundary, not
+      // "some other conversion": tritonxpu-tle-dtype-convert already promoted
+      // the chain and marked the load. The load then keeps its own f32 type,
+      // and a VExtF on top of it would double the conversion, so a marked load
+      // that still carries an extf is left alone.
+      bool bf16Boundary =
+          loadOp->hasAttr("xpu.lm_bf16") && !tleBufferIsSmem(lpOp.getBuffer());
+      if (bf16Boundary && needsExtF) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[TLE Broadcast Source] bf16 boundary still carries an "
+                      "extf, leaving it alone, res="
+                   << resTy << "\n");
+        continue;
+      }
+      if (!bf16Boundary && !needsExtF &&
+          bufElemTy != getElementTypeOrSelf(resTy.getElementType())) {
+        // Some other conversion sits in between; leave the chain alone.
+        continue;
+      }
+
+      OpBuilder builder(bcOp);
+      auto loc = bcOp.getLoc();
+      // Two distinct quantities, two operands: the tile index the local_ptr
+      // already carries stays $loopIndex, the SM index's uniform addend goes to
+      // $smElemOffset. Sharing one slot read another core's columns.
+      Value loaded;
+      if (bf16Boundary) {
+        Value vecPtr = makeVectorTLELocalPtr(builder, lpOp, loadVecTy);
+        auto newLd = builder.create<triton::LoadOp>(
+            loc, vecPtr, loadOp.getCache(), loadOp.getEvict(),
+            loadOp.getIsVolatile());
+        newLd->setAttr("xpu.lm_bf16", builder.getUnitAttr());
+        loaded = newLd.getResult();
+      } else {
+        loaded = builder
+                     .create<triton::xpu::TLEVLoadOp>(
+                         loc, loadVecTy, lpOp.getBuffer(), lpOp.getLoopIndex(),
+                         /*smElemOffset=*/smOff)
+                     .getResult();
+      }
+      if (needsExtF)
+        loaded = builder.create<triton::xpu::VExtFOp>(loc, resTy, loaded);
+      bcOp.getResult().replaceAllUsesWith(loaded);
+      dead.push_back(bcOp);
+      dead.push_back(loadOp);
+      dead.push_back(lpOp);
+
+      std::string msg;
+      llvm::raw_string_ostream os(msg);
+      os << "[Vectorization]: [TLE Broadcast Source] collapsed to "
+         << (bf16Boundary ? "bf16 tt.load"
+                          : (needsExtF ? "vextf(tle_vload)" : "tle_vload"))
+         << " for " << resTy;
+      LLVM_DEBUG(llvm::dbgs() << msg << "\n");
+    }
+
+    // One tle_local_ptr / convert_layout can feed several broadcast chains: a
+    // 2x-unrolled TLE body reads the same [W] weight buffer once per half beat,
+    // so the same Operation is pushed here more than once. The loop below nulls
+    // only the slot it erased, leaving the duplicate dangling, and erasing it
+    // again is a double free -- glibc aborts inside this pass, and MLIR's crash
+    // reproducer then deadlocks in malloc, so it presents as a hang. Seen on
+    // xuchen18's layernorm at XBLOCK=32 ROWITERS=4.
+    llvm::SetVector<Operation *> uniqueDead(dead.begin(), dead.end());
+    dead.assign(uniqueDead.begin(), uniqueDead.end());
+
+    // Erase to fixpoint and only what is genuinely unused: the same pointer op
+    // can also feed a mask chain, and convert_layout results are shared.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (auto &op : dead) {
+        if (op && op->use_empty()) {
+          op->erase();
+          op = nullptr;
+          changed = true;
+        }
+      }
+    }
+  }
+
   void runOnOperation() override {
     context = &getContext();
     ModuleOp mod = getOperation();
 
     LLVM_DEBUG(llvm::dbgs() << __FILE__ << " START\n" << mod << "\n");
-
-    // TLE LM compute segment vectorization (independent of the GM2LMOp-based
-    // normal path below).
-    vectorizeTLE(mod);
 
     // The prologue rewrites that used to sit here (erf lowering, maximum
     // fusion, the two compare fusions, the i1 -> i8 pattern set) now run in
@@ -2185,17 +2631,19 @@ struct TritonXPUVectorizePass
             for (auto &op : block) {
               TypeSwitch<Operation *>(&op)
                   .Case<REDUCE_COMBINE_OP, arith::SubFOp, arith::DivFOp,
-                        arith::SelectOp>([&](auto redComOp) {
-                    // The non-COMBINE_OP kinds are only admitted by
-                    // reduceCombineIsVectorizable while the region lowering is
-                    // on (TRITONXPU_REDUCE_REGION unset or 1), so reaching them
-                    // here implies the region-interpreting lowering is in use.
-                    for (auto res : redComOp->getResults()) {
-                      auto elemTy = res.getType();
-                      VectorType vecType = VectorType::get(vecSize, elemTy);
-                      res.setType(vecType);
-                    }
-                  })
+                        arith::SelectOp, COMBINE_OP_TLE_EXT>(
+                      [&](auto redComOp) {
+                        // The non-COMBINE_OP kinds are only admitted by
+                        // reduceCombineIsVectorizable while the region lowering
+                        // is on (TRITONXPU_REDUCE_REGION unset or 1), so
+                        // reaching them here implies the region-interpreting
+                        // lowering is in use.
+                        for (auto res : redComOp->getResults()) {
+                          auto elemTy = res.getType();
+                          VectorType vecType = VectorType::get(vecSize, elemTy);
+                          res.setType(vecType);
+                        }
+                      })
                   .Case<arith::ConstantOp>([&](auto cstOp) {
                     // Left scalar on purpose: emitCombineOp splats it to the
                     // vector shape of whichever op consumes it.
@@ -2218,6 +2666,40 @@ struct TritonXPUVectorizePass
       vectorizeAndProcessOpVecTy(mod, storeOp, storeOpValueTy,
                                  "[Vectorization]: [Broadcast -> Store] Hit.");
     });
+
+    // The TLE store root. Same shape as the walk above, with the root type
+    // taken from behind the convert_layout the TLE type conversion left on the
+    // value crossing into the store (`convert_layout tensor<64x256xf16,
+    // #cluster1> -> tensor<64x256xf16>`), and every gate downstream reads
+    // sizePerCore off that encoding -- `vectorFitsRoot` casts it
+    // unconditionally. The encoded producer is what the chain actually is, so
+    // that is the type the decision has to see.
+    mod.walk([&](triton::StoreOp storeOp) {
+      if (!storeOp.getPtr().getDefiningOp<triton::xpu::TLELocalPtrOp>())
+        return;
+      Value encoded = storeOp.getValue();
+      while (auto cvt = dyn_cast_or_null<triton::xpu::ConvertLayoutOp>(
+                 encoded.getDefiningOp())) {
+        // Step back only while the encoding is still missing: the nearest
+        // encoded ancestor is the root, not the oldest one.
+        if (cast<RankedTensorType>(cvt.getResult().getType()).getEncoding())
+          break;
+        encoded = cvt.getOperand();
+      }
+      auto rootTy = dyn_cast<RankedTensorType>(encoded.getType());
+      if (!rootTy || !rootTy.getEncoding())
+        return;
+      vectorizeAndProcessOpVecTy(mod, storeOp, rootTy,
+                                 "[Vectorization]: [TLE Store] Hit.");
+    });
+
+    // The chains feeding the TLE segment's [1xN] broadcasts are still scalar at
+    // this point; pull them into vector form so the broadcast does not have to
+    // pack its source lane by lane.
+    collapseTLEBroadcastSource(mod);
+    // After every TLE memory op has its final form: the decision needs to see
+    // whether any plain tle_vload/tle_vstore is left.
+    decideTLEBf16Unordered(mod);
 
     // P4 probe: last stage that can still see fully vectorized store values,
     // before the optional cleanup/fusion stages rewrite them.

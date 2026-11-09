@@ -1914,6 +1914,17 @@ void init_triton_ir(py::module &&m) {
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())
       .def(py::init<MLIRContext *>())
+      .def("enable_verifier",
+           [](PassManager &self, bool enabled) {
+             // Exposed for kernels that embed tle.dsl_region (generic
+             // third_party/tle op) whose operand/region shape intentionally
+             // violates that op's verifier until a later pass consumes it:
+             // operands are the kernel's !tt.ptr/i32 arguments while region
+             // block-args carry the raw fn's memref<*>/index parameters —
+             // TLEToLinalg rewrites the op before it leaves the pipeline
+             // (see make_ttir in backend/compiler.py).
+             self.enableVerifier(enabled);
+           })
       .def("enable_debug",
            [](PassManager &self) -> bool {
              auto *context = self.getContext();

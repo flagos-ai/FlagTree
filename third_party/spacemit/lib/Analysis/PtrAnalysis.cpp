@@ -364,6 +364,45 @@ void PtrAnalysis::visitOperandAdd(
   state.addState(lhsState, rhsState, loc, rewriter);
 }
 
+// SubI(a, b) is treated as AddI(a, -b): visit both operands, then subtract
+// offsets/scalars using subOFRs so PtrAnalysis can rewrite pointers whose
+// address expressions contain subtraction (e.g. ih = oh*s - pad + kh*d).
+void PtrAnalysis::visitOperandSub(
+    arith::SubIOp subOp, PtrState &state, const Location loc,
+    ConversionPatternRewriter &rewriter,
+    const llvm::SmallDenseMap<Value, PtrState> &knownPtrs) {
+  PtrState lhsState;
+  visitOperand(subOp.getLhs(), lhsState, loc, rewriter, knownPtrs);
+
+  PtrState rhsState;
+  visitOperand(subOp.getRhs(), rhsState, loc, rewriter, knownPtrs);
+
+  assert(lhsState.getRank() == rhsState.getRank());
+  assert(!(lhsState.source && rhsState.source));
+  state.source = lhsState.source ? lhsState.source : rhsState.source;
+
+  if (lhsState.scalar && rhsState.scalar) {
+    state.scalar =
+        arith::SubIOp::create(rewriter, loc, lhsState.scalar, rhsState.scalar)
+            .getResult();
+  } else if (lhsState.getRank() == 0) {
+    // One side is a scalar constant zero; just take the non-zero scalar.
+    state.scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
+  }
+
+  for (uint64_t i = 0; i < lhsState.sizes.size(); i++) {
+    state.offsets.push_back(
+        subOFRs(lhsState.offsets[i], rhsState.offsets[i], loc, rewriter));
+    state.strides.push_back(
+        subOFRs(lhsState.strides[i], rhsState.strides[i], loc, rewriter));
+    state.sizes.push_back(lhsState.sizes[i]);
+    assert(!lhsState.hasModulo() || !rhsState.hasModulo());
+    state.modulos.push_back(lhsState.modulos[i].has_value()
+                                ? lhsState.modulos[i]
+                                : rhsState.modulos[i]);
+  }
+}
+
 void PtrAnalysis::visitOperandMul(
     arith::MulIOp mulOp, PtrState &state, const Location loc,
     ConversionPatternRewriter &rewriter,
@@ -679,6 +718,8 @@ void PtrAnalysis::visitOperand(
 
   if (auto op = operand.getDefiningOp<arith::AddIOp>()) {
     visitOperandAdd(op, state, loc, rewriter, knownPtrs);
+  } else if (auto op = operand.getDefiningOp<arith::SubIOp>()) {
+    visitOperandSub(op, state, loc, rewriter, knownPtrs);
   } else if (auto op = operand.getDefiningOp<arith::MulIOp>()) {
     visitOperandMul(op, state, loc, rewriter, knownPtrs);
   } else if (auto op = operand.getDefiningOp<triton::MakeRangeOp>()) {
@@ -1363,6 +1404,40 @@ Value PtrAnalysis::getScalarMemRef(Value ptr, Value memRef, const Location loc,
 
   assert(isa<BlockArgument>(ptr) &&
          "pointer is neither produced by addptr nor a block argument");
+
+  // BUGFIX: For block arguments (function parameters), check if memRef is an
+  // unranked memref that should preserve its actual size. This fixes the
+  // masked_select bug where tensor<256xi8> was incorrectly reinterpreted as
+  // memref<1xi8> instead of memref<256xi8>.
+  //
+  // If memRef is unranked, we cannot know the actual size at this point,
+  // but we should NOT hardcode size=1. Instead, use a large size (INT32_MAX)
+  // to allow access to all valid elements.
+  if (auto unrankedType = dyn_cast<UnrankedMemRefType>(memRef.getType())) {
+    // Create a ranked memref with dynamic size
+    auto elemType = unrankedType.getElementType();
+    auto memSpace = unrankedType.getMemorySpace();
+
+    // For type, use ShapedType::kDynamic to indicate this is a dynamic
+    // dimension
+    auto rankedType = MemRefType::get({ShapedType::kDynamic}, elemType,
+                                      AffineMap(), memSpace);
+
+    // CRITICAL: Use INT32_MAX instead of 1 so all valid accesses work
+    SmallVector<OpFoldResult> sizes;
+    sizes.push_back(rewriter.getIndexAttr(0x7FFFFFFF));
+    SmallVector<OpFoldResult> strides;
+    strides.push_back(rewriter.getIndexAttr(1));
+
+    auto castOp =
+        memref::ReinterpretCastOp::create(rewriter, loc, rankedType, memRef,
+                                          /*offset=*/rewriter.getIndexAttr(0),
+                                          /*sizes=*/sizes,
+                                          /*strides=*/strides);
+    return castOp.getResult();
+  }
+
+  // Original code path for ranked memref or truly scalar pointers
   PtrState state;
   state.source = memRef;
   state.offsets.push_back(rewriter.getIndexAttr(0));

@@ -5,13 +5,15 @@ add_triton_library(TritonXPUTransforms
   CreateGM2LM.cpp
   DtypeConvert.cpp
   Legalize.cpp
+  TLEDtypeConvert.cpp
   TLELegalize.cpp
   TLECoreTiling.cpp
+  TLESharedMemAlloc.cpp
+  TLEPipeline.cpp
   LoopGrid.cpp
   LoopInvariantStaging.cpp
   LowerPrint.cpp
   Mask.cpp
-  MaterializeDeferredRaw.cpp
   OffsetAnalysis.cpp
   ScalarAnalysis.cpp
   TileAnalysisPass.cpp

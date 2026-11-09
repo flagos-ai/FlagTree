@@ -1,0 +1,188 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Notify a Feishu Chat'
+description: >-
+  Post a card message to a Feishu chat. Workflow-agnostic: any job that can
+  produce a notification JSON file (title, lines, link) can notify through it.
+  Deciding whether a run deserves a message belongs to the producer, not here.
+
+inputs:
+  notification:
+    description: >-
+      Path to a notification JSON file. An absent file means the producer
+      decided there was nothing worth saying, and the step does nothing.
+    required: false
+    default: ''
+  title:
+    description: 'Card title, used when no notification file is given'
+    required: false
+    default: ''
+  text:
+    description: 'Card body, used when no notification file is given'
+    required: false
+    default: ''
+  color:
+    description: >-
+      Header theme: red, orange, yellow, green, blue, grey and the other
+      Feishu card themes.
+    required: false
+    default: ''
+  link-url:
+    description: 'URL for the button at the card footer'
+    required: false
+    default: ''
+  link-text:
+    description: 'Label for that button'
+    required: false
+    default: 'Open'
+  link2-url:
+    description: >-
+      URL for a second button, shown next to the first. Left empty the card
+      has one button, as before.
+    required: false
+    default: ''
+  link2-text:
+    description: 'Label for the second button'
+    required: false
+    default: 'Open'
+  chat-id:
+    description: 'Target chat_id (oc_...). Notifying is skipped when empty.'
+    required: false
+    default: ''
+  open-id:
+    description: >-
+      Target user open_id (ou_...) for a direct message, comma separated for
+      several. Takes precedence over chat-id, so a caller that resolved a
+      person reaches that person rather than falling back to a room.
+    required: false
+    default: ''
+  app-id:
+    description: 'Feishu app id. Notifying is skipped when empty.'
+    required: false
+    default: ''
+  app-secret:
+    description: 'Feishu app secret. Notifying is skipped when empty.'
+    required: false
+    default: ''
+  strict:
+    description: >-
+      Fail the step when sending fails. Leave false inside a PR gate: losing
+      a chat message should not fail a PR.
+    required: false
+    default: 'false'
+  python:
+    description: 'Python interpreter to use'
+    required: false
+    default: 'python3'
+
+outputs:
+  notified:
+    description: "'true' when a message was sent"
+    value: ${{ steps.notify.outputs.notified }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Notify Feishu
+      id: notify
+      shell: bash
+      env:
+        # Secrets travel as env vars, never on the command line, since argv is
+        # visible via `ps` on a shared self-hosted runner.
+        FEISHU_APP_ID: ${{ inputs.app-id }}
+        FEISHU_APP_SECRET: ${{ inputs.app-secret }}
+        FEISHU_CHAT_ID: ${{ inputs.chat-id }}
+        FEISHU_OPEN_ID: ${{ inputs.open-id }}
+        NOTIFICATION: ${{ inputs.notification }}
+        TITLE: ${{ inputs.title }}
+        TEXT: ${{ inputs.text }}
+        COLOR: ${{ inputs.color }}
+        LINK_URL: ${{ inputs.link-url }}
+        LINK_TEXT: ${{ inputs.link-text }}
+        LINK2_URL: ${{ inputs.link2-url }}
+        LINK2_TEXT: ${{ inputs.link2-text }}
+        STRICT: ${{ inputs.strict }}
+        PYTHON: ${{ inputs.python }}
+      run: |
+        set -uo pipefail
+
+        echo "notified=false" >> "$GITHUB_OUTPUT"
+
+        fail_or_skip() {
+          if [[ "${STRICT}" == "true" ]]; then
+            echo "::error::$1"
+            exit 1
+          fi
+          echo "::warning::$1"
+          exit 0
+        }
+
+        # No notification file and no inline title: nothing was asked for.
+        if [[ -z "${NOTIFICATION}" && -z "${TITLE}" && -z "${TEXT}" ]]; then
+          echo "Nothing to notify about."
+          exit 0
+        fi
+
+        # The producer writes a file only when a run is worth a message, so an
+        # absent one is the normal quiet path, not a failure.
+        if [[ -n "${NOTIFICATION}" && ! -f "${NOTIFICATION}" ]]; then
+          echo "No notification file at '${NOTIFICATION}', nothing to send."
+          exit 0
+        fi
+
+        if [[ -z "${FEISHU_APP_ID}" || -z "${FEISHU_APP_SECRET}" ]]; then
+          fail_or_skip "notify-feishu: no credentials available, nothing was sent. Check that the caller forwards FLAGTREE_FEISHU_APP_ID and _APP_SECRET."
+        fi
+
+        if [[ -z "${FEISHU_CHAT_ID}" && -z "${FEISHU_OPEN_ID}" ]]; then
+          fail_or_skip "notify-feishu: no recipient, nothing was sent. Pass a chat (oc_...) via chat-id or a user (ou_...) via open-id; \`--list-chats\` on the script prints the ids of chats the bot belongs to."
+        fi
+
+        # feishu_client.py lives with report-feishu rather than being copied
+        # here. GitHub checks out the whole repository when it fetches an
+        # action, so a sibling action's directory is reachable and stays in
+        # step with this one.
+        CLIENT_DIR="${GITHUB_ACTION_PATH}/../report-feishu/scripts"
+        if [[ ! -f "${CLIENT_DIR}/feishu_client.py" ]]; then
+          fail_or_skip "notify-feishu: feishu_client.py not found at ${CLIENT_DIR}"
+        fi
+        export PYTHONPATH="${CLIENT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+
+        # Proxy settings live on the runner, not in the repo
+        if [[ -f ~/env.sh ]]; then
+          # shellcheck disable=SC1090
+          source ~/env.sh || true
+        fi
+
+        args=()
+        [[ -n "${NOTIFICATION}" ]] && args+=(--notification "${NOTIFICATION}")
+        [[ -n "${FEISHU_OPEN_ID}" ]] && args+=(--open-id "${FEISHU_OPEN_ID}")
+        [[ -n "${TITLE}" ]] && args+=(--title "${TITLE}")
+        [[ -n "${TEXT}" ]] && args+=(--text "${TEXT}")
+        [[ -n "${COLOR}" ]] && args+=(--color "${COLOR}")
+        [[ -n "${LINK_URL}" ]] && args+=(--link-url "${LINK_URL}" --link-text "${LINK_TEXT}")
+        [[ -n "${LINK2_URL}" ]] && args+=(--link2-url "${LINK2_URL}" --link2-text "${LINK2_TEXT}")
+        [[ "${STRICT}" == "true" ]] && args+=(--strict)
+
+        "${PYTHON}" "${GITHUB_ACTION_PATH}/scripts/notify_feishu.py" "${args[@]}" \
+          || fail_or_skip "notify-feishu: sending failed"
+
+        echo "notified=true" >> "$GITHUB_OUTPUT"

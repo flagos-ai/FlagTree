@@ -28,6 +28,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -159,11 +160,16 @@ public:
       if (Value userBarrier = op.getBarrier()) {
         auto expectBytes =
             op->getAttrOfType<IntegerAttr>(op.getExpectBytesAttrName());
-        if (!expectBytes || expectBytes.getInt() <= 0)
+        // Zero is reserved for continuation tiles of a planned logical copy.
+        if (!expectBytes || expectBytes.getInt() < 0 ||
+            (expectBytes.getInt() == 0 &&
+             !op->hasAttr(kLogicalTMACopyBytesAttr)))
           return op.emitOpError("with explicit completion barrier requires "
                                 "positive expect_bytes");
-        rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
-            loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()), pred);
+        if (expectBytes.getInt() > 0)
+          rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
+              loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()),
+              pred);
         rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
             op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc, pred);
       } else {
@@ -195,6 +201,9 @@ public:
         int sizeInBytes = product(shapePerCTA) *
                           tensorType.getElementType().getIntOrFloatBitWidth() /
                           8;
+        if (auto logicalBytes =
+                op->getAttrOfType<IntegerAttr>(kLogicalTMACopyBytesAttr))
+          sizeInBytes = static_cast<int>(logicalBytes.getInt());
 
         rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(loc, mbarrierAlloc,
                                                              sizeInBytes, pred);

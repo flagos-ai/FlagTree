@@ -118,6 +118,11 @@ public:
                   ConversionPatternRewriter &rewriter,
                   const llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
+  static void
+  visitOperandSub(arith::SubIOp subOp, PtrState &state, const Location loc,
+                  ConversionPatternRewriter &rewriter,
+                  const llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+
   // Operand is the result of arith.muli. Process both arguments and insert any
   // arith.muli instruction as needed.
   // Main assumptions:

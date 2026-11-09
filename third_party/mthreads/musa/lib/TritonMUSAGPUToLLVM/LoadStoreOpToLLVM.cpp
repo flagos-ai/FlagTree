@@ -3,6 +3,9 @@
 #include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
+#ifdef __TLE__
+#include "MUSATLE/Transforms/TransformAttrs.h"
+#endif
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1069,11 +1072,15 @@ void emitIfPredicated(RewriterBase &rewriter, Location loc, Value pred,
 bool maskIsDynamic(Value mask) {
   if (!mask)
     return false;
+
   if (matchPattern(mask, m_One()) || matchPattern(mask, m_Zero()))
     return false;
-  if (auto splatOp = mask.getDefiningOp<triton::SplatOp>())
+
+  if (auto splatOp = mask.getDefiningOp<triton::SplatOp>()) {
     return !matchPattern(splatOp.getSrc(), m_One()) &&
            !matchPattern(splatOp.getSrc(), m_Zero());
+  }
+
   return true;
 }
 
@@ -1355,6 +1362,15 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
     SmallVector<Value> loaded;
     loaded.reserve(numElems);
 
+    // AMD keeps masked scalar integer loads in a <1 x T> carrier and
+    // extracts the element after the predicated-load join. This prevents
+    // LLVM SimplifyCFG from treating a scalar zero PHI as an immediate
+    // divisor on inactive lanes. BF16 needs the same carrier on PH1: the
+    // target-aware SLP path otherwise clones the masked zero fallback into a
+    // second BF16->FP32/FP32->BF16 arithmetic tree. The target-aware SLP
+    // contract is PH1-only, so keep this BF16 change scoped to capability 31;
+    // unmasked loads, other non-integer types, and other architectures retain
+    // their established lowering.
     bool useVectorCarrier =
         !maskElems.empty() && (logicalValueElemTy.isIntOrIndex() ||
                                (logicalValueElemTy.isBF16() &&
@@ -1556,7 +1572,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
       auto ws = partitions ? dyn_cast<triton::gpu::WarpSpecializeOp>(
                                  partitions->getParentOp())
                            : triton::gpu::WarpSpecializeOp();
-      if (ws && ws->hasAttr("musa_tle.static_warp_specialize")) {
+      if (ws &&
+          ws->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr)) {
         std::optional<int> partitionStartThread =
             getWarpGroupStartThreadId(op->getBlock());
         if (!partitionStartThread || *partitionStartThread < 0) {

@@ -20,6 +20,7 @@
 #ifdef __TLE__
 #include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
 #endif
@@ -121,6 +122,11 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
 #ifndef USE_MACA
 // TODO: failed because ttg::TMACopyOp not defined on metax backend's ttgpuir
 static int getTMACopyLoadSize(ttg::TMACopyOp copy) {
+#ifdef __TLE__
+  if (auto bytes =
+          copy->getAttrOfType<IntegerAttr>(ttle::kLogicalTMACopyBytesAttr))
+    return static_cast<int>(bytes.getInt());
+#endif
   auto dstTy = cast<ttg::MemDescType>(copy.getDst().getType());
   auto shapePerCTA = ttg::getShapePerCTA(dstTy.getEncoding(), dstTy.getShape());
   return product(shapePerCTA) * dstTy.getElementType().getIntOrFloatBitWidth() /
@@ -263,6 +269,20 @@ constexpr llvm::StringLiteral
 static Value getMemDescRoot(Value value) {
   Value current = value;
   while (true) {
+    if (auto result = dyn_cast<OpResult>(current)) {
+      if (auto wait = dyn_cast<triton::nvidia_gpu::WarpGroupDotWaitOp>(
+              result.getOwner())) {
+        unsigned resultNo = result.getResultNumber();
+        if (resultNo < wait.getNumOperands()) {
+          current = wait.getOperand(resultNo);
+          continue;
+        }
+      }
+    }
+    if (auto view = current.getDefiningOp<ttle::MemDescWGMMAViewOp>()) {
+      current = view.getSrc();
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = index.getSrc();
       continue;

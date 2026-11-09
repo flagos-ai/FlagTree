@@ -1,13 +1,5 @@
-# XPU: conceal all IR text (MLIR/LLVM/ASM) in non-Debug builds, aligning with
-# internal Triton 3.0 TRITON_CONCEAL_IR. XPU-only. Also cover
-# TritonRelBuildWithAsserts, which FlagTree uses as the default RelWithAsserts
-# type and does not inherit CMAKE_CXX_FLAGS_RELEASE.
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -DTRITON_CONCEAL_IR=1")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DTRITON_CONCEAL_IR=1")
-set(CMAKE_C_FLAGS_TRITONRELBUILDWITHASSERTS "${CMAKE_C_FLAGS_TRITONRELBUILDWITHASSERTS} -DTRITON_CONCEAL_IR=1")
-set(CMAKE_CXX_FLAGS_TRITONRELBUILDWITHASSERTS "${CMAKE_CXX_FLAGS_TRITONRELBUILDWITHASSERTS} -DTRITON_CONCEAL_IR=1")
-add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:TRITON_CONCEAL_IR=1>)
-message(STATUS "[XPU] TRITON_CONCEAL_IR=1 enabled for non-Debug XPU builds")
+# Conceal the public module string while keeping the private lowering path available.
+message(STATUS "[XPU] TRITON_XPU_CONCEAL_IR: target-scoped concealment")
 
 # ============================================================================
 # XPU SDNN Object File Validation
@@ -101,7 +93,12 @@ function(add_xpu_sdnn_object name)
   if(ARG_LINK_LIBS)
     target_link_libraries(${name} INTERFACE ${ARG_LINK_LIBS})
   endif()
-  llvm_update_compile_flags(${name})
+  # Public LLVM 22's llvm_update_compile_flags rejects IMPORTED targets; these
+  # precompiled objects cannot benefit from compile flags anyway.
+  get_target_property(_xpu_sdnn_obj_imported ${name} IMPORTED)
+  if(NOT _xpu_sdnn_obj_imported)
+    llvm_update_compile_flags(${name})
+  endif()
 endfunction()
 
 # Put the XPU backend's own include dir BEFORE everything else (including the
@@ -114,7 +111,7 @@ include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(device)
 add_subdirectory(include)
 
-# [internal bc5e33a6 sync] The XPU-owned TritonGPUIR Dialect.cpp replacement
+# The XPU-owned TritonGPUIR Dialect.cpp replacement
 # includes TritonXPU Dialect.h. Keep this backend-specific dependency here so
 # the generated XPU attribute-interface header exists before that main target
 # compiles, without changing main-tree CMake files.
@@ -125,18 +122,29 @@ if(TARGET TritonGPUIR)
     ${CMAKE_CURRENT_BINARY_DIR}/include)
 endif()
 
-# ir.cc / llvm.cc are compiled as part of the main `triton` target, which is
-# created after this subdirectory. Defer so the conceal macro actually reaches
-# those sources.
-cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL
-  target_compile_definitions triton PRIVATE TRITON_CONCEAL_IR=1)
 
 # The XPU overlay's python/src/gluon_ir.cc includes
 # triton/Dialect/TritonXPU/IR/Dialect.h for the `triton_xpu.raw` builders
 # (tle.raw on the cluster path), which pulls in the TableGen'd Ops.h.inc /
 # TritonXPUAttrDefs.h.inc. `triton` only links TritonXPUIR, so without an
 # explicit dependency the generation can race with compiling that source.
-# Deferred for the same reason as above: the target does not exist yet here.
+#
+# The SDNN declarations the package stages into triton/Dialect/TritonSDNN/IR/
+# are included by that same source, and their TableGen targets are
+# `add_public_tablegen_target` -- which by MLIR convention is **not** part of
+# `all`, so nothing else pulls them in either.  An incremental tree hides the
+# gap (the .inc files were generated long ago); a clean configuration fails
+# with `Dialect.h.inc: No such file or directory`, and after that one is
+# added, with `TritonSDNNAttrInterfaces.h.inc`.  The internal tree declares
+# both dependencies in three places; they were lost when SDNN became prebuilt
+# objects plus a staged declaration package.
+#
+# The two SDNN tablegen targets are gone: the declaration surface no longer
+# participates in the build.  Its only consumer was the SDNN binding segment of
+# gluon_ir.cc, which now lives in the prebuilt gluon_ir_sdnn.cc.o, so nothing
+# generates or includes those .h.inc files any more.
+#
+# Deferred for the same reason as above: the targets do not exist yet here.
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL
   add_dependencies triton TritonXPUTableGen TritonXPUAttrDefsIncGen)
 
@@ -188,8 +196,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
       TritonShareForXPU
     )
     target_compile_definitions(TritonXPU PRIVATE __XPU__)
+    option(TRITON_XPU_CONCEAL_IR "Conceal XPU IR text in distributed builds" ON)
+    if(TRITON_XPU_CONCEAL_IR)
+      target_compile_definitions(TritonXPU PRIVATE TRITON_CONCEAL_IR=1)
+    endif()
+    # Both objects are staged into this directory, so both must be listed in the
+    # same call: xpu_check_object_file_list() globs the directory and would
+    # report the other one as missing.
     add_xpu_sdnn_object(TritonXPUSDNN
       ${CMAKE_CURRENT_SOURCE_DIR}/triton_xpu_sdnn.cc.o
+      ${CMAKE_CURRENT_SOURCE_DIR}/gluon_ir_sdnn.cc.o
+      ${CMAKE_CURRENT_SOURCE_DIR}/abi_table.cc.o
     )
 endif()
 
@@ -197,7 +214,7 @@ endif()
 # definitions so that a foreign libLLVM loaded into the global scope first
 # (e.g. torch_xmlir's libLLVM-15.so) cannot interpose them; llvm::Module::
 # getDataLayout() then reads a wrong offset and link_extern_libs dies with
-# std::bad_alloc (internal XPUTC-7923). XPU-only, mirroring the internal fix
+# std::bad_alloc (XPUTC-7923). XPU-only, mirroring the sync source's fix
 # without touching the shared top-level CMakeLists.
 if(TRITON_BUILD_PYTHON_MODULE AND UNIX AND NOT APPLE AND TARGET triton)
   target_link_options(triton PRIVATE "-Wl,-Bsymbolic-functions")

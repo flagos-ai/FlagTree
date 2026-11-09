@@ -281,6 +281,58 @@ def test_int32_aiu_load_shift_and_mask_device_correctness():
     torch.testing.assert_close(output.cpu(), reference, rtol=0, atol=0)
 
 
+@triton.jit
+def _fp32_gemm_aiu_ordered_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+                                  BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+                                  A_STRIDE_M: tl.constexpr, A_STRIDE_K: tl.constexpr, B_STRIDE_K: tl.constexpr,
+                                  B_STRIDE_N: tl.constexpr, ORDER_0: tl.constexpr, ORDER_1: tl.constexpr):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(A_STRIDE_M, A_STRIDE_K), offsets=(pid_m * BLOCK_M, 0),
+                             block_shape=(BLOCK_M, BLOCK_K), order=(ORDER_0, ORDER_1))
+    b_bp = tl.make_block_ptr(b_ptr, shape=(K, N), strides=(B_STRIDE_K, B_STRIDE_N), offsets=(0, pid_n * BLOCK_N),
+                             block_shape=(BLOCK_K, BLOCK_N), order=(ORDER_0, ORDER_1))
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for _ in range(0, K, BLOCK_K):
+        a = tle.load(a_bp, is_async=True)
+        b = tle.load(b_bp, is_async=True)
+        acc += tl.dot(a, b)
+        a_bp = tl.advance(a_bp, (0, BLOCK_K))
+        b_bp = tl.advance(b_bp, (BLOCK_K, 0))
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    tl.store(c_ptr + N * offs_m[:, None] + offs_n[None, :], acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("order", [(1, 0), (0, 1)])
+def test_fp32_gemm_aiu_device_correctness_memory_order(order):
+    m, n, k = 32, 32, 32
+    bm, bn, bk = 32, 32, 32
+    torch.manual_seed(0)
+    a_ref = torch.randn((m, k), device="cuda", dtype=torch.float32)
+    b_ref = torch.randn((k, n), device="cuda", dtype=torch.float32)
+    if order == (1, 0):
+        a, a_strides = a_ref, (k, 1)
+        b, b_strides = b_ref, (n, 1)
+    else:
+        # physically [K, M] / [N, K] so that dim 0 of the logical view is contiguous
+        a, a_strides = a_ref.t().contiguous().t(), (1, m)
+        b, b_strides = b_ref.t().contiguous().t(), (1, k)
+    actual = torch.empty((m, n), device="cuda", dtype=torch.float32)
+    grid = (triton.cdiv(m, bm), triton.cdiv(n, bn))
+    _fp32_gemm_aiu_ordered_kernel[grid](a, b, actual, m, n, k, bm, bn, bk, a_strides[0], a_strides[1], b_strides[0],
+                                        b_strides[1], order[0], order[1], num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    # PPU fp32 dot computes through TF32 MMA (10 mantissa bits): measured max
+    # abs error vs the fp32 CPU reference is ~1.6e-2 for this shape. The loose
+    # tolerance absorbs that rounding noise while still catching order/layout
+    # misinterpretation, which produces O(1) errors.
+    expected = a_ref.cpu() @ b_ref.cpu()
+    torch.testing.assert_close(actual.cpu(), expected, rtol=1e-2, atol=1e-2)
+
+
 # ---------------------------------------------------------------------------
 # 3. Block shape parametrization
 # ---------------------------------------------------------------------------

@@ -1,8 +1,7 @@
 // tle.raw payload for the xpu3 cluster path: out = x + y.
 //
 // The xpu3 cluster programming model is not CUDA-like: a core cannot dereference
-// global memory, so every tile is staged through local memory with GM2LM/LM2GM
-// (the SIMT `out[i] = x[i] + y[i]` idiom belongs to the jupiter/xcn payloads).
+// global memory, so every tile is staged through local memory with GM2LM/LM2GM.
 // The core-strided loop makes the payload independent of the launch geometry.
 //
 // Requirements imposed by the toolchain (see XPUJITFunction):

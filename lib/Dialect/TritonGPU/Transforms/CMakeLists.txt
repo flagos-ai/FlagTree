@@ -16,10 +16,25 @@ if(NOT FLAGTREE_BACKEND)
   )
 endif()
 
+set(TritonGPUTransformsSharedMemoryHintSources ProcessSharedMemoryHint.cpp)
+set(TritonGPUTransformsWarpSpecializationSources
+  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  WarpSpecialization/PartitionLoops.cpp
+)
+set(TritonGPUTransformsBackendLibs
+  NVWSIR
+  NVWSTransforms
+)
+if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  set(TritonGPUTransformsSharedMemoryHintSources)
+  set(TritonGPUTransformsWarpSpecializationSources)
+  set(TritonGPUTransformsBackendLibs TritonILUVATARUtils)
+endif()
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   ${TritonGPUTransformsConcatDotOperandSources}
-  ProcessSharedMemoryHint.cpp
+  ${TritonGPUTransformsSharedMemoryHintSources}
   Coalesce.cpp
   F32DotTC.cpp
   FuseNestedLoops.cpp
@@ -50,11 +65,10 @@ add_triton_library(TritonGPUTransforms
   Utility.cpp
   CoalesceUtils.cpp
   LayoutPropagationUtility.cpp
-  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  ${TritonGPUTransformsWarpSpecializationSources}
   WarpSpecialization/Partition.cpp
   WarpSpecialization/OptimizePartitionWarps.cpp
   WarpSpecialization/PartitionBuilder.cpp
-  WarpSpecialization/PartitionLoops.cpp
   WarpSpecialization/PartitionScheduling.cpp
 
   DEPENDS
@@ -75,8 +89,7 @@ add_triton_library(TritonGPUTransforms
   TritonTransforms
   TritonGPUIR
   TritonNvidiaGPUIR
-  NVWSIR
-  NVWSTransforms
+  ${TritonGPUTransformsBackendLibs}
   TritonToTritonGPU
   TritonInstrumentIR
   MLIRTransformUtils

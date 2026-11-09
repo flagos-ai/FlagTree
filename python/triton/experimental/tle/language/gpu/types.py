@@ -23,11 +23,13 @@
 from __future__ import annotations
 
 import math
+from math import prod
 
 import triton.language.core as tl
 from typing import Optional, List, Tuple, TYPE_CHECKING
 from abc import abstractmethod
 from triton._C.libtriton import ir
+from triton._utils import TRITON_MAX_TENSOR_NUMEL, is_power_of_two
 from triton.language.semantic import TritonSemantic
 
 if TYPE_CHECKING:
@@ -322,6 +324,16 @@ class swizzled_shared_layout(shared_layout):
         self.numCTASplit = numCTASplit
         self.numCTAOrder = numCTAOrder
 
+    def _structural_key(self):
+        return (self.vectorSize, self.perPhase, self.maxPhase, tuple(self.order), tuple(self.numCTAs),
+                tuple(self.numCTAsPerCGA), tuple(self.numCTASplit), tuple(self.numCTAOrder))
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self._structural_key() == other._structural_key()
+
+    def __hash__(self):
+        return hash(self._structural_key())
+
     """
     Make a default non-swizzled shared layout encoding.
     """
@@ -532,6 +544,62 @@ def _layout_from_reshaped_memdesc(handle, shape, element_ty, builder) -> shared_
     raise ValueError(f"unsupported inferred shared-memory reshape encoding: {kind}")
 
 
+class _logical_tensor_descriptor_type(tl.tensor_descriptor_type):
+    """Logical block metadata with the ordinary descriptor IR representation."""
+
+    def __init__(self, carrier_type, logical_shape):
+        super().__init__(carrier_type.block_type, carrier_type.shape_type, carrier_type.strides_type)
+        self.logical_shape = tuple(logical_shape)
+
+    def __eq__(self, other):
+        return super().__eq__(other) and self.logical_shape == other.logical_shape
+
+    def mangle(self):
+        return super().mangle() + "_TLE" + "_".join(map(str, self.logical_shape))
+
+    def _unflatten_ir(self, handles, cursor):
+        descriptor, cursor = super()._unflatten_ir(handles, cursor)
+        return _logical_tensor_descriptor(descriptor, self.logical_shape), cursor
+
+
+class _logical_tensor_descriptor(tl.tensor_descriptor):
+    """Python descriptor exposing a logical block over a power-of-two carrier."""
+
+    def __init__(self, descriptor, logical_shape):
+        super().__init__(descriptor.handle, descriptor.shape.values, descriptor.strides.values, descriptor.block_type)
+        self.type = _logical_tensor_descriptor_type(self.type, logical_shape)
+
+    @property
+    def block_shape(self):
+        return self.type.logical_shape
+
+
+def _make_subslice_layout(src_layout: shared_layout, subslice_shape: List[int]) -> shared_layout:
+    if isinstance(src_layout, swizzled_shared_layout):
+        return swizzled_shared_layout(
+            src_layout.vectorSize,
+            src_layout.perPhase,
+            src_layout.maxPhase,
+            list(src_layout.order),
+            list(src_layout.numCTAs),
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+        )
+    if isinstance(src_layout, nv_mma_shared_layout):
+        return nv_mma_shared_layout(
+            list(subslice_shape),
+            list(src_layout.order),
+            src_layout.elemType,
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+            src_layout.fp4Padded,
+            src_layout.swizzled,
+        )
+    raise ValueError(f"buffered_tensor.subslice does not support layout {type(src_layout).__name__}")
+
+
 class buffered_tensor(tl.base_value):
     """
     A symbolic type representing a tensor allocated in a manually managed buffer
@@ -599,8 +667,10 @@ class buffered_tensor(tl.base_value):
         if stage_ty != tl.int32:
             raise ValueError(f"buffered_tensor.slot stage must be int32, got {stage_ty}")
 
+        # A slot is an ordinary carrier view. Logical extents are seeded on
+        # local_alloc and propagated through memdesc_index in TTIR.
         slot_shape = list(self.shape[1:])
-        is_subview = self.type.alloc_shape != self.shape
+        is_subview = self.type.alloc_shape != list(self.shape)
         # A slot of a subview must retain the complete allocation shape.  The
         # extra leading dimension records the ring-buffer allocation while
         # the trailing dimensions provide the physical stride of one stage.
@@ -660,8 +730,26 @@ class buffered_tensor(tl.base_value):
         if self.type.storage is not smem:
             raise ValueError(f"buffered_tensor.subslice supports only smem storage, got {self.type.storage}")
 
-        start = tl._unwrap_if_constexpr(start)
-        length = tl._unwrap_if_constexpr(length)
+        start = _unwrap_pipe_constexpr(start)
+        length = _unwrap_pipe_constexpr(length)
+        if isinstance(start, (tuple, list)) and isinstance(length, (tuple, list)):
+            offsets, sub_shape = list(start), list(length)
+            if len(offsets) != len(self.shape) or len(sub_shape) != len(self.shape):
+                raise ValueError("buffered_tensor.subslice offsets and shape must match the buffer rank")
+            for offset, size, extent in zip(offsets, sub_shape, self.shape):
+                if isinstance(offset, bool) or not isinstance(offset, int):
+                    raise ValueError("buffered_tensor.subslice offsets must be compile-time integers")
+                if isinstance(size, bool) or not isinstance(size, int):
+                    raise ValueError("buffered_tensor.subslice shape must be compile-time integers")
+                if offset < 0 or size <= 0 or offset + size > extent:
+                    raise ValueError("buffered_tensor.subslice is outside extent")
+                if size != extent and (size & (size - 1) or offset % size):
+                    raise ValueError("buffered_tensor.subslice requires an aligned power-of-two tile")
+            from . import semantic as tle_semantic
+            handle = tle_semantic.subview(self, offsets, sub_shape, [1] * len(sub_shape), self.type.layout, _semantic,
+                                          alloc_shape=self.type.alloc_shape)
+            return buffered_tensor(handle, self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                                   alloc_shape=self.type.alloc_shape)
         dim = tl._unwrap_if_constexpr(dim)
         for name, value in (("start", start), ("length", length), ("dim", dim)):
             if not isinstance(value, int):
@@ -697,21 +785,49 @@ class buffered_tensor(tl.base_value):
 
     def make_permute(self, handle, dims):
         permuted_layout = self.type.layout.make_permute(dims)
+        alloc_shape = self.type.alloc_shape
+        prefix_len = len(alloc_shape) - len(self.shape)
+        permuted_alloc_shape = alloc_shape[:prefix_len] + [alloc_shape[prefix_len + d] for d in dims]
         return buffered_tensor(
             handle,
             self.dtype,
             [self.shape[d] for d in dims],
-            self.type.num,
             self.type.storage,
             permuted_layout,
+            self.type.semantic,
+            alloc_shape=permuted_alloc_shape,
         )
 
 
-class buffered_tensor_type(tl.block_type):
+class buffered_tensor_type(tl.base_type):
+    """Type of a memory-backed buffer, represented by a memdesc in IR."""
 
     def __init__(self, element_ty: tl.dtype, shape: List, storage: scope, layout: Optional[shared_layout] = None,
                  semantic: TritonSemantic = None, alloc_shape: List = None):
-        super().__init__(element_ty, shape)
+        # MemDescType deliberately permits a non-power-of-two leading
+        # dimension (the stage/allocation dimension), while ordinary Triton
+        # register tensors require every dimension to be a power of two.  A
+        # buffered tensor is a memory descriptor, not a register tensor, so do
+        # not apply block_type's stronger rule to that leading dimension.
+        shape = tuple(shape)
+        if not shape:
+            raise TypeError("0d buffered_tensor_type is forbidden")
+        for index, extent in enumerate(shape):
+            if not isinstance(extent, int):
+                raise TypeError(f"Shape element {index} must have type `constexpr[int]`, "
+                                f"got `constexpr[{type(extent)}]`")
+            if extent <= 0:
+                raise ValueError(f"Shape element {index} must be positive")
+            if index > 0 and not is_power_of_two(extent):
+                raise ValueError(f"Shape element {index} must be a power of 2")
+        numel = prod(shape)
+        if numel > TRITON_MAX_TENSOR_NUMEL:
+            raise ValueError(f"numel ({numel}) exceeds triton maximum tensor numel "
+                             f"({TRITON_MAX_TENSOR_NUMEL})")
+        self.element_ty = element_ty
+        self.shape = shape
+        self.numel = numel
+        self.name = f"<{self.shape}, {self.element_ty}>"
         # Storage
         self.storage = storage
         # layout encoding
@@ -720,6 +836,17 @@ class buffered_tensor_type(tl.block_type):
         # Buffer number. 0 means a single buffer, 1+ means a buffer array.
         assert semantic, "buffered_tensor array must be created with a builder"
         self.semantic = semantic
+
+    @property
+    def scalar(self):
+        return self.element_ty
+
+    @property
+    def nbytes(self):
+        return self.numel * (self.element_ty.primitive_bitwidth // 8)
+
+    def __repr__(self):
+        return self.__str__()
 
     def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[buffered_tensor, int]:
         value = buffered_tensor(handles[cursor], self.scalar, self.shape, self.storage, self.layout, self.semantic,
@@ -737,7 +864,7 @@ class buffered_tensor_type(tl.block_type):
         elt = self.scalar.mangle()
         shape = '_'.join(map(str, self.shape))
         alloc_suffix = ""
-        if self.alloc_shape != self.shape:
+        if self.alloc_shape != list(self.shape):
             alloc_shape = '_'.join(map(str, self.alloc_shape))
             alloc_suffix = f"A{alloc_shape}"
         remote_suffix = ""
@@ -753,8 +880,8 @@ class buffered_tensor_type(tl.block_type):
         return f"buffered_tensor_<{self.element_ty}, {self.shape}, {self.layout}, {self.alloc_shape}, >"
 
     def __eq__(self, other) -> bool:
-        if not (type(self) is type(other) and self.shape == other.shape and self.layout == other.layout
-                and self.alloc_shape == other.alloc_shape):
+        if not (type(self) is type(other) and self.element_ty == other.element_ty and self.storage == other.storage and
+                self.shape == other.shape and self.layout == other.layout and self.alloc_shape == other.alloc_shape):
             return False
         self_shard = getattr(self, "_tle_remote_shard_id", None)
         other_shard = getattr(other, "_tle_remote_shard_id", None)

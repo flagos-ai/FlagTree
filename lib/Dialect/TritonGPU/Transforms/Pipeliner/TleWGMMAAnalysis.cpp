@@ -775,6 +775,13 @@ bool TleWgmmaScheduleAnalysis::canReuseAccumulatorChainC(
   ttng::WarpGroupDotOp sourceDot = getAccumulatorChainSourceDot(dotOp);
   if (!sourceDot || sourceDot->getBlock() != dotOp->getBlock())
     return false;
+#ifdef __TLE__
+  // active_n uses a narrower low-level accumulator than its physical carrier,
+  // so neither side can reuse the full carrier through this shortcut.
+  if (sourceDot->hasAttr("tle.wgmma_active_n") ||
+      dotOp->hasAttr("tle.wgmma_active_n"))
+    return false;
+#endif
   if (!sourceDot->isBeforeInBlock(dotOp))
     return false;
   if (!hasSingleWgmmaAccumulatorTile(sourceDot) ||

@@ -12,10 +12,17 @@ namespace triton {
 namespace xpu {
 
 ClusterLayoutAttr getClusterLayout(RankedTensorType tensorTy) {
-  if (auto sliceEncoding =
-          dyn_cast<triton::gpu::SliceEncodingAttr>(tensorTy.getEncoding()))
-    return dyn_cast<ClusterLayoutAttr>(sliceEncoding.getParent());
-  return dyn_cast<ClusterLayoutAttr>(tensorTy.getEncoding());
+  // Unencoded tensors reach here on the TLE path -- `tle_local_ptr` yields
+  // `tensor<64x256x!tt.ptr<f16, 0>>` and the `tt.store` beside it takes the
+  // same unencoded type -- and `dyn_cast` on a null Attribute asserts rather
+  // than returning null. The normcopy path always has an encoding by the time
+  // this runs, which is why the missing guard never fired there.
+  Attribute encoding = tensorTy.getEncoding();
+  if (!encoding)
+    return {};
+  if (auto sliceEncoding = dyn_cast<triton::gpu::SliceEncodingAttr>(encoding))
+    return dyn_cast_or_null<ClusterLayoutAttr>(sliceEncoding.getParent());
+  return dyn_cast<ClusterLayoutAttr>(encoding);
 }
 
 int64_t getNumRegs(Type type, bool *isVector) {
@@ -216,6 +223,10 @@ void getBlockRegPressure(ModuleOp m, Operation *insertPt, RegPressure &p) {
 //===----------------------------------------------------------------------===//
 
 bool vectorFitsRoot(Type rootOpTy) {
+  // A TLE store root arrives unencoded (see `withTLEDefaultEncoding`); both
+  // questions below -- the per-core count and `sizePerCore[0]` -- need an
+  // encoding to read, and the cast on the next line is unconditional.
+  rootOpTy = withTLEDefaultEncoding(rootOpTy);
   auto rowsPerCore = 1;
   if (auto rootOpTensorTy = mlir::dyn_cast<RankedTensorType>(rootOpTy)) {
     auto rank = rootOpTensorTy.getShape().size();
@@ -256,7 +267,11 @@ bool vectorFitsReduceOperand(triton::xpu::ReduceOp redOp, Type operandTy) {
 }
 
 Fit vectorFitsValue(Value value, FitQuery query, unsigned wantWidth) {
-  unsigned numElems = getTotalElemsPerThread(value.getType());
+  // Unencoded TLE values reach here through the store-rooted closure walk, and
+  // `getTotalElemsPerThread` aborts on them rather than answering. A Value is
+  // in hand, so the encoded sibling is reachable and is the reading the
+  // vectorized access will be lowered by.
+  unsigned numElems = getTotalElemsPerThread(tleEncodedFacingType(value));
 
   switch (query) {
   case FitQuery::WholeVectors:

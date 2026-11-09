@@ -169,7 +169,7 @@ third_party/xpu/python/*.egg-info
 
 - overlay `lib/Analysis/*.cpp`（死文件，不参与编译）
 - overlay `lib/Analysis/CMakeLists.txt`（仅 `add_subdirectory(Analysis/NewAnalysis)`）
-- `NewAnalysis/*`（与 internal 逻辑等价；`OpFoldResultUtils.h` 为超集）
+- `NewAnalysis/*`（与同步源逻辑等价；`OpFoldResultUtils.h` 为超集）
 
 ## 8. 验证
 

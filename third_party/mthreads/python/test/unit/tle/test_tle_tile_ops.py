@@ -167,6 +167,21 @@ def _insert_dynamic_runtime_kernel(x_ptr, tile_ptr, out_ptr, sxm: tl.constexpr, 
     tl.store(out_ptr + index * 32 * 32 + rows * 32 + cols, result)
 
 
+_FLAT = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [4], [0]))
+_MATRIX = tl.constexpr(tle.gpu.BlockEncoding([1, 1], [1, 32], [4, 1], [1, 0]))
+
+
+@triton.jit(do_not_specialize=["index"])
+def _extract_cta_aligned_kernel(x_ptr, out_ptr, index, STATIC: tl.constexpr, INDEX: tl.constexpr):
+    x = tle.gpu.set_layout(tl.arange(0, 1024), _FLAT)
+    x = tle.gpu.set_layout(x.reshape((32, 32)), _MATRIX)
+    src = tl.load(x_ptr + x)
+    tile = tle.extract_tile(src, index=INDEX if STATIC else index, tile_shape=(16, 32))
+    y = tle.gpu.set_layout(tl.arange(0, 512), _FLAT)
+    y = tle.gpu.set_layout(y.reshape((16, 32)), _MATRIX)
+    tl.store(out_ptr + y, tile)
+
+
 def _compile(fn):
     return compile_musa(
         fn,
@@ -374,6 +389,20 @@ def test_static_non_cta_insert_encoding_mismatch_uses_smem_barrier():
     assert "llvm.musa.syncthreads.lm" in compiled.asm["llir"], compiled.asm["llir"]
 
 
+@pytest.mark.parametrize("static", [True, False])
+@pytest.mark.parametrize("index", [0, 1])
+def test_extract_tile_static_cta_aligned_skips_shared_scratch(static, index):
+    compiled = compile_musa(
+        _extract_cta_aligned_kernel,
+        signature={"x_ptr": "*fp32", "out_ptr": "*fp32", "index": "i32", "STATIC": "constexpr", "INDEX": "constexpr"},
+        constexprs={"STATIC": static, "INDEX": index},
+    )
+
+    assert compiled.metadata.shared == (0 if static else 2048)
+    if static:
+        assert "llvm.musa.syncthreads.lm" not in compiled.asm["llir"], compiled.asm["llir"]
+
+
 @pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
 @pytest.mark.parametrize("index, row, col", [(0, 0, 0), (3, 16, 16)])
 def test_extract_tile_runtime_matches_source_tile(index, row, col):
@@ -442,3 +471,16 @@ def test_insert_tile_dynamic_runtime_updates_each_selected_region():
     expected[2, 16:32, 0:16] = tile[2]
     expected[3, 16:32, 16:32] = tile[3]
     torch.testing.assert_close(out.cpu(), expected.cpu(), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+@pytest.mark.parametrize("static", [True, False])
+def test_extract_tile_cta_aligned_runtime_matches_source_tile(static):
+    x = torch.arange(32 * 32, device="musa", dtype=torch.float32).reshape(32, 32)
+    out = torch.empty((16, 32), device="musa", dtype=torch.float32)
+
+    for index in (0, 1, 0):
+        compiled = _extract_cta_aligned_kernel[(1, )](x, out, index, static, index, num_warps=4)
+
+        torch.testing.assert_close(out.cpu(), x[index * 16:(index + 1) * 16].cpu(), rtol=0, atol=0)
+        assert compiled.metadata.shared == (0 if static else 2048)

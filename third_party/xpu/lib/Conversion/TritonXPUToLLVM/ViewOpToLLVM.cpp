@@ -89,8 +89,25 @@ struct XPUBroadcastOpConversion
           srcValues[srcOffsets[i]] = srcVals_0_vector;
         }
       } else if (srcShape[0] == 1) {
+        // [1xNxTy] -> [MxNxTy] column broadcast: replicate the N/vecSize
+        // source column-vectors across the M rows.
+        //
+        // The source element type decides how those column-vectors are
+        // obtained. If the source is ALREADY vectorized (element type is a
+        // VectorType, e.g. tensor<1 x N/vecSize x vector<vecSize x Ty>>), each
+        // srcVals[i] IS the column-vector -- use it directly, which avoids
+        // materializing all N scalar source elements at once (that scalar
+        // packing forces the whole source row live simultaneously and blows up
+        // the per-core stack via register spills). Otherwise the source is
+        // scalar (tensor<1 x N x Ty>) and we pack vecSize consecutive scalars
+        // into each column-vector via insert_element (legacy path).
+        bool srcIsVectorized = isa<VectorType>(getElementTypeOrSelf(srcTy));
         SmallVector<Value> srcVectorVals;
         for (size_t i = 0; i < resultOffsets.size() / rowsPerCore; i++) {
+          if (srcIsVectorized) {
+            srcVectorVals.push_back(srcVals[i]);
+            continue;
+          }
           Value srcVals_vector = rewriter.create<LLVM::UndefOp>(loc, resElemTy);
           for (size_t elemStart = 0; elemStart < vecSize; ++elemStart) {
             srcVals_vector = insert_element(resElemTy, srcVals_vector,

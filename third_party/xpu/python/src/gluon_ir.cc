@@ -23,6 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "gluon_ir.h"
 #include "ir.h"
 #include "pybind11/pybind11.h"
 #include <pybind11/stl.h>
@@ -57,6 +58,9 @@
 
 using namespace mlir;
 namespace py = pybind11;
+
+// Defined in gluon_ir_sdnn.cc (separately compiled; see plan §9.1).
+void def_sdnn_bindings(py::class_<GluonOpBuilder, TritonOpBuilder> &cls);
 namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
@@ -85,72 +89,6 @@ getCgaLayoutBases(ttg::CTAEncodingAttr layout) {
   assert(it != basesMap.end());
   return it->second;
 }
-
-// Helper to check if an MLIR type or attribute has a verifier method.
-template <typename AttrOrType>
-static constexpr auto hasVerifier(AttrOrType t)
-    -> decltype(t.verifyInvariants, true) {
-  return true;
-}
-static constexpr auto hasVerifier(...) { return false; }
-
-// Print a diagnostic without its location. The frontend will attach the AST
-// location to the error message.
-static void printDiagStr(llvm::raw_ostream &os, const Diagnostic &diag) {
-  for (const DiagnosticArgument &arg : diag.getArguments())
-    arg.print(os);
-  os << "\n";
-  for (const Diagnostic &note : diag.getNotes())
-    printDiagStr(os, note);
-}
-
-struct GluonOpBuilder : public TritonOpBuilder {
-  using TritonOpBuilder::TritonOpBuilder;
-  // Construct an attribute or type while calling its verifier. Error messages
-  // are intercepted and sent back to Python via a C++ exception.
-  template <typename AttrOrType, typename... ArgTs>
-  std::enable_if_t<hasVerifier(AttrOrType()), AttrOrType>
-  getChecked(ArgTs &&...args) {
-    // Set up a scoped handler to intercept errors.
-    std::string msg;
-    llvm::raw_string_ostream os(msg);
-    ScopedDiagnosticHandler handler(
-        getContext(), [&](Diagnostic &diag) { printDiagStr(os, diag); });
-
-    auto result =
-        AttrOrType::getChecked([&] { return mlir::emitError(getLastLoc()); },
-                               std::forward<ArgTs>(args)...);
-    if (!result)
-      throw std::runtime_error(os.str());
-    return result;
-  }
-
-  // A variant of the above due to issues with C++ overload resolution and how
-  // MLIR sets up the default `getChecked` implementation.
-  template <typename AttrOrType, typename... ArgTs>
-  std::enable_if_t<hasVerifier(AttrOrType()), AttrOrType>
-  getChecked(MLIRContext *ctx, ArgTs &&...args) {
-    // Set up a scoped handler to intercept errors.
-    std::string msg;
-    llvm::raw_string_ostream os(msg);
-    ScopedDiagnosticHandler handler(
-        getContext(), [&](Diagnostic &diag) { printDiagStr(os, diag); });
-
-    if (failed(AttrOrType::verifyInvariants(
-            [&] { return mlir::emitError(getLastLoc()); },
-            std::forward<ArgTs>(args)...)))
-      throw std::runtime_error(os.str());
-
-    return AttrOrType::get(ctx, std::forward<ArgTs>(args)...);
-  }
-
-  // Fallback method for types or attributes that do not have a verifier.
-  template <typename AttrOrType, typename... ArgTs>
-  std::enable_if_t<!hasVerifier(AttrOrType()), AttrOrType>
-  getChecked(ArgTs &&...args) {
-    return AttrOrType::get(std::forward<ArgTs>(args)...);
-  }
-};
 
 struct GluonLayouts {
   py::handle AutoLayout;
@@ -331,9 +269,9 @@ template <typename CondT> static void check(CondT &&cond, const char *msg) {
 void init_gluon_ir(py::module &&m) {
   using ret = py::return_value_policy;
 
-  py::class_<GluonOpBuilder, TritonOpBuilder>(
-      m, "GluonOpBuilder", py::module_local(), py::dynamic_attr())
-      .def(py::init<MLIRContext *>())
+  py::class_<GluonOpBuilder, TritonOpBuilder> cls(
+      m, "GluonOpBuilder", py::module_local(), py::dynamic_attr());
+  cls.def(py::init<MLIRContext *>())
       .def("get_op_builder", &GluonOpBuilder::getBuilder, ret::reference)
       .def("get_distributed_ty",
            [](GluonOpBuilder &self, Type &elementType,
@@ -787,16 +725,20 @@ void init_gluon_ir(py::module &&m) {
       .def("create_xpu_copy_global_to_local",
            [](GluonOpBuilder &self, Value descPtr, std::vector<Value> &coord,
               Value dstBuffer, std::vector<Value> &strides,
-              std::vector<Value> &shapes) {
+              std::vector<Value> &shapes, bool isSync) {
              self.create<triton::xpu::TLECopyGlobalToLocalOp>(
-                 descPtr, coord, dstBuffer, strides, shapes, /*is_sync=*/true);
+                 descPtr, coord, dstBuffer, strides, shapes, isSync);
            })
       .def("create_xpu_copy_local_to_global",
            [](GluonOpBuilder &self, Value descPtr, std::vector<Value> &coord,
               Value srcBuffer, std::vector<Value> &strides,
-              std::vector<Value> &shapes) {
+              std::vector<Value> &shapes, bool isSync) {
              self.create<triton::xpu::TLECopyLocalToGlobalOp>(
-                 descPtr, coord, srcBuffer, strides, shapes);
+                 descPtr, coord, srcBuffer, strides, shapes, isSync);
+           })
+      .def("create_xpu_tle_dma_wait",
+           [](GluonOpBuilder &self, int32_t mask) {
+             self.create<triton::xpu::TLEDmaWaitOp>(mask);
            })
       // Permuted gather/scatter: the GM side is a tensor of pointers, which a
       // TensorDescriptor cannot express, so there are no offsets/strides.
@@ -809,38 +751,20 @@ void init_gluon_ir(py::module &&m) {
            [](GluonOpBuilder &self, Value srcBuffer, Value dstPtrs) {
              self.create<triton::xpu::TLENormCopyLocalToGlobalOp>(srcBuffer,
                                                                   dstPtrs);
-           })
-      // tle.raw on the xpu3 cluster (SIMT) path. `triton_xpu.raw` takes a flat
-      // operand list -- there is no memref/DPS split here, unlike `sdnn.raw` on
-      // the SDNN path -- and has no results: the payload writes through the
-      // pointers it is handed, which is also why the op is never DCE'd.
-      .def("create_xpu_raw",
-           [](GluonOpBuilder &self, const std::string &callee,
-              const std::string &llvmIr, std::vector<Value> &args) {
-             self.create<triton::xpu::RawOp>(callee, llvmIr, args);
-           })
-      // Deferred payload: at trace time neither the LLVM IR nor the target arch
-      // is known, so only the source id is recorded. The backend compiles the
-      // payload in make_llir and `tritonxpu-materialize-deferred-raw` fills
-      // `llvm_ir` in before the conversion to LLVM.
-      .def("create_xpu_raw_deferred",
-           [](GluonOpBuilder &self, const std::string &callee,
-              const std::string &sourceId, std::vector<Value> &args) {
-             auto op =
-                 self.create<triton::xpu::RawOp>(callee, /*llvmIr=*/"", args);
-             op->setAttr(triton::xpu::kRawSourceIdAttrName,
-                         self.getBuilder().getStringAttr(sourceId));
-           })
-      .def("create_local_pointers",
-           [](GluonOpBuilder &self, Type resultTy, Value buffer,
-              py::args indices) -> Value {
-             std::vector<Value> idxVec;
-             for (auto &idx : indices)
-               idxVec.push_back(idx.cast<Value>());
-             auto op = self.create<triton::xpu::TLELocalPtrOp>(resultTy, buffer,
-                                                               idxVec);
-             return op->getResult(0);
-           })
+           });
+
+  def_sdnn_bindings(cls);
+
+  cls.def("create_local_pointers",
+          [](GluonOpBuilder &self, Type resultTy, Value buffer,
+             py::args indices) -> Value {
+            std::vector<Value> idxVec;
+            for (auto &idx : indices)
+              idxVec.push_back(idx.cast<Value>());
+            auto op = self.create<triton::xpu::TLELocalPtrOp>(
+                resultTy, buffer, idxVec, /*loopIndex=*/Value());
+            return op->getResult(0);
+          })
       .def("create_async_tma_reduce",
            [](GluonOpBuilder &self, triton::DescriptorReduceKind kind,
               Value descPtr, std::vector<Value> &coord, Value src) {

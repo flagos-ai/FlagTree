@@ -1439,6 +1439,7 @@ public:
           fixedStride = INT32_MIN;
           rowLen = -1;
           rowStride = -1;
+          lrie = -1;
         };
 
     mod.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
@@ -1616,15 +1617,17 @@ public:
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = lm2gmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          lm2gmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
-              : getOffsetState(lm2gmOp);
+          handwritten ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
+                      : getOffsetState(lm2gmOp);
       // Only able to handle continuous and unknown cases.
       if (offsetState != OffsetState::Continuous &&
           offsetState != OffsetState::LocallyContinuous) {
         offsetState = OffsetState::Unknown;
       }
+      int64_t opRowLen = handwritten ? lm2gmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? lm2gmOp.getRowStride() : rowStride;
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
@@ -1636,14 +1639,17 @@ public:
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       lm2gmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      lm2gmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
       lm2gmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      lm2gmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
       findUnsupportedOp = false; // reset
-      rowLen = -1;
-      rowStride = -1;
+      if (!handwritten) {
+        rowLen = -1;
+        rowStride = -1;
+      }
     });
 
     mod.walk([&](triton::xpu::SM2GMMaskOp sm2gmOp) {
@@ -1668,7 +1674,7 @@ public:
 private:
   llvm::DenseMap<mlir::Operation *, int32_t> op2Line;
   int32_t line = 0;
-  int32_t fixedStride = -1;
+  int32_t fixedStride = INT32_MIN;
   int64_t rowLen = -1;
   int64_t rowStride = -1;
   int32_t lrie = -1; // Longest Run Of Identical Elements
