@@ -162,8 +162,51 @@ jobs:
           LOGIN=""
           PR_NUMBER=""
           PR_URL=""
+          TELL=""
 
-          # Asked for every event, not just pull_request: a merge arrives as a
+          # A scheduled run executes whatever is at the head of the branch,
+          # so the commit it lands on resolves to the last PR merged -- an
+          # author who had nothing to do with the failure, and who would keep
+          # being paged until somebody else merged something. It belongs to
+          # whoever looks after CI instead, which is a standing list rather
+          # than anything derivable from the run.
+          if [[ "$EVENT" == "schedule" ]]; then
+            echo "Scheduled run: notifying the admins rather than an author."
+            {
+              echo "logins="
+              echo "admins=true"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A manual run has an obvious owner: whoever started it. No standing
+          # list needed, and no reason to tell anyone else.
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            echo "Manual run started by ${ACTOR:-<unknown>}."
+            {
+              echo "logins=$ACTOR"
+              echo "admins=false"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Anything else without a change behind it has nobody to tell.
+          if [[ "$EVENT" != "pull_request" && "$EVENT" != "push" ]]; then
+            echo "Trigger is '$EVENT', which belongs to nobody. Not notifying."
+            {
+              echo "logins="
+              echo "admins=false"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Asked for a push too, not just pull_request: a merge arrives as a
           # push whose actor is the maintainer who pressed the button, and the
           # commit still belongs to the PR it came from. Squash merges also
           # record `GitHub` as the committer, so the commit itself does not say
@@ -176,28 +219,18 @@ jobs:
             --jq 'first(.[] | "\(.user.login) \(.number) \(.html_url)") // ""' 2>/dev/null || echo "")
           read -r LOGIN PR_NUMBER PR_URL <<<"${PR_FIELDS}"
 
-          # cron and workflow_dispatch belong to nobody in particular: the
-          # actor is whoever last touched the workflow, which is not a useful
-          # person to page. Those failures are about the health of the branch,
-          # which the chat notification already covers.
-          TELL=""
-          if [[ -n "$LOGIN" ]]; then
-            TELL="$LOGIN"
-          fi
+          [[ -n "$LOGIN" ]] && TELL="$LOGIN"
+
           # The maintainer who merged it also wants to know, since they are the
           # one who just changed the branch. Skipped when they are the author,
           # so self-merging does not arrive twice.
           if [[ "$EVENT" == "push" && -n "$ACTOR" && "$ACTOR" != "$LOGIN" ]]; then
             TELL="${TELL:+$TELL }$ACTOR"
           fi
-          # A push with no PR behind it (direct commit to a branch) still has
-          # exactly one person to tell.
-          if [[ -z "$TELL" && "$EVENT" == "push" && -n "$ACTOR" ]]; then
-            TELL="$ACTOR"
-          fi
 
           {
             echo "logins=$TELL"
+            echo "admins=false"
             echo "pr-number=$PR_NUMBER"
             echo "pr-url=$PR_URL"
           } >> "$GITHUB_OUTPUT"
@@ -206,11 +239,12 @@ jobs:
 
       - name: Resolve the Feishu recipient
         id: contact
-        if: ${{ steps.settled.outputs.proceed == 'true' && steps.author.outputs.logins != '' }}
+        if: ${{ steps.settled.outputs.proceed == 'true' && (steps.author.outputs.logins != '' || steps.author.outputs.admins == 'true') }}
         continue-on-error: true
         uses: flagos-ai/FlagTree/.github/actions/lookup-feishu-contact@main
         with:
           login: ${{ steps.author.outputs.logins }}
+          admins: ${{ steps.author.outputs.admins }}
           workflow: ${{ github.event.workflow_run.name }}
           app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
           app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
@@ -274,7 +308,9 @@ jobs:
             ${{ steps.jobs.outputs.failed }}
 
             **Trigger** ${{ github.event.workflow_run.event }} on `${{ github.event.workflow_run.head_branch }}`${{ steps.author.outputs.pr-number != '' && format(' (PR #{0})', steps.author.outputs.pr-number) || '' }}
-            **Attempt** ${{ github.event.workflow_run.run_attempt }}
+            **Attempt** ${{ github.event.workflow_run.run_attempt }}${{ steps.author.outputs.admins == 'true' && '
+
+            _Sent to the CI admins: a scheduled run belongs to the branch, not to any one change._' || '' }}
           link-url: ${{ github.event.workflow_run.html_url }}
           link-text: Open run
           # Second button only when the change came from a PR. The run link
