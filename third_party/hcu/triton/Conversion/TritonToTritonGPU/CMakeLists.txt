@@ -19,5 +19,6 @@ add_triton_library(TritonToTritonGPU
     TritonIR
     ProtonIR
     TritonGPUIR
+    TritonHCUGPUIR
     ${_TLE_IR_LIBS}
 )

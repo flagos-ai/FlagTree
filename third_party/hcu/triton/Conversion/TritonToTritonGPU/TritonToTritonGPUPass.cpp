@@ -4,6 +4,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
@@ -920,6 +921,33 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
 }
 #endif
 
+// Reuse the same conversion policy for the main and worker partitions.
+static void populateConversionPatterns(TritonGPUTypeConverter &typeConverter,
+                                      RewritePatternSet &patterns,
+                                      TritonGPUConversionTarget &target,
+                                      int numCTAs) {
+  MLIRContext *context = patterns.getContext();
+
+  // add rules
+  populateArithPatternsAndLegality(typeConverter, patterns, target);
+  populateMathPatternsAndLegality(typeConverter, patterns, target);
+  populateTritonPatterns(typeConverter, patterns, numCTAs);
+  // TODO: can we use
+  //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
+  populateSCFPatterns(typeConverter, patterns);
+  populateCFPatterns(typeConverter, patterns);
+  // The fence preserves values and tensor layout, but its memory/wave-state
+  // effects must survive the ordinary TL -> TTG type conversion.
+  patterns.add<GenericOpPattern<hcugpu::AccumulatorFenceOp>>(typeConverter,
+                                                           context);
+  target.addDynamicallyLegalOp<hcugpu::AccumulatorFenceOp>(
+      [&](Operation *op) { return typeConverter.isLegal(op); });
+#ifdef __TLE__
+  populateTleRawPatterns(typeConverter, patterns);
+#endif
+  patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
+}
+
 class ConvertTritonToTritonGPU
     : public triton::impl::ConvertTritonToTritonGPUBase<
           ConvertTritonToTritonGPU> {
@@ -940,20 +968,8 @@ public:
     TritonGPUTypeConverter typeConverter(context, numWarps, threadsPerWarp,
                                          numCTAs, enableSourceRemat);
     TritonGPUConversionTarget target(*context, typeConverter);
-    // rewrite patterns
     RewritePatternSet patterns(context);
-    // add rules
-    populateArithPatternsAndLegality(typeConverter, patterns, target);
-    populateMathPatternsAndLegality(typeConverter, patterns, target);
-    populateTritonPatterns(typeConverter, patterns, numCTAs);
-    // TODO: can we use
-    //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
-    populateSCFPatterns(typeConverter, patterns);
-    populateCFPatterns(typeConverter, patterns);
-#ifdef __TLE__
-    populateTleRawPatterns(typeConverter, patterns);
-#endif
-    patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
+    populateConversionPatterns(typeConverter, patterns, target, numCTAs);
 
     Builder b(&getContext());
     mod->setAttr(AttrNumWarpsName, b.getI32IntegerAttr(numWarps));
@@ -961,6 +977,53 @@ public:
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
 
+    // Ordinary TL tensors do not yet carry a layout. Convert each worker
+    // using its declared warp count before the module's default partition.
+    // Already encoded Gluon values retain their existing encodings.
+    SmallVector<WarpSpecializeOp> specializations;
+    mod.walk<WalkOrder::PostOrder>([&](WarpSpecializeOp op) {
+      specializations.push_back(op);
+    });
+    for (WarpSpecializeOp op : specializations) {
+      for (auto [region, warps] :
+           llvm::zip(op.getPartitionRegions(), op.getPartitionNumWarps())) {
+        Region *worker = region;
+        // Register-tensor captures need an explicit inter-partition layout
+        // transfer. Do not silently assign a different layout to one side of
+        // that ABI. Scalar and shared-descriptor captures have no such ABI.
+        for (BlockArgument arg : worker->getArguments()) {
+          if (auto type = dyn_cast<RankedTensorType>(arg.getType());
+              type && !type.getEncoding()) {
+            op.emitOpError("ordinary TL worker register-tensor captures need "
+                           "an explicit layout transfer; define tensor "
+                           "values inside the worker instead");
+            return signalPassFailure();
+          }
+        }
+        TritonGPUTypeConverter workerConverter(context, warps, threadsPerWarp,
+                                               numCTAs, enableSourceRemat);
+        TritonGPUConversionTarget workerRules(*context, workerConverter);
+        RewritePatternSet workerPatterns(context);
+        populateConversionPatterns(workerConverter, workerPatterns, workerRules,
+                                   numCTAs);
+        ConversionTarget scopedTarget(*context);
+        scopedTarget.markUnknownOpDynamicallyLegal(
+            [&](Operation *candidate) -> std::optional<bool> {
+              if (!worker->isAncestor(candidate->getParentRegion()))
+                return true;
+              if (workerRules.isLegal(candidate))
+                return true;
+              if (workerRules.isIllegal(candidate))
+                return false;
+              // Partial conversion permits unknown target operations, e.g.
+              // a typed HCU CTA barrier with no tensor types to convert.
+              return std::nullopt;
+            });
+        if (failed(applyPartialConversion(op, scopedTarget,
+                                          std::move(workerPatterns))))
+          return signalPassFailure();
+      }
+    }
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
   }

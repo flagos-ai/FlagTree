@@ -33,7 +33,10 @@ def prepare_memory_schedule(source, metadata, policy, llvm, arch, num_warps):
         metadata["hcu_post_mma_wait_loops"] = loops
         if loops:
             source, prepared = candidate, True
-    if policy.phase:
+    # A requested pair must not degrade to phase-only motion when the
+    # prerequisite wait proof declines the loop. Phase-only remains available
+    # explicitly with post_mma=False.
+    if policy.phase and (not policy.post_mma or prepared):
         candidate, loops = llvm.prepare_hcu_mma_phase_loops(source, arch, num_warps)
         if loops:
             source, prepared = candidate, True

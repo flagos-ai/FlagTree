@@ -8,5 +8,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.buffered_tensor.subslice",
     "gpu.copy",
     "gpu.local_ptr",
+    "gpu.warp_specialize",
     "extract_tile",
 ]

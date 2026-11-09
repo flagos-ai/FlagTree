@@ -1,4 +1,5 @@
 #include "triton/Analysis/Utility.h"
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 
 #include <fstream>
 
@@ -525,11 +526,13 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
   if (isa<triton::gpu::UpcastFpOpInterface>(op))
     return {};
 
+  // The HCU fence is layout-transparent, but remains effectful. Its separate
+  // rematerialization guards forbid duplicating or moving the priority change.
   if (op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
       isa<scf::WhileOp, scf::YieldOp, scf::ConditionOp,
-          nvidia_gpu::WarpGroupDotWaitOp>(op)) {
+          nvidia_gpu::WarpGroupDotWaitOp, hcugpu::AccumulatorFenceOp>(op)) {
     return encoding;
   }
 
@@ -565,7 +568,7 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
       op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
       isa<scf::WhileOp, scf::ForOp, scf::YieldOp, scf::ConditionOp,
-          nvidia_gpu::WarpGroupDotWaitOp>(op))
+          nvidia_gpu::WarpGroupDotWaitOp, hcugpu::AccumulatorFenceOp>(op))
     return encoding;
   if (auto reduceOp = dyn_cast<triton::ReduceOp>(op))
     return inferDstEncoding(reduceOp, encoding);
@@ -615,7 +618,7 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
   if (isa<triton::CatOp>(op))
     return triton::gpu::isExpensiveCat(cast<triton::CatOp>(op), targetEncoding);
   if (isa<triton::gpu::AsyncCopyGlobalToLocalOp, triton::AtomicRMWOp,
-          triton::AtomicCASOp, triton::DotOp>(op))
+          triton::AtomicCASOp, triton::DotOp, hcugpu::AccumulatorFenceOp>(op))
     return true;
   if (isa<scf::YieldOp, scf::ForOp, scf::IfOp, scf::WhileOp, scf::ConditionOp>(
           op))

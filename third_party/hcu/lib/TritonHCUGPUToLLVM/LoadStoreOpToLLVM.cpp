@@ -6,6 +6,7 @@
 #include "TDMUtility.h"
 #include "TargetInfo.h"
 #include "Utility.h"
+#include "WarpSpecializeUtils.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
@@ -77,6 +78,15 @@ static bool isRematerializationUniform(Value root,
   llvm::SmallDenseSet<Value, 64> active;
   unsigned steps = 0;
   auto arithmetic = [](Operation *op) {
+    // A defined unsigned quotient/remainder of CTA-uniform values remains
+    // uniform for every nonzero constant divisor, not just powers of two.
+    // This is a frontier proof: the existing division stays at its original
+    // position and is reused, never speculated or cloned at another lane.
+    if (isa<arith::DivUIOp, arith::RemUIOp, LLVM::UDivOp, LLVM::URemOp>(op)) {
+      APInt divisor;
+      return matchPattern(op->getOperand(1), m_ConstantInt(&divisor)) &&
+             !divisor.isZero();
+    }
     return isa<arith::ConstantOp, arith::AddIOp, arith::SubIOp,
                arith::MulIOp, arith::AndIOp, arith::OrIOp, arith::XOrIOp,
                arith::ShLIOp, arith::ShRUIOp, arith::ShRSIOp,
@@ -216,6 +226,89 @@ static bool isRematerializationUniform(Value root,
 // Keep the original vector length, offsets, and nonuniform mask conjuncts.
 // This deliberately reuses the existing integer/CFG uniformity proof: a
 // scalar LLVM type, an arbitrary PHI, or a lane/load result is insufficient.
+// Prove the inputs to an integer comparison separately. If the comparison
+// is a loop exit, the induction proof may revisit it under the induction
+// hypothesis. Starting the query at the comparison itself would reject that
+// valid recursion as a value cycle.
+static bool isUniformBranchCondition(Value condition) {
+  Operation *definition = condition.getDefiningOp();
+  if (definition && isa<arith::CmpIOp, LLVM::ICmpOp>(definition))
+    return llvm::all_of(definition->getOperands(), [](Value operand) {
+      return isRematerializationUniform(operand, true);
+    });
+  return isRematerializationUniform(condition, true);
+}
+
+// A uniform mask is not an EXEC proof. A terminal gfx936 partition
+// starts on a wave boundary, and retains all its lanes when its own and
+// the enclosing kernel's control flow are uniform. Inspect the original
+// CFG before individual lowering patterns introduce masked branches.
+static bool preservesFullWaveExecution(Region &region,
+                                       Operation *specialization = nullptr) {
+  for (Block &block : region) {
+    Operation *terminator = block.getTerminator();
+    if (auto branch = dyn_cast<cf::CondBranchOp>(terminator)) {
+      if (!isUniformBranchCondition(branch.getCondition()))
+        return false;
+    } else if (auto branch = dyn_cast<LLVM::CondBrOp>(terminator)) {
+      if (!isUniformBranchCondition(branch.getCondition()))
+        return false;
+    } else if (terminator->getNumSuccessors() &&
+               !isa<cf::BranchOp, LLVM::BrOp>(terminator)) {
+      return false;
+    }
+    for (Operation &op : block.without_terminator()) {
+      if (&op == specialization)
+        continue;
+      if (op.getNumRegions() ||
+          isa<CallOpInterface, LLVM::CallIntrinsicOp, LLVM::InlineAsmOp,
+              triton::ElementwiseInlineAsmOp>(op))
+        return false;
+    }
+  }
+  return true;
+}
+
+static llvm::DenseSet<Operation *> collectFullWaveBufferCopies(ModuleOp module,
+                                                              StringRef arch) {
+  llvm::DenseSet<Operation *> copies;
+  if (arch != "gfx936" || TritonGPUDialect::getNumCTAs(module) != 1 ||
+      TritonGPUDialect::getThreadsPerWarp(module) != 64)
+    return copies;
+  auto base = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
+  auto total = module->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
+  if (!base || !total || base.getInt() < 1 || total.getInt() > 16)
+    return copies;
+
+  module.walk([&](WarpSpecializeOp ws) {
+    auto kernel = dyn_cast<LLVM::LLVMFuncOp>(ws->getParentOp());
+    auto starts = ws.getWarpGroupStartIds();
+    if (!kernel || !triton::isKernel(kernel) || ws.getNumResults() ||
+        !starts || starts->size() != ws.getPartitionRegions().size())
+      return;
+    // The manual specialization pass establishes these exact wave intervals.
+    int64_t next = base.getInt();
+    for (auto [start, waves] : llvm::zip(*starts, ws.getPartitionNumWarps())) {
+      if (start != next || waves < 1)
+        return;
+      next += waves;
+    }
+    if (next != total.getInt() ||
+        !preservesFullWaveExecution(kernel.getBody(), ws.getOperation()))
+      return;
+    SmallVector<Region *> regions{&ws.getDefaultRegion()};
+    llvm::append_range(regions, ws.getPartitionRegions());
+    for (Region *region : regions) {
+      if (!preservesFullWaveExecution(*region))
+        continue;
+      for (Block &block : *region)
+        for (auto copy : block.getOps<triton::hcugpu::BufferLoadToLocalOp>())
+          copies.insert(copy.getOperation());
+    }
+  });
+  return copies;
+}
+
 static Value peelBufferMaskAggregate(Value value) {
   unsigned steps = 0;
   while (true) {
@@ -870,10 +963,11 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
   // Replay a closed scalar-integer address DAG at the selected lane. Only
   // gfx936 kernel-entry integer parameters use the uniform dispatch ABI;
   // other block arguments remain unsupported. No convergent op is moved.
-  Value tryRematerializeOffsetAtLane(RewriterBase &rewriter, Location loc,
+  Value tryRematerializeIntegerAtLane(RewriterBase &rewriter, Location loc,
                                     Value offset, Value selectedLane,
                                     bool allowUniformFrontier = false) const {
-    if (!offset.getType().isInteger(32) ||
+    bool isPredicate = offset.getType().isInteger(1);
+    if ((!offset.getType().isInteger(32) && !isPredicate) ||
         lookupThreadsPerWarp(rewriter) != 64)
       return {};
     DenseMap<Value, Value> scalarized;
@@ -1031,7 +1125,7 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
       ordered.push_back(op);
       return true;
     };
-    if (!visit(offset) || tids.empty()) {
+    if (!visit(offset) || (!isPredicate && tids.empty())) {
       LDBG("selected-lane: fallback, frontier=" << allowUniformFrontier
            << ", values=" << visited.size() << ", aggregates=" << aggregateSteps
            << ", thread leaves=" << tids.size());
@@ -1062,7 +1156,8 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
                       Value &mask, Value laneId,
                       Value swizzleLaneOffset,
                       bool rematerializeOffset = false,
-                      bool wholeOffset = false) const {
+                      bool wholeOffset = false,
+                      bool fullWave = false) const {
     TritonLLVMOpBuilder b(loc, rewriter);
     // laneId + swizzleOffset will always stay inside the warp [0,
     // threadsPerWarp) because we only swizzle inside a warp
@@ -1070,12 +1165,12 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
     // Shuffle based on swizzleLaneId to apply the swizzling
     Value recomputed;
     if (rematerializeOffset) {
-      recomputed = tryRematerializeOffsetAtLane(
+      recomputed = tryRematerializeIntegerAtLane(
           rewriter, loc, srcOrOffset, swizzledLaneId, wholeOffset);
       // Preserve every previously successful explicit split. Only its failed
       // closed-DAG attempt needs the additional uniform-frontier proof.
       if (!recomputed && !wholeOffset)
-        recomputed = tryRematerializeOffsetAtLane(
+        recomputed = tryRematerializeIntegerAtLane(
             rewriter, loc, srcOrOffset, swizzledLaneId, true);
     }
     srcOrOffset = recomputed ? recomputed
@@ -1083,7 +1178,13 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
                                                     swizzledLaneId);
 
     if (mask) {
-      mask = shuffleMask(rewriter, b, loc, targetInfo, swizzledLaneId, mask);
+      Value remappedMask;
+      if (fullWave)
+        remappedMask = tryRematerializeIntegerAtLane(
+            rewriter, loc, mask, swizzledLaneId, /*allowUniformFrontier=*/true);
+      mask = remappedMask ? remappedMask
+                          : shuffleMask(rewriter, b, loc, targetInfo,
+                                        swizzledLaneId, mask);
     }
   }
 
@@ -1146,15 +1247,13 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
       // When this sequence occurs inside a loop, the MachineLICM pass does not
       // hoist it because `v_readfirstlane` is convergent. Since both
       // `workitem.id.x` and `wave_id` are constant at runtime, their
-      // computation can be safely hoisted to the function entry block.
+      // computation can be hoisted to the nearest isolated region entry.
+      // A warp-specialized worker cannot use an SSA value from the kernel
+      // entry, and its wave ID must remain relative to its own partition.
       auto insertPt = rewriter.saveInsertionPoint();
-      Operation *parentOp = insertPt.getBlock()->getParentOp();
-      while (!isa<LLVM::LLVMFuncOp>(parentOp)) {
-        parentOp = parentOp->getParentOp();
-      }
-
-      auto funcOp = cast<LLVM::LLVMFuncOp>(parentOp);
-      rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+      Region *scope = triton::HCU::warpSpecializeScope(
+          &insertPt.getBlock()->front());
+      rewriter.setInsertionPointToStart(&scope->front());
 
       std::tie(laneId, warpId) = getLaneAndWarpId(rewriter, loc);
       auto call = LLVM::createLLVMIntrinsicCallOp(
@@ -1423,7 +1522,11 @@ struct BufferLoadToLocalOpConversion
                                 ModuleAxisInfoAnalysis &axisAnalysisPass,
                                 PatternBenefit benefit)
       : ConvertOpToLLVMPattern(converter, benefit),
-        DirectToLdsLoadConversionBase(targetInfo, axisAnalysisPass) {}
+        DirectToLdsLoadConversionBase(targetInfo, axisAnalysisPass),
+        fullWaveCopies(collectFullWaveBufferCopies(axisAnalysisPass.getModuleOp(),
+                                                    targetInfo.getArch())) {}
+
+  const llvm::DenseSet<Operation *> fullWaveCopies;
 
   LogicalResult
   matchAndRewrite(triton::hcugpu::BufferLoadToLocalOp op, OpAdaptor adaptor,
@@ -1590,7 +1693,7 @@ struct BufferLoadToLocalOpConversion
     auto emitBufferLoadLds =
         [this, &op, &b, &bufferEmitter, &rsrcDesc, laneId = laneId, threadPred,
          offsetTy, otherTy, hasOther, requiresSrcPtrSwizzling, uniformOffset,
-         rebaseUniform](
+         rebaseUniform, fullWave = fullWaveCopies.contains(op.getOperation())](
             RewriterBase &rewriter, Location loc, ArrayRef<Value> loadVals,
             Value shmemAddr, int startIdx, VectorType vecTy,
             Value multicastMask) -> SmallVector<Value> {
@@ -1606,7 +1709,7 @@ struct BufferLoadToLocalOpConversion
         applySwizzling(rewriter, loc, offsetElem, maybeSwizzledMaskElem, laneId,
                        swizzleLaneOffset,
                        /*rematerializeOffset=*/true,
-                       /*wholeOffset=*/!uniformOffset);
+                       /*wholeOffset=*/!uniformOffset, fullWave);
       if (uniformOffset && !rebaseUniform)
         offsetElem = b.add(offsetElem, uniformOffset);
 

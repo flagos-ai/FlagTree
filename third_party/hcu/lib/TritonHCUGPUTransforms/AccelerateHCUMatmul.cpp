@@ -76,6 +76,17 @@ std::optional<MatrixLoadInfo> getDotOperandMatrixLoadInfo(DotOp dotOp,
 
   tt::MatrixLoadOp matrixOp = nullptr;
   for (tt::MatrixLoadOp mOp : allMatrixLoadOps) {
+    // Logical block-pointer descriptors (register or shared) do not impose
+    // the legacy MLS instruction's fragment width or tile geometry.
+    // Let normal dot selection honor kpack and its existing legality checks.
+    // Native MLS keeps its instruction-specific requirements unchanged.
+    auto ordinaryCopy = mod->getAttrOfType<IntegerAttr>(
+        "ttg.hcu.prefer_wide_async_copy");
+    auto async = mOp->getAttrOfType<BoolAttr>("tt.load.async");
+    auto target = mod->getAttrOfType<StringAttr>("ttg.target");
+    if (ordinaryCopy && ordinaryCopy.getInt() == 1 && async &&
+        target && target.getValue() == "hip:gfx936")
+      continue;
     auto maybeDotOpIdxPair = getDotOpIdxFromMatrixLoad(mOp);
     if (succeeded(maybeDotOpIdxPair) &&
         maybeDotOpIdxPair.value().first == dotOp &&

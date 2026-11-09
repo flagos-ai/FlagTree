@@ -28,6 +28,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IntrinsicsAMDGPU.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -610,8 +611,12 @@ static unsigned preferReadySharedLoads(llvm::Module *module,
   auto isCopy = [](llvm::Instruction &inst) {
     auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
     auto *fn = call ? call->getCalledFunction() : nullptr;
-    return fn && fn->getName() == "llvm.amdgcn.raw.ptr.buffer.load.lds" &&
-           call->getType()->isVoidTy();
+    if (!fn || !call->getType()->isVoidTy())
+      return false;
+    return (fn->getName() == "llvm.amdgcn.raw.ptr.buffer.load.lds" &&
+            call->arg_size() == 7) ||
+           (fn->getName() == "llvm.amdgcn.struct.ptr.buffer.load.lds" &&
+            call->arg_size() == 8);
   };
   auto isNativeRead = [](llvm::Instruction &inst) {
     auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
@@ -651,49 +656,63 @@ static unsigned preferReadySharedLoads(llvm::Module *module,
           (branch->getSuccessor(0) != &block &&
            branch->getSuccessor(1) != &block))
         continue;
-      llvm::SmallVector<llvm::Instruction *> copies, reads;
-      bool native = false;
+      // An unrolled loop has several publication/reuse epochs. Alias scopes
+      // are valid for each epoch, not for arbitrary pairs across its barriers.
+      // Partition at every other memory effect, synchronization or terminator;
+      // never move a copy across such a boundary or alter a completion wait.
+      struct Region {
+        llvm::SmallVector<llvm::Instruction *> copies, reads;
+      };
+      llvm::SmallVector<Region> regions;
+      Region region;
+      auto finish = [&] {
+        if (!region.copies.empty() && !region.reads.empty())
+          regions.push_back(std::move(region));
+        region = Region{};
+      };
       for (auto &inst : block) {
         if (isCopy(inst))
-          copies.push_back(&inst);
-        else if (isRead(inst)) {
-          reads.push_back(&inst);
-          native |= isNativeRead(inst);
-        }
-      }
-      if (copies.size() < 2 || reads.empty() || !native ||
-          !copies.back()->comesBefore(reads.back()))
-        continue;
-      bool legal = true;
-      for (auto *copy : copies)
-        for (auto *read : reads)
-          legal &= disjoint(copy, read);
-      if (!legal)
-        continue;
-      auto *lastRead = reads.back();
-      for (auto *inst = copies.front(); inst != lastRead;
-           inst = inst->getNextNode()) {
-        if (isCopy(*inst) || isRead(*inst))
+          region.copies.push_back(&inst);
+        else if (isRead(inst))
+          region.reads.push_back(&inst);
+        // A true assumption carries storage facts but executes no memory
+        // operation. Moving a result-free copy later keeps its SSA operands
+        // defined and does not move the assumption or any operation it uses.
+        else if (auto *assume = llvm::dyn_cast<llvm::AssumeInst>(&inst);
+                 assume && llvm::isa<llvm::ConstantInt>(assume->getArgOperand(0)) &&
+                 llvm::cast<llvm::ConstantInt>(assume->getArgOperand(0))->isOne())
           continue;
-        // In particular, do not cross synchronization, unknown memory effects,
-        // inline assembly or calls which may throw. Keep all original waits.
-        if (inst->mayReadOrWriteMemory() || inst->mayHaveSideEffects()) {
-          legal = false;
-          break;
+        else if (inst.isTerminator() || inst.mayReadOrWriteMemory() ||
+                 inst.mayHaveSideEffects())
+          finish();
+      }
+      finish();
+      for (auto &region : regions) {
+        auto &copies = region.copies;
+        auto &reads = region.reads;
+        if (!copies.back()->comesBefore(reads.back()))
+          continue;
+        bool legal = true;
+        for (auto *copy : copies)
+          for (auto *read : reads)
+            legal &= disjoint(copy, read);
+        if (!legal)
+          continue;
+        // Both ordinary vector loads and native gathers are covered by the
+        // same AA proof. Copies have no SSA result; moving them later retains
+        // all operand definitions and their original relative order.
+        auto *lastRead = reads.back();
+        llvm::IRBuilder<> builder(lastRead->getNextNode());
+        auto *fence = builder.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+            module, llvm::Intrinsic::amdgcn_sched_barrier),
+            {builder.getInt32(0)});
+        llvm::Instruction *after = fence;
+        for (auto *copy : copies) {
+          copy->moveAfter(after);
+          after = copy;
         }
+        ++changed;
       }
-      if (!legal)
-        continue;
-      llvm::IRBuilder<> builder(lastRead->getNextNode());
-      auto *fence = builder.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
-          module, llvm::Intrinsic::amdgcn_sched_barrier),
-          {builder.getInt32(0)});
-      llvm::Instruction *after = fence;
-      for (auto *copy : copies) {
-        copy->moveAfter(after);
-        after = copy;
-      }
-      ++changed;
     }
   }
   return changed;
@@ -715,17 +734,50 @@ struct LdsOffsetRange {
 // launch assumptions or frontend witnesses are required. Unknown expressions
 // and exhausted budgets retain their original conservative facts.
 static llvm::KnownBits getLdsIndexKnownBitsImpl(
-    llvm::Value *value, const llvm::DataLayout &layout, unsigned &budget) {
+    llvm::Value *value, const llvm::DataLayout &layout, unsigned &budget,
+    llvm::DenseMap<llvm::Value *, llvm::KnownBits> &cache) {
+  if (auto found = cache.find(value); found != cache.end())
+    return found->second;
+  auto remember = [&](llvm::KnownBits bits) {
+    cache.try_emplace(value, bits);
+    return bits;
+  };
   auto known = llvm::computeKnownBits(value, layout);
   // A bound inside all LDS can still cross a smaller physical object.
   // Refine nonconstant expressions within the node budget before partitioning.
   if (!budget || known.isConstant())
-    return known;
+    return remember(known);
   --budget;
+  // readfirstlane selects one lane's input without changing its bits. Bounds
+  // known for every possible input therefore also hold for that uniform copy
+  // address, before InstCombine propagates its demanded bits into the caller.
+  if (auto *call = llvm::dyn_cast<llvm::CallBase>(value))
+    if (call->getIntrinsicID() == llvm::Intrinsic::amdgcn_readfirstlane)
+      return remember(known.unionWith(
+          getLdsIndexKnownBitsImpl(call->getArgOperand(0), layout, budget, cache)));
   auto *op = llvm::dyn_cast<llvm::Operator>(value);
   if (!op)
-    return known;
+    return remember(known);
   unsigned code = op->getOpcode();
+  if (code == llvm::Instruction::Shl || code == llvm::Instruction::LShr) {
+    auto *shift = llvm::dyn_cast<llvm::ConstantInt>(op->getOperand(1));
+    unsigned width = known.getBitWidth();
+    if (!shift || shift->getLimitedValue(width) >= width)
+      return remember(known);
+    unsigned amount = shift->getZExtValue();
+    auto input = getLdsIndexKnownBitsImpl(op->getOperand(0), layout, budget, cache);
+    auto refined = input;
+    if (code == llvm::Instruction::Shl) {
+      refined.Zero = (input.Zero << amount) |
+                     llvm::APInt::getLowBitsSet(width, amount);
+      refined.One = input.One << amount;
+    } else {
+      refined.Zero = input.Zero.lshr(amount) |
+                     llvm::APInt::getHighBitsSet(width, amount);
+      refined.One = input.One.lshr(amount);
+    }
+    return remember(known.unionWith(refined));
+  }
   if (code == llvm::Instruction::Mul) {
     // Multiplication by a constant can hide disjoint shifted bitfields.
     // Sum its set-bit shifts in modular arithmetic, without no-wrap flags.
@@ -736,15 +788,15 @@ static llvm::KnownBits getLdsIndexKnownBitsImpl(
       input = op->getOperand(1);
     }
     if (!constant)
-      return known;
-    auto lhs = getLdsIndexKnownBitsImpl(input, layout, budget);
+      return remember(known);
+    auto lhs = getLdsIndexKnownBitsImpl(input, layout, budget, cache);
     unsigned width = lhs.getBitWidth();
     llvm::SmallVector<unsigned, 8> shifts;
     for (unsigned bit = 0; bit < width; ++bit)
       if (constant->getValue()[bit]) {
         shifts.push_back(bit);
         if (shifts.size() > budget)
-          return known;
+          return remember(known);
       }
     budget -= shifts.size();
     llvm::KnownBits product(width);
@@ -757,14 +809,14 @@ static llvm::KnownBits getLdsIndexKnownBitsImpl(
       product = llvm::KnownBits::computeForAddSub(
           true, false, false, product, term);
     }
-    return known.unionWith(product);
+    return remember(known.unionWith(product));
   }
   if (code != llvm::Instruction::Or && code != llvm::Instruction::And &&
       code != llvm::Instruction::Xor && code != llvm::Instruction::Add &&
       code != llvm::Instruction::Sub)
-    return known;
-  auto lhs = getLdsIndexKnownBitsImpl(op->getOperand(0), layout, budget);
-  auto rhs = getLdsIndexKnownBitsImpl(op->getOperand(1), layout, budget);
+    return remember(known);
+  auto lhs = getLdsIndexKnownBitsImpl(op->getOperand(0), layout, budget, cache);
+  auto rhs = getLdsIndexKnownBitsImpl(op->getOperand(1), layout, budget, cache);
   auto refined = lhs;
   if (code == llvm::Instruction::Or)
     refined |= rhs;
@@ -777,13 +829,17 @@ static llvm::KnownBits getLdsIndexKnownBitsImpl(
   } else
     refined = llvm::KnownBits::computeForAddSub(
         code == llvm::Instruction::Add, false, false, lhs, rhs);
-  return known.unionWith(refined);
+  return remember(known.unionWith(refined));
 }
 
 static llvm::KnownBits getLdsIndexKnownBits(llvm::Value *value,
                                            const llvm::DataLayout &layout) {
-  unsigned budget = 31;
-  return getLdsIndexKnownBitsImpl(value, layout, budget);
+  // Layout expressions are DAGs: shared lane/warp terms must consume the
+  // bounded analysis budget only once. Cache only within this one query, so
+  // no result survives an IR mutation or changes another pointer's budget.
+  unsigned budget = 64;
+  llvm::DenseMap<llvm::Value *, llvm::KnownBits> cache;
+  return getLdsIndexKnownBitsImpl(value, layout, budget, cache);
 }
 
 static std::optional<LdsOffsetRange>
@@ -936,6 +992,91 @@ static unsigned annotateLdsObjectScopes(llvm::Module *module,
           reads.push_back({&inst, *range});
         }
       }
+    // Storage extents survive descriptor lowering as standard assume bundles.
+    // They are granularity hints only: all exclusions below still come from
+    // the actual physical access bounds. In particular, dereferenceable does
+    // not mean noalias, and overlapping extents must share a scope.
+    llvm::SmallVector<LdsOffsetRange, 8> extents;
+    for (auto &block : fn)
+      for (auto &inst : block) {
+        auto *assume = llvm::dyn_cast<llvm::AssumeInst>(&inst);
+        if (!assume)
+          continue;
+        for (unsigned i = 0; i < assume->getNumOperandBundles(); ++i) {
+          auto bundle = assume->getOperandBundleAt(i);
+          if (bundle.getTagName() != "dereferenceable" ||
+              bundle.Inputs.size() != 2)
+            continue;
+          auto *size = llvm::dyn_cast<llvm::ConstantInt>(bundle.Inputs[1]);
+          if (!size || size->getLimitedValue(65537) > 65536 || size->isZero())
+            continue;
+          auto range = getBoundedLdsOffset(bundle.Inputs[0], module->getDataLayout());
+          if (!range || range->high + size->getZExtValue() > 65536)
+            continue;
+          range->high += size->getZExtValue();
+          extents.push_back(*range);
+        }
+      }
+    if (!extents.empty() && !copies.empty() && !reads.empty()) {
+      llvm::SmallVector<LdsOffsetRange, 8> groups;
+      for (const auto &copy : copies) {
+        LdsOffsetRange group{copy.range.low / objectBytes * objectBytes,
+                             (copy.range.low / objectBytes + 1) * objectBytes};
+        const LdsOffsetRange *best = nullptr;
+        for (const auto &extent : extents)
+          if (extent.low <= copy.range.low && extent.high >= copy.range.high &&
+              (!best || extent.high - extent.low < best->high - best->low))
+            best = &extent;
+        if (best)
+          group = *best;
+        groups.push_back(group);
+      }
+      llvm::sort(groups, [](const auto &a, const auto &b) {
+        return a.low < b.low || (a.low == b.low && a.high < b.high);
+      });
+      llvm::SmallVector<LdsOffsetRange, 8> merged;
+      for (const auto &group : groups) {
+        if (!merged.empty() && group.low < merged.back().high)
+          merged.back().high = std::max(group.high, merged.back().high);
+        else
+          merged.push_back(group);
+      }
+      // Exceeding the hardware budget or having no useful distinction takes
+      // the original conservative path below. Never truncate a scope list.
+      if (merged.size() >= 2 && merged.size() <= 8) {
+        llvm::MDBuilder metadata(module->getContext());
+        auto *domain = metadata.createAnonymousAliasScopeDomain("gfx936 LDS objects");
+        llvm::SmallVector<llvm::MDNode *, 8> scopes;
+        for (const auto &group : merged)
+          scopes.push_back(metadata.createAnonymousAliasScope(
+              domain, "LDS bytes " + std::to_string(group.low) + ".." +
+                          std::to_string(group.high)));
+        auto *localScope = metadata.createAnonymousAliasScope(domain, "LDS reads");
+        auto *localList = llvm::MDNode::get(module->getContext(), {localScope});
+        for (auto &copy : copies) {
+          for (unsigned i = 0; i < merged.size(); ++i)
+            if (merged[i].low <= copy.range.low && merged[i].high >= copy.range.high) {
+              copy.inst->setMetadata(llvm::LLVMContext::MD_alias_scope,
+                  llvm::MDNode::get(module->getContext(), {scopes[i]}));
+              ++changed;
+              break;
+            }
+        }
+        for (auto &read : reads) {
+          llvm::SmallVector<llvm::Metadata *, 8> disjoint;
+          for (unsigned i = 0; i < merged.size(); ++i)
+            if (merged[i].high <= read.range.low || merged[i].low >= read.range.high)
+              disjoint.push_back(scopes[i]);
+          if (disjoint.empty())
+            continue;
+          read.inst->setMetadata(llvm::LLVMContext::MD_alias_scope, localList);
+          read.inst->setMetadata(llvm::LLVMContext::MD_noalias,
+              llvm::MDNode::get(module->getContext(), disjoint));
+          ++changed;
+        }
+        continue;
+      }
+    }
     for (const auto &copy : copies)
       objects.insert(copy.range.low / objectBytes);
     // LLVM18 reserves eight object-score slots. Coarsen proven byte ranges
@@ -1089,6 +1230,18 @@ static unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
 }
 
 void init_triton_hcu(py::module &&m) {
+  m.def("create_accumulator_fence", [](mlir::OpBuilder &builder,
+                                        mlir::Location loc, mlir::Value acc,
+                                        int32_t priority) -> mlir::Value {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(acc.getType());
+    if (!type || (!type.getElementType().isF32() &&
+                  !type.getElementType().isInteger(32)))
+      throw std::invalid_argument("accumulator fence requires an f32 or i32 tensor");
+    if (priority != 0 && priority != 1)
+      throw std::invalid_argument("accumulator fence priority must be 0 or 1");
+    return builder.create<mlir::triton::hcugpu::AccumulatorFenceOp>(
+        loc, acc.getType(), acc, builder.getI32IntegerAttr(priority)).getResult();
+  });
   m.def("create_local_memory_wait", [](mlir::OpBuilder &builder,
                                         mlir::Location loc) {
     // Reuse the target counter operation so native wait insertion recognizes

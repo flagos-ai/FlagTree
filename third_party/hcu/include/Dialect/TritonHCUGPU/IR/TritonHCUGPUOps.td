@@ -52,6 +52,32 @@ class TT_HCUGPU_Op<string mnemonic, list<Trait> traits = []> :
 //
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 def SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
+def WavePriority : Resource<"::mlir::triton::hcugpu::WavePriorityState">;
+
+def AccumulatorFenceOp : TT_HCUGPU_Op<"accumulator_fence", [
+  SameOperandsAndResultType,
+  MemoryEffects<[MemRead, MemWrite, MemRead<GlobalMemory>,
+                 MemWrite<GlobalMemory>, MemRead<SharedMemory>,
+                 MemWrite<SharedMemory>, MemWrite<WavePriority>]>
+]> {
+  let summary = "Preserve an accumulator cohort across a wave priority boundary";
+  let description = [{
+    The result has exactly the input values and layout. All accumulator
+    registers participate in the scheduling boundary. Priority 0 restores
+    normal priority; priority 1 raises it. The target chooses the physical
+    register cohort from the actual tensor encoding, not a fixed tile size.
+
+    The explicit wave-state and memory effects prevent elimination and
+    unauthorized motion across this boundary. These are compiler scheduling
+    effects: the operation neither completes asynchronous memory accesses nor
+    synchronizes threads. Existing tokens, waits and publication/retirement
+    barriers remain necessary.
+  }];
+  let arguments = (ins TT_Tensor:$acc, I32Attr:$priority);
+  let results = (outs TT_Tensor:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$acc attr-dict `:` type($acc)";
+}
 
 //===----------------------------------------------------------------------===//
 // ExtractSliceOp

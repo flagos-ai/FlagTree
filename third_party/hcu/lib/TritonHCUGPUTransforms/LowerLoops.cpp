@@ -9,6 +9,7 @@
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
+#include <memory>
 #include <variant>
 
 #define DEBUG_TYPE "tritonhcugpu-pipeline-lower-loops"
@@ -57,6 +58,74 @@ static bool hasAsyncLoad(const LoadToInfoMap &loads, bool useAsyncCopy) {
   return llvm::any_of(loads, [&](const auto &entry) {
     return shouldUseAsyncCopy(entry.first, useAsyncCopy);
   });
+}
+
+// Joint producer/shared selection: the dot fragment's minimum vector need not
+// cap a globally proven 16B transfer at 8B. Keep this opt-in while validating
+// its read cost against the existing matrix-read charts.
+static bool preferWideAsyncCopies(
+    scf::ForOp forOp, LoadToInfoMap &loads, bool useAsyncCopy,
+    triton::HCU::ModuleAxisInfoAnalysis &axisInfo,
+    const triton::HCU::TargetInfo &target) {
+  auto module = forOp->getParentOfType<ModuleOp>();
+  auto enabled = module->getAttrOfType<IntegerAttr>(
+      "ttg.hcu.prefer_wide_async_copy");
+  if (target.getArch() != "gfx936" || !enabled || enabled.getInt() != 1)
+    return false;
+  bool changed = false;
+  for (auto &[operation, info] : loads) {
+    auto load = dyn_cast<tt::LoadOp>(operation);
+    auto shared = dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(
+        info.sharedEncoding);
+    if (!load || !shared || !shouldUseAsyncCopy(load, useAsyncCopy))
+      continue;
+    auto type = dyn_cast<RankedTensorType>(load.getType());
+    auto blocked = type ? dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())
+                        : ttg::BlockedEncodingAttr{};
+    if (!type || type.getRank() != 2 || !blocked ||
+        !(type.getElementType().isF16() || type.getElementType().isBF16()) ||
+        shared.getOrder().front() != blocked.getOrder().front() ||
+        axisInfo.getAlignment(load.getPtr()) < 8 ||
+        (load.getMask() && axisInfo.getMaskAlignment(load.getMask()) < 8))
+      continue;
+    unsigned axis = blocked.getOrder().front();
+    auto shape = type.getShape();
+    if (shape[axis] < 8 || !llvm::isPowerOf2_64(shape[axis]))
+      continue;
+    unsigned maxPhase =
+        std::min<unsigned>(shared.getMaxPhase(), shape[axis] / 8);
+    auto widerShared = ttg::SwizzledSharedEncodingAttr::get(
+        load.getContext(), 8, shared.getPerPhase(), maxPhase, shared.getOrder(),
+        shared.getCTALayout());
+    auto elements = llvm::to_vector(blocked.getSizePerThread());
+    elements[axis] = std::max<unsigned>(elements[axis], 8);
+    auto encoding = ttg::BlockedEncodingAttr::get(
+        load.getContext(), shape, elements, blocked.getOrder(),
+        ttg::lookupNumWarps(load),
+        ttg::TritonGPUDialect::getThreadsPerWarp(module), blocked.getCTALayout());
+    if (encoding == blocked && widerShared == shared)
+      continue;
+    IRRewriter builder(load);
+    // Keep the actual load operation stable: the deserialized schedule uses
+    // its identity. Preserve all logical operands, cache/padding attributes
+    // and existing users through an ordinary ownership conversion.
+    for (auto [index, operand] : llvm::enumerate(load->getOperands())) {
+      if (auto tensor = dyn_cast<RankedTensorType>(operand.getType())) {
+        auto converted = ttg::ConvertLayoutOp::create(
+            builder, load.getLoc(), tensor.cloneWithEncoding(encoding), operand);
+        load->setOperand(index, converted.getResult());
+      }
+    }
+    load.getResult().setType(type.cloneWithEncoding(encoding));
+    builder.setInsertionPointAfter(load);
+    auto restored = ttg::ConvertLayoutOp::create(builder, load.getLoc(), type,
+                                                load.getResult());
+    load.getResult().replaceAllUsesExcept(restored.getResult(),
+                                        restored.getOperation());
+    info.sharedEncoding = widerShared;
+    changed = true;
+  }
+  return changed;
 }
 
 // Private linear-copy experiment. These are the GPU-verified, zero-control
@@ -1141,15 +1210,24 @@ void lowerLoop(scf::ForOp forOp,
   selectCanonicalMatrixSharedLayout(forOp, loadToInfo, numStages, targetInfo);
   selectLegacyAltSharedLayout(forOp, loadToInfo, useAsyncCopy, numStages,
                               targetInfo);
+  // New ownership conversions introduce pointer/mask SSA values. Recompute
+  // facts before asking whether those new values can use direct-to-LDS copy.
+  std::unique_ptr<triton::HCU::ModuleAxisInfoAnalysis> refreshedAxisInfo;
+  if (preferWideAsyncCopies(forOp, loadToInfo, useAsyncCopy, axisInfoAnalysis,
+                            targetInfo))
+    refreshedAxisInfo = std::make_unique<triton::HCU::ModuleAxisInfoAnalysis>(
+        forOp->getParentOfType<ModuleOp>());
+  auto &scheduleAxisInfo =
+      refreshedAxisInfo ? *refreshedAxisInfo : axisInfoAnalysis;
   bool waitAtTail = usePingpong && (numStages == 3) &&
                     hasAsyncLoad(loadToInfo, useAsyncCopy);
   if (succeeded(mlir::ChainedDotSchedule::checkPreconditions(forOp, numStages,
                                                              loadToInfo))) {
     ChainedDotSchedule::updateSchedule(forOp, loadToInfo, schedule,
-                                       axisInfoAnalysis, useAsyncCopy);
+                                       scheduleAxisInfo, useAsyncCopy);
   } else {
     SingleDotSchedule::updateSchedule(forOp, loadToInfo, schedule,
-                                      axisInfoAnalysis, numStages, useAsyncCopy,
+                                      scheduleAxisInfo, numStages, useAsyncCopy,
                                       waitAtTail);
   }
 

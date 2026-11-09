@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 #include "../PatternTritonGPUOpToLLVM.h"
+#include "../AccumulatorFence.h"
 #include "TritonHCUGPUTransforms/MfmaGroup.h"
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -344,6 +345,7 @@ struct DotOpMFMAConversionHelper {
         computeStrides({numRepB, numRepM, numRepN, elemsPerVec});
 
     Value firstMfma;
+    bool deferPriority = op->hasAttr("hcu.priority_after_first_mmac");
     auto vecTy = vec_ty(dstElemTy, elemsPerVec);
     for (int b = 0; b < numRepB; ++b) {
       for (int m = 0; m < numRepM; ++m) {
@@ -365,8 +367,24 @@ struct DotOpMFMAConversionHelper {
 
             acc = generateMFMAOp(intrinsicName, op1, op2, acc, mmacLayout);
 
-            if (!firstMfma)
+            if (!firstMfma) {
               firstMfma = acc;
+              if (deferPriority) {
+                // Include the first MMAC's updated slice and every remaining
+                // accumulator. Subsequent MMACs, including independent output
+                // slices, must consume the priority boundary's SSA results.
+                for (int v = 0; v < elemsPerVec; ++v) {
+                  int index = linearize({b, m, n, v}, fcStrides);
+                  fc[index] = tb.extract_element(dstElemTy, acc, tb.i32_val(v));
+                }
+                fc = HCU::emitAccumulatorFence(loc, fc, "s_setprio 1", rewriter);
+                acc = tb.undef(vecTy);
+                for (int v = 0; v < elemsPerVec; ++v) {
+                  int index = linearize({b, m, n, v}, fcStrides);
+                  acc = tb.insert_element(vecTy, acc, fc[index], tb.i32_val(v));
+                }
+              }
+            }
           }
 
           adjustAccForSmallKDim(fc, acc, dstElemTy, b, m, n, numRepM, numRepN,

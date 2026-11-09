@@ -32,6 +32,24 @@ int main() {
   auto a=planFiniteSharedReads(8,4,16384,alt,true,true,true);
   assert(n && n->matrix && !n->matrixAlt && n->width==8);
   assert(a && a->matrix && a->matrixAlt && a->width==8);
+  // A bank-only search used to split the two halves of each MMAC word.
+  // This independently constructed row-XOR chart admits both packed and
+  // unpacked read groups; the selected groups must retain the packed pairs.
+  std::vector<unsigned> rowXor;
+  for (unsigned r=0;r<32;++r) for (unsigned w=0;w<4;++w)
+    for (unsigned l=0;l<64;++l) {
+      unsigned k=(r&3)+((l>>4)&3)*4;
+      unsigned n=((r>>2)&1)*16+((r>>3)&1)*32+
+                 ((r>>4)&1)*128+(l&15)+(w&1)*64;
+      rowXor.push_back(k*256+(n^(8*k)));
+    }
+  auto packed=planFiniteSharedReads(32,4,4096,rowXor,true,true,true);
+  assert(packed && packed->matrix);
+  for(unsigned anchor:packed->groups) for(unsigned j=0;j<8;j+=2) {
+    unsigned lo=packed->repartition?packed->matrixByAnchor[anchor][j]:anchor+j;
+    unsigned hi=packed->repartition?packed->matrixByAnchor[anchor][j+1]:anchor+j+1;
+    assert(!(lo&1) && hi==lo+1);
+  }
   // A single nonbasis point must defeat an otherwise valid matrix gather.
   auto corrupt=normal;corrupt[(7*4+3)*64+63]^=1;
   auto c=planFiniteSharedReads(8,4,16384,corrupt,true,true,true);

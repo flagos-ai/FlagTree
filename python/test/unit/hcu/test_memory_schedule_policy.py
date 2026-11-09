@@ -44,7 +44,7 @@ def test_order_zero_loop_and_exact_off_source(post, phase, loops):
         assert calls[0] == ("post", "original", "gfx936", 256, 32768)
         assert metadata["hcu_post_mma_wait_loops"] == loops
         assert metadata["hcu_post_mma_wait_preparation_result"] == "proof result"
-    if phase:
+    if phase and (not post or loops):
         assert calls[-1] == ("phase", expected, "gfx936", 4)
         if loops:
             expected += ":phase"
@@ -140,3 +140,48 @@ def test_retired_unsafe_imported_schedule_is_rejected(monkeypatch, marker):
             'define amdgpu_kernel void @kernel() { ret void }\n; ' + marker,
             {}, compiler.HIPOptions(arch="gfx936"))
     assert calls == []
+
+
+@pytest.mark.parametrize("arch,waves,wide,hint,expected", [
+    ("gfx936", 8, True, "local-prefetch", True),
+    ("gfx936", 16, True, "local-prefetch", True),
+    ("gfx936", 4, True, "local-prefetch", False),
+    ("gfx936", 2, True, "local-prefetch", False),
+    ("gfx936", 8, False, "local-prefetch", False),
+    ("gfx936", 8, True, "none", False),
+    ("gfx936", 8, True, "attention", False),
+    ("gfx942", 8, True, "local-prefetch", False),
+])
+def test_paired_default_uses_target_wave_coverage_and_intent_only(arch, waves, wide, hint, expected):
+    from triton.backends.compiler import GPUTarget
+    backend = compiler.HIPBackend(GPUTarget("hip", arch, 64))
+    args = dict(num_warps=waves, prefer_wide_async_copy=wide, schedule_hint=hint)
+    parsed = backend.parse_options(args)
+    assert parsed.post_mma_wait is expected
+    assert parsed.mma_phase_schedule is expected
+
+
+@pytest.mark.parametrize("manual", [
+    {"post_mma_wait": False}, {"mma_phase_schedule": False},
+    {"post_mma_wait": True}, {"mma_phase_schedule": True},
+    {"post_mma_wait": False, "mma_phase_schedule": True},
+    {"post_mma_wait": True, "mma_phase_schedule": False},
+    {"post_mma_wait": 0, "mma_phase_schedule": 0},
+])
+def test_explicit_schedule_options_disable_automatic_pair_resolution(manual):
+    from triton.backends.compiler import GPUTarget
+    backend = compiler.HIPBackend(GPUTarget("hip", "gfx936", 64))
+    parsed = backend.parse_options(dict(num_warps=8, prefer_wide_async_copy=True,
+                                        schedule_hint="local-prefetch", **manual))
+    assert parsed.post_mma_wait is bool(manual.get("post_mma_wait", False))
+    assert parsed.mma_phase_schedule is bool(manual.get("mma_phase_schedule", False))
+
+
+def test_declined_post_proof_never_runs_phase_alone_for_a_pair():
+    def forbidden(*args):
+        raise AssertionError("phase-only fallback must not run")
+    llvm = SimpleNamespace(prepare_hcu_post_mma_wait=lambda *args: ("unusable", 0, "declined"),
+                           prepare_hcu_mma_phase_loops=forbidden)
+    policy = schedule.MemorySchedulePolicy(True, True)
+    metadata = {"shared": 65536}
+    assert schedule.prepare_memory_schedule("original", metadata, policy, llvm, "gfx936", 8) == ("original", False)

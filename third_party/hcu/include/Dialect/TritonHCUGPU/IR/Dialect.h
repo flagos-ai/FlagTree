@@ -29,9 +29,19 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Traits.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
+namespace mlir::triton::hcugpu {
+// Wave scheduling state is separate from memory completion/publication. A
+// priority fence changes this state without performing a thread rendezvous.
+struct WavePriorityState
+    : public SideEffects::Resource::Base<WavePriorityState> {
+  StringRef getName() final { return "hcug.wave_priority"; }
+};
+} // namespace mlir::triton::hcugpu
 
 // clang-format off
 #include "hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h.inc"

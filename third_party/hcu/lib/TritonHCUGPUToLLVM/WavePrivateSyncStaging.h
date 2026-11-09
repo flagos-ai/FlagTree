@@ -317,6 +317,65 @@ class WavePrivateSyncStaging {
            shared.getOrder().back() == 0;
   }
 
+  // A recycled allocation can also be wave-private, but equal byte offsets
+  // alone do not prove it. Derive the physical batch-plane pitch from the
+  // actual swizzled chart, and require every overlapping byte to have the same
+  // wave owner in both allocations. Unproved C scratch, views and padded charts
+  // retain the existing allocation-ID rule.
+  std::optional<std::pair<uint64_t, uint64_t>> wavePartition(Id id) const {
+    using namespace mlir;
+    namespace ttg = triton::gpu;
+    auto root = roots.lookup(id);
+    auto type = root ? dyn_cast<MemDesc>(root.getType()) : MemDesc{};
+    if (!type || type != canonicalTypes.lookup(id) || type.getRank() != 3 ||
+        type.getShape() != type.getAllocShape() ||
+        ArrayRef<int64_t>(ttg::getAllocationShapePerCTA(type)) != type.getShape() ||
+        !isa<ttg::SwizzledSharedEncodingAttr>(type.getEncoding()))
+      return std::nullopt;
+    uint64_t plane, elements, bytes;
+    if (!ttg::paddedSlotMul(uint64_t(type.getDimSize(1)),
+                            uint64_t(type.getDimSize(2)), plane) ||
+        !ttg::paddedSlotMul(plane, uint64_t(type.getDimSize(0)), elements) ||
+        elements > uint64_t(std::numeric_limits<int32_t>::max()) ||
+        !ttg::paddedSlotMul(elements, 2, bytes) ||
+        bytes > allocation->getAllocatedSize(id))
+      return std::nullopt;
+    auto layout = ttg::toLinearLayout(type);
+    auto offset = StringAttr::get(type.getContext(), "offset");
+    auto block = StringAttr::get(type.getContext(), "block");
+    if (!layout.isInvertible() || layout.getInDimSize(block) != 1 ||
+        uint64_t(layout.getInDimSize(offset)) != elements)
+      return std::nullopt;
+    auto bases = layout.getBases().lookup(offset);
+    unsigned lowBits = llvm::Log2_64(plane);
+    if (bases.size() != llvm::Log2_64(elements))
+      return std::nullopt;
+    for (auto [bit, basis] : llvm::enumerate(bases)) {
+      if (basis.size() != 3 ||
+          (bit < lowBits ? basis[0] != 0
+                         : basis != std::vector<int32_t>(
+                               {int32_t(1u << (bit - lowBits)), 0, 0})))
+        return std::nullopt;
+    }
+    uint64_t planeBytes;
+    if (!ttg::paddedSlotMul(plane, 2, planeBytes))
+      return std::nullopt;
+    return std::make_pair(uint64_t(allocation->getOffset(id)), planeBytes);
+  }
+
+  bool sameWavePartition(Id a, Id b) const {
+    auto left = wavePartition(a), right = wavePartition(b);
+    if (!left || !right || left->second != right->second)
+      return false;
+    auto warps = mod->getAttrOfType<mlir::IntegerAttr>("ttg.num-warps");
+    uint64_t period;
+    if (!warps || warps.getInt() <= 0 ||
+        !mlir::triton::gpu::paddedSlotMul(
+            left->second, uint64_t(warps.getInt()), period) || !period)
+      return false;
+    return left->first % period == right->first % period;
+  }
+
 public:
   WavePrivateSyncStaging(mlir::ModuleOp mod, mlir::ModuleAllocation &moduleAlloc,
                         const mlir::triton::HCU::TargetInfo &target)
@@ -478,12 +537,14 @@ public:
       accesses.clear();
   }
 
-  // This is an ALLOCATION-ID equality, never equal physical offset/size. A
-  // recycled C allocation at the same LDS address must retain its CTA edges.
+  // A recycled C allocation remains unproved even at the same LDS address.
+  // Different proven input IDs may share storage only with identical physical
+  // wave partitions; shape/offset equality by itself grants nothing.
   bool filter(mlir::Operation *before, mlir::Operation *after) const {
     auto a = accesses.find(before), b = accesses.find(after);
     if (a != accesses.end() || b != accesses.end())
-      return a != accesses.end() && b != accesses.end() && a->second == b->second;
+      return a != accesses.end() && b != accesses.end() &&
+             (a->second == b->second || sameWavePartition(a->second, b->second));
     return mlir::triton::HCU::membarFilter(before, after);
   }
 

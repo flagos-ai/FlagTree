@@ -1,4 +1,5 @@
 #include "TritonHCUGPUTransforms/ExplicitWarpSpecialize.h"
+#include "DeferredWarpWait.h"
 // Conservative lowering of an explicit terminal warp-specialize region.
 // No model shape, operand role, source chart, queue protocol or imported proof
 // selects this path. Source CTA rendezvous are preserved; ordinary local
@@ -18,6 +19,7 @@ static LogicalResult early(ModuleOp mod) {
     return reject("requires a void terminal wave64 single-CTA specialization within hardware wave/barrier limits");
   ws.setWarpGroupStartIds(domain->starts);
   mod->setAttr("ttg.total-num-warps", IntegerAttr::get(IntegerType::get(mod.getContext(), 32), domain->total));
+  HCU::deferred_wait::WindowTrace(ws).run();
   return success();
 }
 

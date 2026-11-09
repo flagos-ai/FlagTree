@@ -4,6 +4,54 @@
 namespace {
 constexpr llvm::StringLiteral StructuredRegisterRequest="hcu.structured_register";
 constexpr llvm::StringLiteral StructuredRegisterWidth="hcu.structured_register.internal_width";
+constexpr llvm::StringLiteral StructuredRegisterOrder="hcu.structured_register.internal_order";
+
+// Register numbering is not an address order. A pure split/transpose may put
+// a distant column bit before the contiguous bits without changing ownership.
+// Group complete vectors by their actual LinearLayout coordinates, then prove
+// the same grouping for every lane and wave. The result is only a permutation
+// of this thread's registers; it never authorizes a cross-thread exchange.
+static SmallVector<int32_t> structuredRegisterOrder(
+    RankedTensorType type, unsigned width) {
+  auto *ctx=type.getContext();
+  auto reg=StringAttr::get(ctx,"register"),lane=StringAttr::get(ctx,"lane"),
+       warp=StringAttr::get(ctx,"warp"),block=StringAttr::get(ctx,"block");
+  auto ll=triton::gpu::toLinearLayout(type);
+  unsigned count=ll.getInDimSize(reg);
+  if(count%width)return {};
+  SmallVector<int32_t> order;
+  for(unsigned r=0;r<count;++r)order.push_back(r);
+  auto at=[&](unsigned r,unsigned l,unsigned w) {
+    return ll.apply({{reg,int32_t(r)},{lane,int32_t(l)},
+                     {warp,int32_t(w)},{block,0}});
+  };
+  auto valid=[&]() {
+    for(unsigned i=0;i<count;i+=width)
+      for(unsigned w=0;w<ll.getInDimSize(warp);++w)
+        for(unsigned l=0;l<ll.getInDimSize(lane);++l) {
+          auto xy=at(order[i],l,w);
+          if(xy[1].second%width || xy[1].second+width>type.getShape()[1])
+            return false;
+          for(unsigned j=1;j<width;++j) {
+            auto z=at(order[i+j],l,w);
+            if(z[0].second!=xy[0].second || z[1].second!=xy[1].second+j)
+              return false;
+          }
+        }
+    return true;
+  };
+  // Keep instruction ordering exactly unchanged for already legal vectors.
+  if(valid())return order;
+  SmallVector<std::pair<int32_t,int32_t>> coordinates;
+  for(unsigned r=0;r<count;++r) {
+    auto xy=at(r,0,0);
+    coordinates.emplace_back(xy[0].second,xy[1].second);
+  }
+  llvm::stable_sort(order,[&](unsigned a,unsigned b) {
+    return coordinates[a]<coordinates[b];
+  });
+  return valid()?order:SmallVector<int32_t>{};
+}
 // Descriptor DATA must be CTA-uniform, independent of unrelated execution
 // branches. In particular warp_group_id is never a valid descriptor operand.
 static bool structuredRegisterDataUniform(Value v) {
@@ -66,6 +114,7 @@ static bool structuredRegisterExecutionUniform(Operation* site) {
   });return result;
 }
 static bool structuredRegisterBaseUniform(Value v) {
+  v = mlir::triton::HCU::resolveWarpSpecializeCapture(v);
   if(auto arg=dyn_cast<BlockArgument>(v))
     if(auto f=dyn_cast<triton::FuncOp>(arg.getOwner()->getParentOp()))
       return arg.getOwner()==&f.getBody().front();
@@ -74,6 +123,7 @@ static bool structuredRegisterBaseUniform(Value v) {
   return false;
 }
 static unsigned structuredRegisterAlignment(Value v) {
+  v = mlir::triton::HCU::resolveWarpSpecializeCapture(v);
   if(auto arg=dyn_cast<BlockArgument>(v))
     if(auto f=dyn_cast<triton::FuncOp>(arg.getOwner()->getParentOp()))
       if(arg.getOwner()==&f.getBody().front())
@@ -82,7 +132,10 @@ static unsigned structuredRegisterAlignment(Value v) {
   return 2; // f16/bf16 element pointer; otherwise retain scalar16-bit reads.
 }
 static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) {
-  mod.walk([&](Operation *op){op->removeAttr(StructuredRegisterWidth);});
+  mod.walk([&](Operation *op){
+    op->removeAttr(StructuredRegisterWidth);
+    op->removeAttr(StructuredRegisterOrder);
+  });
   if(auto a=mod->getAttr("ttg.hcu.structured_register_flat_addressing");a&&!isa<BoolAttr>(a))
     return mod.emitError("structured-register: flat-addressing option must be BoolAttr");
   if(auto a=mod->getAttr("ttg.hcu.structured_register_prepack_address");a&&!isa<BoolAttr>(a))
@@ -130,22 +183,20 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
       if(xy.size()!=2 || xy[0].second<0 || xy[0].second>=t.getShape()[0] || xy[1].second<0 || xy[1].second>=t.getShape()[1])
         return fail("layout contains a coordinate outside the logical tile");
     }
+    SmallVector<int32_t> order;
     auto legal=[&](unsigned width) {
       if(ll.getInDimSize(reg)%width || *K%width || structuredRegisterAlignment(op.getBase())<2*width)return false;
       llvm::SmallPtrSet<void *,32> seen;
       if(!mlir::triton::HCU::memory_analysis::multipleOf(op.getIndices()[1],width,seen))return false;
-      for(unsigned r=0;r<ll.getInDimSize(reg);r+=width)for(unsigned w=0;w<ll.getInDimSize(warp);++w)for(unsigned l=0;l<64;++l) {
-        auto xy=at(r,l,w);
-        if(xy[1].second%width || xy[1].second+width>t.getShape()[1])return false;
-        for(unsigned j=1;j<width;++j) {
-          auto z=at(r+j,l,w);
-          if(z[0].second!=xy[0].second || z[1].second!=xy[1].second+j)return false;
-        }
-      }
-      return true;
+      order=structuredRegisterOrder(t,width);
+      return !order.empty();
     };
     unsigned width=legal(8)?8:legal(4)?4:legal(2)?2:1;
     op->setAttr(StructuredRegisterWidth,IntegerAttr::get(IntegerType::get(ctx,32),width));
+    if(width>1 && llvm::any_of(llvm::enumerate(order),[](auto entry) {
+         return entry.index()!=unsigned(entry.value());
+       }))
+      op->setAttr(StructuredRegisterOrder,DenseI32ArrayAttr::get(ctx,order));
   });
   return answer;
 }
@@ -218,8 +269,12 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
         "llvm.amdgcn.struct.ptr.buffer.load."+suffix,payload,{ptr_ty(ctx,8),i32_ty,i32_ty,i32_ty,i32_ty});
     auto reg=StringAttr::get(ctx,"register"),lane=StringAttr::get(ctx,"lane"),warp=StringAttr::get(ctx,"warp");
     auto ll=triton::gpu::toLinearLayout(op.getType());ll=ll.sublayout({reg,lane,warp},llvm::to_vector(ll.getOutDimNames()));
-    auto [laneId,warpId]=getLaneAndWarpId(rw,loc);SmallVector<Value> values;
-    for(unsigned r=0;r<ll.getInDimSize(reg);r+=width) {
+    auto [laneId,warpId]=getLaneAndWarpId(rw,loc);
+    SmallVector<Value> values(ll.getInDimSize(reg));
+    auto order=op->getAttrOfType<DenseI32ArrayAttr>(StructuredRegisterOrder);
+    auto original=[&](unsigned i) {return order?unsigned(order[i]):i;};
+    for(unsigned i=0;i<ll.getInDimSize(reg);i+=width) {
+      unsigned r=original(i);
       auto xy=applyLinearLayout(loc,rw,ll,{{reg,b.i32_val(r)},{lane,laneId},{warp,warpId}});
       // For negative R, unsigned rowIndex is OOB until r+R becomes nonnegative.
       // For R>M, records==0. For enabled in-range R, this is exactly local row.
@@ -253,10 +308,11 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
         }
         loaded=LLVM::createLLVMCallOp(rw,loc,loadFn,{resource,index,offset,b.i32_val(0),b.i32_val(0)}).getResult();
       }
-      if(width==1)values.push_back(b.bitcast(loaded,elem));
+      if(width==1)values[original(i)]=b.bitcast(loaded,elem);
       else {
         Value casted=b.bitcast(loaded,vec_ty(elem,width));
-        for(unsigned j=0;j<width;++j)values.push_back(b.extract_element(elem,casted,b.i32_val(j)));
+        for(unsigned j=0;j<width;++j)
+          values[original(i+j)]=b.extract_element(elem,casted,b.i32_val(j));
       }
     }
     rw.replaceOp(op,packLLElements(loc,getTypeConverter(),values,rw,op.getType()));return success();

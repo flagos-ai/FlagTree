@@ -19,93 +19,6 @@ from pathlib import Path
 _REGISTER_OWNER_DEFAULT_POLICY = "gfx936_optimize_epilogue_register_owner_shared_vector_v1"
 
 
-def _priority_after_first_mmac(assembly, kernel_name):
-    """Delay one priority raise past register/wait prefix and one MMAC."""
-    lines = assembly.splitlines(keepends=True)
-    code = lambda s: s.split(';', 1)[0].split('//', 1)[0].strip()
-    starts = [i for i, line in enumerate(lines) if code(line) == kernel_name + ':']
-    if len(starts) != 1:
-        return assembly, 0
-    # Unknown section stacks make a label-reference classification ambiguous.
-    if any(re.match(r'\.(?:pushsection|popsection|previous|subsection)\b', code(s)) for s in lines):
-        return assembly, 0
-    start = starts[0]
-    ends = [i for i in range(start + 1, len(lines))
-            if re.fullmatch(r'\.Lfunc_end\d+:', code(lines[i]))]
-    if not ends:
-        return assembly, 0
-    end = ends[0]
-    instructions = [code(s) for s in lines[start + 1:end]
-                    if code(s) and not code(s).startswith('.') and not code(s).endswith(':')]
-    if any(re.match(r's_(?:setpc|swappc|rfe|call)(?:_\w+)?(?:\s|$)', s) for s in instructions):
-        return assembly, 0
-
-    # Relative numeric branch displacements would not be reassembled against a
-    # moved instruction. Accept only a single symbolic direct target.
-    for instruction in instructions:
-        branch = re.match(r'(s_branch|s_cbranch_\w+)\s+(.+)$', instruction)
-        if branch and not re.fullmatch(r'[A-Za-z_.$][A-Za-z0-9_.$]*', branch.group(2)):
-            return assembly, 0
-
-    # A .Ltmp name alone does not prove that it is only a debug anchor. Reject
-    # every reference outside a .debug_* section, including literal jump tables.
-    non_debug = []
-    section = '.text'
-    debug_exempt = False
-    for line in lines:
-        text = code(line)
-        match = re.match(r'\.section\s+(?:"([^"]+)"|([^,\s]+))', text)
-        if match:
-            section = match.group(1) or match.group(2)
-            debug_exempt = False
-            if section.startswith('.debug_'):
-                # A section merely named debug may be executable/allocated.
-                # Only empty flags earn the reference exemption; nonalloc MS strings are scanned.
-                flags = re.match(r'\s*,\s*"([^"]*)"', text[match.end():])
-                if not flags or flags.group(1) not in ['', 'MS', 'SM']:
-                    return assembly, 0
-                debug_exempt = flags.group(1) == ''
-        elif re.match(r'\.(?:text|data|bss)(?:\s|$)', text):
-            section = text.split()[0]
-            debug_exempt = False
-        if not debug_exempt:
-            non_debug.append(text)
-
-    changes = []
-    for i in range(start + 1, end):
-        if not re.fullmatch(r's_setprio\s+1', code(lines[i])):
-            continue
-        for j in range(i + 1, end):
-            text = code(lines[j])
-            if not text or re.match(r'\.loc(?:\s|$)', text):
-                continue
-            # These waits and SGPR-only numeric ops retain their exact order.
-            # The priority raise neither reads nor writes their SCC/EXEC data.
-            if re.fullmatch(r's_waitcnt\s+(?:(?:vmcnt|lgkmcnt|expcnt)\(\d+\)(?:\s+|$))+', text):
-                continue
-            if re.fullmatch(r's_(?:add_u32|addc_u32|and_b32|or_b32|mov_b32|cselect_b32)\s+s\d+\s*,[^;]+', text):
-                continue
-            label = re.fullmatch(r'(\.Ltmp\d+):', text)
-            if label:
-                token = label.group(1)
-                pattern = r'(?<![\w.$])' + re.escape(token) + r'(?![\w.$])'
-                if any(s != token + ':' and re.search(pattern, s) for s in non_debug):
-                    break
-                continue
-            # Other labels, directives, loads/CTA/control and other MMAC types
-            # all stop the match. This pass never walks across another opcode.
-            if re.fullmatch(r'v_mmac_f32_16x16x16_bf16\s+[^\n]+', text):
-                changes.append((i, j))
-            break
-    for i, j in reversed(changes):
-        priority = lines[i]
-        lines[i] = ''
-        lines[j] += priority
-    return ''.join(lines), len(changes)
-
-
-
-
 def get_min_dot_size(target: GPUTarget):
     # We fallback to use FMA and cast arguments if certain configurations is
     # not supported natively by matrix core units.
@@ -476,6 +389,19 @@ class HIPBackend(BaseBackend):
         if args.get("schedule_hint", "none") == "none" and legacy_sched_variant is not None:
             args["schedule_hint"] = legacy_sched_variant
 
+        # gfx936 has four SIMD units per CU. Split computation into two
+        # full-SIMD wave groups only when the launch supplies enough waves.
+        # This is an initial scheduling heuristic; actual loop/queue proofs
+        # and final native readiness still decide whether it can be used.
+        # Explicit options preserve independent manual experiments and off.
+        if "post_mma_wait" not in args and "mma_phase_schedule" not in args:
+            waves = args.get("num_warps", HIPOptions.num_warps)
+            paired = (args["arch"] == "gfx936"
+                      and type(waves) is int and waves >= 8 and waves % 8 == 0
+                      and args.get("prefer_wide_async_copy", False) is True
+                      and "local-prefetch" in args.get("schedule_hint", "none").split(","))
+            args.update(post_mma_wait=paired, mma_phase_schedule=paired)
+
         if args.get("wasp_enabled"):
             if args.get("wdra_enabled"):
                 assert args["wasp_num_load_warps"] == 4
@@ -675,6 +601,10 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, options):
+        if options.arch == "gfx936" and options.prefer_wide_async_copy:
+            # Preserve block-pointer descriptors before scalar pointer expansion.
+            mod.set_attr("ttg.hcu.prefer_wide_async_copy",
+                         ir.builder(mod.context).get_int32_attr(1))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -797,6 +727,10 @@ class HIPBackend(BaseBackend):
         # Pipelining leaves dead source tt.loads until canonicalization. Drop
         # them before TLE lowering can turn them into side-effecting copies.
         passes.common.add_canonicalizer(pm)
+        # Pipelining only consumes loop loads. Lower remaining descriptors
+        # (e.g. fully unrolled/peeled dots) before pointer canonicalization
+        # changes the scalar pointer ABI that matrix lowering still needs.
+        hcu.passes.ttgpuir.add_mls_lowering_pass(pm)
         tle.passes.add_lower_async_load(pm)
         # Form actual BUFFER copies before GLOBAL-only width contraction.
         # Failed conversions remain GLOBAL and retain their original limits.
@@ -825,9 +759,18 @@ class HIPBackend(BaseBackend):
                 hcu.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
         passes.ttgpuir.add_remove_layout_conversions(pm)
 
-        hcu.passes.ttgpuir.add_mls_lowering_pass(pm)
-
+        # Descriptor-preserving MLS selection can expose the final consumer
+        # layout only after the earlier operand pass. Retarget the original
+        # register read before data-duplication lowering allocates LDS staging.
+        if options.arch == "gfx936" and options.prefer_wide_async_copy:
+            hcu.passes.ttgpuir.add_optimize_dot_operands(pm, options.arch)
         passes.ttgpuir.add_reduce_data_duplication(pm)
+        if options.wave_private_sync:
+            # Ordinary dot-operand conversions become local allocations here.
+            # Reuse the existing producer coalescing/provenance policy after
+            # those stores exist, so wave-private staging can see the full path.
+            hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
+            passes.ttgpuir.add_remove_layout_conversions(pm)
         if is_in_thread_transpose_enabled(options.arch):
             hcu.passes.ttgpuir.add_in_thread_transpose(pm)
             passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -864,6 +807,10 @@ class HIPBackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
+        # Layout propagation can expose a view conversion on a pipeline's
+        # peeled result. Retarget its original completed shared reads only
+        # after the final SSA cleanup has exposed unused carried arguments.
+        hcu.passes.ttgpuir.add_mls_lowering_pass(pm)
         if 1:  #use_async_copy:
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
@@ -890,6 +837,11 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
+        if options.priority_after_first_mmac:
+            # Typed fences and the MMAC lowering own the SSA scheduling
+            # boundary. Never move final assembly instructions as text.
+            mod.set_attr("ttg.hcu.priority_after_first_mmac",
+                         ir.builder(mod.context).get_bool_attr(True))
         if options.terminal_readonly_publication:
             mod.set_attr("ttg.hcu.terminal_readonly_publication",
                          ir.builder(mod.context).get_bool_attr(True))
@@ -1144,6 +1096,12 @@ class HIPBackend(BaseBackend):
             llvm.link_extern_libs(llvm_mod, [str(default_libdir / "libnvshmem_device.bc")])
 
         hcu.strip_synchronous_barrier_markers(llvm_mod, options.arch)
+        # Consume dense descriptor destination extents before LLVM folds
+        # dereferenceable(base + offset, size) into weaker base-only facts.
+        # The existing wide-copy policy enables this path; no new tuning axis.
+        # Object scopes still require independently proven physical bounds.
+        if options.prefer_wide_async_copy:
+            hcu.annotate_lds_object_scopes(llvm_mod, options.arch, options.warp_size)
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, options.arch, '', [], options.enable_fp_fusion)
 
         # Architectures with architected SGPRs store the workgroup id in ttmp9 (X) and ttmp7 (Y[15:0], Z[31:16]).
@@ -1200,16 +1158,6 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_amdgcn(src, metadata, options, _skip_schedules=False):
         amdgcn=HIPBackend._make_amdgcn_with_schedules(src,metadata,options,_skip_schedules)
-        if options.priority_after_first_mmac:
-            original=amdgcn
-            try:
-                amdgcn,sites=_priority_after_first_mmac(amdgcn,metadata["name"])
-                metadata["hcu_priority_after_first_mmac_sites"]=sites
-                metadata["hcu_priority_after_first_mmac_result"]="delayed across one MMAC" if sites else "no eligible adjacent sites"
-            except Exception as error:
-                amdgcn=original
-                metadata["hcu_priority_after_first_mmac_sites"]=0
-                metadata["hcu_priority_after_first_mmac_result"]="fallback: "+str(error)
         if options.coalesce_lgkm_waits:
             original = amdgcn
             try:

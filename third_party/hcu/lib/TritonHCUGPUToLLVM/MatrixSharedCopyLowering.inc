@@ -101,6 +101,20 @@ static LogicalResult lowerMatrixSharedCopy(
       LLVM::LLVMVoidType::get(ctx),p.structured?
       ArrayRef<Type>{ptr_ty(ctx,8),ptr_ty(ctx,3),i32_ty,i32_ty,i32_ty,i32_ty,i32_ty,i32_ty}:
       ArrayRef<Type>{ptr_ty(ctx,8),ptr_ty(ctx,3),i32_ty,i32_ty,i32_ty,i32_ty,i32_ty});
+  // The destination proof covers a dense, allocation-backed tile, including
+  // zero-filled or disabled source vectors. Preserve that storage extent as a
+  // standard LLVM fact; it says nothing about initialization or non-aliasing.
+  // p.tileSpanBytes describes the strided global source, not this LDS extent.
+  // Consume these extents before O3 under the existing wide-copy policy.
+  // Other paths retain their original scopes: after O3 a canonicalized base
+  // dereferenceability bound can join adjacent, independently scored slots.
+  auto policy=op->getParentOfType<ModuleOp>()->getAttrOfType<IntegerAttr>(
+      "ttg.hcu.prefer_wide_async_copy");
+  if (policy && policy.getInt()==1) {
+    Value tileBase=b.gep(ptr_ty(ctx,3),elem,smem.getBase(),affine);
+    LLVM::AssumeOp::create(rw,loc,b.i1_val(true),"dereferenceable",
+        ValueRange{tileBase,b.i64_val(uint64_t(2)*p.copies*p.waves*512)});
+  }
   for (unsigned copy=0;copy<p.copies;++copy) {
     Value pw=b.add(wave,b.i32_val(copy*p.waves));
     Value ordinal=b.add(b.shl(pw,b.i32_val(9)),b.shl(lane,b.i32_val(3)));

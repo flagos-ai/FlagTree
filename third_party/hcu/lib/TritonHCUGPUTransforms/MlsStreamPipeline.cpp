@@ -1,5 +1,6 @@
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "Utility.h"
+#include "MatrixDescriptorLayout.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
@@ -13,6 +14,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 #include <variant>
 #include <cstdint>
 
@@ -56,6 +58,22 @@ Operation *streamPredication(RewriterBase &rewriter, Operation *op,
     dotOp->moveBefore(yield);
     ifOp.getElseBodyBuilder().create<scf::YieldOp>(loc, dotOp->getOperand(2));
     return ifOp;
+  }
+  if (auto copy = dyn_cast<tta::MatrixLoadToLocalOp>(op)) {
+    if (isa<ttg::SharedLinearEncodingAttr>(copy.getDest().getType().getEncoding())) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(copy);
+      SmallVector<Value> indices(copy.getIndices());
+      assert(indices.size() == 3 && "matrix descriptor requires an enable SSA operand");
+      auto loc = copy.getLoc();
+      Value enabled = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::ne, indices[2],
+          rewriter.create<arith::ConstantIntOp>(loc, 0, 32));
+      enabled = rewriter.create<arith::AndIOp>(loc, enabled, pred);
+      indices[2] = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), enabled);
+      copy.getIndicesMutable().assign(indices);
+      return copy;
+    }
   }
   if (isa<tta::MatrixLoadToLocalOp, tt::MatrixLoadOp>(op)) {
     // TODO: some extreme cases may cause out-of-bounds access,
@@ -159,24 +177,35 @@ AsyncCopyChainOps createAsyncCopy(tt::MatrixLoadOp loadOp, Value alloc,
   auto viewLoad = triton::createSingleBufferView(builder, alloc, extractIdx)
                       .getDefiningOp<ttg::MemDescIndexOp>();
 
+  SmallVector<Value> indices(loadOp.getIndices());
+  SmallVector<int32_t> boundary(loadOp.getBoundaryCheck());
+  if (triton::HCU::isAsyncMatrixDescriptor(loadOp)) {
+    indices.push_back(builder.create<arith::ConstantIntOp>(loc, 1, 32));
+    // MatrixSharedCopy checks both scalar dimensions and zero-fills the full
+    // destination. An unchecked source region retains its defined values.
+    boundary.clear();
+  }
   auto copyOp = builder.create<tta::MatrixLoadToLocalOp>(
       loc, loadOp.getBase(), loadOp.getShape(), loadOp.getStrides(),
-      loadOp.getTensorShape(), loadOp.getIndices(), loadOp.getBoundaryCheck(),
+      loadOp.getTensorShape(), indices, boundary,
       loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(), viewLoad);
 
   auto mlsAttr = loadOp->getAttrOfType<tta::MlsEncodingAttr>(
       tta::MlsEncodingAttr::getMnemonic());
-  copyOp->setAttr(tta::MlsEncodingAttr::getMnemonic(), mlsAttr);
+  if (mlsAttr)
+    copyOp->setAttr(tta::MlsEncodingAttr::getMnemonic(), mlsAttr);
 
   auto commitOp =
       builder.create<ttg::AsyncCommitGroupOp>(loc, copyOp->getResult(0));
   ttg::AsyncWaitOp waitOp =
       builder.create<ttg::AsyncWaitOp>(loc, commitOp->getResult(0), 0);
 
-  // HCU TODO: if loadLoad with AsyncWait, membarFilter will stop insert
-  // barrier for WAR and lead to incorrect result.
+  // Preserve completion as SSA. The current membar filter suppresses only
+  // copy->read RAW covered by this wait; reverse read->copy WAR is retained.
+  // Omitting the token also loses LLVM alias scopes and serializes future
+  // copies against local reads, despite the explicit hardware waits.
   auto maybeSharedLoad = tt::replaceUsesWithLocalLoad(
-      builder, loadOp->getResult(0), viewLoad /*, waitOp */);
+      builder, loadOp->getResult(0), viewLoad, waitOp);
   return {copyOp.getOperation(), commitOp, waitOp, maybeSharedLoad};
 }
 
@@ -345,9 +374,18 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
 
   builder.setInsertionPoint(forOp.getBody(), forOp.getBody()->begin());
   extractIdx = builder.create<arith::AddIOp>(loc, extractIdx, one);
-  Value cndExt = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
-                                               extractIdx, numBuffersVal);
-  extractIdx = builder.create<arith::SelectOp>(loc, cndExt, extractIdx, zero);
+  bool ordinaryDescriptors = llvm::any_of(loadToInfo, [](const auto &entry) {
+    auto matrix = dyn_cast<tt::MatrixLoadOp>(entry.first);
+    return matrix && triton::HCU::isAsyncMatrixDescriptor(matrix);
+  });
+  if (ordinaryDescriptors && llvm::isPowerOf2_32(numBuffers)) {
+    Value mask = builder.create<arith::ConstantIntOp>(loc, numBuffers - 1, 32);
+    extractIdx = builder.create<arith::AndIOp>(loc, extractIdx, mask);
+  } else {
+    Value cndExt = builder.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+                                                 extractIdx, numBuffersVal);
+    extractIdx = builder.create<arith::SelectOp>(loc, cndExt, extractIdx, zero);
+  }
 
   // Patch the yield with the updated counter.
   appendToForOpYield(forOp, {extractIdx});
@@ -372,8 +410,11 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
       alloc = triton::createAlloc(forOp, ty, loadOp->getLoc(), shared, numBuffers);
     } else if (matrixLoadOp) {
       auto ty = cast<RankedTensorType>(matrixLoadOp->getResultTypes()[0]);
-      alloc = triton::createAlloc(forOp, ty, matrixLoadOp->getLoc(),
-                                  info.mlsEncoding, numBuffers);
+      ttg::SharedEncodingTrait shared = info.sharedEncoding
+                                          ? info.sharedEncoding
+                                          : cast<ttg::SharedEncodingTrait>(info.mlsEncoding);
+      alloc = triton::createAlloc(forOp, ty, matrixLoadOp->getLoc(), shared,
+                                  numBuffers);
     }
     assert(alloc && "Failed to create alloc for the async load.");
     if (isLoadOp) {
@@ -402,6 +443,9 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
   std::function<void(Operation *, Operation *, int)> dfs =
       [&](Operation *op, Operation *finalUser, int distance) {
         if (!seen.insert(op).second || excluded.count(op))
+          return;
+        if (auto matrix = dyn_cast<tt::MatrixLoadOp>(op);
+            matrix && matrix->hasAttr("hcu.structured_register"))
           return;
         if (isa<tt::LoadOp, tt::MatrixLoadOp>(op)) {
           if (filterSmall && isa<tt::LoadOp>(op) &&
@@ -509,6 +553,15 @@ preprocessLoop(triton::HCU::ModuleAxisInfoAnalysis &axisInfoAnalysis,
           getSharedEncIfAllUsersAreDotEnc(load->getResult(0)).value_or(nullptr);
       loadToInfo[load] = {sharedEncoding, distance, use};
     } else if (isa<tt::MatrixLoadOp>(load)) {
+      auto matrix = cast<tt::MatrixLoadOp>(load);
+      if (triton::HCU::isAsyncMatrixDescriptor(matrix)) {
+        auto shared = triton::HCU::getMatrixDescriptorSharedLayout(matrix);
+        if (shared) {
+          loadToInfo[load] = {cast<ttg::SharedEncodingTrait>(shared), distance, use};
+          loadToInfo[load].isMatrixLoad = true;
+        }
+        continue;
+      }
       auto mlsEncoding =
           getMlsEncIfAllUsersAreDotEnc(load->getResult(0)).value_or(nullptr);
       loadToInfo[load] = {mlsEncoding, distance, use};
@@ -979,6 +1032,15 @@ buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
                           forceSchedLocalLoad, clusters, schedule)))
     return {};
 
+  // Ordinary XOR charts use power-of-two extents. Round the required lifetime
+  // capacity upward, preserving the schedule's reuse distance; never reduce
+  // the number of slots inferred from producer/consumer stages.
+  if (llvm::any_of(loadToInfo, [](const auto &entry) {
+        auto matrix = dyn_cast<tt::MatrixLoadOp>(entry.first);
+        return matrix && triton::HCU::isAsyncMatrixDescriptor(matrix);
+      }))
+    numBuffers = llvm::PowerOf2Ceil(unsigned(numBuffers));
+
   if (failed(scheduleLoads(loadToInfo, maxDist, maxDistLoad, numStages, stages,
                            clusters, schedule)))
     return {};
@@ -1084,7 +1146,10 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
 // StreamPipelinePass
 bool skipLoopWithOutMatrixLoadOp(scf::ForOp forOp) {
   return llvm::all_of(forOp.getBody()->without_terminator(),
-                      [](Operation &op) { return !isa<tt::MatrixLoadOp>(op); });
+                      [](Operation &op) {
+                        return !isa<tt::MatrixLoadOp>(op) ||
+                               op.hasAttr("hcu.structured_register");
+                      });
 }
 
 } // namespace
@@ -1095,6 +1160,10 @@ struct MlsPipelinePass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    bool ordinaryDescriptors = false;
+    moduleOp.walk([&](tt::MatrixLoadOp op) {
+      ordinaryDescriptors |= triton::HCU::isAsyncMatrixDescriptor(op);
+    });
     // check numStages
     if (numStages == 1)
       return;
@@ -1107,7 +1176,11 @@ struct MlsPipelinePass
       globalPrefetch = 0;
     }
 
-    constexpr int localPrefetch = 0;
+    auto prefetch =
+        moduleOp->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
+    // Mode 1 is the existing one-iteration local-read policy. Modes 6/7
+    // describe a different stream-pipeline experiment, not stage distances.
+    bool prefetchOrdinaryReads = prefetch && prefetch.getInt() == 1;
     constexpr bool useAsyncCopy = true;
 
     SmallVector<scf::ForOp> loops;
@@ -1132,11 +1205,40 @@ struct MlsPipelinePass
       // i.e., we can still disable `waitAtTail` by explicitly disabling
       // pingpong, which is the only use case of this scheduling variant.
       int numStagesThis = tt::getNumStagesOrDefault(forOp, numStages);
+      // Ordinary matrix descriptors participate in the same stage dependency
+      // analysis as their copies. Read a completed tile ahead of its dot;
+      // initSchedule still checks producer distance and buffer lifetimes.
+      bool ordinaryLoop = llvm::any_of(
+          forOp.getBody()->without_terminator(), [](Operation &op) {
+            auto load = dyn_cast<tt::MatrixLoadOp>(op);
+            return load && triton::HCU::isAsyncMatrixDescriptor(load);
+          });
+      int localPrefetch = prefetchOrdinaryReads && ordinaryLoop &&
+                                  numStagesThis > globalPrefetch + 1
+                              ? 1
+                              : 0;
       bool waitAtTail =
           false; // usePingpong && (numStagesThis == 3) && useAsyncCopy;
       (void)pipelineLoop(forOp, numStagesThis, globalPrefetch, localPrefetch,
                          useAsyncCopy, waitAtTail, asyncCopySingleBuffer != 0);
     }
+
+    // Pipeline expansion can forward an already bounded index through an SSA
+    // argument. Retain its finite domain at each ordinary buffer view. For a
+    // defined memdesc_index, 0 <= index < extent, this mask is an identity.
+    moduleOp.walk([&](ttg::MemDescIndexOp view) {
+      auto type = view.getSrc().getType();
+      if (!ordinaryDescriptors ||
+          !isa<ttg::SharedLinearEncodingAttr>(type.getEncoding()) ||
+          type.getRank() != view.getType().getRank() + 1 ||
+          !llvm::isPowerOf2_64(type.getShape()[0]))
+        return;
+      OpBuilder builder(view);
+      auto mask = builder.create<arith::ConstantIntOp>(
+          view.getLoc(), type.getShape()[0] - 1, 32);
+      view.getIndexMutable().assign(builder.create<arith::AndIOp>(
+          view.getLoc(), view.getIndex(), mask));
+    });
 
     // NOTE: Leave empty for now, until we utilize customEpiloguePeeling
     DenseSet<ttg::MaskOp> peeledMaskOps;

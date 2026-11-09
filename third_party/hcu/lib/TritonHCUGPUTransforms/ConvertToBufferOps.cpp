@@ -12,6 +12,7 @@
 #include "third_party/hcu/include/Analysis/RangeAnalysis.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "third_party/hcu/lib/TritonHCUGPUToLLVM/Utility.h"
+#include "third_party/hcu/lib/TritonHCUGPUToLLVM/WarpSpecializeUtils.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -205,6 +206,10 @@ bool isByteOffsetSmallerThan2GB(triton::AddPtrOp addPtrOp,
 }
 
 bool isFuncArgWith32bitPtrRange(mlir::Value value) {
+  // An isolated worker receives the exact captured scalar pointer. Preserve
+  // the caller's range proof through that structural forwarding; computed
+  // pointers and loop-carried arguments still require the ordinary analysis.
+  value = triton::HCU::resolveWarpSpecializeCapture(value);
   if (value.getDefiningOp())
     return false;
 

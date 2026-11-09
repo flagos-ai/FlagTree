@@ -74,6 +74,12 @@ struct Events {
     if(barrier(i))return Event{CTA};
     if(fenceNoop(i))return Event{Noop};
     if(isRegisterIdentityFence(i))return Event{Noop};
+    // A true assumption records facts but issues no memory/queue event.
+    // Keep it and its SSA operands in place, as ready-read scheduling does.
+    if (auto *assume = dyn_cast<AssumeInst>(i))
+      if (auto *condition = dyn_cast<ConstantInt>(assume->getArgOperand(0));
+          condition && condition->isOne())
+        return Event{Noop};
     uint64_t mask=0;
     if(copy(i)) {
       auto *c=cast<CallBase>(i);auto *size=dyn_cast<ConstantInt>(c->getArgOperand(2));if(!size||size->getZExtValue()!=16)return std::nullopt;

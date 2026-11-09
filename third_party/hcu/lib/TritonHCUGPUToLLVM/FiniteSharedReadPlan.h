@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 namespace mlir::triton::HCU {
@@ -118,6 +119,14 @@ planFiniteSharedReads(unsigned registers, unsigned warps, unsigned elements,
     // issuing lanes, each16B/four32-bit words across32banks. Deduplicate exact
     // same-word broadcasts, then count distinct-word bank fan-in.
     auto bankScore=[&](const MatrixGroups &groups) {
+      // A native read returns packed 16-bit pairs. Splitting adjacent tensor
+      // registers across reads forces byte permutations when consumers use
+      // those same 32-bit words. Preserve this packing before ranking banks;
+      // a bank-only score can otherwise add many v_perm instructions.
+      unsigned repackedWords = 0;
+      for (const auto &g : groups)
+        for (unsigned j = 0; j < g.size(); j += 2)
+          repackedWords += (g[j] & 1) || g[j + 1] != g[j] + 1;
       uint64_t excess=0;unsigned maximum=0;
       for(const auto &g:groups)for(unsigned w=0;w<warps;++w)
         for(unsigned first=0;first<64;first+=8) {
@@ -135,11 +144,11 @@ planFiniteSharedReads(unsigned registers, unsigned warps, unsigned elements,
             maximum=std::max(maximum,unsigned(bank.size()));
           }
         }
-      return std::make_pair(excess,maximum);
+      return std::make_tuple(repackedWords,excess,maximum);
     };
     unsigned bits=0;for(unsigned n=registers;n>1;n>>=1)++bits;
     MatrixGroups bestGroups;
-    std::pair<uint64_t,unsigned> bestScore{uint64_t(-1),unsigned(-1)};
+    std::tuple<unsigned,uint64_t,unsigned> bestScore{unsigned(-1),uint64_t(-1),unsigned(-1)};
     std::array<unsigned,3> bestAxes{0,1,2};
     // Baseline wins ties. Otherwise first strict improvement in generic
     // lexicographic bit-axis order is stable; no shape/Torch register gate.

@@ -1,4 +1,5 @@
 #include "AsyncUtility.h"
+#include "AccumulatorFence.h"
 #include "FiniteSharedReadPlan.h"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
@@ -18,6 +19,51 @@
 using ::mlir::triton::gpu::MemDescType;
 
 namespace {
+// Keep the complete, actual accumulator cohort tied across the boundary.
+// Inline assembly here is a target lowering detail, not the source-level
+// semantic representation. In particular, no fixed 128-register ABI leaks
+// into the operator or the IR operation.
+class AccumulatorFenceOpConversion
+    : public ConvertOpToLLVMPattern<triton::hcugpu::AccumulatorFenceOp> {
+public:
+  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+
+  LogicalResult matchAndRewrite(triton::hcugpu::AccumulatorFenceOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto values = unpackLLElements(op.getLoc(), adaptor.getAcc(), rewriter);
+    if (values.empty())
+      return op.emitOpError("requires a nonempty per-thread accumulator cohort");
+    // Only cross the immediately following pure dot, with an exact, single
+    // accumulator use. Keep a tied empty memory fence here and transfer the
+    // priority update to the first MMAC's full accumulator cohort. No memory,
+    // synchronization, conversion, control-flow or unrelated user is crossed.
+    bool defer = false;
+    auto module = op->getParentOfType<ModuleOp>();
+    auto enabled = module->getAttrOfType<BoolAttr>(
+        "ttg.hcu.priority_after_first_mmac");
+    if (op.getPriority() == 1 && enabled && enabled.getValue() &&
+        op.getResult().hasOneUse()) {
+      auto dot = dyn_cast_or_null<triton::DotOp>(op->getNextNode());
+      auto tensor = dyn_cast<RankedTensorType>(op.getType());
+      auto mma = tensor ? dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(
+                              tensor.getEncoding())
+                        : triton::gpu::AMDMfmaEncodingAttr{};
+      if (dot && dot.getC() == op.getResult() && mma && mma.isHCUMmac()) {
+        dot->setAttr("hcu.priority_after_first_mmac", rewriter.getUnitAttr());
+        defer = true;
+      }
+    }
+    auto outputs = triton::HCU::emitAccumulatorFence(
+        op.getLoc(), values,
+        defer ? "" : op.getPriority() ? "s_setprio 1" : "s_setprio 0",
+        rewriter);
+    rewriter.replaceOp(op, packLLElements(op.getLoc(), getTypeConverter(),
+                                        outputs, rewriter, op.getType()));
+    return success();
+  }
+};
+
 static bool hasAlignedMatrixReadAllocation(
     Value source, const LLVMTypeConverter &converter);
 
@@ -1249,6 +1295,7 @@ void mlir::triton::HCU::populateMemoryOpToLLVMPatterns(
   PatternBenefit transBenefit = PatternBenefit(benefit.getBenefit() + 1);
   PatternBenefit barrierBenefit = PatternBenefit(benefit.getBenefit() + 1);
 
+  patterns.add<AccumulatorFenceOpConversion>(typeConverter, benefit);
   patterns.add<LinearMatrixLocalLoadOpConversion>(typeConverter, targetInfo,
       PatternBenefit(benefit.getBenefit() + 2));
   patterns.add<TransLocalLoadOpConversion>(typeConverter, targetInfo,
