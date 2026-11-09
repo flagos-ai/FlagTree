@@ -107,3 +107,24 @@ def test_model_identity_uses_platform_key():
     identity = ModelIdentity("nvidia-h20", "flaggems/mm", "gemv", "bf16-bf16-bf16")
     assert identity.platform_key == "nvidia-h20"
     assert identity.artifact_key == "nvidia-h20/flaggems/mm/gemv/bf16-bf16-bf16"
+
+
+@pytest.mark.parametrize("suffix", ["", "B", "B1", "B4-1", "C", "_9392", "-future-revision"])
+@pytest.mark.parametrize("prefix", ["Ascend910", "Huawei Ascend910", "HUAWEI ASCEND910"])
+def test_ascend910_suffixes_share_one_model_platform(prefix, suffix):
+    assert make_platform_key("Huawei", prefix + suffix) == "huawei-ascend910"
+
+
+def test_ascend910_alias_is_scoped_to_huawei_and_the_910_family():
+    assert make_platform_key("Huawei", "Ascend310P3") == "huawei-ascend310p3"
+    assert make_platform_key("Huawei", "Ascend950") == "huawei-ascend950"
+    assert make_platform_key("Other", "Ascend910B4-1") == "other-ascend910b4-1"
+
+
+def test_ascend910_model_config_accepts_family_platform_key():
+    metadata = gpu_metadata(backend="npu", vendor="Huawei", device_name="Ascend910B4-1", architecture="ascend910b4-1")
+    config = _model_config(platform_key="huawei-ascend910", gpu=metadata)
+    assert metadata["platform_key"] == "huawei-ascend910"
+    assert metadata["device_name"] == "Ascend910B4-1"
+    assert metadata["architecture"] == "ascend910b4-1"
+    assert parse_model_config(config).op_id == "flaggems/mm"

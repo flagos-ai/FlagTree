@@ -169,12 +169,21 @@ _PLATFORM_DEVICE_ALIASES = {
     ("nvidia", "h20-3e"): "h20",
 }
 
+# Ascend910 suffixes identify products within one model platform family.
+_PLATFORM_DEVICE_PREFIX_ALIASES = {
+    ("huawei", "ascend910"): "ascend910",
+}
+
 
 def make_platform_key(vendor: str, device_name: str) -> str:
     """Return the stable vendor/product component used for model artifacts."""
     vendor_key = _normalize_vendor(vendor)
     device_key = normalize_device_name(device_name)
     device_key = _PLATFORM_DEVICE_ALIASES.get((vendor_key, device_key), device_key)
+    for (alias_vendor, prefix), canonical in _PLATFORM_DEVICE_PREFIX_ALIASES.items():
+        if vendor_key == alias_vendor and device_key.startswith(prefix):
+            device_key = canonical
+            break
     return validate_platform_key(f"{vendor_key}-{device_key}", "platform_key")
 
 

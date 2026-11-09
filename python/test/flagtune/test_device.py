@@ -186,7 +186,7 @@ def test_probe_npu_preserves_ascend_soc_and_device_index(monkeypatch, arch):
     assert descriptor.torch_device_type == "npu"
     assert descriptor.architecture == arch.lower()
     assert descriptor.device_index == 1
-    assert make_platform_key(descriptor.vendor, descriptor.device_name) == "huawei-ascend910b"
+    assert make_platform_key(descriptor.vendor, descriptor.device_name) == "huawei-ascend910"
 
 
 @pytest.mark.parametrize("arch", ["", "sm90", "gfx942", "Ascend", "Ascend910/../B"])
