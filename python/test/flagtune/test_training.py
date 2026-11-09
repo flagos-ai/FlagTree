@@ -930,9 +930,16 @@ def test_xgboost_progress_uses_flushed_text_without_tqdm(monkeypatch, capsys):
 
 @pytest.mark.parametrize("illegal", [False, True])
 def test_explicit_training_domain_is_indexed_once(tmp_path, monkeypatch, illegal):
-    variant = parse_operator_config(_config()).get_variant("kernel")
-    domain = list(variant.param_space.iter_configs())
-    variant.param_space.explicit_configs = domain[:-1] if illegal else domain
+    config = _config()
+    spec = config["variants"]["kernel"]
+    domain = list(parse_operator_config(config).get_variant("kernel").param_space.iter_configs())
+    del spec["params"]
+    spec["config_space"] = {
+        "kind": "explicit",
+        "fields": {"BLOCK": "int", "num_warps": "int"},
+        "configs": domain[:-1] if illegal else domain,
+    }
+    variant = parse_operator_config(config).get_variant("kernel")
     path = tmp_path / "data.jsonl"
     _write_data(path)
     calls = []
@@ -986,3 +993,12 @@ def test_training_domain_rejects_invalid_records(tmp_path, config, explicit):
     path.write_text("".join(json.dumps(row) + "\n" for row in rows))
     with pytest.raises(TrainingDataError, match="outside.*parameter space"):
         prepare_ranking_data(variant, path, XGBoostTrainingOptions(min_train_rows=2))
+
+
+def test_training_accepts_explicit_spaces_with_unhashable_candidates(tmp_path):
+    variant = parse_operator_config(_config()).get_variant("kernel")
+    path = tmp_path / "data.jsonl"
+    _write_data(path)
+    domain = list(variant.param_space.iter_configs())
+    variant.param_space.explicit_configs = [{"BLOCK": [16], "num_warps": 2}, *domain]
+    assert prepare_ranking_data(variant, path, XGBoostTrainingOptions(min_train_rows=2)).row_count == 8

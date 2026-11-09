@@ -379,8 +379,10 @@ def prepare_ranking_data(
     Implementation and limitations:
         The file is streamed twice: first to size allocation and again to fill
         it. Only one shape's JSON objects are retained, but the full dense matrix
-        is resident for the single global XGBoost fit. Tied latencies inherit
-        stable source order rather than sharing a relevance label.
+        is resident for the single global XGBoost fit. Explicit config domains
+        with hashable keys also retain a membership index for this call. Tied
+        latencies inherit stable source order rather than sharing a relevance
+        label.
     """
     path = Path(benchmark_path).expanduser().resolve()
     if not path.is_file():
@@ -402,8 +404,14 @@ def prepare_ranking_data(
     # The contract is fixed for this preparation pass. Index an explicit
     # domain once instead of scanning every candidate for every training row.
     param_space = variant.param_space
-    explicit_keys = ({param_space.config_key(config)
-                      for config in param_space.explicit_configs} if param_space.explicit_configs is not None else None)
+    explicit_keys = None
+    if param_space.explicit_configs is not None:
+        try:
+            explicit_keys = {param_space.config_key(config) for config in param_space.explicit_configs}
+        except TypeError:
+            # Directly constructed spaces can contain unhashable values that
+            # the existing equality-based validator can still compare.
+            pass
 
     for group_index, (_key, records) in enumerate(_group_records(path)):
         finite = [(line_number, record, latency)
