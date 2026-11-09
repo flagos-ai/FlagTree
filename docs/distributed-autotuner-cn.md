@@ -1,6 +1,6 @@
 # FlagTree 函数级自动调优器
 
-> **Language / 语言**: [English](autotuner.md) | [中文](autotuner-cn.md)
+> **Language / 语言**: [English](distributed-autotuner.md) | [中文](distributed-autotuner-cn.md)
 
 `flagtree.tune.autotune` 用于调优 Python 函数的参数。被装饰的函数可以提交分布式通信 kernel。
 

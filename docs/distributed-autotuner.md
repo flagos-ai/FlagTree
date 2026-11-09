@@ -1,6 +1,6 @@
 # FlagTree Function-Level Autotuner
 
-> **Language / 语言**: [English](autotuner.md) | [中文](autotuner-cn.md)
+> **Language / 语言**: [English](distributed-autotuner.md) | [中文](distributed-autotuner-cn.md)
 
 `flagtree.tune.autotune` tunes the parameters of Python functions. The decorated function can launch kernels that perform distributed communication.
 
