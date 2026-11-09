@@ -623,7 +623,7 @@ def test_tle_warp_specialize_dialect_rejects_invalid_structure(tmp_path, capfd, 
 
 
 @triton.jit
-def _ws_cta_barrier_idle_role():
+def _ws_implicit_tme_idle_role():
     pass
 
 
@@ -634,27 +634,29 @@ def _ws_implicit_tme_role(desc):
 
 
 @triton.jit
-def _ws_cta_barrier_probe(desc, MODE: tl.constexpr):
+def _ws_implicit_tme_barrier_probe(desc, MODE: tl.constexpr):
     if MODE == 0:
-        tle.gpu.warp_specialize([(_ws_implicit_tme_role, (desc, )), (_ws_cta_barrier_idle_role, ())], [4], [24])
+        tle.gpu.warp_specialize([(_ws_implicit_tme_role, (desc, )), (_ws_implicit_tme_idle_role, ())], [4], [24])
     elif MODE == 1:
-        tle.gpu.warp_specialize([(_ws_cta_barrier_idle_role, ()), (_ws_implicit_tme_role, (desc, ))], [4], [24])
+        tle.gpu.warp_specialize([(_ws_implicit_tme_idle_role, ()), (_ws_implicit_tme_role, (desc, ))], [4], [24])
     else:
         _ws_implicit_tme_role(desc)
-        tle.gpu.warp_specialize([(_ws_cta_barrier_idle_role, ()), (_ws_cta_barrier_idle_role, ())], [4], [24])
+        tle.gpu.warp_specialize([(_ws_implicit_tme_idle_role, ()), (_ws_implicit_tme_idle_role, ())], [4], [24])
 
 
 @pytest.mark.parametrize("mode", [0, 1])
-def test_unknown_cta_barrier_in_partition_rejected(mode, capfd):
-    # Compile only: an unmatched CTA barrier must never be launched.
-    with pytest.raises(RuntimeError):
-        compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": mode})
-    assert "CTA barrier inside MUSA TLE static warp_specialize partition" in capfd.readouterr().err
+def test_implicit_tme_smem_barrier_in_partition_accepted(mode):
+    compiled = compile_musa(_ws_implicit_tme_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": mode})
+    llir = compiled.asm["llir"]
+    assert "call void @llvm.musa.syncthreads.lm()" in llir, llir
+    assert "call void @llvm.musa.barrier0()" not in llir, llir
 
 
-def test_cta_barrier_before_dispatch_preserved():
-    compiled = compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": 2})
-    assert "call void @llvm.musa.barrier0()" in compiled.asm["llir"]
+def test_implicit_tme_smem_barrier_before_dispatch_preserved():
+    compiled = compile_musa(_ws_implicit_tme_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": 2})
+    llir = compiled.asm["llir"]
+    assert "call void @llvm.musa.syncthreads.lm()" in llir, llir
+    assert "call void @llvm.musa.barrier0()" not in llir, llir
 
 
 # Partition synchronization must retain local-memory completion semantics.
