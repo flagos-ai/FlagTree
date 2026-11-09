@@ -59,8 +59,8 @@ inputs:
     default: ''
   flaggems-tag:
     description: >-
-      FlagGems release under test. Selects the asset directory
-      .github/workflows/gems/<flaggems-tag>/ for conftest.py and skip_list.
+      FlagGems release under test. Selects assets/<flaggems-tag>/conftest.py
+      inside this action, and the skip list directory in the checkout.
     required: true
   backend:
     description: >-
@@ -68,9 +68,16 @@ inputs:
     required: true
   assets-dir:
     description: >-
-      Directory holding the FlagGems CI assets, normally the checked-out
-      .github/workflows/gems. Must be an absolute path: the test step runs
-      with the FlagGems clone as its working directory, not the workspace.
+      Overrides the directory holding the version-independent assets, which
+      normally ships with this action. Absolute path: the test step runs with
+      the FlagGems clone as its working directory, not the workspace.
+    required: false
+    default: ''
+  skip-list-dir:
+    description: >-
+      Overrides the skip list directory. Unlike the rest of the assets this
+      one stays in the checkout, because each branch carries the skip lists
+      for the backends it builds. Absolute path.
     required: false
     default: ''
 
@@ -121,6 +128,7 @@ runs:
         FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
         BACKEND: ${{ inputs.backend }}
         ASSETS_DIR: ${{ inputs.assets-dir }}
+        SKIP_LIST_DIR: ${{ inputs.skip-list-dir }}
         RUN_SCRIPT: ${{ inputs.run-script }}
       run: |
         set -x
@@ -134,16 +142,27 @@ runs:
         # Set PYTHONPATH to the FlagGems source directory so script can run without installing FlagGems
         export PYTHONPATH="${{ inputs.flaggems-path }}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-        # FlagTree-side CI assets. Absolute paths throughout: this step's
-        # working directory is the FlagGems clone, not the workspace.
-        ASSETS="${ASSETS_DIR:-${GITHUB_WORKSPACE}/.github/workflows/gems}"
+        # The assets ship with this action, so they exist once for every
+        # branch: $GITHUB_ACTION_PATH resolves under the ref in `uses:`, not
+        # the branch under test. Absolute paths throughout, since this step's
+        # working directory is the FlagGems clone.
+        ASSETS="${ASSETS_DIR:-${GITHUB_ACTION_PATH}/assets}"
         VERSION_DIR="${ASSETS}/${FLAGGEMS_TAG}"
 
-        if [[ ! -d "${VERSION_DIR}" ]]; then
+        if [[ ! -f "${VERSION_DIR}/conftest.py" ]]; then
           echo "::error::No CI assets for FlagGems tag '${FLAGGEMS_TAG}'."
-          echo "Expected ${VERSION_DIR} to exist."
-          echo "Add .github/workflows/gems/${FLAGGEMS_TAG}/ with conftest.py"
-          echo "and skip_list/default.yaml before testing against this tag."
+          echo "Expected ${VERSION_DIR}/conftest.py to exist."
+          echo "Add assets/${FLAGGEMS_TAG}/conftest.py to this action before"
+          echo "testing against that tag."
+          exit 1
+        fi
+
+        # The skip lists stay in the checkout: each branch carries the ones
+        # for the backends it builds, so they are not shared.
+        SKIP_DIR="${SKIP_LIST_DIR:-${GITHUB_WORKSPACE}/.github/workflows/gems/${FLAGGEMS_TAG}/skip_list}"
+        if [[ ! -f "${SKIP_DIR}/default.yaml" ]]; then
+          echo "::error::No skip lists for FlagGems tag '${FLAGGEMS_TAG}'."
+          echo "Expected ${SKIP_DIR}/default.yaml to exist."
           exit 1
         fi
 
@@ -161,8 +180,8 @@ runs:
         # Written into the output dir, after it is recreated above, so the list
         # the run actually used is kept alongside its results.
         SKIP_FILE="${TEST_OUTPUT_DIR}/skip_list.yaml"
-        cp "${VERSION_DIR}/skip_list/default.yaml" "${SKIP_FILE}"
-        BACKEND_SKIP="${VERSION_DIR}/skip_list/${BACKEND}.yaml"
+        cp "${SKIP_DIR}/default.yaml" "${SKIP_FILE}"
+        BACKEND_SKIP="${SKIP_DIR}/${BACKEND}.yaml"
         if [[ -f "${BACKEND_SKIP}" ]]; then
           cp "${BACKEND_SKIP}" "${SKIP_FILE}"
           echo "Using backend skip list: ${BACKEND}.yaml"

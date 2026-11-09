@@ -31,6 +31,15 @@ on:
         description: 'Backend name, e.g. nvidia, mthreads, ppu'
         required: true
         type: string
+      variant:
+        description: >-
+          Configuration label for a backend that tests several at once, e.g.
+          a matrix over devices or python versions. It becomes part of the
+          record id, so those results do not overwrite one another. Leave
+          unset when the backend tests a single configuration.
+        required: false
+        type: string
+        default: ''
       gpu-env-var:
         description: 'GPU device environment variable name'
         required: false
@@ -73,6 +82,10 @@ on:
       FLAGTREE_FEISHU_APP_SECRET:
         required: false
       FLAGTREE_FEISHU_BITABLE_APP_TOKEN:
+        required: false
+      # Target chat for change notifications. Absent means no notifications,
+      # which is how a branch that has not set it up stays silent.
+      FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID:
         required: false
 
 env:
@@ -216,40 +229,24 @@ jobs:
         id: collect
         if: always()
         continue-on-error: true
-        shell: bash
-        env:
-          CTX_KIND: baseline
-          CTX_BACKEND: ${{ inputs.backend }}
-          CTX_RUNNER: ${{ inputs.runner }}
-          CTX_FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
-          CTX_FLAGTREE_SHA: ${{ github.sha }}
-          CTX_FLAGTREE_BRANCH: ${{ github.ref_name }}
-          CTX_ACTOR: ${{ github.actor }}
-          CTX_RUN_ID: ${{ github.run_id }}
-          CTX_RUN_ATTEMPT: ${{ github.run_attempt }}
-          CTX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          # outcome, not conclusion: continue-on-error rewrites conclusion
-          CTX_BUILD_OUTCOME: ${{ steps.build.outcome }}
-          CTX_TEST_OUTCOME: ${{ steps.run-flaggems-test.outcome }}
-          # Whether this run became the new best baseline
-          CTX_BEST_UPDATED: ${{ steps.update-best.outcome == 'success' }}
-          OUT_DIR: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
-          BASELINE_DIR: ${{ steps.setup.outputs.best_dir }}
-        run: |
-          if [[ -z "${OUT_DIR}" || ! -f "${OUT_DIR}/summary.json" ]]; then
-            echo "No summary.json under '${OUT_DIR}', nothing to collect."
-            exit 0
-          fi
-
-          # Run from the checkout, not the FlagGems clone, which the cleanup
-          # step below removes.
-          python3 "${GITHUB_WORKSPACE}/.github/workflows/gems/ci/collect_gems_record.py" \
-            --summary "${OUT_DIR}/summary.json" \
-            --baseline-dir "${BASELINE_DIR}" \
-            --ledger "${FLAGGEMS_CI_DIR}/Ledger/runs.jsonl" \
-            --op-ledger "${FLAGGEMS_CI_DIR}/Ledger/operators.jsonl"
-
-          echo "record-file=${OUT_DIR}/record.json" >> $GITHUB_OUTPUT
+        uses: flagos-ai/FlagTree/.github/actions/collect-gems-record@main
+        with:
+          output-dir: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          baseline-dir: ${{ steps.setup.outputs.best_dir }}
+          ledger-dir: ${{ env.FLAGGEMS_CI_DIR }}/Ledger
+          kind: baseline
+          backend: ${{ inputs.backend }}
+          variant: ${{ inputs.variant }}
+          runner: ${{ inputs.runner }}
+          flaggems-tag: ${{ inputs.flaggems-tag }}
+          flagtree-sha: ${{ github.sha }}
+          flagtree-branch: ${{ github.ref_name }}
+          actor: ${{ github.actor }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          build-outcome: ${{ steps.build.outcome }}
+          test-outcome: ${{ steps.run-flaggems-test.outcome }}
+          best-updated: ${{ steps.update-best.outcome == 'success' }}
+          notify: 'true'
 
       - name: Report Record to Feishu
         if: ${{ always() && steps.collect.outputs.record-file != '' }}
@@ -258,11 +255,23 @@ jobs:
         with:
           record: ${{ steps.collect.outputs.record-file }}
           table-name: flaggems_runs
-          schema: ${{ github.workspace }}/.github/workflows/gems/ci/flaggems_runs.schema.json
+          schema: ${{ steps.collect.outputs.schema-file }}
           dedup-field: record_id
           app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
           app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
           app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
+
+      # Only fires when the collector decided this run changed something, so
+      # the chat stays quiet on the ordinary no-change push.
+      - name: Notify Feishu Chat
+        if: ${{ always() && steps.collect.outputs.notification-file != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/notify-feishu@main
+        with:
+          notification: ${{ steps.collect.outputs.notification-file }}
+          chat-id: ${{ secrets.FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID }}
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
 
       - name: Cleanup FlagGems Repo
         if: always()

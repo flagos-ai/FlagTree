@@ -475,8 +475,50 @@ bool loadRequiresAdditionalBuffer(Operation *loadOp) {
   return false;
 }
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+// The load feeds a wgmma shared-memory operand but is also read into registers
+// (e.g. scaled in registers and consumed transposed by the dot), so it has more
+// than one user and loadRequiresAdditionalBuffer() never sees the dot. Its
+// local_alloc is still folded into the ring buffer (replaceUsesWithLocalLoad),
+// so the wgmma needs the same extra slot or the next prefetch overwrites the
+// buffer it is reading.
+static bool loadFeedsWgmmaSharedOperand(Operation *loadOp,
+                                        Attribute bufferEncoding) {
+  if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(loadOp))
+    return false;
+  // A non-zero "other" is applied by a select in registers, so the dot never
+  // reads the ring buffer directly.
+  if (auto load = dyn_cast<tt::LoadOp>(loadOp))
+    if (load.getOther() && !isZeroConst(load.getOther()))
+      return false;
+  for (Operation *user : loadOp->getUsers()) {
+    auto alloc = dyn_cast<ttg::LocalAllocOp>(user);
+    if (!alloc || alloc.getType().getEncoding() != bufferEncoding)
+      continue;
+    SmallVector<Operation *> worklist(alloc->getUsers().begin(),
+                                      alloc->getUsers().end());
+    llvm::SmallDenseSet<Operation *, 8> visited;
+    while (!worklist.empty()) {
+      Operation *view = worklist.pop_back_val();
+      if (!visited.insert(view).second)
+        continue;
+      if (isa<ttng::WarpGroupDotOp>(view))
+        return true;
+      if (view->hasTrait<OpTrait::MemDescViewTrait>())
+        llvm::append_range(worklist, view->getUsers());
+    }
+  }
+  return false;
+}
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+
 scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+                      triton::ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                      bool enablePipelineEnhance) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
                       triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   llvm::MapVector<Operation *, AsyncLoad> asyncLoads;
   llvm::MapVector<int, LoadGroupInfo> loadGroups;
   llvm::SmallVector<Operation *> scalarLoads;
@@ -542,6 +584,12 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
           // Allocate additional buffer required by the wgmma pipelining.
           stageDiff += 1;
         }
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+        // Only the slot count changes; the TLE decisions above are untouched.
+        if (enablePipelineEnhance && !requiresAdditionalBuffer &&
+            loadFeedsWgmmaSharedOperand(&op, sharedEncoding))
+          stageDiff += 1;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
         auto &asyncLoad = asyncLoads[&op];
         asyncLoad.stageDiff = stageDiff;
         asyncLoad.contiguity = contiguity;
@@ -1106,27 +1154,45 @@ scf::ForOp lowerMMAs(scf::ForOp forOp, CoarseSchedule &schedule) {
 /////////////////////////////
 
 void lowerLoop(scf::ForOp forOp,
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+               triton::ModuleAxisInfoAnalysis &axisInfoAnalysis,
+               bool enablePipelineEnhance) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
                triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   CoarseSchedule schedule;
   if (failed(schedule.deSerialize(forOp))) {
     return;
   }
   scf::ForOp newForOp = lowerMMAs(forOp, schedule);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  newForOp =
+      lowerLoads(newForOp, schedule, axisInfoAnalysis, enablePipelineEnhance);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
   newForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   newForOp = lowerTMADescriptors(newForOp, schedule);
   schedule.serialize(newForOp);
 }
 
 } // namespace
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+void lowerLoops(ModuleOp moduleOp, bool enablePipelineEnhance) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
 void lowerLoops(ModuleOp moduleOp) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   triton::ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
   if (loops.empty())
     return;
   for (auto forOp : loops) {
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    lowerLoop(forOp, axisInfoAnalysis, enablePipelineEnhance);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     lowerLoop(forOp, axisInfoAnalysis);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   }
 }
 

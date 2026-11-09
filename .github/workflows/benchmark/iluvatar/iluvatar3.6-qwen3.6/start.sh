@@ -61,7 +61,7 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --gpu-memory-utilization 0.8 \
     --trust-remote-code \
     --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
-    --dtype bfloat16 2>&1 >vllm.log &
+    --dtype bfloat16 >vllm.log 2>&1 &
 echo "$!" >pid.txt
 
 PID_FILE="pid.txt"

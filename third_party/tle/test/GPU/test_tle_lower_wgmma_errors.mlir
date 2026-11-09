@@ -66,3 +66,25 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 32, transposed = false, elementBitWidth = 16}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @reject_async_loop_passthrough(
+      %a: !ttg.memdesc<64x16xf16, #shared, #smem, mutable>,
+      %b: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %zero = arith.constant dense<0.0> : tensor<64x16xf32, #blocked>
+    // expected-error @+1 {{unwaited async accumulators across scf.for yields are not supported on NVIDIA}}
+    %dot = tle.wgmma %a, %b, %zero {inputPrecision = 0 : i32, isAsync = true, maxNumImpreciseAcc = 0 : i32} : !ttg.memdesc<64x16xf16, #shared, #smem, mutable> * !ttg.memdesc<16x16xf16, #shared, #smem, mutable>, tensor<64x16xf32, #blocked> -> tensor<64x16xf32, #blocked>
+    %result = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %dot) -> tensor<64x16xf32, #blocked> {
+      scf.yield %acc : tensor<64x16xf32, #blocked>
+    }
+    %wait = tle.wgmma_wait %result {pendings = 0 : i32} : tensor<64x16xf32, #blocked> -> tensor<64x16xf32, #blocked>
+    tt.return
+  }
+}

@@ -20,11 +20,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 """
-feishu_client.py - Minimal Feishu (Lark) Bitable client
+feishu_client.py - Minimal Feishu (Lark) client: Bitable and chat messages
 
-Shared by bootstrap_feishu_table.py and report_feishu.py. Uses only the
-standard library, since the CI runners are not guaranteed to have requests
-installed and must not need a pip install to report results.
+Shared by bootstrap_feishu_table.py, report_feishu.py and the notify-feishu
+action, which imports it from here rather than keeping a second copy. Uses
+only the standard library, since the CI runners are not guaranteed to have
+requests installed and must not need a pip install to report results.
 
 Credentials are read from the environment, never from argv, because argv is
 visible in `ps` output on a shared self-hosted runner:
@@ -236,6 +237,50 @@ def find_records(token: str, app_token: str, table_id: str, field: str, value: s
     return [item["record_id"] for item in (data.get("items") or [])]
 
 
+def search_records(token: str, app_token: str, table_id: str, field: str, value: str,
+                   want: Optional[List[str]] = None) -> List[Dict]:
+    """Rows whose `field` equals `value`, as field dicts.
+
+    find_records answers "does a row exist" for idempotent writes; this one
+    answers "what does that row say", which is what a lookup table needs.
+    """
+    payload: Dict = {
+        "filter": {
+            "conjunction": "and",
+            "conditions": [{"field_name": field, "operator": "is", "value": [str(value)]}],
+        },
+    }
+    if want:
+        payload["field_names"] = want
+    url = f"{_records_url(app_token, table_id)}/search?page_size=100"
+    data = _request("POST", url, token, payload=payload).get("data", {})
+    return [item.get("fields") or {} for item in (data.get("items") or [])]
+
+
+def cell_text(value) -> str:
+    """Flatten a Bitable cell to plain text.
+
+    Text cells come back as a list of segments rather than a string, and a
+    link cell as a dict, so reading one without this returns something that
+    looks right in a log and is wrong in a comparison.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for seg in value:
+            if isinstance(seg, dict):
+                parts.append(str(seg.get("text") or seg.get("name") or ""))
+            else:
+                parts.append(str(seg))
+        return "".join(parts).strip()
+    if isinstance(value, dict):
+        return str(value.get("text") or value.get("link") or "").strip()
+    return str(value).strip()
+
+
 def create_records(token: str, app_token: str, table_id: str, rows: List[Dict]) -> int:
     """Batch-create rows, chunked to the API limit. Returns rows written."""
     url = f"{_records_url(app_token, table_id)}/batch_create"
@@ -352,3 +397,48 @@ def coerce_row(row: Dict, types: Dict[str, int], strict: bool = False) -> Dict:
         if fitted is not None:
             out[key] = fitted
     return out
+
+
+# ============================================================================
+# Chat messages
+# ============================================================================
+
+
+def send_message(token: str, receive_id: str, content: Dict, msg_type: str = "interactive",
+                 receive_id_type: str = "chat_id") -> str:
+    """Post one message to a chat, returning its message_id.
+
+    `content` is serialised to a JSON string by the API's contract: the field
+    is a string, not an object, so a dict passed straight through is rejected.
+    """
+    result = _request(
+        "POST",
+        f"{API_BASE}/im/v1/messages?receive_id_type={receive_id_type}",
+        token,
+        payload={
+            "receive_id": receive_id,
+            "msg_type": msg_type,
+            "content": json.dumps(content, ensure_ascii=False),
+        },
+    )
+    return (result.get("data") or {}).get("message_id", "")
+
+
+def list_chats(token: str) -> List[Dict]:
+    """Chats the bot is a member of, each with chat_id and name.
+
+    Only useful for finding a chat_id by hand: a bot cannot post to a chat it
+    has not been added to, so a chat missing from this list is the diagnosis
+    for the permission error that posting would otherwise return.
+    """
+    items: List[Dict] = []
+    page_token = None
+    while True:
+        url = f"{API_BASE}/im/v1/chats?page_size=100"
+        if page_token:
+            url += f"&page_token={page_token}"
+        data = _request("GET", url, token).get("data", {})
+        items.extend(data.get("items") or [])
+        if not data.get("has_more"):
+            return items
+        page_token = data.get("page_token")

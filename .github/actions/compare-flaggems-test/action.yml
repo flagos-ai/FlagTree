@@ -35,9 +35,9 @@ inputs:
     default: ''
   compare-script:
     description: >-
-      Comparison script. Defaults to the copy in the FlagTree checkout, which
-      takes every path as an argument and so runs in place -- it does not need
-      to be copied into the FlagGems clone.
+      Comparison script. Defaults to the copy shipped with this action, which
+      takes every path as an argument and so runs in place -- it needs neither
+      the checkout nor the FlagGems clone.
     required: false
     default: ''
   working-directory:
@@ -97,7 +97,7 @@ runs:
           exit 1
         fi
 
-        COMPARE_SCRIPT="${COMPARE_SCRIPT:-${GITHUB_WORKSPACE}/.github/workflows/gems/ci/compare_test_result.py}"
+        COMPARE_SCRIPT="${COMPARE_SCRIPT:-${GITHUB_ACTION_PATH}/scripts/compare_test_result.py}"
 
         if [ ! -f "$COMPARE_SCRIPT" ]; then
           echo "::error::Comparison script not found: $COMPARE_SCRIPT"
