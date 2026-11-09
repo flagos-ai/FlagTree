@@ -36,6 +36,7 @@ def test_optional_dependency_error_identifies_package_and_extra(monkeypatch):
 
 
 def test_xgboost_dependency_check_reports_missing_scikit_learn(monkeypatch):
+    monkeypatch.setattr(_dependencies, "_needs_xgboost_isolation", lambda: False)
 
     def import_without_sklearn(name):
         if name == "xgboost":
@@ -90,3 +91,99 @@ def test_download_preserves_dependency_error_from_package_validation(tmp_path, m
 
     assert error.value is dependency_error
     assert not list(tmp_path.rglob("*.tar.gz"))
+
+
+@pytest.fixture
+def isolated_loader(monkeypatch, tmp_path):
+    package = tmp_path / "xgboost"
+    library = package / "lib" / "libxgboost.so"
+    library.parent.mkdir(parents=True)
+    library.touch()
+    monkeypatch.setattr(_dependencies, "_XGBOOST_LIBRARY", None)
+    monkeypatch.setattr(_dependencies, "_needs_xgboost_isolation", lambda: True)
+    monkeypatch.delitem(_dependencies.sys.modules, "xgboost", raising=False)
+    monkeypatch.setattr(_dependencies, "find_spec", lambda _name: SimpleNamespace(origin=str(package / "__init__.py")))
+    monkeypatch.setattr(_dependencies.os, "RTLD_LOCAL", 0, raising=False)
+    monkeypatch.setattr(_dependencies.os, "RTLD_DEEPBIND", 8, raising=False)
+    return library
+
+
+def test_xgboost_isolated_before_import_and_handle_reused(monkeypatch, isolated_loader):
+    events = []
+    handle = object()
+    monkeypatch.setattr(_dependencies.ctypes, "CDLL", lambda path, mode: events.append((path, mode)) or handle)
+    monkeypatch.setattr(_dependencies, "import_module", lambda name: events.append(name) or SimpleNamespace())
+    _dependencies.require_xgboost("test")
+    _dependencies.require_xgboost("test")
+    assert events == [(str(isolated_loader), 8), "xgboost", "sklearn", "xgboost", "sklearn"]
+    assert _dependencies._XGBOOST_LIBRARY is handle
+
+
+def test_xgboost_isolation_failure_does_not_import_unsafe_library(monkeypatch, isolated_loader):
+
+    def fail_load(*args, **kwargs):
+        raise OSError("missing native dependency")
+
+    monkeypatch.setattr(_dependencies.ctypes, "CDLL", fail_load)
+    monkeypatch.setattr(_dependencies, "import_module", lambda name: pytest.fail(f"unsafe import: {name}"))
+    with pytest.raises(FlagTuneDependencyError, match="cannot load isolated XGBoost") as error:
+        _dependencies.require_xgboost("test")
+    assert isinstance(error.value.__cause__, OSError)
+    assert _dependencies._XGBOOST_LIBRARY is None
+
+
+def test_xgboost_already_imported_requires_restart(monkeypatch, isolated_loader):
+    monkeypatch.setitem(_dependencies.sys.modules, "xgboost", SimpleNamespace())
+    with pytest.raises(FlagTuneDependencyError, match="already imported.*restart"):
+        _dependencies.require_xgboost("test")
+
+
+def test_xgboost_missing_native_library_has_actionable_error(isolated_loader):
+    isolated_loader.unlink()
+    with pytest.raises(FlagTuneDependencyError, match="cannot locate.*libxgboost.so"):
+        _dependencies.require_xgboost("test")
+
+
+def test_xgboost_missing_deepbind_has_actionable_error(monkeypatch, isolated_loader):
+    monkeypatch.delattr(_dependencies.os, "RTLD_DEEPBIND")
+    with pytest.raises(FlagTuneDependencyError, match="requires Linux RTLD_DEEPBIND"):
+        _dependencies.require_xgboost("test")
+
+
+def test_xgboost_missing_package_keeps_optional_dependency_error(monkeypatch, isolated_loader):
+    monkeypatch.setattr(_dependencies, "find_spec", lambda name: None)
+
+    def missing(name):
+        raise _missing_module(name)
+
+    monkeypatch.setattr(_dependencies, "import_module", missing)
+    with pytest.raises(FlagTuneDependencyError, match="optional dependency 'xgboost'"):
+        _dependencies.require_xgboost("test")
+
+
+@pytest.mark.parametrize("platform,backend,npu,expected", [
+    ("linux", "ascend", False, True),
+    ("linux", "", True, True),
+    ("linux", "nvidia", False, False),
+    ("darwin", "ascend", True, False),
+    ("win32", "ascend", True, False),
+])
+def test_xgboost_isolation_is_scoped_to_linux_ascend(monkeypatch, platform, backend, npu, expected):
+    import triton._flagtree_backend as backend_module
+    monkeypatch.setattr(_dependencies.sys, "platform", platform)
+    monkeypatch.setattr(backend_module, "FLAGTREE_BACKEND", backend)
+    if npu:
+        monkeypatch.setitem(_dependencies.sys.modules, "torch_npu", SimpleNamespace())
+    else:
+        monkeypatch.delitem(_dependencies.sys.modules, "torch_npu", raising=False)
+    assert _dependencies._needs_xgboost_isolation() is expected
+
+
+def test_xgboost_concurrent_requests_load_one_library(monkeypatch, isolated_loader):
+    from concurrent.futures import ThreadPoolExecutor
+    loads = []
+    monkeypatch.setattr(_dependencies.ctypes, "CDLL", lambda *a, **kw: loads.append(True) or object())
+    monkeypatch.setattr(_dependencies, "import_module", lambda name: SimpleNamespace())
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(_dependencies.require_xgboost, ["test"] * 12))
+    assert loads == [True]

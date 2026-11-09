@@ -144,7 +144,7 @@ def test_ksyun_package_download_validation_and_cache_reuse(
     if staging_manifest:
         monkeypatch.setenv("FLAGTUNE_LOCAL_MANIFEST", staging_manifest)
 
-    pytest.importorskip("xgboost", reason="published model validation requires the real XGBoost runtime")
+    _test_xgboost()
     downloaded = FlagTuneModelManager().resolve(
         "flaggems/mul",
         "broadcast_2d",
@@ -206,3 +206,13 @@ def test_ksyun_package_download_validation_and_cache_reuse(
             assert set(candidate) == set(variant.param_names)
             assert variant.param_space.validate(candidate)
             assert candidate in candidates
+
+
+def _test_xgboost():
+    from triton.flagtune._dependencies import FlagTuneDependencyError, require_xgboost
+    try:
+        return require_xgboost("FlagTune test")
+    except FlagTuneDependencyError as exc:
+        if isinstance(exc.__cause__, ModuleNotFoundError):
+            pytest.skip(str(exc))
+        raise

@@ -1263,7 +1263,7 @@ def test_default_cache_manifest_downloads_package_without_being_modified(tmp_pat
 
 
 def test_remote_h20_package_loads_available_model_and_reports_missing_coverage(tmp_path, monkeypatch):
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     model = xgboost.XGBRanker(n_estimators=0)
     model.fit(np.zeros((2, 1)), np.zeros(2), group=[2])
     children = tmp_path / "children"
@@ -1309,7 +1309,7 @@ def test_remote_h20_package_loads_available_model_and_reports_missing_coverage(t
 
 
 def test_remote_package_validates_unselected_child_before_cache(tmp_path, monkeypatch):
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     model = xgboost.XGBRanker(n_estimators=0)
     model.fit(np.zeros((2, 1)), np.zeros(2), group=[2])
     children = tmp_path / "children"
@@ -1616,3 +1616,13 @@ def test_writer_rejects_invalid_schema_version(tmp_path, schema):
     with pytest.raises(ModelArchiveError, match="schema_version"):
         write_platform_package(tmp_path / "package.tar.gz", platform_key="nvidia-h20", package_version="1.0.0",
                                model_archives={}, schema_version=schema)
+
+
+def _test_xgboost():
+    from triton.flagtune._dependencies import FlagTuneDependencyError, require_xgboost
+    try:
+        return require_xgboost("FlagTune test")
+    except FlagTuneDependencyError as exc:
+        if isinstance(exc.__cause__, ModuleNotFoundError):
+            pytest.skip(str(exc))
+        raise

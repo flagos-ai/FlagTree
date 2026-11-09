@@ -169,7 +169,7 @@ def _old_model_archive(
     dtypes=DTYPES,
 ):
     """Fit one small legacy model before migration installs its no-fit guard."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     train_features = np.array([
         [64, 32, 16, 2, 32],
         [64, 32, 16, 4, 64],
@@ -333,7 +333,7 @@ def test_prepare_ranking_data_rejects_mixed_device_architecture(tmp_path):
 
 def test_train_and_export_model_is_loadable_by_xgboost_ranker(tmp_path):
     """Fit a small ranker and reload its model/schema bundle with XGBoost."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     variant = parse_operator_config(_config()).get_variant("kernel")
     data_path = tmp_path / "benchmark.jsonl"
     _write_data(data_path)
@@ -379,7 +379,7 @@ def test_train_and_export_model_is_loadable_by_xgboost_ranker(tmp_path):
 
 def test_migrate_model_archive_preserves_predictions_without_fitting(tmp_path, monkeypatch):
     """Rewrite only legacy metadata while retaining the fitted Booster behavior."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     archive_path, _model_json, old_config, old_predictions = _old_model_archive(tmp_path)
 
     def reject_training(*_args, **_kwargs):
@@ -441,7 +441,7 @@ def test_migrate_model_archive_rejects_config_tampered_after_training(tmp_path):
 
 def test_migrate_model_archive_rejects_legacy_gpu_key_mismatching_h20_metadata(tmp_path, ):
     """Do not relabel an archive whose old identity contradicts its H20 metadata."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     yaml = pytest.importorskip("yaml")
     archive_path, _model_json, _old_config, _old_predictions = _old_model_archive(tmp_path)
     members = read_model_archive(archive_path)
@@ -479,7 +479,7 @@ def test_migrate_model_archive_requires_sm90_architecture(tmp_path):
 
 def test_migrate_model_archive_rejects_booster_feature_order_mismatch(tmp_path):
     """Reject a Booster that cannot satisfy the migrated config feature contract."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     archive_path, _model_json, _old_config, _old_predictions = _old_model_archive(tmp_path)
     members = read_model_archive(archive_path)
     model = xgboost.XGBRanker()
@@ -926,3 +926,13 @@ def test_xgboost_progress_uses_flushed_text_without_tqdm(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "XGBoost progress: 1/4 trees" in output
     assert "XGBoost progress: 4/4 trees" in output
+
+
+def _test_xgboost():
+    from triton.flagtune._dependencies import FlagTuneDependencyError, require_xgboost
+    try:
+        return require_xgboost("FlagTune test")
+    except FlagTuneDependencyError as exc:
+        if isinstance(exc.__cause__, ModuleNotFoundError):
+            pytest.skip(str(exc))
+        raise

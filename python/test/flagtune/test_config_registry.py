@@ -81,7 +81,7 @@ def _config():
 
 
 def _export_model_archive(root, model_version):
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     from triton.flagtune.training.ranker import export_ranker_model
 
     variant = parse_operator_config(_config()).get_variant("general")
@@ -382,7 +382,7 @@ def test_model_config_rejects_unknown_custom_operation():
 
 
 def test_untrained_empty_xgboost_model_runs_the_candidate_pipeline(tmp_path, monkeypatch):
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     from triton.flagtune.training.ranker import export_ranker_model
 
     feature_names = ["M", "N", "tile", "grid", "ratio", "aligned", "power", "log_tile"]
@@ -460,7 +460,7 @@ def test_implicit_load_reuses_first_bundle_before_reresolution(tmp_path, monkeyp
 
 def test_modified_config_is_rejected_by_embedded_model_digest(tmp_path, monkeypatch):
     """Reject a valid YAML config that no longer belongs to its XGBoost file."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     yaml = pytest.importorskip("yaml")
     from triton.flagtune.training.ranker import export_ranker_model
 
@@ -496,7 +496,7 @@ def test_modified_config_is_rejected_by_embedded_model_digest(tmp_path, monkeypa
 
 def test_embedded_xgboost_feature_order_must_match_config(tmp_path, monkeypatch):
     """Reject weights whose named columns were reordered after export."""
-    xgboost = pytest.importorskip("xgboost")
+    xgboost = _test_xgboost()
     from triton.flagtune.training.ranker import export_ranker_model
 
     variant = parse_operator_config(_config()).get_variant("general")
@@ -530,3 +530,13 @@ def test_embedded_xgboost_feature_order_must_match_config(tmp_path, monkeypatch)
 
     with pytest.raises(IncompatibleModelError, match="feature order mismatch"):
         FlagTuneModelManager().load("vendor/mm", "general", platform_key=PLATFORM_KEY, dtype_key=DTYPE_KEY)
+
+
+def _test_xgboost():
+    from triton.flagtune._dependencies import FlagTuneDependencyError, require_xgboost
+    try:
+        return require_xgboost("FlagTune test")
+    except FlagTuneDependencyError as exc:
+        if isinstance(exc.__cause__, ModuleNotFoundError):
+            pytest.skip(str(exc))
+        raise
