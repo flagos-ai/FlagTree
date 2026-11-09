@@ -1,0 +1,15 @@
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+set(LLVM_TARGET_DEFINITIONS TritonAscendOps.td)
+mlir_tablegen(TritonAscendDialect.h.inc -gen-dialect-decls -dialect=ascend)
+mlir_tablegen(TritonAscendDialect.cpp.inc -gen-dialect-defs -dialect=ascend)
+mlir_tablegen(TritonAscendOps.h.inc -gen-op-decls)
+mlir_tablegen(TritonAscendOps.cpp.inc -gen-op-defs)
+add_mlir_doc(TritonAscendDialect TritonAscendDialect dialects/ -gen-dialect-doc)
+add_mlir_doc(TritonAscendOps TritonAscendOps dialects/ -gen-op-doc)
+add_public_tablegen_target(TritonAscendTableGen)
+
+set(LLVM_TARGET_DEFINITIONS TritonAscendAttrDefs.td)
+mlir_tablegen(TritonAscendOpsAttrDefs.h.inc -gen-attrdef-decls)
+mlir_tablegen(TritonAscendOpsAttrDefs.cpp.inc -gen-attrdef-defs)
+add_public_tablegen_target(TritonAscendAttrDefsIncGen)

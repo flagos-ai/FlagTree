@@ -1,26 +1,26 @@
+# flagtree tle
+"""to_tensor / to_buffer bridge between tl.tensor and on-chip buffers.
+
+Portable across TsingMicro (txda) and Ascend NPU.
+"""
+
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
+from .._dsa_backend import get_dsa_backend
 
-def _is_txda():
-    try:
-        import torch_txda  # noqa: F401
-    except ImportError:
-        return False
-    target = triton.runtime.driver.active.get_current_target()
-    return getattr(target, "backend", None) == "txda"
-
-
-pytestmark = pytest.mark.skipif(not _is_txda(), reason="TLE DSA tests require TsingMicro (txda) backend")
+BACKEND, DEVICE, SPACE = get_dsa_backend()
+IS_ASCEND = BACKEND in ("npu", "ascend")
 
 
 @triton.jit
 def to_buffer_to_tensor_kernel(x_ptr, y_ptr, out_ptr, M, N, P, Q, BM: tl.constexpr, BN: tl.constexpr, BP: tl.constexpr,
-                               BQ: tl.constexpr):
+                               BQ: tl.constexpr, SPACE: tl.constexpr):
     """4D round-trip: to_buffer -> to_tensor -> compute -> to_buffer -> store."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -37,23 +37,24 @@ def to_buffer_to_tensor_kernel(x_ptr, y_ptr, out_ptr, M, N, P, Q, BM: tl.constex
     x = tl.load(x_ptr + idx, mask=mask)
     y = tl.load(y_ptr + idx, mask=mask)
 
-    # tl.tensor -> fresh SPM buffer.
-    buf_x = tle.dsa.to_buffer(x, tle.dsa.tsingmicro.SPM)
-    buf_y = tle.dsa.to_buffer(y, tle.dsa.tsingmicro.SPM)
+    buf_x = tle.dsa.to_buffer(x, SPACE)
+    buf_y = tle.dsa.to_buffer(y, SPACE)
 
-    # SPM buffer -> zero-copy tl.tensor view, then compute.
     tx = tle.dsa.to_tensor(buf_x)
     ty = tle.dsa.to_tensor(buf_y)
     z = tx * ty
 
-    # Result into a fresh SPM buffer, then read back out.
-    buf_z = tle.dsa.to_buffer(z, tle.dsa.tsingmicro.SPM)
+    buf_z = tle.dsa.to_buffer(z, SPACE)
     zz = tle.dsa.to_tensor(buf_z)
     tl.store(out_ptr + idx, zz, mask=mask)
 
 
+def _launch_kwargs():
+    return {} if IS_ASCEND else {"num_ctas": 1}
+
+
 class TestTLEDsaBridge:
-    """to_tensor / to_buffer bridge between tl.tensor and SPM buffers."""
+    """to_tensor / to_buffer bridge between tl.tensor and on-chip buffers."""
 
     @pytest.mark.parametrize(
         "shape,block",
@@ -64,12 +65,13 @@ class TestTLEDsaBridge:
         torch.manual_seed(42)
         m, n, p, q = shape
         bm, bn, bp, bq = block
-        a = torch.randn(*shape, device="txda", dtype=torch.float32)
-        b = torch.randn(*shape, device="txda", dtype=torch.float32)
+        a = torch.randn(*shape, device=DEVICE, dtype=torch.float32)
+        b = torch.randn(*shape, device=DEVICE, dtype=torch.float32)
         out = torch.empty_like(a)
 
         grid = (triton.cdiv(m, bm), triton.cdiv(n, bn), triton.cdiv(p, bp))
-        to_buffer_to_tensor_kernel[grid](a, b, out, m, n, p, q, BM=bm, BN=bn, BP=bp, BQ=bq, num_ctas=1)
+        to_buffer_to_tensor_kernel[grid](a, b, out, m, n, p, q, BM=bm, BN=bn, BP=bp, BQ=bq, SPACE=SPACE,
+                                         **_launch_kwargs())
 
         torch.testing.assert_close(out, a * b, atol=1e-4, rtol=1e-4)
 

@@ -4,13 +4,18 @@
 Covers ``randgen`` (raw xorshift128+ i64 stream), ``rand`` (Uniform(0,1))
 and ``randn`` (Normal(0,1) via Box-Muller) on the TX81 hardware TRNG.
 
+These primitives are hardware-vendor specific and have no Ascend equivalent;
+the module is intentionally txda-only.  The portable DSA tests live in the
+sibling ``test_tle_dsa_*`` modules.
+
 Constraints exercised by the API:
   - ``randgen``: n_out multiple of 16, seeds are ``[16]`` i64 blocks
   - ``rand`` / ``randn``: n_out multiple of 32
 """
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 import triton
 import triton.language as tl
@@ -22,11 +27,16 @@ def _is_txda():
         import torch_txda  # noqa: F401
     except ImportError:
         return False
-    target = triton.runtime.driver.active.get_current_target()
+    try:
+        target = triton.runtime.driver.active.get_current_target()
+    except Exception:
+        return False
     return getattr(target, "backend", None) == "txda"
 
 
-pytestmark = pytest.mark.skipif(not _is_txda(), reason="requires TsingMicro (txda) backend")
+pytestmark = pytest.mark.skipif(not _is_txda(),
+                                reason="tle.dsa.tsingmicro.rand* primitives are TsingMicro-only; "
+                                "they have no Ascend equivalent")
 
 
 @triton.jit

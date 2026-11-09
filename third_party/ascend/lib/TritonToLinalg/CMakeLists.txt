@@ -1,0 +1,40 @@
+add_triton_library(TritonToLinalg
+        TritonToLinalgPass.cpp
+        LoadStoreConverter.cpp
+        FunctionConverter.cpp
+        ArgMinMaxConverter.cpp
+        TritonOpConverter.cpp
+        HoistBroadcast.cpp
+        BlockPtrAnalysis.cpp
+        UseAnalysis.cpp
+        ImplicitPermute.cpp
+        DescriptorConverter.cpp
+        MarkTensorKindPass.cpp
+        DevicePrintOffsetRewrite.cpp
+        DeduplicateDebugNopsPass.cpp
+        CanonicalizeDebugLocationsPass.cpp
+
+  DEPENDS
+  TritonToLinalgConversionPassIncGen
+
+  LINK_LIBS PUBLIC
+  MLIRArithDialect
+  MLIRDialectUtils
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRPass
+  MLIRTensorDialect
+  MLIRTransforms
+  MLIRSupport
+  BiShengIRHIVMDialect
+  BiShengIRScopeDialect
+  TritonIR
+  TritonTransforms
+  TritonAnalysis
+  TritonMemoryAccessAnalysis
+  TritonToGraph
+  MLIRTritonNPUUtils
+  MLIRSCFTransforms
+  MLIRLinalgTransforms
+)

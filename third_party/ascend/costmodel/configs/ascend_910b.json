@@ -1,0 +1,770 @@
+{
+  "$schema": "./hardware_schema.json",
+  "name": "Ascend 910B",
+  "vendor": "Huawei",
+  "version": "1.0",
+
+  "clock": {
+    "frequency_ghz": 1.85,
+    "cycles_per_us": 1850
+  },
+
+  "memory_spaces": {
+    "hbm": {
+      "type": "off_chip",
+      "size_gb": 32,
+      "bandwidth_tbps": 1.6,
+      "latency_cycles": 200
+    },
+    "l2": {
+      "type": "on_chip_shared",
+      "size_mb": 192,
+      "bandwidth_gbps": 3200,
+      "latency_cycles": 50
+    },
+    "l1": {
+      "type": "on_chip_local",
+      "size_kb": 512,
+      "bandwidth_gbps": 6400,
+      "latency_cycles": 10,
+      "description": "Cube data staging buffer"
+    },
+    "l0a": {
+      "type": "register_file",
+      "size_kb": 64,
+      "description": "Left matrix input for Cube"
+    },
+    "l0b": {
+      "type": "register_file",
+      "size_kb": 64,
+      "description": "Right matrix input for Cube"
+    },
+    "l0c": {
+      "type": "register_file",
+      "size_kb": 128,
+      "description": "Cube output accumulator"
+    },
+    "ub": {
+      "type": "on_chip_local",
+      "size_kb": 192,
+      "bandwidth_gbps": 3200,
+      "latency_cycles": 5,
+      "description": "Unified Buffer for Vector compute"
+    }
+  },
+
+  "compute_units": {
+    "cube": {
+      "type": "matrix_engine",
+      "tflops_fp16": 320,
+      "tflops_fp32": 160,
+      "tflops_int8": 640,
+      "fractal_sizes": {
+        "fp16": {
+          "m": 16,
+          "k": 16,
+          "n": 16
+        },
+        "bf16": {
+          "m": 16,
+          "k": 16,
+          "n": 16
+        },
+        "fp32": {
+          "m": 16,
+          "k": 8,
+          "n": 16
+        },
+        "int8": {
+          "m": 16,
+          "k": 32,
+          "n": 16
+        }
+      },
+      "tile_m": 16,
+      "tile_n": 16,
+      "tile_k": 16,
+      "input_spaces": [
+        "l0a",
+        "l0b"
+      ],
+      "output_space": "l0c",
+      "supported_dtypes": [
+        "fp16",
+        "bf16",
+        "fp32",
+        "int8"
+      ]
+    },
+    "vector": {
+      "type": "simd_engine",
+      "width_elements": 128,
+      "width_bytes": 256,
+      "tflops_fp32": 10,
+      "tflops_fp16": 20,
+      "compute_space": "ub",
+      "supported_ops": [
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "max",
+        "min",
+        "exp",
+        "log",
+        "sqrt",
+        "rsqrt",
+        "tanh",
+        "sigmoid",
+        "relu",
+        "reduce_sum",
+        "reduce_max",
+        "reduce_min",
+        "cast",
+        "broadcast"
+      ],
+      "supported_dtypes": [
+        "fp32",
+        "fp16",
+        "bf16",
+        "int32",
+        "int8"
+      ]
+    }
+  },
+
+  "data_movers": {
+    "cube_mte2": {
+      "description": "Cube input: HBM to L1",
+      "src_space": "hbm",
+      "dst_space": "l1",
+      "bandwidth_gbps": 200,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32
+    },
+    "mte1": {
+      "description": "Cube input: L1 to L0A/L0B",
+      "src_space": "l1",
+      "dst_spaces": [
+        "l0a",
+        "l0b"
+      ],
+      "bandwidth_gbps": 400,
+      "max_burst_bytes": 32768,
+      "alignment_bytes": 32
+    },
+    "fixpipe": {
+      "description": "Cube output: L0C to HBM",
+      "src_space": "l0c",
+      "dst_space": "hbm",
+      "bandwidth_gbps": 200,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32,
+      "supports_accumulate": true,
+      "supports_cast": true
+    },
+    "vector_mte2": {
+      "description": "Vector input: HBM to UB",
+      "src_space": "hbm",
+      "dst_space": "ub",
+      "bandwidth_gbps": 200,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32
+    },
+    "mte3": {
+      "description": "Vector output: UB to HBM",
+      "src_space": "ub",
+      "dst_space": "hbm",
+      "bandwidth_gbps": 200,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32
+    }
+  },
+
+  "pipeline": {
+    "cube_path": {
+      "stages": [
+        "cube_mte2",
+        "mte1",
+        "cube",
+        "fixpipe"
+      ],
+      "description": "Matrix multiplication data flow",
+      "fully_pipelined": true
+    },
+    "vector_path": {
+      "stages": [
+        "vector_mte2",
+        "vector",
+        "mte3"
+      ],
+      "description": "Vector computation data flow",
+      "fully_pipelined": true
+    },
+    "hardware_units": {
+      "cube_mte2": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "mte1": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "cube": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "fixpipe": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "vector_mte2": {
+        "path": "vector",
+        "can_overlap": true
+      },
+      "vector": {
+        "path": "vector",
+        "can_overlap": true
+      },
+      "mte3": {
+        "path": "vector",
+        "can_overlap": true
+      }
+    },
+    "parallelism": {
+      "inter_path": {
+        "cube_path_and_vector_path": true,
+        "description": "Cube and Vector paths execute in parallel"
+      },
+      "intra_path": {
+        "cube_mte2_mte1_cube_fixpipe": true,
+        "vector_mte2_vector_mte3": true,
+        "description": "All units within each path can execute in parallel (pipelined)"
+      }
+    }
+  },
+
+  "performance_model": {
+    "cube_cycles_per_tile": {
+      "formula": "ceil(M/16) * ceil(N/16) * ceil(K/16)",
+      "base_cycles": 1
+    },
+    "vector_cycles_per_op": {
+      "formula": "ceil(elements / 128)",
+      "base_cycles": 1
+    },
+    "memory_cycles": {
+      "formula": "bytes / bandwidth_per_cycle",
+      "include_latency": true
+    }
+  },
+
+  "calibration": {
+    "description": "Parameters calibrated from _attn_fwd (flash attention) profiling on Ascend 910B. Input: Z=1,H=8,N_CTX=192,HEAD_DIM=128. BLOCK_M in {16,32,48,64}, BLOCK_N=64 fixed. Hardware: Block Dim=20 (AIC) + 20 AIV = Mix Block Dim 40.",
+
+    "startup_latencies": {
+      "vector_startup_cycles": 35,
+      "mte2_startup_cycles": 50,
+      "mte3_startup_cycles": 40,
+      "cube_startup_cycles": 20,
+      "fixpipe_startup_cycles": 30,
+      "notes": "vector: was 10, increased to reflect UB read-after-write stall in serial dependency chains (sub->exp->reduce). mte2: restored to 50 (actual DMA startup); pipe_barrier overhead now modeled separately in estimateDuration."
+    },
+
+    "vector_op_cycles_per_vec_instruction": {
+      "exp": 4,
+      "log": 3,
+      "tanh": 3,
+      "sigmoid": 3,
+      "sqrt": 2,
+      "rsqrt": 2,
+      "div": 3,
+      "simple_ops_add_sub_mul_etc": 1,
+      "notes": "Calibrated ordering for vector ALU ops: vadd/vsub/vmul remain the cheapest, vreduce is only slightly heavier, and vexp is typically about 4x the cost of simple arithmetic. Other transcendental and divide-like ops stay between those extremes."
+    },
+
+    "scalar_overhead": {
+      "aiv_scalar_to_vec_ratio_steady_state": 1.27,
+      "aic_scalar_to_mac_ratio_steady_state": 8.4,
+      "aiv_vec_ratio_observed": 0.211,
+      "aiv_scalar_overhead_factor": 3.74,
+      "description": "aiv_vec_ratio converges to 0.211 for BM>=48. Total AIV time = vec_time * (1/0.211) = vec_time * 4.74, equivalently vec_time * (1 + 3.74). Scalar fraction covers loop control, pointer arithmetic, and pipe_barrier sync between AIC and AIV. Completely absent from prior model."
+    },
+
+    "parallelism": {
+      "num_aic_cores": 20,
+      "num_aiv_cores": 40,
+      "description": "From profiling: Block Dim=20, Mix Block Dim=40 (2 AIV per AIC block)."
+    },
+
+    "pipe_barrier": {
+      "cycles_per_inner_iteration": 7500,
+      "description": "Calibrated from BM=64 (1 AIV wave, 24 programs). AIV wall time=31.993us=59187 cycles. Active fraction (vec+scalar+mte) sums to 61.1%, leaving 38.9% idle=23044 cycles. With N_iter=3 inner iterations per program: 23044/3 ~ 7500 cycles per pipe_barrier."
+    },
+
+    "wave_overhead": {
+      "description": "Observed aiv_time decreases monotonically with fewer AIV waves: BM=16(3 waves)->BM=32(2 waves)->BM=48(1 wave). BM=64 also 1 wave but with lower program count, making BM=48 and BM=64 near-equal (exception to the monotonic trend). The wave count multiplier N_waves=ceil(N_programs/N_AIV) is applied to per-program cycles to produce kernel-level time."
+    }
+  },
+
+  "tilesim": {
+    "description": "Knobs for the tilesim-migrated micro-architecture model (root cause 1/2).",
+    "active_bandwidth_cores": 48,
+    "enable_small_packet_bw": true,
+    "small_packet": {
+      "description": "Global small-packet bandwidth fitting coefficients (tilesim 910B1.yaml pkt_param). Applied to EVERY mover when enable_small_packet_bw is on, mirroring tilesim's single global pkt_param dict; a per-table bandwidth_tables[*].small_packet entry overrides these. Bucket selection: <64B -> 64B, <128B -> 128B, <256B -> 256B; formula bw = b/(a*b + pktBytes/(1024^3)).",
+      "threshold_bytes": 256,
+      "64B": [
+        0.295,
+        12.061
+      ],
+      "128B": [
+        0.272,
+        16.820
+      ],
+      "256B": [
+        0.322,
+        24.004
+      ]
+    },
+    "mutex_groups": {
+      "description": "Hardware units that share a physical pipeline and cannot execute in parallel (tilesim MutexComponents / pipe_exclusive_config). Each clique is an array of costmodel unit names (cube/cube_mte2/fixpipe/vector/vec_mte2/mte3/scalar). 910B: AIV MTE2 (vec load) and MTE3 (vec store) share one pipeline -> they serialize, so the vector-path roofline uses max(vector, vec_mte2 + mte3) instead of max(vector, vec_mte2, mte3).",
+      "cliques": [
+        [
+          "vec_mte2",
+          "mte3"
+        ]
+      ]
+    }
+  },
+
+  "cube_model": {
+    "description": "Cube (GEMM) L1-pipe roofline parameters (tilesim 910B1 cube_config).",
+    "throughput": [
+      16,
+      32,
+      16
+    ],
+    "repeat_cycles": {
+      "fp32": 2,
+      "fp16": 1,
+      "bf16": 1,
+      "int8": 1
+    },
+    "l0_tile_limit_kb": 32
+  },
+
+  "bandwidth_tables": {
+    "description": "Per-(src:dst[,corenum,pkt]) bandwidth in GB/s, migrated from tilesim bandwidth_910B1.csv (GM->hbm, SHM->l2). Costmodel space names: hbm/l2/l1/l0a/l0b/l0c/ub. Core-dependent movers carry per_core_gbps (1..48); others use bandwidth_gbps.",
+    "hbm:ub": {
+      "per_core_gbps": {
+        "1": 100.9,
+        "2": 64.5,
+        "3": 88.29666667,
+        "4": 77.945,
+        "5": 84.852,
+        "6": 80.82666667,
+        "7": 73.31571429,
+        "8": 68.93375,
+        "9": 73.22888889,
+        "10": 67.586,
+        "11": 71.13727273,
+        "12": 68.08833333,
+        "13": 69.14615385,
+        "14": 72.60785714,
+        "15": 74.99866667,
+        "16": 73.26375,
+        "17": 72.05058824,
+        "18": 70.66833333,
+        "19": 73.27,
+        "20": 68.7705,
+        "21": 68.72190476,
+        "22": 66.07909091,
+        "23": 66.33826087,
+        "24": 65.08041667,
+        "25": 65.3448,
+        "26": 62.61884615,
+        "27": 62.15148148,
+        "28": 58.95964286,
+        "29": 58.23,
+        "30": 56.146,
+        "31": 56.48,
+        "32": 53.3059375,
+        "33": 51.55151515,
+        "34": 49.97264706,
+        "35": 48.51342857,
+        "36": 46.525,
+        "37": 46.06621622,
+        "38": 43.74315789,
+        "39": 42.97435897,
+        "40": 41.5595,
+        "41": 40.44609756,
+        "42": 39.31904762,
+        "43": 38.47302326,
+        "44": 37.03886364,
+        "45": 36.33777778,
+        "46": 35.40717391,
+        "47": 34.83446809,
+        "48": 33.68666667
+      }
+    },
+    "ub:hbm": {
+      "per_core_gbps": {
+        "1": 188.46,
+        "2": 210.53,
+        "3": 117.2733333,
+        "4": 130.295,
+        "5": 108.964,
+        "6": 119.54,
+        "7": 117.280446425,
+        "8": 115.02089285,
+        "9": 112.761339275,
+        "10": 110.5017857,
+        "11": 108.242232125,
+        "12": 105.98267855,
+        "13": 103.723124975,
+        "14": 101.4635714,
+        "15": 100.0593333,
+        "16": 100.373125,
+        "17": 96.81470588,
+        "18": 98.78555556,
+        "19": 90.44578947,
+        "20": 88.896,
+        "21": 83.38571429,
+        "22": 83.77727273,
+        "23": 77.92608696,
+        "24": 76.65166667,
+        "25": 71.0792,
+        "26": 70.58615385,
+        "27": 66.58407407,
+        "28": 66.42357143,
+        "29": 61.56655172,
+        "30": 59.854,
+        "31": 56.1083871,
+        "32": 55.9315625,
+        "33": 53.0,
+        "34": 51.53,
+        "35": 49.45828571,
+        "36": 48.11111111,
+        "37": 46.14540541,
+        "38": 45.26947368,
+        "39": 43.51512821,
+        "40": 42.56075,
+        "41": 40.9797561,
+        "42": 40.19857143,
+        "43": 38.46488372,
+        "44": 38.07454545,
+        "45": 36.684,
+        "46": 36.17608696,
+        "47": 34.70893617,
+        "48": 34.34291667
+      }
+    },
+    "hbm:l1": {
+      "bandwidth_gbps": 135
+    },
+    "hbm:l2": {
+      "bandwidth_gbps": 33.68666667
+    },
+    "l2:hbm": {
+      "bandwidth_gbps": 34.34291667
+    },
+    "l2:ub": {
+      "bandwidth_gbps": 137
+    },
+    "ub:l2": {
+      "bandwidth_gbps": 93
+    },
+    "l2:l1": {
+      "bandwidth_gbps": 221
+    },
+    "l1:l2": {
+      "bandwidth_gbps": 221
+    },
+    "l1:l0a": {
+      "bandwidth_gbps": 441
+    },
+    "l1:l0b": {
+      "bandwidth_gbps": 220.5
+    },
+    "hbm:l0b": {
+      "bandwidth_gbps": 104.5
+    },
+    "l0c:hbm": {
+      "bandwidth_gbps": 70
+    },
+    "l0c:l2": {
+      "bandwidth_gbps": 70
+    },
+    "l0c:l1": {
+      "bandwidth_gbps": 70
+    },
+    "hbm:l2_agg": {
+      "bandwidth_gbps": 1638.4
+    }
+  },
+
+  "vec_cycle_tables": {
+    "description": "Per-(intrinsic,dtype) vector cycle triplets {compute,head,interval}, migrated from tilesim vec_cycle_910B1.csv. dtype keys fp16 (covers fp16/bf16) and fp32. cycles = compute * repeats + startup, repeats = ceil(numElems*elemBytes/256).",
+    "VADD": {
+      "fp16": {
+        "compute": 2,
+        "head": 13,
+        "interval": 18
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 13,
+        "interval": 18
+      }
+    },
+    "VSUB": {
+      "fp16": {
+        "compute": 2,
+        "head": 13,
+        "interval": 18
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 13,
+        "interval": 18
+      }
+    },
+    "VMUL": {
+      "fp16": {
+        "compute": 2,
+        "head": 13,
+        "interval": 19
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 13,
+        "interval": 19
+      }
+    },
+    "VDIV": {
+      "fp16": {
+        "compute": 8,
+        "head": 13,
+        "interval": 25
+      },
+      "fp32": {
+        "compute": 4,
+        "head": 13,
+        "interval": 25
+      }
+    },
+    "VMAX": {
+      "fp16": {
+        "compute": 2,
+        "head": 14,
+        "interval": 16
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 14,
+        "interval": 16
+      }
+    },
+    "VMIN": {
+      "fp16": {
+        "compute": 2,
+        "head": 14,
+        "interval": 16
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 14,
+        "interval": 16
+      }
+    },
+    "VEXP": {
+      "fp16": {
+        "compute": 4,
+        "head": 13,
+        "interval": 24
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 13,
+        "interval": 24
+      }
+    },
+    "VSQRT": {
+      "fp16": {
+        "compute": 2,
+        "head": 14,
+        "interval": 25
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 14,
+        "interval": 25
+      }
+    },
+    "VABS": {
+      "fp16": {
+        "compute": 1,
+        "head": 13,
+        "interval": 16
+      },
+      "fp32": {
+        "compute": 1,
+        "head": 14,
+        "interval": 16
+      }
+    },
+    "RELU": {
+      "fp16": {
+        "compute": 1,
+        "head": 14,
+        "interval": 16
+      },
+      "fp32": {
+        "compute": 1,
+        "head": 14,
+        "interval": 16
+      }
+    },
+    "LOG": {
+      "fp16": {
+        "compute": 2,
+        "head": 26,
+        "interval": 14
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 26,
+        "interval": 14
+      }
+    },
+    "VSEL": {
+      "fp16": {
+        "compute": 2,
+        "head": 13,
+        "interval": 13
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 13,
+        "interval": 14
+      }
+    },
+    "VBRCB": {
+      "fp16": {
+        "compute": 0,
+        "head": 0,
+        "interval": 18
+      },
+      "fp32": {
+        "compute": 0,
+        "head": 0,
+        "interval": 18
+      }
+    },
+    "VCMPV_NE": {
+      "fp16": {
+        "compute": 2,
+        "head": 14,
+        "interval": 22
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 14,
+        "interval": 22
+      }
+    },
+    "VCMPV_GE": {
+      "fp16": {
+        "compute": 2,
+        "head": 14,
+        "interval": 22
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 14,
+        "interval": 22
+      }
+    },
+    "CMPV_EQ": {
+      "fp16": {
+        "compute": 2,
+        "head": 13,
+        "interval": 22
+      },
+      "fp32": {
+        "compute": 2,
+        "head": 13,
+        "interval": 22
+      }
+    },
+    "VCGADD": {
+      "fp32": {
+        "compute": 1,
+        "head": 14,
+        "interval": 24
+      }
+    },
+    "VCGMAX": {
+      "fp32": {
+        "compute": 1,
+        "head": 14,
+        "interval": 17
+      }
+    },
+    "VCGMIN": {
+      "fp32": {
+        "compute": 1,
+        "head": 14,
+        "interval": 17
+      }
+    },
+    "VREDUCEV2": {
+      "fp32": {
+        "compute": 14,
+        "head": 14,
+        "interval": 20
+      }
+    },
+    "VCOPY": {
+      "fp16": {
+        "compute": 1,
+        "head": 11,
+        "interval": 13
+      },
+      "fp32": {
+        "compute": 1,
+        "head": 11,
+        "interval": 13
+      }
+    },
+    "CONV_F322F16": {
+      "fp32": {
+        "compute": 1,
+        "head": 16,
+        "interval": 14
+      }
+    },
+    "CONV_F162F32": {
+      "fp16": {
+        "compute": 2,
+        "head": 13,
+        "interval": 15
+      }
+    },
+    "CONV_F322BF16": {
+      "fp32": {
+        "compute": 1,
+        "head": 14,
+        "interval": 16
+      }
+    },
+    "CONV_BF162F32": {
+      "fp16": {
+        "compute": 2,
+        "head": 14,
+        "interval": 18
+      }
+    }
+  }
+}

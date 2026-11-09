@@ -72,6 +72,9 @@ python/triton/instrumentation
 python/triton/experimental/tle/language/include
 python/triton/experimental/tle/language/flagcx*
 
+# TLE Ascend custom-op bitcode generated from custom_ops/*.cpp
+python/triton/experimental/tle/language/dsa/ascend/custom_ops/custom_ops*.bc
+
 # Python caches
 __pycache__/
 *.py[cod]

@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import triton.language as tl
+from triton._flagtree_backend import FLAGTREE_BACKEND
 from triton.language.core import builtin, constexpr as tl_constexpr, tensor
 from triton.experimental.tle.language.gpu import buffered_tensor
 
@@ -99,3 +100,32 @@ def call(func, args, output_indices=None, hint="", _semantic: TLESemantic | None
 def call_smem(func, args, output_indices=None, hint="", _semantic: TLESemantic | None = None, _generator=None):
     return _tle_raw_call(func, args, output_indices=output_indices, hint=hint, smem=True, _semantic=_semantic,
                          _generator=_generator)
+
+
+# Ascend backend entry point.  String op names carry an ``<backend>_<op>``
+# prefix which is stripped before dispatching to the custom op registered for
+# that backend::
+#
+#     pair = tle.raw.call("ascend_sort32", src0, src1, repeat_times, out=pair)
+#
+# is equivalent to
+#
+#     pair = tle.dsa.ascend.raw("sort32", src0, src1, repeat_times, out=pair)
+#
+# with identical IR (the previous Ascend-only entry stays available).
+if FLAGTREE_BACKEND == "ascend":
+    from triton.experimental.tle.language.dsa.ascend.core import raw as _ascend_raw
+    from triton.language.extra.cann.extension import builtin as _ascend_builtin
+
+    @_ascend_builtin
+    def call(op, *args, output_indices=None, out=(), _semantic=None):
+        op = getattr(op, "value", op)
+        if not isinstance(op, str):
+            raise ValueError(f"tle.raw.call on Ascend expects an 'ascend_<op>' string, got {op!r}")
+        backend, _, name = op.partition("_")
+        if backend != "ascend" or not name:
+            raise ValueError(f"unknown raw backend prefix in {op!r}")
+        return _ascend_raw(name, *args, out=out, _semantic=_semantic)
+
+    def call_smem(*args, **kwargs):
+        raise NotImplementedError("tle.raw.call_smem is not supported on the Ascend backend")

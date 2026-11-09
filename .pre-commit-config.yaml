@@ -11,6 +11,7 @@ repos:
       - id: check-toml
       - id: check-ast
       - id: check-added-large-files
+        exclude: ^third_party/ascend/backend/lib/libdevice\.10\.bc$
       - id: check-merge-conflict
       - id: check-executables-have-shebangs
       - id: check-shebang-scripts-are-executable

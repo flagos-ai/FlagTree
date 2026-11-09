@@ -76,6 +76,10 @@ def is_power_of_two(x):
 
 
 def validate_block_shape(shape: List[int]):
+    impl = spec_func("validate_block_shape")
+    if impl is not None:
+        return impl(shape)
+
     numel = 1
     for i, d in enumerate(shape):
         if not isinstance(d, int):
