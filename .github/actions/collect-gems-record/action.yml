@@ -55,7 +55,9 @@ inputs:
     required: false
     default: ''
   runner:
-    description: 'Runner label the job ran on'
+    description: >-
+      Runner label the job ran on, e.g. 'xpu3.6'. Identifies the class of
+      machine, which is what cross-runner aggregation groups by.
     required: false
     default: ''
   flaggems-tag:
@@ -143,6 +145,10 @@ runs:
         CTX_BACKEND: ${{ inputs.backend }}
         CTX_VARIANT: ${{ inputs.variant }}
         CTX_RUNNER: ${{ inputs.runner }}
+        # The actual machine, as opposed to the label. Several runners can
+        # share one label, so the label alone cannot say which host ran a
+        # job. GitHub sets this inside the job, so no caller has to pass it.
+        CTX_RUNNER_NAME: ${{ runner.name }}
         CTX_FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
         CTX_FLAGTREE_SHA: ${{ inputs.flagtree-sha }}
         CTX_FLAGTREE_BRANCH: ${{ inputs.flagtree-branch }}

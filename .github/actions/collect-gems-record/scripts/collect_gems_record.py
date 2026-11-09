@@ -301,6 +301,10 @@ def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "")
         # part of record_id, so those results do not overwrite each other.
         "variant": ctx("VARIANT"),
         "runner": ctx("RUNNER"),
+        # The host, as opposed to the label above. Several runners can
+        # share a label, so a result can only be traced to a machine
+        # through this.
+        "runner_name": ctx("RUNNER_NAME"),
         "flaggems_tag": ctx("FLAGGEMS_TAG"),
         "flagtree_sha": ctx("FLAGTREE_SHA"),
         "flagtree_branch": ctx("FLAGTREE_BRANCH"),
@@ -426,6 +430,7 @@ def build_operator_rows(record: Dict, summary: Dict, compare: Optional[Dict]) ->
             "backend": record["backend"],
             "variant": record["variant"],
             "runner": record["runner"],
+            "runner_name": record["runner_name"],
             "kind": record["kind"],
             "flagtree_sha": record["flagtree_sha"],
             "flaggems_tag": record["flaggems_tag"],
@@ -492,7 +497,11 @@ def build_notification(record: Dict) -> Optional[Dict]:
     if record.get("variant"):
         where = f"{where} ({record['variant']})"
 
-    lines: List[List[str]] = [["Backend", where], ["Runner", record.get("runner") or "?"]]
+    # The host rather than the label: the label is usually implied by the
+    # backend, while which machine ran this is what a reader cannot infer.
+    # Falls back to the label for records written before runner_name existed.
+    runner = record.get("runner_name") or record.get("runner") or "?"
+    lines: List[List[str]] = [["Backend", where], ["Runner", runner]]
     if record.get("pr_number"):
         lines.append(["PR", f"#{record['pr_number']}"])
     else:
@@ -607,7 +616,8 @@ Context is read from CTX_* environment variables, all optional:
   CTX_VARIANT         configuration label, for a backend that tests
                       several at once; part of record_id so they do
                       not overwrite each other
-  CTX_RUNNER          amd3.6, ...
+  CTX_RUNNER          runner label, e.g. amd3.6
+  CTX_RUNNER_NAME     the host behind that label, set by GitHub in the job
   CTX_FLAGGEMS_TAG    v5.3.5
   CTX_FLAGTREE_SHA    commit under test
   CTX_FLAGTREE_BRANCH main
