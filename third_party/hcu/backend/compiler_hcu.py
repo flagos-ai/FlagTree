@@ -542,6 +542,7 @@ class HIPBackend(BaseBackend):
         if 1:  #use_async_copy:
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
+        metadata["tle_node_buffer_bindings"] = mod.get_operation().get_str_attr("tle.node_buffer_bindings") or ""
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
 
