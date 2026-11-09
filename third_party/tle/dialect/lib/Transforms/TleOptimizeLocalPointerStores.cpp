@@ -294,6 +294,27 @@ static bool isKnownAllTrueMask(Value mask, unsigned depth = 0) {
   return false;
 }
 
+static bool isFullTileIndex(Value index, size_t axis, ArrayRef<int64_t> shape) {
+  auto indexTy = dyn_cast<RankedTensorType>(index.getType());
+  if (!indexTy || indexTy.getShape() != shape)
+    return false;
+  Value current = stripConvertLayouts(index);
+  if (shape.size() > 1) {
+    auto broadcast = current.getDefiningOp<tt::BroadcastOp>();
+    if (!broadcast)
+      return false;
+    auto sourceTy = cast<RankedTensorType>(broadcast.getSrc().getType());
+    for (auto [dim, size] : llvm::enumerate(shape))
+      if (sourceTy.getShape()[dim] != (dim == axis ? size : 1))
+        return false;
+    current = stripConvertLayouts(broadcast.getSrc());
+    while (auto expand = current.getDefiningOp<tt::ExpandDimsOp>())
+      current = stripConvertLayouts(expand.getSrc());
+  }
+  auto range = current.getDefiningOp<tt::MakeRangeOp>();
+  return range && range.getStart() == 0 && range.getEnd() == shape[axis];
+}
+
 class OptimizeLocalPointerStoresPass
     : public impl::TritonTleOptimizeLocalPointerStoresBase<
           OptimizeLocalPointerStoresPass> {
@@ -323,6 +344,17 @@ class OptimizeLocalPointerStoresPass
       if (valueTy.getShape() != memDescTy.getShape())
         continue;
       if (valueTy.getElementType() != memDescTy.getElementType())
+        continue;
+
+      // Equal shapes do not imply identity addressing: permutations and
+      // offsets must retain local_pointers and the elementwise store.
+      auto indices = localPointers.getIndices();
+      if (!indices.empty() &&
+          (indices.size() != memDescTy.getRank() ||
+           !llvm::all_of(llvm::enumerate(indices), [&](auto item) {
+             return isFullTileIndex(item.value(), item.index(),
+                                    memDescTy.getShape());
+           })))
         continue;
 
       OpBuilder builder(store);
