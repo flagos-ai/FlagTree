@@ -294,12 +294,20 @@ static void hintDescriptorAlignment(tt::LoadOp load, int64_t bits) {
                             8,
                         1);
   Value ptr = load.getPtr();
+  // The innermost dimension is the last one the rewrite adds, so it is the
+  // outermost addptr. Its stride is 1 and carries no alignment, and the host
+  // checks every stride but that one. dropInnermostStride has usually folded
+  // the product away already; skipping the step keeps the hint right when it
+  // could not, as for a stride that is already a constant.
+  bool innermost = true;
   while (auto addptr = ptr.getDefiningOp<tt::AddPtrOp>()) {
-    if (auto broadcast = addptr.getOffset().getDefiningOp<tt::BroadcastOp>())
-      if (auto mul = broadcast.getSrc().getDefiningOp<arith::MulIOp>())
-        if (auto stride = mul.getRhs().getDefiningOp<tt::SplatOp>())
-          setDivisibility(stride,
-                          std::max<int64_t>(kVectorBytes / elemBytes, 1));
+    if (!innermost)
+      if (auto broadcast = addptr.getOffset().getDefiningOp<tt::BroadcastOp>())
+        if (auto mul = broadcast.getSrc().getDefiningOp<arith::MulIOp>())
+          if (auto stride = mul.getRhs().getDefiningOp<tt::SplatOp>())
+            setDivisibility(stride,
+                            std::max<int64_t>(kVectorBytes / elemBytes, 1));
+    innermost = false;
     ptr = addptr.getPtr();
   }
   if (auto base = ptr.getDefiningOp<tt::SplatOp>(); base && (bits & 1))

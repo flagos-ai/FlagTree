@@ -814,7 +814,10 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
                           b.icmp_sle(rowLength, maxDim)),
                    b.and_(b.icmp_sgt(rowStride, b.i64_val(0)),
                           b.icmp_sle(rowStride, b.mul(rowLength, maxDim))));
-        Value length32 = b.trunc(i32_ty, b.umax(rowLength, b.i64_val(1)));
+        // Clamp after the truncation: a row length whose low 32 bits are
+        // zero would otherwise make the division below a division by zero,
+        // which `use3d` predicates the copy off for but does not remove.
+        Value length32 = b.umax(b.trunc(i32_ty, rowLength), b.i32_val(1));
         Value stride32 = b.trunc(i32_ty, rowStride);
         use3d = b.and_(b.and_(fits, b.icmp_ne(rowStride, rowLength)),
                        b.icmp_eq(b.urem(stride32, length32), b.i32_val(0)));
