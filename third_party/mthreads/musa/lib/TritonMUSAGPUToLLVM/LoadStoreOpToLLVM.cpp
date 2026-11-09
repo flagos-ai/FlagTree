@@ -5,6 +5,7 @@
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include <cstdlib>
 #ifdef __TLE__
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -1065,6 +1066,17 @@ void emitIfPredicated(RewriterBase &rewriter, Location loc, Value pred,
   rewriter.setInsertionPointToStart(afterBlock);
 }
 
+bool maskIsDynamic(Value mask) {
+  if (!mask)
+    return false;
+  if (matchPattern(mask, m_One()) || matchPattern(mask, m_Zero()))
+    return false;
+  if (auto splatOp = mask.getDefiningOp<triton::SplatOp>())
+    return !matchPattern(splatOp.getSrc(), m_One()) &&
+           !matchPattern(splatOp.getSrc(), m_Zero());
+  return true;
+}
+
 bool asyncCopyMaskNeedsPredicate(Value mask) {
   if (!mask)
     return false;
@@ -1143,6 +1155,139 @@ StringRef getMusaMemcpyG2SIntrinsic(Type elemTy) {
   }
 }
 
+// A register basis crossing a mask-constancy interval may require a separate
+// predicated scalar load. Leave already shared predicates on their usual path.
+static bool hasSplitRegisterMasks(Value mask,
+                                  ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  auto maskTy = dyn_cast<RankedTensorType>(mask.getType());
+  auto *axisInfo = axisInfoAnalysis.getAxisInfo(mask);
+  if (!maskTy || !axisInfo)
+    return false;
+  auto layout = toLinearLayout(maskTy);
+  auto reg = StringAttr::get(mask.getContext(), "register");
+  auto it = layout.getBases().find(reg);
+  if (it == layout.getBases().end())
+    return false;
+  for (const auto &basis : it->second)
+    for (unsigned dim = 0; dim < basis.size(); ++dim)
+      if (basis[dim] >= std::max<int64_t>(axisInfo->getConstancy(dim), 1))
+        return true;
+  return false;
+}
+
+// A prefix mask lets the first/last element guard any/all register elements.
+// Alignment keeps the contiguous index range from crossing integer wraparound.
+static bool hasPrefixRegisterMask(Value mask,
+                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                  unsigned depth = 8) {
+  auto ty = dyn_cast<RankedTensorType>(mask.getType());
+  if (!ty || !isa<BlockedEncodingAttr>(ty.getEncoding()) || !depth ||
+      !axisInfoAnalysis.getAxisInfo(mask))
+    return false;
+  if (!hasSplitRegisterMasks(mask, axisInfoAnalysis))
+    return true;
+  if (auto both = mask.getDefiningOp<arith::AndIOp>())
+    return hasPrefixRegisterMask(both.getLhs(), axisInfoAnalysis, depth - 1) &&
+           hasPrefixRegisterMask(both.getRhs(), axisInfoAnalysis, depth - 1);
+  auto cmp = mask.getDefiningOp<arith::CmpIOp>();
+  if (!cmp || (cmp.getPredicate() != arith::CmpIPredicate::slt &&
+               cmp.getPredicate() != arith::CmpIPredicate::ult))
+    return false;
+  auto *lhs = axisInfoAnalysis.getAxisInfo(cmp.getLhs());
+  auto *rhs = axisInfoAnalysis.getAxisInfo(cmp.getRhs());
+  if (!lhs || !rhs)
+    return false;
+  int dim = -1;
+  auto layout = toLinearLayout(ty);
+  auto reg = StringAttr::get(mask.getContext(), "register");
+  for (const auto &basis : layout.getBases().lookup(reg))
+    for (unsigned d = 0; d < basis.size(); ++d)
+      if (basis[d]) {
+        if (dim != -1 && dim != static_cast<int>(d))
+          return false;
+        dim = d;
+      }
+  if (dim == -1)
+    return false;
+  int64_t extent = ty.getShape()[dim];
+  auto indexTy = dyn_cast<IntegerType>(getElementTypeOrSelf(cmp.getLhs()));
+  if (!indexTy || indexTy.getWidth() > 64 || extent <= 0 ||
+      (extent & (extent - 1)) != 0 ||
+      static_cast<uint64_t>(extent) > (uint64_t{1} << (indexTy.getWidth() - 1)))
+    return false;
+  return lhs->getContiguity(dim) >= extent &&
+         lhs->getDivisibility(dim) >= extent &&
+         rhs->getConstancy(dim) >= extent;
+}
+
+// Only ordinary reads may be duplicated. In the active block, anchor is an
+// address whose mask is true; inactive elements read it instead of
+// dereferencing their possibly invalid address. Restore each element's original
+// other value.
+static SmallVector<Value>
+emitMergedMaskedLoads(Location loc, ValueRange ptrs, ValueRange masks,
+                      ValueRange others, bool preserveOther,
+                      bool useVectorCarrier,
+                      ConversionPatternRewriter &rewriter) {
+  Value any = masks.front();
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type scalarTy = others.front().getType();
+  Type mergeTy = useVectorCarrier ? LLVM::getVectorType(scalarTy, 1) : scalarTy;
+  SmallVector<Value> mergeOthers;
+  for (Value other : others) {
+    if (useVectorCarrier) {
+      Value carrier = LLVM::UndefOp::create(rewriter, loc, mergeTy);
+      other = b.insert_element(mergeTy, carrier, other, b.i32_val(0));
+    }
+    mergeOthers.push_back(other);
+  }
+
+  Block *current = rewriter.getInsertionBlock();
+  Block *after = rewriter.splitBlock(current, rewriter.getInsertionPoint());
+  for (Value other : mergeOthers)
+    after->addArgument(other.getType(), loc);
+  Block *active = rewriter.createBlock(after);
+  // Full groups avoid both pointer and result selects. Partial groups retain
+  // the safe-address path, including the all-inactive case.
+  Block *full = rewriter.createBlock(active);
+  Block *checkAny = rewriter.createBlock(active);
+  rewriter.setInsertionPointToEnd(current);
+  LLVM::CondBrOp::create(rewriter, loc, masks.back(), full, checkAny);
+  rewriter.setInsertionPointToStart(full);
+  SmallVector<Value> fullValues;
+  for (unsigned i = 0; i < ptrs.size(); ++i)
+    fullValues.push_back(
+        LLVM::LoadOp::create(rewriter, loc, mergeTy, ptrs[i]));
+  LLVM::BrOp::create(rewriter, loc, fullValues, after);
+  rewriter.setInsertionPointToStart(checkAny);
+  LLVM::CondBrOp::create(rewriter, loc, any, active, ValueRange{}, after,
+                         mergeOthers);
+
+  rewriter.setInsertionPointToStart(active);
+  SmallVector<Value> loaded;
+  for (unsigned i = 0; i < ptrs.size(); ++i) {
+    Value safePtr =
+        LLVM::SelectOp::create(rewriter, loc, masks[i % masks.size()], ptrs[i],
+                               ptrs[i / masks.size() * masks.size()]);
+    Value value =
+        LLVM::LoadOp::create(rewriter, loc, mergeTy, safePtr);
+    // Inactive results are undefined without an explicit other.
+    loaded.push_back(
+        preserveOther
+            ? LLVM::SelectOp::create(rewriter, loc, masks[i % masks.size()], value,
+                                     mergeOthers[i])
+            : value);
+  }
+  LLVM::BrOp::create(rewriter, loc, loaded, after);
+  rewriter.setInsertionPointToStart(after);
+  SmallVector<Value> results;
+  for (Value value : after->getArguments())
+    results.push_back(useVectorCarrier
+                          ? b.extract_element(scalarTy, value, b.i32_val(0))
+                          : value);
+  return results;
+}
+
 struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
   LoadOpConversion(LLVMTypeConverter &converter,
                    const mlir::triton::MUSA::TargetInfo &targetInfo,
@@ -1211,8 +1356,82 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
     loaded.reserve(numElems);
 
     bool useVectorCarrier =
-        !maskElems.empty() && logicalValueElemTy.isIntOrIndex();
-    if (vec == 1 && !useVectorCarrier) {
+        !maskElems.empty() && (logicalValueElemTy.isIntOrIndex() ||
+                               (logicalValueElemTy.isBF16() &&
+                                targetInfo.getComputeCapability() == 31 &&
+                                maskIsDynamic(op.getMask())));
+    auto arch =
+        musa::getMusaArchFromCapability(targetInfo.getComputeCapability());
+    auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptrElems.front().getType());
+    bool mergeMaskedLoads =
+        arch && *arch == musa::MusaArch::PH1 && ptrTy &&
+        ptrTy.getAddressSpace() == 1 && !op.getIsVolatile() &&
+        !useInplaceLoad &&
+        (logicalValueElemTy.isF16() || logicalValueElemTy.isBF16() ||
+         logicalValueElemTy.isF32()) &&
+        vec == 1 && numElems > 1 && numElems <= 8 && regMask == 0 &&
+        !maskElems.empty() &&
+        hasSplitRegisterMasks(op.getMask(), axisInfoAnalysis) &&
+        hasPrefixRegisterMask(op.getMask(), axisInfoAnalysis);
+    if (mergeMaskedLoads) {
+      // Only address preparation may separate two independent reads. Share the
+      // full/tail guard without moving a read across another memory operation.
+      Operation *next = op->getNextNode();
+      unsigned skipped = 0;
+      while (next && skipped < 4 &&
+             isa<triton::SplatOp, triton::AddPtrOp>(next) &&
+             !llvm::is_contained(next->getOperands(), op.getResult())) {
+        next = next->getNextNode();
+        ++skipped;
+      }
+      auto peer = dyn_cast_or_null<triton::LoadOp>(next);
+      if (peer &&
+          (peer.getMask() != op.getMask() || peer.getType() != op.getType() ||
+           peer->getAttrDictionary() != op->getAttrDictionary() ||
+           llvm::is_contained(peer->getOperands(), op.getResult()) ||
+           peer.getIsVolatile() || peer->hasAttr(kInplaceLoadAttr) ||
+           static_cast<bool>(peer.getOther()) != static_cast<bool>(llOther) ||
+           getVectorSize(peer.getPtr(), axisInfoAnalysis) != 1))
+        peer = {};
+      SmallVector<Value> peerPtrs, peerOthers;
+      if (peer) {
+        rewriter.setInsertionPoint(peer);
+        Value peerPtr = rewriter.getRemappedValue(peer.getPtr());
+        Value peerOther = peer.getOther()
+                              ? rewriter.getRemappedValue(peer.getOther())
+                              : Value{};
+        if (!peerPtr || peerPtr.getType() != llPtr.getType() ||
+            (peer.getOther() && !peerOther)) {
+          peer = {};
+          rewriter.setInsertionPoint(op);
+        } else {
+          peerPtrs = ::mlir::unpackLLElements(loc, peerPtr, rewriter);
+          if (peerOther)
+            peerOthers = ::mlir::unpackLLElements(loc, peerOther, rewriter);
+        }
+      }
+      if (otherElems.empty()) {
+        Value zero = LLVM::ConstantOp::create(
+            rewriter, loc, valueElemTy, rewriter.getZeroAttr(valueElemTy));
+        otherElems.assign(numElems, zero);
+      }
+      if (peer) {
+        ptrElems.append(peerPtrs);
+        if (peerOthers.empty())
+          peerOthers.assign(numElems, otherElems.front());
+        otherElems.append(peerOthers);
+      }
+      loaded = emitMergedMaskedLoads(loc, ptrElems, maskElems, otherElems,
+                                     static_cast<bool>(llOther),
+                                     useVectorCarrier, rewriter);
+      if (peer) {
+        Value packed = ::mlir::packLLElements(
+            loc, typeConverter, llvm::ArrayRef<Value>(loaded).drop_front(numElems),
+            rewriter, peer.getType());
+        rewriter.replaceOp(peer, packed);
+        loaded.resize(numElems);
+      }
+    } else if (vec == 1 && !useVectorCarrier) {
       for (unsigned i = 0; i < numElems; ++i) {
         if (auto canonical = getCanonicalIndex(i, regMask); i != canonical) {
           loaded.push_back(loaded[canonical]);
@@ -1375,6 +1594,17 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
     Type valueElemTy =
         getTypeConverter()->convertType(getElementTypeOrSelf(op.getValue()));
     auto vecTy = LLVM::getVectorType(valueElemTy, vec);
+    // Reuse the first address when a contiguous register run needs multiple
+    // stores. Keep the vector width limited by the original alignment.
+    bool reuseStoreAddress = false;
+    auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    if (tensorTy && tensorTy.getRank() == 1 && numElems > vec && regMask == 0) {
+      auto *axisInfo = axisInfoAnalysis.getAxisInfo(ptr);
+      auto contigPerThread =
+          triton::gpu::toLinearEncoding(tensorTy).getContigPerThread();
+      reuseStoreAddress = axisInfo && axisInfo->getContiguity(0) >= numElems &&
+                          contigPerThread[0] >= numElems;
+    }
     for (unsigned vecStart = 0; vecStart < numElems; vecStart += vec) {
       if (!isCanonicalIndex(vecStart, regMask))
         continue;
@@ -1389,7 +1619,11 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
         storeVal = b.insert_element(
             vecTy, storeVal, valElems[vecStart + elemIdx], b.i32_val(elemIdx));
       }
-      LLVM::MUSA::llStore(rewriter, loc, ptrElems[vecStart], storeVal, pred);
+      Value storePtr = ptrElems[vecStart];
+      if (reuseStoreAddress && vecStart != 0)
+        storePtr = b.gep(ptrElems.front().getType(), valueElemTy,
+                         ptrElems.front(), b.i32_val(vecStart));
+      LLVM::MUSA::llStore(rewriter, loc, storePtr, storeVal, pred);
     }
 
     rewriter.eraseOp(op);

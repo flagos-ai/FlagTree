@@ -62,18 +62,14 @@ namespace mlir::triton::gpu {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-static bool isRlcRejectTraceEnabled() {
-  const char *value = std::getenv("FLAGTREE_RLC_TRACE_REJECTS");
-  if (!value)
-    return false;
-  StringRef setting(value);
-  return setting == "1" || setting.equals_insensitive("true") ||
-         setting.equals_insensitive("on");
-}
-
 static void traceRlcDecision(StringRef phase, StringRef outcome,
                              StringRef reason, Operation *op = nullptr) {
-  if (!isRlcRejectTraceEnabled())
+  const char *value = std::getenv("FLAGTREE_RLC_TRACE_REJECTS");
+  if (!value)
+    return;
+  StringRef setting(value);
+  if (setting != "1" && !setting.equals_insensitive("true") &&
+      !setting.equals_insensitive("on"))
     return;
   llvm::raw_ostream &os = llvm::errs();
   os << "FLAGTREE_RLC_TRACE phase=" << phase << " outcome=" << outcome
@@ -101,6 +97,16 @@ static bool isPassthroughWaitLike(Operation *op) {
 // sharing the phased implementation.
 constexpr unsigned kMaxRematSliceSize = 256;
 
+// Fixed relative cost weights inherited from shared RLC, not measured MUSA
+// cycles. Byte estimates use the element-count and bit-width floors below.
+constexpr int kConvertMinimumElements = 32;
+constexpr int kConvertMinimumElementBits = 32;
+constexpr int kConvertCostPerByte = 32;
+constexpr int kCachedLoadCostPerByte = 8;
+constexpr int kCheapMathCostPerByte = 1;
+constexpr int kExpensiveMathCostPerByte = 8;
+constexpr int kInterWarpReduceCost = 8;
+
 static bool isExplicitLayoutConversion(Operation *op) {
 #ifdef __TLE__
   return isTleExplicitConvertLayoutOp(op);
@@ -109,40 +115,13 @@ static bool isExplicitLayoutConversion(Operation *op) {
 #endif
 }
 
-// Backend-calibrated constants used by the RLC profitability and writeback
-// guards.  Defaults preserve the NVIDIA implementation exactly.  A backend
-// may override individual values on the TTGPU module while it is being
-// qualified, without forking this pass:
-//
-//   ttg.rlc-minimum-writeback-bits
-//   ttg.rlc-convert-minimum-elements
-//   ttg.rlc-convert-minimum-element-bits
-//   ttg.rlc-convert-cost-per-byte
-//   ttg.rlc-cached-load-cost-per-byte
-//   ttg.rlc-expensive-math-cost-per-byte
-//   ttg.rlc-inter-warp-reduce-cost
-//   ttg.rlc-atomic-writeback-max-elements-per-thread-ratio
-//   ttg.rlc-preserve-int-to-fp-contiguity
-//   ttg.rlc-int-to-fp-vector-width-mask
-//
-// Values must be positive integers; absent or invalid values keep the
-// conservative defaults below.
+// Backend controls for atomic writeback parallelism and integer-to-float
+// lowering. Cost estimates retain the shared RLC constants.
 struct RlcBackendPolicy {
-  int64_t minimumWritebackBits = 32;
-  int64_t convertMinimumElements = 32;
-  int64_t convertMinimumElementBits = 32;
-  int64_t convertCostPerByte = 32;
-  int64_t cachedLoadCostPerByte = 8;
-  int64_t expensiveMathCostPerByte = 8;
-  int64_t interWarpReduceCost = 8;
-  // Zero leaves atomic writeback retagging unrestricted. Backends whose
-  // atomic lowering serializes every per-thread element can set a positive
-  // ratio to preserve the incumbent lane parallelism.
+  // Zero disables the limit; a positive ratio bounds per-thread atomic growth.
   int64_t atomicWritebackMaxElementsPerThreadRatio = 0;
-  // Some backends lower vector and scalar integer-to-float conversions through
-  // different instructions. Retagging such a chain while changing its
-  // per-thread contiguous width can therefore change deterministic RNG bits.
-  // Keep this opt-in so NVIDIA and already-qualified backends are unchanged.
+  // Preserve the conversion width when scalar/vector lowering can round
+  // differently and change deterministic RNG bits.
   bool preserveIntToFpContiguity = false;
   // Bit `1 << width` advertises an explicitly implemented backend lowering for
   // that integer-to-float vector width. Zero is fail-closed.
@@ -159,20 +138,6 @@ struct RlcBackendPolicy {
         if (attr.getInt() > 0)
           value = attr.getInt();
     };
-    overridePositive("ttg.rlc-minimum-writeback-bits",
-                     policy.minimumWritebackBits);
-    overridePositive("ttg.rlc-convert-minimum-elements",
-                     policy.convertMinimumElements);
-    overridePositive("ttg.rlc-convert-minimum-element-bits",
-                     policy.convertMinimumElementBits);
-    overridePositive("ttg.rlc-convert-cost-per-byte",
-                     policy.convertCostPerByte);
-    overridePositive("ttg.rlc-cached-load-cost-per-byte",
-                     policy.cachedLoadCostPerByte);
-    overridePositive("ttg.rlc-expensive-math-cost-per-byte",
-                     policy.expensiveMathCostPerByte);
-    overridePositive("ttg.rlc-inter-warp-reduce-cost",
-                     policy.interWarpReduceCost);
     overridePositive("ttg.rlc-atomic-writeback-max-elements-per-thread-ratio",
                      policy.atomicWritebackMaxElementsPerThreadRatio);
     if (auto attr = module->getAttrOfType<IntegerAttr>(
@@ -183,7 +148,6 @@ struct RlcBackendPolicy {
     return policy;
   }
 };
-
 
 static Attribute getTensorEncoding(Value value) {
   auto tensorType = dyn_cast<RankedTensorType>(value.getType());
@@ -554,6 +518,68 @@ bool LayoutPropagation::conflictsWithHardEncoding(Value value,
          !it->second.hardEncodings.contains(encoding);
 }
 
+// Keep the compute layout of a large, widened loop accumulator. Replacing its
+// narrow input conversion with the load layout can widen each FP32 fragment
+// beyond 128 bits and fragment masked loads or spill loop addresses on MUSA.
+// The 256-byte state budget is a conservative profitability heuristic, not a
+// hardware register limit. Small states and FP32 input paths remain eligible.
+static Attribute getWidenedLoopComputeLayout(arith::ExtFOp ext) {
+  constexpr int kMaxWidenedLoopStateBytes = 256;
+  constexpr int kMaxWidenedFragmentBits = 128;
+  auto type = dyn_cast<RankedTensorType>(ext.getType());
+  auto inputType = dyn_cast<RankedTensorType>(ext.getIn().getType());
+  auto loop = ext->getParentOfType<scf::ForOp>();
+  if (!type || !inputType || !loop || !type.getElementType().isF32() ||
+      inputType.getElementTypeBitWidth() != 16 ||
+      !isa<BlockedEncodingAttr>(type.getEncoding()) ||
+      int64_t(getTotalElemsPerThread(type)) * 4 <= kMaxWidenedLoopStateBytes)
+    return {};
+  auto cvt = ext.getIn().getDefiningOp<ConvertLayoutOp>();
+  if (!cvt || !cvt.getSrc().getDefiningOp<LoadOp>())
+    return {};
+  auto loadEncoding = dyn_cast<BlockedEncodingAttr>(
+      cast<RankedTensorType>(cvt.getSrc().getType()).getEncoding());
+  if (!loadEncoding)
+    return {};
+  unsigned dim = loadEncoding.getOrder()[0];
+  if (getContigPerThread(type)[dim] * 32 > kMaxWidenedFragmentBits ||
+      getContigPerThread(type.cloneWithEncoding(loadEncoding))[dim] * 32 <=
+          kMaxWidenedFragmentBits)
+    return {};
+  for (Operation *user : ext->getUsers()) {
+    auto mul = dyn_cast<arith::MulFOp>(user);
+    if (!mul)
+      continue;
+    Value vector = mul.getLhs() == ext.getResult() ? mul.getRhs() : mul.getLhs();
+    auto broadcast = vector.getDefiningOp<BroadcastOp>();
+    if (!broadcast)
+      continue;
+    vector = broadcast.getSrc();
+    // The vector load may have been retiled by OptimizeThreadLocality after
+    // an earlier RLC invocation. Follow it rather than pinning the accumulator
+    // to the stale pre-locality layout, which would add another loop convert.
+    while (Operation *def = vector.getDefiningOp()) {
+      if (!isa<arith::ExtFOp, ConvertLayoutOp>(def))
+        break;
+      vector = def->getOperand(0);
+    }
+    auto vectorType = dyn_cast<RankedTensorType>(vector.getType());
+    if (!vector.getDefiningOp<LoadOp>() || !vectorType ||
+        !isa<BlockedEncodingAttr>(vectorType.getEncoding()))
+      continue;
+    for (Operation *consumer : mul->getUsers()) {
+      auto add = dyn_cast<arith::AddFOp>(consumer);
+      if (!add || add->getParentOp() != loop)
+        continue;
+      for (BlockArgument carry : loop.getRegionIterArgs())
+        if ((add.getLhs() == carry || add.getRhs() == carry) &&
+            loop.getYieldedValues()[carry.getArgNumber() - 1] == add.getResult())
+          return vectorType.getEncoding();
+    }
+  }
+  return {};
+}
+
 void LayoutPropagation::initAnchorLayout() {
 
   auto addAnchor = [&](Value v, Attribute encoding = nullptr,
@@ -575,6 +601,10 @@ void LayoutPropagation::initAnchorLayout() {
   }
 
   funcOp.walk([&](Operation *op) {
+    if (enableCostBasedResolution)
+      if (auto ext = dyn_cast<arith::ExtFOp>(op))
+        if (Attribute encoding = getWidenedLoopComputeLayout(ext))
+          addAnchor(ext.getResult(), encoding, /*hard=*/true);
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
 #ifdef __TLE__
@@ -765,8 +795,7 @@ static bool isEncodingUniformPureOp(Operation *op);
 static bool preservesWritebackMemoryAccess(RankedTensorType ptrType,
                                            RankedTensorType valueType,
                                            Attribute targetEncoding,
-                                           bool allowNarrowerContiguity,
-                                           const RlcBackendPolicy &policy);
+                                           bool allowNarrowerContiguity);
 static unsigned getContigAlongMemoryOrder(RankedTensorType type);
 static bool isOrderIndifferentAccess(ModuleAxisInfoAnalysis *axisInfo,
                                      Value ptr);
@@ -996,8 +1025,7 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
                     defOp->getParentOfType<scf::WhileOp>() != nullptr;
       if (!preservesWritebackMemoryAccess(
               ptrType, resultType, encoding,
-              /*allowNarrowerContiguity=*/false,
-              RlcBackendPolicy::fromOperation(loadOp)) &&
+              /*allowNarrowerContiguity=*/false) &&
           (inLoop ||
            !isOrderIndifferentAccess(axisInfoAnalysis, loadOp.getPtr())))
         return false;
@@ -1144,7 +1172,9 @@ static int64_t getOpLoopFrequencyWeight(Operation *op) {
 
 // Cost of one convert of `value`: its smem round-trip byte estimate (>= 1).
 static int64_t getConvertUnitCost(Value value) {
-  int64_t cost = 32 * getByteCount(value, 32, 32);
+  int64_t cost = kConvertCostPerByte *
+                 getByteCount(value, kConvertMinimumElements,
+                              kConvertMinimumElementBits);
   return cost == 0 ? 1 : cost;
 }
 
@@ -2150,8 +2180,8 @@ static unsigned getPreservedIntToFpVectorWidth(Value value,
 static bool preservesWritebackMemoryAccess(RankedTensorType ptrType,
                                            RankedTensorType valueType,
                                            Attribute targetEncoding,
-                                           bool allowNarrowerContiguity,
-                                           const RlcBackendPolicy &policy) {
+                                           bool allowNarrowerContiguity) {
+  constexpr int kMinimumWritebackBits = 32;
   if (!ptrType || !valueType || !targetEncoding ||
       !isa<DistributedEncodingTrait>(targetEncoding))
     return false;
@@ -2176,7 +2206,7 @@ static bool preservesWritebackMemoryAccess(RankedTensorType ptrType,
   Type elementType = valueType.getElementType();
   unsigned elementBits =
       elementType.isIntOrFloat() ? elementType.getIntOrFloatBitWidth() : 0;
-  return int64_t(targetContig) * elementBits >= policy.minimumWritebackBits;
+  return int64_t(targetContig) * elementBits >= kMinimumWritebackBits;
 }
 
 // True if retagging the coalesced access at `ptr` to `targetEncoding` widens
@@ -2220,8 +2250,7 @@ static bool preservesStoreMemoryAccess(StoreOp storeOp,
   return preservesWritebackMemoryAccess(
       dyn_cast<RankedTensorType>(storeOp.getPtr().getType()),
       dyn_cast<RankedTensorType>(storeOp.getValue().getType()), targetEncoding,
-      /*allowNarrowerContiguity=*/false,
-      RlcBackendPolicy::fromOperation(storeOp));
+      /*allowNarrowerContiguity=*/false);
 }
 
 // Number of threads that own at least one element of `type`, i.e. the store's
@@ -2500,8 +2529,7 @@ bool LayoutPropagation::solveSmallComponents() {
     }
     if (!preservesWritebackMemoryAccess(
             ptrType, valType, encoding,
-            /*allowNarrowerContiguity=*/false,
-            policy) ||
+            /*allowNarrowerContiguity=*/false) ||
         widensPastVectorAccess(axisInfoAnalysis, atomicOp.getPtr(),
                                atomicOp.getMask(), valType.getElementType(),
                                encoding))
@@ -3079,7 +3107,8 @@ void LayoutPropagation::resolveConflictsByComponent(
   constexpr int kNumPasses = 2;
   DenseSet<Value> moved;
   for (int pass = 0; pass < kNumPasses; ++pass) {
-    for (auto &[root, members] : components) {
+    for (auto &component : components) {
+      auto &members = component.second;
       DenseSet<Value> inComponent(members.begin(), members.end());
       SmallVector<Attribute> shared(candidates.lookup(members.front()));
       bool skip = false;
@@ -3937,8 +3966,7 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
   }
 
   if (preservesWritebackMemoryAccess(ptrType, resultType, encoding,
-                                     /*allowNarrowerContiguity=*/false,
-                                     RlcBackendPolicy::fromOperation(loadOp)))
+                                     /*allowNarrowerContiguity=*/false))
     return true;
   // The order-indifference relaxation is limited to straight-line code: for a
   // loop-resident scatter load the retag reshapes every iteration's request
@@ -4442,16 +4470,8 @@ void LayoutRematerialization::backwardRematerialization(
     return singleUse;
   };
 
-  // Measure the number of bytes that the ConvertLayoutOp manipulates. The
-  // defaults retain the original NVIDIA assumptions (32 elements, 32-bit
-  // shared-memory bank width, and 32 milli-SM-cycles per byte); other backends
-  // can override them through the module-level RLC policy attributes.
-  RlcBackendPolicy backendPolicy = RlcBackendPolicy::fromOperation(convertOp);
-  int64_t convertLayoutBytes =
-      getByteCount(convertOp.getSrc(), backendPolicy.convertMinimumElements,
-                   backendPolicy.convertMinimumElementBits);
-  int64_t convertLayoutCost =
-      backendPolicy.convertCostPerByte * convertLayoutBytes;
+  // Share the fixed conversion estimate with layout conflict resolution.
+  int64_t convertLayoutCost = getConvertUnitCost(convertOp.getSrc());
   int64_t rematerialisationCost = 0;
 
   // Evaluate single-use status for every operation in slice
@@ -4467,8 +4487,7 @@ void LayoutRematerialization::backwardRematerialization(
     } else if (isa<LoadOp>(op) || isa<LocalLoadOp>(op)) {
       // optimistically assume L1-cached:
       for (Value result : op->getResults()) {
-        rematerialisationCost +=
-            backendPolicy.cachedLoadCostPerByte * getByteCount(result);
+        rematerialisationCost += kCachedLoadCostPerByte * getByteCount(result);
       }
     } else if (isa<arith::ArithDialect, math::MathDialect>(dialect)) {
       // this is an arithmetic operation; we distinguish between cheap
@@ -4476,8 +4495,8 @@ void LayoutRematerialization::backwardRematerialization(
       // as halves of a single-cycle FMA instruction) and expensive
       // operations which use the special function unit and/or involve
       // multiple instructions.
-      int64_t multiplier =
-          isExpensiveMathOp(op) ? backendPolicy.expensiveMathCostPerByte : 1;
+      int64_t multiplier = isExpensiveMathOp(op) ? kExpensiveMathCostPerByte
+                                              : kCheapMathCostPerByte;
       for (Value result : op->getResults()) {
         rematerialisationCost += multiplier * getByteCount(result);
       }
@@ -4493,8 +4512,8 @@ void LayoutRematerialization::backwardRematerialization(
         return;
       }
       rematerialisationCost += helper.getIntraWarpSizeWithUniqueData();
-      rematerialisationCost += backendPolicy.interWarpReduceCost *
-                               helper.getInterWarpSizeWithUniqueData();
+      rematerialisationCost +=
+          kInterWarpReduceCost * helper.getInterWarpSizeWithUniqueData();
     }
   }
 
@@ -4615,8 +4634,7 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
       writebackOp->getParentOfType<scf::ForOp>() ||
       writebackOp->getParentOfType<scf::WhileOp>();
   if (!preservesWritebackMemoryAccess(ptrType, valueType, targetEncoding,
-                                      allowNarrowerContiguity,
-            RlcBackendPolicy::fromOperation(writebackOp)))
+                                      allowNarrowerContiguity))
     return false;
 
   // A contiguous (coalesced) store moves consecutive addresses across a warp
@@ -5147,6 +5165,381 @@ void hoistConvert(ModuleOp module) {
     layoutRemat.cleanup();
   });
 }
+
+// A closed two-output reduction can keep its conversion-free writeback while
+// grouping the rows owned by each warp consecutively. This exchanges a row
+// register bit with a row warp bit; the column distribution and load width stay
+// unchanged. Do not generalize this to mixed layouts or explicit TLE layouts.
+static bool packReductionWritebackRows(FuncOp funcOp) {
+  auto module = funcOp->getParentOfType<ModuleOp>();
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  auto ctas = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
+  if (!target || target.getValue() != "musa:31" || !ctas ||
+      ctas.getInt() != 1 || !funcOp.getResultTypes().empty() ||
+      llvm::any_of(funcOp.getArgumentTypes(),
+                   [](Type t) { return isa<RankedTensorType>(t); }))
+    return false;
+  SmallVector<StoreOp> stores;
+  SmallVector<LoadOp> loads;
+  SmallVector<ReduceOp> reductions;
+  SmallVector<scf::ForOp> loops;
+  bool closed = true;
+  funcOp.walk([&](Operation *op) {
+    if (auto store = dyn_cast<StoreOp>(op))
+      stores.push_back(store);
+    else if (auto load = dyn_cast<LoadOp>(op))
+      loads.push_back(load);
+    else if (auto reduce = dyn_cast<ReduceOp>(op))
+      reductions.push_back(reduce);
+    else if (auto loop = dyn_cast<scf::ForOp>(op))
+      loops.push_back(loop);
+    else if (!isa<FuncOp, scf::YieldOp, ReduceReturnOp, ReturnOp, MakeRangeOp,
+                  SplatOp, ExpandDimsOp, BroadcastOp, AddPtrOp, GetProgramIdOp,
+                  arith::ConstantOp>(op) &&
+             !(op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op) &&
+               op->getNumRegions() == 0))
+      closed = false;
+    if (isa<arith::SIToFPOp, arith::UIToFPOp>(op))
+      closed = false;
+#ifdef __TLE__
+    for (unsigned i = 0; i < op->getNumResults(); ++i)
+      if (getTleExplicitResultEncoding(op, i))
+        closed = false;
+#endif
+  });
+  if (!closed || stores.size() != 2 || loads.size() != 1 ||
+      reductions.size() != 1 || loops.size() != 1)
+    return false;
+  auto loop = loops.front();
+  auto reduce = reductions.front();
+  auto loadType = dyn_cast<RankedTensorType>(loads.front().getType());
+  if (loop->getNumResults() != 2 || reduce.getAxis() != 1 ||
+      reduce->getNumResults() != 2 || reduce->getNumOperands() != 2 ||
+      reduce->getParentOfType<scf::ForOp>() != loop ||
+      loads.front()->getParentOfType<scf::ForOp>() != loop ||
+      loads.front().getIsVolatile() || !loadType)
+    return false;
+  auto parent = dyn_cast<BlockedEncodingAttr>(loadType.getEncoding());
+  if (!parent || parent.getOrder() != ArrayRef<unsigned>({1, 0}))
+    return false;
+  Type elementType = loadType.getElementType();
+  bool fp32 = elementType.isF32() &&
+              loadType.getShape() == ArrayRef<int64_t>({32, 128}) &&
+              parent.getSizePerThread() == ArrayRef<unsigned>({1, 4}) &&
+              parent.getThreadsPerWarp() == ArrayRef<unsigned>({1, 32}) &&
+              (parent.getWarpsPerCTA() == ArrayRef<unsigned>({16, 1}) ||
+               parent.getWarpsPerCTA() == ArrayRef<unsigned>({8, 1}));
+  bool fp16 = elementType.isF16() &&
+              loadType.getShape() == ArrayRef<int64_t>({16, 256}) &&
+              parent.getSizePerThread() == ArrayRef<unsigned>({1, 8}) &&
+              parent.getThreadsPerWarp() == ArrayRef<unsigned>({1, 32}) &&
+              parent.getWarpsPerCTA() == ArrayRef<unsigned>({4, 1});
+  bool bf16 = elementType.isBF16() &&
+              loadType.getShape() == ArrayRef<int64_t>({32, 128}) &&
+              parent.getSizePerThread() == ArrayRef<unsigned>({1, 8}) &&
+              parent.getThreadsPerWarp() == ArrayRef<unsigned>({2, 16}) &&
+              parent.getWarpsPerCTA() == ArrayRef<unsigned>({8, 1});
+  // Experimental extension: when the reduced dimension spans multiple
+  // warps but row-warps are at least as numerous, try keeping the no-convert
+  // reduction and group four adjacent rows per thread for value/index stores.
+  // The closed-use, mask and alignment checks below still apply.  This is a
+  // candidate for measurement, not a claim that every matching shape wins.
+  auto tile = loadType.getShape();
+  auto perThread = parent.getSizePerThread();
+  auto lanes = parent.getThreadsPerWarp();
+  auto warps = parent.getWarpsPerCTA();
+  bool fp32CrossWarp =
+      elementType.isF32() && tile.size() == 2 &&
+      perThread.size() == 2 && lanes.size() == 2 && warps.size() == 2 &&
+      perThread[0] == 1 && lanes[0] == 1 && lanes[1] == 32 &&
+      warps[1] > 1 && warps[0] >= warps[1] &&
+      // Require an integral number of complete packed row ownership groups.
+      // This conservative bound narrows the experiment; it is not a general
+      // occupancy or memory-transaction cost model.
+      tile[0] >= 4 * int64_t(warps[0]) * warps[1] &&
+      tile[0] % (4 * int64_t(warps[0]) * warps[1]) == 0 &&
+      tile[1] >= int64_t(lanes[1]) * warps[1] * perThread[1];
+  // Experimental narrow-input case: keep each row inside one warp while
+  // grouping two rows per warp owner. Require complete groups and the same
+  // closed-use and exact widening/truncation chain below; measure before use.
+  bool fp16CrossWarp =
+      elementType.isF16() && tile.size() == 2 &&
+      perThread.size() == 2 && lanes.size() == 2 && warps.size() == 2 &&
+      perThread[0] == 1 && lanes[0] == 1 && lanes[1] == 32 &&
+      warps[1] > 1 &&
+      tile[0] >= 2 * int64_t(warps[0]) * warps[1] &&
+      tile[0] % (2 * int64_t(warps[0]) * warps[1]) == 0 &&
+      tile[1] >= int64_t(lanes[1]) * warps[1] * perThread[1];
+  if (!fp32 && !fp16 && !bf16 && !fp32CrossWarp && !fp16CrossWarp)
+    return false;
+  auto valueType = dyn_cast<RankedTensorType>(reduce.getSrcs()[0].getType());
+  auto indexType = dyn_cast<RankedTensorType>(reduce.getSrcs()[1].getType());
+  if (!valueType || !valueType.getElementType().isF32() ||
+      valueType.getShape() != loadType.getShape() ||
+      valueType.getEncoding() != parent || !indexType ||
+      !indexType.getElementType().isInteger(32) ||
+      indexType.getShape() != loadType.getShape() ||
+      indexType.getEncoding() != parent)
+    return false;
+  // Narrow inputs must retain their exact widening/reduction/truncation chain.
+  // Retarget both casts together with the value and index writeback region.
+  if (!fp32 && !fp32CrossWarp) {
+    auto ext = reduce.getSrcs()[0].getDefiningOp<arith::ExtFOp>();
+    if (!ext || ext.getIn() != loads.front().getResult())
+      return false;
+  }
+  bool hasValue = false, hasIndex = false;
+  for (StoreOp store : stores) {
+    auto type = dyn_cast<RankedTensorType>(store.getValue().getType());
+    if (!type)
+      return false;
+    auto slice = dyn_cast<SliceEncodingAttr>(type.getEncoding());
+    if (store->getParentOfType<scf::ForOp>() ||
+        type.getShape() != ArrayRef<int64_t>({loadType.getShape()[0]}) || !slice ||
+        slice.getDim() != 1 || slice.getParent() != parent)
+      return false;
+    if (fp32 || fp32CrossWarp) {
+      if (store.getValue().getDefiningOp() != loop.getOperation())
+        return false;
+      hasValue |= type.getElementType().isF32();
+      hasIndex |= type.getElementType().isInteger(32);
+    } else if (type.getElementType() == elementType) {
+      auto trunc = store.getValue().getDefiningOp<arith::TruncFOp>();
+      if (!trunc || trunc.getIn() != loop.getResult(0))
+        return false;
+      hasValue = true;
+    } else if (type.getElementType().isInteger(32) &&
+               store.getValue() == loop.getResult(1)) {
+      hasIndex = true;
+    } else {
+      return false;
+    }
+  }
+  if (!hasValue || !hasIndex)
+    return false;
+  ModuleAxisInfoAnalysis axisInfo(module);
+  // Experiment: allow eight logical rows with four-element-aligned stores.
+  // MUSA StoreOp lowering caps FP32 vectors at 128 bits and also bounds them
+  // by pointer contiguity and mask alignment.  Keep original warp grouping;
+  // this still needs boundary/NaN correctness and device validation.
+  bool packEightRows = fp32CrossWarp &&
+                       tile[0] >= 8 * int64_t(warps[0]) &&
+                       tile[0] % (8 * int64_t(warps[0])) == 0;
+  if (packEightRows)
+    for (StoreOp store : stores)
+      if (axisInfo.getAlignment(store.getPtr()) < 4 ||
+          (store.getMask() && axisInfo.getMaskAlignment(store.getMask()) < 4))
+        packEightRows = false;
+  const unsigned rowsPerThread =
+      packEightRows ? 8 : fp16CrossWarp ? 2 :
+      (fp32CrossWarp || fp16 ||
+       (fp32 && parent.getWarpsPerCTA() == ArrayRef<unsigned>({8, 1})))
+          ? 4
+          : 2;
+  const unsigned columnsPerThread = parent.getSizePerThread()[1];
+  // Keep the original warp grouping; only the per-thread row grouping may
+  // change.  This still requires device semantic and performance validation.
+  SmallVector<unsigned> packedWarps(parent.getWarpsPerCTA().begin(),
+                                    parent.getWarpsPerCTA().end());
+  // Preserve warp decomposition for both narrow and FP32 reductions.  The
+  // combine region can be non-associative for NaNs; changing the tree can
+  // change both the selected value and index.  Packing rows alone still needs
+  // device-side equivalence and performance validation.
+  auto packed = BlockedEncodingAttr::get(
+      funcOp.getContext(), {rowsPerThread, columnsPerThread},
+      parent.getThreadsPerWarp(), packedWarps, parent.getOrder(),
+      parent.getCGALayout());
+  auto newType = [&](RankedTensorType type) -> RankedTensorType {
+    Attribute encoding = type.getEncoding();
+    if (encoding == parent)
+      return type.cloneWithEncoding(packed);
+    if (auto slice = dyn_cast<SliceEncodingAttr>(encoding);
+        slice && slice.getParent() == parent)
+      return type.cloneWithEncoding(
+          SliceEncodingAttr::get(funcOp.getContext(), slice.getDim(), packed));
+    return {};
+  };
+  SmallVector<std::pair<Value, RankedTensorType>> values;
+  funcOp.walk([&](Operation *op) {
+    auto collect = [&](Value value) {
+      if (auto type = dyn_cast<RankedTensorType>(value.getType())) {
+        auto replacement = newType(type);
+        if (!replacement)
+          closed = false;
+        else
+          values.emplace_back(value, replacement);
+      }
+    };
+    for (Value result : op->getResults())
+      collect(result);
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        for (BlockArgument arg : block.getArguments())
+          collect(arg);
+    if (auto constant = dyn_cast<arith::ConstantOp>(op);
+        constant && isa<RankedTensorType>(constant.getType()) &&
+        !isa<DenseElementsAttr>(constant.getValue()))
+      closed = false;
+  });
+  if (!closed)
+    return false;
+  const unsigned requiredStoreAlignment = packEightRows ? 4 : rowsPerThread;
+  for (StoreOp store : stores)
+    if (axisInfo.getAlignment(store.getPtr()) < requiredStoreAlignment ||
+        (store.getMask() &&
+         axisInfo.getMaskAlignment(store.getMask()) < requiredStoreAlignment))
+      return false;
+  if (axisInfo.getContiguity(loads.front().getPtr()) < columnsPerThread)
+    return false;
+  for (auto [value, type] : values) {
+    if (auto constant = value.getDefiningOp<arith::ConstantOp>())
+      constant.setValueAttr(
+          cast<DenseElementsAttr>(constant.getValue()).reshape(type));
+    value.setType(type);
+  }
+  traceRlcDecision("2", "accept", "consecutive-reduction-writeback-rows",
+                   reduce);
+  return true;
+}
+// Retarget only a matched dual writeback with a launch-time bounded-width
+// proof. Unproved shapes retain the existing layout and writeback path.
+static void specializeBoundedDualWriteback(FuncOp funcOp) {
+  ModuleOp module = funcOp->getParentOfType<ModuleOp>();
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  if (!target || target.getValue() != "musa:31" ||
+      !funcOp.getBody().hasOneBlock())
+    return;
+  Block &block = funcOp.getBody().front();
+  SmallVector<StoreOp> stores;
+  Operation *lastLoad = nullptr;
+  for (Operation &op : block) {
+    if (isa<ConvertLayoutOp, scf::IfOp, scf::ForOp, scf::WhileOp>(&op))
+      return;
+    if (isa<LoadOp>(&op))
+      lastLoad = &op;
+    if (auto store = dyn_cast<StoreOp>(&op))
+      stores.push_back(store);
+  }
+  if (!lastLoad || stores.size() != 2 || !stores[0].getMask() ||
+      stores[0].getMask() != stores[1].getMask())
+    return;
+  bool hasFloat = false, hasIndex = false;
+  Attribute encoding;
+  for (StoreOp store : stores) {
+    auto ptrTy = dyn_cast<RankedTensorType>(store.getPtr().getType());
+    auto valTy = dyn_cast<RankedTensorType>(store.getValue().getType());
+    if (!ptrTy || !valTy || ptrTy.getRank() != 2 ||
+        !isa<BlockedEncodingAttr>(ptrTy.getEncoding()) ||
+        getContigAlongMemoryOrder(ptrTy) != 2)
+      return;
+    if (encoding && encoding != ptrTy.getEncoding())
+      return;
+    encoding = ptrTy.getEncoding();
+    Type elem = valTy.getElementType();
+    hasFloat |= elem.isF16() || elem.isBF16() || elem.isF32();
+    hasIndex |= elem.isInteger(64);
+  }
+  if (!hasFloat || !hasIndex)
+    return;
+
+  auto constantInt = [](Value value) -> std::optional<int64_t> {
+    auto c = value.getDefiningOp<arith::ConstantOp>();
+    if (!c)
+      return std::nullopt;
+    auto attr = dyn_cast<IntegerAttr>(c.getValue());
+    if (!attr)
+      return std::nullopt;
+    return attr.getInt();
+  };
+
+  arith::DivSIOp div;
+  arith::RemSIOp rem;
+  arith::DivSIOp blocks;
+  arith::AddIOp numerator;
+  Value width;
+  int64_t tile = 0;
+  // Match div/rem of the same program coordinate by ceildiv(width, tile).
+  // The guarded one-block simplification is valid for any positive tile.
+  for (Operation &op : block) {
+    auto candidate = dyn_cast<arith::DivSIOp>(&op);
+    if (!candidate)
+      continue;
+    auto inner = candidate.getRhs().getDefiningOp<arith::DivSIOp>();
+    if (!inner)
+      continue;
+    auto size = constantInt(inner.getRhs());
+    auto add = inner.getLhs().getDefiningOp<arith::AddIOp>();
+    if (!size || *size < 2 || *size > 1024 || !add)
+      continue;
+    Value possibleWidth;
+    if (constantInt(add.getRhs()) == *size - 1)
+      possibleWidth = add.getLhs();
+    else if (constantInt(add.getLhs()) == *size - 1)
+      possibleWidth = add.getRhs();
+    if (!possibleWidth || !isa<BlockArgument>(possibleWidth) ||
+        !possibleWidth.getType().isInteger(32))
+      continue;
+    auto next = dyn_cast_or_null<arith::RemSIOp>(candidate->getNextNode());
+    if (!next || next.getLhs() != candidate.getLhs() ||
+        next.getRhs() != candidate.getRhs() ||
+        !add.getResult().hasOneUse() ||
+        !llvm::hasNItems(inner.getResult().getUses(), 2))
+      continue;
+    if (div)
+      return; // Ambiguous candidate; keep the original code.
+    div = candidate;
+    rem = next;
+    blocks = inner;
+    numerator = add;
+    width = possibleWidth;
+    tile = *size;
+  }
+  if (!div || !rem || !blocks || !numerator || !width)
+    return;
+  // The fast coordinate branch is inserted before numerator. Its program
+  // coordinate must already dominate that point, including for other kernels
+  // which happen to match the same arithmetic pattern.
+  if (Operation *coordDef = div.getLhs().getDefiningOp())
+    if (coordDef->getBlock() != &block ||
+        !coordDef->isBeforeInBlock(numerator.getOperation()))
+      return;
+  auto widthArg = cast<BlockArgument>(width);
+  // This attribute is a launch-time proof, carried in the specialization key.
+  // Without a matching exact tile and even divisibility, use the generic guard.
+  auto proofBound = funcOp.getArgAttrOfType<IntegerAttr>(
+      widthArg.getArgNumber(), "musa.rlc_positive_even_block_upper_bound");
+  auto proofDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
+      widthArg.getArgNumber(), "musa.rlc_positive_even_divisor");
+  auto existingDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
+      widthArg.getArgNumber(), "tt.divisibility");
+  if (proofBound && proofBound.getInt() == tile && proofDivisor &&
+      (proofDivisor.getInt() == 2 || proofDivisor.getInt() == 4 ||
+       proofDivisor.getInt() == 8 || proofDivisor.getInt() == 16)) {
+    int64_t divisor = proofDivisor.getInt();
+    if (existingDivisor) {
+      int64_t prior = existingDivisor.getInt();
+      if (prior <= 0 || (prior % divisor != 0 && divisor % prior != 0))
+        return; // Preserve unusual existing proofs unchanged.
+      if (prior > divisor)
+        divisor = prior;
+    }
+    OpBuilder b(numerator);
+    // Only the matched enhanced pass exposes divisibility to later lowering.
+    funcOp.setArgAttr(widthArg.getArgNumber(), "tt.divisibility",
+                      b.getI32IntegerAttr(divisor));
+    Value zero = arith::ConstantIntOp::create(b, numerator.getLoc(), 0, 32);
+    div.getResult().replaceAllUsesWith(div.getLhs());
+    rem.getResult().replaceAllUsesWith(zero);
+    rem.erase();
+    div.erase();
+    blocks.erase();
+    numerator.erase();
+    traceRlcDecision("2", "accept", "single-block-cache-class", funcOp);
+    return;
+  }
+  // No matching launch proof: keep the existing writeback path.
+  return;
+}
 } // namespace
 
 class TritonGPURemoveLayoutConversionsPass
@@ -5179,8 +5572,10 @@ public:
     // Per-phase options are AND-ed with the master option. Backward-propagation
     // and small-component solving depend on cost-based resolution (disabling it
     // forces both off); store-layout remat is independent.
-    bool costBased = enableRlcEnhance && enableCostBasedResolution && (rlcPhaseMask & 1u);
-    bool backwardProp = enableRlcEnhance && enableBackwardPropagation && (rlcPhaseMask & 2u);
+    bool costBased =
+        enableRlcEnhance && enableCostBasedResolution && (rlcPhaseMask & 1u);
+    bool backwardProp =
+        enableRlcEnhance && enableBackwardPropagation && (rlcPhaseMask & 2u);
     bool smallComponentSolving =
         enableRlcEnhance && enableSmallComponentSolving && (rlcPhaseMask & 4u);
     bool storeLayoutRemat =
@@ -5275,6 +5670,11 @@ public:
     if (applyPatternsGreedily(m, std::move(cleanUpPatterns2)).failed()) {
       signalPassFailure();
     }
+    if (smallComponentSolving)
+      m.walk([](FuncOp funcOp) {
+        packReductionWritebackRows(funcOp);
+        specializeBoundedDualWriteback(funcOp);
+      });
     LLVM_DEBUG({
       DBGS() << "Module after final cleanups:\n";
       m.dump();
@@ -5286,10 +5686,7 @@ std::unique_ptr<Pass>
 createTritonGPURemoveLayoutConversionsEnhanced(bool enhance, unsigned phaseMask) {
   TritonGPURemoveLayoutConversionsOptions options;
   options.enableRlcEnhance = enhance;
-  options.enableCostBasedResolution = (phaseMask & 1u) != 0;
-  options.enableBackwardPropagation = (phaseMask & 2u) != 0;
-  options.enableSmallComponentSolving = (phaseMask & 4u) != 0;
-  options.enableStoreLayoutRematerialization = (phaseMask & 8u) != 0;
+  options.rlcPhaseMask = phaseMask;
   return createTritonGPURemoveLayoutConversions(options);
 }
 
