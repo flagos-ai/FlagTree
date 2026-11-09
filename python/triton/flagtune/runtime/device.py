@@ -122,7 +122,7 @@ def _musa_architecture(value: Any) -> str:
 
 def _ascend_architecture(value: Any) -> str:
     text = str(value).strip().lower()
-    if not re.fullmatch(r"ascend[0-9][a-z0-9_]*", text):
+    if not re.fullmatch(r"ascend[0-9][a-z0-9_-]*", text):
         raise DeviceProbeError(f"NPU target has invalid architecture {value!r}; expected Ascend SoC name")
     return text
 

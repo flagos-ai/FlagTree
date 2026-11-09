@@ -172,7 +172,7 @@ def test_probe_rejects_invalid_native_architecture(monkeypatch):
         probe_flagtune_device()
 
 
-@pytest.mark.parametrize("arch", ["Ascend910B1", "Ascend910_9392", "Ascend310P3"])
+@pytest.mark.parametrize("arch", ["Ascend910B1", "Ascend910_9392", "Ascend310P3", "Ascend910B4-1"])
 def test_probe_npu_preserves_ascend_soc_and_device_index(monkeypatch, arch):
     from triton.flagtune.runtime import device
     from triton.flagtune.contract.identity import make_platform_key
