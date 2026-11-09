@@ -530,6 +530,32 @@ tt.func @atomic_scalar(%arg3: !tt.ptr<i32>) -> i32 {
   tt.return %4 : i32
 }
 
+// CHECK-LABEL: atomic_scalar_scratch_reuse
+tt.func @atomic_scalar_scratch_reuse(%ptr: !tt.ptr<i32>) -> i32 {
+  %zero = arith.constant 0 : i32
+  // Both results are used, so the atomics need shared scratch broadcasts.
+  // CHECK: tt.atomic_cas
+  // CHECK-NEXT: ttg.local_barrier
+  // CHECK-NEXT: tt.atomic_cas
+  %a = tt.atomic_cas acq_rel, gpu, %ptr, %zero, %zero : (!tt.ptr<i32>, i32, i32) -> i32
+  %b = tt.atomic_cas acq_rel, gpu, %ptr, %zero, %zero : (!tt.ptr<i32>, i32, i32) -> i32
+  %sum = arith.addi %a, %b : i32
+  tt.return %sum : i32
+}
+
+// CHECK-LABEL: atomic_add_scalar_scratch_reuse
+tt.func @atomic_add_scalar_scratch_reuse(%ptr: !tt.ptr<i32>) -> i32 {
+  %one = arith.constant 1 : i32
+  // Both results are used, so the atomics need shared scratch broadcasts.
+  // CHECK: tt.atomic_rmw add
+  // CHECK-NEXT: ttg.local_barrier
+  // CHECK-NEXT: tt.atomic_rmw add
+  %a = tt.atomic_rmw add, acq_rel, gpu, %ptr, %one : (!tt.ptr<i32>, i32) -> i32
+  %b = tt.atomic_rmw add, acq_rel, gpu, %ptr, %one : (!tt.ptr<i32>, i32) -> i32
+  %sum = arith.addi %a, %b : i32
+  tt.return %sum : i32
+}
+
 // CHECK-LABEL: atomic_scalar_no_use
 tt.func @atomic_scalar_no_use(%arg3: !tt.ptr<i32>) {
   %c0_i32 = arith.constant 0 : i32
