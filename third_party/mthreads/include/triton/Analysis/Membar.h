@@ -210,6 +210,10 @@ protected:
                       FuncBlockInfoMapT *funcBlockInfoMap,
                       OpBuilder *builder) = 0;
 
+  /// Finalizes analysis-owned IR annotations after the dataflow worklist has
+  /// reached a fixed point.
+  virtual void finalize(FunctionOpInterface) {}
+
   Allocation *allocation = nullptr;
   MembarFilterFn filter = nullptr;
 };
@@ -228,7 +232,9 @@ private:
                       FuncBlockInfoMapT *funcBlockInfoMap,
                       OpBuilder *builder) override;
 
-  void insertBarrier(Operation *operation, OpBuilder *builder);
+  void finalize(FunctionOpInterface funcOp) override;
+
+  Operation *insertBarrier(Operation *operation, OpBuilder *builder);
 };
 
 /// Postorder traversal on the callgraph to insert membar instructions

@@ -1,6 +1,7 @@
 #include "SqmmaPipelineUtils.h"
 
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -453,7 +454,7 @@ void pipelineSqmma(ModuleOp moduleOp, unsigned numStages) {
     SmallVector<triton::musa::SquadDotOp> sqmmaDots =
         collectPipelineSqmmaDots(loop);
     llvm::erase_if(sqmmaDots, [](triton::musa::SquadDotOp dot) {
-      return dot->hasAttr("musa_tle.explicit_sqmma");
+      return dot->hasAttr(triton::musa_tle::kMUSATLEExplicitSqmmaAttr);
     });
     if (sqmmaDots.empty())
       continue;

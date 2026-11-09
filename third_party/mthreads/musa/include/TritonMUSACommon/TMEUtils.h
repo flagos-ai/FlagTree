@@ -395,32 +395,59 @@ getPH1TMELeadingDimGrouping(ArrayRef<int64_t> shape, ArrayRef<unsigned> order,
                             unsigned elemBytes) {
   if (shape.size() != 2 || order.size() < 2)
     return PH1TMELeadingDimGrouping{};
+  if (elemBytes == 0 || order[0] >= shape.size() || order[1] >= shape.size())
+    return failure();
 
   int64_t leadingDim = shape[order[0]];
-  int64_t leadingWidthBytes = leadingDim * static_cast<int64_t>(elemBytes);
-  if (leadingDim <= 0 || leadingWidthBytes <= 0)
+  int64_t leadingWidthBytes = 0;
+  if (leadingDim <= 0 ||
+      llvm::MulOverflow(leadingDim, static_cast<int64_t>(elemBytes),
+                        leadingWidthBytes) ||
+      leadingWidthBytes <= 0)
     return failure();
 
   if (leadingWidthBytes <= 256) {
+    int64_t outerDim = shape[order[1]];
+    int64_t elemsPerGroup = 0;
+    if (outerDim <= 0 || llvm::MulOverflow(outerDim, leadingDim, elemsPerGroup))
+      return failure();
     return PH1TMELeadingDimGrouping{/*numGroups=*/1,
                                     /*elemsPerGroupInLeadingDim=*/leadingDim,
-                                    /*elemsPerGroup=*/shape[order[1]] *
-                                        leadingDim};
+                                    /*elemsPerGroup=*/elemsPerGroup};
   }
 
   int64_t maxColsPerGroup = 256 / static_cast<int64_t>(elemBytes);
-  if (maxColsPerGroup <= 0)
-    return failure();
-  int64_t numGroups = (leadingDim + maxColsPerGroup - 1) / maxColsPerGroup;
-  if (numGroups <= 0 || (leadingDim % numGroups) != 0)
+  if (maxColsPerGroup <= 0 ||
+      !llvm::isPowerOf2_64(static_cast<uint64_t>(elemBytes)))
     return failure();
 
-  int64_t elemsPerGroupInLeadingDim = leadingDim / numGroups;
+  // A TME descriptor addresses one contiguous group at a time. Select the
+  // largest power-of-two element width which divides the leading dimension
+  // and stays within PH1's 256-byte descriptor limit. For example, 320 bf16
+  // elements need five groups of 64 (128 bytes each); the naive
+  // ceil(320 / 128) == 3 grouping is neither divisible nor representable.
+  int64_t numGroups = 0;
+  int64_t elemsPerGroupInLeadingDim = 0;
+  int64_t largestPowerOfTwoElems = 1;
+  while (largestPowerOfTwoElems <= maxColsPerGroup / 2)
+    largestPowerOfTwoElems *= 2;
+  for (int64_t elems = largestPowerOfTwoElems; elems > 0; elems >>= 1) {
+    if ((leadingDim % elems) == 0) {
+      elemsPerGroupInLeadingDim = elems;
+      numGroups = leadingDim / elems;
+      break;
+    }
+  }
+  if (numGroups <= 0 || elemsPerGroupInLeadingDim <= 0)
+    return failure();
   int64_t totalElems = 1;
   for (int64_t dim : shape) {
     if (dim <= 0)
       return failure();
-    totalElems *= dim;
+    int64_t product = 0;
+    if (llvm::MulOverflow(totalElems, dim, product))
+      return failure();
+    totalElems = product;
   }
   if ((totalElems % numGroups) != 0)
     return failure();
@@ -627,7 +654,15 @@ resolveCanonicalPH1TMESharedCarrierConfig(ttg::MemDescType localType) {
 
   constexpr int64_t kLineBytes = 256;
   int64_t elemBytes = *maybeElemBytes;
-  int64_t leadingWidthBytes = localType.getShape()[order.front()] * elemBytes;
+  ArrayRef<int64_t> physicalShape = localType.getAllocShape();
+  if (physicalShape.empty())
+    physicalShape = localType.getShape();
+  else {
+    if (physicalShape.size() < localType.getShape().size())
+      return failure();
+    physicalShape = physicalShape.take_back(localType.getShape().size());
+  }
+  int64_t leadingWidthBytes = physicalShape[order.front()] * elemBytes;
   if (leadingWidthBytes <= 0)
     return failure();
 
@@ -772,7 +807,8 @@ inline FailureOr<ResolvedTMESwizzleConfig>
 resolveTMESwizzleConfigFromMatrixView(ttg::MemDescType localType,
                                       ArrayRef<int64_t> matrixPhysicalShape,
                                       ArrayRef<unsigned> matrixOrder) {
-  if (localType.getShape().size() == 2)
+  if (localType.getShape().size() == 2 &&
+      localType.getShape() == matrixPhysicalShape)
     return resolveTMESwizzleConfigFromEncoding(localType);
 
   auto swizzled =

@@ -1,6 +1,7 @@
 #ifdef __TLE__
 
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/BarrierUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 
@@ -9,7 +10,10 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -29,9 +33,8 @@ namespace {
 
 namespace ttg = triton::gpu;
 namespace ttmg = triton::musa;
+namespace musa_tle = triton::musa_tle;
 
-static constexpr StringLiteral kStaticWarpSpecializeAttr =
-    "musa_tle.static_warp_specialize";
 static constexpr StringLiteral kLocalSyncIntrinsic = "llvm.musa.syncthreads.lm";
 static constexpr StringLiteral kBarRecordIntrinsic =
     "llvm.musa.async.bar.record";
@@ -40,7 +43,135 @@ struct PartitionSync {
   LLVM::CallIntrinsicOp op;
   int32_t numWarps;
   Region *partition;
+  int32_t sharedGroup = -1;
 };
+
+static FailureOr<Value> getForwardedBlockArgument(Block *predecessor,
+                                                  Block *successor,
+                                                  unsigned argument) {
+  auto branch = dyn_cast<BranchOpInterface>(predecessor->getTerminator());
+  if (!branch)
+    return failure();
+  auto successorIt = llvm::find(branch->getSuccessors(), successor);
+  if (successorIt == branch->getSuccessors().end())
+    return failure();
+  unsigned successorIndex =
+      std::distance(branch->getSuccessors().begin(), successorIt);
+  SuccessorOperands operands = branch.getSuccessorOperands(successorIndex);
+  if (argument < operands.getProducedOperandCount())
+    return failure();
+  ValueRange forwarded = operands.getForwardedOperands();
+  unsigned forwardedIndex = argument - operands.getProducedOperandCount();
+  if (forwardedIndex >= forwarded.size())
+    return failure();
+  return forwarded[forwardedIndex];
+}
+
+static bool isConstant(Value value, int64_t expected) {
+  Attribute constant;
+  if (!matchPattern(value, m_Constant(&constant)))
+    return false;
+  auto integer = dyn_cast<IntegerAttr>(constant);
+  return integer && integer.getInt() == expected;
+}
+
+static FailureOr<std::pair<Value, int64_t>>
+getPositiveConstantIncrement(Value value, Value induction) {
+  auto match = [&](Value lhs,
+                   Value rhs) -> FailureOr<std::pair<Value, int64_t>> {
+    Value increment;
+    if (lhs == induction)
+      increment = rhs;
+    else if (rhs == induction)
+      increment = lhs;
+    else
+      return failure();
+
+    APInt constant;
+    if (!matchPattern(increment, m_ConstantInt(&constant)) ||
+        constant.getSExtValue() <= 0)
+      return failure();
+    return std::make_pair(increment, constant.getSExtValue());
+  };
+  if (auto add = value.getDefiningOp<arith::AddIOp>())
+    return match(add.getLhs(), add.getRhs());
+  if (auto add = value.getDefiningOp<LLVM::AddOp>())
+    return match(add.getLhs(), add.getRhs());
+  return failure();
+}
+
+// scf.for has become CFG by late warp-specialize lowering.  Recover the
+// canonical induction variable, lower bound, and positive constant step so
+// every consumer in a shared epoch group waits on the same alternating
+// hardware phase.  In particular, a grid-stride persistent loop uses
+// ((tile - pid) / NUM_SMS) & 1 rather than tile & 1.
+static FailureOr<Value> resolvePartitionSyncPhase(LLVM::CallIntrinsicOp sync,
+                                                  Region &partition,
+                                                  DominanceInfo &dominance,
+                                                  IRRewriter &rewriter) {
+  Block *loopHeader = nullptr;
+  Value loopInitial;
+  Value loopStep;
+  int64_t loopStepValue = 0;
+  for (Block &candidate : partition.getBlocks()) {
+    if (candidate.getNumArguments() == 0 ||
+        !dominance.dominates(&candidate, sync->getBlock()))
+      continue;
+    Value induction = candidate.getArgument(0);
+    auto inductionType = dyn_cast<IntegerType>(induction.getType());
+    if (!inductionType || inductionType.getWidth() != 32)
+      continue;
+
+    SmallVector<Block *> entries;
+    SmallVector<Block *> backedges;
+    for (Block *predecessor : candidate.getPredecessors()) {
+      (dominance.dominates(&candidate, predecessor) ? backedges : entries)
+          .push_back(predecessor);
+    }
+    if (entries.size() != 1 || backedges.size() != 1)
+      continue;
+    Block *backedge = backedges.front();
+    // The epoch marker is inserted at the outer-loop latch.  It must
+    // therefore dominate the selected loop's backedge.  A completed nested
+    // K loop can dominate the marker, but the marker cannot dominate that
+    // inner backedge, which keeps its induction variable out of the phase.
+    if (!dominance.dominates(sync->getBlock(), backedge))
+      continue;
+    FailureOr<Value> initial =
+        getForwardedBlockArgument(entries.front(), &candidate, 0);
+    FailureOr<Value> next = getForwardedBlockArgument(backedge, &candidate, 0);
+    if (failed(initial) || failed(next))
+      continue;
+    FailureOr<std::pair<Value, int64_t>> increment =
+        getPositiveConstantIncrement(*next, induction);
+    if (failed(increment))
+      continue;
+
+    if (loopHeader)
+      return failure();
+    loopHeader = &candidate;
+    loopInitial = *initial;
+    loopStep = (*increment).first;
+    loopStepValue = (*increment).second;
+  }
+
+  if (!loopHeader)
+    return failure();
+  rewriter.setInsertionPoint(sync);
+  Value iteration = loopHeader->getArgument(0);
+  if (!isConstant(loopInitial, 0))
+    iteration =
+        arith::SubIOp::create(rewriter, sync.getLoc(), iteration, loopInitial)
+            .getResult();
+  if (loopStepValue != 1)
+    iteration =
+        arith::DivUIOp::create(rewriter, sync.getLoc(), iteration, loopStep)
+            .getResult();
+
+  Value one = arith::ConstantIntOp::create(rewriter, sync.getLoc(), 1, 32);
+  return arith::AndIOp::create(rewriter, sync.getLoc(), iteration, one)
+      .getResult();
+}
 
 static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
                                             ttg::WarpSpecializeOp ws,
@@ -64,23 +195,158 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
           (!arch.getAsInteger(10, capability) && capability >= 31);
   }
 
+  SmallVector<Region *> workerRegions(ws.getPartitionRegions().begin(),
+                                      ws.getPartitionRegions().end());
+  ArrayRef<int32_t> workerWarps = ws.getPartitionNumWarps();
+  if (workerRegions.empty() || workerRegions.size() != workerWarps.size())
+    return ws.emitOpError(
+        "MUSA TLE partition synchronization requires matching worker "
+        "regions and warp counts");
+
+  // The regular layout assigns the final worker to the producer.
+  // Every non-explicit local barrier that survives pipe dependency analysis
+  // is a real partition rendezvous. Explicit frontend CTA barriers remain
+  // untouched and are lowered after the static partitions are flattened.
+  Region &producerRegion = *workerRegions.back();
+  int32_t producerWarps = workerWarps.back();
   SmallVector<PartitionSync> syncs;
-  auto collect = [&](Region &region, int32_t warps) {
-    region.walk([&](LLVM::CallIntrinsicOp call) {
-      if (call.getIntrin() == kLocalSyncIntrinsic)
-        syncs.push_back({call, warps, &region});
+  SmallVector<LLVM::CallIntrinsicOp> tmeReuseSyncs;
+  producerRegion.walk([&](LLVM::CallIntrinsicOp call) {
+    if (call.getIntrin() != kLocalSyncIntrinsic ||
+        call->hasAttr(musa_tle::kMUSATLEExplicitCtaSyncAttr))
+      return;
+    if (needsLmaCompletion &&
+        call->hasAttr(musa_tle::kMUSATLEPipeTMEReuseSyncAttr)) {
+      tmeReuseSyncs.push_back(call);
+      return;
+    }
+    syncs.push_back({call, producerWarps, &producerRegion, -1});
+  });
+
+  bool invalidSharedGroup = false;
+  auto collectConsumerSyncs = [&](Region &region, int32_t warps) {
+    region.walk<WalkOrder::PreOrder>([&](Operation *op) {
+      auto call = dyn_cast<LLVM::CallIntrinsicOp>(op);
+      if (!call)
+        return WalkResult::advance();
+      if (call.getIntrin() != kLocalSyncIntrinsic ||
+          call->hasAttr(musa_tle::kMUSATLEExplicitCtaSyncAttr))
+        return WalkResult::advance();
+      if (auto group = call->getAttrOfType<IntegerAttr>(
+              musa_tle::kMUSATLEConsumerEpochSyncAttr)) {
+        if (group.getInt() < 0 ||
+            group.getInt() > std::numeric_limits<int32_t>::max()) {
+          invalidSharedGroup = true;
+          return WalkResult::interrupt();
+        }
+        syncs.push_back(
+            {call, warps, &region, static_cast<int32_t>(group.getInt())});
+        return WalkResult::advance();
+      }
+      syncs.push_back({call, warps, &region, -1});
+      return WalkResult::advance();
     });
   };
-  collect(ws.getDefaultRegion(), defaultWarps);
-  for (auto [region, warps] :
-       llvm::zip_equal(ws.getPartitionRegions(), ws.getPartitionNumWarps()))
-    collect(*region, warps);
+  collectConsumerSyncs(ws.getDefaultRegion(), defaultWarps);
+  for (unsigned index = 0; index + 1 < workerRegions.size(); ++index)
+    collectConsumerSyncs(*workerRegions[index], workerWarps[index]);
 
-  llvm::DenseSet<Region *> partitions;
-  for (auto &sync : syncs)
-    partitions.insert(sync.partition);
+  if (invalidSharedGroup)
+    return ws.emitOpError(
+        "MUSA TLE consumer epoch synchronization group must be a "
+        "non-negative int32");
+
+  // The bundled LLVM does not register this newer MCC intrinsic. Declare it
+  // as an external call, as for memcpy.g2s; MCC resolves the intrinsic later.
+  LLVM::LLVMFuncOp lmaWait;
+  if (needsLmaCompletion && (!syncs.empty() || !tmeReuseSyncs.empty())) {
+    StringRef name = "llvm.musa.lma.wait";
+    lmaWait = module.lookupSymbol<LLVM::LLVMFuncOp>(name);
+    if (!lmaWait) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto type = LLVM::LLVMFunctionType::get(
+          LLVM::LLVMVoidType::get(module.getContext()), {});
+      lmaWait = LLVM::LLVMFuncOp::create(rewriter, ws.getLoc(), name, type);
+    }
+  }
+
+  // Membar inserts this sync for the loop-carried WAW on a pipe-managed TME
+  // payload.  PH1 still needs the local-memory completion edge, but turning
+  // it into a partition rendezvous allocates an unnecessary hardware barrier.
+  // Keep the completion semantics with the target's LMA wait instead.
+  for (LLVM::CallIntrinsicOp sync : tmeReuseSyncs) {
+    rewriter.setInsertionPoint(sync);
+    LLVM::CallOp::create(rewriter, sync.getLoc(), lmaWait, ValueRange{});
+    rewriter.eraseOp(sync);
+  }
+
   if (syncs.empty())
     return success();
+
+  llvm::DenseSet<Region *> privatePartitions;
+  llvm::DenseMap<int32_t, int32_t> sharedGroupWarps;
+  llvm::DenseMap<int32_t, llvm::DenseSet<Region *>> sharedGroupPartitions;
+  SmallVector<int32_t> sharedGroupOrder;
+  for (PartitionSync &sync : syncs) {
+    if (sync.sharedGroup < 0) {
+      privatePartitions.insert(sync.partition);
+      continue;
+    }
+    auto &partitions = sharedGroupPartitions[sync.sharedGroup];
+    if (!partitions.insert(sync.partition).second)
+      return sync.op.emitOpError(
+          "MUSA TLE consumer epoch sync group contains duplicate markers "
+          "for one partition");
+    auto it = sharedGroupWarps.find(sync.sharedGroup);
+    if (it == sharedGroupWarps.end()) {
+      sharedGroupWarps[sync.sharedGroup] = sync.numWarps;
+      sharedGroupOrder.push_back(sync.sharedGroup);
+      continue;
+    }
+    if (it->second > std::numeric_limits<int32_t>::max() - sync.numWarps)
+      return sync.op.emitOpError(
+          "MUSA TLE shared consumer epoch warp count overflow");
+    it->second += sync.numWarps;
+  }
+
+  if (!sharedGroupOrder.empty()) {
+    ArrayRef<int32_t> workerWarps = ws.getPartitionNumWarps();
+    llvm::DenseSet<Region *> expectedConsumerPartitions;
+    expectedConsumerPartitions.insert(&ws.getDefaultRegion());
+    int64_t expectedConsumerWarps = defaultWarps;
+    // The regular layout places the producer in the final worker partition.
+    // Every preceding partition participates in the shared consumer epoch
+    // rendezvous.
+    for (unsigned index = 0; index + 1 < workerWarps.size(); ++index) {
+      expectedConsumerWarps += workerWarps[index];
+      expectedConsumerPartitions.insert(ws.getPartitionRegions()[index]);
+    }
+    if (expectedConsumerWarps <= 0 ||
+        expectedConsumerWarps > std::numeric_limits<int32_t>::max())
+      return syncs.front().op.emitOpError(
+          "MUSA TLE total consumer warp count overflow");
+    for (int32_t group : sharedGroupOrder) {
+      const llvm::DenseSet<Region *> &actual =
+          sharedGroupPartitions.lookup(group);
+      bool samePartitions =
+          actual.size() == expectedConsumerPartitions.size() &&
+          llvm::all_of(expectedConsumerPartitions,
+                       [&](Region *region) { return actual.contains(region); });
+      if (!samePartitions ||
+          sharedGroupWarps.lookup(group) != expectedConsumerWarps)
+        return syncs.front().op.emitOpError(
+            "MUSA TLE consumer epoch sync must cover every consumer "
+            "partition exactly once");
+    }
+  }
+
+  int64_t requiredBarrierIds =
+      privatePartitions.size() + sharedGroupOrder.size();
+  if (requiredBarrierIds <= 0 ||
+      requiredBarrierIds > std::numeric_limits<int32_t>::max())
+    return syncs.front().op.emitOpError(
+        "MUSA TLE partition synchronization barrier count overflow");
 
   // Each thread executes exactly one static partition, which reuses one
   // hardware barrier. Track its phase explicitly across every rendezvous,
@@ -99,23 +365,8 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
     LLVM::StoreOp::create(rewriter, ws.getLoc(), zero, phaseSlot);
   }
 
-  // The bundled LLVM does not register this newer MCC intrinsic. Declare it
-  // as an external call, as for memcpy.g2s; MCC resolves the intrinsic later.
-  LLVM::LLVMFuncOp lmaWait;
-  if (needsLmaCompletion) {
-    StringRef name = "llvm.musa.lma.wait";
-    lmaWait = module.lookupSymbol<LLVM::LLVMFuncOp>(name);
-    if (!lmaWait) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(module.getBody());
-      auto type = LLVM::LLVMFunctionType::get(
-          LLVM::LLVMVoidType::get(module.getContext()), {});
-      lmaWait = LLVM::LLVMFuncOp::create(rewriter, ws.getLoc(), name, type);
-    }
-  }
-
   auto reserved = ttmg::reserveBarrierIdRange(
-      syncs.front().op, static_cast<int32_t>(partitions.size()));
+      syncs.front().op, static_cast<int32_t>(requiredBarrierIds));
   if (failed(reserved))
     return syncs.front().op.emitOpError(
         "MUSA TLE partition synchronization exhausted hardware barrier "
@@ -137,17 +388,26 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
   else
     rewriter.setInsertionPoint(ws);
   Value phase = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-  llvm::DenseMap<Region *, Value> barrierIds;
+  DominanceInfo dominance(func);
+  llvm::DenseMap<Region *, Value> privateBarrierIds;
+  llvm::DenseMap<int32_t, Value> sharedBarrierIds;
   SmallVector<std::pair<Value, Value>> initializationArgs;
   int32_t nextId = *reserved;
   for (PartitionSync &sync : syncs) {
-    if (barrierIds.count(sync.partition))
+    if (sync.sharedGroup >= 0 || privateBarrierIds.count(sync.partition))
       continue;
     Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
     Value count =
         arith::ConstantIntOp::create(rewriter, loc, sync.numWarps, 32);
     initializationArgs.push_back({id, count});
-    barrierIds[sync.partition] = id;
+    privateBarrierIds[sync.partition] = id;
+  }
+  for (int32_t group : sharedGroupOrder) {
+    Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
+    Value count = arith::ConstantIntOp::create(
+        rewriter, loc, sharedGroupWarps.lookup(group), 32);
+    initializationArgs.push_back({id, count});
+    sharedBarrierIds[group] = id;
   }
 
   Value tid =
@@ -172,14 +432,27 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
 
   for (PartitionSync &sync : syncs) {
     rewriter.setInsertionPoint(sync.op);
-    Value id = barrierIds.lookup(sync.partition);
+    Value id = sync.sharedGroup >= 0 ? sharedBarrierIds.lookup(sync.sharedGroup)
+                                     : privateBarrierIds.lookup(sync.partition);
     // syncthreads.lm also completes preceding local-memory accesses. A named
     // arrival/wait alone loses that ordering on PH1, including when vector
     // loads are still outstanding as the shared buffer is reused.
     if (needsLmaCompletion)
       LLVM::CallOp::create(rewriter, sync.op.getLoc(), lmaWait, ValueRange{});
-    Value arrived = LLVM::LoadOp::create(rewriter, sync.op.getLoc(),
-                                         rewriter.getI32Type(), phaseSlot);
+    Value arrived;
+    if (sync.sharedGroup >= 0) {
+      FailureOr<Value> resolved = resolvePartitionSyncPhase(
+          sync.op, *sync.partition, dominance, rewriter);
+      if (failed(resolved))
+        return sync.op.emitOpError(
+            "MUSA TLE consumer epoch sync requires exactly one canonical "
+            "outer-loop induction variable");
+      arrived = *resolved;
+    } else {
+      arrived = LLVM::LoadOp::create(rewriter, sync.op.getLoc(),
+                                     rewriter.getI32Type(), phaseSlot)
+                    .getResult();
+    }
     LLVM::CallIntrinsicOp::create(
         rewriter, sync.op.getLoc(),
         rewriter.getStringAttr("llvm.musa.async.arrive.none.phaseid"),
@@ -188,10 +461,13 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         rewriter, sync.op.getLoc(),
         rewriter.getStringAttr("llvm.musa.async.wait"),
         ValueRange{id, arrived});
-    Value one = arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 1, 32);
-    Value nextPhase =
-        arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
-    LLVM::StoreOp::create(rewriter, sync.op.getLoc(), nextPhase, phaseSlot);
+    if (sync.sharedGroup < 0) {
+      Value one =
+          arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 1, 32);
+      Value nextPhase =
+          arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
+      LLVM::StoreOp::create(rewriter, sync.op.getLoc(), nextPhase, phaseSlot);
+    }
     rewriter.eraseOp(sync.op);
   }
 
@@ -324,21 +600,31 @@ static LogicalResult lowerStaticWarpSpecialize(LLVM::LLVMFuncOp func,
   if (workerRegions.size() == 1) {
     Region &workerRegion = *workerRegions.front();
     funcBlocks.splice(continuation->getIterator(), workerRegion.getBlocks());
-    Block *workerJoin =
+    Block *producerJoin =
         rewriter.createBlock(&funcBody, continuation->getIterator());
     funcBlocks.splice(continuation->getIterator(), defaultRegion.getBlocks());
 
-    for (ttg::WarpReturnOp op : workerReturns.front()) {
+    Block *producerRoot = workerRoots.front();
+    Block *consumerRoot = defaultRoot;
+    SmallVector<Operation *> producerTerminators;
+    SmallVector<Operation *> consumerTerminators;
+    for (ttg::WarpReturnOp op : workerReturns.front())
+      producerTerminators.push_back(op);
+    for (ttg::WarpYieldOp op : defaultYields)
+      consumerTerminators.push_back(op);
+
+    for (Operation *op : producerTerminators) {
       rewriter.setInsertionPoint(op);
-      cf::BranchOp::create(rewriter, op.getLoc(), workerJoin);
+      cf::BranchOp::create(rewriter, op->getLoc(), producerJoin);
       rewriter.eraseOp(op);
     }
-    for (ttg::WarpYieldOp op : defaultYields) {
-      if (op.getNumOperands() != 0)
-        return op.emitOpError(
+    for (Operation *op : consumerTerminators) {
+      if (auto yield = dyn_cast<ttg::WarpYieldOp>(op);
+          yield && yield.getNumOperands() != 0)
+        return op->emitOpError(
             "MUSA TLE static default partition must not yield values");
       rewriter.setInsertionPoint(op);
-      cf::BranchOp::create(rewriter, op.getLoc(), continuation);
+      cf::BranchOp::create(rewriter, op->getLoc(), continuation);
       rewriter.eraseOp(op);
     }
 
@@ -352,15 +638,15 @@ static LogicalResult lowerStaticWarpSpecialize(LLVM::LLVMFuncOp func,
                     .getResult(0);
     Value boundaryValue =
         arith::ConstantIntOp::create(rewriter, loc, threadEnds.front(), 32);
-    Value isWorker = arith::CmpIOp::create(
+    Value isProducer = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::uge, tid, boundaryValue);
-    cf::CondBranchOp::create(rewriter, loc, isWorker, workerRoots.front(),
-                             ValueRange{}, workerJoin, ValueRange{});
+    cf::CondBranchOp::create(rewriter, loc, isProducer, producerRoot,
+                             ValueRange{}, producerJoin, ValueRange{});
 
-    rewriter.setInsertionPointToEnd(workerJoin);
-    Value isDefault = arith::CmpIOp::create(
+    rewriter.setInsertionPointToEnd(producerJoin);
+    Value isConsumer = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::ult, tid, boundaryValue);
-    cf::CondBranchOp::create(rewriter, loc, isDefault, defaultRoot,
+    cf::CondBranchOp::create(rewriter, loc, isConsumer, consumerRoot,
                              ValueRange{}, continuation, ValueRange{});
     return success();
   }
@@ -425,13 +711,22 @@ class LowerWarpSpecializePass
 public:
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    auto stripInternalSyncMarkers = [&]() {
+      module.walk([&](LLVM::CallIntrinsicOp call) {
+        call->removeAttr(musa_tle::kMUSATLEExplicitCtaSyncAttr);
+        call->removeAttr(musa_tle::kMUSATLEPipeTMEReuseSyncAttr);
+        call->removeAttr(musa_tle::kMUSATLELayoutConversionSyncAttr);
+      });
+    };
     SmallVector<ttg::WarpSpecializeOp> marked;
     module.walk([&](ttg::WarpSpecializeOp ws) {
-      if (ws->hasAttr(kStaticWarpSpecializeAttr))
+      if (ws->hasAttr(musa_tle::kMUSATLEStaticWarpSpecializeAttr))
         marked.push_back(ws);
     });
-    if (marked.empty())
+    if (marked.empty()) {
+      stripInternalSyncMarkers();
       return;
+    }
     if (marked.size() != 1) {
       marked[1].emitOpError(
           "MUSA TLE static warp_specialize supports exactly one marked "
@@ -461,8 +756,11 @@ public:
 
     IRRewriter rewriter(&getContext());
     if (failed(lowerWarpGroupBarriers(func, marked.front(), rewriter)) ||
-        failed(lowerStaticWarpSpecialize(func, marked.front(), rewriter)))
+        failed(lowerStaticWarpSpecialize(func, marked.front(), rewriter))) {
       signalPassFailure();
+      return;
+    }
+    stripInternalSyncMarkers();
   }
 };
 

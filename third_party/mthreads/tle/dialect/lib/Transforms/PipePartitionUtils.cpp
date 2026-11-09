@@ -1,6 +1,7 @@
 #ifdef __TLE__
 
 #include "MUSATLE/Transforms/PipePartitionUtils.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
@@ -14,14 +15,11 @@ namespace ttg = triton::gpu;
 
 namespace {
 
-constexpr StringLiteral kStaticWarpSpecializeAttr =
-    "musa_tle.static_warp_specialize";
-
 static LogicalResult verifyMarkedWarpSpecialize(ttg::WarpSpecializeOp ws,
                                                 ModuleOp module) {
   SmallVector<ttg::WarpSpecializeOp> marked;
   module.walk([&](ttg::WarpSpecializeOp candidate) {
-    if (candidate->hasAttr(kStaticWarpSpecializeAttr))
+    if (candidate->hasAttr(kMUSATLEStaticWarpSpecializeAttr))
       marked.push_back(candidate);
   });
   if (marked.size() != 1 || marked.front() != ws)

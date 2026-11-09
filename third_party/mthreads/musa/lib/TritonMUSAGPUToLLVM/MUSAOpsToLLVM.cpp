@@ -513,7 +513,12 @@ struct InitArrivalOpConversion
                           .i32_val(static_cast<int32_t>(*numWarps));
     }
 
-    Value launchPred = buildTMEIssueOnlyPredicate(loc, rewriter);
+    Value truePred = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+#ifdef __TLE__
+    Value launchPred = buildTMEIssuePredicate(truePred, loc, rewriter, op);
+#else
+    Value launchPred = buildTMEIssuePredicate(truePred, loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId(), arriveCount,
                                    adaptor.getPhaseId()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,

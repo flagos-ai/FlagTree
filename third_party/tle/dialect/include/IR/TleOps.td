@@ -105,7 +105,9 @@ def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr, TT_Int]>;
 def Tle_LocalPointerIndexType : AnyTypeOf<[TT_Tensor, TT_Int]>;
 def Tle_WGMMAAType : AnyTypeOf<[TT_FpIntTensor, TTG_MemDescType]>;
 
-def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure]> {
+// Tensor indices and the pointer result share a register encoding. The source
+// MemDesc has an independent storage encoding (ignored by this tensor trait).
+def Tle_LocalPointersOp : Tle_Op<"local_pointers", [Pure, SameOperandsAndResultEncoding]> {
   let arguments = (ins TTG_MemDescType:$src,
       Variadic<Tle_LocalPointerIndexType>:$indices);
   let results = (outs Tle_LocalPointerResultType:$result);

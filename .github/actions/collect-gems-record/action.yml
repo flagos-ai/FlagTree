@@ -1,0 +1,197 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Collect FlagGems Record'
+description: >-
+  Flatten one FlagGems run into record.json and append it to the ledger. The
+  CI context is the point: backend, runner, commit and PR number appear
+  nowhere in summary.json, so they are passed in here.
+
+inputs:
+  output-dir:
+    description: >-
+      Directory holding this run's summary.json, where record.json is written.
+      Empty, or without a summary.json, means there is nothing to collect.
+    required: true
+  baseline-dir:
+    description: >-
+      Baseline directory, read for commit_id.txt so the deltas can be
+      attributed to a specific baseline.
+    required: false
+    default: ''
+  ledger-dir:
+    description: >-
+      Durable store. Run-level records are appended to <ledger-dir>/runs.jsonl
+      and operator rows go to <ledger-dir>/operators/<record_id>.jsonl.
+    required: false
+    default: ''
+  kind:
+    description: "'test' for a PR run, 'baseline' for a push run"
+    required: true
+  backend:
+    description: 'Backend name, e.g. nvidia, ascend'
+    required: true
+  variant:
+    description: >-
+      Configuration label for a backend testing several at once. Becomes part
+      of the record id so those results do not overwrite one another.
+    required: false
+    default: ''
+  runner:
+    description: 'Runner label the job ran on'
+    required: false
+    default: ''
+  flaggems-tag:
+    description: 'FlagGems release under test'
+    required: false
+    default: ''
+  flagtree-sha:
+    description: 'Commit under test'
+    required: false
+    default: ''
+  flagtree-branch:
+    description: 'Branch under test'
+    required: false
+    default: ''
+  pr-number:
+    description: 'Pull request number, empty for a baseline run'
+    required: false
+    default: ''
+  pr-url:
+    description: 'Link to the pull request'
+    required: false
+    default: ''
+  actor:
+    description: 'GitHub login that triggered the run'
+    required: false
+    default: ''
+  run-url:
+    description: 'Link back to this workflow run'
+    required: false
+    default: ''
+  build-outcome:
+    description: >-
+      Outcome of the build step. Use steps.<id>.outcome, not conclusion:
+      continue-on-error rewrites conclusion.
+    required: false
+    default: ''
+  test-outcome:
+    description: 'Outcome of the test step, same caveat as build-outcome'
+    required: false
+    default: ''
+  best-updated:
+    description: >-
+      Baseline runs only: whether this run became the new best baseline.
+    required: false
+    default: ''
+  notify:
+    description: >-
+      Also decide whether the run deserves a chat message, and write
+      notification.json when it does. Leave unset to collect only.
+    required: false
+    default: 'false'
+  python:
+    description: 'Python interpreter to use'
+    required: false
+    default: 'python3'
+
+outputs:
+  record-file:
+    description: >-
+      Path to the record that was written, empty when there was nothing to
+      collect. Gate a downstream reporting step on this being non-empty.
+    value: ${{ steps.collect.outputs.record-file }}
+  schema-file:
+    description: >-
+      Table schema matching the record. Pass it to the reporting step so a
+      schema that grew a field repairs the table on the next run.
+    value: ${{ steps.collect.outputs.schema-file }}
+  notification-file:
+    description: >-
+      Path to a notification for a chat, written only when the run changed
+      something against the baseline, failed, or had no baseline. Empty
+      otherwise, which is how the notify step stays quiet on a normal run.
+    value: ${{ steps.collect.outputs.notification-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Collect record
+      id: collect
+      shell: bash
+      env:
+        # The collector reads its context from CTX_* rather than argv, so a
+        # value containing quotes cannot break the command line.
+        CTX_KIND: ${{ inputs.kind }}
+        CTX_BACKEND: ${{ inputs.backend }}
+        CTX_VARIANT: ${{ inputs.variant }}
+        CTX_RUNNER: ${{ inputs.runner }}
+        CTX_FLAGGEMS_TAG: ${{ inputs.flaggems-tag }}
+        CTX_FLAGTREE_SHA: ${{ inputs.flagtree-sha }}
+        CTX_FLAGTREE_BRANCH: ${{ inputs.flagtree-branch }}
+        CTX_PR_NUMBER: ${{ inputs.pr-number }}
+        CTX_PR_URL: ${{ inputs.pr-url }}
+        CTX_ACTOR: ${{ inputs.actor }}
+        CTX_RUN_ID: ${{ github.run_id }}
+        CTX_RUN_ATTEMPT: ${{ github.run_attempt }}
+        CTX_RUN_URL: ${{ inputs.run-url }}
+        CTX_BUILD_OUTCOME: ${{ inputs.build-outcome }}
+        CTX_TEST_OUTCOME: ${{ inputs.test-outcome }}
+        CTX_BEST_UPDATED: ${{ inputs.best-updated }}
+        OUT_DIR: ${{ inputs.output-dir }}
+        BASELINE_DIR: ${{ inputs.baseline-dir }}
+        LEDGER_DIR: ${{ inputs.ledger-dir }}
+        NOTIFY: ${{ inputs.notify }}
+        PYTHON: ${{ inputs.python }}
+      run: |
+        set -uo pipefail
+
+        echo "record-file=" >> "$GITHUB_OUTPUT"
+        echo "notification-file=" >> "$GITHUB_OUTPUT"
+        echo "schema-file=${GITHUB_ACTION_PATH}/scripts/flaggems_runs.schema.json" >> "$GITHUB_OUTPUT"
+
+        # An earlier failure leaves no summary to collect. That is not an
+        # error worth surfacing: the job already failed for its own reason.
+        if [[ -z "${OUT_DIR}" || ! -f "${OUT_DIR}/summary.json" ]]; then
+          echo "No summary.json under '${OUT_DIR}', nothing to collect."
+          exit 0
+        fi
+
+        args=(--summary "${OUT_DIR}/summary.json")
+        [[ -n "${BASELINE_DIR}" ]] && args+=(--baseline-dir "${BASELINE_DIR}")
+        if [[ -n "${LEDGER_DIR}" ]]; then
+          args+=(--ledger "${LEDGER_DIR}/runs.jsonl")
+          args+=(--op-ledger "${LEDGER_DIR}/operators.jsonl")
+        fi
+        [[ "${NOTIFY}" == "true" ]] && args+=(--notify-out "${OUT_DIR}/notification.json")
+
+        # Runs from this action's directory, so it does not depend on the
+        # checkout and is therefore shared by every branch.
+        "${PYTHON}" "${GITHUB_ACTION_PATH}/scripts/collect_gems_record.py" "${args[@]}"
+
+        if [[ -f "${OUT_DIR}/record.json" ]]; then
+          echo "record-file=${OUT_DIR}/record.json" >> "$GITHUB_OUTPUT"
+        fi
+
+        # Written only when the run is worth a message, so its absence is the
+        # normal quiet path rather than a failure.
+        if [[ -f "${OUT_DIR}/notification.json" ]]; then
+          echo "notification-file=${OUT_DIR}/notification.json" >> "$GITHUB_OUTPUT"
+        fi
