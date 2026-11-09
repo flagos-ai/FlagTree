@@ -153,6 +153,116 @@ class CudaTileSemantic(TritonSemantic):
             return tl.tensor(res_token, token_ty)
         return tl.tensor(res_token, tl.void)
 
+    def load_store_typechecking_impl(self, ptr, value, mask, *, is_store):
+        """Check and convert pointer inputs; value is the store value or load's other."""
+        if is_store and (ptr.type.is_const() or ptr.type.scalar.is_const()):
+            raise ValueError("Cannot store to a constant pointer")
+        if not ptr.type.scalar.is_ptr() or ptr.type.scalar.element_ty.is_block():
+            op = "store_tko" if is_store else "load_tko"
+            raise ValueError(f"{op} requires a scalar pointer or tensor of pointers, not a block pointer")
+        if not is_store and value is not None and mask is None:
+            raise ValueError("`other` cannot be provided without `mask`")
+        if not ptr.type.is_block():
+            if mask is not None and mask.type.is_block():
+                raise ValueError("Mask argument cannot be block type if pointer argument is not a block")
+            if value is not None and value.type.is_block():
+                operand = "Value" if is_store else "Other"
+                raise ValueError(f"{operand} argument cannot be block type if pointer argument is not a block")
+        else:
+            if mask is not None:
+                mask = self.broadcast_impl_shape(mask, ptr.type.get_block_shapes())
+            if value is not None:
+                value = self.broadcast_impl_shape(value, ptr.type.get_block_shapes())
+
+        ptr_ty = ptr.type.scalar
+        elt_ty = ptr_ty.element_ty
+        # Boolean memory uses bytes, as in Triton's ordinary pointer loads/stores.
+        if elt_ty == tl.int1:
+            elt_ty = tl.int8
+            ptr = self.cast(ptr, tl.pointer_type(elt_ty, ptr_ty.address_space))
+        if value is not None:
+            value = self.cast(value, elt_ty)
+        if mask is not None and not mask.type.scalar.is_bool():
+            raise ValueError("Mask must have boolean scalar type")
+        return ptr, value, mask
+
+    def load_tko(self, ptr, mask, other, mem_token, semantics, scope, token_ty, has_result_token, cost):
+        semantics = _str_to_tileir_semantic(semantics)
+        scope = tl._unwrap_if_constexpr(scope)
+        if scope not in ("", "tl_blk", "device", "sys") or (semantics == 0 and scope != ""):
+            raise ValueError("scope must be empty for weak ordering, or tl_blk/device/sys otherwise")
+        scope = _str_to_tileir_scope(scope)
+        _check_memory_ordering(semantics, scope)
+        if semantics not in (0, 1, 2):
+            raise ValueError("load_tko requires weak/relaxed/acquire ordering")
+
+        original_ptr_ty = ptr.type.scalar
+        ptr, other, mask = self.load_store_typechecking_impl(ptr, other, mask, is_store=False)
+        elt_ty = ptr.type.scalar.element_ty
+        result_ty = tl.block_type(elt_ty, ptr.type.get_block_shapes()) if ptr.type.is_block() else elt_ty
+
+        data, token = self.builder.create_load_tko(ptr.handle, mask.handle if mask is not None else None,
+                                                   other.handle if other is not None else None,
+                                                   mem_token.handle if mem_token is not None else None, semantics,
+                                                   scope, cost, _tileir_capability(self))
+        result = tl.tensor(data, result_ty)
+        if original_ptr_ty.element_ty == tl.int1:
+            result = self.cast(result, tl.int1)
+        return (result, tl.tensor(token, token_ty)) if has_result_token else result
+
+    def store_tko(self, ptr, value, mask, mem_token, semantics, scope, token_ty, has_result_token, cost):
+        semantics = _str_to_tileir_semantic(semantics)
+        scope = tl._unwrap_if_constexpr(scope)
+        if scope not in ("", "tl_blk", "device", "sys") or (semantics == 0 and scope != ""):
+            raise ValueError("scope must be empty for weak ordering, or tl_blk/device/sys otherwise")
+        scope = _str_to_tileir_scope(scope)
+        _check_memory_ordering(semantics, scope)
+        if semantics not in (0, 1, 3):
+            raise ValueError("store_tko requires weak/relaxed/release ordering")
+
+        ptr, value, mask = self.load_store_typechecking_impl(ptr, value, mask, is_store=True)
+        token = self.builder.create_store_tko(ptr.handle, value.handle, mask.handle if mask is not None else None,
+                                              mem_token.handle if mem_token is not None else None, semantics, scope,
+                                              cost, _tileir_capability(self))
+        return tl.tensor(token, token_ty if has_result_token else tl.void)
+
+    def atomic_cas_tko(self, ptr, cmp, val, mem_token, semantics, scope, token_ty, has_result_token):
+        cmp = self.to_tensor(cmp)
+        val = self.to_tensor(val)
+        cmp, val = self.binary_op_type_checking_impl(cmp, val, False, False, False, True)
+        semantics = _str_to_tileir_semantic(semantics)
+        scope = _str_to_tileir_scope(scope)
+        _check_memory_ordering(semantics, scope)
+        result, res_token = self.builder.create_atomic_cas_tko(
+            ptr.handle,
+            cmp.handle,
+            val.handle,
+            mem_token.handle if mem_token else None,
+            semantics,
+            scope,
+        )
+        result = tl.tensor(result, val.type)
+        if has_result_token:
+            return result, tl.tensor(res_token, token_ty)
+        return result
+
+    def atomic_xchg_tko(self, ptr, val, mem_token, semantics, scope, token_ty, has_result_token):
+        val = self.to_tensor(val)
+        semantics = _str_to_tileir_semantic(semantics)
+        scope = _str_to_tileir_scope(scope)
+        _check_memory_ordering(semantics, scope)
+        result, res_token = self.builder.create_atomic_xchg_tko(
+            ptr.handle,
+            val.handle,
+            mem_token.handle if mem_token else None,
+            semantics,
+            scope,
+        )
+        result = tl.tensor(result, val.type)
+        if has_result_token:
+            return result, tl.tensor(res_token, token_ty)
+        return result
+
     def create_mem_token(self):
         return self.builder.create_mem_token()
 
