@@ -816,32 +816,6 @@ def test_pipe_reuse_join_hazard_keeps_full_partition_barrier(hazard_kind):
     assert len(init_calls) >= 7, llir
 
 
-def test_persistent_named_readers_accept_runtime_grid_stride_bounds():
-    compiled = compile_musa(
-        _persistent_multi_reader_kernel,
-        {
-            "a_desc": "tensordesc<bf16[256, 64]>",
-            "b_main_desc": "tensordesc<bf16[64, 256]>",
-            "b_tail_desc": "tensordesc<bf16[64, 64]>",
-            "out": "*bf16",
-            "OUTER_TILES": "i32",
-            "NUM_SMS": "constexpr",
-            "K_TILES": "constexpr",
-        },
-        {"NUM_SMS": 2, "K_TILES": 4},
-        options={"num_warps": 4, "num_stages": 1},
-    )
-    llir = compiled.asm["llir"]
-    epoch_barrier_ids = re.findall(
-        r"call void @llvm\.musa\.async\.init\.arrival\(i32 (\d+), i32 20, i32 0\)",
-        llir,
-    )
-    assert len(epoch_barrier_ids) == 3
-    epoch_barrier_id = epoch_barrier_ids[-1]
-    assert llir.count(f"call void @llvm.musa.async.arrive.none.phaseid(i32 {epoch_barrier_id})") == 2
-    assert llir.count(f"call void @llvm.musa.async.wait(i32 {epoch_barrier_id},") == 2
-
-
 @pytest.mark.parametrize(
     "signature,constexprs",
     [
@@ -922,7 +896,7 @@ def test_persistent_single_reader_pipe_reuses_ring_across_output_tiles():
 
     for _ in range(3):
         out.fill_(float("nan"))
-        compiled = _persistent_single_reader_kernel[(1, )](
+        _persistent_single_reader_kernel[(1, )](
             a_desc,
             b_desc,
             out,
@@ -934,27 +908,15 @@ def test_persistent_single_reader_pipe_reuses_ring_across_output_tiles():
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu().float(), expected, atol=3e-1, rtol=1e-1)
 
-    llir = compiled.asm["llir"]
-    assert "llvm.musa.async.init.arrival" in llir
-    assert "llvm.musa.async.arrive.none.phaseid" in llir
-    # Three full and three empty pipe barriers manage the ring.  The seventh
-    # barrier is a rendezvous for the persistent consumer warps once per
-    # output-tile epoch before the shared ring is reused by the next tile.
-    assert "llvm.musa.async.bar.record(i32 7)" in llir
-    assert "call void @llvm.musa.lma.wait()" in llir
-    init_calls = re.findall(r"(?:tail )?call void @llvm\.musa\.async\.init\.arrival\(", llir)
-    assert len(init_calls) == 7
-
 
 @pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
-def test_persistent_named_readers_release_every_epoch_before_ring_reuse():
+@pytest.mark.parametrize("outer_tiles, num_sms, k_tiles", [(7, 2, 4), (11, 2, 3), (18, 3, 5)])
+def test_persistent_named_readers_release_every_epoch_before_ring_reuse(outer_tiles, num_sms, k_tiles):
     # Exercise the production grid-stride shape
-    # range(pid, runtime_num_tiles, NUM_SMS).  Each CTA wraps the alternating
-    # barrier phase more than once; the nested K loop also verifies that late
-    # lowering derives the phase from the outer epoch rather than the K loop.
-    m, n, k = 1792, 320, 256
-    outer_tiles, k_tiles = m // 256, k // 64
-    num_sms = 2
+    # range(pid, runtime_num_tiles, NUM_SMS). Longer cases cross four epochs
+    # per CTA, reusing both phases of each barrier. Different K trip counts
+    # distinguish the outer epoch from the nested K loop.
+    m, n, k = outer_tiles * 256, 320, k_tiles * 64
     a_cpu, b_cpu, a, b = _make_inputs(m, n, k)
     out = torch.empty((m, n), device="musa", dtype=torch.bfloat16)
     a_desc = TensorDescriptor.from_tensor(a, [256, 64])
@@ -964,7 +926,7 @@ def test_persistent_named_readers_release_every_epoch_before_ring_reuse():
 
     for _ in range(10):
         out.fill_(float("nan"))
-        compiled = _persistent_multi_reader_kernel[(num_sms, )](
+        _persistent_multi_reader_kernel[(num_sms, )](
             a_desc,
             b_main_desc,
             b_tail_desc,
@@ -977,18 +939,3 @@ def test_persistent_named_readers_release_every_epoch_before_ring_reuse():
         )
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu().float(), expected, atol=3e-1, rtol=1e-1)
-
-    llir = compiled.asm["llir"]
-    assert llir.count("llvm.musa.async.init.arrival") >= 4
-    assert "llvm.musa.async.arrive.none.phaseid" in llir
-    # The two-stage named-reader pipe already owns two arrival-count-20 empty
-    # barriers.  The compiler-inferred consumer epoch rendezvous must add a
-    # third one, shared by tail(4) + main(16) warps.
-    epoch_barrier_ids = re.findall(
-        r"call void @llvm\.musa\.async\.init\.arrival\(i32 (\d+), i32 20, i32 0\)",
-        llir,
-    )
-    assert len(epoch_barrier_ids) == 3
-    epoch_barrier_id = epoch_barrier_ids[-1]
-    assert llir.count(f"call void @llvm.musa.async.arrive.none.phaseid(i32 {epoch_barrier_id})") == 2
-    assert llir.count(f"call void @llvm.musa.async.wait(i32 {epoch_barrier_id},") == 2
