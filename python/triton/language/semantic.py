@@ -1567,6 +1567,7 @@ class TritonSemantic(Generic[TensorTy]):
             "min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
         if resolve_dot is not None:  # flagtree
             # queried after the legacy e4b15/fnuz upcasts above so rules see the effective dtypes
+            # None defers native-path classification to backend lowering.
             dot_cap = resolve_dot(lhs.dtype.name, rhs.dtype.name, out_dtype.name, lhs.shape[-2].value,
                                   rhs.shape[-1].value, lhs.shape[-1].value)
             if dot_cap is not None and not dot_cap.supported:

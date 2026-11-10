@@ -146,7 +146,7 @@ def _unpack_int4(packed: core.tensor, axis: core.constexpr) -> core.tensor:
 
 @triton.jit
 def fp4_to_fp_scaled(src: core.tensor, scale: "Optional[core.tensor]", elem_type: core.constexpr,
-                     axis: core.constexpr = -1) -> core.tensor:
+                     axis: core.constexpr) -> core.tensor:
     """Decode E2M1, then apply E8M0 scales in FP32 and narrow with RTNE.
 
     Scales are None, one byte per 32 logical values, or one byte per packed
