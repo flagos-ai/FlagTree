@@ -19,11 +19,11 @@
 
 // This is a fork of upstream pipeline transformation. This will be merged back
 // upstream once we have a stable solution.
-#include <utility>
-#include <vector>
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
+#include <utility>
+#include <vector>
 namespace mlir {
 
 class RewriterBase;

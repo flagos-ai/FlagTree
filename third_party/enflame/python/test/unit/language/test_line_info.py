@@ -429,6 +429,7 @@ def test_use_name_loc_as_prefix(fresh_triton_cache):
     check_template = inspect.getsource(kernel_basic_while.fn)
     run_filecheck("placeholder", h.asm["ttir"], check_template)
 
+
 # TODO gcu don't support tl.map_elementwise
 # def test_map_elementwise_has_lineinfo():
 

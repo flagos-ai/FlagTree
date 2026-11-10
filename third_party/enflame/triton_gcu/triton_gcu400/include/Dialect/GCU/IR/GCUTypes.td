@@ -179,4 +179,3 @@ def GCU_VectorType : AnyTypeOf<[VectorOfRankAndLengthAndType<[1], [128 ,256, 512
                                 VectorOfRankAndLengthAndType<[1], [16, 32, 64, 128, 256], [I64]>]>;
 
 #endif //GCU_TYPES
-

@@ -71,7 +71,8 @@ struct MaskState {
   void minStates(OpBuilder &builder, Location loc, const MaskState &lhsState,
                  const MaskState &rhsState);
 
-  void setStates(OpBuilder &/*builder*/, Location /*loc*/, const MaskState &srcState);
+  void setStates(OpBuilder & /*builder*/, Location /*loc*/,
+                 const MaskState &srcState);
 };
 
 class MaskAnalysis {
@@ -82,19 +83,22 @@ public:
                     MaskState &state,
                     llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
-  static void parseBlockArgument(OpBuilder &builder, Location loc,
-                            BlockArgument blockArg, MaskState &state,
-                            llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void
+  parseBlockArgument(OpBuilder &builder, Location loc, BlockArgument blockArg,
+                     MaskState &state,
+                     llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
-  static void parseIntScalar(OpBuilder &builder, Location loc, Value scalar,
-                             MaskState &state,
-                             llvm::SmallDenseMap<Value, MaskState> &/*knownMasks*/);
+  static void
+  parseIntScalar(OpBuilder &builder, Location loc, Value scalar,
+                 MaskState &state,
+                 llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/);
 
   // Operand is the result of a constant
   // Get the value of the constant and assign it to scalar.
-  static void parseConstant(OpBuilder &builder, Location /*loc*/,
-                            arith::ConstantOp constOp, MaskState &state,
-                            llvm::SmallDenseMap<Value, MaskState> &/*knownMasks*/);
+  static void
+  parseConstant(OpBuilder &builder, Location /*loc*/, arith::ConstantOp constOp,
+                MaskState &state,
+                llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/);
 
   // Operand is the result of addi
   // One and only one of the operands should be a scalar. Increment both start
@@ -120,9 +124,10 @@ public:
 
   // Operand is the result of make_range
   // Set start and end accordingly; step size must be 1.
-  static void parseMakeRange(OpBuilder &builder, Location /*loc*/,
-                             triton::MakeRangeOp rangeOp, MaskState &state,
-                             llvm::SmallDenseMap<Value, MaskState> &/*knownMasks*/);
+  static void
+  parseMakeRange(OpBuilder &builder, Location /*loc*/,
+                 triton::MakeRangeOp rangeOp, MaskState &state,
+                 llvm::SmallDenseMap<Value, MaskState> & /*knownMasks*/);
 
   // Operand is the result of broadcast
   // Change dims only; assume only applies to tensors.
@@ -140,14 +145,15 @@ public:
   // Operand is the result of expand_dims
   // Insert additional dims; start and end do not change and correspond to the
   // dimension that contains the range.
-  static void parseExpandDims(OpBuilder &builder, Location loc,
-                        triton::ExpandDimsOp expandDimsOp, MaskState &state,
-                        llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void
+  parseExpandDims(OpBuilder &builder, Location loc,
+                  triton::ExpandDimsOp expandDimsOp, MaskState &state,
+                  llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
   // Operand is the result of DotC
-  static void parseDot(OpBuilder &builder, Location loc,
-                            triton::DotOp dotOp, MaskState &state,
-                            llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void parseDot(OpBuilder &builder, Location loc, triton::DotOp dotOp,
+                       MaskState &state,
+                       llvm::SmallDenseMap<Value, MaskState> &knownMasks);
   // Operand is the result of remsi
   // One and only one of the operands should be a scalar. Increment both start
   // and end, dims remains unchanged, and scalar is empty.
@@ -157,18 +163,18 @@ public:
   // Operand is the result of SelectOp
   // only for bypass
   static void parseSelect(OpBuilder &builder, Location loc,
-                         arith::SelectOp SelectOp, MaskState &state,
-                         llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+                          arith::SelectOp SelectOp, MaskState &state,
+                          llvm::SmallDenseMap<Value, MaskState> &knownMasks);
   // Operand is the result of ReduceOp
   // only for bypass
   static void parseReduce(OpBuilder &builder, Location loc,
-                         triton::ReduceOp ReduceOp, MaskState &state,
-                         llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+                          triton::ReduceOp ReduceOp, MaskState &state,
+                          llvm::SmallDenseMap<Value, MaskState> &knownMasks);
   // Operand is the result of LoadOp
   // only for bypass
-  static void parseLoad(OpBuilder &builder, Location loc,
-                         triton::LoadOp LoadOp, MaskState &state,
-                         llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void parseLoad(OpBuilder &builder, Location loc, triton::LoadOp LoadOp,
+                        MaskState &state,
+                        llvm::SmallDenseMap<Value, MaskState> &knownMasks);
   // Operand is the result of ExtSIOp
   // only for bypass
   static void parseExtsi(OpBuilder &builder, Location loc,
@@ -181,8 +187,8 @@ public:
                          llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 };
 
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
-#endif  // GCU_ANALYSIS_MASKANALYSIS_H
+#endif // GCU_ANALYSIS_MASKANALYSIS_H

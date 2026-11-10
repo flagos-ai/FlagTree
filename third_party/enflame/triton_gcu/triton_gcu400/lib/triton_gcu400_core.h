@@ -27,7 +27,7 @@ extern "C" {
 
 typedef struct {
   const char *data;
-  size_t      len;
+  size_t len;
 } Gcu400String;
 
 // Opaque pipeline handle for building and running pass pipelines.
@@ -35,18 +35,18 @@ typedef struct Gcu400Pipeline_ *Gcu400Pipeline;
 
 // Pipeline lifecycle
 Gcu400Pipeline gcu400_pipeline_create(void);
-void           gcu400_pipeline_destroy(Gcu400Pipeline p);
+void gcu400_pipeline_destroy(Gcu400Pipeline p);
 
 // Add a pass to the pipeline with optional key=value options.
 // options_str format: "key1=value1,key2=value2" or empty string for no options.
 void gcu400_pipeline_add_pass(Gcu400Pipeline p, const char *pass_name,
-                               const char *options_str);
+                              const char *options_str);
 
 // Run the configured pipeline on MLIR text input.
 // Returns the processed MLIR text. On error, data is NULL and
 // gcu400_pipeline_last_error() gives the message.
-Gcu400String gcu400_pipeline_run(Gcu400Pipeline p,
-                                  const char *input, size_t input_len);
+Gcu400String gcu400_pipeline_run(Gcu400Pipeline p, const char *input,
+                                 size_t input_len);
 
 // Get last error message (empty string if none).
 const char *gcu400_pipeline_last_error(Gcu400Pipeline p);
@@ -68,4 +68,4 @@ int gcu400_opt_main(int argc, char **argv);
 }
 #endif
 
-#endif  // TRITON_GCU400_CORE_H
+#endif // TRITON_GCU400_CORE_H

@@ -27,25 +27,24 @@ namespace triton {
 namespace gcu {
 class FirstLastUserAnalysis;
 class PrivateDTETagPool;
-}
-}
-}
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
 using namespace mlir;
 
 template <typename SourceOp>
 class SharedConversionPattern : public OpConversionPattern<SourceOp> {
- public:
-  SharedConversionPattern(
-     const TypeConverter &converter, MLIRContext *ctx,
-      triton::gcu::FirstLastUserAnalysis &userAnalysis,
-      std::map<Operation *, Operation *> &replaced2Origin,
-      triton::gcu::PrivateDTETagPool &pTagPool)
+public:
+  SharedConversionPattern(const TypeConverter &converter, MLIRContext *ctx,
+                          triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                          std::map<Operation *, Operation *> &replaced2Origin,
+                          triton::gcu::PrivateDTETagPool &pTagPool)
       : OpConversionPattern<SourceOp>(converter, ctx),
         userAnalysis(userAnalysis), replaced2Origin(replaced2Origin),
         pTagPool(pTagPool) {}
 
- protected:
+protected:
   triton::gcu::FirstLastUserAnalysis &userAnalysis;
   std::map<Operation *, Operation *> &replaced2Origin;
   triton::gcu::PrivateDTETagPool &pTagPool;

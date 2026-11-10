@@ -178,10 +178,9 @@ def _stage_multipython_mlir(mlir_dst):
 
     modules_file = os.path.join(staging_dir, "modules.txt")
     if not os.path.isfile(modules_file):
-        raise RuntimeError(
-            f"FLAGTREE_MLIR_PY_DIR is set to {staging_dir}, but it holds no "
-            "modules.txt: run `.pipeline/build.sh mlir_python` before building "
-            "the wheel")
+        raise RuntimeError(f"FLAGTREE_MLIR_PY_DIR is set to {staging_dir}, but it holds no "
+                           "modules.txt: run `.pipeline/build.sh mlir_python` before building "
+                           "the wheel")
     with open(modules_file, encoding="utf-8") as stream:
         modules = {line.strip() for line in stream if line.strip()}
 
@@ -189,8 +188,7 @@ def _stage_multipython_mlir(mlir_dst):
     copied = 0
     for name in sorted(os.listdir(staging_dir)):
         if name.endswith(".so"):
-            shutil.copy2(os.path.join(staging_dir, name),
-                         os.path.join(libs_dst, name))
+            shutil.copy2(os.path.join(staging_dir, name), os.path.join(libs_dst, name))
             copied += 1
 
     removed = 0

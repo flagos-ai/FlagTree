@@ -29,11 +29,7 @@
 #define GET_ATTRDEF_CLASSES
 
 namespace mlir {
-namespace memref_ext {
+namespace memref_ext {} // namespace memref_ext
+} // namespace mlir
 
-
-
-}  // namespace memref_ext
-}  // namespace mlir
-
-#endif  // GCU_DIALECT_MEMREF_EXT_DIALECT_H
+#endif // GCU_DIALECT_MEMREF_EXT_DIALECT_H
