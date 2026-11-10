@@ -97,6 +97,28 @@ def test_late_unrelated_operations_unchanged():
     assert late.lower_private_ops(text) == text
 
 
+@pytest.mark.parametrize('suffix,element', [('half', 'f16'), ('bf16', 'bf16'), ('float', 'f32')])
+def test_strided_matrix_store_abi(suffix, element):
+    ub, gm = '#hivm.address_space<ub>', '#hivm.address_space<gm>'
+    types = [
+        f'memref<?x16x{element}, strided<[16, 1]>, {ub}>',
+        f'memref<?x16x{element}, strided<[256, 16], offset: ?>, {gm}>', f'memref<1024xi32, {ub}>',
+        f'memref<1024xi32, {ub}>'
+    ]
+    text = ('"builtin.module"() ({\n'
+            '    "hivm.hir.custom"(%a, %b, %addr, %work) '
+            f'{{symbol = "custom_flagtree_strided_store_{suffix}"}} : ({", ".join(types)}) -> ()\n'
+            '}) : () -> ()\n')
+    lowered = late.lower_private_ops(text)
+    assert f'func.call @custom_flagtree_strided_store_{suffix}' in lowered
+    assert types[1] in lowered
+    assert lowered.count('memref.cast') == 4
+    with pytest.raises(ValueError, match='rank-2 GM'):
+        late.lower_private_ops(text.replace(types[1], types[1].replace(gm, ub)))
+    with pytest.raises(ValueError, match='workspaces'):
+        late.lower_private_ops(text.replace('1024xi32', '2048xi32'))
+
+
 def test_late_storage_conversion_abi():
     for symbol, elements in [('byte_to_word', ('i8', 'i16', 'f16')), ('word_to_byte', ('i16', 'i8', 'f16'))]:
         types = ', '.join(f'memref<64x{e}, #hivm.address_space<ub>>' for e in elements)
