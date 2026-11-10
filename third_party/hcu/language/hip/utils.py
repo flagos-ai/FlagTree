@@ -53,6 +53,10 @@ def _convert_fp8(input, dst_ty, rounding, _semantic):
     """
     from triton._C.libtriton import ir
 
+    if input.dtype.is_fp8() and dst_ty.scalar.is_fp8():
+        # FP32 represents every FP8 value exactly; narrow once to the target
+        # format with the same saturation and special-value rules as .to().
+        return _semantic.cast(_semantic.cast(input, tl.float32), dst_ty)
     if input.dtype.is_int():
         input = _semantic.cast(input, tl.float32)
         rounding = ir.ROUNDING_MODE.RTNE

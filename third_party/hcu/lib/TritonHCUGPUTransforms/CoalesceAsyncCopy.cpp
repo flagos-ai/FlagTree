@@ -256,8 +256,11 @@ public:
       if (!request || !request.getValue())
         return;
       auto type = dyn_cast<RankedTensorType>(load.getType());
+      auto ptrType = dyn_cast<RankedTensorType>(load.getPtr().getType());
       bool eligible = supportsDirectToLds && type && !load.getIsVolatile() &&
-                      isa<RankedTensorType>(load.getPtr().getType());
+                      ptrType &&
+                      cast<triton::PointerType>(ptrType.getElementType())
+                              .getAddressSpace() == 1;
       if (eligible) {
         unsigned contiguity =
             mlir::LLVM::HCU::getContiguity(load.getPtr(), axisAnalysis);
@@ -269,13 +272,14 @@ public:
       }
       if (!eligible) {
         load->removeAttr("tt.load.async");
-        m->setAttr("hcug.async_load_diagnostics",
-                   StringAttr::get(
-                       context,
-                       "HCU tle.load(is_async=True) uses a synchronous load: "
-                       "direct-to-LDS requires a non-volatile tensor load with "
-                       "at least four coalesced bytes and compatible pointer, "
-                       "mask and shared layout alignment (native=false)"));
+        m->setAttr(
+            "hcug.async_load_diagnostics",
+            StringAttr::get(
+                context,
+                "HCU tle.load(is_async=True) uses a synchronous load: "
+                "direct-to-LDS requires a non-volatile global tensor load with "
+                "at least four coalesced bytes and compatible pointer, "
+                "mask and shared layout alignment (native=false)"));
       }
     });
     if (!supportsDirectToLds)
