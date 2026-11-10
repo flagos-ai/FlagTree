@@ -23,8 +23,11 @@ def _dot(q, k, out, L: tl.constexpr, GRAN: tl.constexpr, PHASE: tl.constexpr, FP
     tle.gpu.copy(k, b, (128, 128), (0, 0))
     zero = tle.gpu.set_layout(tl.zeros((32, 128), outtype), L)
     pending = tle.gpu.wgmma(a, b, acc=zero, trans_b=True, out_dtype=outtype)
-    result = tle.gpu.wgmma_wait(0, pending)
-    tl.store(out + i[:, None] * 128 + j[None, :], result)
+    result = tle.gpu.set_layout(tle.gpu.wgmma_wait(0, pending), L)
+    # Isolate descriptor lowering from implicit MMA-to-store propagation.
+    # Both sides of the store have the same explicit representation.
+    output_ptr = tle.gpu.set_layout(out + i[:, None] * 128 + j[None, :], L)
+    tl.store(output_ptr, result)
 
 
 def compile_descriptor(gran, phase=2, fp8=True, abi="native_mp31_shared"):
