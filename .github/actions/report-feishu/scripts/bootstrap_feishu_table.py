@@ -180,8 +180,23 @@ def main() -> int:
 
         if table_id is None:
             print(f"Table '{table_name}' not found, creating it...")
-            table_id = fc.create_table(token, app_token, table_name, wanted)
-            print(f"[INFO] Created table {table_id} with {len(wanted)} fields")
+            # Nothing here can take a lock, so when the name carries the month
+            # every backend's first run of a month races every other to create
+            # it. Feishu settles the race for us: it rejects a duplicate table
+            # name (code 1254013), so exactly one job creates the table and the
+            # rest are told to look again. Losing is the common case, not an
+            # error.
+            try:
+                table_id = fc.create_table(token, app_token, table_name, wanted)
+                print(f"[INFO] Created table {table_id} with {len(wanted)} fields")
+            except fc.FeishuError as e:
+                table_id = fc.find_table(token, app_token, table_name)
+                if table_id is None:
+                    # Not the race, then: a real failure with nothing to adopt.
+                    raise
+                print(f"[INFO] Another job created '{table_name}' first "
+                      f"({table_id}), using it. ({e})")
+                ensure_fields(token, app_token, table_id, wanted)
         else:
             print(f"Table '{table_name}' exists ({table_id}), checking fields...")
             ensure_fields(token, app_token, table_id, wanted)

@@ -103,6 +103,13 @@ inputs:
       Baseline runs only: whether this run became the new best baseline.
     required: false
     default: ''
+  table-base:
+    description: >-
+      Base name of the reporting table. The month is appended, so reporting
+      goes to e.g. flaggems_runs_202612 and no single table approaches the
+      row limit. Leave empty to keep using a fixed table name.
+    required: false
+    default: ''
   notify:
     description: >-
       Also decide whether the run deserves a chat message, and write
@@ -125,6 +132,12 @@ outputs:
       Table schema matching the record. Pass it to the reporting step so a
       schema that grew a field repairs the table on the next run.
     value: ${{ steps.collect.outputs.schema-file }}
+  table-name:
+    description: >-
+      This month's table, empty when table-base was not set. Pass it to the
+      reporting step so a record goes to the table its own timestamp agrees
+      with.
+    value: ${{ steps.collect.outputs.table-name }}
   notification-file:
     description: >-
       Path to a notification for a chat, written only when the run changed
@@ -165,12 +178,14 @@ runs:
         BASELINE_DIR: ${{ inputs.baseline-dir }}
         LEDGER_DIR: ${{ inputs.ledger-dir }}
         NOTIFY: ${{ inputs.notify }}
+        TABLE_BASE: ${{ inputs.table-base }}
         PYTHON: ${{ inputs.python }}
       run: |
         set -uo pipefail
 
         echo "record-file=" >> "$GITHUB_OUTPUT"
         echo "notification-file=" >> "$GITHUB_OUTPUT"
+        echo "table-name=" >> "$GITHUB_OUTPUT"
         echo "schema-file=${GITHUB_ACTION_PATH}/scripts/flaggems_runs.schema.json" >> "$GITHUB_OUTPUT"
 
         # An earlier failure leaves no summary to collect. That is not an
@@ -187,6 +202,7 @@ runs:
           args+=(--op-ledger "${LEDGER_DIR}/operators.jsonl")
         fi
         [[ "${NOTIFY}" == "true" ]] && args+=(--notify-out "${OUT_DIR}/notification.json")
+        [[ -n "${TABLE_BASE}" ]] && args+=(--table-base "${TABLE_BASE}")
 
         # Runs from this action's directory, so it does not depend on the
         # checkout and is therefore shared by every branch.
@@ -200,4 +216,8 @@ runs:
         # normal quiet path rather than a failure.
         if [[ -f "${OUT_DIR}/notification.json" ]]; then
           echo "notification-file=${OUT_DIR}/notification.json" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [[ -f "${OUT_DIR}/table_name" ]]; then
+          echo "table-name=$(cat "${OUT_DIR}/table_name")" >> "$GITHUB_OUTPUT"
         fi
