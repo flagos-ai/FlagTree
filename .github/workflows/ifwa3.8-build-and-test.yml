@@ -40,7 +40,7 @@ jobs:
     if: >-
       github.repository == 'flagos-ai/FlagTree' &&
       (github.event_name != 'pull_request' || !github.event.pull_request.draft)
-    runs-on: [self-hosted, Linux, X64, flagtree-ifwa-build]
+    runs-on: [self-hosted, Linux, X64, intellifusion3.8]
     timeout-minutes: 120
     container:
       image: harbor.baai.ac.cn/flagtree/flagtree-ifwa-py313-torch2.13.0-cpu-ubuntu22.04@sha256:2cd1e179eaed533fa494c1fa1daf380a451719a416619ba37d63f6f1ccf42f01
