@@ -46,11 +46,13 @@ on:
       - "Enflame3.6-GCU300-Gems-Baseline"
       - "Enflame3.6-GCU300-Gems-Test"
       - "Enflame3.6-GCU400-Build-And-Test"
+      - "Enflame3.6-Qwen-Benchmark"
       - "FlagCICD-NV3.6-Build-And-Test"
       - "Hcu3.6"
       - "Hcu3.6-Gems-Baseline"
       - "Hcu3.6-Gems-Test"
       - "Hcu3.6-Qwen-Benchmark"
+      - "Hcu3.6-Dist"
       - "Iluvatar3.6-Build-And-Test"
       - "Iluvatar3.6-Gems-Baseline"
       - "Iluvatar3.6-Gems-Test"
@@ -85,6 +87,7 @@ on:
       - "Xpu3.6-Build-And-Test"
       - "Xpu3.6-Gems-Baseline"
       - "Xpu3.6-Gems-Test"
+      - "Xpu3.6-Qwen-Benchmark"
 
 # Name each run after the run it is reporting on, so the Actions list shows
 # what failed rather than rows of identical titles.
