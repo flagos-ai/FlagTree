@@ -10,8 +10,10 @@ from triton.flagmega.passes.manager import FunctionalPass, PassManager
 from triton.flagmega.passes.functions.function_boundary_layout import propagate_function_boundary_layouts
 from triton.flagmega.passes.rewriter import DataflowPass, EGraphRulesPass
 from triton.flagmega.rules.neutral import post_boundary_auto_packing_neutral_rules
+from triton.flagmega.rules.neutral.fuse_norm_stats_input_cast import fuse_norm_stats_input_cast_rule
 from triton.flagmega.rules.ntt.vectorize import VectorizeRuleRegistry
 from triton.flagmega.rules.ntt.vectorize.propagation.embedding import embedding_producer_rule
+from triton.flagmega.rules.ntt.vectorize.propagation.interleaved_projection import interleaved_projection_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.block_scaled_matmul import block_scaled_matmul_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.mhc_pre import mhc_pre_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.kda import kda_recurrent_producer_rule
@@ -38,7 +40,7 @@ def post_function_boundary_pack_propagation(module: IRModule, target) -> IRModul
         *registry.propagation_rules,
         *post_boundary_auto_packing_neutral_rules(),
     )
-    current = module
+    current = DataflowPass("FusePackedNormStatsInputCast", (fuse_norm_stats_input_cast_rule(),)).run(module)
     for iteration in range(16):
         dumper = DumpScope.current()
         if iteration:
@@ -65,7 +67,7 @@ def _propagation_round(module, rules, dumper):
         current = propagate_function_boundary_layouts(current)
         current = DataflowPass(
             "PackResultProducers",
-            (embedding_producer_rule(), rotary_embedding_producer_rule(), mhc_pre_producer_rule(),
+            (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(), mhc_pre_producer_rule(),
              block_scaled_matmul_producer_rule(), kda_recurrent_producer_rule(), reduce_sum_producer_rule(),
              kda_input_projection_input_rule(), kda_input_projection_producer_rule()),
         ).run(current)
@@ -90,7 +92,7 @@ def _propagation_round(module, rules, dumper):
         # Rebuild shared/stateful producers once, at their original position.
         # This is a dataflow transformation: an effectful cos/sin generator
         # must not become a duplicated helper in an egraph alternative.
-        DataflowPass("PackResultProducers", (embedding_producer_rule(), rotary_embedding_producer_rule(),
+        DataflowPass("PackResultProducers", (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(),
                                            mhc_pre_producer_rule(), block_scaled_matmul_producer_rule(),
                                            kda_recurrent_producer_rule(), reduce_sum_producer_rule(),
                                            kda_input_projection_input_rule(), kda_input_projection_producer_rule()))

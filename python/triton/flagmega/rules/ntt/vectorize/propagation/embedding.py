@@ -21,24 +21,26 @@ def embedding_producer_rule():
             return None
         indices, weight = (module.node_map[name] for name in node.inputs)
         metadata = {"rewritten_by": "VectorizeEmbeddingPropagation"}
-        packed_weight = make_node(
-            "tensors.pack", f"{node.id}.packed_weight", (weight,), {"axes": (1,) * len(lanes), "lanes": lanes}, metadata
-        )
-        packed = make_node(
-            node.op, f"{node.id}.packed", (indices, packed_weight), node.attrs, {**dict(node.metadata), **metadata}
-        )
+        helpers = ()
+        if node.attrs.get("weight_encoding") is not None:
+            packed = make_node(node.op, f"{node.id}.packed", (indices, weight),
+                {**node.attrs, "output_lanes": (*lanes, *node.attrs.get("output_lanes", ()))},
+                {**dict(node.metadata), **metadata})
+        else:
+            packed_weight = make_node("tensors.pack", f"{node.id}.packed_weight", (weight,),
+                {"axes": (1,) * len(lanes), "lanes": lanes}, metadata)
+            packed = make_node(node.op, f"{node.id}.packed", (indices, packed_weight), node.attrs,
+                {**dict(node.metadata), **metadata})
+            helpers = (packed_weight,)
         rank = tensor_of(node.type).rank
         restored = make_node("tensors.unpack", node.id, (packed,), {"axes": (rank - 1,) * len(lanes)}, metadata)
         assert restored.type == node.type
-        return RewriteResult(restored, (packed_weight, packed))
+        return RewriteResult(restored, (*helpers, packed))
 
-    # A native GGUF embedding decodes the packed row directly and returns a
-    # scalar BF16 result.  Packing its weight to a VectorType would make the
-    # producer result look vectorized and the restoring unpack would violate
-    # the op's scalar output contract.
+    # Native rows stay compressed; only decoded activation features gain lanes.
     return RewriteRule(
         "VectorizeEmbeddingPropagation",
-        lambda node, _: node.op == "nn.embedding" and node.attrs.get("weight_encoding") is None,
+        lambda node, _: node.op == "nn.embedding",
         rewrite, root_ops=("nn.embedding",),
     )
 

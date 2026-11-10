@@ -564,6 +564,8 @@ def describe_local_buffer_abi(
     )
     if buffer.component_stride_bytes:
         abi["alignment_bytes"] = gcd(abi["alignment_bytes"], buffer.component_stride_bytes)
+    if plan is not None:
+        abi["alignment_bytes"] = plan.proven_buffer_alignments[buffer.id]
     return _with_memory_space_abi(abi, buffer, plan, pool_scope_count)
 
 

@@ -43,6 +43,11 @@ class BufferPlan:
         return {value.id: value for value in self.buffers}
 
     @cached_property
+    def proven_buffer_alignments(self) -> Mapping[str, int]:
+        from triton.flagmega.ir.bufferization.alignment import proven_buffer_alignments
+        return proven_buffer_alignments(self)
+
+    @cached_property
     def physical_buffer_map(self) -> Mapping[str, PhysicalBuffer]:
         return {value.id: value for value in self.physical_buffers}
 

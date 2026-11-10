@@ -1,0 +1,59 @@
+// flagmega-kernel: matmul_glu/simt platform=generic
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "matmul_glu" and call.variant == "simt" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_source = {{ call.value | cppexpr }};
+    auto *const ftt_gate = {{ call.gate_weight | cppexpr }};
+    auto *const ftt_up = {{ call.up_weight | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{% if call.local_iq4_async | default(false) %}
+    auto *const q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(_local_iq4_q8 + {{ call.local_iq4_async_q8_offset }});
+    auto *const stages = _local_iq4_q8 + {{ call.local_iq4_async_weight_offset }};
+    auto row0 = [&](int local_n_offsets) {
+        return reinterpret_cast<const unsigned char *>(ftt_gate) + ({{ call.weight_row_offset | cppexpr }});
+    };
+    auto row1 = [&](int local_n_offsets) {
+        return reinterpret_cast<const unsigned char *>(ftt_up) + ({{ call.up_weight_row_offset | cppexpr }});
+    };
+    auto valid = [&](int local_n_offsets) { return (local_n_offsets < ({{ call.active_n | cppexpr }})); };
+    auto store = [&](int local_n_offsets, float value) {
+        ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, value);
+    };
+    {{ 'local_iq4_async_r8' if (call.local_iq4_async_r8 | default(false)) else 'local_iq4_async' }}::run<{{ call.k }}, true, 2, {{ call.local_iq4_async_warps }}>(
+        ftt_source, q8, stages, {{ call.local_n_capacity }}, row0, row1, valid, store);
+{% elif call.local_iq4_mmvq | default(false) %}
+    auto *const q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(_local_iq4_q8);
+    local_iq4_mmvq::quantize<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(ftt_source, q8);
+    const ftt::dim_t ftt_warp = ftt_thread / 32;
+    const ftt::dim_t ftt_warps = ftt_threads / 32;
+    for (ftt::dim_t local_n_offsets = ftt_warp; local_n_offsets < {{ call.local_n_capacity }}LL; local_n_offsets += ftt_warps) {
+        if (!(local_n_offsets < ({{ call.active_n | cppexpr }}))) continue;
+        const auto *gate_row = reinterpret_cast<const unsigned char *>(ftt_gate) + ({{ call.weight_row_offset | cppexpr }});
+        const auto *up_row = reinterpret_cast<const unsigned char *>(ftt_up) + ({{ call.up_weight_row_offset | cppexpr }});
+        const float gate = local_iq4_mmvq::dot<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(gate_row, q8);
+        const float up = local_iq4_mmvq::dot<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(up_row, q8);
+        // Native GLU retains F32 gate/up projections, then rounds its one result.
+        if (ftt_thread % 32 == 0)
+            ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, ftt::silu(gate) * up);
+    }
+    ftt::arch::cta_sync();
+{% else %}
+{{ entry.strided_loop("local_n_offsets", call.local_n_capacity) }} {
+        if (!(local_n_offsets < ({{ call.active_n | cppexpr }}))) continue;
+        const auto *gate_row = reinterpret_cast<const unsigned char *>(ftt_gate) + ({{ call.weight_row_offset | cppexpr }});
+        const auto *up_row = reinterpret_cast<const unsigned char *>(ftt_up) + ({{ call.up_weight_row_offset | cppexpr }});
+        const float gate = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(ftt_source, gate_row, {{ call.k }}LL);
+        const float up = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(ftt_source, up_row, {{ call.k }}LL);
+        // Native fused GLU has no BF16 boundary between projection and SiLU.
+        ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, ftt::silu(gate) * up);
+    }
+{% endif %}
+}
+{% endif %}
+{% endfor %}
+{% endif %}

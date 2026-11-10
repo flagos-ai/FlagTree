@@ -1,0 +1,4 @@
+gguf>=0.19.0
+huggingface-hub>=0.34
+matplotlib>=3.8
+ortools==9.10.4067

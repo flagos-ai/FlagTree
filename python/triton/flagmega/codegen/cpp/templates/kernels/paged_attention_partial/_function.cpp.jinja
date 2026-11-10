@@ -27,6 +27,9 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% if call.cpp_attention_staging | default(false) %}
 {% include "kernels/paged_attention_partial/_staged.cpp.jinja" %}
 {% else %}
+{% set score_group = warp_size %}
+{% set value_width = [call.head_dim, block_threads] | min %}
+{% set value_groups = [call.token_tile, block_threads // value_width] | min %}
 {% if shared_arena_reuse | default(false) %}
     auto *const ftt_attention_score = reinterpret_cast<float *>(_ftt_sme_arena);
     auto *const ftt_attention_probability = ftt_attention_score + {{ call.token_tile }};
@@ -36,7 +39,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
     __shared__ float ftt_attention_score[{{ call.token_tile }}];
     __shared__ float ftt_attention_probability[{{ call.token_tile }}];
     __shared__ float ftt_attention_reduce[4];
-    __shared__ float ftt_attention_value_partial[{{ block_threads }}];
+    __shared__ float ftt_attention_value_partial[{{ value_groups * value_width }}];
 {% endif %}
     const ftt::dim_t attention_context_shard = {{ call.context_shard | cppexpr }};
     const ftt::dim_t attention_layer_id = {{ call.layer_id | cppexpr }};
@@ -92,11 +95,10 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
    long-context cost. Splitting `head_dim` across a lane group turns that
    serial walk into `head_dim / group` steps plus one shuffle fold, and raises
    the active-thread count by the same factor. #}
-{% set group = 64 %}
-            for (ftt::dim_t token_lane = ftt_thread / {{ group }}LL;
+            for (ftt::dim_t token_lane = ftt_thread / {{ score_group }}LL;
                  token_lane < {{ call.token_tile }}LL;
-                 token_lane += ftt_threads / {{ group }}LL) {
-                const ftt::dim_t attention_dim_lane = ftt_thread % {{ group }}LL;
+                 token_lane += ftt_threads / {{ score_group }}LL) {
+                const ftt::dim_t attention_dim_lane = ftt_thread % {{ score_group }}LL;
                 const ftt::dim_t token = token_start + token_lane;
                 if (token >= token_end) {
                     if (attention_dim_lane == 0) {
@@ -120,7 +122,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                 float score = 0.0f;
                 for (ftt::dim_t dimension = attention_dim_lane;
                      dimension < {{ call.head_dim }}LL;
-                     dimension += {{ group }}LL) {
+                     dimension += {{ score_group }}LL) {
                     const ftt::dim_t query_offset =
                         (dimension / {{ call.query_lanes }}LL)
                             * {{ call.query_dim_stride }}LL
@@ -128,7 +130,7 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                     score += ftt::to_float(ftt_kv_cache[key_base + dimension])
                              * ftt::to_float(ftt_query[query_offset]);
                 }
-                score = ftt::arch::lane_group_reduce_sum<{{ group }}>(score);
+                score = ftt::arch::lane_group_reduce_sum<{{ score_group }}>(score);
                 if (attention_dim_lane == 0) {
                     ftt_attention_score[token_lane] = score * {{ call.scale }}f;
                 }
@@ -170,22 +172,27 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
             const float previous_scale = ftt_attention_reduce[0];
             const float updated_max = ftt_attention_reduce[1];
             const float probability_sum = ftt_attention_reduce[2];
-{# Accumulator: `head_dim` lanes over dimensions, and the CTA's remaining
-   threads split the token tile, so the per-token block-table lookup is shared
-   across a group instead of repeated by every dimension lane. The partial sums
-   fold through shared memory at the end of the tile. Without this the loop
-   used only `head_dim` of the CTA's threads (128 of 1024). #}
-{% set vgroup = 8 %}
-            for (ftt::dim_t dimension = ftt_thread % {{ call.head_dim }}LL,
-                            slot = 0;
-                 dimension < {{ call.head_dim }}LL;
-                 dimension += {{ call.head_dim }}LL, ++slot) {
+{# Complete token groups share a dimension tile no wider than the CTA. Heads
+   wider than the CTA take several tiles; ragged tails only mask arithmetic,
+   while every thread reaches the same two CTA barriers per tile. The original
+   Iluvatar 1024-thread/128-dimension mapping still has exactly eight groups. #}
+            for (ftt::dim_t attention_dimension_base = 0, slot = 0;
+                 attention_dimension_base < {{ call.head_dim }}LL;
+                 attention_dimension_base += {{ value_width }}LL, ++slot) {
+                const ftt::dim_t attention_dimension_lane =
+                    ftt_thread % {{ value_width }}LL;
                 const ftt::dim_t attention_token_group =
-                    ftt_thread / {{ call.head_dim }}LL;
+                    ftt_thread / {{ value_width }}LL;
+                const ftt::dim_t dimension =
+                    attention_dimension_base + attention_dimension_lane;
+                const bool attention_dimension_active =
+                    dimension < {{ call.head_dim }}LL
+                    && attention_token_group < {{ value_groups }}LL;
                 float weighted = 0.0f;
+                if (attention_dimension_active) {
                 for (ftt::dim_t token_lane = attention_token_group;
                      token_lane < {{ call.token_tile }}LL;
-                     token_lane += {{ vgroup }}LL) {
+                     token_lane += {{ value_groups }}LL) {
                     const ftt::dim_t token = token_start + token_lane;
                     if (token >= token_end) {
                         continue;
@@ -211,14 +218,17 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
                                 * ftt::to_float(
                                     ftt_kv_cache[value_base + dimension]);
                 }
-{# Fold the token groups' partials for this dimension. #}
-                ftt_attention_value_partial[ftt_thread] = weighted;
+                ftt_attention_value_partial[
+                    attention_token_group * {{ value_width }}LL
+                    + attention_dimension_lane] = weighted;
+                }
+{# Each active dimension has one bounded partial per complete token group. #}
                 ftt::arch::cta_sync();
-                if (attention_token_group == 0) {
+                if (attention_token_group == 0 && dimension < {{ call.head_dim }}LL) {
                     FTT_UNROLL
-                    for (ftt::dim_t g = 1; g < {{ vgroup }}LL; ++g) {
+                    for (ftt::dim_t g = 1; g < {{ value_groups }}LL; ++g) {
                         weighted += ftt_attention_value_partial[
-                            g * {{ call.head_dim }}LL + dimension];
+                            g * {{ value_width }}LL + attention_dimension_lane];
                     }
                     accumulator[slot] =
                         accumulator[slot] * previous_scale + weighted;

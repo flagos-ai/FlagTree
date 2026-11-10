@@ -147,6 +147,7 @@ class NttDistributionPolicy:
                     "nn.softmax",
                     "nn.kda_convolution",
                     "nn.kda_input_projection",
+                    "nn.interleaved_projection",
                     "nn.partitioned_linear",
                     "nn.partitioned_block_scaled_linear",
                     "nn.kda_recurrent_core",

@@ -3,6 +3,7 @@
  */
 #pragma once
 #include "compiler_defs.h"
+#include "program_abi.h"
 
 // FlagMega runtime ABI for generated C++ packages.
 //
@@ -33,12 +34,22 @@
 // not a FlagMega-specific one: the Python side reports it through the same
 // path as any other driver error.
 
+#if defined(FTT_ARCH_NVIDIA)
+#define FLAGMEGA_CPP_ABI_VERSION 2
+#else
 #define FLAGMEGA_CPP_ABI_VERSION 1
+#endif
 
 extern "C" {
 
 // Defined by every generated package.
+#if defined(FTT_ARCH_NVIDIA)
+// ABI v2 adds runtime-owned scratch, independently of the buffer argument
+// signature. Each runtime owns its counters across capture and graph replay.
+int flagmega_launch(void **arguments, void *stream, void *scratch);
+#else
 int flagmega_launch(void **arguments, void *stream);
+#endif
 int flagmega_argument_count();
 int flagmega_abi_version();
 

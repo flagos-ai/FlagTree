@@ -240,6 +240,9 @@ class GdnCandidateProvider:
 
 
 def _gdn_applicable(node, context, implementation):
+    if implementation.contract.get("scalar_head_gates"):
+        from .gdn_head_gates import applicable
+        return applicable(node, context)
     if node.op == "nn.gdn_recurrent_core" and node.attrs.get("b_weight_encoding") is not None:
         # The native packed projection helper is implemented by the persistent
         # recurrent kernel; the state-pipeline variant still assumes dense rows.

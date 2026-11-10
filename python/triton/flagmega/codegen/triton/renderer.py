@@ -65,6 +65,11 @@ def render_triton_package(
     destination.mkdir(parents=True, exist_ok=True)
     spec = renderer_registry.resolve(module)
     descriptor = spec.describe(module)
+    from triton.flagmega.errors import CodegenError
+    for call in descriptor.get("render_calls", ()):
+        required = call.get("facts", {}).get("required_codegen_backend")
+        if required is not None and required != "triton":
+            raise CodegenError(f"Selected implementation {call.get('implementation')!r} requires codegen backend {required!r}.")
     prepared = spec.prepare(descriptor, RENDERER_VERSION) if spec.prepare is not None else descriptor
     source = spec.render(prepared, RENDERER_VERSION)
     source_path = destination / "generated_kernels.py"

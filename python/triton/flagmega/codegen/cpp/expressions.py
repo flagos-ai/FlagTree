@@ -115,7 +115,7 @@ def cpp_scalar_type(dtype: str) -> str:
         ) from error
 
 
-def translate(expression: object) -> str:
+def translate(expression: object, *, scalar_types: Mapping[str, str] | None = None) -> str:
     """Translate one renderer expression string into a C++ expression."""
 
     # The renderers emit multi-line expressions and indented argument lists, so
@@ -128,14 +128,15 @@ def translate(expression: object) -> str:
         raise CodegenError(
             f"Cannot parse renderer expression for C++ codegen: {text!r} ({error})."
         ) from error
-    return _Translator(text).visit(tree.body)
+    return _Translator(text, scalar_types=scalar_types).visit(tree.body)
 
 
 class _Translator:
     """Recursive-descent emitter over the renderer's expression grammar."""
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, *, scalar_types: Mapping[str, str] | None = None) -> None:
         self.source = source
+        self.scalar_types = {} if scalar_types is None else scalar_types
 
     def reject(self, node: ast.AST, reason: str):
         raise CodegenError(
@@ -306,11 +307,17 @@ class _Translator:
         self.reject(node, f"call to {dotted!r}")
 
     def _pointer_cast(self, node: ast.Call) -> str:
-        """Translate ``base.to(tl.pointer_type(T))`` into a C++ cast."""
+        """Translate a pointer retype or proven signed-integer index widening."""
 
         if len(node.args) != 1:
             self.reject(node, "a .to() cast with other than one argument")
         argument = node.args[0]
+        if isinstance(argument, ast.Attribute) and self._dotted_name(argument) == "tl.int64":
+            base = node.func.value
+            if (isinstance(base, ast.Name) and self.scalar_types.get(base.id)
+                    in {"signed char", "short", "int", "long long", "ftt::dim_t"}):
+                return f"static_cast<long long>({self.visit(base)})"
+            self.reject(node, "an int64 widening without a typed signed scalar integer source")
         if (
             not isinstance(argument, ast.Call)
             or self._dotted_name(argument.func) != "tl.pointer_type"
@@ -363,3 +370,106 @@ class _Translator:
 
 
 __all__ = ["cpp_scalar_type", "translate"]
+
+
+# Numeric register expressions have a narrower grammar than addresses. Values
+# are FP32 registers; BF16 casts round and widen explicitly so each semantic
+# boundary survives later arithmetic without requiring C++ BF16 operators.
+
+
+def register_cast(expression: str, dtype: str) -> str:
+    """Round one already-emitted FP32 register expression to a supported dtype."""
+    if dtype == 'tl.bfloat16':
+        return f'ftt::to_float(ftt::to_bfloat16(static_cast<float>({expression})))'
+    if dtype == 'tl.float32':
+        return f'static_cast<float>({expression})'
+    raise CodegenError(f'C++ register fusion does not implement dtype {dtype!r}.')
+
+
+def translate_register(expression: str, variables: set[str] | frozenset[str]) -> str:
+    """Emit one closed scalar expression with only initialized register names."""
+    if not isinstance(expression, str):
+        raise CodegenError('C++ register fusion requires an expression string.')
+    try:
+        tree = ast.parse(expression.strip(), mode='eval')
+    except SyntaxError as error:
+        raise CodegenError(f'Invalid C++ register expression {expression!r}.') from error
+    return _RegisterTranslator(expression, frozenset(variables)).visit(tree.body)
+
+
+class _RegisterTranslator(_Translator):
+    def __init__(self, source: str, variables: frozenset[str]) -> None:
+        super().__init__(source)
+        self.variables = variables
+
+    def _Name(self, node: ast.Name) -> str:
+        if node.id not in self.variables:
+            self.reject(node, f'uninitialized register {node.id!r}')
+        return node.id
+
+    def _Constant(self, node: ast.Constant) -> str:
+        import math
+        value = node.value
+        if type(value) not in (int, float) or not math.isfinite(value):
+            self.reject(node, 'a non-finite or non-numeric register literal')
+        return f'{float(value)!r}f'
+
+    def _Attribute(self, node: ast.Attribute) -> str:
+        self.reject(node, 'an attribute outside a numeric cast or intrinsic')
+
+    def _Subscript(self, node: ast.Subscript) -> str:
+        self.reject(node, 'a register subscript')
+
+    def _UnaryOp(self, node: ast.UnaryOp) -> str:
+        if isinstance(node.op, ast.USub):
+            return f'(-{self.visit(node.operand)})'
+        if isinstance(node.op, ast.UAdd):
+            return self.visit(node.operand)
+        self.reject(node, 'a non-numeric register unary operation')
+
+    def _BinOp(self, node: ast.BinOp) -> str:
+        operators = {ast.Add: '+', ast.Sub: '-', ast.Mult: '*', ast.Div: '/'}
+        if type(node.op) not in operators:
+            self.reject(node, 'a non-floating register binary operation')
+        return f'({self.visit(node.left)} {operators[type(node.op)]} {self.visit(node.right)})'
+
+    def _BoolOp(self, node: ast.BoolOp) -> str:
+        self.reject(node, 'a boolean register operation')
+
+    def _Compare(self, node: ast.Compare) -> str:
+        self.reject(node, 'a register comparison')
+
+    def _IfExp(self, node: ast.IfExp) -> str:
+        self.reject(node, 'a register conditional')
+
+    def _Call(self, node: ast.Call) -> str:
+        if node.keywords:
+            self.reject(node, 'register intrinsic keyword arguments')
+        function = node.func
+        if isinstance(function, ast.Attribute) and function.attr == 'to':
+            if len(node.args) != 1:
+                self.reject(node, 'a numeric cast with other than one argument')
+            dtype = self._dotted_name(node.args[0])
+            return register_cast(self.visit(function.value), dtype)
+        name = self._dotted_name(function)
+        if name == 'tl.full':
+            if (len(node.args) != 3 or not isinstance(node.args[0], ast.Tuple)
+                    or node.args[0].elts):
+                self.reject(node, 'a non-scalar full register')
+            return register_cast(self.visit(node.args[1]), self._dotted_name(node.args[2]))
+        intrinsics = {'tl.sigmoid': ('ftt::sigmoid', 1), 'libdevice.exp': ('expf', 1)}
+        if name in intrinsics:
+            target, arity = intrinsics[name]
+            if len(node.args) != arity:
+                self.reject(node, f'incorrect arity for {name}')
+            return f'{target}({", ".join(self.visit(arg) for arg in node.args)})'
+        if name == 'tl.div_rn':
+            if len(node.args) != 2:
+                self.reject(node, 'incorrect arity for tl.div_rn')
+            # CUDA C++ division has FP32 round-to-nearest semantics without
+            # fast-math; the normal backend toolchain does not enable it.
+            return f'({self.visit(node.args[0])} / {self.visit(node.args[1])})'
+        self.reject(node, f'unimplemented register intrinsic {name!r}')
+
+
+__all__ += ['register_cast', 'translate_register']

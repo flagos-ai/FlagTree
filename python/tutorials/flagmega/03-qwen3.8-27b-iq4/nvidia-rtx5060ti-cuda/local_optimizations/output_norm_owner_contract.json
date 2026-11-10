@@ -1,0 +1,2967 @@
+{
+  "schema": "flagmega.output-norm-owner-fixed-scope/v1",
+  "parent_recipe": {
+    "mode": "iq4_mmvq",
+    "precision": "dual_glu",
+    "interleaved": "dual",
+    "gdn_warp_state": true,
+    "async_weights": "uniform128_r8",
+    "async_interleaved": true,
+    "gdn_head_projection": "gdn_head_globalq8_qkregs_fullhead48",
+    "u4_scope": "full12",
+    "conv_channel128_fixed96": true,
+    "input_norm_q8": true
+  },
+  "module": {
+    "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti-cuda/.local/runs/20261105T031000Z-cpp-decode/agents/distribution_optimizer/a0009/normal/r4-kernel-r3/bufferized_tir.py",
+    "nbytes": 10600990,
+    "sha256": "f3e45fa515b813e1b37b6f492aa595a4235e6473dad21f7bbe4fdda43d83117a"
+  },
+  "semantic_hash": "e62a46ebb2bfbd9a93e2e34d9527fee642f8564f46b13a64ec1a7016b3644fb7",
+  "cpp_programs_sha256": "7c6e644a82b368606e5a89d000eb97e8424a3b746489f8106661630dc44a017e",
+  "types": {
+    "source": {
+      "kind": "distributed",
+      "tensor": {
+        "kind": "tensor",
+        "dtype": {
+          "kind": "vector",
+          "elem_type": "bfloat16",
+          "lanes": [
+            8
+          ]
+        },
+        "shape": [
+          {
+            "kind": "fixed",
+            "value": 1
+          },
+          {
+            "kind": "fixed",
+            "value": 640
+          }
+        ],
+        "layout": {
+          "order": [],
+          "strides": [],
+          "vector_lanes": [],
+          "tag": "dense"
+        }
+      },
+      "axis_policies": [
+        {
+          "kind": "broadcast"
+        },
+        {
+          "kind": "broadcast"
+        }
+      ],
+      "placement": {
+        "hierarchy": [
+          4,
+          24
+        ],
+        "name": "yx",
+        "hierarchy_levels": "bb"
+      },
+      "partial": null,
+      "exclusive": null
+    },
+    "result": {
+      "kind": "distributed",
+      "tensor": {
+        "kind": "tensor",
+        "dtype": "float32",
+        "shape": [
+          {
+            "kind": "fixed",
+            "value": 1
+          },
+          {
+            "kind": "fixed",
+            "value": 1
+          },
+          {
+            "kind": "fixed",
+            "value": 1
+          }
+        ],
+        "layout": {
+          "order": [],
+          "strides": [],
+          "vector_lanes": [],
+          "tag": "dense"
+        }
+      },
+      "axis_policies": [
+        {
+          "kind": "broadcast"
+        },
+        {
+          "kind": "broadcast"
+        },
+        {
+          "kind": "broadcast"
+        }
+      ],
+      "placement": {
+        "hierarchy": [
+          4,
+          24
+        ],
+        "name": "yx",
+        "hierarchy_levels": "bb"
+      },
+      "partial": null,
+      "exclusive": null
+    },
+    "producer": {
+      "kind": "distributed",
+      "tensor": {
+        "kind": "tensor",
+        "dtype": {
+          "kind": "vector",
+          "elem_type": "bfloat16",
+          "lanes": [
+            8
+          ]
+        },
+        "shape": [
+          {
+            "kind": "fixed",
+            "value": 1
+          },
+          {
+            "kind": "fixed",
+            "value": 640
+          }
+        ],
+        "layout": {
+          "order": [],
+          "strides": [],
+          "vector_lanes": [],
+          "tag": "dense"
+        }
+      },
+      "axis_policies": [
+        {
+          "kind": "broadcast"
+        },
+        {
+          "kind": "split",
+          "stages": [
+            {
+              "hierarchy_axes": [
+                0,
+                1
+              ],
+              "distribution": {
+                "kind": "block_cyclic",
+                "block_size": 4
+              }
+            }
+          ]
+        }
+      ],
+      "placement": {
+        "hierarchy": [
+          4,
+          24
+        ],
+        "name": "yx",
+        "hierarchy_levels": "bb"
+      },
+      "partial": null,
+      "exclusive": null
+    }
+  },
+  "kernel_definition_sha256": "a16fbf47a0ed725ca8afba3627e7b31c17b5adee54173f0520bd5a8a0e0d9db7",
+  "contexts": {
+    "13": {
+      "entry_id": 13,
+      "symbol": "flagmega_main_program_13",
+      "owning_function": "decode_linear_0",
+      "platform": "nvidia",
+      "target_architecture": "sm120",
+      "grid": [
+        96,
+        1,
+        1
+      ],
+      "block_threads": 128,
+      "warp_size": 32,
+      "warps": 4,
+      "launch_kind": "cooperative",
+      "grid_mesh": {
+        "hierarchy": [
+          4,
+          24
+        ],
+        "name": "yx",
+        "hierarchy_levels": "bb"
+      },
+      "mesh_axes": [
+        {
+          "placement_axis": 0,
+          "name": "block_y",
+          "size": 4,
+          "level": "b"
+        },
+        {
+          "placement_axis": 1,
+          "name": "block_x",
+          "size": 24,
+          "level": "b"
+        }
+      ],
+      "mesh_axis_sources": [
+        null,
+        null
+      ],
+      "mesh_coordinate_strides": [
+        1,
+        1
+      ],
+      "mesh_size": 96,
+      "mesh_hierarchy": [
+        4,
+        24
+      ],
+      "mesh_levels": [
+        "b",
+        "b"
+      ],
+      "grid_barrier_axis_groups": [
+        {
+          "key": "0x4",
+          "axis_names_repr": "('block_y',)",
+          "shape_repr": "(4,)",
+          "axes": [
+            0
+          ],
+          "shape": [
+            4
+          ]
+        }
+      ],
+      "grid_barrier_counter_slots": 25,
+      "launch_scratch": {
+        "kind": "grid-barrier-counters/v1",
+        "count": 25,
+        "nbytes": 100,
+        "dtype": "int32",
+        "reset": "per-launch-stream"
+      },
+      "scoped_entry_arguments": [
+        {
+          "name": "block_local_data",
+          "stride": 2304,
+          "dtype": "tl.uint8",
+          "scalar_dtype": "uint8"
+        }
+      ],
+      "signature_arguments": [
+        "decode_linear_0_hidden",
+        "decode_linear_0_state_0",
+        "decode_linear_0_state_1",
+        "decode_linear_0_layer_id",
+        "decode_linear_0_mlp_gate_proj_weight",
+        "decode_linear_0_mlp_up_proj_weight",
+        "decode_linear_0_mlp_down_proj_weight",
+        "decode_linear_0_linear_attn_in_proj_qkv_weight",
+        "decode_linear_0_linear_attn_in_proj_z_weight",
+        "decode_linear_0_linear_attn_in_proj_b_weight",
+        "decode_linear_0_linear_attn_in_proj_a_weight",
+        "decode_linear_0_linear_attn_conv1d_weight",
+        "decode_linear_0_linear_attn_a_log",
+        "decode_linear_0_linear_attn_dt_bias",
+        "decode_linear_0_linear_attn_norm_weight",
+        "decode_linear_0_linear_attn_out_proj_weight",
+        "decode_linear_0_hidden_norm_stats",
+        "decode_linear_0_input_norm_vectorized_pack2_reshard10_constant_parameter",
+        "decode_linear_0_post_norm_vectorized_pack2_constant_parameter",
+        "decode_linear_0_output_vectorized_compute_reshard917",
+        "decode_linear_0_output_norm_stats",
+        "rdata",
+        "workspace",
+        "block_local_data"
+      ],
+      "typed_signature_arguments": [
+        "decode_linear_0_hidden",
+        "decode_linear_0_state_0",
+        "decode_linear_0_state_1",
+        "decode_linear_0_layer_id: tl.int32",
+        "decode_linear_0_mlp_gate_proj_weight",
+        "decode_linear_0_mlp_up_proj_weight",
+        "decode_linear_0_mlp_down_proj_weight",
+        "decode_linear_0_linear_attn_in_proj_qkv_weight",
+        "decode_linear_0_linear_attn_in_proj_z_weight",
+        "decode_linear_0_linear_attn_in_proj_b_weight",
+        "decode_linear_0_linear_attn_in_proj_a_weight",
+        "decode_linear_0_linear_attn_conv1d_weight",
+        "decode_linear_0_linear_attn_a_log",
+        "decode_linear_0_linear_attn_dt_bias",
+        "decode_linear_0_linear_attn_norm_weight",
+        "decode_linear_0_linear_attn_out_proj_weight",
+        "decode_linear_0_hidden_norm_stats",
+        "decode_linear_0_input_norm_vectorized_pack2_reshard10_constant_parameter",
+        "decode_linear_0_post_norm_vectorized_pack2_constant_parameter",
+        "decode_linear_0_output_vectorized_compute_reshard917",
+        "decode_linear_0_output_norm_stats",
+        "rdata",
+        "workspace",
+        "block_local_data"
+      ],
+      "argument_types": {
+        "decode_linear_0_hidden": {
+          "type": "ftt::bfloat16_t",
+          "pointer": true
+        },
+        "decode_linear_0_state_0": {
+          "type": "ftt::bfloat16_t",
+          "pointer": true
+        },
+        "decode_linear_0_state_1": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_layer_id": {
+          "type": "int",
+          "pointer": false
+        },
+        "decode_linear_0_mlp_gate_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_mlp_up_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_mlp_down_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_in_proj_qkv_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_in_proj_z_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_in_proj_b_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_in_proj_a_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_conv1d_weight": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_a_log": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_dt_bias": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_norm_weight": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_linear_attn_out_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_linear_0_hidden_norm_stats": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_input_norm_vectorized_pack2_reshard10_constant_parameter": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_post_norm_vectorized_pack2_constant_parameter": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_linear_0_output_vectorized_compute_reshard917": {
+          "type": "ftt::bfloat16_t",
+          "pointer": true
+        },
+        "decode_linear_0_output_norm_stats": {
+          "type": "float",
+          "pointer": true
+        },
+        "rdata": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "workspace": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "block_local_data": {
+          "type": "unsigned char",
+          "pointer": true
+        }
+      },
+      "entry_events": [
+        {
+          "kind": "tir.kernel_call",
+          "call": "decode_linear_0_output.vectorized.compute",
+          "family": "elementwise",
+          "variant": "add",
+          "execution_kind": "local_shard",
+          "participation_active": "True",
+          "barrier_before": false,
+          "barrier_scope": null,
+          "barrier_axis_group_axes": [],
+          "memory_dependencies": [],
+          "symbol": "_flagmega_decode_linear_0_call_15_decode_linear_0_output_vectorized_compute",
+          "pipeline_channels": [],
+          "pipeline_commits_per_invocation": 0,
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "pipeline_auxiliary_consumer": null,
+          "arguments": "workspace, decode_linear_0_output_vectorized_compute_reshard917"
+        },
+        {
+          "kind": "barrier",
+          "scope": "grid",
+          "axis_group_axes": [],
+          "after": [
+            "decode_linear_0_output.vectorized.compute"
+          ],
+          "before": "decode_linear_0.output_norm_stats",
+          "hazards": [
+            "WRITE->READ"
+          ],
+          "ranges": [
+            {
+              "kind": "synchronization_range",
+              "storage": "return",
+              "physical_id": "external:decode_linear_0:result:decode_linear_0_output.vectorized.compute.reshard917",
+              "offset": 0,
+              "nbytes": 10240,
+              "mode": "read"
+            }
+          ]
+        },
+        {
+          "kind": "tir.kernel_call",
+          "call": "decode_linear_0.output_norm_stats",
+          "family": "norm_stats",
+          "variant": "local",
+          "execution_kind": "local_shard",
+          "participation_active": "True",
+          "barrier_before": false,
+          "barrier_scope": null,
+          "barrier_axis_group_axes": [],
+          "memory_dependencies": [],
+          "symbol": "_flagmega_decode_linear_0_call_16_decode_linear_0_output_norm_stats",
+          "pipeline_channels": [],
+          "pipeline_commits_per_invocation": 0,
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "pipeline_auxiliary_consumer": null,
+          "arguments": "decode_linear_0_output_vectorized_compute_reshard917, decode_linear_0_output_norm_stats"
+        }
+      ],
+      "render_calls": [
+        {
+          "schema": "flagmega.triton-call-abi/v1",
+          "call": "decode_linear_0_output.vectorized.compute",
+          "callee": "kernel_elementwise_add_1c579cc9601fdffe",
+          "semantic_op": "math.vectorized_binary",
+          "implementation": "tir.elementwise.add",
+          "family": "elementwise",
+          "variant": "add",
+          "execution_kind": "local_shard",
+          "inputs": [
+            {
+              "formal": "lhs",
+              "role": "input",
+              "actual_value": "decode_linear_0_output.vectorized.compute",
+              "buffers": [
+                {
+                  "formal": "lhs",
+                  "actual": "decode_linear_0_attention_residual.vectorized.compute",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_linear_0_attention_residual.vectorized.compute",
+                    "physical_buffer": "workspace:874",
+                    "storage": "workspace",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16<8>",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      640
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      8
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "(tl.minimum(4, tl.maximum(0, ((shard_coord_0 * -96) + (shard_coord_1 * -4) + 256))) + 4)"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "((shard_coord_1 * 4) + (shard_coord_0 * 96) + (((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "((((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_strides": [
+                      640,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      8
+                    ],
+                    "scalar_lane_shape": [
+                      8
+                    ],
+                    "scalar_lane_count": 8,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": {
+                          "kind": "vector",
+                          "elem_type": "bfloat16",
+                          "lanes": [
+                            8
+                          ]
+                        },
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 640
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "split",
+                          "stages": [
+                            {
+                              "hierarchy_axes": [
+                                0,
+                                1
+                              ],
+                              "distribution": {
+                                "kind": "block_cyclic",
+                                "block_size": 4
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 128,
+                    "memory_space": "workspace",
+                    "memory_sharing_scope": "chip",
+                    "pooled": true
+                  },
+                  "runtime_argument": "workspace",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            },
+            {
+              "formal": "rhs",
+              "role": "input",
+              "actual_value": "decode_linear_0_output.vectorized.compute",
+              "buffers": [
+                {
+                  "formal": "rhs",
+                  "actual": "decode_linear_0_mlp_down.reshard916",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_linear_0_mlp_down.reshard916",
+                    "physical_buffer": "workspace:880",
+                    "storage": "workspace",
+                    "pool_byte_offset": 32000,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      5120
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      64
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "(tl.minimum(32, tl.maximum(0, ((shard_coord_0 * -768) + (shard_coord_1 * -32) + 2048))) + 32)"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "((shard_coord_1 * 32) + (shard_coord_0 * 768) + (((local_coord_1) // (32)) * 3072) + ((local_coord_1) % (32)))"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "((((local_coord_1) // (32)) * 3072) + ((local_coord_1) % (32)))"
+                    ],
+                    "storage_strides": [
+                      5120,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      1
+                    ],
+                    "scalar_lane_shape": [],
+                    "scalar_lane_count": 1,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": "bfloat16",
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 5120
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "split",
+                          "stages": [
+                            {
+                              "hierarchy_axes": [
+                                0,
+                                1
+                              ],
+                              "distribution": {
+                                "kind": "block_cyclic",
+                                "block_size": 32
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "workspace",
+                    "memory_sharing_scope": "chip",
+                    "pooled": true
+                  },
+                  "runtime_argument": "workspace",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "formal": "result",
+              "role": "output",
+              "actual_value": "decode_linear_0_output.vectorized.compute",
+              "buffers": [
+                {
+                  "formal": "result",
+                  "actual": "decode_linear_0_output.vectorized.compute",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_linear_0_output.vectorized.compute",
+                    "physical_buffer": "external:decode_linear_0:result:decode_linear_0_output.vectorized.compute.reshard917",
+                    "storage": "return",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16<8>",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      640
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      8
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "(tl.minimum(4, tl.maximum(0, ((shard_coord_0 * -96) + (shard_coord_1 * -4) + 256))) + 4)"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "((shard_coord_1 * 4) + (shard_coord_0 * 96) + (((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "((((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_strides": [
+                      640,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      8
+                    ],
+                    "scalar_lane_shape": [
+                      8
+                    ],
+                    "scalar_lane_count": 8,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": {
+                          "kind": "vector",
+                          "elem_type": "bfloat16",
+                          "lanes": [
+                            8
+                          ]
+                        },
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 640
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "split",
+                          "stages": [
+                            {
+                              "hierarchy_axes": [
+                                0,
+                                1
+                              ],
+                              "distribution": {
+                                "kind": "block_cyclic",
+                                "block_size": 4
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "external",
+                    "memory_sharing_scope": "chip"
+                  },
+                  "runtime_argument": "decode_linear_0_output_vectorized_compute_reshard917",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "workspaces": [],
+          "semantic_attrs": {
+            "binary_op": "add",
+            "rhs_pack": {
+              "axes": [
+                1
+              ],
+              "lanes": [
+                8
+              ]
+            }
+          },
+          "parameters": {
+            "distribution": {
+              "input_types": [
+                {
+                  "kind": "distributed",
+                  "tensor": {
+                    "kind": "tensor",
+                    "dtype": {
+                      "kind": "vector",
+                      "elem_type": "bfloat16",
+                      "lanes": [
+                        8
+                      ]
+                    },
+                    "shape": [
+                      {
+                        "kind": "fixed",
+                        "value": 1
+                      },
+                      {
+                        "kind": "fixed",
+                        "value": 640
+                      }
+                    ],
+                    "layout": {
+                      "order": [],
+                      "strides": [],
+                      "vector_lanes": [],
+                      "tag": "dense"
+                    }
+                  },
+                  "axis_policies": [
+                    {
+                      "kind": "broadcast"
+                    },
+                    {
+                      "kind": "split",
+                      "stages": [
+                        {
+                          "hierarchy_axes": [
+                            0,
+                            1
+                          ],
+                          "distribution": {
+                            "kind": "block_cyclic",
+                            "block_size": 4
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "placement": {
+                    "hierarchy": [
+                      4,
+                      24
+                    ],
+                    "name": "yx",
+                    "hierarchy_levels": "bb"
+                  },
+                  "partial": null,
+                  "exclusive": null
+                },
+                {
+                  "kind": "distributed",
+                  "tensor": {
+                    "kind": "tensor",
+                    "dtype": "bfloat16",
+                    "shape": [
+                      {
+                        "kind": "fixed",
+                        "value": 1
+                      },
+                      {
+                        "kind": "fixed",
+                        "value": 5120
+                      }
+                    ],
+                    "layout": {
+                      "order": [],
+                      "strides": [],
+                      "vector_lanes": [],
+                      "tag": "dense"
+                    }
+                  },
+                  "axis_policies": [
+                    {
+                      "kind": "broadcast"
+                    },
+                    {
+                      "kind": "split",
+                      "stages": [
+                        {
+                          "hierarchy_axes": [
+                            0,
+                            1
+                          ],
+                          "distribution": {
+                            "kind": "block_cyclic",
+                            "block_size": 32
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "placement": {
+                    "hierarchy": [
+                      4,
+                      24
+                    ],
+                    "name": "yx",
+                    "hierarchy_levels": "bb"
+                  },
+                  "partial": null,
+                  "exclusive": null
+                }
+              ],
+              "output_type": {
+                "kind": "distributed",
+                "tensor": {
+                  "kind": "tensor",
+                  "dtype": {
+                    "kind": "vector",
+                    "elem_type": "bfloat16",
+                    "lanes": [
+                      8
+                    ]
+                  },
+                  "shape": [
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    },
+                    {
+                      "kind": "fixed",
+                      "value": 640
+                    }
+                  ],
+                  "layout": {
+                    "order": [],
+                    "strides": [],
+                    "vector_lanes": [],
+                    "tag": "dense"
+                  }
+                },
+                "axis_policies": [
+                  {
+                    "kind": "broadcast"
+                  },
+                  {
+                    "kind": "split",
+                    "stages": [
+                      {
+                        "hierarchy_axes": [
+                          0,
+                          1
+                        ],
+                        "distribution": {
+                          "kind": "block_cyclic",
+                          "block_size": 4
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "placement": {
+                  "hierarchy": [
+                    4,
+                    24
+                  ],
+                  "name": "yx",
+                  "hierarchy_levels": "bb"
+                },
+                "partial": null,
+                "exclusive": null
+              },
+              "placement": {
+                "hierarchy": [
+                  4,
+                  24
+                ],
+                "hierarchy_levels": "bb",
+                "name": "yx"
+              }
+            },
+            "family": "elementwise",
+            "variant": "add",
+            "vector_groups": 32,
+            "vector_schedule": {
+              "contract": {
+                "axes": [
+                  1
+                ],
+                "kind": "axes",
+                "lane_count": 8,
+                "lanes": [
+                  8
+                ],
+                "source_candidate": "vectorization.last_axis"
+              },
+              "lowering": "packed_axes",
+              "physical": {
+                "elements_per_program": 256
+              }
+            }
+          },
+          "facts": {
+            "portable_triton": true
+          },
+          "shared_workspaces": [],
+          "ordinal": 15,
+          "symbol": "_flagmega_decode_linear_0_call_15_decode_linear_0_output_vectorized_compute",
+          "internal_grid_barriers": 0,
+          "arguments": [
+            "workspace",
+            "decode_linear_0_output_vectorized_compute_reshard917"
+          ],
+          "signature": "workspace, decode_linear_0_output_vectorized_compute_reshard917",
+          "fusion_lines": [],
+          "fusion_value": "",
+          "math_mode": "fast",
+          "lhs": "workspace.to(tl.pointer_type(tl.bfloat16))",
+          "rhs": "(workspace.to(tl.pointer_type(tl.bfloat16)) + 16000)",
+          "result": "decode_linear_0_output_vectorized_compute_reshard917",
+          "local_capacity": 64,
+          "logical_capacity": 64,
+          "logical_shape": [
+            1,
+            8
+          ],
+          "padded_shape": [
+            1,
+            8
+          ],
+          "vector_axes": [
+            1
+          ],
+          "active": "(((((((local_offsets) // 8)) // 8)) < (1)) & ((((((local_offsets) // 8)) % 8)) < ((tl.minimum(4, tl.maximum(0, (((shard_y) * -96) + ((shard_x) * -4) + 256))) + 4)))) & (((((((local_offsets) // 8)) // 8)) < (1)) & ((((((((local_offsets) // 8)) % 8)) * 8 + (((((local_offsets) % 8)) % 8)))) < ((tl.minimum(32, tl.maximum(0, (((shard_y) * -768) + ((shard_x) * -32) + 2048))) + 32))))",
+          "lhs_offset": "((((((local_offsets) // 8)) // 8))) * 5120 + ((((shard_x) * 4) + ((shard_y) * 96) + ((((((((local_offsets) // 8)) % 8))) // (4)) * 384) + (((((((local_offsets) // 8)) % 8))) % (4)))) * 8 + (((local_offsets) % 8))",
+          "rhs_offset": "((((((local_offsets) // 8)) // 8))) * 5120 + ((((((shard_x) * 4) + ((shard_y) * 96) + ((((((((local_offsets) // 8)) % 8))) // (4)) * 384) + (((((((local_offsets) // 8)) % 8))) % (4)))) * 8 + (((((local_offsets) % 8)) % 8)))) * 1",
+          "lhs_read_active": "True",
+          "rhs_read_active": "((((((local_offsets) // 8)) // 8)) < (1)) & ((((((((local_offsets) // 8)) % 8)) * 8 + (((((local_offsets) % 8)) % 8)))) < ((tl.minimum(32, tl.maximum(0, (((shard_y) * -768) + ((shard_x) * -32) + 2048))) + 32)))",
+          "lhs_other": 0.0,
+          "rhs_other": 0.0,
+          "result_offset": "((((((local_offsets) // 8)) // 8))) * 5120 + ((((shard_x) * 4) + ((shard_y) * 96) + ((((((((local_offsets) // 8)) % 8))) // (4)) * 384) + (((((((local_offsets) // 8)) % 8))) % (4)))) * 8 + (((local_offsets) % 8))",
+          "tile": 256,
+          "output_type": "tl.bfloat16",
+          "participation_active": "True",
+          "descriptor_storage": "kernel_parameter",
+          "host_tensor_descriptor_requests": [],
+          "descriptor_parameters": [],
+          "pipeline_channels": [],
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "device_function_parent": true
+        },
+        {
+          "schema": "flagmega.triton-call-abi/v1",
+          "call": "decode_linear_0.output_norm_stats",
+          "callee": "kernel_norm_stats_local_53db6195662b2e29",
+          "semantic_op": "nn.norm_stats",
+          "implementation": "tir.norm_stats.local",
+          "family": "norm_stats",
+          "variant": "local",
+          "execution_kind": "local_shard",
+          "inputs": [
+            {
+              "formal": "input",
+              "role": "input",
+              "actual_value": "decode_linear_0.output_norm_stats",
+              "buffers": [
+                {
+                  "formal": "input",
+                  "actual": "decode_linear_0_output.vectorized.compute.reshard917",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_linear_0_output.vectorized.compute.reshard917",
+                    "physical_buffer": "external:decode_linear_0:result:decode_linear_0_output.vectorized.compute.reshard917",
+                    "storage": "return",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16<8>",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      640
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      640
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "640"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1"
+                    ],
+                    "storage_strides": [
+                      640,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      8
+                    ],
+                    "scalar_lane_shape": [
+                      8
+                    ],
+                    "scalar_lane_count": 8,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": {
+                          "kind": "vector",
+                          "elem_type": "bfloat16",
+                          "lanes": [
+                            8
+                          ]
+                        },
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 640
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "broadcast"
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "external",
+                    "memory_sharing_scope": "chip"
+                  },
+                  "runtime_argument": "decode_linear_0_output_vectorized_compute_reshard917",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "formal": "result",
+              "role": "output",
+              "actual_value": "decode_linear_0.output_norm_stats",
+              "buffers": [
+                {
+                  "formal": "result",
+                  "actual": "decode_linear_0.output_norm_stats",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_linear_0.output_norm_stats",
+                    "physical_buffer": "external:decode_linear_0:result:decode_linear_0.output_norm_stats",
+                    "storage": "return",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "float32",
+                    "scalar_dtype": "float32",
+                    "scalar_itemsize": 4,
+                    "logical_shape": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "1",
+                      "1"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1",
+                      "local_coord_2"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1",
+                      "local_coord_2"
+                    ],
+                    "storage_strides": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "scalar_lane_shape": [],
+                    "scalar_lane_count": 1,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": "float32",
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "broadcast"
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "external",
+                    "memory_sharing_scope": "chip"
+                  },
+                  "runtime_argument": "decode_linear_0_output_norm_stats",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "workspaces": [],
+          "semantic_attrs": {
+            "axis": 1,
+            "use_mean": false
+          },
+          "parameters": {
+            "axis": 1,
+            "block_size": 128,
+            "distribution": {
+              "input_types": [
+                {
+                  "kind": "distributed",
+                  "tensor": {
+                    "kind": "tensor",
+                    "dtype": {
+                      "kind": "vector",
+                      "elem_type": "bfloat16",
+                      "lanes": [
+                        8
+                      ]
+                    },
+                    "shape": [
+                      {
+                        "kind": "fixed",
+                        "value": 1
+                      },
+                      {
+                        "kind": "fixed",
+                        "value": 640
+                      }
+                    ],
+                    "layout": {
+                      "order": [],
+                      "strides": [],
+                      "vector_lanes": [],
+                      "tag": "dense"
+                    }
+                  },
+                  "axis_policies": [
+                    {
+                      "kind": "broadcast"
+                    },
+                    {
+                      "kind": "broadcast"
+                    }
+                  ],
+                  "placement": {
+                    "hierarchy": [
+                      4,
+                      24
+                    ],
+                    "name": "yx",
+                    "hierarchy_levels": "bb"
+                  },
+                  "partial": null,
+                  "exclusive": null
+                }
+              ],
+              "output_type": {
+                "kind": "distributed",
+                "tensor": {
+                  "kind": "tensor",
+                  "dtype": "float32",
+                  "shape": [
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    },
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    },
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    }
+                  ],
+                  "layout": {
+                    "order": [],
+                    "strides": [],
+                    "vector_lanes": [],
+                    "tag": "dense"
+                  }
+                },
+                "axis_policies": [
+                  {
+                    "kind": "broadcast"
+                  },
+                  {
+                    "kind": "broadcast"
+                  },
+                  {
+                    "kind": "broadcast"
+                  }
+                ],
+                "placement": {
+                  "hierarchy": [
+                    4,
+                    24
+                  ],
+                  "name": "yx",
+                  "hierarchy_levels": "bb"
+                },
+                "partial": null,
+                "exclusive": null
+              },
+              "placement": {
+                "hierarchy": [
+                  4,
+                  24
+                ],
+                "hierarchy_levels": "bb",
+                "name": "yx"
+              }
+            },
+            "family": "norm_stats",
+            "use_mean": false,
+            "variant": "local"
+          },
+          "facts": {
+            "additive_statistics": [
+              "square_sum"
+            ],
+            "local_shard_reduction": true,
+            "portable_triton": true
+          },
+          "shared_workspaces": [],
+          "ordinal": 16,
+          "symbol": "_flagmega_decode_linear_0_call_16_decode_linear_0_output_norm_stats",
+          "internal_grid_barriers": 0,
+          "arguments": [
+            "decode_linear_0_output_vectorized_compute_reshard917",
+            "decode_linear_0_output_norm_stats"
+          ],
+          "signature": "decode_linear_0_output_vectorized_compute_reshard917, decode_linear_0_output_norm_stats",
+          "reduction_group_size": 1,
+          "ordered_tree": false,
+          "tiled_fma": false,
+          "group_fma": false,
+          "reduction_group_seed_index": 0,
+          "reduction_block_traversal": "forward",
+          "reduction_tree_group_size": null,
+          "reduction_block_size": 5120,
+          "group_tile": 8192,
+          "norm_stats_reduction_layout": "default",
+          "norm_stats_reduction_algorithm": "tree",
+          "source": "decode_linear_0_output_vectorized_compute_reshard917",
+          "result": "decode_linear_0_output_norm_stats",
+          "partial_stats": null,
+          "axis": 1,
+          "use_mean": false,
+          "lane_count": 8,
+          "outer_capacity": 1,
+          "reduction_capacity": 5120,
+          "source_active": "((norm_outer_index) < (1)) & ((((norm_reduction_offsets) // 8)) < (640))",
+          "outer_active": "((norm_outer_index) < (1))",
+          "writer_active": "(shard_y == 0) & (shard_x == 0)",
+          "source_offset": "((norm_outer_index)) * 5120 + ((((norm_reduction_offsets) // 8))) * 8 + (((norm_reduction_offsets) % 8))",
+          "result_offsets": [
+            "((0)) * 1 + ((norm_outer_index)) * 1 + ((0)) * 1"
+          ],
+          "tile": 128,
+          "participation_active": "True",
+          "descriptor_storage": "kernel_parameter",
+          "host_tensor_descriptor_requests": [],
+          "descriptor_parameters": [],
+          "pipeline_channels": [],
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "device_function_parent": true
+        }
+      ],
+      "kernel_templates": [
+        "kernels/norm_stats/local.cpp.jinja",
+        "kernels/elementwise/add.cpp.jinja"
+      ],
+      "kernel_template_specs": [
+        {
+          "kernel": "norm_stats",
+          "variant": "local"
+        },
+        {
+          "kernel": "elementwise",
+          "variant": "add"
+        }
+      ],
+      "shared_arena_reuse": null,
+      "pipeline_schedule": null,
+      "device_functions": []
+    },
+    "28": {
+      "entry_id": 28,
+      "symbol": "flagmega_main_program_28",
+      "owning_function": "decode_attention_1",
+      "platform": "nvidia",
+      "target_architecture": "sm120",
+      "grid": [
+        96,
+        1,
+        1
+      ],
+      "block_threads": 128,
+      "warp_size": 32,
+      "warps": 4,
+      "launch_kind": "cooperative",
+      "grid_mesh": {
+        "hierarchy": [
+          4,
+          24
+        ],
+        "name": "yx",
+        "hierarchy_levels": "bb"
+      },
+      "mesh_axes": [
+        {
+          "placement_axis": 0,
+          "name": "block_y",
+          "size": 4,
+          "level": "b"
+        },
+        {
+          "placement_axis": 1,
+          "name": "block_x",
+          "size": 24,
+          "level": "b"
+        }
+      ],
+      "mesh_axis_sources": [
+        null,
+        null
+      ],
+      "mesh_coordinate_strides": [
+        1,
+        1
+      ],
+      "mesh_size": 96,
+      "mesh_hierarchy": [
+        4,
+        24
+      ],
+      "mesh_levels": [
+        "b",
+        "b"
+      ],
+      "grid_barrier_axis_groups": [
+        {
+          "key": "0x4",
+          "axis_names_repr": "('block_y',)",
+          "shape_repr": "(4,)",
+          "axes": [
+            0
+          ],
+          "shape": [
+            4
+          ]
+        }
+      ],
+      "grid_barrier_counter_slots": 25,
+      "launch_scratch": {
+        "kind": "grid-barrier-counters/v1",
+        "count": 25,
+        "nbytes": 100,
+        "dtype": "int32",
+        "reset": "per-launch-stream"
+      },
+      "scoped_entry_arguments": [
+        {
+          "name": "block_local_data",
+          "stride": 2304,
+          "dtype": "tl.uint8",
+          "scalar_dtype": "uint8"
+        }
+      ],
+      "signature_arguments": [
+        "decode_attention_1_hidden",
+        "decode_attention_1_state_0",
+        "decode_attention_1_state_1",
+        "decode_attention_1_state_2",
+        "decode_attention_1_state_3",
+        "decode_attention_1_state_4",
+        "decode_attention_1_layer_id",
+        "decode_attention_1_advance_sequence",
+        "decode_attention_1_rotary_cos",
+        "decode_attention_1_rotary_sin",
+        "decode_attention_1_mlp_gate_proj_weight",
+        "decode_attention_1_mlp_up_proj_weight",
+        "decode_attention_1_mlp_down_proj_weight",
+        "decode_attention_1_self_attn_q_proj_weight",
+        "decode_attention_1_self_attn_k_proj_weight",
+        "decode_attention_1_self_attn_v_proj_weight",
+        "decode_attention_1_self_attn_o_proj_weight",
+        "decode_attention_1_hidden_norm_stats",
+        "decode_attention_1_input_norm_vectorized_pack2_reshard74_constant_parameter",
+        "decode_attention_1_k_norm_vectorized_pack2_constant_parameter",
+        "decode_attention_1_q_norm_vectorized_pack2_constant_parameter",
+        "decode_attention_1_post_norm_vectorized_pack2_constant_parameter",
+        "decode_attention_1_output_vectorized_compute_reshard936",
+        "decode_attention_1_output_norm_stats",
+        "rdata",
+        "workspace",
+        "block_local_data"
+      ],
+      "typed_signature_arguments": [
+        "decode_attention_1_hidden",
+        "decode_attention_1_state_0",
+        "decode_attention_1_state_1",
+        "decode_attention_1_state_2",
+        "decode_attention_1_state_3",
+        "decode_attention_1_state_4",
+        "decode_attention_1_layer_id: tl.int32",
+        "decode_attention_1_advance_sequence: tl.int1",
+        "decode_attention_1_rotary_cos",
+        "decode_attention_1_rotary_sin",
+        "decode_attention_1_mlp_gate_proj_weight",
+        "decode_attention_1_mlp_up_proj_weight",
+        "decode_attention_1_mlp_down_proj_weight",
+        "decode_attention_1_self_attn_q_proj_weight",
+        "decode_attention_1_self_attn_k_proj_weight",
+        "decode_attention_1_self_attn_v_proj_weight",
+        "decode_attention_1_self_attn_o_proj_weight",
+        "decode_attention_1_hidden_norm_stats",
+        "decode_attention_1_input_norm_vectorized_pack2_reshard74_constant_parameter",
+        "decode_attention_1_k_norm_vectorized_pack2_constant_parameter",
+        "decode_attention_1_q_norm_vectorized_pack2_constant_parameter",
+        "decode_attention_1_post_norm_vectorized_pack2_constant_parameter",
+        "decode_attention_1_output_vectorized_compute_reshard936",
+        "decode_attention_1_output_norm_stats",
+        "rdata",
+        "workspace",
+        "block_local_data"
+      ],
+      "argument_types": {
+        "decode_attention_1_hidden": {
+          "type": "ftt::bfloat16_t",
+          "pointer": true
+        },
+        "decode_attention_1_state_0": {
+          "type": "ftt::bfloat16_t",
+          "pointer": true
+        },
+        "decode_attention_1_state_1": {
+          "type": "int",
+          "pointer": true
+        },
+        "decode_attention_1_state_2": {
+          "type": "int",
+          "pointer": true
+        },
+        "decode_attention_1_state_3": {
+          "type": "long long",
+          "pointer": true
+        },
+        "decode_attention_1_state_4": {
+          "type": "int",
+          "pointer": true
+        },
+        "decode_attention_1_layer_id": {
+          "type": "int",
+          "pointer": false
+        },
+        "decode_attention_1_advance_sequence": {
+          "type": "bool",
+          "pointer": false
+        },
+        "decode_attention_1_rotary_cos": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_rotary_sin": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_mlp_gate_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_mlp_up_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_mlp_down_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_self_attn_q_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_self_attn_k_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_self_attn_v_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_self_attn_o_proj_weight": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "decode_attention_1_hidden_norm_stats": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_input_norm_vectorized_pack2_reshard74_constant_parameter": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_k_norm_vectorized_pack2_constant_parameter": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_q_norm_vectorized_pack2_constant_parameter": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_post_norm_vectorized_pack2_constant_parameter": {
+          "type": "float",
+          "pointer": true
+        },
+        "decode_attention_1_output_vectorized_compute_reshard936": {
+          "type": "ftt::bfloat16_t",
+          "pointer": true
+        },
+        "decode_attention_1_output_norm_stats": {
+          "type": "float",
+          "pointer": true
+        },
+        "rdata": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "workspace": {
+          "type": "unsigned char",
+          "pointer": true
+        },
+        "block_local_data": {
+          "type": "unsigned char",
+          "pointer": true
+        }
+      },
+      "entry_events": [
+        {
+          "kind": "tir.kernel_call",
+          "call": "decode_attention_1_output.vectorized.compute",
+          "family": "elementwise",
+          "variant": "add",
+          "execution_kind": "local_shard",
+          "participation_active": "True",
+          "barrier_before": false,
+          "barrier_scope": null,
+          "barrier_axis_group_axes": [],
+          "memory_dependencies": [],
+          "symbol": "_flagmega_decode_attention_1_call_24_decode_attention_1_output_vectorized_compute",
+          "pipeline_channels": [],
+          "pipeline_commits_per_invocation": 0,
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "pipeline_auxiliary_consumer": null,
+          "arguments": "workspace, decode_attention_1_output_vectorized_compute_reshard936"
+        },
+        {
+          "kind": "barrier",
+          "scope": "grid",
+          "axis_group_axes": [],
+          "after": [
+            "decode_attention_1_output.vectorized.compute"
+          ],
+          "before": "decode_attention_1.output_norm_stats",
+          "hazards": [
+            "WRITE->READ"
+          ],
+          "ranges": [
+            {
+              "kind": "synchronization_range",
+              "storage": "return",
+              "physical_id": "external:decode_attention_1:result:decode_attention_1_output.vectorized.compute.reshard936",
+              "offset": 0,
+              "nbytes": 10240,
+              "mode": "read"
+            }
+          ]
+        },
+        {
+          "kind": "tir.kernel_call",
+          "call": "decode_attention_1.output_norm_stats",
+          "family": "norm_stats",
+          "variant": "local",
+          "execution_kind": "local_shard",
+          "participation_active": "True",
+          "barrier_before": false,
+          "barrier_scope": null,
+          "barrier_axis_group_axes": [],
+          "memory_dependencies": [],
+          "symbol": "_flagmega_decode_attention_1_call_25_decode_attention_1_output_norm_stats",
+          "pipeline_channels": [],
+          "pipeline_commits_per_invocation": 0,
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "pipeline_auxiliary_consumer": null,
+          "arguments": "decode_attention_1_output_vectorized_compute_reshard936, decode_attention_1_output_norm_stats"
+        }
+      ],
+      "render_calls": [
+        {
+          "schema": "flagmega.triton-call-abi/v1",
+          "call": "decode_attention_1_output.vectorized.compute",
+          "callee": "kernel_elementwise_add_1c579cc9601fdffe",
+          "semantic_op": "math.vectorized_binary",
+          "implementation": "tir.elementwise.add",
+          "family": "elementwise",
+          "variant": "add",
+          "execution_kind": "local_shard",
+          "inputs": [
+            {
+              "formal": "lhs",
+              "role": "input",
+              "actual_value": "decode_attention_1_output.vectorized.compute",
+              "buffers": [
+                {
+                  "formal": "lhs",
+                  "actual": "decode_attention_1_attention_residual.vectorized.compute",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_attention_1_attention_residual.vectorized.compute",
+                    "physical_buffer": "workspace:902",
+                    "storage": "workspace",
+                    "pool_byte_offset": 64768,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16<8>",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      640
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      8
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "(tl.minimum(4, tl.maximum(0, ((shard_coord_0 * -96) + (shard_coord_1 * -4) + 256))) + 4)"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "((shard_coord_1 * 4) + (shard_coord_0 * 96) + (((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "((((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_strides": [
+                      640,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      8
+                    ],
+                    "scalar_lane_shape": [
+                      8
+                    ],
+                    "scalar_lane_count": 8,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": {
+                          "kind": "vector",
+                          "elem_type": "bfloat16",
+                          "lanes": [
+                            8
+                          ]
+                        },
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 640
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "split",
+                          "stages": [
+                            {
+                              "hierarchy_axes": [
+                                0,
+                                1
+                              ],
+                              "distribution": {
+                                "kind": "block_cyclic",
+                                "block_size": 4
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 128,
+                    "memory_space": "workspace",
+                    "memory_sharing_scope": "chip",
+                    "pooled": true
+                  },
+                  "runtime_argument": "workspace",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            },
+            {
+              "formal": "rhs",
+              "role": "input",
+              "actual_value": "decode_attention_1_output.vectorized.compute",
+              "buffers": [
+                {
+                  "formal": "rhs",
+                  "actual": "decode_attention_1_mlp_down.reshard935",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_attention_1_mlp_down.reshard935",
+                    "physical_buffer": "workspace:908",
+                    "storage": "workspace",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      5120
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      64
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "(tl.minimum(32, tl.maximum(0, ((shard_coord_0 * -768) + (shard_coord_1 * -32) + 2048))) + 32)"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "((shard_coord_1 * 32) + (shard_coord_0 * 768) + (((local_coord_1) // (32)) * 3072) + ((local_coord_1) % (32)))"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "((((local_coord_1) // (32)) * 3072) + ((local_coord_1) % (32)))"
+                    ],
+                    "storage_strides": [
+                      5120,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      1
+                    ],
+                    "scalar_lane_shape": [],
+                    "scalar_lane_count": 1,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": "bfloat16",
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 5120
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "split",
+                          "stages": [
+                            {
+                              "hierarchy_axes": [
+                                0,
+                                1
+                              ],
+                              "distribution": {
+                                "kind": "block_cyclic",
+                                "block_size": 32
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "workspace",
+                    "memory_sharing_scope": "chip",
+                    "pooled": true
+                  },
+                  "runtime_argument": "workspace",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "formal": "result",
+              "role": "output",
+              "actual_value": "decode_attention_1_output.vectorized.compute",
+              "buffers": [
+                {
+                  "formal": "result",
+                  "actual": "decode_attention_1_output.vectorized.compute",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_attention_1_output.vectorized.compute",
+                    "physical_buffer": "external:decode_attention_1:result:decode_attention_1_output.vectorized.compute.reshard936",
+                    "storage": "return",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16<8>",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      640
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      8
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "(tl.minimum(4, tl.maximum(0, ((shard_coord_0 * -96) + (shard_coord_1 * -4) + 256))) + 4)"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "((shard_coord_1 * 4) + (shard_coord_0 * 96) + (((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "((((local_coord_1) // (4)) * 384) + ((local_coord_1) % (4)))"
+                    ],
+                    "storage_strides": [
+                      640,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      8
+                    ],
+                    "scalar_lane_shape": [
+                      8
+                    ],
+                    "scalar_lane_count": 8,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": {
+                          "kind": "vector",
+                          "elem_type": "bfloat16",
+                          "lanes": [
+                            8
+                          ]
+                        },
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 640
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "split",
+                          "stages": [
+                            {
+                              "hierarchy_axes": [
+                                0,
+                                1
+                              ],
+                              "distribution": {
+                                "kind": "block_cyclic",
+                                "block_size": 4
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "external",
+                    "memory_sharing_scope": "chip"
+                  },
+                  "runtime_argument": "decode_attention_1_output_vectorized_compute_reshard936",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "workspaces": [],
+          "semantic_attrs": {
+            "binary_op": "add",
+            "rhs_pack": {
+              "axes": [
+                1
+              ],
+              "lanes": [
+                8
+              ]
+            }
+          },
+          "parameters": {
+            "distribution": {
+              "input_types": [
+                {
+                  "kind": "distributed",
+                  "tensor": {
+                    "kind": "tensor",
+                    "dtype": {
+                      "kind": "vector",
+                      "elem_type": "bfloat16",
+                      "lanes": [
+                        8
+                      ]
+                    },
+                    "shape": [
+                      {
+                        "kind": "fixed",
+                        "value": 1
+                      },
+                      {
+                        "kind": "fixed",
+                        "value": 640
+                      }
+                    ],
+                    "layout": {
+                      "order": [],
+                      "strides": [],
+                      "vector_lanes": [],
+                      "tag": "dense"
+                    }
+                  },
+                  "axis_policies": [
+                    {
+                      "kind": "broadcast"
+                    },
+                    {
+                      "kind": "split",
+                      "stages": [
+                        {
+                          "hierarchy_axes": [
+                            0,
+                            1
+                          ],
+                          "distribution": {
+                            "kind": "block_cyclic",
+                            "block_size": 4
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "placement": {
+                    "hierarchy": [
+                      4,
+                      24
+                    ],
+                    "name": "yx",
+                    "hierarchy_levels": "bb"
+                  },
+                  "partial": null,
+                  "exclusive": null
+                },
+                {
+                  "kind": "distributed",
+                  "tensor": {
+                    "kind": "tensor",
+                    "dtype": "bfloat16",
+                    "shape": [
+                      {
+                        "kind": "fixed",
+                        "value": 1
+                      },
+                      {
+                        "kind": "fixed",
+                        "value": 5120
+                      }
+                    ],
+                    "layout": {
+                      "order": [],
+                      "strides": [],
+                      "vector_lanes": [],
+                      "tag": "dense"
+                    }
+                  },
+                  "axis_policies": [
+                    {
+                      "kind": "broadcast"
+                    },
+                    {
+                      "kind": "split",
+                      "stages": [
+                        {
+                          "hierarchy_axes": [
+                            0,
+                            1
+                          ],
+                          "distribution": {
+                            "kind": "block_cyclic",
+                            "block_size": 32
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "placement": {
+                    "hierarchy": [
+                      4,
+                      24
+                    ],
+                    "name": "yx",
+                    "hierarchy_levels": "bb"
+                  },
+                  "partial": null,
+                  "exclusive": null
+                }
+              ],
+              "output_type": {
+                "kind": "distributed",
+                "tensor": {
+                  "kind": "tensor",
+                  "dtype": {
+                    "kind": "vector",
+                    "elem_type": "bfloat16",
+                    "lanes": [
+                      8
+                    ]
+                  },
+                  "shape": [
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    },
+                    {
+                      "kind": "fixed",
+                      "value": 640
+                    }
+                  ],
+                  "layout": {
+                    "order": [],
+                    "strides": [],
+                    "vector_lanes": [],
+                    "tag": "dense"
+                  }
+                },
+                "axis_policies": [
+                  {
+                    "kind": "broadcast"
+                  },
+                  {
+                    "kind": "split",
+                    "stages": [
+                      {
+                        "hierarchy_axes": [
+                          0,
+                          1
+                        ],
+                        "distribution": {
+                          "kind": "block_cyclic",
+                          "block_size": 4
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "placement": {
+                  "hierarchy": [
+                    4,
+                    24
+                  ],
+                  "name": "yx",
+                  "hierarchy_levels": "bb"
+                },
+                "partial": null,
+                "exclusive": null
+              },
+              "placement": {
+                "hierarchy": [
+                  4,
+                  24
+                ],
+                "hierarchy_levels": "bb",
+                "name": "yx"
+              }
+            },
+            "family": "elementwise",
+            "variant": "add",
+            "vector_groups": 32,
+            "vector_schedule": {
+              "contract": {
+                "axes": [
+                  1
+                ],
+                "kind": "axes",
+                "lane_count": 8,
+                "lanes": [
+                  8
+                ],
+                "source_candidate": "vectorization.last_axis"
+              },
+              "lowering": "packed_axes",
+              "physical": {
+                "elements_per_program": 256
+              }
+            }
+          },
+          "facts": {
+            "portable_triton": true
+          },
+          "shared_workspaces": [],
+          "ordinal": 24,
+          "symbol": "_flagmega_decode_attention_1_call_24_decode_attention_1_output_vectorized_compute",
+          "internal_grid_barriers": 0,
+          "arguments": [
+            "workspace",
+            "decode_attention_1_output_vectorized_compute_reshard936"
+          ],
+          "signature": "workspace, decode_attention_1_output_vectorized_compute_reshard936",
+          "fusion_lines": [],
+          "fusion_value": "",
+          "math_mode": "fast",
+          "lhs": "(workspace.to(tl.pointer_type(tl.bfloat16)) + 32384)",
+          "rhs": "workspace.to(tl.pointer_type(tl.bfloat16))",
+          "result": "decode_attention_1_output_vectorized_compute_reshard936",
+          "local_capacity": 64,
+          "logical_capacity": 64,
+          "logical_shape": [
+            1,
+            8
+          ],
+          "padded_shape": [
+            1,
+            8
+          ],
+          "vector_axes": [
+            1
+          ],
+          "active": "(((((((local_offsets) // 8)) // 8)) < (1)) & ((((((local_offsets) // 8)) % 8)) < ((tl.minimum(4, tl.maximum(0, (((shard_y) * -96) + ((shard_x) * -4) + 256))) + 4)))) & (((((((local_offsets) // 8)) // 8)) < (1)) & ((((((((local_offsets) // 8)) % 8)) * 8 + (((((local_offsets) % 8)) % 8)))) < ((tl.minimum(32, tl.maximum(0, (((shard_y) * -768) + ((shard_x) * -32) + 2048))) + 32))))",
+          "lhs_offset": "((((((local_offsets) // 8)) // 8))) * 5120 + ((((shard_x) * 4) + ((shard_y) * 96) + ((((((((local_offsets) // 8)) % 8))) // (4)) * 384) + (((((((local_offsets) // 8)) % 8))) % (4)))) * 8 + (((local_offsets) % 8))",
+          "rhs_offset": "((((((local_offsets) // 8)) // 8))) * 5120 + ((((((shard_x) * 4) + ((shard_y) * 96) + ((((((((local_offsets) // 8)) % 8))) // (4)) * 384) + (((((((local_offsets) // 8)) % 8))) % (4)))) * 8 + (((((local_offsets) % 8)) % 8)))) * 1",
+          "lhs_read_active": "True",
+          "rhs_read_active": "((((((local_offsets) // 8)) // 8)) < (1)) & ((((((((local_offsets) // 8)) % 8)) * 8 + (((((local_offsets) % 8)) % 8)))) < ((tl.minimum(32, tl.maximum(0, (((shard_y) * -768) + ((shard_x) * -32) + 2048))) + 32)))",
+          "lhs_other": 0.0,
+          "rhs_other": 0.0,
+          "result_offset": "((((((local_offsets) // 8)) // 8))) * 5120 + ((((shard_x) * 4) + ((shard_y) * 96) + ((((((((local_offsets) // 8)) % 8))) // (4)) * 384) + (((((((local_offsets) // 8)) % 8))) % (4)))) * 8 + (((local_offsets) % 8))",
+          "tile": 256,
+          "output_type": "tl.bfloat16",
+          "participation_active": "True",
+          "descriptor_storage": "kernel_parameter",
+          "host_tensor_descriptor_requests": [],
+          "descriptor_parameters": [],
+          "pipeline_channels": [],
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "device_function_parent": true
+        },
+        {
+          "schema": "flagmega.triton-call-abi/v1",
+          "call": "decode_attention_1.output_norm_stats",
+          "callee": "kernel_norm_stats_local_53db6195662b2e29",
+          "semantic_op": "nn.norm_stats",
+          "implementation": "tir.norm_stats.local",
+          "family": "norm_stats",
+          "variant": "local",
+          "execution_kind": "local_shard",
+          "inputs": [
+            {
+              "formal": "input",
+              "role": "input",
+              "actual_value": "decode_attention_1.output_norm_stats",
+              "buffers": [
+                {
+                  "formal": "input",
+                  "actual": "decode_attention_1_output.vectorized.compute.reshard936",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_attention_1_output.vectorized.compute.reshard936",
+                    "physical_buffer": "external:decode_attention_1:result:decode_attention_1_output.vectorized.compute.reshard936",
+                    "storage": "return",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "bfloat16<8>",
+                    "scalar_dtype": "bfloat16",
+                    "scalar_itemsize": 2,
+                    "logical_shape": [
+                      1,
+                      640
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      640
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "640"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1"
+                    ],
+                    "storage_strides": [
+                      640,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      5120,
+                      8
+                    ],
+                    "scalar_lane_shape": [
+                      8
+                    ],
+                    "scalar_lane_count": 8,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": {
+                          "kind": "vector",
+                          "elem_type": "bfloat16",
+                          "lanes": [
+                            8
+                          ]
+                        },
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 640
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "broadcast"
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "external",
+                    "memory_sharing_scope": "chip"
+                  },
+                  "runtime_argument": "decode_attention_1_output_vectorized_compute_reshard936",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "formal": "result",
+              "role": "output",
+              "actual_value": "decode_attention_1.output_norm_stats",
+              "buffers": [
+                {
+                  "formal": "result",
+                  "actual": "decode_attention_1.output_norm_stats",
+                  "abi": {
+                    "schema": "flagmega.local-buffer-abi/v2",
+                    "buffer": "decode_attention_1.output_norm_stats",
+                    "physical_buffer": "external:decode_attention_1:result:decode_attention_1.output_norm_stats",
+                    "storage": "return",
+                    "pool_byte_offset": 0,
+                    "storage_kind": "canonical_global",
+                    "dtype": "float32",
+                    "scalar_dtype": "float32",
+                    "scalar_itemsize": 4,
+                    "logical_shape": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "local_capacity_shape": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "active_shape_expressions": [
+                      "1",
+                      "1",
+                      "1"
+                    ],
+                    "logical_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1",
+                      "local_coord_2"
+                    ],
+                    "storage_coordinate_expressions": [
+                      "local_coord_0",
+                      "local_coord_1",
+                      "local_coord_2"
+                    ],
+                    "storage_strides": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "scalar_storage_strides": [
+                      1,
+                      1,
+                      1
+                    ],
+                    "scalar_lane_shape": [],
+                    "scalar_lane_count": 1,
+                    "component_stride_elements": 0,
+                    "component_stride_scalar_elements": 0,
+                    "owner_count": 96,
+                    "placement_owner_count": 96,
+                    "owner_index_expression": "shard_index",
+                    "coordinate_space": "canonical_global",
+                    "distributed_type": {
+                      "kind": "distributed",
+                      "tensor": {
+                        "kind": "tensor",
+                        "dtype": "float32",
+                        "shape": [
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          },
+                          {
+                            "kind": "fixed",
+                            "value": 1
+                          }
+                        ],
+                        "layout": {
+                          "order": [],
+                          "strides": [],
+                          "vector_lanes": [],
+                          "tag": "dense"
+                        }
+                      },
+                      "axis_policies": [
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "broadcast"
+                        },
+                        {
+                          "kind": "broadcast"
+                        }
+                      ],
+                      "placement": {
+                        "hierarchy": [
+                          4,
+                          24
+                        ],
+                        "name": "yx",
+                        "hierarchy_levels": "bb"
+                      },
+                      "partial": null,
+                      "exclusive": null
+                    },
+                    "distributed_backing_type": null,
+                    "alignment_bytes": 256,
+                    "memory_space": "external",
+                    "memory_sharing_scope": "chip"
+                  },
+                  "runtime_argument": "decode_attention_1_output_norm_stats",
+                  "runtime_value_kind": "pointer"
+                }
+              ]
+            }
+          ],
+          "workspaces": [],
+          "semantic_attrs": {
+            "axis": 1,
+            "use_mean": false
+          },
+          "parameters": {
+            "axis": 1,
+            "block_size": 128,
+            "distribution": {
+              "input_types": [
+                {
+                  "kind": "distributed",
+                  "tensor": {
+                    "kind": "tensor",
+                    "dtype": {
+                      "kind": "vector",
+                      "elem_type": "bfloat16",
+                      "lanes": [
+                        8
+                      ]
+                    },
+                    "shape": [
+                      {
+                        "kind": "fixed",
+                        "value": 1
+                      },
+                      {
+                        "kind": "fixed",
+                        "value": 640
+                      }
+                    ],
+                    "layout": {
+                      "order": [],
+                      "strides": [],
+                      "vector_lanes": [],
+                      "tag": "dense"
+                    }
+                  },
+                  "axis_policies": [
+                    {
+                      "kind": "broadcast"
+                    },
+                    {
+                      "kind": "broadcast"
+                    }
+                  ],
+                  "placement": {
+                    "hierarchy": [
+                      4,
+                      24
+                    ],
+                    "name": "yx",
+                    "hierarchy_levels": "bb"
+                  },
+                  "partial": null,
+                  "exclusive": null
+                }
+              ],
+              "output_type": {
+                "kind": "distributed",
+                "tensor": {
+                  "kind": "tensor",
+                  "dtype": "float32",
+                  "shape": [
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    },
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    },
+                    {
+                      "kind": "fixed",
+                      "value": 1
+                    }
+                  ],
+                  "layout": {
+                    "order": [],
+                    "strides": [],
+                    "vector_lanes": [],
+                    "tag": "dense"
+                  }
+                },
+                "axis_policies": [
+                  {
+                    "kind": "broadcast"
+                  },
+                  {
+                    "kind": "broadcast"
+                  },
+                  {
+                    "kind": "broadcast"
+                  }
+                ],
+                "placement": {
+                  "hierarchy": [
+                    4,
+                    24
+                  ],
+                  "name": "yx",
+                  "hierarchy_levels": "bb"
+                },
+                "partial": null,
+                "exclusive": null
+              },
+              "placement": {
+                "hierarchy": [
+                  4,
+                  24
+                ],
+                "hierarchy_levels": "bb",
+                "name": "yx"
+              }
+            },
+            "family": "norm_stats",
+            "use_mean": false,
+            "variant": "local"
+          },
+          "facts": {
+            "additive_statistics": [
+              "square_sum"
+            ],
+            "local_shard_reduction": true,
+            "portable_triton": true
+          },
+          "shared_workspaces": [],
+          "ordinal": 25,
+          "symbol": "_flagmega_decode_attention_1_call_25_decode_attention_1_output_norm_stats",
+          "internal_grid_barriers": 0,
+          "arguments": [
+            "decode_attention_1_output_vectorized_compute_reshard936",
+            "decode_attention_1_output_norm_stats"
+          ],
+          "signature": "decode_attention_1_output_vectorized_compute_reshard936, decode_attention_1_output_norm_stats",
+          "reduction_group_size": 1,
+          "ordered_tree": false,
+          "tiled_fma": false,
+          "group_fma": false,
+          "reduction_group_seed_index": 0,
+          "reduction_block_traversal": "forward",
+          "reduction_tree_group_size": null,
+          "reduction_block_size": 5120,
+          "group_tile": 8192,
+          "norm_stats_reduction_layout": "default",
+          "norm_stats_reduction_algorithm": "tree",
+          "source": "decode_attention_1_output_vectorized_compute_reshard936",
+          "result": "decode_attention_1_output_norm_stats",
+          "partial_stats": null,
+          "axis": 1,
+          "use_mean": false,
+          "lane_count": 8,
+          "outer_capacity": 1,
+          "reduction_capacity": 5120,
+          "source_active": "((norm_outer_index) < (1)) & ((((norm_reduction_offsets) // 8)) < (640))",
+          "outer_active": "((norm_outer_index) < (1))",
+          "writer_active": "(shard_y == 0) & (shard_x == 0)",
+          "source_offset": "((norm_outer_index)) * 5120 + ((((norm_reduction_offsets) // 8))) * 8 + (((norm_reduction_offsets) % 8))",
+          "result_offsets": [
+            "((0)) * 1 + ((norm_outer_index)) * 1 + ((0)) * 1"
+          ],
+          "tile": 128,
+          "participation_active": "True",
+          "descriptor_storage": "kernel_parameter",
+          "host_tensor_descriptor_requests": [],
+          "descriptor_parameters": [],
+          "pipeline_channels": [],
+          "pipeline_consumer_workspaces": [],
+          "pipeline_consumer_parameters": [],
+          "pipeline_producer_parameters": [],
+          "device_function_parent": true
+        }
+      ],
+      "kernel_templates": [
+        "kernels/norm_stats/local.cpp.jinja",
+        "kernels/elementwise/add.cpp.jinja"
+      ],
+      "kernel_template_specs": [
+        {
+          "kernel": "norm_stats",
+          "variant": "local"
+        },
+        {
+          "kernel": "elementwise",
+          "variant": "add"
+        }
+      ],
+      "shared_arena_reuse": null,
+      "pipeline_schedule": null,
+      "device_functions": []
+    }
+  }
+}

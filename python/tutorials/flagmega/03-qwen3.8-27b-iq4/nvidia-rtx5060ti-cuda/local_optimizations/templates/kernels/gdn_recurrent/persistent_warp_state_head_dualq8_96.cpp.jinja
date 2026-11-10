@@ -1,0 +1,157 @@
+// flagmega-kernel: gdn_recurrent/persistent_warp_state_head_dualq8_96 platform=nvidia
+// Warp/register state mapping adapted from llama.cpp gated_delta_net.cu,
+// MIT, revision 5ce06fc71f5e938301f7dc51697a59ae308bd6b7, S_v=128/cols_per_warp=1.
+// B/A use unchanged local_iq4_mmvq dual-Q8/DP4A with shuffle-down reduction;
+// this is q8_residual2_f32scale_roundf, not scalar-C1-equivalent projection.
+// Q/K norms and BF16 gate boundaries stay unchanged. State sums retain the
+// parent lane-strided partials and XOR16,8,4,2,1 F32 reassociation.
+#include <cmath>
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gdn_recurrent" and call.variant == "persistent_warp_state_head_dualq8_96" %}
+static FTT_DEVICE void {{ call.symbol }}__core({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_qkv = {{ call.qkv | cppexpr }};
+    auto *const ftt_gdn_projection_input = {{ call.projection_input | cppexpr }};
+    auto *const ftt_gdn_b_weight = {{ call.b_weight | cppexpr }};
+    auto *const ftt_gdn_a_weight = {{ call.a_weight | cppexpr }};
+    auto *const ftt_gdn_a_log = {{ call.a_log | cppexpr }};
+    auto *const ftt_gdn_dt_bias = {{ call.dt_bias | cppexpr }};
+    auto *const ftt_gdn_state = {{ call.state | cppexpr }};
+    auto *const ftt_gdn_scratch = {{ call.core_scratch | cppexpr }};
+    // Two simultaneously live planner spans within the sequential arena.
+    // Statistics: {{ call.head_statistics_physical_buffer }}; Q8:
+    // {{ call.head_projection_q8_physical_buffer }}. Offsets are planner-owned.
+    // The predecessor drained all cp.async groups and completed its reuse
+    // barrier. Q8 dies at statistics publication; statistics die after state.
+    float *const ftt_head_statistics = reinterpret_cast<float *>(
+        _local_iq4_q8 + {{ call.head_statistics_offset_bytes }});
+    auto *const ftt_head_projection_q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(
+        _local_iq4_q8 + {{ call.head_projection_q8_offset_bytes }});
+    const ftt::dim_t first_value = {{ call.head_statistics_first_value | cppexpr }};
+    const ftt::dim_t first_head = first_value / {{ call.value_dim }}LL;
+    const ftt::dim_t lane = ftt_thread % 32;
+    const ftt::dim_t warp = ftt_thread / 32;
+    // All128 threads produce groups warp,warp+4,... and converge at the
+    // helper's CTA publication barrier. Never call inside the B/A branches.
+    local_iq4_mmvq::quantize<5120, true>(ftt_gdn_projection_input, ftt_head_projection_q8);
+    if (warp == 0) {
+        const auto *b_row = reinterpret_cast<const unsigned char *>(ftt_gdn_b_weight)
+            + first_head * {{ (call.projection_dim // 256) * 136 }}LL;
+        float b_projection = local_iq4_mmvq::dot<5120, true>(b_row, ftt_head_projection_q8);
+        if (lane == 0) {
+            b_projection = ftt::to_float(ftt::to_bfloat16(b_projection));
+            float beta = ftt::sigmoid(b_projection);
+            beta = ftt::to_float(ftt::to_bfloat16(beta));
+            const ftt::dim_t key_head = first_head % {{ call.key_heads }}LL;
+            const ftt::dim_t query_base = key_head * {{ call.key_dim }}LL;
+            const ftt::dim_t key_base = {{ call.key_heads * call.key_dim }}LL + query_base;
+            float query_square_sum = 0.0f;
+            float key_square_sum = 0.0f;
+            FTT_NO_UNROLL
+            for (ftt::dim_t k = 0; k < {{ call.key_dim }}LL; ++k) {
+                const float query = ftt::to_float(ftt_gdn_qkv[query_base + k]);
+                const float key = ftt::to_float(ftt_gdn_qkv[key_base + k]);
+                query_square_sum += query * query;
+                key_square_sum += key * key;
+            }
+            const float query_norm = ftt::max(sqrtf(query_square_sum), {{ call.qk_norm_epsilon | cppfloat }});
+            const float key_norm = ftt::max(sqrtf(key_square_sum), {{ call.qk_norm_epsilon | cppfloat }});
+            // Only thread0 writes beta/query_norm/key_norm; slot1 is inactive.
+            ftt_head_statistics[0] = beta;
+            ftt_head_statistics[2] = query_norm;
+            ftt_head_statistics[3] = key_norm;
+        }
+    }
+    if (warp == 1) {
+        const auto *a_row = reinterpret_cast<const unsigned char *>(ftt_gdn_a_weight)
+            + first_head * {{ (call.projection_dim // 256) * 136 }}LL;
+        float a_projection = local_iq4_mmvq::dot<5120, true>(a_row, ftt_head_projection_q8);
+        if (lane == 0) {
+            a_projection = ftt::to_float(ftt::to_bfloat16(a_projection));
+            const float decay_input = a_projection + ftt::to_float(ftt_gdn_dt_bias[first_head]);
+            const float softplus = decay_input > 20.0f ? decay_input : log1pf(expf(decay_input));
+            const float decay = expf(-expf(ftt::to_float(ftt_gdn_a_log[first_head])) * softplus);
+            // Only thread32 writes decay; full warp participated in the dot.
+            ftt_head_statistics[1] = decay;
+        }
+    }
+    // Publish statistics and retire all Q8 readers before state begins.
+    ftt::arch::cta_sync();
+    for (ftt::dim_t local_values = warp; local_values < {{ call.local_capacity }}LL; local_values += 4) {
+        const ftt::dim_t global_value = {{ call.global_value | cppexpr }};
+        const ftt::dim_t value_head = global_value / {{ call.value_dim }}LL;
+        const ftt::dim_t slot = value_head - first_head;
+        const float beta = ftt_head_statistics[4 * slot];
+        const float decay = ftt_head_statistics[4 * slot + 1];
+        const float query_norm = ftt_head_statistics[4 * slot + 2];
+        const float key_norm = ftt_head_statistics[4 * slot + 3];
+        const ftt::dim_t query_base = (value_head % {{ call.key_heads }}LL) * {{ call.key_dim }}LL;
+        const ftt::dim_t key_base = {{ call.key_heads * call.key_dim }}LL + query_base;
+        const ftt::dim_t state_base = global_value * {{ call.key_dim }}LL;
+        float s_shard[4], k_reg[4], q_reg[4];
+        float recalled = 0.0f;
+        #pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            const ftt::dim_t k = lane + r * 32;
+            s_shard[r] = ftt::to_float(ftt_gdn_state[state_base + k]);
+            k_reg[r] = ftt::to_float(ftt_gdn_qkv[key_base + k]) / key_norm;
+            q_reg[r] = ftt::to_float(ftt_gdn_qkv[query_base + k]) / query_norm;
+            q_reg[r] *= {{ call.query_scale | cppfloat }};
+            // Keep nncase decay placement: do not pull decay out of this sum.
+            recalled += (s_shard[r] * decay) * k_reg[r];
+        }
+        recalled = ftt::arch::warp_reduce_sum(recalled);
+        const float target = ftt::to_float(ftt_gdn_qkv[{{ 2 * call.key_heads * call.key_dim }}LL + global_value]);
+        const float delta = (target - recalled) * beta;
+        float core = 0.0f;
+        #pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            const ftt::dim_t k = lane + r * 32;
+            const float updated = s_shard[r] * decay + k_reg[r] * delta;
+            ftt_gdn_state[state_base + k] = ftt::store_as(ftt_gdn_state, updated);
+            core += updated * q_reg[r];
+        }
+        core = ftt::arch::warp_reduce_sum(core);
+        if (lane == 0) ftt_gdn_scratch[global_value] = ftt::store_as(ftt_gdn_scratch, core);
+    }
+}
+
+static FTT_DEVICE void {{ call.symbol }}__norm({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_z = {{ call.z | cppexpr }};
+    auto *const ftt_gdn_norm_weight = {{ call.norm_weight | cppexpr }};
+    auto *const ftt_gdn_result = {{ call.result | cppexpr }};
+    auto *const ftt_gdn_scratch = {{ call.core_scratch | cppexpr }};
+{{ entry.strided_loop("local_values", call.local_capacity) }} {
+        if (!(local_values < ({{ call.active_values | cppexpr }})) || !({{ call.writer_active | cppexpr }})) continue;
+        const ftt::dim_t global_value = {{ call.global_value | cppexpr }};
+        const ftt::dim_t head = global_value / {{ call.value_dim }}LL;
+        float square_sum = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t v = 0; v < {{ call.value_dim }}LL; ++v) {
+            const float value = ftt::to_float(ftt_gdn_scratch[head * {{ call.value_dim }}LL + v]);
+            square_sum += value * value;
+        }
+        const float inverse_rms = ftt::rsqrt(square_sum / {{ call.value_dim }}.0f + {{ call.epsilon | cppfloat }});
+        const float gate = ftt::to_float(ftt_gdn_z[{{ call.z_offset | cppexpr }}]);
+{% if call.accurate_norm_silu %}
+        const float activation = gate / (1.0f + expf(-gate));
+{% else %}
+        const float activation = ftt::silu(gate);
+{% endif %}
+        const float output = ((ftt::to_float(ftt_gdn_scratch[global_value]) * inverse_rms)
+            * ftt::to_float(ftt_gdn_norm_weight[global_value % {{ call.value_dim }}LL])) * activation;
+        ftt_gdn_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(ftt_gdn_result, output);
+    }
+}
+
+// Publish every complete core coordinate before any owner reads its head.
+{{ entry.phase_schedule(call, ("core", "norm")) }}
+{% endif %}
+{% endfor %}
+{% endif %}

@@ -279,6 +279,7 @@ class DumpManager:
             module,
             function_name,
             include_unreferenced=include_unreferenced,
+            preserve_local_unreferenced=True,
         )
         if self._weight_analysis is None or self._weight_analysis.owner is not module:
             self._weight_analysis = WeightPrintAnalysis.analyze(module)

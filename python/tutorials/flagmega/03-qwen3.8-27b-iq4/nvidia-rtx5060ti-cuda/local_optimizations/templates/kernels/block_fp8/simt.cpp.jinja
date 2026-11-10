@@ -1,0 +1,54 @@
+// flagmega-kernel: block_fp8/simt platform=generic
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "block_fp8" and call.variant == "simt" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_source = {{ call.value | cppexpr }};
+    auto *const ftt_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{% if call.local_iq4_async | default(false) %}
+    auto *const q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(_local_iq4_q8 + {{ call.local_iq4_async_q8_offset }});
+    auto *const stages = _local_iq4_q8 + {{ call.local_iq4_async_weight_offset }};
+    auto row0 = [&](int local_n_offsets) {
+        return reinterpret_cast<const unsigned char *>(ftt_weight) + ({{ call.weight_row_offset | cppexpr }});
+    };
+    auto row1 = row0;
+    auto valid = [&](int local_n_offsets) { return ({{ call.n_mask | cppexpr }}); };
+    auto store = [&](int local_n_offsets, float value) {
+        ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, value);
+    };
+    {{ 'local_iq4_async_r8' if (call.local_iq4_async_r8 | default(false)) else 'local_iq4_async' }}::run<{{ call.k }}, false, 1, {{ call.local_iq4_async_warps }}>(
+        ftt_source, q8, stages, {{ call.local_n_capacity }}, row0, row1, valid, store);
+{% elif call.local_iq4_mmvq | default(false) %}
+    auto *const q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(_local_iq4_q8);
+    local_iq4_mmvq::quantize<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(ftt_source, q8);
+    const ftt::dim_t ftt_warp = ftt_thread / 32;
+    const ftt::dim_t ftt_warps = ftt_threads / 32;
+    for (ftt::dim_t local_n_offsets = ftt_warp; local_n_offsets < {{ call.local_n_capacity }}LL; local_n_offsets += ftt_warps) {
+        // n_mask is warp-uniform: row coordinates contain no physical lane.
+        if (!({{ call.n_mask | cppexpr }})) continue;
+        const auto *row = reinterpret_cast<const unsigned char *>(ftt_weight) + ({{ call.weight_row_offset | cppexpr }});
+        const float accumulator = local_iq4_mmvq::dot<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(row, q8);
+        if (ftt_thread % 32 == 0)
+            ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, accumulator);
+    }
+    // Every warp's Q8 reads finish before any following call reuses the arena.
+    ftt::arch::cta_sync();
+{% else %}
+{{ entry.strided_loop("local_n_offsets", call.local_n_capacity) }} {
+        if (!({{ call.n_mask | cppexpr }})) continue;
+        const auto *row = reinterpret_cast<const unsigned char *>(ftt_weight)
+            + ({{ call.weight_row_offset | cppexpr }});
+        const float accumulator = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(
+            ftt_source, row, {{ call.k }}LL);
+        ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, accumulator);
+    }
+{% endif %}
+}
+{% endif %}
+{% endfor %}
+{% endif %}

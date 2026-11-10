@@ -1,0 +1,73 @@
+{# A38: fixed warp-private row4, preserving the U4-L logical chunk arithmetic DAG. #}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const ftt::dim_t task_row = 4LL * static_cast<ftt::dim_t>(blockIdx.x) + warp;
+    // Warp-uniform guard: each live warp owns one complete output row.
+    if (task_row >= {{ call.u4_rows }}LL) return;
+    const auto *q8 = reinterpret_cast<const local_u4::Q8Block *>({{ call.u4_pointers.q8 | cppexpr }});
+    const unsigned char *rows[2] = {
+        reinterpret_cast<const unsigned char *>({{ call.u4_pointers.gate_weight | cppexpr }}) + task_row * {{ call.u4_row_bytes }}LL,
+        reinterpret_cast<const unsigned char *>({{ call.u4_pointers.up_weight | cppexpr }}) + task_row * {{ call.u4_row_bytes }}LL};
+    float sums[2][2] = {};
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 4); // row-private traversal starts
+{% endif %}
+    // Reproduce parent logical chunk0: l, then 128+l into the same +0 sum.
+#pragma unroll
+    for (int pass = 0; pass < 2; ++pass) {
+        const ftt::dim_t group = lane + 128LL * pass;
+        local_u4::Q8Block activation[2];
+#pragma unroll
+        for (int c = 0; c < 2; ++c)
+            activation[c] = q8[c * 160LL + group];
+#pragma unroll
+        for (int f = 0; f < 2; ++f)
+            local_u4::group_dot<2>(rows[f], group, activation, sums[f]);
+    }
+    // Parent chunks1/2/3 were separate warp accumulators, each starting at +0.
+    // Preserve each one-group FMA and the ordered RN additions into chunk0.
+#pragma unroll
+    for (int chunk = 1; chunk < 4; ++chunk) {
+        const ftt::dim_t group = 32LL * chunk + lane;
+        local_u4::Q8Block activation[2];
+        float temporary[2][2] = {};
+#pragma unroll
+        for (int c = 0; c < 2; ++c)
+            activation[c] = q8[c * 160LL + group];
+#pragma unroll
+        for (int f = 0; f < 2; ++f) {
+            local_u4::group_dot<2>(rows[f], group, activation, temporary[f]);
+#pragma unroll
+            for (int c = 0; c < 2; ++c)
+                sums[f][c] = __fadd_rn(sums[f][c], temporary[f][c]);
+        }
+    }
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 5); // traversal and logical chunk RN merges complete
+    flagmega_program_event(ftt_program_trace, 6); // private sums ready; no shared publication
+    flagmega_program_event(ftt_program_trace, 7); // no CTA synchronization in this implementation
+{% endif %}
+    float result[2] = {};
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 8); // residual-component and warp reductions start
+{% endif %}
+#pragma unroll
+    for (int f = 0; f < 2; ++f) {
+        float v = __fadd_rn(sums[f][0], sums[f][1]);
+#pragma unroll
+        for (int offset = 16; offset > 0; offset >>= 1)
+            v = __fadd_rn(v, __shfl_down_sync(0xffffffffu, v, offset));
+        result[f] = v;
+    }
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 9);
+{% endif %}
+    if (lane == 0) {
+        auto *output = {{ call.u4_pointers.result | cppexpr }};
+        output[task_row] = ftt::store_as(output, ftt::silu(result[0]) * result[1]);
+    }
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 10); // this warp's private row store interval
+{% endif %}
+}

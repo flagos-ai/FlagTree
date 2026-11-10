@@ -50,6 +50,7 @@ from triton.flagmega.ir.ops.nn.dense_matmul_glu import DenseMatMulGlu
 from triton.flagmega.ir.ops.nn.dsa_indexer import DsaIndexer
 from triton.flagmega.ir.ops.nn.dsa_paged_attention import DsaPagedAttention
 from triton.flagmega.ir.ops.nn.embedding import Embedding
+from triton.flagmega.ir.ops.nn.interleaved_projection import InterleavedProjection
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
@@ -1011,6 +1012,17 @@ class _nn:
             name=name, metadata=metadata)
 
     @staticmethod
+    @_op_function(InterleavedProjection)
+    def interleaved_projection(value: Node, weight: Node, weight_scale: Node, *,
+                              weight_block_n: int, weight_block_k: int, weight_encoding: str,
+                              feature_shape: Sequence[int], field_count: int = 2,
+                              output_lanes: Sequence[Sequence[int]] = ((), ()),
+                              name: str | None = None, metadata: Metadata = None) -> Node:
+        return InterleavedProjection.construct(value, weight, weight_scale,
+            weight_block_n=weight_block_n, weight_block_k=weight_block_k, weight_encoding=weight_encoding,
+            feature_shape=feature_shape, field_count=field_count, output_lanes=output_lanes, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(Embedding)
     def embedding(
         indices: Node,
@@ -1018,6 +1030,7 @@ class _nn:
         *,
         padding_idx: int | None = None,
         weight_encoding: str | None = None,
+        output_lanes: Sequence[int] = (),
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1028,6 +1041,7 @@ class _nn:
             weight,
             padding_idx=padding_idx,
             weight_encoding=weight_encoding,
+            output_lanes=output_lanes,
             name=name,
             metadata=metadata,
         )

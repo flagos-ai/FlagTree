@@ -1,0 +1,1695 @@
+{
+  "device_source_sha256": "741eeefd318673f6fffa6a9efb51d56148e51c4a6aae17158ffa5815d1cb059a",
+  "effects": [
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 0,
+      "entry_sha256": "b94ef1f427adb66e8069045ee135dedc7b9bdb98aabf50c336f58ff524d6fa1f"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 1,
+      "entry_sha256": "90ee1b66b67438e0a3124a5db5f9a5df4a1af1b2b8c1e1216458353556dab28d"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 2,
+      "entry_sha256": "646256e89d6c961a183fad756ac4b25a024fd0547ea79cb3e0625c48fa7c7d8d"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 3,
+      "entry_sha256": "fd1a611037a401bf0b422d49a7b6c6486390f6ca57eed0291de6589c011a0b41"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 4,
+      "entry_sha256": "0f1e38e36043fc06ce82e442ed0de306efc53dbbb26936b26b6215183caa2bbf"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 48,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 5,
+      "entry_sha256": "0ae2c6ae5914172defa340b5152878d50f2c1c10392b7395a092596a0fe5f271"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 6,
+      "entry_sha256": "67f0590d2aeec93351737766b50ef6ee0b2b20ed07388f42ba4f78403d075c29"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 7,
+      "entry_sha256": "cdd75460fbdfebc9eaf0e27dffaa46d2805f986e13bcfe1c3d8079af3f874874"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 8,
+      "entry_sha256": "6a1d89a9e9e0a3c5e9369ea1ea9560a973a88a5f9cc903e65cc70f36f42a0cd1"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 9,
+      "entry_sha256": "1b16e16b62945df31156a1125c375d2c678ba2a1ca741fb0b7a52d0462ad98cb"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 10,
+      "entry_sha256": "838e91779f78b672050dc21c50236a9ef178b947aaaee6b5333407115503bc21"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 11,
+      "entry_sha256": "6bb2e4895c6e8003c01bac83ca32ca258dde008955a62dbd23ae95d9ae2f7aa2"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 12,
+      "entry_sha256": "e98aafa1b5d02995186479cd49d478c1c4202b77ee92f1ec5ab819f6bf679e13"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 13,
+      "entry_sha256": "076d23e6d32d724ef601f7a9b5de7815c63bbb457907ca7d44d5923de3e21364"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 14,
+      "entry_sha256": "c1657640ae286a2e62710180a7db450b504a4adc1f7f59c3cb06687f4757ffd8"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 15,
+      "entry_sha256": "afdfea705c2a68415fcd125f820991c71434a0d12234a275c6ea864a91e34f49"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 16,
+      "entry_sha256": "aa2ee1cb9542c16806f924e2867cdff43f7fd200e278a210d6099fc4a553b782"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 17,
+      "entry_sha256": "6978703ee2573c7e437901736797fb56ba7a3d928ea1bf7a0b6eda3df502c963"
+    },
+    {
+      "alternatives": [
+        [],
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 18,
+      "entry_sha256": "fd5aa5b6affb6e41232fd4820440bbf9d5badddfb36e48452641ed1d873443af"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 19,
+      "entry_sha256": "11012cec477d7d118f9e034a519e7fec792fa87e892ace57a7ac7bdd2ba537e0"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          },
+          {
+            "population": 4,
+            "slot": 1
+          },
+          {
+            "population": 4,
+            "slot": 2
+          },
+          {
+            "population": 4,
+            "slot": 3
+          },
+          {
+            "population": 4,
+            "slot": 4
+          },
+          {
+            "population": 4,
+            "slot": 5
+          },
+          {
+            "population": 4,
+            "slot": 6
+          },
+          {
+            "population": 4,
+            "slot": 7
+          },
+          {
+            "population": 4,
+            "slot": 8
+          },
+          {
+            "population": 4,
+            "slot": 9
+          },
+          {
+            "population": 4,
+            "slot": 10
+          },
+          {
+            "population": 4,
+            "slot": 11
+          },
+          {
+            "population": 4,
+            "slot": 12
+          },
+          {
+            "population": 4,
+            "slot": 13
+          },
+          {
+            "population": 4,
+            "slot": 14
+          },
+          {
+            "population": 4,
+            "slot": 15
+          },
+          {
+            "population": 4,
+            "slot": 16
+          },
+          {
+            "population": 4,
+            "slot": 17
+          },
+          {
+            "population": 4,
+            "slot": 18
+          },
+          {
+            "population": 4,
+            "slot": 19
+          },
+          {
+            "population": 4,
+            "slot": 20
+          },
+          {
+            "population": 4,
+            "slot": 21
+          },
+          {
+            "population": 4,
+            "slot": 22
+          },
+          {
+            "population": 4,
+            "slot": 23
+          },
+          {
+            "population": 4,
+            "slot": 24
+          },
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 20,
+      "entry_sha256": "c936e38ff6c53cdc78b981dcffe0b8438e63c8ad91fc8ef3bbb2e7034ba2bb6e"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 21,
+      "entry_sha256": "54d240d5bad0d5743a72159fc8a49d1d7af944add4fbc701f488e518b16ab471"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 22,
+      "entry_sha256": "0a20e0e182c5e6a2277a51b4b68be0c2ae7292e69f124f30580c3eb12ceebacb"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 23,
+      "entry_sha256": "8d0746e0929c63642dab9cf6fbcb687c28226e7194736569d41614188b250469"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 24,
+      "entry_sha256": "64420d77d456107baff163cd6f1f9be82d7daf79b7ac2354707780cce31d8352"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 25,
+      "entry_sha256": "6e785001d37990b1ac245796d442b8a6992a1ad4e8b72a3e6a39bd02160e104a"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 26,
+      "entry_sha256": "9855878bab1e05f56333e6858cbe8fdbc79bec74a31ea048025f1529a20e1d6c"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 27,
+      "entry_sha256": "eb5974adc365d8841b177c11fc269f114fd529e92fb4f4f1473f9eae4bbae7c1"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 28,
+      "entry_sha256": "6b585088d0861637d496df2ee9242b7d79ec1d97b09f92455af24f25ae738ad3"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 29,
+      "entry_sha256": "6335c8ea841d48161d63aabdab92410eb11d4624d5fa91aed76c882006c9c7bd"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 30,
+      "entry_sha256": "cde2292dec72dc2144f99170421559c0f013187642153148a08c639fd2934bad"
+    },
+    {
+      "alternatives": [
+        []
+      ],
+      "entry_id": 31,
+      "entry_sha256": "6f4b1866263e7a5769370526b73c6d7a6b4f232b1e17de65817397b1136276c4"
+    },
+    {
+      "alternatives": [
+        [
+          {
+            "population": 96,
+            "slot": 0
+          }
+        ]
+      ],
+      "entry_id": 32,
+      "entry_sha256": "4ef115c00a7b0b51286f0c720f9cdeeff8c5e83df7ced53d2efd4fc91ebc4767"
+    }
+  ],
+  "execution_sha256": "0788b2b87a4627adff18d56cf80037eb0b0aa8c3e96d26ae2688469ed4186272",
+  "frame_nbytes": 100,
+  "name": "qwen38-iq4-t26-normal-reset/v1",
+  "proof_sha256": "f324312e5134b8c9bcbcecdc7ddb61f6dbe8aba549e3544cc3f44f90ead96f79",
+  "schedules": [
+    {
+      "name": "baseline275",
+      "resets": [
+        {
+          "nbytes": 100,
+          "ordinal": 0
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 3
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 5
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 8
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 13
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 16
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 18
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 21
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 26
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 29
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 31
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 34
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 39
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 42
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 44
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 46
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 49
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 54
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 57
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 59
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 62
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 67
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 70
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 72
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 75
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 80
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 83
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 85
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 88
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 93
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 96
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 98
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 100
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 103
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 108
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 111
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 113
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 116
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 121
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 124
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 126
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 129
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 134
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 137
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 139
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 142
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 147
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 150
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 152
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 154
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 157
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 162
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 165
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 167
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 170
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 175
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 178
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 180
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 183
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 188
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 191
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 193
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 196
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 201
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 204
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 206
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 208
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 211
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 216
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 219
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 221
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 224
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 229
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 232
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 234
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 237
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 242
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 245
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 247
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 250
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 255
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 258
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 260
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 262
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 265
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 270
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 273
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 275
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 278
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 283
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 286
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 288
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 291
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 296
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 299
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 301
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 304
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 309
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 312
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 314
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 316
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 319
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 324
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 327
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 329
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 332
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 337
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 340
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 342
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 345
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 350
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 353
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 355
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 358
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 363
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 366
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 368
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 370
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 373
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 378
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 381
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 383
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 386
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 391
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 394
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 396
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 399
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 404
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 407
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 409
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 412
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 417
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 420
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 422
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 424
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 427
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 432
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 435
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 437
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 440
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 445
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 448
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 450
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 453
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 458
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 461
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 463
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 466
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 471
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 474
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 476
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 478
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 481
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 486
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 489
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 491
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 494
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 499
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 502
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 504
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 507
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 512
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 515
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 517
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 520
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 525
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 528
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 530
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 532
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 535
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 540
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 543
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 545
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 548
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 553
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 556
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 558
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 561
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 566
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 569
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 571
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 574
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 579
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 582
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 584
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 586
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 589
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 594
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 597
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 599
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 602
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 607
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 610
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 612
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 615
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 620
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 623
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 625
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 628
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 633
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 636
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 638
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 640
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 643
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 648
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 651
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 653
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 656
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 661
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 664
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 666
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 669
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 674
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 677
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 679
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 682
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 687
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 690
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 692
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 694
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 697
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 702
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 705
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 707
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 710
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 715
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 718
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 720
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 723
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 728
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 731
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 733
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 736
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 741
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 744
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 746
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 748
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 751
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 756
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 759
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 761
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 764
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 769
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 772
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 774
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 777
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 782
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 785
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 787
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 790
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 795
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 798
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 800
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 802
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 805
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 810
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 813
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 815
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 818
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 823
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 826
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 828
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 831
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 836
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 839
+        },
+        {
+          "nbytes": 52,
+          "ordinal": 841
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 844
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 849
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 852
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 854
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 856
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 859
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 864
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 865
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 868
+        }
+      ]
+    },
+    {
+      "name": "candidate49",
+      "resets": [
+        {
+          "nbytes": 100,
+          "ordinal": 0
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 8
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 21
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 34
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 62
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 75
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 88
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 116
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 129
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 142
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 170
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 183
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 196
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 224
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 237
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 250
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 278
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 291
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 304
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 332
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 345
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 358
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 386
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 399
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 412
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 440
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 453
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 466
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 494
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 507
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 520
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 548
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 561
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 574
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 602
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 615
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 628
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 656
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 669
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 682
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 710
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 723
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 736
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 764
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 777
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 790
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 818
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 831
+        },
+        {
+          "nbytes": 100,
+          "ordinal": 844
+        }
+      ]
+    }
+  ],
+  "schema": "flagmega.counter-effect-contract/v1"
+}

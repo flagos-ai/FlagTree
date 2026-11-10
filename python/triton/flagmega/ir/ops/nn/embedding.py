@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
+from math import prod
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -20,7 +21,9 @@ from triton.flagmega.ir.ops.core import (
     tensor_nbytes,
 )
 from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_tensor
-from triton.flagmega.ir.types import DType
+from triton.flagmega.ir.types import DType, VectorType
+from triton.flagmega.ir.dim_expr import try_div_exactly
+from triton.flagmega.ir.ops.math._block_scaled import normalize_output_lanes
 from triton.flagmega.ir.ops.math._quantized import matrix_width
 
 
@@ -30,6 +33,7 @@ class Embedding(OpDefinition):
     weight = input_parameter(is_tensor() & has_rank(2))
     padding_idx = attribute_parameter(default=None)
     weight_encoding = attribute_parameter(default=None)
+    output_lanes = attribute_parameter(default=())
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -40,7 +44,8 @@ class Embedding(OpDefinition):
         encoding = attrs.get("weight_encoding")
         if encoding is not None and not isinstance(encoding, str):
             raise IRSchemaError("F.nn.embedding weight_encoding must be a string or None.")
-        result = {"padding_idx": padding_idx}
+        lanes = normalize_output_lanes(attrs["output_lanes"], "Embedding")
+        result = {"padding_idx": padding_idx, **({"output_lanes": lanes} if lanes else {})}
         if encoding is not None:
             result["weight_encoding"] = encoding
         return result
@@ -59,7 +64,13 @@ class Embedding(OpDefinition):
                 raise IRSchemaError(
                     f"F.nn.embedding padding_idx {padding_idx} is outside vocabulary size {vocabulary.fixed_value}.")
         output_dtype = DType.BFLOAT16 if attrs.get("weight_encoding") is not None else weight.dtype
-        output = tensor_type(output_dtype, (*indices.shape, matrix_width(weight, attrs.get("weight_encoding"))))
+        lanes = tuple(attrs.get("output_lanes", ()))
+        if lanes and attrs.get("weight_encoding") is None:
+            raise IRSchemaError("Embedding output_lanes requires native decoded weights; scalar tables use table packing.")
+        hidden = try_div_exactly(matrix_width(weight, attrs.get("weight_encoding")), prod(lanes))
+        if hidden is None:
+            raise IRSchemaError("Embedding hidden features must be divisible by output_lanes.")
+        output = tensor_type(VectorType(output_dtype, lanes) if lanes else output_dtype, (*indices.shape, hidden))
         distributed_inputs = tuple(isinstance(value, DistributedType) for value in (indices_type, weight_type))
         if not any(distributed_inputs):
             return output
@@ -80,6 +91,8 @@ class Embedding(OpDefinition):
             raise IRSchemaError("F.nn.embedding distributed indices must be broadcast.")
         if not isinstance(weight_type.axis_policies[0], SBPBroadCast):
             raise IRSchemaError("F.nn.embedding distributed vocabulary axis must be broadcast.")
+        if attrs.get("weight_encoding") is not None and not isinstance(weight_type.axis_policies[1], SBPBroadCast):
+            raise IRSchemaError("Native embedding byte rows must remain broadcast.")
         return DistributedType(
             output,
             (*indices_type.axis_policies, weight_type.axis_policies[1]),
@@ -92,6 +105,7 @@ class Embedding(OpDefinition):
             cls.indices.read(arguments),
             cls.weight.read(arguments),
             padding_idx=cls.padding_idx.read(arguments, node.attrs),
+            weight_encoding=node.attrs.get("weight_encoding"), output_lanes=node.attrs.get("output_lanes", ()),
         )
 
     @classmethod
@@ -104,17 +118,23 @@ class Embedding(OpDefinition):
         return OpCost(flops=0, bytes_read=output_bytes, bytes_written=output_bytes, notes=notes)
 
 
-def embedding(indices, weight, *, padding_idx: int | None = None):
+def embedding(indices, weight, *, padding_idx: int | None = None, weight_encoding=None, output_lanes=()):
     """Gather embedding rows and apply nncase/HuggingFace padding semantics."""
 
     flat_indices = indices.to(dtype=_torch().int64).reshape(-1)
     # Vector element lanes are trailing physical dimensions of the table.
     # Gathering rows preserves them, just as it preserves scalar features.
-    result = weight.index_select(0, flat_indices).reshape((*indices.shape, *weight.shape[1:]))
+    rows = weight.index_select(0, flat_indices)
+    if weight_encoding is not None:
+        from triton.flagmega.ir.ops.math._quantized import decode_native_rows
+        rows = decode_native_rows(rows, weight_encoding).bfloat16()
+    result = rows.reshape((*indices.shape, *rows.shape[1:]))
     if padding_idx is not None:
         normalized = padding_idx + weight.shape[0] if padding_idx < 0 else padding_idx
         mask = (indices == normalized).reshape((*indices.shape, *((1,) * (weight.ndim - 1))))
         result = result.masked_fill(mask, 0)
+    if output_lanes:
+        result = result.reshape(*indices.shape, result.shape[-1] // prod(output_lanes), *output_lanes)
     return result
 
 

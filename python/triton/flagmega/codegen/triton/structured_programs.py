@@ -215,8 +215,8 @@ class _StructuredPrograms:
             index = sum(k[0] == program['symbol'] for k in self.variants)
             symbol = program['symbol'] if not index else self.fresh_symbol(f"{program['symbol']}_abi")
             self.variants[key] = symbol
-            self.programs.append({**program, 'symbol': symbol,
-                'scoped_entry_arguments': [dict(name=v, stride=s, dtype=emit_triton_scalar_type(d)) for v, s, d in scoped]})
+            self.programs.append({**program, 'symbol': symbol, 'owning_function': name,
+                'scoped_entry_arguments': [dict(name=v, stride=s, dtype=emit_triton_scalar_type(d), scalar_dtype=d) for v, s, d in scoped]})
         dynamic = [i for i, binding in enumerate(bindings)
                    if binding['kind'] != 'immediate' and binding['source'] in self.dynamic]
         self.launches.append({**launch, 'symbol': self.fresh_symbol('flagmega_invocation_'),

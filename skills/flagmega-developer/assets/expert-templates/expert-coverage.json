@@ -1,0 +1,18 @@
+{
+  "schema": "flagmega.expert-coverage/v1",
+  "run_id": "<run>",
+  "baseline_id": "<baseline>",
+  "trial_id": null,
+  "revision_id": null,
+  "input_identities": {},
+  "phase": "baseline_assessment",
+  "domains": {
+    "Graph": {"disposition": "unassessed", "reason": "", "architect": null, "optimizer": null, "independent_review": null, "evidence": [], "next_action": "obtain domain assessment"},
+    "Vector": {"disposition": "unassessed", "reason": "", "architect": null, "optimizer": null, "independent_review": null, "evidence": [], "next_action": "obtain domain assessment"},
+    "Distribution": {"disposition": "unassessed", "reason": "", "architect": null, "optimizer": null, "independent_review": null, "evidence": [], "next_action": "obtain domain assessment"},
+    "Kernel": {"disposition": "unassessed", "reason": "", "architect": null, "optimizer": null, "independent_review": null, "evidence": [], "next_action": "obtain domain assessment"}
+  },
+  "delegation_limitations": [],
+  "consolidated_hypothesis": null,
+  "consolidated_review": null
+}

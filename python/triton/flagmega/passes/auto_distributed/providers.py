@@ -126,7 +126,7 @@ class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
         weight = tensor_of(module.node_map[node.inputs[1]].type)
         output = tensor_of(node.type)
         if (weight.rank != 2 or output.rank != indices.rank + 1 or output.shape[:-1] != indices.shape
-                or output.shape[-1] != matrix_width(weight, node.attrs.get("weight_encoding"))):
+                or output.shape[-1] * prod(node.attrs.get("output_lanes", ())) != matrix_width(weight, node.attrs.get("weight_encoding"))):
             return ()
 
         work = max(_tensor_bytes(output), 1)

@@ -1,0 +1,162 @@
+// PRIVATE DESIGN DRAFT a006: no normal compiler/NVCC/device receipt yet.
+// Reuse: a001 local_iq4_mmvq lookup/quantize arithmetic, itself a pinned
+// llama.cpp 5ce06fc71f5e938301f7dc51697a59ae308bd6b7 MIT port.
+// Transport uses NVIDIA CUDA 12.8 documented per-thread pipeline primitives.
+// Caller supplies both offsets from typed Shared workspaces in one arena.
+// This helper declares no extra Shared allocation.
+#include <cuda_pipeline_primitives.h>
+#include <cstdint>
+namespace local_iq4_async {
+constexpr int Rows = 16;
+constexpr int Chunk = 1024;
+constexpr int RowBytes = 4 * 136; // 544, divisible by 16; original native bytes
+constexpr int Stages = 2;
+
+template<int Fields, class Row0, class Row1, class Valid>
+FTT_DEVICE_INLINE void copy_stage(unsigned char *stage, int tile, int chunk,
+                                 Row0 row0, Row1 row1, Valid valid,
+                                 bool async_aligned) {
+    constexpr int UnitsPerRow = RowBytes / 16;
+    constexpr int Units = Fields * Rows * UnitsPerRow;
+    for (int unit = threadIdx.x; unit < Units; unit += blockDim.x) {
+        const int field = unit / (Rows * UnitsPerRow);
+        const int tile_row = (unit / UnitsPerRow) % Rows;
+        const int byte = (unit % UnitsPerRow) * 16;
+        const int local_row = tile * Rows + tile_row;
+        const bool active = valid(local_row);
+        // Never form an out-of-range native row for an inactive tail. Even
+        // zero-fill uses the existing valid first row as its source address.
+        const auto *base = field == 0 ? row0(active ? local_row : 0)
+                                     : row1(active ? local_row : 0);
+        const auto *src = base + chunk * RowBytes + byte;
+        auto *dst = stage + (field * Rows + tile_row) * RowBytes + byte;
+        if (async_aligned) {
+            __pipeline_memcpy_async(dst, src, 16, active ? 0 : 16);
+        } else {
+            // The generic native UINT8 ABI promises alignment 1. Preserve
+            // it with a synchronous byte fallback; never lie to cp.async.
+#pragma unroll
+            for (int b = 0; b < 16; ++b) dst[b] = active ? src[b] : 0;
+        }
+    }
+    // All physical threads reach the same commit/wait/CTA phases, including
+    // threads issuing fewer copies and CTAs with masked tail rows.
+    __pipeline_commit();
+}
+
+template<int K, bool Dual>
+FTT_DEVICE_INLINE void accumulate_group(const unsigned char *shared_row,
+                                       const local_iq4_mmvq::Q8Block *q8,
+                                       int global_group, float &sum, float &residual_sum) {
+    const int lane = threadIdx.x & 31;
+    const int block = lane / 8;
+    const int group = lane % 8;
+    const auto *words = reinterpret_cast<const unsigned int *>(shared_row);
+    // Typed Shared alignment and 544B row pitch prove these word loads are
+    // aligned. Do not use the global-u32 reader on a shared-memory pointer.
+    const unsigned int header = words[block * 34];
+    const unsigned int scales = words[block * 34 + 1];
+    int dot = 0;
+    int residual_dot = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int packed = static_cast<int>(words[block * 34 + 2 + group * 4 + j]);
+        const int2 v = local_iq4_mmvq::lookup(packed);
+        dot = __dp4a(v.x, q8[global_group].qs[j], dot);
+        dot = __dp4a(v.y, q8[global_group].qs[j + 4], dot);
+        if constexpr (Dual) {
+            residual_dot = __dp4a(v.x, q8[K / 32 + global_group].qs[j], residual_dot);
+            residual_dot = __dp4a(v.y, q8[K / 32 + global_group].qs[j + 4], residual_dot);
+        }
+    }
+    const int scale = static_cast<int>(((scales >> (group * 4)) & 15u)
+                       | (((header >> (16 + group * 2)) & 3u) << 4)) - 32;
+    dot *= scale;
+    const float d = __half2float(__ushort_as_half(static_cast<unsigned short>(header)));
+    // Same per-lane group order and expression as the current local helper.
+    sum += (d * q8[global_group].d) * static_cast<float>(dot);
+    if constexpr (Dual) {
+        residual_dot *= scale;
+        residual_sum += (d * q8[K / 32 + global_group].d) * static_cast<float>(residual_dot);
+    }
+}
+
+template<bool Dual>
+FTT_DEVICE_INLINE float finish(float sum, float residual_sum) {
+    if constexpr (Dual) sum += residual_sum;
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    return sum;
+}
+
+// Valid/local-row/source/store callbacks must use the ordinary renderer's
+// scalar-coordinate expressions. SourceRow returns a complete native K row.
+// Store receives a scalar F32 result and retains the original BF16/F32 store.
+// Fields=2 owns both GLU projections; Fields=1 owns an ordinary matrix.
+// Warps is selected before launch/shared planning; descriptor must reject a
+// mismatch with the real saved block_threads. No runtime block-size override.
+template<int K, bool Dual, int Fields, int Warps, class T,
+         class Row0, class Row1, class Valid, class Store>
+FTT_DEVICE_INLINE void run(const T *source, local_iq4_mmvq::Q8Block *q8,
+                          unsigned char *weight_stages, int local_rows,
+                          Row0 row0, Row1 row1, Valid valid, Store store) {
+    static_assert(K > 0 && K % Chunk == 0);
+    static_assert(Fields == 1 || Fields == 2);
+    static_assert(Warps == 4 || Warps == 8);
+    constexpr int PerWarpRows = Rows / Warps;
+    constexpr int StageBytes = Fields * Rows * RowBytes;
+    const int warp = threadIdx.x / 32;
+    const int lane = threadIdx.x & 31;
+    // The package guard proves every row offset is a multiple of the native
+    // K-row byte pitch, which is a multiple of 16 for these K buckets.
+    const bool async_aligned =
+        (reinterpret_cast<uintptr_t>(row0(0)) & 15u) == 0 &&
+        (Fields == 1 || (reinterpret_cast<uintptr_t>(row1(0)) & 15u) == 0);
+    local_iq4_mmvq::quantize<K, Dual>(source, q8);
+    for (int tile = 0; tile < (local_rows + Rows - 1) / Rows; ++tile) {
+        float sums[PerWarpRows][Fields] = {};
+        float residuals[PerWarpRows][Fields] = {};
+        copy_stage<Fields>(weight_stages, tile, 0, row0, row1, valid, async_aligned);
+        __pipeline_wait_prior(0);
+        ftt::arch::cta_sync();
+        for (int chunk = 0; chunk < K / Chunk; ++chunk) {
+            const int current = chunk & 1;
+            if (chunk + 1 < K / Chunk)
+                copy_stage<Fields>(weight_stages + (1 - current) * StageBytes,
+                                   tile, chunk + 1, row0, row1, valid, async_aligned);
+#pragma unroll
+            for (int r = 0; r < PerWarpRows; ++r) {
+                const int tile_row = warp + r * Warps;
+#pragma unroll
+                for (int field = 0; field < Fields; ++field) {
+                    const auto *row = weight_stages + current * StageBytes
+                                    + (field * Rows + tile_row) * RowBytes;
+                    accumulate_group<K, Dual>(row, q8, chunk * 32 + lane,
+                                              sums[r][field], residuals[r][field]);
+                }
+            }
+            // Wait for every issuer's next-stage copies, then publish them.
+            // The same CTA barrier also drains all current-stage readers
+            // before that stage can be overwritten in the next iteration.
+            __pipeline_wait_prior(0);
+            ftt::arch::cta_sync();
+        }
+#pragma unroll
+        for (int r = 0; r < PerWarpRows; ++r) {
+            const int local_row = tile * Rows + warp + r * Warps;
+            float value = finish<Dual>(sums[r][0], residuals[r][0]);
+            if constexpr (Fields == 2) {
+                const float up = finish<Dual>(sums[r][1], residuals[r][1]);
+                value = ftt::silu(value) * up;
+            }
+            if (lane == 0 && valid(local_row)) store(local_row, value);
+        }
+        // Final chunk already drained all staged readers; output stores do
+        // not read Shared. The next row tile may now overwrite stage zero.
+    }
+    // Publish outputs and finish all Q8 readers before sequential arena reuse.
+    ftt::arch::cta_sync();
+}
+} // namespace local_iq4_async
+

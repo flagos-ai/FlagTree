@@ -58,6 +58,7 @@ class TritonCandidateContext:
     reusable_node_ids: frozenset[str]
     cooperative_grid: bool
     implementation_model: TritonImplementationModel
+    codegen_backend: str | None = None
 
     def is_reusable(self, node: Node) -> bool:
         return node.id in self.reusable_node_ids

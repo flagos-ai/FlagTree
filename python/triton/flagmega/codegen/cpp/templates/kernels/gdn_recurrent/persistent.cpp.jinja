@@ -1,0 +1,176 @@
+// flagmega-kernel: gdn_recurrent/persistent platform=generic
+#include <cmath>
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gdn_recurrent" and call.variant == "persistent" %}
+static FTT_DEVICE void {{ call.symbol }}__core({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_qkv = {{ call.qkv | cppexpr }};
+    auto *const ftt_gdn_projection_input = {{ call.projection_input | cppexpr }};
+    auto *const ftt_gdn_b_weight = {{ call.b_weight | cppexpr }};
+    auto *const ftt_gdn_a_weight = {{ call.a_weight | cppexpr }};
+    auto *const ftt_gdn_a_log = {{ call.a_log | cppexpr }};
+    auto *const ftt_gdn_dt_bias = {{ call.dt_bias | cppexpr }};
+    auto *const ftt_gdn_state = {{ call.state | cppexpr }};
+    auto *const ftt_gdn_scratch = {{ call.core_scratch | cppexpr }};
+    ftt::dim_t cached_head = -1;
+    float beta = 0.0f;
+    float decay = 0.0f;
+{% if call.head_gate_cache | default(false) %}
+    // Planned CTA-private {{ call.head_gate_physical_buffer }}; preserve its byte offset.
+    __shared__ __align__(16) unsigned char ftt_head_gate_storage[{{ call.head_gate_arena_bytes }}];
+    float *const ftt_head_gates = reinterpret_cast<float *>(ftt_head_gate_storage + {{ call.head_gate_offset_bytes }});
+    const ftt::dim_t first_value = {{ call.head_gate_first_value | cppexpr }};
+    const ftt::dim_t first_head = first_value / {{ call.value_dim }}LL;
+    const ftt::dim_t needed_heads = (first_value + {{ call.local_capacity }}LL - 1) / {{ call.value_dim }}LL - first_head + 1;
+    if (ftt_thread < needed_heads && first_head + ftt_thread < {{ call.value_heads }}LL) {
+        const ftt::dim_t value_head = first_head + ftt_thread;
+{% for weight in ["b", "a"] %}
+        const auto *{{ weight }}_row = reinterpret_cast<const unsigned char *>(ftt_gdn_{{ weight }}_weight)
+            + value_head * {{ (call.projection_dim // 256) * 136 }}LL;
+        float {{ weight }}_projection = ftt::quantized::dot<ftt::quantized::encoding::iq4_xs>(ftt_gdn_projection_input, {{ weight }}_row, {{ call.projection_dim }}LL);
+        {{ weight }}_projection = ftt::to_float(ftt::to_bfloat16({{ weight }}_projection));
+{% endfor %}
+        beta = ftt::sigmoid(b_projection);
+        beta = ftt::to_float(ftt::to_bfloat16(beta));
+        const float decay_input = a_projection + ftt::to_float(ftt_gdn_dt_bias[value_head]);
+        const float softplus = decay_input > 20.0f ? decay_input : log1pf(expf(decay_input));
+        decay = expf(-expf(ftt::to_float(ftt_gdn_a_log[value_head])) * softplus);
+        ftt_head_gates[2 * ftt_thread] = beta;
+        ftt_head_gates[2 * ftt_thread + 1] = decay;
+    }
+    // All CTA threads publish and observe the final F32 gate bits each invocation.
+    ftt::arch::cta_sync();
+{% endif %}
+{{ entry.strided_loop("local_values", call.local_capacity) }} {
+        if (!(local_values < ({{ call.active_values | cppexpr }})) || !({{ call.writer_active | cppexpr }})) continue;
+        const ftt::dim_t global_value = {{ call.global_value | cppexpr }};
+        const ftt::dim_t value_head = global_value / {{ call.value_dim }}LL;
+        const ftt::dim_t key_head = value_head {{ "%" if call.tiled_value_heads else "/" }} {{ call.key_heads if call.tiled_value_heads else call.repeats }}LL;
+{% if call.head_gate_cache | default(false) %}
+        const ftt::dim_t gate_slot = value_head - first_head;
+        if (gate_slot < 0 || gate_slot >= needed_heads) continue;
+        beta = ftt_head_gates[2 * gate_slot];
+        decay = ftt_head_gates[2 * gate_slot + 1];
+{% else %}
+        if (value_head != cached_head) {
+{% for weight in ["b", "a"] %}
+{% set encoding = call[weight ~ "_weight_encoding"] %}
+{% if encoding in ("IQ4_XS", "Q4_K") %}
+            const auto *{{ weight }}_row = reinterpret_cast<const unsigned char *>(ftt_gdn_{{ weight }}_weight)
+                + value_head * {{ (call.projection_dim // 256) * (136 if encoding == "IQ4_XS" else 144) }}LL;
+            float {{ weight }}_projection = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if encoding == "IQ4_XS" else "q4_k" }}>(ftt_gdn_projection_input, {{ weight }}_row, {{ call.projection_dim }}LL);
+{% else %}
+            float {{ weight }}_projection = 0.0f;
+            FTT_NO_UNROLL
+            for (ftt::dim_t k = 0; k < {{ call.projection_dim }}LL; ++k)
+                {{ weight }}_projection += ftt::to_float(ftt_gdn_{{ weight }}_weight[value_head * {{ call.projection_dim }}LL + k]) * ftt::to_float(ftt_gdn_projection_input[k]);
+{% endif %}
+            {{ weight }}_projection = ftt::to_float(ftt::to_bfloat16({{ weight }}_projection));
+{% endfor %}
+            beta = ftt::sigmoid(b_projection);
+{% if call.round_beta %}
+            beta = ftt::to_float(ftt::to_bfloat16(beta));
+{% endif %}
+            const float decay_input = a_projection + ftt::to_float(ftt_gdn_dt_bias[value_head]);
+{% if call.gate_math_mode == "accurate" %}
+            const float softplus = decay_input > 20.0f ? decay_input : log1pf(expf(decay_input));
+            decay = expf(-expf(ftt::to_float(ftt_gdn_a_log[value_head])) * softplus);
+{% else %}
+            const float softplus = decay_input > 20.0f ? decay_input : ftt::log(1.0f + ftt::exp(decay_input));
+            decay = ftt::exp(-ftt::exp(ftt::to_float(ftt_gdn_a_log[value_head])) * softplus);
+{% endif %}
+            cached_head = value_head;
+        }
+{% endif %}
+        const ftt::dim_t query_base = key_head * {{ call.key_dim }}LL;
+        const ftt::dim_t key_base = {{ call.key_heads * call.key_dim }}LL + query_base;
+        float query_square_sum = 0.0f;
+        float key_square_sum = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t k = 0; k < {{ call.key_dim }}LL; ++k) {
+            const float query = ftt::to_float(ftt_gdn_qkv[query_base + k]);
+            const float key = ftt::to_float(ftt_gdn_qkv[key_base + k]);
+            query_square_sum += query * query;
+            key_square_sum += key * key;
+        }
+{% if call.qk_norm_add %}
+        const float query_norm = sqrtf(query_square_sum + {{ call.qk_norm_epsilon | cppfloat }});
+        const float key_norm = sqrtf(key_square_sum + {{ call.qk_norm_epsilon | cppfloat }});
+{% else %}
+        const float query_norm = ftt::max(sqrtf(query_square_sum), {{ call.qk_norm_epsilon | cppfloat }});
+        const float key_norm = ftt::max(sqrtf(key_square_sum), {{ call.qk_norm_epsilon | cppfloat }});
+{% endif %}
+        // Canonical packed state [head,value,key/4,4] is a contiguous key
+        // row. The input pointer already selects the state layer.
+        const ftt::dim_t state_base = global_value * {{ call.key_dim }}LL;
+        float recalled = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t k = 0; k < {{ call.key_dim }}LL; ++k) {
+            float key = ftt::to_float(ftt_gdn_qkv[key_base + k]) / key_norm;
+{% if call.round_normalized_qk %}
+            key = ftt::to_float(ftt::to_bfloat16(key));
+{% endif %}
+            recalled += (ftt::to_float(ftt_gdn_state[state_base + k]) * decay) * key;
+        }
+        const float target = ftt::to_float(ftt_gdn_qkv[{{ 2 * call.key_heads * call.key_dim }}LL + global_value]);
+        const float delta = (target - recalled) * beta;
+        float core = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t k = 0; k < {{ call.key_dim }}LL; ++k) {
+            float key = ftt::to_float(ftt_gdn_qkv[key_base + k]) / key_norm;
+            float query = ftt::to_float(ftt_gdn_qkv[query_base + k]) / query_norm;
+{% if call.round_normalized_qk %}
+            key = ftt::to_float(ftt::to_bfloat16(key));
+            query = ftt::to_float(ftt::to_bfloat16(query));
+{% endif %}
+            query *= {{ call.query_scale | cppfloat }};
+            const float updated = ftt::to_float(ftt_gdn_state[state_base + k]) * decay + key * delta;
+            ftt_gdn_state[state_base + k] = ftt::store_as(ftt_gdn_state, updated);
+            core += updated * query;
+        }
+{% if call.round_core %}
+        core = ftt::to_float(ftt::to_bfloat16(core));
+{% endif %}
+        ftt_gdn_scratch[global_value] = ftt::store_as(ftt_gdn_scratch, core);
+    }
+}
+
+static FTT_DEVICE void {{ call.symbol }}__norm({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_z = {{ call.z | cppexpr }};
+    auto *const ftt_gdn_norm_weight = {{ call.norm_weight | cppexpr }};
+    auto *const ftt_gdn_result = {{ call.result | cppexpr }};
+    auto *const ftt_gdn_scratch = {{ call.core_scratch | cppexpr }};
+{{ entry.strided_loop("local_values", call.local_capacity) }} {
+        if (!(local_values < ({{ call.active_values | cppexpr }})) || !({{ call.writer_active | cppexpr }})) continue;
+        const ftt::dim_t global_value = {{ call.global_value | cppexpr }};
+        const ftt::dim_t head = global_value / {{ call.value_dim }}LL;
+        float square_sum = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t v = 0; v < {{ call.value_dim }}LL; ++v) {
+            const float value = ftt::to_float(ftt_gdn_scratch[head * {{ call.value_dim }}LL + v]);
+            square_sum += value * value;
+        }
+        const float inverse_rms = ftt::rsqrt(square_sum / {{ call.value_dim }}.0f + {{ call.epsilon | cppfloat }});
+        const float gate = ftt::to_float(ftt_gdn_z[{{ call.z_offset | cppexpr }}]);
+{% if call.accurate_norm_silu %}
+        const float activation = gate / (1.0f + expf(-gate));
+{% else %}
+        const float activation = ftt::silu(gate);
+{% endif %}
+        const float output = ((ftt::to_float(ftt_gdn_scratch[global_value]) * inverse_rms)
+            * ftt::to_float(ftt_gdn_norm_weight[global_value % {{ call.value_dim }}LL])) * activation;
+        ftt_gdn_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(ftt_gdn_result, output);
+    }
+}
+
+// Publish every complete core coordinate before any owner reads its head.
+{{ entry.phase_schedule(call, ("core", "norm")) }}
+{% endif %}
+{% endfor %}
+{% endif %}

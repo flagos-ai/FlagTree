@@ -1,0 +1,176 @@
+extern "C" uint32_t flagmega_program_count_v3() { return {{ cpp_programs.entries | length }}; }
+extern "C" const char *flagmega_program_manifest_v3() { return {{ native_manifest_literal }}; }
+
+extern "C" int flagmega_program_resource_info_v3(uint32_t entry_id, FlagmegaResourceRecord *out, uint32_t record_bytes) {
+    if (!out || record_bytes != sizeof(*out)) return -1;
+    int device;
+    cudaError_t status = cudaGetDevice(&device);
+    if (status != cudaSuccess) return (int)status;
+    cudaDeviceProp prop{};
+    status = cudaGetDeviceProperties(&prop, device);
+    if (status != cudaSuccess) return (int)status;
+    cudaFuncAttributes attr{};
+    int resident = 0;
+    switch (entry_id) {
+{% for p in native_program_contexts %}
+    case {{ p.entry_id }}:
+        status = cudaFuncGetAttributes(&attr, flagmega_entry_{{ p.entry_id }}::{{ p.symbol }});
+        if (status != cudaSuccess) return (int)status;
+        status = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident,
+            flagmega_entry_{{ p.entry_id }}::{{ p.symbol }}, {{ p.block_threads }}, {{ p.dynamic_shared_bytes }});
+        if (status != cudaSuccess) return (int)status;
+        *out = {3, sizeof(*out), entry_id, (uint32_t)device, (uint32_t)prop.major, (uint32_t)prop.minor,
+            (uint32_t)prop.multiProcessorCount, (uint32_t)prop.warpSize, (uint32_t)attr.numRegs,
+            (uint32_t)attr.maxThreadsPerBlock, {{ p.block_threads }}, (uint32_t)resident,
+            (uint32_t)prop.cooperativeLaunch, 0, (uint64_t)attr.sharedSizeBytes,
+            {{ p.dynamic_shared_bytes }}, (uint64_t)attr.localSizeBytes};
+        return 0;
+{% endfor %}
+    default: return -1;
+    }
+}
+
+// Prepared runtime owns admission/lifetime; enqueue contains no query/allocation/sync.
+static int _flagmega_launch_program_impl(uint32_t entry_id, const FlagmegaArgSlot *args,
+    uint32_t arg_count, void *stream, void *scratch, uint64_t scratch_bytes, const FlagmegaProgramTrace *trace,
+    bool validate_only, bool clear_scratch, void *frame = nullptr, uint64_t frame_bytes = 0) {
+    switch (entry_id) {
+{% for p in native_program_contexts %}
+    case {{ p.entry_id }}: {
+        if (arg_count != {{ p.native_signature | length }} ||
+            (arg_count && (!args || reinterpret_cast<uintptr_t>(args) % alignof(FlagmegaArgSlot)))) return -1;
+{% for arg in p.native_signature %}
+        if (args[{{ loop.index0 }}].tag != {{ arg.tag }} || args[{{ loop.index0 }}].reserved) return -2;
+{% if arg.tag == 2 %}
+        if (args[{{ loop.index0 }}].payload > 1) return -2;
+        bool arg_{{ loop.index0 }} = args[{{ loop.index0 }}].payload != 0;
+{% elif arg.tag in [3,4,7] %}
+        if (args[{{ loop.index0 }}].payload >> 32) return -2;
+        {{ arg.c_type }} arg_{{ loop.index0 }};
+        const uint32_t bits_{{ loop.index0 }} = (uint32_t)args[{{ loop.index0 }}].payload;
+        std::memcpy(&arg_{{ loop.index0 }}, &bits_{{ loop.index0 }}, sizeof(arg_{{ loop.index0 }}));
+{% elif arg.pointer %}
+        if (validate_only) {
+            const uint64_t address = args[{{ loop.index0 }}].payload;
+            const uint64_t span = {{ arg.min_nbytes | default(1) }};
+            if (!address || address % {{ arg.alignment | default(1) }} || address > UINT64_MAX - span) return -2;
+            if (frame_bytes && address < reinterpret_cast<uintptr_t>(frame) + frame_bytes &&
+                reinterpret_cast<uintptr_t>(frame) < address + span) return -3;
+        }
+        {{ arg.c_type }} *arg_{{ loop.index0 }} = reinterpret_cast<{{ arg.c_type }} *>(args[{{ loop.index0 }}].payload);
+{% else %}
+        {{ arg.c_type }} arg_{{ loop.index0 }};
+        std::memcpy(&arg_{{ loop.index0 }}, &args[{{ loop.index0 }}].payload, sizeof(arg_{{ loop.index0 }}));
+{% endif %}
+{% endfor %}
+{% if p.launch_kind == 'cooperative' %}
+        if (!scratch || scratch_bytes != {{ p.launch_scratch.nbytes }} || reinterpret_cast<uintptr_t>(scratch) % 4) return -3;
+{% else %}
+        if (scratch || scratch_bytes) return -3;
+{% endif %}
+{% if p.program_trace | default(false) %}
+        FlagmegaProgramTrace trace_value = trace ? *trace : FlagmegaProgramTrace{};
+{% else %}
+        if (trace) return -4;
+{% endif %}
+        if (validate_only) return 0;
+        void *values[{{ [1, (p.native_signature | length) + (1 if p.barrier_abi else 0) + (1 if p.program_trace | default(false) else 0)] | max }}] = {
+{% for arg in p.native_signature %}
+            &arg_{{ loop.index0 }},
+{% endfor %}
+{% if p.barrier_abi %}            &scratch,{% endif %}
+{% if p.program_trace | default(false) %}            &trace_value,{% endif %}
+        };
+{% if p.launch_kind == 'cooperative' %}
+        if (clear_scratch) {
+            cudaError_t status = cudaMemsetAsync(scratch, 0, {{ p.launch_scratch.nbytes }}, (cudaStream_t)stream);
+            if (status != cudaSuccess) return (int)status;
+        }
+        return (int)cudaLaunchCooperativeKernel((const void *)flagmega_entry_{{ p.entry_id }}::{{ p.symbol }},
+{% else %}
+        return (int)cudaLaunchKernel((const void *)flagmega_entry_{{ p.entry_id }}::{{ p.symbol }},
+{% endif %}
+            dim3({{ p.grid | join(', ') }}), dim3({{ p.block_threads }}), values,
+            {{ p.dynamic_shared_bytes }}, (cudaStream_t)stream);
+    }
+{% endfor %}
+    default: return -1;
+    }
+}
+
+extern "C" int flagmega_launch_program_v3(uint32_t id, const FlagmegaArgSlot *args,
+    uint32_t count, void *stream, void *scratch, uint64_t size) {
+    return _flagmega_launch_program_impl(id, args, count, stream, scratch, size, nullptr, false, true);
+}
+{% if program_profile | default(false) %}
+extern "C" int flagmega_launch_program_profile_v3(uint32_t id, const FlagmegaArgSlot *args,
+    uint32_t count, void *stream, void *scratch, uint64_t size, const FlagmegaProgramTrace *trace) {
+    if (!trace || !trace->buffer || trace->buffer % 8 || !trace->epoch || trace->entry_id != id) return -4;
+    switch (trace->invocation) {
+{% for scope in program_profile.ranges %}
+    case {{ scope.invocation }}:
+        if (id != {{ scope.entry_id }} || trace->capacity != {{ scope.capacity }}) return -4;
+        break;
+{% endfor %}
+    default: return -4;
+    }
+    cudaError_t status = cudaMemsetAsync(reinterpret_cast<void *>(trace->buffer), 0, 16, (cudaStream_t)stream);
+    if (status != cudaSuccess) return (int)status;
+    return _flagmega_launch_program_impl(id, args, count, stream, scratch, size, trace, false, true);
+}
+{% endif %}
+
+{% if cpp_counter_epoch_plan | default(false) %}
+// This immutable library table is verified against the typed companion at codegen.
+extern "C" const char *flagmega_counter_epoch_manifest_v1() {
+    return {{ native_counter_epoch_manifest_literal }};
+}
+struct _FlagmegaEpochRow { uint32_t entry; uint64_t scratch_bytes, reset_bytes; };
+static constexpr _FlagmegaEpochRow _flagmega_epoch_rows[] = {
+{% for row in cpp_counter_epoch_plan.rows %}
+{% set reset = cpp_counter_epoch_plan.resets | selectattr('ordinal', 'equalto', row.ordinal) | list %}
+    { {{ row.entry_id }}, {{ cpp_programs.entries[row.entry_id].scratch_nbytes }}, {{ reset[0].nbytes if reset else 0 }} },
+{% endfor %}
+};
+extern "C" int flagmega_launch_counter_epoch_plan_v1(const char *plan_sha256,
+    const FlagmegaProgramRow *rows, uint32_t row_count, void *stream,
+    void *scratch, uint64_t scratch_bytes, FlagmegaPlanResult *out) {
+    if (!out || reinterpret_cast<uintptr_t>(out) % alignof(FlagmegaPlanResult) ||
+        out->version != 1 || out->record_bytes != sizeof(*out)) return -1;
+    *out = {1, sizeof(*out), 0, 1, -1, 0, 0, 0};
+    if (!plan_sha256 || std::strcmp(plan_sha256, "{{ cpp_counter_epoch_plan.plan_sha256 }}") ||
+        row_count != {{ cpp_counter_epoch_plan.rows | length }} || !rows ||
+        reinterpret_cast<uintptr_t>(rows) % alignof(FlagmegaProgramRow) ||
+        !scratch || reinterpret_cast<uintptr_t>(scratch) % 4 ||
+        scratch_bytes != {{ cpp_counter_epoch_plan.frame_nbytes }} ||
+        reinterpret_cast<uintptr_t>(scratch) > UINT64_MAX - scratch_bytes) return -1;
+    // Every late row is checked before the first reset/launch. No CUDA here.
+    for (uint32_t i = 0; i < row_count; ++i) {
+        out->ordinal = i;
+        if (rows[i].reserved) return -1;
+        const auto &p = _flagmega_epoch_rows[i];
+        int status = _flagmega_launch_program_impl(p.entry, rows[i].args, rows[i].arg_count,
+            stream, p.scratch_bytes ? scratch : nullptr, p.scratch_bytes, nullptr,
+            true, false, scratch, scratch_bytes);
+        if (status) { out->status = status; return status; }
+    }
+    for (uint32_t i = 0; i < row_count; ++i) {
+        out->ordinal = i;
+        const auto &p = _flagmega_epoch_rows[i];
+        if (p.reset_bytes) {
+            out->stage = 2;
+            int status = (int)cudaMemsetAsync(scratch, 0, p.reset_bytes, (cudaStream_t)stream);
+            if (status) { out->status = status; return status; }
+        }
+        out->stage = 3;
+        int status = _flagmega_launch_program_impl(p.entry, rows[i].args, rows[i].arg_count,
+            stream, p.scratch_bytes ? scratch : nullptr, p.scratch_bytes, nullptr, false, false);
+        if (status) { out->status = status; return status; }
+        ++out->submitted;
+    }
+    out->ordinal = row_count;
+    out->stage = 4;
+    out->status = 0;
+    return 0;
+}
+{% endif %}

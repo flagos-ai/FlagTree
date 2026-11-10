@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from triton.flagmega.ir import IRModule, verify_module
 from triton.flagmega.passes.gated_delta_net import decompose_gated_delta_net
+from triton.flagmega.passes.interleaved_projection import form_interleaved_projection
 from triton.flagmega.passes.rewriter import DataflowPass
 from triton.flagmega.rules.neutral import (
     decompose_layer_norm_rule,
@@ -17,6 +18,7 @@ from triton.flagmega.rules.neutral import (
 )
 from triton.flagmega.rules.neutral.form_qkv_rope_with_cache import form_qkv_rope_with_cache_rule
 from triton.flagmega.rules.neutral.form_paged_attention_kv_cache_pair import form_paged_attention_kv_cache_pair_rule
+from triton.flagmega.rules.neutral.fuse_norm_stats_input_cast import fuse_norm_stats_input_cast_rule
 from triton.flagmega.rules.neutral.fold_cast import fold_cast_rule
 from triton.flagmega.rules.neutral.fold_matmul_cast import fold_matmul_cast_rule
 
@@ -33,11 +35,11 @@ def decompose_complex_ops(module: IRModule) -> IRModule:
     ).run(verify_module(module))
     # Form larger semantic regions before canonicalizing their remaining
     # output conversions; local precision changes must not hide those regions.
-    current = decompose_gated_delta_net(current)
+    current = form_interleaved_projection(decompose_gated_delta_net(current))
     # Infer a private MatMul's wider result before a consumer records that
     # widening as its own conversion boundary.
     return DataflowPass("FoldOutputConversions", (
-        fold_cast_rule(), fold_matmul_cast_rule(), fuse_norm_apply_input_cast_rule(),
+        fold_cast_rule(), fold_matmul_cast_rule(), fuse_norm_stats_input_cast_rule(), fuse_norm_apply_input_cast_rule(),
     )).run(current)
 
 

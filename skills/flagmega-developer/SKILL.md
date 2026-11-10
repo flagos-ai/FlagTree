@@ -1,6 +1,6 @@
 ---
 name: flagmega-developer
-description: Develop and optimize FlagMega models through editable Python IR/TIR, custom passes, new kernels or in-place kernel overrides, measured choices, and resumable compilation. Use for agent-driven compiler optimization and serving-runtime integration.
+description: Develop and optimize FlagMega models with a coordinated expert workflow, editable Python IR/TIR, custom passes, kernels and overrides, measured choices, and resumable compilation. Use for model compiler optimization and serving-runtime integration.
 ---
 
 # FlagMega developer
@@ -22,25 +22,157 @@ into an unconditional compiler default. Preserve native compiler ownership
 boundaries; changing a FlagMega kernel does not itself require a Triton/TLE
 native compiler change.
 
+## Agent workflow
+
+For end-to-end optimization and performance regression recovery, read
+[Agent flow](references/agent-flow.md). **Orchestrator** owns dispatch, state and
+resources; **Architect** owns the joint technical plan and consolidated review;
+**Optimizer** integrates implementation; **Validator** independently checks the
+artifact and reports acceptance. Ordinary compilation does not require this flow.
+
+Architect and Optimizer each have **Graph**, **Vector**, **Distribution** and
+**Kernel** specialists. Obtain four separate baseline assessments for an
+end-to-end task, reusing current pinned assessments on resume. Each hypothesis
+has one lead and only the affected supporting experts; a `Joint` report cannot
+replace four domain assessments. Use the
+[expert responsibilities, directories and handoffs](references/expert-workspaces.md)
+and [coverage rules](references/agent-flow.md#expert-dispatch-and-coverage).
+Keep final review independent of design/implementation; record any delegation
+or independence limitation.
+
+Keep one integrated candidate active. Dispatch independent ready analysis,
+implementation and review concurrently; refill capacity when inputs become
+ready, without whole-wave barriers. Serialize conflicting writes and exclusive
+device use, and honor host isolation during protected measurements. Start source
+review on frozen inputs alongside author self-checks; consolidate when the
+required evidence arrives.
+
+Prioritize the first decisive result using the
+[candidate prerequisites](references/agent-flow.md#candidate-checks-and-acceptance):
+build, full numerical checks and ordinary screening begin when their own inputs
+and execution checks are ready. Pending diagnostic analysis, review paperwork
+or figure export alone does not block them. Known execution defects and
+`paused_ncu_error` retain their prescribed blocking scope. Acceptance still
+requires current independent review, all agreed checks, profiles and reproduction.
+Review only changed contracts and reuse valid evidence; use
+[bounded coordination](references/agent-flow.md#iteration-cost-and-bounded-coordination)
+and [capture preparation reuse](references/kernel-microprofiling.md#capture-preparation-and-reuse)
+to reduce measured iteration cost.
+
+Maintain a [progress dashboard](references/agent-flow.md#progress-dashboard)
+with completed results, actual running work, and the next actions with owners
+and dependencies. Refresh it when adopting a state transition and link it at
+handoff; current work and its verification status remain visible even before
+the next performance or diagnostic publication.
+
+Kernel development follows the mandatory
+[microprofiling flow](references/kernel-microprofiling.md): successful inspected
+`ncu` on NVIDIA for baseline and evaluated revisions, actual WG pipeline traces
+covering every physical warp in the declared scope, and swimlane SVGs showing WG
+stages **and hardware-module activity** (CUDA Core, TMA, Tensor Core or platform
+equivalents). KernelOptimizer owns capture/analysis; a separate KernelArchitect
+reviews the evidence. Label sampled hardware resolution and evidence type, keep
+asynchronous in-flight envelopes distinct, and quantify producer/consumer waits
+and overlap. Any ncu error pauses optimization until a successful inspected
+capture; obtain sudo access if needed, reusing existing user authorization and
+handling supplied credentials privately. Instrumentation cannot replace ncu.
+Use the [IKET-derived tracing method](references/kernel-trace-method.md) when
+designing or changing instrumentation, including measured overhead and the
+NCU-compatible recorder needed for same-invocation WG/hardware traces.
+
+Before choosing a design, affected performance experts follow
+[Expert baselines and SOTA targets](references/expert-baselines.md).
+Research and pin the strongest applicable implementation, reuse or traceably
+port its code/algorithm/mapping rather than start from scratch, and reproduce a
+matched baseline. Record license/source lineage, numerical/ABI adaptations and
+the changes beyond that starting point. Each hypothesis needs a causal,
+falsifiable prediction of whole-workload benefit. Scope SOTA claims to evaluated
+implementations; theoretical bounds support planning. An outperform objective
+remains open until a strict matched measured win meets the complete contract.
+
+## Workspace, trace and Git
+
+Before creating or resuming a workspace, read
+[Workspace layout and maintenance](references/workspace-layout.md).
+Orchestrator chooses the model/workload/hardware delivery directory
+`DELIVERY_DIR` and initializes each new run at
+`WORK_DIR="$DELIVERY_DIR/.local/runs/$RUN_ID"`. Version baselines and trial
+revisions; preserve existing runs and record any legacy path mapping.
+
+Keep full optimization traces, agent assignments/handoffs, raw evidence, drafts
+and artifacts in `.local/`. Orchestrator maintains the run's overall trace and
+state; agents write their assigned responses and evidence. Git-managed files
+include reproduction code, required `local_optimizations/`, the public
+`optimization-trace.md`, documented results and figures with compact source
+data. Before rendering or exporting, follow the user's output layout recorded in
+`workspace.json.artifact_layout`; it overrides the default shareable layout.
+If results are local and `figures/` is reserved for final performance charts,
+write data/history to `.local/results/` and process/WG/operator figures to
+`.local/figures/` or the exact run. Keep final iteration/comparison figures in
+`figures/`, update links and render commands, and document the local data needed
+to redraw them. Otherwise use the reference's self-contained public export
+layout. Code reproduction remains independent of private process records.
+
+Every assignment follows the [Markdown report conventions](references/agent-report-templates.md):
+full role reports at major handoffs, compact evidence-linked deltas for bounded follow-ups.
+Validator, also called **Verifier**, records every performance measurement in
+the [iteration performance history](references/performance-history.md), including
+screening, rejected candidates and failed attempts. At handoff publish the
+one cumulative performance-versus-iteration line chart covering all qualified
+iterations, with comparable workload/contract series and explicit acceptance
+status. Orchestrator embeds the latest verified chart in the delivery README
+and updates its data/reproduction links and coverage caption at each handoff;
+do not defer this until a winning candidate or final delivery.
+For each execution-based candidate verification, Verifier also saves one
+measured per-operator latency SVG and its raw profile/provenance. Register pending
+profiling separately from ordinary checks; individual build/preflight commands
+are not new verification rounds. Kernel revisions
+also retain ncu reports, raw WG/module traces, swimlane SVGs and independent
+overlap analysis; model/operator charts do not replace these artifacts. Reserve
+attempt IDs before evaluation; assign
+an iteration number only after Verifier passes the complete agreed numerical
+contract. Numerical failures and partial diagnostics remain attempts; a
+numerically correct performance regression still counts as an iteration.
+The public `optimization-trace.md` and every
+entry must strictly follow the [trace templates](references/agent-report-templates.md#public-optimization-trace).
+Run `scripts/validate_trace.py` on the complete staged public trace before
+declaring a publication ready, including its index and entry metadata; checking
+only a new entry is insufficient. Verify the installed bytes at handoff and
+reconcile its measurements/gates with the Verifier ledger.
+
+Experts follow the [mandatory domain checklists](references/expert-checklists.md)
+and record check IDs, inspected values/checkpoints, results and evidence in their
+role reports. Vector explicitly audits actual `TensorType.dtype` / `VectorType`
+lanes and packet geometry, plus justified scalar cases; vectorized op names or
+zero adapter counts alone do not prove correct vectorization.
+
 ## Establish the contract and baseline
 
-Inspect the installed compiler, target, runtime integration, and local APIs.
+Inspect the installed compiler, codegen backend, target, runtime integration,
+and local APIs. Verify the active interpreter's dependencies against repository
+requirements before treating an environment-version failure as a compiler bug;
+use an isolated task environment when restoring a pinned dependency.
 Fix the input/checkpoint revision, numerical profile, shapes, state layout,
 execution mode, device, measurement boundary, and requested acceptance rule
 before comparing candidates. A source runtime's compiled and custom-op paths
 may implement different rounding; its name alone does not define a contract.
 
-Set `WORK_DIR` to a task-local output directory and `TARGET` to a supported
-backend. A typical starting point is:
+Initialize the run as above, set `BASELINE_DIR` to a fresh baseline version
+(initially `"$WORK_DIR/baselines/b0001"`), choose `TARGET` and explicitly set
+`CODEGEN_BACKEND` (`triton` or `cpp`). Target availability does not establish
+support in both backends: check toolchain, runtime binding and required kernel
+families/encodings with a small normal-generated build before a full workload.
+A typical starting point is:
 
 ```sh
-python -m triton.flagmega import --model "$CHECKPOINT" --output "$WORK_DIR/imported.py"
-python -m triton.flagmega verify "$WORK_DIR/imported.py"
-python -m triton.flagmega inspect "$WORK_DIR/imported.py" --json
-python -m triton.flagmega compile --input "$WORK_DIR/imported.py" --checkpoint "$CHECKPOINT" \
-  --target "$TARGET" --output "$WORK_DIR/baseline" --emit-executable \
-  --work-dir "$WORK_DIR/baseline-dumps" --dump-flags compile,pass-ir,egraph-cost
-python -m triton.flagmega artifact verify "$WORK_DIR/baseline"
+python -m triton.flagmega import --model "$CHECKPOINT" --output "$BASELINE_DIR/imported.py"
+python -m triton.flagmega verify "$BASELINE_DIR/imported.py"
+python -m triton.flagmega inspect "$BASELINE_DIR/imported.py" --json
+python -m triton.flagmega compile --input "$BASELINE_DIR/imported.py" --checkpoint "$CHECKPOINT" \
+  --target "$TARGET" --codegen-backend "$CODEGEN_BACKEND" \
+  --output "$BASELINE_DIR/artifact" --emit-executable \
+  --work-dir "$BASELINE_DIR/dumps" --dump-flags compile,pass-ir,egraph-cost
+python -m triton.flagmega artifact verify "$BASELINE_DIR/artifact"
 ```
 
 Inspect `--help` for importer-specific options, including `--full-model` and
@@ -159,7 +291,7 @@ persistent implementation, but never fuses with other kernels; adjacent fixed
 meshes require full mapping identity and the usual fusion legality proofs.
 
 An implementation override is not a post-hoc patch to emitted
-`generated_kernels.py`. Regenerate the artifact from the edited implementation
+`generated_kernels.py` or `generated_kernels.cpp`. Regenerate the artifact from the edited implementation
 or registered override through normal codegen, verification, and runtime setup.
 Do not bypass legality checks or silently fall back when a requested choice
 or override cannot satisfy its contract.
@@ -188,6 +320,13 @@ acceptance. Record each operation's compute-body count separately, together with
 the inspected checkpoint identity and structural/numerical/device evidence,
 including any failed items.
 
+Audit physical writers of every result and state update. Broadcast/replicated
+values do not authorize overlapping ordinary stores into one canonical shared
+span, even when values match. Prove disjoint writes, elect the appropriate
+writer on replicated mesh axes, or use a declared synchronization/atomic
+contract. Preserve split ownership, private replicas, partial state-update
+regions, per-result tuple ownership and all required publication barriers.
+
 Explicitly assess both kernel/program `partition` decisions and the role
 partitions inside `warp_specialize`, using the actual lowered IR and execution
 scope. Record each role's work, warp allocation and blocking waits. For a
@@ -201,7 +340,8 @@ per-op or per-layer splitting fails IR acceptance. Follow the partition checks
 in [IR acceptance and repair](references/ir-acceptance.md#assess-partitioning-and-warp-specialization-scope).
 Report the partition assessment in a table, including overlap with both
 producer prefetch and independent consumer work, and distinguish demonstrated
-overlap from unverified intent.
+overlap from unverified intent. Support runtime overlap claims with the actual
+WG and hardware-module traces required by the kernel microprofiling flow.
 
 ## Iteration and acceptance
 
@@ -265,12 +405,15 @@ were measured. Source alone is not a runnable artifact: execution also needs
 final IR, readonly data, the manifest, and a compatible compiler/runtime.
 
 For tutorial deliverables, keep public files focused on reproduction scripts,
-required local implementations, accepted generated source, and documentation
-with measured SVGs. Describe agent gains relative to the current FlagMega
-baseline, not core capabilities as local agent optimizations. Keep experiment
-notes, raw results, tutorial tests, and intermediate snapshots under gitignored
-`.local/`; core regression tests remain in the compiler's normal test tree.
-Public reproduction must work without the author's private `.local/` files.
+required local implementations, accepted generated source, documented results
+with measured SVGs and their compact source data, and `optimization-trace.md`
+summarizing meaningful trials and decisions, including rejected candidates.
+Describe agent gains relative to the current FlagMega baseline, not core
+capabilities as local agent optimizations. Keep detailed run traces, agent
+interaction documents, raw results, tutorial tests and intermediate snapshots
+under gitignored `.local/`; core regression tests remain in the compiler's
+normal test tree. Public reproduction must work without the author's private
+`.local/` files.
 
 Do not discard rejected trials or raw evidence merely to clean the public
 view. Document reproduction steps, the applied optimization, measurement

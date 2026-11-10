@@ -77,9 +77,28 @@ def write_artifact(
     checkpoint: Checkpoint | None = None,
     emit_executable: bool = False,
     codegen_backend: str = "triton",
+    cpp_max_registers: int | None = None,
+    cpp_operator_profile: str | None = None,
     dumper: Dumper | None = None,
     rdata_cache_dir: str | Path | None = None,
+    readonly_source=None,
+    require_reflink: bool = False,
 ) -> Path:
+    """Write an artifact, optionally requiring payload clones to share extents.
+
+    The explicit policy crosses the asset worker boundary. It does not prohibit
+    ordinary checkpoint materialization or copying small metadata files.
+    """
+    if type(require_reflink) is not bool:
+        raise TypeError("require_reflink must be a bool")
+    from triton.flagmega.codegen.cpp.build import validate_cpp_max_registers
+    validate_cpp_max_registers(
+        cpp_max_registers, target=target, codegen_backend=codegen_backend,
+        emit_executable=emit_executable)
+    if cpp_operator_profile is not None:
+        from triton.flagmega.codegen.cpp.operator_profile import validate_option
+        validate_option(cpp_operator_profile, target=target, codegen_backend=codegen_backend,
+                        emit_executable=emit_executable)
     verify_module(module)
     if codegen_backend not in CODEGEN_BACKENDS:
         raise ArtifactError(
@@ -107,12 +126,15 @@ def write_artifact(
     # materialization critical path. Publish the manifest only after both join.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="flagmega-assets") as worker:
         rdata_future = (
-            worker.submit(pack_rdata, module, checkpoint, destination / "assets", cache_dir=rdata_cache_dir)
+            worker.submit(pack_rdata, module, checkpoint, destination / "assets",
+                          cache_dir=rdata_cache_dir, readonly_source=readonly_source,
+                          require_reflink=require_reflink)
             if checkpoint is not None else None
         )
         final_ir = emit_module(module, ir_dir / "final.py")
         codegen = (
-            _render_codegen_package(module, destination, target=target, codegen_backend=codegen_backend, dumper=dumper)
+            _render_codegen_package(module, destination, target=target, codegen_backend=codegen_backend,
+                                    cpp_max_registers=cpp_max_registers, cpp_operator_profile=cpp_operator_profile, dumper=dumper)
             if emit_executable else None
         )
         rdata = rdata_future.result() if rdata_future is not None else None
@@ -209,6 +231,8 @@ def _render_codegen_package(
     *,
     target: str,
     codegen_backend: str,
+    cpp_max_registers: int | None = None,
+    cpp_operator_profile: str | None = None,
     dumper: Dumper | None,
 ) -> dict[str, object]:
     if codegen_backend == "triton":
@@ -216,7 +240,7 @@ def _render_codegen_package(
     from triton.flagmega.codegen.cpp import render_cpp_package_artifact
 
     return render_cpp_package_artifact(
-        module, destination, target=target, dumper=dumper
+        module, destination, target=target, cpp_max_registers=cpp_max_registers, cpp_operator_profile=cpp_operator_profile, dumper=dumper
     )
 
 

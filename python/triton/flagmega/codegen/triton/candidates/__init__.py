@@ -16,6 +16,7 @@ from .core import (
     TritonCandidateProviderRegistry,
 )
 from .delta_rule import DeltaRuleCandidateProvider
+from .interleaved_projection import InterleavedProjectionCandidateProvider
 from .dense_matmul import DenseMatmulCandidateProvider, MatMulNormStatsCandidateProvider
 from .dense_matmul_glu import DenseMatmulGluCandidateProvider
 from .distributed_boxing import DistributedBoxingCandidateProvider
@@ -67,6 +68,7 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             DeltaRuleCandidateProvider(),
             SparseExpertsCandidateProvider(),
             BlockFp8CandidateProvider(),
+            InterleavedProjectionCandidateProvider(),
             MatmulGluCandidateProvider(),
             DenseMatmulGluCandidateProvider(),
             EmbeddingCandidateProvider(),
@@ -98,6 +100,7 @@ __all__ = [
     "ReductionCandidateProvider",
     "TensorTransformCandidateProvider",
     "BlockFp8CandidateProvider",
+    "InterleavedProjectionCandidateProvider",
     "AttentionPrimitiveSemanticTIRCandidateProvider",
     "DenseMatmulCandidateProvider",
     "MatMulNormStatsCandidateProvider",

@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from triton.flagmega.diagnostics import Dumper
 
 
-CPP_RENDERER_VERSION = "flagmega-cpp-renderer/v1"
+CPP_RENDERER_VERSION = "flagmega-cpp-renderer/v3"
 
 CPP_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.cpp-package-descriptor/v1"
 
@@ -69,7 +69,7 @@ CPP_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.cpp-package-descriptor/v1"
 # what the driver rejects, and cutting registers means giving up the in-flight
 # depth the vector path depends on. `FLAGMEGA_CPP_BLOCK_THREADS` overrides it
 # for re-measurement if that footprint ever shrinks.
-CPP_BLOCK_THREADS = int(os.environ.get("FLAGMEGA_CPP_BLOCK_THREADS", "1024"))
+CPP_BLOCK_THREADS = 1024
 
 # Independent K-walk depth for the vectorized (tiled) GEMV path: how many K
 # groups one thread keeps in flight at once.
@@ -208,6 +208,22 @@ def _target_capability(architecture: str):
     raise CodegenError(f"No registered C++ capability for {architecture!r}.")
 
 
+def _cpp_block_threads(descriptor, capability) -> int:
+    # Preserve the measured COREX default. NVIDIA follows the saved physical
+    # launch plan instead of inheriting a 16-warp, 64-lane Iluvatar setting.
+    default = (CPP_BLOCK_THREADS if descriptor["platform"] == "corex"
+               else int(descriptor["num_warps"]) * int(capability.warp_size))
+    try:
+        threads = int(os.environ.get("FLAGMEGA_CPP_BLOCK_THREADS", default))
+    except ValueError as error:
+        raise CodegenError("FLAGMEGA_CPP_BLOCK_THREADS must be an integer.") from error
+    if threads <= 0 or threads % capability.warp_size or threads > capability.max_threads_per_block:
+        raise CodegenError(
+            f"C++ block_threads={threads} must be a positive multiple of the target "
+            f"warp size {capability.warp_size}, at most {capability.max_threads_per_block}.")
+    return threads
+
+
 def describe_cpp_package(module: IRModule) -> dict[str, object]:
     """Extend the shared TIR descriptor with the C++ package's own facts."""
 
@@ -219,6 +235,17 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
     # is not a buffer at all. Ask the shared descriptor for the unpooled
     # convention rather than teaching every template to undo it.
     descriptor = dict(describe_tir_package(module, pool_function_arguments=False))
+    if 'counter_epoch_plan' in module.metadata and (
+            not descriptor.get('programs') or descriptor.get('platform') != 'nvidia'):
+        raise CodegenError('Counter epoch plans require a serial NVIDIA program package.', stage=module.stage)
+    if descriptor.get("programs"):
+        from .programs import describe_cpp_programs
+        return describe_cpp_programs(module, descriptor, _describe_cpp_entry)
+    return _describe_cpp_entry(module, descriptor)
+
+
+def _describe_cpp_entry(module, descriptor):
+    descriptor = dict(descriptor)
     platform = str(descriptor.get("platform", ""))
     architecture = str(descriptor.get("target_architecture", ""))
     registry = CppTemplateRegistry()
@@ -244,22 +271,34 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
             stage=module.stage,
         )
     _reject_unsupported_constructs(descriptor, module)
+    if descriptor.get("distributed_entry") and tuple(descriptor["grid"][1:]) != (1, 1):
+        raise CodegenError("C++ distributed mesh addressing requires a one-dimensional physical launch grid.")
     # Derive the per-call GEMV knobs first: the arena size below reads the
     # weight group stride this fills in.
     _gemv_k_streams(descriptor)
     from triton.flagmega.codegen.cpp.readonly_layout import select_readonly_layouts
     # The flat SME ISA and FIFO count waits are an ivcore11 capability.
     capability = _target_capability(architecture)
+    # Lowering freezes the actual target capability, including injected
+    # machine overrides. The registry is only a fallback for legacy IR.
+    snapshot = module.metadata.get("target_capability")
+    if isinstance(snapshot, Mapping):
+        from types import SimpleNamespace
+        capability = SimpleNamespace(**snapshot)
+    block_threads = _cpp_block_threads(descriptor, capability)
+    warp_size = int(capability.warp_size)
+    if platform == "nvidia" and warp_size != 32:
+        raise CodegenError("NVIDIA FTT requires the target's physical 32-lane warp contract.")
     use_sme = CPP_USE_SME and getattr(capability, "supports_flat_sme_count_wait", False)
     if use_sme:
-        descriptor.update(block_threads=CPP_BLOCK_THREADS, warp_size=_target_warp_size(architecture),
+        descriptor.update(block_threads=block_threads, warp_size=warp_size,
                           sme_slots=CPP_SME_SLOTS, sme_pad=CPP_SME_PAD)
         descriptor["readonly_device_layout"] = select_readonly_layouts(module, descriptor)
         for call in descriptor.get("render_calls", ()):
             if call.get("cpp_shard_major_weight") and call.get("variant") == "packed_k_major_gemv_norm_stats":
                 groups = call["local_k_capacity"] // call["weight_k_lane"]
                 tiles = call["local_n_capacity"] * call["weight_k_lane"] // 512
-                concurrency = CPP_BLOCK_THREADS // _target_warp_size(architecture) // tiles
+                concurrency = block_threads // warp_size // tiles
                 if groups % (6 * concurrency) == 0:
                     call["sme_slots"] = 6
             if call.get("family") == "qkv_parallel_linear":
@@ -268,7 +307,7 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
                 if source_walk is not None:
                     call["cpp_sme_source_base"], call["cpp_sme_source_stride"] = source_walk
                 call["cpp_fused_sme"] = (
-                    CPP_BLOCK_THREADS == 1024 and CPP_SME_PAD == 0
+                    block_threads == 1024 and CPP_SME_PAD == 0
                     and call.get("k_lane") == 16
                     and call.get("n_lane") == 4
                     and [o["local_n_capacity"] for o in outputs] == [128, 64, 64]
@@ -288,7 +327,7 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "schema": CPP_PACKAGE_DESCRIPTOR_SCHEMA,
         "kernel_templates": tuple(registry.resolve(spec) for spec in specs),
         "entry_template": "entrypoints/call_graph.cpp.jinja",
-        "block_threads": CPP_BLOCK_THREADS,
+        "block_threads": block_threads,
         "tiled_depth": CPP_TILED_DEPTH,
         # Warp geometry is a target property, not an FTT constant: the
         # reductions fold inside a warp before touching shared memory, so the
@@ -296,8 +335,23 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         # target's capability rather than hardcoded, so a target with a
         # different warp width renders correctly instead of silently
         # mis-sizing the buffers.
-        "warp_size": _target_warp_size(architecture),
-        "warps": CPP_BLOCK_THREADS // _target_warp_size(architecture),
+        "warp_size": warp_size,
+        "warps": block_threads // warp_size,
+        "launch_admission": "cuda-occupancy-cooperative/v1" if platform == "nvidia" else "corex-sm-bound/v1",
+        "launch_abi_version": 2 if platform == "nvidia" else 1,
+        "launch_scratch": ({
+            "kind": "grid-barrier-counters/v1",
+            "count": _grid_barrier_counter_slots(descriptor),
+            "nbytes": 4 * _grid_barrier_counter_slots(descriptor),
+            "dtype": "int32",
+            "reset": "per-launch-stream",
+        } if platform == "nvidia" and descriptor.get("distributed_entry") else None),
+        "launch_resource_limits": {
+            "max_threads_per_block": capability.max_threads_per_block,
+            "max_shared_memory_bytes": capability.max_shared_memory_bytes,
+            "max_registers_per_sm": capability.max_registers_per_sm,
+            "compute_capability": list(getattr(capability, "compute_capability", (7, 1))),
+        },
         "sme": use_sme,
         "sme_slots": CPP_SME_SLOTS,
         "sme_pad": CPP_SME_PAD,
@@ -306,21 +360,24 @@ def describe_cpp_package(module: IRModule) -> dict[str, object]:
         "qkv_pair": CPP_QKV_PAIR,
         "run_load": "load_run_narrow" if CPP_NARROW_LOADS else "load_run",
         "sme_arena_elems": _sme_arena_elems(
-            descriptor, CPP_BLOCK_THREADS // _target_warp_size(architecture)),
+            descriptor, block_threads // warp_size),
         "grid_total_blocks": _grid_total_blocks(descriptor),
         "grid_barrier_counter_slots": _grid_barrier_counter_slots(descriptor),
         "grid_barrier_group_bases": _barrier_group_bases(descriptor),
         "argument_types": _argument_types(descriptor, module),
     })
+    from triton.flagmega.codegen.triton.gdn_head_gates import validate_call as validate_head_gates
+    for call in descriptor.get("render_calls", ()):
+        validate_head_gates(call, descriptor)
     if use_sme and descriptor["sme_arena_elems"]:
         descriptor["shared_arena_reuse"] = True
         _select_attention_staging(descriptor, capability)
         shared_floats = max((
             int(call.get("cpp_attention_shared_bytes", 0)) // 4
-            or (2 * int(call.get("token_tile", 0)) + 4 + CPP_BLOCK_THREADS)
+            or (2 * int(call.get("token_tile", 0)) + 4 + block_threads)
             for call in descriptor["render_calls"] if call["family"] == "paged_attention_partial"), default=0)
         if any(call["family"] == "greedy_sample" for call in descriptor["render_calls"]):
-            shared_floats = max(shared_floats, 3 * CPP_BLOCK_THREADS)
+            shared_floats = max(shared_floats, 3 * block_threads)
         descriptor["sme_arena_elems"] = max(descriptor["sme_arena_elems"], 2 * shared_floats)
         if descriptor["sme_arena_elems"] * 2 > capability.max_shared_memory_bytes:
             raise CodegenError("C++ shared arena exceeds the target per-block memory budget.")
@@ -802,7 +859,7 @@ def _weight_k_lane(call: Mapping[str, object], prefix: str) -> int:
 
 def _argument_types(
     descriptor: Mapping[str, object], module: IRModule
-) -> dict[str, str]:
+) -> dict[str, dict[str, object]]:
     """Resolve the C++ element type of every generated pointer parameter.
 
     A Triton kernel parameter arrives already typed: the JIT reads the dtype
@@ -811,7 +868,7 @@ def _argument_types(
     expressions. C++ has neither, so the element type has to come from
     somewhere -- and the only authority on it is the buffer plan.
 
-    This reads it back out of the call ABI: every buffer binding names the
+    This reads it back out of the call and runtime ABIs: every buffer binding names the
     runtime argument it resolves against and the scalar dtype it views that
     argument with. Pooled storage keeps its byte-pointer parameter, because
     the renderer's cast already retypes it at each use. A non-pooled argument
@@ -824,9 +881,12 @@ def _argument_types(
     """
 
     from triton.flagmega.codegen.cpp.expressions import cpp_scalar_type
+    from triton.flagmega.codegen.triton.call_abi import describe_local_buffer_abi
+    from triton.flagmega.codegen.triton.runtime_binding import describe_function_runtime_binding
+    from triton.flagmega.ir import verify_buffer_plan
 
     byte_pointer = "unsigned char"
-    resolved: dict[str, dict[str, object]] = {}
+    resolved: dict[str, dict[str, object]] = dict(descriptor.get("native_argument_types", {}))
 
     def record(argument: str, abi: Mapping[str, object]) -> None:
         storage = str(abi.get("storage"))
@@ -861,6 +921,28 @@ def _argument_types(
                 argument = buffer.get("runtime_argument")
                 if isinstance(abi, Mapping) and isinstance(argument, str) and argument:
                     record(argument, abi)
+    # A reference or bank field can enter only through a reusable function,
+    # or remain an unused external parameter. Its typed physical buffer still
+    # belongs to the runtime signature even when no kernel consumes it here.
+    # Resolve those roots through the same binding/BufferPlan authority used
+    # by source scheduling, without inventing a byte-pointer fallback.
+    plan = verify_buffer_plan(module)
+    root_binding = descriptor.get("runtime_binding")
+    bindings = [root_binding if isinstance(root_binding, Mapping) else
+                describe_function_runtime_binding(module)]
+    bindings.extend(describe_function_runtime_binding(module, function_name=str(function["function"]))
+                    for function in descriptor.get("device_functions", ()))
+    for binding in bindings:
+        for value in binding.get("values", ()):
+            argument, buffer_id = value.get("runtime_argument"), value.get("buffer")
+            if isinstance(argument, str) and argument and buffer_id in plan.buffer_map:
+                record(argument, describe_local_buffer_abi(plan.buffer_map[buffer_id], plan))
+        for pool in binding.get("pools", ()):
+            # Runtime pools are explicit byte allocations. Their scalar views
+            # are supplied at each use, independently of any external dtype.
+            if pool.get("storage") not in plan.memory_space_map:
+                raise CodegenError("C++ runtime pool has no physical memory-space contract.", stage=module.stage)
+            record(str(pool["name"]), {"storage": pool["storage"], "pooled": True})
     required = [
         *(str(name) for name in descriptor.get("signature_arguments", ())),
         *(
@@ -874,7 +956,7 @@ def _argument_types(
         if name not in resolved:
             raise CodegenError(
                 f"C++ codegen cannot type argument {name!r}: no kernel call "
-                "binds it to a buffer ABI.",
+                "or runtime signature binds it to a physical buffer ABI.",
                 stage=module.stage,
             )
         types[name] = resolved[name]
@@ -884,6 +966,9 @@ def _argument_types(
 def render_cpp_package(
     descriptor: Mapping[str, object], renderer_version: str
 ) -> str:
+    if descriptor.get("cpp_programs"):
+        from .programs import render_program_package
+        return render_program_package(descriptor, renderer_version)
     context = {**descriptor, "renderer_version": renderer_version}
     return CppTemplateRegistry().render("module.cpp.jinja", context)
 
@@ -916,6 +1001,27 @@ def _reject_unsupported_constructs(
             'The C++ backend does not implement separate kernel programs and their per-program execution meshes.',
             stage=module.stage,
         )
+    unsupported_encodings = tuple(
+        str(call.get("call"))
+        for call in descriptor.get("render_calls", ())
+        if ((call.get("family") in {"block_fp8", "matmul_glu", "interleaved_projection"}
+             and call.get("weight_encoding") not in {"IQ4_XS", "Q4_K"})
+            or (call.get("family") == "embedding"
+                and call.get("weight_encoding") not in {None, "IQ4_XS", "Q4_K"}))
+    )
+    if unsupported_encodings:
+        raise CodegenError(
+            "C++ kernels do not implement the weight encoding on call(s) "
+            f"{list(unsupported_encodings)}.", stage=module.stage)
+    for call in descriptor.get("render_calls", ()):
+        if call.get("family") == "matmul_glu" and any(
+                call.get(key) not in (None, "None") for key in ("gate_clamp_max", "up_clamp")):
+            raise CodegenError("C++ native GLU does not implement projection clamps.", stage=module.stage)
+        if (call.get("family") == "gdn_recurrent"
+                and (call.get("b_weight_encoding") or call.get("a_weight_encoding"))
+                and int(call.get("projection_dim", 0)) % 256):
+            raise CodegenError("C++ packed projection requires a whole number of 256-element blocks.",
+                               stage=module.stage)
     if descriptor.get("pipeline_schedule") is not None:
         raise CodegenError(
             "The C++ backend does not implement warp-specialized "
@@ -945,32 +1051,9 @@ def _reject_unsupported_constructs(
             "(TMA-style descriptor arguments).",
             stage=module.stage,
         )
-    fused = tuple(
-        str(call.get("call"))
-        for call in descriptor.get("render_calls", ())
-        if call.get("fusion_lines")
-    )
-    if fused:
-        raise CodegenError(
-            f"The C++ backend does not implement fused epilogues on call(s) "
-            f"{list(fused)}.",
-            stage=module.stage,
-        )
-    # Intermediate dtype round-trips applied to an addend before a fused add.
-    # Each one is a rounding step that changes the result, and the C++
-    # templates cannot name an arbitrary Triton dtype spelling, so a non-empty
-    # list must raise rather than be skipped.
-    recast = tuple(
-        str(call.get("call"))
-        for call in descriptor.get("render_calls", ())
-        if call.get("addend_cast_types")
-    )
-    if recast:
-        raise CodegenError(
-            "The C++ backend does not implement intermediate addend casts on "
-            f"call(s) {list(recast)}.",
-            stage=module.stage,
-        )
+    from triton.flagmega.codegen.cpp.fusion import validate_call
+    for call in descriptor.get("render_calls", ()):
+        validate_call(call)
 
 
 def render_cpp_source_package(
@@ -978,6 +1061,7 @@ def render_cpp_source_package(
     output_dir: str | Path,
     *,
     dumper: Dumper | None = None,
+    cpp_operator_profile: str | None = None,
 ) -> dict[str, object]:
     """Write one generated ``generated_kernels.cpp`` and describe it."""
 
@@ -990,6 +1074,9 @@ def render_cpp_source_package(
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     descriptor = describe_cpp_package(module)
+    if cpp_operator_profile is not None:
+        from triton.flagmega.codegen.cpp.operator_profile import configure_descriptor
+        descriptor = configure_descriptor(descriptor, cpp_operator_profile)
     source = render_cpp_package(descriptor, CPP_RENDERER_VERSION)
     source_path = destination / "generated_kernels.cpp"
     source_path.write_text(source, encoding="utf-8")

@@ -1,0 +1,115 @@
+// IQ4 MMVQ port: ggml-org/llama.cpp, MIT, commit
+// 5ce06fc71f5e938301f7dc51697a59ae308bd6b7.
+// See local_optimizations/upstream.md for symbols and explicit adaptations.
+#include <ftt/quantized_ops.h>
+#include <cuda_fp16.h>
+#include <cmath>
+
+// Descriptor-declared CTA-private activation scratch. All users execute a CTA
+// barrier before reading and before returning; no cross-CTA or persistent state.
+__shared__ __align__(16) unsigned char _local_iq4_q8[{{ local_iq4_shared_bytes }}];
+
+namespace local_iq4_mmvq {
+struct alignas(4) Q8Block {
+    float d;
+    int qs[8];
+};
+static_assert(sizeof(Q8Block) == 36 && alignof(Q8Block) == 4);
+
+// Direct CUDA branch port of get_int_from_table_16, with the fixed IQ4 lookup
+// table constant-folded into four words. Layout: low/high nibbles become x/y.
+FTT_DEVICE_INLINE int2 lookup(const int q4) {
+    const unsigned int table32[4] = {0xbfad9881u, 0xf6eaddcfu, 0x26190d01u, 0x71594535u};
+    unsigned int tmp[2];
+    const unsigned int low_high_selection_indices = 0x32103210u | ((static_cast<unsigned int>(q4) & 0x88888888u) >> 1);
+#pragma unroll
+    for (unsigned int i = 0; i < 2; ++i) {
+        const unsigned int shift = 16 * i;
+        const unsigned int low = __byte_perm(table32[0], table32[1], static_cast<unsigned int>(q4) >> shift);
+        const unsigned int high = __byte_perm(table32[2], table32[3], static_cast<unsigned int>(q4) >> shift);
+        tmp[i] = __byte_perm(low, high, low_high_selection_indices >> shift);
+    }
+    return make_int2(__byte_perm(tmp[0], tmp[1], 0x6420), __byte_perm(tmp[0], tmp[1], 0x7531));
+}
+
+FTT_DEVICE_INLINE float warp_max(float value) {
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value = fmaxf(value, __shfl_xor_sync(0xffffffffu, value, offset));
+    return value;
+}
+
+// Port of quantize_q8_1: a warp owns one 32-element activation group. Retain
+// roundf (ties away), but keep d in F32 because this temporary is not GGUF data.
+// The dual component is an explicit local approximation of the residual.
+// Encoding is completed once for the CTA before its output-row traversal.
+template <int K, bool Dual, class T>
+FTT_DEVICE_INLINE void quantize(const T *source, Q8Block *q8) {
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const int warps = blockDim.x >> 5;
+    for (int group = warp; group < K / 32; group += warps) {
+        const float xi = ftt::to_float(source[group * 32 + lane]);
+        const float amax = warp_max(fabsf(xi));
+        const float d = amax / 127.0f;
+        const int q = amax == 0.0f ? 0 : static_cast<int>(roundf(xi / d));
+        reinterpret_cast<signed char *>(q8[group].qs)[lane] = static_cast<signed char>(q);
+        if (lane == 0) q8[group].d = d;
+        if constexpr (Dual) {
+            const float residual = __fsub_rn(xi, __fmul_rn(static_cast<float>(q), d));
+            const float rmax = warp_max(fabsf(residual));
+            const float rd = rmax / 127.0f;
+            const int rq = rmax == 0.0f ? 0 : static_cast<int>(roundf(residual / rd));
+            reinterpret_cast<signed char *>(q8[K / 32 + group].qs)[lane] = static_cast<signed char>(rq);
+            if (lane == 0) q8[K / 32 + group].d = rd;
+        }
+    }
+    __syncthreads();
+}
+
+// Port of vec_dot_iq4_xs_q8_1. Each lane owns an IQ4 group, corresponding to
+// upstream kbx=group/8 and iqs=(group%8)*4. Four packed words produce eight
+// signed DP4A operations. Native row stride and scale bits are unchanged.
+template <int K, bool Dual>
+FTT_DEVICE_INLINE float dot(const unsigned char *row, const Q8Block *q8) {
+    const ftt::quantized::detail::iq4_row_reader reader(row);
+    const int lane = threadIdx.x & 31;
+    float sum = 0.0f;
+    float residual_sum = 0.0f;
+#pragma unroll 1
+    for (int group = lane; group < K / 32; group += 32) {
+        const int kbx = group / 8;
+        const int iqs = (group % 8) * 4;
+        const auto *block = row + kbx * 136;
+        int sumi = 0;
+        int residual_sumi = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int aux_q4 = static_cast<int>(reader.word(kbx * 136LL + 8 + 4 * (iqs + j)));
+            const int2 v = lookup(aux_q4);
+            const int u0 = q8[group].qs[j + 0];
+            const int u1 = q8[group].qs[j + 4];
+            sumi = __dp4a(v.x, u0, sumi);
+            sumi = __dp4a(v.y, u1, sumi);
+            if constexpr (Dual) {
+                residual_sumi = __dp4a(v.x, q8[K / 32 + group].qs[j + 0], residual_sumi);
+                residual_sumi = __dp4a(v.y, q8[K / 32 + group].qs[j + 4], residual_sumi);
+            }
+        }
+        const unsigned int scales_h = ftt::quantized::load_u16(block + 2);
+        const int ls = ((block[4 + iqs / 8] >> (iqs & 4)) & 15) | (((scales_h >> (iqs / 2)) & 3) << 4);
+        sumi *= ls - 32;
+        const float d = __half2float(__ushort_as_half(static_cast<unsigned short>(ftt::quantized::load_u16(block))));
+        sum += (d * q8[group].d) * static_cast<float>(sumi);
+        if constexpr (Dual) {
+            residual_sumi *= ls - 32;
+            residual_sum += (d * q8[K / 32 + group].d) * static_cast<float>(residual_sumi);
+        }
+    }
+    if constexpr (Dual) sum += residual_sum;
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    return sum;  // complete row sum is owned only by lane 0
+}
+}  // namespace local_iq4_mmvq

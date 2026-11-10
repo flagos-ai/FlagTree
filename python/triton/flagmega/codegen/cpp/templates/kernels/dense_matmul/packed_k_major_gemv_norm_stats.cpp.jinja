@@ -368,14 +368,11 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         }
 {% endif %}
 {% endif %}
-        const float dense_residual =
+        const float dense_residual_loaded =
             ftt::to_float(ftt_residual[{{ call.residual_offset | cppexpr }}]);
-{# `addend_cast_types` records intermediate rounding of the residual before the
-   add. Each entry is one round-trip through that dtype; the C++ side cannot
-   name an arbitrary Triton dtype, so a non-empty list is rejected in
-   `_reject_unsupported_constructs` rather than silently skipped. #}
-        const float dense_projection =
-            ftt::to_float(ftt::store_as(ftt_result, dense_accumulator));
+{# Projection and addend each retain their own typed round-trip sequence. #}
+        const float dense_residual = {{ 'dense_residual_loaded' | cppcasts(call.addend_cast_types | default(())) }};
+        const float dense_projection = {{ 'dense_accumulator' | cppcasts((call.projection_type | default('tl.bfloat16'),)) }};
         const auto dense_value =
             ftt::store_as(ftt_result, dense_projection + dense_residual);
         if ({{ call.result_writer_active | cppexpr }}) {

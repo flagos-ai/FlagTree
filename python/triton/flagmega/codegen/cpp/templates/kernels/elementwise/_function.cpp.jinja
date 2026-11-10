@@ -1,3 +1,4 @@
+#include <cmath>
 {% import "entrypoints/_common.cpp.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "elementwise" and call.variant == elementwise_variant %}
@@ -16,12 +17,13 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
             ? ftt::to_float(({{ call.rhs | cppexpr }})[{{ call.rhs_offset | cppexpr }}])
             : ftt::to_float(ftt::store_as({{ call.rhs | cppexpr }}, {{ call.rhs_other | default(0.0) }}));
 {% endif %}
-{% if call.fusion_lines %}
-{# Fusion epilogues are emitted as Triton statements, which have no C++
-   spelling here. The implementation model refuses a fused call rather than
-   dropping the epilogue, so reaching this branch is a codegen bug. #}
-{{ undefined_fusion_is_rejected_by_the_implementation_model }}
-{% endif %}
+{% if call.fusion_lines | default(()) %}
+{% set program = call | cppfusion %}
+{% for line in program.lines %}
+        {{ line }}
+{% endfor %}
+        const float ftt_value = {{ program.value }};
+{% else %}
 {% if call.variant == "add" %}
         const float ftt_value = lhs_value + rhs_value;
 {% elif call.variant == "mul" %}
@@ -31,9 +33,14 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {% elif call.variant == "sigmoid" %}
         const float ftt_value = ftt::sigmoid(lhs_value);
 {% elif call.variant == "silu" %}
-        const float ftt_value = ftt::silu(lhs_value);
+{% if call.math_mode | default('fast') == 'accurate' %}
+        const float ftt_value = lhs_value / (1.0f + expf(-lhs_value));
+{% else %}
+        const float ftt_value = lhs_value * ftt::sigmoid(lhs_value);
+{% endif %}
 {% elif call.variant == "cast" %}
         const float ftt_value = lhs_value;
+{% endif %}
 {% endif %}
         auto *const ftt_result = {{ call.result | cppexpr }};
         ftt_result[{{ call.result_offset | cppexpr }}] =

@@ -28,6 +28,9 @@
 #if defined(FTT_ARCH_ILUVATAR)
 #include "arch/iluvatar/arch_types.h"
 #include "arch/iluvatar/primitive_ops.h"
+#elif defined(FTT_ARCH_NVIDIA)
+#include "arch/nvidia/arch_types.h"
+#include "arch/nvidia/primitive_ops.h"
 #else
 #error "No FTT arch selected."
 #endif

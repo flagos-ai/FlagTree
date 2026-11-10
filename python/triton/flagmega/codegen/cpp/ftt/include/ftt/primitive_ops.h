@@ -24,7 +24,9 @@ template <class T> FTT_DEVICE_INLINE float to_float(T value) {
 }
 
 FTT_DEVICE_INLINE float to_float(bfloat16_t value) {
-#if defined(FTT_DEVICE_PASS)
+#if defined(FTT_ARCH_NVIDIA)
+    return __bfloat162float(value);
+#elif defined(FTT_DEVICE_PASS)
     return static_cast<float>(value);
 #else
     // Host path: widen the stored bits.  bf16 is the top 16 bits of fp32.
@@ -36,7 +38,9 @@ FTT_DEVICE_INLINE float to_float(bfloat16_t value) {
 }
 
 FTT_DEVICE_INLINE bfloat16_t to_bfloat16(float value) {
-#if defined(FTT_DEVICE_PASS)
+#if defined(FTT_ARCH_NVIDIA)
+    return __float2bfloat16_rn(value);
+#elif defined(FTT_DEVICE_PASS)
     return static_cast<bfloat16_t>(value);
 #else
     unsigned int bits;

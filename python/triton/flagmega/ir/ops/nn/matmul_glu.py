@@ -20,8 +20,9 @@ from triton.flagmega.ir.ops.math._block_scaled import (
     normalize_glu_activation_quantization,
     verify_block_scaled_precision_inputs,
 )
-from triton.flagmega.ir.ops.math._quantized import matrix_width
+from triton.flagmega.ir.ops.math._quantized import matrix_width, verify_native_scale_type
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
+from triton.flagmega.ir.types import DType
 
 
 @op_definition(
@@ -69,6 +70,11 @@ class MatMulGlu(OpDefinition):
                 if not isinstance(value, str):
                     raise IRSchemaError(f"MatMulGlu {name} must be a string or None.")
                 result[name] = value
+        if result.get("gate_weight_encoding") != result.get("up_weight_encoding"):
+            raise IRSchemaError("MatMulGlu gate/up native encodings must match.")
+        if result.get("gate_weight_encoding") is not None and any(
+                result[name] is not None for name in ("gate_clamp_max", "up_clamp")):
+            raise IRSchemaError("Native MatMulGlu does not support clamp attributes.")
         result.update(normalize_glu_activation_quantization(attributes, "MatMulGlu"))
         return result
 
@@ -79,6 +85,8 @@ class MatMulGlu(OpDefinition):
         value = tensor_of(value_type)
         gate = tensor_of(gate_type)
         up = tensor_of(up_type)
+        if attrs.get("gate_weight_encoding") is not None and value.dtype != DType.BFLOAT16:
+            raise IRSchemaError("Native MatMulGlu currently requires scalar BF16 input/output.")
         verify_block_scaled_precision_inputs(value, gate, tensor_of(gate_scale_type), attrs, "MatMulGlu")
         verify_block_scaled_precision_inputs(value, up, tensor_of(up_scale_type), attrs, "MatMulGlu")
         if up.shape[0] != gate.shape[0] or matrix_width(up, attrs.get("up_weight_encoding")) != matrix_width(
@@ -86,6 +94,10 @@ class MatMulGlu(OpDefinition):
             raise IRSchemaError("MatMulGlu gate/up weight types must match.")
         if value.shape[1] != matrix_width(gate, attrs.get("gate_weight_encoding")):
             raise IRSchemaError("MatMulGlu value/weight K dimensions must match.")
+        for weight, scale, encoding in ((gate, tensor_of(gate_scale_type), attrs.get("gate_weight_encoding")),
+                                        (up, tensor_of(up_scale_type), attrs.get("up_weight_encoding"))):
+            verify_native_scale_type(value, weight, scale, encoding=encoding,
+                                     block_n=attrs["weight_block_n"], block_k=attrs["weight_block_k"], opname="MatMulGlu")
         output = tensor_type(value.dtype, (value.shape[0], gate.shape[0]))
         placement = placement_of(*input_types)
         if placement is None:
@@ -102,25 +114,30 @@ class MatMulGlu(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        native = node.attrs.get("gate_weight_encoding") is not None
+        output_dtype = context.torch_dtype(tensor_of(node.type).dtype)
+        projection_dtype = context.torch.float32 if native else output_dtype
         gate = block_scaled_linear(
             cls.value.read(arguments), cls.gate_weight.read(arguments), cls.gate_scale.read(arguments),
+            weight_encoding=node.attrs.get("gate_weight_encoding"),
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
-            output_dtype=context.torch_dtype(node.type.dtype),
+            output_dtype=projection_dtype,
             activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"),
         )
         up = block_scaled_linear(
             cls.value.read(arguments), cls.up_weight.read(arguments), cls.up_scale.read(arguments),
+            weight_encoding=node.attrs.get("up_weight_encoding"),
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
-            output_dtype=context.torch_dtype(node.type.dtype),
+            output_dtype=projection_dtype,
             activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"),
         )
         if node.attrs["gate_clamp_max"] is not None:
             gate = context.torch.clamp(gate, max=node.attrs["gate_clamp_max"])
         if node.attrs["up_clamp"] is not None:
             up = context.torch.clamp(up, min=-node.attrs["up_clamp"], max=node.attrs["up_clamp"])
-        return context.torch.nn.functional.silu(gate) * up
+        return (context.torch.nn.functional.silu(gate) * up).to(output_dtype)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

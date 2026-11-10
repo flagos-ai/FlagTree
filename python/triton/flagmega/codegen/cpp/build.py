@@ -11,6 +11,8 @@ renderer.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 import os
 import shutil
@@ -20,6 +22,22 @@ from triton.flagmega.errors import CodegenError
 
 
 FTT_INCLUDE_DIR = Path(__file__).parent / "ftt" / "include"
+
+
+def validate_cpp_max_registers(
+    value: int | None, *, target: str, codegen_backend: str = "cpp",
+    emit_executable: bool = True,
+) -> None:
+    """Reject unsupported resource requests before compilation or output writes."""
+    if value is None:
+        return
+    if type(value) is not int or not 1 <= value <= 255:
+        raise CodegenError("cpp_max_registers must be an integer between 1 and 255.")
+    if (codegen_backend != "cpp" or not emit_executable
+            or str(target) not in {"nvidia-sm89", "nvidia-sm90", "nvidia-sm120"}):
+        raise CodegenError(
+            "cpp_max_registers requires an executable NVIDIA C++ artifact."
+        )
 
 
 @dataclass(frozen=True)
@@ -34,14 +52,21 @@ class CppToolchain:
     link_flags: tuple[str, ...]
     # Preprocessor definition that selects the FTT arch headers.
     arch_define: str
+    host_flags: tuple[str, ...] = ("-fPIC",)
 
-    def command(self, source: Path, output: Path) -> tuple[str, ...]:
+    def command(
+        self, source: Path, output: Path, *, max_registers_per_thread: int | None = None,
+    ) -> tuple[str, ...]:
+        validate_cpp_max_registers(max_registers_per_thread, target=self.name)
+        resource_flags = (() if max_registers_per_thread is None else
+                          (f"--maxrregcount={max_registers_per_thread}",))
         return (
             str(self.compiler),
             *self.target_flags,
             "-std=c++20",
             "-O3",
-            "-fPIC",
+            *resource_flags,
+            *self.host_flags,
             "-shared",
             f"-D{self.arch_define}",
             f"-I{FTT_INCLUDE_DIR}",
@@ -84,6 +109,28 @@ _TOOLCHAINS = {
 }
 
 
+def nvidia_toolchain(target: str) -> CppToolchain:
+    """NVCC's driver syntax differs from the COREX clang driver."""
+    root = Path(os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or "/usr/local/cuda")
+    compiler = root / "bin" / "nvcc"
+    if not compiler.is_file() and not (os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")):
+        found = shutil.which("nvcc")
+        if found:
+            compiler = Path(found)
+    return CppToolchain(
+        name=target,
+        compiler=compiler,
+        target_flags=("-x", "cu", f"-arch=sm_{target.removeprefix('nvidia-sm')}"),
+        link_flags=(),  # NVCC supplies cudart and its installation's library path.
+        arch_define="FTT_ARCH_NVIDIA",
+        host_flags=("-Xcompiler", "-fPIC"),
+    )
+
+
+for _target in ("nvidia-sm89", "nvidia-sm90", "nvidia-sm120"):
+    _TOOLCHAINS[_target] = lambda target=_target: nvidia_toolchain(target)
+
+
 def resolve_toolchain(target: str) -> CppToolchain:
     try:
         factory = _TOOLCHAINS[str(target)]
@@ -96,7 +143,8 @@ def resolve_toolchain(target: str) -> CppToolchain:
     if not toolchain.compiler.is_file():
         raise CodegenError(
             f"C++ backend device compiler {toolchain.compiler} is missing. Set "
-            "COREX_HOME if the vendor toolchain is installed elsewhere."
+            "CUDA_HOME/CUDA_PATH for NVIDIA or COREX_HOME for Iluvatar if "
+            "the toolchain is installed elsewhere."
         )
     return toolchain
 
@@ -106,22 +154,42 @@ def build_cpp_package(
     output: str | Path,
     *,
     target: str,
+    max_registers_per_thread: int | None = None,
+    build_provenance: dict[str, object] | None = None,
 ) -> Path:
     """Compile one generated source into a shared library and return its path."""
 
+    validate_cpp_max_registers(max_registers_per_thread, target=target)
     toolchain = resolve_toolchain(target)
     source_path = Path(source).resolve()
     output_path = Path(output).resolve()
     if not source_path.is_file():
         raise CodegenError(f"Generated C++ source {source_path} is missing.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    command = toolchain.command(source_path, output_path)
+    command = toolchain.command(
+        source_path, output_path, max_registers_per_thread=max_registers_per_thread)
+    if build_provenance is not None:
+        version = subprocess.run(
+            [str(toolchain.compiler), "--version"], capture_output=True, text=True, check=False)
+        if version.returncode != 0:
+            raise CodegenError(f"Cannot identify C++ compiler {toolchain.compiler}: {version.stderr.strip()}")
+        build_provenance.update(
+            argv=list(command), compiler={
+                "path": str(toolchain.compiler), "realpath": str(toolchain.compiler.resolve()),
+                "sha256": hashlib.sha256(toolchain.compiler.read_bytes()).hexdigest(),
+                "version": version.stdout.strip(),
+            }, started_UTC=datetime.now(timezone.utc).isoformat())
     result = subprocess.run(
         command,
         capture_output=True,
         text=True,
         check=False,
     )
+    if build_provenance is not None:
+        build_provenance.update(
+            actual_exit_code=result.returncode,
+            stdout=result.stdout, stderr=result.stderr,
+            completed_UTC=datetime.now(timezone.utc).isoformat())
     if result.returncode != 0:
         raise CodegenError(
             f"Building the generated C++ package failed ({toolchain.name}, exit "
@@ -141,7 +209,7 @@ def toolchain_available(target: str) -> bool:
     if factory is None:
         return False
     compiler = factory().compiler
-    return compiler.is_file() or shutil.which(compiler.name) is not None
+    return compiler.is_file()
 
 
 __all__ = [
@@ -150,4 +218,5 @@ __all__ = [
     "build_cpp_package",
     "resolve_toolchain",
     "toolchain_available",
+    "validate_cpp_max_registers",
 ]

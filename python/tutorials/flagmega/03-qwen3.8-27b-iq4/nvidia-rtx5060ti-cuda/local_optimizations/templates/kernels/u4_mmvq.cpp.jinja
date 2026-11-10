@@ -1,0 +1,98 @@
+{% include 'kernels/u4_common.cpp.jinja' %}
+{% import 'entrypoints/_common.cpp.jinja' as entry with context %}
+{% for call in render_calls if call.family in ('u4_iq4_matmul', 'u4_iq4_glu', 'u4_iq4_interleaved') %}
+{% if call.u4_kind == 'glu' %}
+{% include 'kernels/u4_glu_warp_private_row4.cpp.jinja' %}
+{% else %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+    const ftt::dim_t task_row = static_cast<ftt::dim_t>(blockIdx.x);
+    // CTA-uniform tail guard before native/Q8/output address formation.
+    if (task_row >= {{ call.u4_rows }}LL) return;
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const auto *q8 = reinterpret_cast<const local_u4::Q8Block *>({{ call.u4_pointers.q8 | cppexpr }});
+{% if call.u4_kind == 'glu' %}
+    const unsigned char *rows[2] = {
+        reinterpret_cast<const unsigned char *>({{ call.u4_pointers.gate_weight | cppexpr }}) + task_row * {{ call.u4_row_bytes }}LL,
+        reinterpret_cast<const unsigned char *>({{ call.u4_pointers.up_weight | cppexpr }}) + task_row * {{ call.u4_row_bytes }}LL};
+{% else %}
+    const unsigned char *rows[1] = {reinterpret_cast<const unsigned char *>({{ call.u4_pointers.weight | cppexpr }}) + task_row * {{ call.u4_row_bytes }}LL};
+{% endif %}
+    // Exactly the catalog-declared row_partials workspace; no package arena.
+    __shared__ __align__(16) float partials[3][{{ call.u4_fields }}][{{ call.u4_components }}][32];
+    float sums[{{ call.u4_fields }}][{{ call.u4_components }}] = {};
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 4); // load/compute traversal start
+{% endif %}
+#pragma unroll 1
+    for (ftt::dim_t group = 32LL * warp + lane; group < {{ call.u4_k // 32 }}LL; group += 128LL) {
+        local_u4::Q8Block activation[{{ call.u4_components }}];
+#pragma unroll
+        for (int c = 0; c < {{ call.u4_components }}; ++c)
+            activation[c] = q8[c * {{ call.u4_k // 32 }}LL + group];
+#pragma unroll
+        for (int f = 0; f < {{ call.u4_fields }}; ++f)
+            local_u4::group_dot<{{ call.u4_components }}>(rows[f], group, activation, sums[f]);
+    }
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 5); // traversal complete
+{% endif %}
+    if (warp != 0) {
+#pragma unroll
+        for (int f = 0; f < {{ call.u4_fields }}; ++f)
+#pragma unroll
+            for (int c = 0; c < {{ call.u4_components }}; ++c)
+                partials[warp - 1][f][c][lane] = sums[f][c];
+    }
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 6); // partial writes issued
+{% endif %}
+    __syncthreads(); // all128 threads, including every zero-work lane
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 7); // partials published
+{% endif %}
+    float result[{{ call.u4_fields }}] = {};
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 8);
+{% endif %}
+    if (warp == 0) {
+#pragma unroll
+        for (int f = 0; f < {{ call.u4_fields }}; ++f) {
+#pragma unroll
+            for (int c = 0; c < {{ call.u4_components }}; ++c) {
+                sums[f][c] = __fadd_rn(sums[f][c], partials[0][f][c][lane]);
+                sums[f][c] = __fadd_rn(sums[f][c], partials[1][f][c][lane]);
+                sums[f][c] = __fadd_rn(sums[f][c], partials[2][f][c][lane]);
+            }
+            float v = sums[f][0];
+{% if call.u4_components == 2 %}
+            v = __fadd_rn(v, sums[f][1]);
+{% endif %}
+#pragma unroll
+            for (int offset = 16; offset > 0; offset >>= 1)
+                v = __fadd_rn(v, __shfl_down_sync(0xffffffffu, v, offset));
+            result[f] = v;
+        }
+    }
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 9);
+{% endif %}
+    if (warp == 0 && lane == 0) {
+{% if call.u4_kind == 'interleaved' %}
+            auto *q = {{ call.u4_pointers.q | cppexpr }};
+            auto *gate = {{ call.u4_pointers.gate | cppexpr }};
+            const ftt::dim_t scalar = 256LL * (task_row / 512LL) + task_row % 256LL;
+            if ((task_row % 512LL) / 256LL == 0) q[scalar] = ftt::store_as(q, result[0]);
+            else gate[scalar] = ftt::store_as(gate, result[0]);
+{% else %}
+            auto *output = {{ call.u4_pointers.result | cppexpr }};
+            output[task_row] = ftt::store_as(output, {% if call.u4_kind == 'glu' %}ftt::silu(result[0]) * result[1]{% else %}result[0]{% endif %});
+{% endif %}
+    }
+{% if program_trace | default(false) %}
+    // Non-owner warps report their own interval only; no artificial end barrier.
+    flagmega_program_event(ftt_program_trace, 10);
+{% endif %}
+}
+{% endif %}
+{% endfor %}

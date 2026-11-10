@@ -24,7 +24,7 @@ from triton.flagmega.ir.ops.math._block_scaled import (
     normalize_output_lanes,
     verify_block_scaled_precision_inputs,
 )
-from triton.flagmega.ir.ops.math._quantized import matrix_width
+from triton.flagmega.ir.ops.math._quantized import matrix_width, verify_native_scale_type
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
@@ -91,6 +91,8 @@ class BlockScaledMatMul(OpDefinition):
         verify_block_scaled_precision_inputs(value, weight, tensor_of(scale_type), attrs, "BlockScaledMatMul")
         if value.shape[1] != matrix_width(weight, attrs.get("weight_encoding")):
             raise IRSchemaError("BlockScaledMatMul value/weight K dimensions must match.")
+        verify_native_scale_type(value, weight, tensor_of(scale_type), encoding=attrs.get("weight_encoding"),
+                                 block_n=attrs["weight_block_n"], block_k=attrs["weight_block_k"], opname="BlockScaledMatMul")
         lanes = tuple(attrs.get("output_lanes", ()))
         output_n = try_div_exactly(weight.shape[0], prod(lanes))
         if output_n is None:
@@ -134,6 +136,7 @@ class BlockScaledMatMul(OpDefinition):
             output_dtype=context.torch_dtype(dtype.elem_type if isinstance(dtype, VectorType) else dtype),
             activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"),
             weight_dequant_dtype=node.attrs.get("weight_dequant_dtype"),
+            weight_encoding=node.attrs.get("weight_encoding"),
         )
         lanes = tuple(node.attrs.get("output_lanes", ()))
         return output.reshape(output.shape[0], output.shape[1] // prod(lanes), *lanes)

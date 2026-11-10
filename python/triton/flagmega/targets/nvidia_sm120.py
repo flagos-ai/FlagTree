@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Conservative SM120 profile for RTX 5060 Ti native quantized kernels."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 
 from triton.flagmega.ir import Placement
@@ -58,4 +58,26 @@ class NvidiaSm120Target(PyNttTarget):
             policy_version=self.policy_version,
             options=options,
             **policies,
+        )
+
+    def with_placement(self, placement: Placement) -> "NvidiaSm120Target":
+        """Reconfigure distribution before proposal, retaining installed kernels.
+
+        The local TIR registry and other independent policy overrides belong
+        to this target. Reconstructing them from defaults would lose explicit
+        recipe providers. Distribution is rebuilt for the new placement.
+        """
+        if not isinstance(placement, Placement):
+            raise TypeError("placement must be a Placement")
+        return type(self)(
+            self.machine.capability,
+            options=replace(self.options, placements=(placement,)),
+            vectorization_policy=self.vectorization_policy,
+            selection_policy=self.selection_policy,
+            bufferization_policy=self.bufferization_policy,
+            packing_policy=self.packing_policy,
+            tir_selection_policy=self.tir_selection_policy,
+            tir_lowering_policy=self.tir_lowering_policy,
+            microkernel_selection_policy=self.microkernel_selection_policy,
+            triton_implementation_model=self.triton_implementation_model,
         )

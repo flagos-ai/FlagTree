@@ -18,11 +18,19 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
 {% if call.weight_encoding == "IQ4_XS" %}
         value = _flagmega_iq4_xs_embedding(
+{% if call.native_weight_row_offset is defined and call.native_weight_row_offset is not none %}
+            {{ call.weight }} + ({{ call.native_weight_row_offset }}), 0, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% else %}
             {{ call.weight }}, token_id, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% endif %}
         )
 {% else %}
         value = _flagmega_q4_k_embedding(
+{% if call.native_weight_row_offset is defined and call.native_weight_row_offset is not none %}
+            {{ call.weight }} + ({{ call.native_weight_row_offset }}), 0, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% else %}
             {{ call.weight }}, token_id, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% endif %}
         )
 {% endif %}
 {% else %}
@@ -39,7 +47,7 @@ def {{ call.symbol }}({{ call.signature }}):
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
             value,
-            mask=local_mask,
+            mask=local_mask & ({{ call.writer_active }}),
         )
 {% endfilter %}
 

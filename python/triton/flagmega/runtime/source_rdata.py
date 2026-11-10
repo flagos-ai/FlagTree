@@ -15,6 +15,57 @@ from triton.flagmega.runtime.source_rdata_windows import source_transfers
 
 
 PINNED_SOURCE_LIMIT = 1024 * 1024 * 1024
+SOURCE_COPY_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def _contiguous_source_copy(program, layouts, sources, destination_nbytes):
+    """Prove a complete byte copy, without inspecting source payloads.
+
+    The normal artifact validator remains responsible for source/program
+    integrity. A nonempty map, transform, concat or partial owner needs the
+    generic address kernel even if its total size matches a dense tensor.
+    """
+    shape = tuple(program["shape"])
+    axis = program["axis"]
+    if (len(layouts) != 1 or not shape
+            or any(type(n) is not int or n <= 0 for n in shape)
+            or type(axis) is not int or not 0 <= axis < len(shape)
+            or any(type(n) is not int for n in program["concat_shape"])
+            or tuple(program["concat_shape"]) != shape
+            or program["transforms"] not in ([], ())
+            or len(program["operands"]) != 1):
+        return None
+    destination, component_shape, maps = layouts[0]
+    if (any(type(n) is not int for n in component_shape)
+            or tuple(component_shape) != shape or maps not in ([], ())):
+        return None
+    count = prod(shape)
+    operand = program["operands"][0]
+    source, offset = operand["source"], operand["offset"]
+    if (any(type(n) is not int for n in
+            (destination, destination_nbytes, source, offset, operand["nbytes"], operand["extent"]))
+            or not 0 <= source < len(sources)
+            or not 0 <= destination <= destination_nbytes - count
+            or operand["nbytes"] != count or operand["extent"] != shape[axis]):
+        return None
+    source_nbytes = sources[source]["nbytes"]
+    ranges = program["ranges"]
+    if (type(source_nbytes) is not int or not 0 <= offset <= source_nbytes - count
+            or len(ranges) != 1 or len(ranges[0]) != 2
+            or any(type(n) is not int for n in ranges[0])
+            or tuple(ranges[0]) != (destination, count)):
+        return None
+    # maps=[] makes local flat index j the global flat index; no transforms
+    # and one full concat operand preserve j. All byte ranges were checked.
+    return source, offset, destination, count
+
+
+def _copy_source_bytes(pool, source, source_offset, destination, count):
+    """Keep the file view alive through each bounded, synchronous H2D copy."""
+    for begin in range(0, count, SOURCE_COPY_CHUNK_BYTES):
+        size = min(SOURCE_COPY_CHUNK_BYTES, count - begin)
+        pool.narrow(0, destination + begin, size).copy_(
+            source.narrow(0, source_offset + begin, size), non_blocking=False)
 
 
 def byte_addresses(program, shape, maps, start, count):
@@ -183,10 +234,21 @@ def load_source_rdata(root, index, module, *, chip, device, pool=None, buffer_id
         return pool
     if target.type != "cuda":
         raise ArtifactError(f"Source-composed rdata does not support device {target}.")
-    from triton.flagmega.runtime.source_rdata_kernel import gather_source_bytes
+    source_views = {}
     with torch.cuda.device(target):
         for program in programs:
             layouts = list(component_layouts(buffers[program["buffer"]], chip))
+            direct = _contiguous_source_copy(program, layouts, index["sources"], size)
+            if direct is not None:
+                source, offset, destination, count = direct
+                if source not in source_views:
+                    descriptor = index["sources"][source]
+                    source_views[source] = torch.from_file(
+                        str(root / descriptor["path"]), shared=False,
+                        size=descriptor["nbytes"], dtype=torch.uint8)
+                _copy_source_bytes(pool, source_views[source], offset, destination, count)
+                continue
+            from triton.flagmega.runtime.source_rdata_kernel import gather_source_bytes
             shape = tuple(layouts[0][1])
             maps = layouts[0][2]
             stages = tuple(tuple((block, shards, capacity) for _, block, shards, capacity in axis[1]) for axis in maps)

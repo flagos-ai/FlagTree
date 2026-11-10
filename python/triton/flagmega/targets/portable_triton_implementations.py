@@ -42,7 +42,10 @@ from triton.flagmega.ir.tir import (
     TIRTransferPipelineChannel,
     TIRTransferPipelineContract,
 )
-from triton.flagmega.targets.nvidia.gdn import gdn_large_key_implementations, gdn_state_pipeline_implementations
+from triton.flagmega.targets.nvidia.gdn import (
+    gdn_large_key_implementations, gdn_state_pipeline_implementations,
+    gdn_scalar_head_gate_implementations,
+)
 from triton.flagmega.targets.nvidia.mhc import mhc_contiguous_tf32_implementations
 from triton.flagmega.targets.nvidia.mla import mla_projection_implementations
 from triton.flagmega.targets.nvidia.kda_input_projection import kda_input_projection_implementations
@@ -107,6 +110,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
     implementations = (
         *gdn_state_pipeline_implementations(),
         *gdn_large_key_implementations(),
+        *gdn_scalar_head_gate_implementations(),
         *delta_rule_implementations(),
         *portable_tensor_transform_implementations(),
         *portable_gather_implementations(),
@@ -213,6 +217,13 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "simt",
             {"tile_n": 16},
             requires=("fp8", ),
+        ),
+        _implementation(
+            "tir.interleaved_projection.simt",
+            "interleaved_projection",
+            "simt",
+            {"tile_n": 16},
+            facts={"portable_triton": True},
         ),
         _implementation(
             "tir.block_fp8.mma",
@@ -2077,6 +2088,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
         **portable_local_reduction_preferences(),
         **portable_normalization_preferences(),
         "block_fp8": ("tir.block_fp8.mma", "tir.block_fp8.simt"),
+        "interleaved_projection": ("tir.interleaved_projection.simt",),
         "matmul_glu": ("tir.matmul_glu.mma", "tir.matmul_glu.simt"),
         "greedy_sample": ("tir.greedy_sample.distributed_argmax",),
         "rms_norm": ("tir.rms_norm.local",),

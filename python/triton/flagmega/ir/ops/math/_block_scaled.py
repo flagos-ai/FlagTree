@@ -111,10 +111,21 @@ def dynamic_block_quant_dequant(value, *, block_k: int, mode="dynamic_fp8"):
 
 
 def block_scaled_linear(value, weight, weight_scale_inv, *, block_n: int, block_k: int, output_dtype=None,
-                        activation_quantization="dynamic_fp8", weight_dequant_dtype=None):
+                        activation_quantization="dynamic_fp8", weight_dequant_dtype=None, weight_encoding=None):
     torch = _torch()
     if value.ndim < 2 or weight.ndim != 2 or weight_scale_inv.ndim != 2:
         raise EvaluationError("Block-scaled linear requires value rank >=2 and rank-2 weight/scale.")
+    if weight_encoding is not None:
+        from triton.flagmega.ir.ops.math._quantized import native_linear, BLOCK_BYTES
+        if weight_encoding not in BLOCK_BYTES:
+            raise EvaluationError(f"Unsupported native GGUF encoding {weight_encoding!r}.")
+        k = weight.shape[1] // BLOCK_BYTES[weight_encoding] * 256
+        expected_scale = ((weight.shape[0] + block_n - 1) // block_n, (k + block_k - 1) // block_k)
+        if weight_scale_inv.dtype != torch.float32 or tuple(weight_scale_inv.shape) != expected_scale:
+            raise EvaluationError(f"Native projection placeholder scales require FP32 shape {expected_scale}.")
+        # Native header scales own dequantization; placeholder FP8 scales and
+        # dynamic activation quantization do not participate in native math.
+        return native_linear(value, weight, weight_encoding, output_dtype=output_dtype)
     n, k = weight.shape
     if value.shape[-1] != k:
         raise EvaluationError(f"Block-scaled linear K mismatch: value {value.shape[-1]}, weight {k}.")

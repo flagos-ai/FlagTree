@@ -1,0 +1,36 @@
+// Exact IQ4 staging composes the existing FlagMega grouped IQ4 decoder,
+// whose four-byte LUT mapping uses the pinned llama.cpp IQ4 level ordering.
+// Only weights are materialized. Products and partial reductions are forbidden.
+#include <ftt/quantized_ops.h>
+
+namespace local_gdn_exact_chunk {
+FTT_DEVICE_INLINE void decode_quad(const unsigned char *row, ftt::dim_t feature,
+                                   float *destination) {
+    const ftt::dim_t block_offset = (feature / 256) * 136;
+    const int group = static_cast<int>((feature % 256) / 32);
+    const int lane = static_cast<int>(feature % 32);
+    const auto *block = row + block_offset;
+    const unsigned int high = ftt::quantized::load_u16(block + 2);
+    const unsigned int low = (block[4 + group / 2] >> (4 * (group % 2))) & 15;
+    const int scale = static_cast<int>(low | (((high >> (2 * group)) & 3) << 4)) - 32;
+    const float factor = ftt::quantized::load_f16(block) * static_cast<float>(scale);
+    const ftt::quantized::detail::iq4_row_reader reader(row);
+    const unsigned int packed = reader.word(block_offset + 8 + group * 16 + lane % 16);
+#if defined(FTT_ARCH_NVIDIA) && defined(FTT_DEVICE_PASS)
+    const unsigned int levels = lane < 16
+        ? ftt::quantized::detail::iq4_lut4<0>(packed)
+        : ftt::quantized::detail::iq4_lut4<4>(packed);
+    destination[0] = factor * static_cast<float>(ftt::arch::signed_byte_extract<0>(levels));
+    destination[1] = factor * static_cast<float>(ftt::arch::signed_byte_extract<1>(levels));
+    destination[2] = factor * static_cast<float>(ftt::arch::signed_byte_extract<2>(levels));
+    destination[3] = factor * static_cast<float>(ftt::arch::signed_byte_extract<3>(levels));
+#else
+    // CPU self-check uses the same integer code and scale map; CUDA reuses the
+    // exact existing PRMT helper, rather than introducing a second LUT path.
+    for (int i = 0; i < 4; ++i) {
+        const unsigned int code = (packed >> (8 * i + (lane < 16 ? 0 : 4))) & 15;
+        destination[i] = factor * static_cast<float>(ftt::quantized::detail::iq4_value(code));
+    }
+#endif
+}
+}

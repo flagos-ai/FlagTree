@@ -1,0 +1,75 @@
+// Query the compiled function, rather than treating a source thread count as
+// a residency proof. These values also populate the Python resource report.
+extern "C" int flagmega_resource_info(int *values) {
+    if (values == nullptr) return -1;
+    int device = 0;
+    cudaError_t status = cudaGetDevice(&device);
+    if (status != cudaSuccess) return (int)status;
+    cudaDeviceProp properties{};
+    status = cudaGetDeviceProperties(&properties, device);
+    if (status != cudaSuccess) return (int)status;
+    cudaFuncAttributes attributes{};
+    status = cudaFuncGetAttributes(&attributes, {{ symbol }});
+    if (status != cudaSuccess) return (int)status;
+    if (properties.major != {{ launch_resource_limits.compute_capability[0] }} ||
+        properties.minor != {{ launch_resource_limits.compute_capability[1] }} ||
+        properties.warpSize != {{ warp_size }} ||
+        {{ block_threads }} > properties.maxThreadsPerBlock ||
+        {{ block_threads }} > attributes.maxThreadsPerBlock ||
+        attributes.sharedSizeBytes > {{ launch_resource_limits.max_shared_memory_bytes }}ULL ||
+        attributes.numRegs * {{ block_threads }}LL > {{ launch_resource_limits.max_registers_per_sm }}LL) {
+        return (int)cudaErrorLaunchOutOfResources;
+    }
+    int resident_blocks = 0;
+    status = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &resident_blocks, {{ symbol }}, {{ block_threads }}, 0);
+    if (status != cudaSuccess) return (int)status;
+    if (resident_blocks <= 0) return (int)cudaErrorLaunchOutOfResources;
+{% if distributed_entry %}
+    if (!properties.cooperativeLaunch) return (int)cudaErrorNotSupported;
+    if ({{ grid[0] }}LL * {{ grid[1] }}LL * {{ grid[2] }}LL >
+        resident_blocks * (long long)properties.multiProcessorCount) {
+        return (int)cudaErrorCooperativeLaunchTooLarge;
+    }
+{% endif %}
+    values[0] = properties.multiProcessorCount;
+    values[1] = attributes.numRegs;
+    values[2] = (int)attributes.sharedSizeBytes;
+    values[3] = (int)attributes.localSizeBytes;
+    values[4] = resident_blocks;
+    values[5] = attributes.maxThreadsPerBlock;
+    return 0;
+}
+
+extern "C" int flagmega_launch(void **arguments, void *stream, void *scratch) {
+    if (arguments == nullptr) return -1;
+    const cudaStream_t launch_stream = (cudaStream_t)stream;
+    int resources[6];
+    const int admission = flagmega_resource_info(resources);
+    if (admission != 0) return admission;
+{% if distributed_entry %}
+    if (scratch == nullptr || reinterpret_cast<uintptr_t>(scratch) % alignof(unsigned int)) return -1;
+    // The reset is on the launch stream and is captured alongside the kernel,
+    // so each replay starts a fresh barrier epoch using this runtime's storage.
+    cudaError_t status = cudaMemsetAsync(scratch, 0, {{ grid_barrier_counter_slots }} * sizeof(unsigned int), launch_stream);
+    if (status != cudaSuccess) return (int)status;
+    // Kernel launch arguments are addresses of pointer values, unlike the
+    // public launch ABI's array of device pointer values.
+    void *launch_arguments[{{ (signature_arguments | length) + 1 }}];
+    for (int index = 0; index < {{ signature_arguments | length }}; ++index)
+        launch_arguments[index] = &arguments[index];
+    launch_arguments[{{ signature_arguments | length }}] = &scratch;
+    return (int)cudaLaunchCooperativeKernel(
+        (const void *){{ symbol }}, dim3({{ grid[0] }}, {{ grid[1] }}, {{ grid[2] }}),
+        dim3({{ block_threads }}), launch_arguments, 0, launch_stream);
+{% else %}
+    (void)scratch;
+    {{ symbol }}<<<dim3({{ grid[0] }}, {{ grid[1] }}, {{ grid[2] }}),
+        dim3({{ block_threads }}), 0, launch_stream>>>(
+{% for argument in signature_arguments %}
+        reinterpret_cast<{{ argument_types[argument].type }} *>(arguments[{{ loop.index0 }}]){{ "," if not loop.last }}
+{% endfor %}
+    );
+    return (int)cudaGetLastError();
+{% endif %}
+}

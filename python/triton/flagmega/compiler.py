@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import time
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,11 @@ class Compiler:
             if configure is None:
                 raise StageError(f"Target {self.target.name!r} does not support bufferize optimization levels.")
             self.target = configure(self.options.bufferize_opt_level)
+        if self.options.codegen_backend is not None:
+            # Bind after target configuration, which may reconstruct the target.
+            # Registered targets are shared; this belongs to one invocation.
+            self.target = copy(self.target)
+            self.target.codegen_backend = self.options.codegen_backend
         self.diagnostics = DiagnosticSession(
             self.options.work_dir,
             dump_flags=self.options.effective_dump_flags,

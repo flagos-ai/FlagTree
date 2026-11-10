@@ -57,6 +57,12 @@ vectorization to pass the gate.
 
 ## Assess partitioning and warp-specialization scope
 
+This static assessment is paired with the mandatory
+[kernel microprofiling flow](kernel-microprofiling.md): ncu, actual per-WG
+producer/consumer trace and hardware-module activity swimlanes. Use comparable
+runtime intervals to establish overlap; lowered specialization alone is not
+evidence of concurrent hardware execution.
+
 Inspect partition metadata such as `kernel_program_partition`, the owning
 pass/target decision, lowered IR containing the specialization regions,
 generated entrypoints and the runtime launch graph. Distinguish kernel/program

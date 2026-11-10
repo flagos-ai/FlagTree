@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: MIT
+// Adapted from llama.cpp ggml-cuda/ssm-conv.cu, revision
+// 5ce06fc71f5e938301f7dc51697a59ae308bd6b7, ssm_conv_f32<...,128,4>.
+// Copyright (c) 2023-2026 The ggml authors. See licenses/llama-ssm-conv.txt.
+// Port: short-token contiguous128 channels, one thread/channel, four w registers.
+// ABI adaptation: fixed96 x, BF16 input/output and packed8 mutable history.
+// Arithmetic adaptation: preserve A98 current-first BF16 product/sum rounding.
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gdn_convolution" and call.variant == "canonical_channel128_fixed96" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    const ftt::dim_t local_channels = block_index * 128LL + ftt_thread;
+    if (!(local_channels < 10240LL)) return;
+    auto *const ftt_gdn_qkv = {{ call.qkv | cppexpr }};
+    auto *const ftt_gdn_state = {{ call.state | cppexpr }};
+    auto *const ftt_gdn_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_gdn_result = {{ call.result | cppexpr }};
+    const ftt::dim_t channel = {{ call.global_channel | cppexpr }};
+    const ftt::dim_t weight_base = {{ call.weight_offset | cppexpr }};
+    float w[4];
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        w[j] = ftt::to_float(ftt_gdn_weight[weight_base + j]);
+    }
+    for (ftt::dim_t token_index = 0; token_index < 1LL; ++token_index) {
+        const float current = ftt::to_float(ftt_gdn_qkv[{{ call.source_offset | cppexpr }}]);
+        float accumulator = current * w[3];
+        accumulator = ftt::to_float(ftt::to_bfloat16(accumulator));
+        for (ftt::dim_t history_index = 0; history_index < 3LL; ++history_index) {
+            const ftt::dim_t state_offset = (channel / 8) * 24LL + history_index * 8 + channel % 8;
+            const float old = ftt::to_float(ftt_gdn_state[state_offset]);
+            accumulator += ftt::to_float(ftt::to_bfloat16(old * w[history_index]));
+            if (history_index + 1 < 3LL)
+                ftt_gdn_state[state_offset] = ftt_gdn_state[state_offset + 8];
+        }
+        ftt_gdn_state[(channel / 8) * 24LL + 16LL + channel % 8] = ftt::store_as(ftt_gdn_state, current);
+        accumulator = ftt::to_float(ftt::to_bfloat16(accumulator));
+        ftt_gdn_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(ftt_gdn_result, ftt::silu(accumulator));
+    }
+}
+{% endif %}
+{% endfor %}
+{% endif %}

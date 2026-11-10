@@ -1,0 +1,34 @@
+{% include 'kernels/u4_common.cpp.jinja' %}
+{% import 'entrypoints/_common.cpp.jinja' as entry with context %}
+{% for call in render_calls if call.family == 'u4_q8_encode' %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const ftt::dim_t group = 4LL * blockIdx.x + warp;
+    // Warp-uniform guard precedes every address. Selected K has no tail warp.
+    if (group >= {{ call.u4_k // 32 }}LL) return;
+    const auto *source = {{ call.u4_pointers.value | cppexpr }};
+    auto *q8 = reinterpret_cast<local_u4::Q8Block *>({{ call.u4_pointers.q8 | cppexpr }});
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 2);
+{% endif %}
+    const float xi = ftt::to_float(source[group * 32LL + lane]);
+    const float amax = local_u4::warp_max(fabsf(xi));
+    const float d = amax / 127.0f;
+    const int q = amax == 0.0f ? 0 : static_cast<int>(roundf(xi / d));
+    reinterpret_cast<signed char *>(q8[group].qs)[lane] = static_cast<signed char>(q);
+    if (lane == 0) q8[group].d = d;
+{% if call.u4_components == 2 %}
+    const float residual = __fsub_rn(xi, __fmul_rn(static_cast<float>(q), d));
+    const float rmax = local_u4::warp_max(fabsf(residual));
+    const float rd = rmax / 127.0f;
+    const int rq = rmax == 0.0f ? 0 : static_cast<int>(roundf(residual / rd));
+    reinterpret_cast<signed char *>(q8[{{ call.u4_k // 32 }}LL + group].qs)[lane] = static_cast<signed char>(rq);
+    if (lane == 0) q8[{{ call.u4_k // 32 }}LL + group].d = rd;
+{% endif %}
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 3);
+{% endif %}
+    // Global publication is producer-kernel completion on the caller stream.
+}
+{% endfor %}

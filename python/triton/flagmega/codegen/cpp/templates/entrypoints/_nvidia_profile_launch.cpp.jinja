@@ -1,0 +1,111 @@
+// Query the compiled function, rather than treating a source thread count as
+// a residency proof. These values also populate the Python resource report.
+extern "C" int flagmega_resource_info(int *values) {
+    if (values == nullptr) return -1;
+    int device = 0;
+    cudaError_t status = cudaGetDevice(&device);
+    if (status != cudaSuccess) return (int)status;
+    cudaDeviceProp properties{};
+    status = cudaGetDeviceProperties(&properties, device);
+    if (status != cudaSuccess) return (int)status;
+    cudaFuncAttributes attributes{};
+    status = cudaFuncGetAttributes(&attributes, {{ symbol }});
+    if (status != cudaSuccess) return (int)status;
+    if (properties.major != {{ launch_resource_limits.compute_capability[0] }} ||
+        properties.minor != {{ launch_resource_limits.compute_capability[1] }} ||
+        properties.warpSize != {{ warp_size }} ||
+        {{ block_threads }} > properties.maxThreadsPerBlock ||
+        {{ block_threads }} > attributes.maxThreadsPerBlock ||
+        attributes.sharedSizeBytes > {{ launch_resource_limits.max_shared_memory_bytes }}ULL ||
+        attributes.numRegs * {{ block_threads }}LL > {{ launch_resource_limits.max_registers_per_sm }}LL) {
+        return (int)cudaErrorLaunchOutOfResources;
+    }
+    int resident_blocks = 0;
+    status = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &resident_blocks, {{ symbol }}, {{ block_threads }}, 0);
+    if (status != cudaSuccess) return (int)status;
+    if (resident_blocks <= 0) return (int)cudaErrorLaunchOutOfResources;
+{% if distributed_entry %}
+    if (!properties.cooperativeLaunch) return (int)cudaErrorNotSupported;
+    if ({{ grid[0] }}LL * {{ grid[1] }}LL * {{ grid[2] }}LL >
+        resident_blocks * (long long)properties.multiProcessorCount) {
+        return (int)cudaErrorCooperativeLaunchTooLarge;
+    }
+{% endif %}
+    values[0] = properties.multiProcessorCount;
+    values[1] = attributes.numRegs;
+    values[2] = (int)attributes.sharedSizeBytes;
+    values[3] = (int)attributes.localSizeBytes;
+    values[4] = resident_blocks;
+    values[5] = attributes.maxThreadsPerBlock;
+    return 0;
+}
+
+extern "C" int flagmega_profile_device_info(unsigned char *uuid,int *values) {
+    if(!uuid || !values)return -1;
+    int device=0;cudaError_t status=cudaGetDevice(&device);
+    if(status!=cudaSuccess)return (int)status;
+    cudaDeviceProp properties{};status=cudaGetDeviceProperties(&properties,device);
+    if(status!=cudaSuccess)return (int)status;
+    int driver=0;status=cudaDriverGetVersion(&driver);if(status!=cudaSuccess)return (int)status;
+    for(int i=0;i<16;++i)uuid[i]=(unsigned char)properties.uuid.bytes[i];
+    values[0]=device;values[1]=properties.major;values[2]=properties.minor;values[3]=properties.multiProcessorCount;values[4]=driver;
+    return 0;
+}
+// Ordinary launch is unavailable for this separately instrumented library.
+extern "C" int flagmega_launch(void **, void *, void *) { return (int)cudaErrorNotSupported; }
+static int _flagmega_profile_enqueue(void **arguments, void *stream, void *scratch,
+    void *trace, unsigned long long capacity, unsigned long long epoch,
+    cudaEvent_t total_start, cudaEvent_t kernel_start, cudaEvent_t kernel_end) {
+    if (!arguments || !scratch || !trace || reinterpret_cast<uintptr_t>(trace)%8 ||
+        capacity < {{ operator_profile.trace_nbytes }}ULL || epoch==0) return -1;
+    const bool events=(total_start!=nullptr || kernel_start!=nullptr || kernel_end!=nullptr);
+    if (events && (!total_start || !kernel_start || !kernel_end)) return -1;
+    const cudaStream_t launch_stream=(cudaStream_t)stream;
+    cudaStreamCaptureStatus capture;
+    cudaError_t status=cudaStreamIsCapturing(launch_stream,&capture);
+    if (status!=cudaSuccess) return (int)status;
+    if (capture!=cudaStreamCaptureStatusNone) return (int)cudaErrorNotSupported;
+    int resources[6];const int admission=flagmega_resource_info(resources);
+    if (admission) return admission;
+    if (reinterpret_cast<uintptr_t>(scratch)%alignof(unsigned int)) return -1;
+    if (events) { status=cudaEventRecord(total_start,launch_stream);if(status!=cudaSuccess)return (int)status; }
+    status=cudaMemsetAsync(scratch,0,{{ grid_barrier_counter_slots }}*sizeof(unsigned int),launch_stream);
+    if (status!=cudaSuccess) return (int)status;
+    status=cudaMemsetAsync(trace,0,{{ operator_profile.trace_nbytes }}ULL,launch_stream);
+    if (status!=cudaSuccess) return (int)status;
+    if (events) { status=cudaEventRecord(kernel_start,launch_stream);if(status!=cudaSuccess)return (int)status; }
+    void *launch_arguments[{{ (signature_arguments | length) + 3 }}];
+    for (int i=0;i<{{ signature_arguments | length }};++i) launch_arguments[i]=&arguments[i];
+    launch_arguments[{{ signature_arguments | length }}]=&scratch;
+    launch_arguments[{{ (signature_arguments | length) + 1 }}]=&trace;
+    launch_arguments[{{ (signature_arguments | length) + 2 }}]=&epoch;
+    status=cudaLaunchCooperativeKernel((const void *){{ symbol }},
+        dim3({{ grid[0] }},{{ grid[1] }},{{ grid[2] }}),dim3({{ block_threads }}),launch_arguments,0,launch_stream);
+    if(status!=cudaSuccess)return (int)status;
+    if(events) { status=cudaEventRecord(kernel_end,launch_stream);if(status!=cudaSuccess)return (int)status; }
+    return 0;
+}
+extern "C" int flagmega_launch_profile(void **arguments, void *stream, void *scratch,
+    void *trace, unsigned long long capacity, unsigned long long epoch) {
+    return _flagmega_profile_enqueue(arguments,stream,scratch,trace,capacity,epoch,nullptr,nullptr,nullptr);
+}
+extern "C" int flagmega_launch_profile_events(void **arguments, void *stream, void *scratch,
+    void *trace, unsigned long long capacity, unsigned long long epoch,
+    void *total_start_event, void *kernel_start_event, void *kernel_end_event) {
+    if(!total_start_event || !kernel_start_event || !kernel_end_event)return -1;
+    return _flagmega_profile_enqueue(arguments,stream,scratch,trace,capacity,epoch,
+        (cudaEvent_t)total_start_event,(cudaEvent_t)kernel_start_event,(cudaEvent_t)kernel_end_event);
+}
+extern "C" int flagmega_profile_event_create(void **event) {
+    if(!event)return -1;
+    return (int)cudaEventCreate((cudaEvent_t*)event); // Timing enabled; owned current device.
+}
+extern "C" int flagmega_profile_event_destroy(void *event) { return (int)cudaEventDestroy((cudaEvent_t)event); }
+extern "C" int flagmega_profile_event_elapsed(void *start, void *end, float *milliseconds) {
+    if(!start || !end || !milliseconds)return -1;
+    cudaError_t status=cudaEventQuery((cudaEvent_t)end);
+    if(status!=cudaSuccess)return (int)status;
+    return (int)cudaEventElapsedTime(milliseconds,(cudaEvent_t)start,(cudaEvent_t)end);
+}
+{% include "entrypoints/_nvidia_profile_clock.cpp.jinja" %}

@@ -20,8 +20,8 @@ def {{ call.symbol }}({{ call.signature }}):
 {% if call.cache_table %}
         rotary_cosine = tl.load({{ call.cache_table }} + ({{ call.cache_offsets[0] }}), mask=rotary_mask, other=0.)
         rotary_sine = tl.load({{ call.cache_table }} + ({{ call.cache_offsets[1] }}), mask=rotary_mask, other=0.)
-        tl.store({{ call.cosine }} + ({{ call.cosine_offset }}), rotary_cosine, mask=rotary_mask)
-        tl.store({{ call.sine }} + ({{ call.sine_offset }}), rotary_sine, mask=rotary_mask)
+        tl.store({{ call.cosine }} + ({{ call.cosine_offset }}), rotary_cosine, mask=rotary_mask & ({{ call.cosine_writer_active }}))
+        tl.store({{ call.sine }} + ({{ call.sine_offset }}), rotary_sine, mask=rotary_mask & ({{ call.sine_writer_active }}))
 {% else %}
         rotary_frequency_dimension = (
             rotary_dimension % ({{ call.head_dim }} // 2)
@@ -48,12 +48,12 @@ def {{ call.symbol }}({{ call.signature }}):
         tl.store(
             {{ call.cosine }} + ({{ call.cosine_offset }}),
             {% if call.bounded_accurate %}rotary_cosine{% else %}{{ "libdevice.cos" if call.math_mode == "accurate" else "libdevice.fast_cosf" }}(rotary_angle){% endif %} * {{ call.attention_scaling }},
-            mask=rotary_mask,
+            mask=rotary_mask & ({{ call.cosine_writer_active }}),
         )
         tl.store(
             {{ call.sine }} + ({{ call.sine_offset }}),
             {% if call.bounded_accurate %}rotary_sine{% else %}{{ "libdevice.sin" if call.math_mode == "accurate" else "libdevice.fast_sinf" }}(rotary_angle){% endif %} * {{ call.attention_scaling }},
-            mask=rotary_mask,
+            mask=rotary_mask & ({{ call.sine_writer_active }}),
         )
 {% endif %}
 

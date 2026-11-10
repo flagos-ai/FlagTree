@@ -17,8 +17,10 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
         const ftt::dim_t rotary_dimension = {{ call.dimension_coordinate | cppexpr }};
 {% if call.cache_table %}
         auto *const ftt_cache = {{ call.cache_table | cppexpr }};
-        ftt_cosine[{{ call.cosine_offset | cppexpr }}] = ftt_cache[{{ call.cache_offsets[0] | cppexpr }}];
-        ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt_cache[{{ call.cache_offsets[1] | cppexpr }}];
+        if ({{ call.cosine_writer_active | cppexpr }})
+            ftt_cosine[{{ call.cosine_offset | cppexpr }}] = ftt_cache[{{ call.cache_offsets[0] | cppexpr }}];
+        if ({{ call.sine_writer_active | cppexpr }})
+            ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt_cache[{{ call.cache_offsets[1] | cppexpr }}];
 {% else %}
         const ftt::dim_t rotary_frequency_dimension =
             rotary_dimension % ({{ call.head_dim }}LL / 2LL);
@@ -33,10 +35,12 @@ static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {# The Triton form uses `libdevice.fast_cosf`/`fast_sinf`. These are the
    COREX equivalents; the reduced-accuracy variants are what the reference
    schedule was measured against, so do not substitute the exact ones. #}
-        ftt_cosine[{{ call.cosine_offset | cppexpr }}] = ftt::store_as(
-            ftt_cosine, __cosf(rotary_angle) * {{ call.attention_scaling }}f);
-        ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt::store_as(
-            ftt_sine, __sinf(rotary_angle) * {{ call.attention_scaling }}f);
+        if ({{ call.cosine_writer_active | cppexpr }})
+            ftt_cosine[{{ call.cosine_offset | cppexpr }}] = ftt::store_as(
+                ftt_cosine, __cosf(rotary_angle) * {{ call.attention_scaling }}f);
+        if ({{ call.sine_writer_active | cppexpr }})
+            ftt_sine[{{ call.sine_offset | cppexpr }}] = ftt::store_as(
+                ftt_sine, __sinf(rotary_angle) * {{ call.attention_scaling }}f);
 {% endif %}
     }
 }

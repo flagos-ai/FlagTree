@@ -121,6 +121,7 @@ class AutoDistributedPass:
         materialized = DistributedMaterializer(
             result,
             policy=target.distribution_policy.identity,
+            reshard_metadata=getattr(target.distribution_policy, "reshard_value_metadata", None),
             proposal_points=proposal_points,
             proposal_records=proposal_records,
         ).run()

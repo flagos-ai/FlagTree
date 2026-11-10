@@ -116,6 +116,7 @@ def _parser() -> argparse.ArgumentParser:
     compile_command.add_argument("--output", required=True, help="Artifact output directory")
     compile_command.add_argument("--stop-after")
     compile_command.add_argument("--emit-executable", action="store_true")
+    _codegen_option(compile_command)
     compile_command.add_argument("--checkpoint-integrity-report", help="Completed local checkpoint SHA-256 audit to reuse for unchanged source files")
     compile_rdata_cache = compile_command.add_mutually_exclusive_group()
     compile_rdata_cache.add_argument("--rdata-cache-dir")
@@ -129,6 +130,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--stop-after")
         command.add_argument("--checkpoint", help="Checkpoint root used to materialize executable rdata")
         command.add_argument("--emit-executable", action="store_true")
+        _codegen_option(command)
         command.add_argument("--checkpoint-integrity-report", help="Completed local checkpoint SHA-256 audit to reuse for unchanged source files")
         rdata_cache = command.add_mutually_exclusive_group()
         rdata_cache.add_argument("--rdata-cache-dir")
@@ -152,6 +154,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def _json_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", dest="json_output")
+
+
+def _codegen_option(parser: argparse.ArgumentParser) -> None:
+    from triton.flagmega.artifacts.module import CODEGEN_BACKENDS
+    parser.add_argument("--codegen-backend", choices=CODEGEN_BACKENDS, default="triton",
+                        help="Executable source backend (default: triton)")
+    parser.add_argument("--cpp-operator-profile", choices=("cta-globaltimer-v1", "cta-globaltimer-v2"),
+                        help="Separate eager diagnostic operator timestamps; ordinary timing ineligible")
+    parser.add_argument("--cpp-max-registers", type=int,
+                        help="Optional NVIDIA executable C++ register limit per thread (1..255)")
 
 
 def _compiler_options(parser: argparse.ArgumentParser) -> None:
@@ -193,6 +205,7 @@ def _options(args: argparse.Namespace) -> CompileOptions:
         dump_flags=DumpFlags(args.dump_flags),
         bufferize_opt_level=args.bufferize_opt_level,
         placement=args.placement,
+        codegen_backend=getattr(args, "codegen_backend", None),
     )
 
 
@@ -337,6 +350,14 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             dump_flags=dump_flags_text(compiler.options.effective_dump_flags),
         )
     if args.command in {"compile", "resume", "replay"}:
+        from triton.flagmega.codegen.cpp.build import validate_cpp_max_registers
+        validate_cpp_max_registers(
+            args.cpp_max_registers, target=args.target, codegen_backend=args.codegen_backend,
+            emit_executable=args.emit_executable)
+        if args.cpp_operator_profile is not None:
+            from triton.flagmega.codegen.cpp.operator_profile import validate_option
+            validate_option(args.cpp_operator_profile, target=args.target,
+                            codegen_backend=args.codegen_backend, emit_executable=args.emit_executable)
         source = ((import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile
                                 or "nncase", mode=args.mode or "decode-1",
                                 num_tokens=1 if args.num_tokens is None else args.num_tokens) if args.full_model else
@@ -369,6 +390,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             target=args.target,
             checkpoint=checkpoint,
             emit_executable=bool(getattr(args, "emit_executable", False)),
+            codegen_backend=args.codegen_backend,
+            cpp_max_registers=args.cpp_max_registers,
+            cpp_operator_profile=args.cpp_operator_profile,
             dumper=compiler.diagnostics.dumper,
             rdata_cache_dir=rdata_cache_dir,
         )

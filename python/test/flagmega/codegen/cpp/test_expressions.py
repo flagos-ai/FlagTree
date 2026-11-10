@@ -78,3 +78,49 @@ def test_scalar_dtype_spellings():
     assert cpp_scalar_type("int32") == "int"
     with pytest.raises(CodegenError, match="float8"):
         cpp_scalar_type("float8_e4m3fn")
+
+
+def test_index_int64_widening_requires_a_typed_scalar_source():
+    from triton.flagmega.codegen.cpp.templates import CppTemplateRegistry
+    template = CppTemplateRegistry().environment.from_string("{{ 'layer_id.to(tl.int64) * 61440 // 2' | cppexpr }}")
+    assert template.render(argument_types={'layer_id':{'type':'int','pointer':False}}) == '((static_cast<long long>(layer_id) * 61440LL) / 2LL)'
+    for info in ({'type':'float','pointer':False}, {'type':'int','pointer':True}):
+        with pytest.raises(CodegenError):
+            template.render(argument_types={'layer_id':info})
+
+
+def test_index_int64_widening_is_shared_by_call_argument_filter():
+    from triton.flagmega.codegen.cpp.templates import CppTemplateRegistry
+    template = CppTemplateRegistry().environment.from_string("{{ 'layer_id.to(tl.int64), pool.to(tl.pointer_type(tl.bfloat16))' | cppargs }}")
+    assert template.render(argument_types={'layer_id':{'type':'int','pointer':False}}) == 'static_cast<long long>(layer_id), reinterpret_cast<ftt::bfloat16_t *>(pool)'
+
+
+def test_untyped_or_numeric_float_casts_remain_rejected_in_index_expressions():
+    with pytest.raises(CodegenError):
+        translate('layer_id.to(tl.int64)')
+    with pytest.raises(CodegenError):
+        translate('layer_id.to(tl.float32)')
+
+
+def test_typed_integer_span_is_exact_and_compiles_for_cuda(tmp_path):
+    import ctypes
+    import shutil
+    import subprocess
+    from triton.flagmega.codegen.cpp.templates import CppTemplateRegistry
+    if shutil.which('c++') is None:
+        pytest.skip('A host C++ compiler is required')
+    template = CppTemplateRegistry().environment.from_string("{{ 'layer_id.to(tl.int64) * 61440 // 2' | cppexpr }}")
+    expression = template.render(argument_types={'layer_id':{'type':'int','pointer':False}})
+    source = tmp_path/'span.cpp'
+    source.write_text(f'extern "C" long long span(int layer_id) {{return {expression};}}\n')
+    library = tmp_path/'span.so'
+    subprocess.run(['c++','-std=c++17','-shared','-fPIC',str(source),'-o',str(library)],check=True,capture_output=True,text=True)
+    span = ctypes.CDLL(str(library)).span
+    span.restype = ctypes.c_longlong
+    for layer_id in (0,47,65536,2**31-1):
+        assert span(layer_id) == layer_id*61440//2
+    nvcc = shutil.which('nvcc')
+    if nvcc:
+        cuda = tmp_path/'span.cu'
+        cuda.write_text(f'extern "C" __global__ void span_cuda(int layer_id,long long *output) {{*output = {expression};}}\n')
+        subprocess.run([nvcc,'-std=c++20','-arch=sm_120','-c',str(cuda),'-o',str(tmp_path/'span.o')],check=True,capture_output=True,text=True)

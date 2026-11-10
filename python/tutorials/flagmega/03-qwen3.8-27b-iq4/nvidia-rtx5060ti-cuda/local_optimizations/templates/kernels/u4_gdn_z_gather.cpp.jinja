@@ -1,0 +1,21 @@
+{% import 'entrypoints/_common.cpp.jinja' as entry with context %}
+{% for call in render_calls if call.family == 'u4_gdn_z_gather' %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+    const ftt::dim_t cta = static_cast<ftt::dim_t>(blockIdx.x);
+    const auto *source = {{ call.u4_pointers.value | cppexpr }};
+    auto *destination = {{ call.u4_pointers.result | cppexpr }};
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 11);
+{% endif %}
+{% if call.implementation == "tir.local_u4.gdn_z_gather.fullhead48.v1" %}
+    if (threadIdx.x < 128) destination[threadIdx.x] = source[128LL * cta + threadIdx.x];
+{% else %}
+    if (threadIdx.x < 64) destination[threadIdx.x] = source[64LL * cta + threadIdx.x];
+{% endif %}
+    __syncthreads(); // all-thread publication to the selected GDN continuation
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 12);
+{% endif %}
+}
+{% endfor %}

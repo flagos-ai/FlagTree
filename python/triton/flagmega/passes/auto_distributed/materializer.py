@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 
 from triton.flagmega.errors import IRVerificationError
@@ -42,12 +42,14 @@ class DistributedMaterializer:
         result: SearchResult,
         *,
         policy: str,
+        reshard_metadata: Callable[[IRModule, Node, IRType, str], Mapping[str, object]] | None = None,
         proposal_points: Mapping[str, SelectionPoint] | None = None,
         proposal_records: Mapping[str, SelectionRecord] | None = None,
     ) -> None:
         self.result = result
         self.module = result.graph.module
         self.policy = policy
+        self.reshard_metadata = reshard_metadata
         self.proposal_points = dict(proposal_points or {})
         self.proposal_records = dict(proposal_records or {})
         self.nodes: list[Node] = []
@@ -351,6 +353,16 @@ class DistributedMaterializer:
                 if realization == DistributedReshardRealization.SHARDED_VIEW
                 else "distributed.boxing"
             )
+            value_metadata = {}
+            if self.reshard_metadata is not None:
+                # Only the target's explicit policy can derive value-level
+                # contracts for a new boundary. Never copy execution metadata.
+                context_module = replace(self.module, nodes=tuple(self.nodes))
+                value_metadata = dict(self.reshard_metadata(context_module, current, step, op))
+                reserved = {"source_type", "target_type", "consumer", "input_index", "realization"}
+                if reserved.intersection(value_metadata):
+                    raise IRVerificationError("Reshard value metadata overrides materializer identity.",
+                                              stage=self.module.stage, node_id=consumer)
             node = Node(
                 id=f"{source.id}.reshard{self._ordinal}",
                 op=op,
@@ -358,6 +370,7 @@ class DistributedMaterializer:
                 type=step,
                 attrs={"new_type": step},
                 metadata={
+                    **value_metadata,
                     "source_type": _type_summary(current.type),
                     "target_type": _type_summary(step),
                     "consumer": consumer,

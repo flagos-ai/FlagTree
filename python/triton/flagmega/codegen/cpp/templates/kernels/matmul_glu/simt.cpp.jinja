@@ -1,0 +1,26 @@
+// flagmega-kernel: matmul_glu/simt platform=generic
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "matmul_glu" and call.variant == "simt" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_source = {{ call.value | cppexpr }};
+    auto *const ftt_gate = {{ call.gate_weight | cppexpr }};
+    auto *const ftt_up = {{ call.up_weight | cppexpr }};
+    auto *const ftt_result = {{ call.result | cppexpr }};
+{{ entry.strided_loop("local_n_offsets", call.local_n_capacity) }} {
+        if (!(local_n_offsets < ({{ call.active_n | cppexpr }}))) continue;
+        const auto *gate_row = reinterpret_cast<const unsigned char *>(ftt_gate) + ({{ call.weight_row_offset | cppexpr }});
+        const auto *up_row = reinterpret_cast<const unsigned char *>(ftt_up) + ({{ call.up_weight_row_offset | cppexpr }});
+        const float gate = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(ftt_source, gate_row, {{ call.k }}LL);
+        const float up = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(ftt_source, up_row, {{ call.k }}LL);
+        // Native fused GLU has no BF16 boundary between projection and SiLU.
+        ftt_result[{{ call.destination_offset | cppexpr }}] = ftt::store_as(ftt_result, ftt::silu(gate) * up);
+    }
+}
+{% endif %}
+{% endfor %}
+{% endif %}

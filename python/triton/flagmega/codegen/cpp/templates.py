@@ -15,10 +15,11 @@ from pathlib import Path
 import re
 from typing import Mapping
 
-from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateError
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateError, pass_context
 
 from triton.flagmega.codegen.cpp.expressions import cpp_scalar_type, translate
 from triton.flagmega.errors import CodegenError
+from triton.flagmega.codegen.cpp.fusion import elementwise_program, ordered_casts
 
 
 _SNAKE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -64,10 +65,12 @@ class CppTemplateRegistry:
         # algebra: the strings are Python expressions, and the filter is the
         # only sanctioned path that turns them into C++. A template that
         # interpolates one directly would emit Python `//` into C++.
-        self.environment.filters["cppexpr"] = translate
+        self.environment.filters["cppexpr"] = _expression
         self.environment.filters["cpptype"] = cpp_scalar_type
         self.environment.filters["cppargs"] = _argument_list
         self.environment.filters["cppfloat"] = _float_literal
+        self.environment.filters["cppfusion"] = elementwise_program
+        self.environment.filters["cppcasts"] = ordered_casts
 
     def candidates(self, spec: CppKernelTemplateSpec) -> tuple[str, ...]:
         spec = CppKernelTemplateSpec(
@@ -112,7 +115,18 @@ class CppTemplateRegistry:
             ) from error
 
 
-def _argument_list(value: object) -> str:
+def _scalar_types(context) -> dict[str, str]:
+    return {name: str(info["type"]) for name, info in context.get("argument_types", {}).items()
+            if not info.get("pointer", True)}
+
+
+@pass_context
+def _expression(context, value: object) -> str:
+    return translate(value, scalar_types=_scalar_types(context))
+
+
+@pass_context
+def _argument_list(context, value: object) -> str:
     """Translate a comma-separated renderer argument list into C++.
 
     A call event's ``arguments`` is one string holding several expressions, so
@@ -135,7 +149,7 @@ def _argument_list(value: object) -> str:
             start = index + 1
     arguments.append(text[start:])
     return ", ".join(
-        translate(argument) for argument in arguments if argument.strip()
+        translate(argument, scalar_types=_scalar_types(context)) for argument in arguments if argument.strip()
     )
 
 

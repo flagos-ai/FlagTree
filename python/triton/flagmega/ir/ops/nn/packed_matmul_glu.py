@@ -82,6 +82,8 @@ class PackedMatMulGlu(OpDefinition):
             if (value is not None and
                     (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0)):
                 raise IRSchemaError(f"PackedMatMulGlu {name} must be a positive number or None.")
+        if result.get("gate_weight_encoding") is not None or result.get("up_weight_encoding") is not None:
+            raise IRSchemaError("PackedMatMulGlu vector-FP8 storage does not support native GGUF byte rows.")
         result.update(normalize_glu_activation_quantization(attrs, "PackedMatMulGlu"))
         return result
 

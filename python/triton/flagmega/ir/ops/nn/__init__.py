@@ -12,6 +12,7 @@ from triton.flagmega.ir.ops.nn._dsa_indexer_state import DsaIndexerState, DsaInd
 from triton.flagmega.ir.ops.nn.dsa_indexer import DsaIndexer
 from triton.flagmega.ir.ops.nn.dsa_paged_attention import DsaPagedAttention
 from triton.flagmega.ir.ops.nn.embedding import Embedding
+from triton.flagmega.ir.ops.nn.interleaved_projection import InterleavedProjection
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gated_norm_apply import GatedNormApply
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
@@ -68,7 +69,7 @@ __all__ = [
     "MhcPre", "MhcPost",
     "MlaProjection", "KdaInputProjection", "PartitionedLinear", "PartitionedBlockScaledLinear",
     "RequantizeBlockScaledFP8",
-    "Embedding",
+    "Embedding", "InterleavedProjection",
     "DenseMatMulGlu",
     "DsaIndexer",
     "DsaIndexerState",

@@ -732,6 +732,7 @@ def function_module(
     function_name: str,
     *,
     include_unreferenced: bool = False,
+    preserve_local_unreferenced: bool = False,
 ) -> IRModule:
     """Return a self-contained module containing one function's node closure.
 
@@ -762,6 +763,13 @@ def function_module(
         return result
 
     reachable = closure(function)
+    if preserve_local_unreferenced:
+        # Explicit diagnostic mode: preserve dead projections beside the live
+        # callee values they reference. Executable per-function closure users
+        # retain the default behavior.
+        from triton.flagmega.ir.print_symbols import function_node_scopes
+        scoped = function_node_scopes(module)[function_name]
+        reachable.update(node.id for node in scoped)
     if module.constant_recipes:
         # Constant recipes are module-level artifact data.  Keep every exported
         # leaf in each per-function dump so the standalone function checkpoint
@@ -772,7 +780,7 @@ def function_module(
             if node.op == "builtin.const_asset"
             or (node.op == "tir.buffer" and "constant_recipe" in node.metadata)
         )
-    if include_unreferenced:
+    if include_unreferenced and not preserve_local_unreferenced:
         referenced = set().union(*(closure(value) for value in module.functions))
         reachable.update(node_map.keys() - referenced)
     nodes = tuple(node for node in module.nodes if node.id in reachable)

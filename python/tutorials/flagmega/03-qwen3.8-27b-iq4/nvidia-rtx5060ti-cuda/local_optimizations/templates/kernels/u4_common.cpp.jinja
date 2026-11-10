@@ -1,0 +1,59 @@
+// U4-L ports the pinned llama.cpp IQ4 lookup/DP4A and t9 F32-Q8 body.
+// See upstream.md and LICENSE.llama.cpp. No changed GDN implementation.
+#ifndef FLAGMEGA_U4_COMMON_V1_{{ entry_id | default("single") }}
+#define FLAGMEGA_U4_COMMON_V1_{{ entry_id | default("single") }}
+#include <ftt/quantized_ops.h>
+#include <cuda_fp16.h>
+#include <cmath>
+namespace local_u4 {
+struct alignas(4) Q8Block { float d; int qs[8]; };
+static_assert(sizeof(Q8Block) == 36 && alignof(Q8Block) == 4);
+FTT_DEVICE_INLINE int2 lookup(const int q4) {
+    const unsigned int table32[4] = {0xbfad9881u, 0xf6eaddcfu, 0x26190d01u, 0x71594535u};
+    unsigned int tmp[2];
+    const unsigned int low_high_selection_indices = 0x32103210u | ((static_cast<unsigned int>(q4) & 0x88888888u) >> 1);
+#pragma unroll
+    for (unsigned int i = 0; i < 2; ++i) {
+        const unsigned int shift = 16 * i;
+        const unsigned int low = __byte_perm(table32[0], table32[1], static_cast<unsigned int>(q4) >> shift);
+        const unsigned int high = __byte_perm(table32[2], table32[3], static_cast<unsigned int>(q4) >> shift);
+        tmp[i] = __byte_perm(low, high, low_high_selection_indices >> shift);
+    }
+    return make_int2(__byte_perm(tmp[0], tmp[1], 0x6420), __byte_perm(tmp[0], tmp[1], 0x7531));
+}
+FTT_DEVICE_INLINE float warp_max(float value) {
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value = fmaxf(value, __shfl_xor_sync(0xffffffffu, value, offset));
+    return value;
+}
+// Q8 is loaded once per group/component and reused by both GLU weight fields.
+template <int C>
+FTT_DEVICE_INLINE void group_dot(const unsigned char *row, const ftt::dim_t group,
+                                const Q8Block (&activation)[C], float (&sum)[C]) {
+    const ftt::quantized::detail::iq4_row_reader reader(row);
+    const ftt::dim_t block = (group / 8) * 136LL;
+    const int inner = group % 8;
+    const unsigned int header = reader.word(block);
+    const unsigned int scales = reader.word(block + 4);
+    const int ls = ((scales >> (4 * inner)) & 15) | (((header >> (16 + 2 * inner)) & 3) << 4);
+    const float d = __half2float(__ushort_as_half(static_cast<unsigned short>(header)));
+    int dot[C] = {};
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int2 v = lookup(static_cast<int>(reader.word(block + 8 + 16 * inner + 4 * j)));
+#pragma unroll
+        for (int c = 0; c < C; ++c) {
+            dot[c] = __dp4a(v.x, activation[c].qs[j], dot[c]);
+            dot[c] = __dp4a(v.y, activation[c].qs[j + 4], dot[c]);
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < C; ++c) {
+        dot[c] *= ls - 32;
+        // Pin scale rounding and contracted dot update to Graph's oracle.
+        sum[c] = __fmaf_rn(__fmul_rn(d, activation[c].d), static_cast<float>(dot[c]), sum[c]);
+    }
+}
+} // namespace local_u4
+#endif

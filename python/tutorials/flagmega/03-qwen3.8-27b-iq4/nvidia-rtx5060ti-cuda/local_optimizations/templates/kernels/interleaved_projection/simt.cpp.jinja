@@ -1,0 +1,71 @@
+// flagmega-kernel: interleaved_projection/simt platform=generic
+// PRIVATE DRAFT: pending operator evidence, normal build, and numerical review.
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "interleaved_projection" and call.variant == "simt" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_source = {{ call.value | cppexpr }};
+    auto *const ftt_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_result_0 = {{ call.result_0 | cppexpr }};
+    auto *const ftt_result_1 = {{ call.result_1 | cppexpr }};
+    for (ftt::dim_t interleaved_m = 0; interleaved_m < {{ call.local_m }}LL; ++interleaved_m) {
+{% if call.local_iq4_async | default(false) %}
+        auto *const q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(_local_iq4_q8 + {{ call.local_iq4_async_q8_offset }});
+        auto *const stages = _local_iq4_q8 + {{ call.local_iq4_async_weight_offset }};
+        auto row0 = [&](int interleaved_offsets) {
+            return reinterpret_cast<const unsigned char *>(ftt_weight) + ({{ call.weight_row_offset | cppexpr }});
+        };
+        auto row1 = row0;
+        auto valid = [&](int interleaved_offsets) { return ({{ call.n_mask | cppexpr }}); };
+        auto store = [&](int interleaved_offsets, float value) {
+            if (({{ call.field | cppexpr }}) == 0)
+                ftt_result_0[{{ call.destination_0_offset | cppexpr }}] = ftt::store_as(ftt_result_0, value);
+            else
+                ftt_result_1[{{ call.destination_1_offset | cppexpr }}] = ftt::store_as(ftt_result_1, value);
+        };
+        {{ 'local_iq4_async_r8' if (call.local_iq4_async_r8 | default(false)) else 'local_iq4_async' }}::run<{{ call.k }}, true, 1, {{ call.local_iq4_async_warps }}>(
+            ftt_source + ({{ call.source_row_offset | cppexpr }}), q8, stages,
+            {{ call.local_n_capacity }}, row0, row1, valid, store);
+{% elif call.local_iq4_mmvq | default(false) %}
+        auto *const q8 = reinterpret_cast<local_iq4_mmvq::Q8Block *>(_local_iq4_q8);
+        local_iq4_mmvq::quantize<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(
+            ftt_source + ({{ call.source_row_offset | cppexpr }}), q8);
+        const ftt::dim_t ftt_warp = ftt_thread / 32;
+        const ftt::dim_t ftt_warps = ftt_threads / 32;
+        for (ftt::dim_t interleaved_offsets = ftt_warp; interleaved_offsets < {{ call.local_n_capacity }}LL;
+             interleaved_offsets += ftt_warps) {
+            // Existing renderer coordinates are row/CTA dependent and warp-uniform.
+            if (!({{ call.n_mask | cppexpr }})) continue;
+            const auto *row = reinterpret_cast<const unsigned char *>(ftt_weight)
+                + ({{ call.weight_row_offset | cppexpr }});
+            const float accumulator = local_iq4_mmvq::dot<{{ call.k }}, {{ "true" if call.local_iq4_dual else "false" }}>(row, q8);
+            if (ftt_thread % 32 == 0) {
+                if (({{ call.field | cppexpr }}) == 0)
+                    ftt_result_0[{{ call.destination_0_offset | cppexpr }}] = ftt::store_as(ftt_result_0, accumulator);
+                else
+                    ftt_result_1[{{ call.destination_1_offset | cppexpr }}] = ftt::store_as(ftt_result_1, accumulator);
+            }
+        }
+        // Drain all readers before the following invocation reuses the Q8 arena.
+        ftt::arch::cta_sync();
+{% else %}
+{{ entry.strided_loop("interleaved_offsets", call.local_n_capacity) }} {
+        if (!({{ call.n_mask | cppexpr }})) continue;
+        const float accumulator = ftt::quantized::dot<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(
+            ftt_source + ({{ call.source_row_offset | cppexpr }}),
+            reinterpret_cast<const unsigned char *>(ftt_weight) + ({{ call.weight_row_offset | cppexpr }}), {{ call.k }}LL);
+        if (({{ call.field | cppexpr }}) == 0)
+            ftt_result_0[{{ call.destination_0_offset | cppexpr }}] = ftt::store_as(ftt_result_0, accumulator);
+        else
+            ftt_result_1[{{ call.destination_1_offset | cppexpr }}] = ftt::store_as(ftt_result_1, accumulator);
+    }
+{% endif %}
+    }
+}
+{% endif %}
+{% endfor %}
+{% endif %}

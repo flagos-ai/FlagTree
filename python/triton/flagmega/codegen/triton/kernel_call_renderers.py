@@ -31,6 +31,7 @@ from triton.flagmega.codegen.triton.mla_renderer import mla_projection_call
 from triton.flagmega.codegen.triton.kda_input_projection_renderer import kda_input_projection_call
 from triton.flagmega.codegen.triton.partitioned_linear_renderer import partitioned_linear_call
 from triton.flagmega.codegen.triton.partitioned_block_scaled_linear_renderer import partitioned_block_scaled_linear_call
+from triton.flagmega.codegen.triton.interleaved_projection_renderer import interleaved_projection_call
 from triton.flagmega.codegen.triton.physical_access import (
     emit_active_extent,
     emit_buffer_pointer,
@@ -73,6 +74,48 @@ from triton.flagmega.ir.ops.math._block_scaled import (
     normalize_glu_activation_quantization,
 )
 
+
+
+def register_family_encoder(family, encoder, *, schema, validate_raw):
+    """Register a local typed operand encoder before package description.
+
+    ``validate_raw(raw)`` checks the local semantic/physical ABI and raises on
+    failure. ``encoder(raw)`` returns JSON fields including ``schema`` equal
+    to the registered version. Scheduling and call identity stay compiler-owned.
+    Re-registering the identical registration is harmless; replacement is not.
+    """
+    if (not isinstance(family, str) or not family.isidentifier() or
+            not isinstance(schema, str) or '/' not in schema or
+            not callable(encoder) or not callable(validate_raw)):
+        raise CodegenError('Invalid versioned family encoder registration.')
+    identity = (encoder, schema, validate_raw)
+    previous = _LOCAL_FAMILY_ENCODERS.get(family)
+    if previous == identity:
+        return
+    if family in _FAMILY_ENCODERS:
+        raise CodegenError(f'Family encoder {family!r} already registered.')
+
+    def checked(raw):
+        import json
+        validate_raw(raw)
+        value = encoder(raw)
+        if not isinstance(value, Mapping) or value.get('schema') != schema:
+            raise CodegenError(f'Family encoder {family!r} returned an invalid schema.')
+        protected = {'call', 'symbol', 'family', 'variant', 'arguments', 'signature',
+                     'execution_kind', 'internal_grid_barriers', 'participation_active'}
+        if protected.intersection(value):
+            raise CodegenError('Local family encoder cannot replace compiler-owned call fields.')
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise CodegenError('Local family encoder fields must be finite JSON values.') from error
+        return dict(value)
+
+    _LOCAL_FAMILY_ENCODERS[family] = identity
+    _FAMILY_ENCODERS[family] = checked
+
+
+_LOCAL_FAMILY_ENCODERS = {}
 
 def prepare_kernel_calls(
     raw_calls,
@@ -611,16 +654,31 @@ def _embedding_call(raw) -> dict[str, object]:
     if len(local_shape) != 2:
         raise CodegenError("TIR embedding requires token and feature axes.")
     lanes = int(result_abi.get("scalar_lane_count", 1))
-    if (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
+    encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
+    if encoding is not None:
+        declared = tuple(raw.get("semantic_attrs", {}).get("output_lanes", ()))
+        if (encoding not in {"IQ4_XS", "Q4_K"} or weight["abi"].get("scalar_dtype") != "uint8"
+                or tuple(weight["abi"].get("scalar_lane_shape", ()))
+                or result_abi.get("scalar_dtype") != "bfloat16"
+                or tuple(result_abi.get("scalar_lane_shape", ())) != declared
+                or lanes != prod(declared)):
+            raise CodegenError("Native embedding requires scalar UINT8 rows and declared BF16 decoded output lanes.")
+    if encoding is None and (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
         raise CodegenError("Embedding weight and output must have identical vector element lanes.")
     local_feature = "local_offsets" if lanes == 1 else f"(local_offsets // {lanes})"
     lane_coordinate = None if lanes == 1 else f"(local_offsets % {lanes})"
     coordinates = ("embedding_row", local_feature)
     global_token = emit_logical_coordinate(result_abi, 0, coordinates)
     global_feature = emit_logical_coordinate(result_abi, 1, coordinates)
+    if encoding is not None and lanes > 1:
+        global_feature = f"(({global_feature}) * {lanes} + ({lane_coordinate}))"
     weight_abi = weight["abi"]
     weight_space = str(weight_abi["coordinate_space"])
-    if weight_space == "canonical_global":
+    if encoding is not None:
+        if weight_space != "canonical_global":
+            raise CodegenError("Native embedding decoding requires canonical complete byte rows.")
+        weight_offset = "0"
+    elif weight_space == "canonical_global":
         # The table spans the whole vocabulary, so the row address is global.
         weight_offset = emit_global_scalar_offset(
             weight_abi, ("token_id", global_feature), lane_coordinate=lane_coordinate,
@@ -641,6 +699,8 @@ def _embedding_call(raw) -> dict[str, object]:
             f"table, got coordinate space {weight_space!r}."
         )
     padding_idx = raw.get("semantic_attrs", {}).get("padding_idx")
+    if padding_idx is not None and int(padding_idx) < 0:
+        padding_idx = int(padding_idx) + _static_shape(weight_abi, "logical_shape")[0]
     encoding = raw.get("semantic_attrs", {}).get("weight_encoding")
     if encoding not in (None, "IQ4_XS", "Q4_K"):
         raise CodegenError(f"Unsupported native GGUF embedding encoding {encoding!r}.")
@@ -663,10 +723,15 @@ def _embedding_call(raw) -> dict[str, object]:
         "local_capacity": local_shape[-1] * lanes,
         "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
         "weight_offset": weight_offset,
+        "native_weight_row_offset": (
+            emit_global_scalar_offset(weight_abi, ("token_id", "0"))
+            if encoding is not None else None
+        ),
         "global_feature": global_feature,
         "result_offset": emit_local_scalar_offset(
             result_abi, coordinates, lane_coordinate=lane_coordinate,
         ),
+        "writer_active": _tensor_output_writer_active(result_abi),
         "tile":
         int(raw["parameters"]["elements_per_program"]),
         "vocab_size":
@@ -807,10 +872,11 @@ def _block_fp8_call(raw) -> dict[str, object]:
     scale_abi = scale["abi"]
     result_abi = result["abi"]
     lanes = tuple(raw["semantic_attrs"].get("output_lanes", ()))
+    output_dtype = raw["semantic_attrs"].get("output_data_type") or value_abi["scalar_dtype"]
     if (tuple(result_abi.get("scalar_lane_shape", ())) != lanes
             or int(result_abi.get("scalar_lane_count", 1)) != prod(lanes)
-            or result_abi["scalar_dtype"] != value_abi["scalar_dtype"]):
-        raise CodegenError("TIR block-FP8 output ABI disagrees with output_lanes or activation dtype.")
+            or result_abi["scalar_dtype"] != output_dtype):
+        raise CodegenError("TIR block-FP8 output ABI disagrees with output_lanes or declared output dtype.")
     value_shape = _static_shape(value_abi, "logical_shape")
     result_local = _static_shape(result_abi, "local_capacity_shape")
     if len(value_shape) != 2 or len(result_local) != 2:
@@ -2174,6 +2240,10 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
         "a_weight_encoding": a_encoding,
         "tiled_value_heads": attrs.get("value_head_order", "grouped") == "tiled",
     }
+    if raw.get("implementation") == "tir.gdn_recurrent.persistent_scalar_head_gates_v1":
+        from triton.flagmega.codegen.triton.gdn_head_gates import prepare_fields
+        result_context.update(prepare_fields(raw, result_context))
+        result_context["head_gate_first_value"] = emit_logical_coordinate(result_abi, 1, ("0", "0"))
     if raw.get("variant") == "state_smem_pipeline":
         from triton.flagmega.ir.tir import tir_from_data
         partition = raw["transfer_pipeline"]["channels"][0].get("inplace_partition")
@@ -5782,19 +5852,30 @@ def _invert_split_axis(coordinate, parent_extent, policy, hierarchy):
                 "Operand split axes must belong to the placement."
             )
         count = prod(hierarchy[axis] for axis in axes)
+        if count <= 0:
+            raise CodegenError("Operand split owner count must be positive.")
         distribution = stage.get("distribution")
         if not isinstance(distribution, Mapping):
             raise CodegenError("Serialized split stage has no distribution.")
         kind = str(distribution.get("kind"))
         if kind == "contiguous":
             granularity = distribution.get("granularity")
-            capacity = (
-                _serialized_fixed_dimension(granularity)
-                if granularity is not None
-                else f"(-(-({extent}) // {count}))"
-            )
+            if granularity is not None:
+                capacity = _serialized_fixed_dimension(granularity)
+            else:
+                try:
+                    static_extent = int(extent)
+                except (ValueError, TypeError):
+                    # Tensor extents and the staged active-extent clamps are
+                    # nonnegative. Express ceil division in that domain so
+                    # both backends retain identical integer semantics.
+                    capacity = f"((({extent}) + {count - 1}) // {count})"
+                else:
+                    if static_extent < 0:
+                        raise CodegenError("Operand split extent must be nonnegative.")
+                    capacity = str((static_extent + count - 1) // count)
             owner = f"(({local}) // ({capacity}))"
-            local = f"(({local}) - ({owner}) * ({capacity}))"
+            local = f"(({local}) % ({capacity}))"
             extent = (
                 f"tl.maximum(0, tl.minimum(({capacity}), "
                 f"({extent}) - ({owner}) * ({capacity})))"
@@ -6279,6 +6360,8 @@ def _rotary_embedding_call(raw) -> dict[str, object]:
         "cache_offsets": cache_offsets,
         "cosine": _pointer(cosine),
         "sine": _pointer(sine),
+        "cosine_writer_active": _tensor_output_writer_active(cosine_abi),
+        "sine_writer_active": _tensor_output_writer_active(sine["abi"]),
         "local_capacity": domain["capacity"],
         "active": domain["active"],
         "local_coordinates": domain["local_coordinates"],
@@ -7697,6 +7780,20 @@ def _linear_owner_expression(
     return expression
 
 
+def _tensor_output_writer_active(abi: Mapping[str, object]) -> str:
+    """Publish a pure tensor output once per physical allocation/shard.
+
+    Reference updates instead use their semantic head/page/slot domains; a
+    canonical reference address alone does not describe the subset updated.
+    """
+    if (abi.get("memory_sharing_scope") != "block" and abi.get("distributed_type") is None
+            and abi.get("coordinate_space") == "canonical_global"):
+        # An unsplit plain tensor still has one shared physical allocation
+        # when called from a cooperative entry. Local entries bind zero.
+        return "(block_index == 0)"
+    return _canonical_writer_active(abi)
+
+
 def _canonical_writer_active(abi: Mapping[str, object], *, iteration_abi=None) -> str:
     # Canonical is an addressing convention. A block-private allocation must
     # be populated by every CTA, including replicas of a logical owner.
@@ -8209,6 +8306,7 @@ _FAMILY_ENCODERS = {
     "embedding": _embedding_call,
     "rms_norm": _rms_norm_call,
     "block_fp8": _block_fp8_call,
+    "interleaved_projection": interleaved_projection_call,
     "distributed_boxing": _boxing_call,
     "gdn_convolution": _gdn_convolution_call,
     "gdn_recurrent": _gdn_recurrent_call,

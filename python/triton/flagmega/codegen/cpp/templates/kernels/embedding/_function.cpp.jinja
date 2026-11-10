@@ -1,33 +1,44 @@
 {% import "entrypoints/_common.cpp.jinja" as entry with context %}
+#include <ftt/quantized_ops.h>
 {% for call in render_calls %}
 {% if call.family == "embedding" and call.variant == "decode" %}
 static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
 {{ entry.mesh_coordinates() }}
 {{ entry.thread_identity() }}
     auto *const ftt_indices = {{ call.indices | cppexpr }};
-    const ftt::dim_t token_id = static_cast<ftt::dim_t>(ftt_indices[0]);
-{# The Triton form asserts the id is in range through `tl.device_assert`. An
-   out-of-range id would read outside the embedding table, so keep the check:
-   clamping instead would silently return another token's embedding. #}
-    if (token_id < 0 || token_id >= {{ call.vocab_size }}LL) {
-        __builtin_trap();
-    }
     auto *const ftt_weight = {{ call.weight | cppexpr }};
     auto *const ftt_result = {{ call.result | cppexpr }};
-{{ entry.strided_loop("local_offsets", call.local_capacity) }} {
-        if (!(local_offsets < ({{ call.active | cppexpr }}))) {
-            continue;
+    for (ftt::dim_t embedding_row = 0; embedding_row < {{ call.rows }}LL; ++embedding_row) {
+        if (!({{ call.row_active | cppexpr }})) continue;
+        const ftt::dim_t token_id = static_cast<ftt::dim_t>(ftt_indices[{{ call.indices_offset | cppexpr }}]);
+        if (token_id < 0 || token_id >= {{ call.vocab_size }}LL) {
+#if defined(FTT_ARCH_NVIDIA) && defined(FTT_DEVICE_PASS)
+            __trap();
+#else
+            __builtin_trap();
+#endif
         }
-        const float value =
-            (({{ call.padding_idx }}LL >= 0)
-             && (token_id == {{ call.padding_idx }}LL))
-                ? 0.0f
-                : ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}]);
-        ftt_result[{{ call.result_offset | cppexpr }}] =
-            ftt::store_as(ftt_result, value);
+{{ entry.strided_loop("local_offsets", call.local_capacity) }} {
+            if (!(local_offsets < ({{ call.active | cppexpr }}))) continue;
+            float value = 0.0f;
+            if (token_id != {{ call.padding_idx }}LL) {
+{% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
+                const auto *row = reinterpret_cast<const unsigned char *>(ftt_weight)
+{% if call.native_weight_row_offset is defined and call.native_weight_row_offset is not none %}
+                    + ({{ call.native_weight_row_offset | cppexpr }});
+{% else %}
+                    + token_id * {{ (call.weight_hidden // 256) * call.weight_block_bytes }}LL;
+{% endif %}
+                value = ftt::quantized::decode<ftt::quantized::encoding::{{ "iq4_xs" if call.weight_encoding == "IQ4_XS" else "q4_k" }}>(
+                    row, {{ call.global_feature | cppexpr }});
+{% else %}
+                value = ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}]);
+{% endif %}
+            }
+            if ({{ call.writer_active | cppexpr }})
+                ftt_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(ftt_result, value);
+        }
     }
 }
-
-
 {% endif %}
 {% endfor %}

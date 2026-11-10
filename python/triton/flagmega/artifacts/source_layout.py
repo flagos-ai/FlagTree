@@ -150,7 +150,12 @@ def build_program(buffer, nodes, output, range_getter):
             "axis": axis, "operands": operands, "transforms": transforms}
 
 
-def prepare_programs(module, checkpoint, buffers, destination):
+def prepare_programs(module, checkpoint, buffers, destination, *, readonly_source=None, require_reflink=False):
+    if readonly_source is not None:
+        from triton.flagmega.artifacts.materialized_source import prove_output_reuse
+        proof = prove_output_reuse(module, readonly_source)
+        programs = [{**p, "operands": [{**o, "path": str(readonly_source.path)} for o in p["operands"]]} for p in proof["programs"]]
+        return _snapshot_programs(programs, readonly_source, destination, require_reflink=True)
     if not callable(getattr(checkpoint, "source_file_digest", None)):
         return [], []
     getter = getattr(checkpoint, "tensor_byte_range", None)
@@ -165,6 +170,10 @@ def prepare_programs(module, checkpoint, buffers, destination):
         program = build_program(buffer, recipe.node_map, buffer.weight_key, getter)
         if program is not None:
             programs.append(program)
+    return _snapshot_programs(programs, checkpoint, destination, require_reflink=require_reflink)
+
+
+def _snapshot_programs(programs, checkpoint, destination, *, require_reflink=False):
     paths = sorted({operand["path"] for p in programs for operand in p["operands"]})
     if not paths:
         return [], []
@@ -176,7 +185,10 @@ def prepare_programs(module, checkpoint, buffers, destination):
         before = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         digest = checkpoint.source_file_digest(source)
         relative = f"sources/{index:04d}.bin"
-        _clone_file(source, staging / f"{index:04d}.bin")
+        if require_reflink:
+            _clone_file(source, staging / f"{index:04d}.bin", require_reflink=True)
+        else:
+            _clone_file(source, staging / f"{index:04d}.bin")
         stat = source.stat()
         after = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         if before != after:
@@ -328,7 +340,10 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_
             cursor = end
         if cursor != size:
             raise ArtifactError("Rdata source layout does not cover the complete chip segment.")
-    if module is not None:
+    if "materialized_sources" in index:
+        from triton.flagmega.artifacts.materialized_source import validate_materialized_source_table
+        validate_materialized_source_table(index, module)
+    elif module is not None:
         from triton.flagmega.importer.checkpoint import TensorByteRange
         from triton.flagmega.ir import verify_buffer_plan
         buffers = verify_buffer_plan(module).buffer_map

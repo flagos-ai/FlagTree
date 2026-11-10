@@ -4,7 +4,18 @@ Use this reference when tuning runtime performance, recovering a regression,
 changing a numerical or storage contract, or preparing final measurements.
 It describes decision criteria, not a fixed sequence of tuning parameters.
 
+Kernel development also follows [Kernel microprofiling](kernel-microprofiling.md):
+mandatory ncu, actual per-WG pipeline and hardware-module activity traces,
+swimlane SVGs and before/after overlap analysis throughout the development loop.
+
 ## Keep the iteration loop short
+
+Follow the [candidate prerequisite table](agent-flow.md#candidate-checks-and-acceptance).
+Prioritize a runnable ordinary artifact, resource/ABI checks, complete NUM and
+the first decisive timing over finishing diagnostic infrastructure. Independent
+reviews, fixture preparation and profile analysis can run in parallel. Their
+actual execution prerequisites still apply, and final acceptance waits for all
+required evidence. An active ncu failure always retains its global pause.
 
 Track two separate costs: time to validate the next hypothesis, and execution
 time of the resulting artifact. Profile compiler passes, constant materialization,
@@ -25,6 +36,7 @@ Choose the earliest checkpoint whose incoming contracts remain valid:
 | Distribution choices | Reopen the distribution proposal and solve coupled choices without accidentally pinning unrelated defaults. |
 | Candidate parameters, capabilities, workspace, or ABI | Resume before candidate proposal generation; regenerate selection and dependent memory/synchronization plans. |
 | Contract-compatible kernel source or renderer override | A valid later TIR checkpoint may be reusable; regenerate source and device code with the override loaded and new source identity. |
+| Executable compiler/resource flags with unchanged IR and ABI | Reuse verified final TIR and unchanged readonly transformations; rebuild through the normal artifact API, recording the executed flags/compiler and new library identity. Recheck actual resource admission and complete numerical correctness. |
 
 Rebuild only the stage the hypothesis touches. An artifact holds three
 independent things -- the readonly weight data, the generated source, and the
@@ -38,16 +50,27 @@ for nothing; measured on the 28-layer Qwen3-1.7B BI-V150 C++ artifact:
 | Recompile the device library | ~18 s |
 | Re-pack readonly weights (not needed) | the rest of ~28 s, plus 3.9 GB of disk per trial |
 
-So the loop is: render into the artifact directory in place, rebuild the
-library, refresh the `codegen.source` / `codegen.library` hashes and `nbytes`
-in the manifest, then run. Skipping the hash refresh fails the load with
+For a new unfrozen, unreviewed and unmeasured revision, use the normal compiler's
+artifact build/update path to render source, rebuild the library and refresh the
+`codegen.source` / `codegen.library` hashes and `nbytes` in the manifest. Verify
+that the resulting full artifact loads; a library-only build is insufficient.
+Do not hand-patch emitted code or pair an old manifest with a new library.
+Reuse unchanged readonly sections without copying
+model-sized weights. In-place rendering applies to mutable build outputs;
+never overwrite a frozen baseline or candidate under review or measurement.
+Skipping the hash refresh fails the load with
 `Artifact section 'codegen.source' size does not match its manifest`, which is
 the loader correctly refusing a stale pairing rather than a bug to work around.
 
 Two practical consequences. Each full re-write costs disk as well as time --
 repeatedly copying whole artifacts per variant filled a 438 GB scratch volume
-twice in one session and started failing builds with `No space left on device`;
-delete a variant once it is measured. And when a template edit needs several
+twice in one session and started failing builds with `No space left on device`.
+For closed trials after measurement, redundant large build outputs may be
+removed once trial records, generated source/final IR, provenance, reproduction inputs and raw
+evidence are preserved. Retain the active baseline, pending review/validation/
+reproduction/export candidates, accepted deliverable and shared readonly data
+still referenced by retained artifacts. And when a template
+edit needs several
 attempts, the per-attempt cost decides whether to think or to try: at ~22 s a
 sweep is cheap, at ~30 minutes it is not, which is reason enough to find the
 in-place path before starting the sweep.
@@ -188,12 +211,35 @@ real cause and makes the path recoverable by splitting a different axis;
 
 ## Build correctness evidence at the right level
 
+Before using an evaluator as the numerical oracle for encoded weights or a
+fused operation, verify that it implements the actual storage encoding and
+rounding boundaries. A valid inferred BF16 result does not prove that evaluation
+decodes an IQ4/Q4 byte matrix. A fused FP32 projection epilogue may also differ
+from composing two BF16-returning primitive evaluators. Use small independent
+format/rounding fixtures, then actual device checks; repair the owning evaluator
+and neighboring encoded paths rather than accepting a misleading oracle.
+
 For a defect, retain a minimal reproducer and identify file, function/pass,
 and triggering condition. Demonstrate a real failing-before assertion or
 execution, then pass-after with the causal fix. An invalid fixture, import
 failure, or unavailable device is not evidence of the claimed compiler bug.
 Preserve the intended optimization while fixing its cause; if its premise is
 invalid, document the needed redesign instead of hiding a fallback.
+
+For benchmark wrappers or recipe entry points, check the exact child command
+and bootstrap in a fresh process before a long run. A CPU-only help or identity
+probe must resolve the same helper imports; the actual build must select the
+intended recipe installer. Direct module imports and mocked subprocess success
+do not test that entry path. Record setup or precompilation separately from
+execution, with the actual arguments and exit statuses.
+
+For timed kernels, check the outputs and guards of the exact compiled
+instantiations selected by the timing dispatch. A diagnostic specialization
+with extra stores or instrumentation does not establish correctness of the
+timed specialization. Capture its output before another launch or reset
+overwrites the sink. Save each completed sample batch outside the measured
+interval before later checks can fail; retain partial timings with their
+failure gates, and mark them usable only after the actual timed path passes.
 
 Use focused op/rule/pass/TIR and device-kernel tests, including negative cases:
 shared or exported intermediates, effects, mixed dtypes, layout/vector variants,
@@ -209,6 +255,19 @@ useful performance probes but cannot establish state-update correctness.
 If acceptance requires exact greedy sequences, compare complete independently
 generated sequences; teacher-forced checks and approximate logits are diagnostic
 evidence, not substitutes for the requested acceptance rule.
+
+When exact generation fails, retain the first mismatch and actual/reference
+top candidates, logits and margins before discarding the execution state.
+Identify whether the complete input history is still equal at that step;
+later cross-history logits cannot explain the first divergence. Establish the
+current same-profile compiler baseline on the same independent workload before
+attributing the failure to an optimization or revising precision. Isolate the
+changed mechanisms and reproduce affected operations on identical saved inputs
+and encoded rows; a family-level failure alone does not prove a decoder,
+epilogue or reduction-order defect. Record storage dtype, intermediate rounding,
+accumulation order and each state leaf separately. A justified profile change
+requires a named task revision, fresh baseline and separate comparison cohort,
+while preserving prior failures and the user's acceptance constraints.
 
 Keep the reference from becoming part of candidate execution. Prefer isolated
 state; if same-history diagnostics must share storage, snapshot and restore
@@ -235,15 +294,43 @@ Run comparable variants sequentially on the same device, rotate order, repeat
 enough to assess variation, and retain raw samples and per-round summaries.
 Keep correctness diagnostics outside timing, avoid competing jobs on the measured
 device, and do not rebuild native libraries or mutate artifacts during a run.
+Check GPU competition before launch and throughout each measured child. A task
+lease or file lock only coordinates participants that honor it. Retain timestamped
+process queries and establish ownership from the actual child and its descendants;
+do not allow a process merely because its executable has the same name. Record
+the monitor's extent and any unavailable process identity. A later competition
+snapshot does not establish overlap with an earlier completed interval, and an
+empty prelaunch snapshot does not establish isolation throughout the child.
+For host-wall timing, also keep compilation outside the measured execution and
+record CPU compilation checks before launch and throughout the child. Report
+CPU and GPU monitor results and their actual scope separately from an aggregate
+guard verdict: a CPU competition failure does not make clear GPU observations
+fail. A disabled or unavailable monitor is not evidence of an uncontended interval.
+Keep raw samples from interrupted or contaminated attempts, but exclude affected
+intervals from performance acceptance and attribution.
 
-For a grid-barrier megakernel, concurrency on one device is not merely noisy,
-it deadlocks: the kernel needs every CTA co-resident to pass a barrier, so two
-processes each get a partial share and neither proceeds. Expect a hang, a lost
-card, and an illegal-instruction entry in the kernel log. Serialize runs on one
-device or give each run its own, and treat any measurement taken while another
-job shared the device as discarded rather than merely suspect. A test suite
-that executes kernels counts as such a job; apparent suite slowness is often
-self-inflicted contention, not a slow test.
+Probe ncu access with a small leased launch before tuning or collecting an
+expensive model profile. Any ncu error or unusable report pauses optimization:
+preserve the error, request sudo access if it has not already been authorized
+and made available, and retry within that authorization. Resume only after a
+successful inspected capture; persistent errors keep the flow paused. Follow
+the [failure and credential rules](kernel-microprofiling.md#mandatory-capture-and-failure-gate).
+Timing, generated-code inspection and instrumentation supplement ncu and cannot
+replace it. Likewise, ncu aggregates alone cannot establish WG or hardware-module
+timelines. Distinguish measured activity, in-flight envelopes and estimates.
+
+For a grid-barrier megakernel, verify the actual cooperative-launch admission,
+grid size and resident-block limits needed by its synchronization contract.
+Requested register limits or launch bounds are not measured residency. Inspect
+the new executable's registers and spills, then query device occupancy and
+check that its complete grid fits the available resident blocks. A register cap
+can increase spill/reload work; measure the resulting whole-workload effect.
+Use the same resource settings on both sides when attributing a gain to a
+separate layout change, and record requested settings apart from actual use.
+Contention can also invalidate that contract; do not infer that every concurrent
+launch necessarily deadlocks or that a hang proves contention. Serialize runs on
+one device or give each run its own, and discard measurements with observed GPU
+overlap. A test suite that executes kernels also counts as a GPU job.
 
 Verify that a reference artifact was built from the same module as the variant
 before comparing. An artifact left over from a different profile can still load
@@ -260,6 +347,36 @@ numerical contract can be a labeled performance reference, not the correctness
 baseline. Retain intermediate comparisons when they show which choices helped;
 do not assume every additional optimization improves performance.
 
+Choose a control that isolates the proposed mechanism. For a load-lowering or
+kernel change, keep placement, grid, register cap, math and other recipes equal,
+and compare an explicit off/on variant built through the same current compiler.
+A new-core 32-CTA control versus a new-core 96-CTA candidate measures placement;
+it does not establish the benefit of a load change shared by both. When several
+factors change, name each comparison and its intended varying factor. Link
+historical timings as context, without pooling them or treating separate
+cohorts as a causal comparison. Numerical qualification and iteration numbering
+remain independent of whether the measured mechanism improves performance.
+
+Verifier records every performance attempt under its reserved attempt ID in the
+append-only [Performance history](performance-history.md), including baseline,
+reference, screening, formal measurement, rejected candidates and reproduction.
+An iteration is assigned only after the complete agreed numerical checks pass;
+failed/incomplete numerical attempts do not increment it. A numerical pass with
+a performance regression still counts. Save samples and per-round statistics
+before deciding the next attempt.
+Failures retain their status/reason, not a fabricated value. At handoff render
+the performance-versus-iteration history for numerically qualified revisions,
+preserving regressions and acceptance status. Retain every other attempt in the
+public table and optional separate attempt-axis figure, with diagnostic/invalid
+scope and reasons.
+
+Render this as one cumulative figure, with workload curves or compact panels
+spanning qualified iterations. Baseline/source version changes alone do not
+create a separate panel per iteration. After every execution-based verification,
+also save a measured per-operator latency SVG and its pinned raw profile, outside
+acceptance timing. Follow [operator profiling requirements](performance-history.md#operator-latency-after-verification)
+for attribution, instrumentation overhead, overlap and unavailable evidence.
+
 Before publication, rebuild from the original input plus saved scripts and
 overrides, not only the final edited checkpoint. Recheck independent acceptance,
 artifact verification, and provenance linking compiler inputs, target/catalog,
@@ -268,8 +385,14 @@ different implementations into one variant merely because their IDs match.
 Where deterministic generation is expected, compare the fresh source with the
 measured source; investigate mismatches rather than relabeling an artifact.
 
-Generate summaries and SVGs from accepted raw measurements. Export only the
-validated source/artifact after those checks, and verify that public reproduction
-does not import private experiment files. Keep rejected trials and raw evidence
-in the task-local archive; the user-facing document should explain reproduction,
-the agent's incremental optimizations, and final results rather than the work log.
+Generate formal accepted-comparison summaries and SVGs from accepted raw
+measurements. Diagnostic/regression plots may also be exported from pinned
+raw data with explicit failed or unaccepted status; they do not establish
+candidate acceptance and require the same provenance and sample checks. Follow
+[Workspace layout and maintenance](workspace-layout.md) for trial figures,
+public source data, export receipts and the overall optimization trace. Export
+only the validated source/artifact after those checks, and verify that public
+reproduction does not import private experiment files. Keep rejected trials,
+agent handoffs and raw evidence in the task-local archive. The public
+`optimization-trace.md` summarizes meaningful outcomes, including failures;
+the readme explains reproduction, incremental optimizations and final results.

@@ -33,4 +33,21 @@ def gdn_large_key_implementations():
         )
 
 
-__all__ = ["gdn_state_pipeline_implementations", "gdn_large_key_implementations"]
+def gdn_scalar_head_gate_implementations():
+    """Optional CPP scalar-ordered gate publication; never an ordinary default."""
+    yield TritonImplementation(
+        "tir.gdn_recurrent.persistent_scalar_head_gates_v1", "gdn_recurrent", "persistent",
+        {"tile_state": (128, 4), "projection_tile": 128, "head_gate_cache": True,
+         "head_cache_slots": 2, "projection_order": "ascending_scalar_C1",
+         "cache_contents": ("beta", "decay"), "cache_epoch": "per_GDN_invocation",
+         "num_warps": 4},
+        {"scalar_head_gates": True, "required_codegen_backend": "cpp"},
+        ("cooperative_grid", "grid_sync"),
+        {"internal_grid_barriers": 1, "internal_cta_barriers": 1,
+         "required_codegen_backend": "cpp"},
+        (T.shared_workspace_descriptor("head_gates", tensor_type("float32", (2, 2)), 16),),
+    )
+
+
+__all__ = ["gdn_state_pipeline_implementations", "gdn_large_key_implementations",
+           "gdn_scalar_head_gate_implementations"]

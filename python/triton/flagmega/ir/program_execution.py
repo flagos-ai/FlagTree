@@ -151,7 +151,21 @@ def verify_program_execution(module):
         plan = ProgramExecution.from_data(data)
     except IRSchemaError as error:
         fail(str(error))
-    if plan.entry != module.entry:
+    # A per-function checkpoint retains the complete interprocedural plan,
+    # just like ExecutionFunction schedules. Verify its local typed body and
+    # the complete plan structure; directory loading restores the entry and
+    # verifies every body together after removing the explicit fragment mark.
+    fragment = module.metadata.get('_dump_function_fragment') is True
+    graph_names = set(module.function_map)
+    declared_names = graph_names
+    if fragment:
+        signatures = module.metadata.get('function_signatures')
+        if (len(graph_names) != 1 or not isinstance(signatures, Mapping)
+                or not graph_names.issubset(signatures)
+                or plan.entry not in signatures):
+            fail('dump fragment requires complete function signatures.')
+        declared_names = set(signatures)
+    elif plan.entry != module.entry:
         fail('entry differs from the typed module.')
     if not isinstance(requests, (tuple, list)) or not requests:
         fail('requires scoped program definitions.')
@@ -159,7 +173,7 @@ def verify_program_execution(module):
     for request in requests:
         if (not isinstance(request, Mapping) or not isinstance(request.get('symbol'), str)
                 or request['symbol'] in programs or not isinstance(request.get('function'), str)
-                or request['function'] not in module.function_map
+                or request['function'] not in declared_names
                 or not isinstance(request.get('calls'), (tuple, list)) or not request['calls']):
             fail('has invalid or duplicate scoped program definitions.')
         if 'depends_on' in request or request.get('tasks_per_owner', 1) != 1:
@@ -171,10 +185,11 @@ def verify_program_execution(module):
     from triton.flagmega.passes.functions.graph import function_nodes
     used = set()
     for function in plan.functions:
-        if function.function not in module.function_map:
+        if function.function not in declared_names:
             fail('references an unknown typed function.')
-        nodes = tuple(n for n in function_nodes(module, module.function_map[function.function])
-                      if n.op in {'tir.call', 'control.for'})
+        local = function.function in module.function_map
+        nodes = (tuple(n for n in function_nodes(module, module.function_map[function.function])
+                       if n.op in {'tir.call', 'control.for'}) if local else ())
         by_id = {n.id: n for n in nodes}
         actual = []
         for step in function.steps:
@@ -185,17 +200,21 @@ def verify_program_execution(module):
                 used.add(step.symbol)
                 actual.extend(request['calls'])
                 continue
+            if step.callee not in functions:
+                fail('call reference differs from its typed invocation or callee scope.')
+            if not local:
+                continue
             node = by_id.get(step.call)
-            if node is None or str(node.attrs.get('callee', '')) != step.callee or step.callee not in functions:
+            if node is None or str(node.attrs.get('callee', '')) != step.callee:
                 fail('call reference differs from its typed invocation or callee scope.')
             if isinstance(step, LoopInvocation):
                 if node.op != 'control.for' or step != loop_invocation(module, node):
                     fail('loop bounds or kind differ from the typed For.')
-            elif node.op != 'tir.call' or step.callee not in module.function_map:
+            elif node.op != 'tir.call' or step.callee not in declared_names:
                 fail('function invocation differs from its typed call.')
             actual.append(execution_item_identity(function.function, node))
         expected = [execution_item_identity(function.function, n) for n in nodes]
-        if actual != expected:
+        if local and actual != expected:
             fail('must preserve every scoped executable item in its original order.')
     if used != set(programs):
         fail('contains unreferenced program definitions.')

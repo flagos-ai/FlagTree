@@ -55,6 +55,7 @@ class TritonTirSelectionPolicy:
             reusable_node_ids=reusable_function_node_ids(module),
             cooperative_grid=requires_distributed_grid(module),
             implementation_model=target.triton_implementation_model,
+            codegen_backend=getattr(target, "codegen_backend", None),
         )
         mesh_hierarchy = target.distributed_placements(module)[0].hierarchy
         points: list[SelectionPoint] = []

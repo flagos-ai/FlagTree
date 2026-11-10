@@ -76,6 +76,8 @@ class PackedBlockScaledMatMul(OpDefinition):
             raise IRSchemaError("PackedBlockScaledMatMul requires n_major_k_packed layout.")
         if result.get("weight_encoding") is not None and not isinstance(result["weight_encoding"], str):
             raise IRSchemaError("PackedBlockScaledMatMul weight_encoding must be a string or None.")
+        if result.get("weight_encoding") is not None:
+            raise IRSchemaError("PackedBlockScaledMatMul vector-FP8 storage does not support native GGUF byte rows.")
         result.update(normalize_block_scaled_precision(attrs, "PackedBlockScaledMatMul"))
         return result
 

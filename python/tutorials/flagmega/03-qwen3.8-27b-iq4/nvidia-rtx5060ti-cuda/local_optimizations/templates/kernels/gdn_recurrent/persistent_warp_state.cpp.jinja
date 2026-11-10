@@ -1,0 +1,138 @@
+// flagmega-kernel: gdn_recurrent/persistent_warp_state platform=nvidia
+// Warp/register state mapping adapted from llama.cpp gated_delta_net.cu,
+// MIT, revision 5ce06fc71f5e938301f7dc51697a59ae308bd6b7, S_v=128/cols_per_warp=1.
+// Projection and Q/K norm statistics retain ascending_scalar_C1. State sums
+// use explicit lane-strided partials and XOR16,8,4,2,1 F32 reassociation.
+#include <cmath>
+#include <ftt/quantized_ops.h>
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gdn_recurrent" and call.variant == "persistent_warp_state" %}
+static FTT_DEVICE void {{ call.symbol }}__core({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_qkv = {{ call.qkv | cppexpr }};
+    auto *const ftt_gdn_projection_input = {{ call.projection_input | cppexpr }};
+    auto *const ftt_gdn_b_weight = {{ call.b_weight | cppexpr }};
+    auto *const ftt_gdn_a_weight = {{ call.a_weight | cppexpr }};
+    auto *const ftt_gdn_a_log = {{ call.a_log | cppexpr }};
+    auto *const ftt_gdn_dt_bias = {{ call.dt_bias | cppexpr }};
+    auto *const ftt_gdn_state = {{ call.state | cppexpr }};
+    auto *const ftt_gdn_scratch = {{ call.core_scratch | cppexpr }};
+    // Planned CTA-private {{ call.head_statistics_physical_buffer }}. Lifetime:
+    // this invocation's scalar leaders through final state/core consumption.
+    __shared__ __align__(16) unsigned char ftt_head_statistics_storage[{{ call.head_statistics_arena_bytes }}];
+    float *const ftt_head_statistics = reinterpret_cast<float *>(ftt_head_statistics_storage + {{ call.head_statistics_offset_bytes }});
+    const ftt::dim_t first_value = {{ call.head_statistics_first_value | cppexpr }};
+    const ftt::dim_t first_head = first_value / {{ call.value_dim }}LL;
+    const ftt::dim_t needed_heads = (first_value + {{ call.local_capacity }}LL - 1) / {{ call.value_dim }}LL - first_head + 1;
+    if (ftt_thread < needed_heads) {
+        const ftt::dim_t value_head = first_head + ftt_thread;
+{% for weight in ["b", "a"] %}
+        const auto *{{ weight }}_row = reinterpret_cast<const unsigned char *>(ftt_gdn_{{ weight }}_weight)
+            + value_head * {{ (call.projection_dim // 256) * 136 }}LL;
+        float {{ weight }}_projection = ftt::quantized::dot<ftt::quantized::encoding::iq4_xs>(ftt_gdn_projection_input, {{ weight }}_row, {{ call.projection_dim }}LL);
+        {{ weight }}_projection = ftt::to_float(ftt::to_bfloat16({{ weight }}_projection));
+{% endfor %}
+        float beta = ftt::sigmoid(b_projection);
+        beta = ftt::to_float(ftt::to_bfloat16(beta));
+        const float decay_input = a_projection + ftt::to_float(ftt_gdn_dt_bias[value_head]);
+        const float softplus = decay_input > 20.0f ? decay_input : log1pf(expf(decay_input));
+        const float decay = expf(-expf(ftt::to_float(ftt_gdn_a_log[value_head])) * softplus);
+        const ftt::dim_t key_head = value_head % {{ call.key_heads }}LL;
+        const ftt::dim_t query_base = key_head * {{ call.key_dim }}LL;
+        const ftt::dim_t key_base = {{ call.key_heads * call.key_dim }}LL + query_base;
+        float query_square_sum = 0.0f;
+        float key_square_sum = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t k = 0; k < {{ call.key_dim }}LL; ++k) {
+            const float query = ftt::to_float(ftt_gdn_qkv[query_base + k]);
+            const float key = ftt::to_float(ftt_gdn_qkv[key_base + k]);
+            query_square_sum += query * query;
+            key_square_sum += key * key;
+        }
+        const float query_norm = ftt::max(sqrtf(query_square_sum), {{ call.qk_norm_epsilon | cppfloat }});
+        const float key_norm = ftt::max(sqrtf(key_square_sum), {{ call.qk_norm_epsilon | cppfloat }});
+        ftt_head_statistics[4 * ftt_thread] = beta;
+        ftt_head_statistics[4 * ftt_thread + 1] = decay;
+        ftt_head_statistics[4 * ftt_thread + 2] = query_norm;
+        ftt_head_statistics[4 * ftt_thread + 3] = key_norm;
+    }
+    ftt::arch::cta_sync();
+    const ftt::dim_t lane = ftt_thread % 32;
+    const ftt::dim_t warp = ftt_thread / 32;
+    for (ftt::dim_t local_values = warp; local_values < {{ call.local_capacity }}LL; local_values += 4) {
+        const ftt::dim_t global_value = {{ call.global_value | cppexpr }};
+        const ftt::dim_t value_head = global_value / {{ call.value_dim }}LL;
+        const ftt::dim_t slot = value_head - first_head;
+        const float beta = ftt_head_statistics[4 * slot];
+        const float decay = ftt_head_statistics[4 * slot + 1];
+        const float query_norm = ftt_head_statistics[4 * slot + 2];
+        const float key_norm = ftt_head_statistics[4 * slot + 3];
+        const ftt::dim_t query_base = (value_head % {{ call.key_heads }}LL) * {{ call.key_dim }}LL;
+        const ftt::dim_t key_base = {{ call.key_heads * call.key_dim }}LL + query_base;
+        const ftt::dim_t state_base = global_value * {{ call.key_dim }}LL;
+        float s_shard[4], k_reg[4], q_reg[4];
+        float recalled = 0.0f;
+        #pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            const ftt::dim_t k = lane + r * 32;
+            s_shard[r] = ftt::to_float(ftt_gdn_state[state_base + k]);
+            k_reg[r] = ftt::to_float(ftt_gdn_qkv[key_base + k]) / key_norm;
+            q_reg[r] = ftt::to_float(ftt_gdn_qkv[query_base + k]) / query_norm;
+            q_reg[r] *= {{ call.query_scale | cppfloat }};
+            // Keep nncase decay placement: do not pull decay out of this sum.
+            recalled += (s_shard[r] * decay) * k_reg[r];
+        }
+        recalled = ftt::arch::warp_reduce_sum(recalled);
+        const float target = ftt::to_float(ftt_gdn_qkv[{{ 2 * call.key_heads * call.key_dim }}LL + global_value]);
+        const float delta = (target - recalled) * beta;
+        float core = 0.0f;
+        #pragma unroll
+        for (int r = 0; r < 4; ++r) {
+            const ftt::dim_t k = lane + r * 32;
+            const float updated = s_shard[r] * decay + k_reg[r] * delta;
+            ftt_gdn_state[state_base + k] = ftt::store_as(ftt_gdn_state, updated);
+            core += updated * q_reg[r];
+        }
+        core = ftt::arch::warp_reduce_sum(core);
+        if (lane == 0) ftt_gdn_scratch[global_value] = ftt::store_as(ftt_gdn_scratch, core);
+    }
+}
+
+static FTT_DEVICE void {{ call.symbol }}__norm({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_z = {{ call.z | cppexpr }};
+    auto *const ftt_gdn_norm_weight = {{ call.norm_weight | cppexpr }};
+    auto *const ftt_gdn_result = {{ call.result | cppexpr }};
+    auto *const ftt_gdn_scratch = {{ call.core_scratch | cppexpr }};
+{{ entry.strided_loop("local_values", call.local_capacity) }} {
+        if (!(local_values < ({{ call.active_values | cppexpr }})) || !({{ call.writer_active | cppexpr }})) continue;
+        const ftt::dim_t global_value = {{ call.global_value | cppexpr }};
+        const ftt::dim_t head = global_value / {{ call.value_dim }}LL;
+        float square_sum = 0.0f;
+        FTT_NO_UNROLL
+        for (ftt::dim_t v = 0; v < {{ call.value_dim }}LL; ++v) {
+            const float value = ftt::to_float(ftt_gdn_scratch[head * {{ call.value_dim }}LL + v]);
+            square_sum += value * value;
+        }
+        const float inverse_rms = ftt::rsqrt(square_sum / {{ call.value_dim }}.0f + {{ call.epsilon | cppfloat }});
+        const float gate = ftt::to_float(ftt_gdn_z[{{ call.z_offset | cppexpr }}]);
+{% if call.accurate_norm_silu %}
+        const float activation = gate / (1.0f + expf(-gate));
+{% else %}
+        const float activation = ftt::silu(gate);
+{% endif %}
+        const float output = ((ftt::to_float(ftt_gdn_scratch[global_value]) * inverse_rms)
+            * ftt::to_float(ftt_gdn_norm_weight[global_value % {{ call.value_dim }}LL])) * activation;
+        ftt_gdn_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(ftt_gdn_result, output);
+    }
+}
+
+// Publish every complete core coordinate before any owner reads its head.
+{{ entry.phase_schedule(call, ("core", "norm")) }}
+{% endif %}
+{% endfor %}
+{% endif %}

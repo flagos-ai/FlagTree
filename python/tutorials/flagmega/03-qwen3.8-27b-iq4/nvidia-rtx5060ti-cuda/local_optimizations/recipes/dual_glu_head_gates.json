@@ -1,0 +1,5 @@
+{
+  "mode": "iq4_mmvq",
+  "precision": "dual_glu",
+  "head_gate_cache": true
+}

@@ -19,6 +19,8 @@
    it directly -- see `codegen/cpp/expressions.py`. #}
 
 {% macro mesh_coordinates() -%}
+    const ftt::dim_t block_index = ftt::arch::block_id();
+    (void)block_index;
 {% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
 {% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}
 {% if distributed_entry %}
@@ -64,8 +66,14 @@
 {# The strided walk described above.  `induction` is the Triton name the
    renderer's expressions use for this loop's index. #}
 {% macro strided_loop(induction, capacity) -%}
+{% if cpp_task_loop | default(false) %}
+    for (ftt::dim_t {{ induction }} = ftt::arch::block_id() * {{ native_task_recipe.tile_size }}LL + ftt_thread;
+         {{ induction }} < {{ capacity }}LL && {{ induction }} < (ftt::arch::block_id() + 1) * {{ native_task_recipe.tile_size }}LL;
+         {{ induction }} += ftt_threads)
+{% else %}
     for (ftt::dim_t {{ induction }} = ftt_thread; {{ induction }} < {{ capacity }}LL;
          {{ induction }} += ftt_threads)
+{% endif %}
 {%- endmacro %}
 
 {# Device-function signature.  A pointer parameter carries the element type the
@@ -80,7 +88,9 @@
 {% macro device_signature(call) -%}
 {% if call.arguments %}
 {%- for name in call.arguments %}{{ parameter(name) }}{{ ", " if not loop.last }}{% endfor %}
-{%- else %}void{% endif %}
+{%- else %}{% if not (platform | default("") == "nvidia" and (barrier_abi | default(distributed_entry))) and not (program_trace | default(false)) %}void{% endif %}{% endif %}
+{% if platform | default("") == "nvidia" and (barrier_abi | default(distributed_entry)) %}{{ ", " if call.arguments }}unsigned int *ftt_grid_barrier{% endif %}
+{% if program_trace | default(false) %}{{ ", " if call.arguments or (platform == "nvidia" and (barrier_abi | default(distributed_entry))) }}FlagmegaProgramTrace ftt_program_trace{% endif %}
 {%- endmacro %}
 
 {# Grid-wide rendezvous.
@@ -91,7 +101,7 @@
    counter slot, indexed by the CTA's position outside the group, so two groups
    cannot release each other. A barrier with no key spans the whole grid. #}
 {% macro stage_barrier(axis_group_key=none) -%}
-{% if not distributed_entry %}
+{% if not (barrier_abi | default(distributed_entry)) %}
     ftt::arch::cta_sync();
 {%- elif axis_group_key %}
 {% set group = (grid_barrier_axis_groups | selectattr("key", "equalto", axis_group_key) | first) %}
@@ -110,13 +120,13 @@
    has explicit buffer ABI storage, which is what makes the split legal. #}
 {% macro phase_schedule(call, phases) -%}
 static FTT_DEVICE void {{ call.symbol }}({{ device_signature(call) }}) {
-{% if distributed_entry %}
+{% if distributed_entry and platform | default("") != "nvidia" %}
     unsigned int *const ftt_grid_barrier = _ftt_grid_barrier_counters;
 {% endif %}
 {{ mesh_coordinates() }}
 {{ barrier_group_slots() }}
 {% for phase in phases %}
-    {{ call.symbol }}__{{ phase }}({{ call.arguments | join(", ") }});
+    {{ call.symbol }}__{{ phase }}({{ call.arguments | join(", ") }}{% if platform | default("") == "nvidia" and (barrier_abi | default(distributed_entry)) %}{{ ", " if call.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}, ftt_program_trace{% endif %});
 {% if not loop.last %}
 {{ stage_barrier() }}
 {% endif %}

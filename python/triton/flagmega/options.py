@@ -47,8 +47,13 @@ class CompileOptions:
     # None preserves the target default, or the allocator in an existing plan.
     bufferize_opt_level: str | None = None
     placement: Placement | None = None
+    # None preserves existing backend-independent compile/checkpoint APIs.
+    # Executable CLI paths bind their actual backend before TIR proposals.
+    codegen_backend: str | None = None
 
     def __post_init__(self) -> None:
+        if self.codegen_backend not in (None, "cpp", "triton"):
+            raise ValueError("codegen_backend must be 'cpp' or 'triton'.")
         if self.bufferize_opt_level not in (None, "fast", "optimized"):
             raise ValueError("bufferize_opt_level must be 'fast' or 'optimized'.")
 

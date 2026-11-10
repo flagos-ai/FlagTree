@@ -34,6 +34,8 @@ def _register_builtin_packages() -> None:
     package_registry.register("elementwise/v2", "iluvatar-bi-v150", GeneratedElementwiseModule)
     package_registry.register("tir_call_graph/v1", "iluvatar-bi-v150", create_tir_runtime)
     package_registry.register("tir_call_graph_cpp/v1", "iluvatar-bi-v150", create_cpp_tir_runtime)
+    for target in ("nvidia-sm89", "nvidia-sm90", "nvidia-sm120"):
+        package_registry.register("tir_call_graph_cpp/v1", target, create_cpp_tir_runtime)
     # Ada (sm_89, e.g. RTX 4090) runs the same portable TIR call graph.
     package_registry.register("tir_call_graph/v1", "nvidia-sm89", create_tir_runtime)
     # The TIR call-graph runtime is model- and platform-neutral; the RDNA path

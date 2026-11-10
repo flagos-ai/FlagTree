@@ -167,10 +167,22 @@ def pack_rdata(
     output_dir: str | Path,
     *,
     cache_dir: str | Path | None = None,
+    readonly_source=None,
+    require_reflink: bool = False,
 ) -> dict[str, object]:
-    """Pack readonly data, optionally reusing a trusted local build cache."""
+    """Pack readonly data, optionally reusing a trusted local build cache.
 
+    require_reflink forbids payload-copy fallback for source/cache snapshots
+    and striped extent assembly; fresh checkpoint materialization is unchanged.
+    """
+    if type(require_reflink) is not bool:
+        raise TypeError("require_reflink must be a bool")
     verify_module(module)
+    if readonly_source is not None:
+        from triton.flagmega.artifacts.materialized_source import prove_output_reuse, require
+        prove_output_reuse(module, readonly_source)
+        key_data = _rdata_cache_key_data(module, checkpoint)
+        require(key_data is not None and key_data["checkpoint"] == readonly_source.checkpoint_identity, "writer checkpoint identity differs")
     if cache_dir is not None:
         cache_key = _rdata_cache_key(module, checkpoint)
         if cache_key is not None:
@@ -180,14 +192,18 @@ def pack_rdata(
                 output_dir,
                 Path(cache_dir),
                 cache_key,
+                readonly_source=readonly_source,
+                require_reflink=require_reflink,
             )
-    return _pack_rdata_uncached(module, checkpoint, output_dir)
+    return _pack_rdata_uncached(module, checkpoint, output_dir,
+                                readonly_source=readonly_source, require_reflink=require_reflink)
 
 
 def _pack_rdata_uncached(
     module: IRModule,
     checkpoint: Checkpoint,
     output_dir: str | Path,
+    *, readonly_source=None, require_reflink=False,
 ) -> dict[str, object]:
     plan = verify_buffer_plan(module)
     destination = Path(output_dir)
@@ -223,7 +239,7 @@ def _pack_rdata_uncached(
     requested_outputs = recipe_outputs & set(by_key)
     direct_ranges: dict[str, TensorByteRange] = {}
     tensor_byte_range = getattr(checkpoint, "tensor_byte_range", None)
-    if tensor_byte_range is not None:
+    if tensor_byte_range is not None and readonly_source is None:
         for output in recipe_output_order:
             if output not in requested_outputs:
                 continue
@@ -243,7 +259,8 @@ def _pack_rdata_uncached(
         buffers,
         key=lambda value: (value.offset, value.id),
     )
-    programs, sources = prepare_programs(module, checkpoint, ordered_buffers, destination)
+    programs, sources = prepare_programs(module, checkpoint, ordered_buffers, destination,
+                                        readonly_source=readonly_source, require_reflink=require_reflink)
     buffer_by_id = {buffer.id: buffer for buffer in ordered_buffers}
     virtual_outputs = {buffer_by_id[program["buffer"]].weight_key for program in programs}
     for program in programs:
@@ -282,6 +299,7 @@ def _pack_rdata_uncached(
                     stream, module, checkpoint, ordered_buffers, direct_ranges,
                     evaluated_outputs, recipe_outputs, segment_nbytes, chip_count,
                     virtual_outputs=virtual_outputs,
+                    require_reflink=require_reflink or readonly_source is not None,
                     virtual_ranges=[tuple(pair) for program in programs for pair in program["ranges"]],
                 )
             elif can_hash_while_writing:
@@ -339,6 +357,10 @@ def _pack_rdata_uncached(
     if programs:
         index.pop("segment_sha256")
         index.update(programs=programs, sources=sources)
+    if readonly_source is not None:
+        from triton.flagmega.artifacts.materialized_source import prove_output_reuse
+        index["materialized_sources"] = [{**readonly_source.table, "bindings": prove_output_reuse(module, readonly_source)["bindings"]}]
+        index["materialized_checkpoint_identity"] = readonly_source.checkpoint_identity
     index["sha256"] = content_digest(index) if programs else _segment_content_digest(index)
     write_json_atomic(index_path, index)
     return index
@@ -357,6 +379,7 @@ def _pack_chip_segments(
     *,
     virtual_outputs=frozenset(),
     virtual_ranges=None,
+    require_reflink=False,
 ):
     """Write one chip-local image segment per launch chip.
 
@@ -372,7 +395,8 @@ def _pack_chip_segments(
     budget = _MaterializationBudget()
     storage_reader = NumpyStorageReader()
     failed = Event()
-    image = _StripedImage(stream, segment_nbytes * chip_count, preallocate=not virtual_outputs)
+    image = _StripedImage(stream, segment_nbytes * chip_count, preallocate=not virtual_outputs,
+                          require_reflink=require_reflink)
 
     def write_source(buffer, source, writer_pool):
         sharded = buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP
@@ -710,6 +734,7 @@ def _pack_rdata_cached(
     output_dir: str | Path,
     cache_root: Path,
     cache_key: str,
+    *, readonly_source=None, require_reflink=False,
 ) -> dict[str, object]:
     cache_root.mkdir(parents=True, exist_ok=True)
     entry = cache_root / cache_key
@@ -720,7 +745,8 @@ def _pack_rdata_cached(
             dir=cache_root,
         ))
         try:
-            index = _pack_rdata_uncached(module, checkpoint, staging)
+            index = _pack_rdata_uncached(module, checkpoint, staging,
+                                         readonly_source=readonly_source, require_reflink=require_reflink)
             image = staging / "rdata.bin"
             index_path = staging / "rdata.index.json"
             manifest = {
@@ -735,7 +761,7 @@ def _pack_rdata_cached(
                 path.chmod(0o444)
             for source in index.get("sources", []):
                 path = staging / source["path"]
-                before = _verified_snapshot_identity(path, source["sha256"])
+                before = _verified_snapshot_identity(path, source["sha256"], require_existing=readonly_source is not None)
                 path.chmod(0o444)
                 after = file_identity(path)
                 # Freezing our freshly published snapshot changes ctime, not
@@ -757,26 +783,38 @@ def _pack_rdata_cached(
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+    if readonly_source is not None:
+        from triton.flagmega.artifacts.materialized_source import require
+        require("materialized_sources" in index, "cache is not the requested verified materialized source")
+        verify_rdata(entry, module=module, verify_image_bytes=False)
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    _clone_file(entry / "rdata.bin", destination / "rdata.bin")
+    if require_reflink or readonly_source is not None:
+        _clone_file(entry / "rdata.bin", destination / "rdata.bin", require_reflink=True)
+    else:
+        _clone_file(entry / "rdata.bin", destination / "rdata.bin")
     _clone_file(entry / "rdata.index.json", destination / "rdata.index.json")
     for source in index.get("sources", []):
         target = destination / source["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         original = entry / source["path"]
-        before = _verified_snapshot_identity(original, source["sha256"])
-        _clone_file(original, target)
+        before = _verified_snapshot_identity(original, source["sha256"], require_existing=readonly_source is not None)
+        if require_reflink or readonly_source is not None:
+            _clone_file(original, target, require_reflink=True)
+        else:
+            _clone_file(original, target)
         if file_identity(original) != before:
             raise ArtifactError(f"Readonly source snapshot changed while copying: {original}.")
         remember_snapshot_digest(target, source["sha256"], file_identity(target))
     return dict(index)
 
 
-def _verified_snapshot_identity(path: Path, expected: str) -> tuple[int, ...]:
+def _verified_snapshot_identity(path: Path, expected: str, *, require_existing=False) -> tuple[int, ...]:
     """Use an unchanged-file receipt, auditing unknown cache versions once."""
     before = file_identity(path)
-    if verified_source_digest(path, expected, hash_file) != expected:
+    def no_fallback(path):
+        raise ArtifactError(f"Readonly source has no existing file-version proof: {path}.")
+    if verified_source_digest(path, expected, no_fallback if require_existing else hash_file) != expected:
         raise ArtifactError(f"Rdata source hash mismatch: {path}.")
     if file_identity(path) != before:
         raise ArtifactError(f"Readonly source snapshot changed while verifying: {path}.")
@@ -817,7 +855,7 @@ def _load_rdata_cache_entry(
     return index
 
 
-def _clone_file(source: Path, destination: Path) -> None:
+def _clone_file(source: Path, destination: Path, *, require_reflink=False) -> None:
     """Atomically materialize an independent reflink, with copy fallback."""
 
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
@@ -841,6 +879,8 @@ def _clone_file(source: Path, destination: Path) -> None:
                             fcntl.ioctl(alias_stream.fileno(), _FICLONE, backing_stream.fileno())
         except (ImportError, OSError):
             temporary.unlink(missing_ok=True)
+            if require_reflink:
+                raise
             shutil.copyfile(source, temporary)
         os.replace(temporary, destination)
     except BaseException:
@@ -1135,7 +1175,8 @@ class _StripedImage:
     metadata and reads no payload. Source maps live until all writers join.
     """
 
-    def __init__(self, stream, nbytes, *, preallocate=True):
+    def __init__(self, stream, nbytes, *, preallocate=True, require_reflink=False):
+        self.require_reflink = require_reflink
         self.stream = stream
         self.nbytes = nbytes
         self.preallocate = preallocate
@@ -1192,7 +1233,7 @@ class _StripedImage:
                         raise OSError(errno.EOPNOTSUPP, "shared extent cloning is unavailable")
                     fcntl.ioctl(self.stream.fileno(), _FICLONERANGE, request)
                 except OSError as error:
-                    if error.errno not in {errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV}:
+                    if self.require_reflink or error.errno not in {errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV}:
                         raise
                     # Filesystems without shared extents use the same layout
                     # producer and a bounded range-copy assembly backend.

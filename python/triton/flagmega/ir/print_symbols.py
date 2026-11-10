@@ -56,8 +56,9 @@ class GraphPrintSymbols:
 def function_node_scopes(module: IRModule) -> dict[str, tuple[Node, ...]]:
     """Match function dump closures without constructing/copying module metadata.
 
-    Keep unreferenced nodes in the entry's diagnostic body, as function_module's
-    include_unreferenced dump mode does. Do not repeat another callee's body.
+    Keep dead local nodes with their callee and otherwise use the entry's
+    diagnostic body. Include dependencies so each diagnostic fragment is valid;
+    function parameters, outputs and executable closures remain unchanged.
     """
     node_map = module.node_map
     scopes = {}
@@ -73,6 +74,48 @@ def function_node_scopes(module: IRModule) -> dict[str, tuple[Node, ...]]:
             pending.extend(node_map[node_id].inputs)
         scopes[function.name] = reachable
         referenced.update(reachable)
+    # Literals and pure computations of literals can be shared by diagnostic
+    # scopes. They supply dependencies, not runtime function-ownership anchors.
+    constants = set()
+    for node in module.nodes:
+        if is_inline_leaf(node) or (node.effect.is_pure and node.inputs
+                                    and all(value in constants for value in node.inputs)):
+            constants.add(node.id)
+
+    def add_dependencies(values, roots):
+        pending = list(roots)
+        while pending:
+            node_id = pending.pop()
+            if node_id not in values:
+                values.add(node_id)
+                pending.extend(node_map[node_id].inputs)
+
+    # Dead callee-local expressions can depend on literals not used by any
+    # output. Require a unique runtime owner and bring their dependencies along.
+    pending_nodes = [node for node in module.nodes if node.id not in referenced]
+    while pending_nodes:
+        deferred = []
+        progress = False
+        for node in pending_nodes:
+            if node.id in referenced:
+                continue
+            anchors = set(node.inputs) - constants
+            owners = {name for name, values in scopes.items()
+                      if anchors and anchors <= values
+                      and any(sum(value in other for other in scopes.values()) == 1
+                              for value in anchors)}
+            if len(owners) == 1:
+                values = scopes[owners.pop()]
+                add_dependencies(values, (node.id,))
+                referenced.update(values)
+                progress = True
+            else:
+                deferred.append(node)
+        if not progress:
+            break
+        pending_nodes = deferred
     if module.entry in scopes:
-        scopes[module.entry].update(node_map.keys() - referenced)
+        # Shared-only or free dead subgraphs retain the entry fallback, but
+        # their already-referenced inputs must also be present in this fragment.
+        add_dependencies(scopes[module.entry], node_map.keys() - referenced)
     return {name: tuple(node for node in module.nodes if node.id in reachable) for name, reachable in scopes.items()}

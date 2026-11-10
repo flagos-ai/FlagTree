@@ -14,12 +14,22 @@
     // No executable events in this entry.
 {% else %}
 {% for event in events %}
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, {{ event.cpp_trace_before }});
+{% endif %}
 {% if event.kind == "barrier" %}
 {% if event.scope == "grid" %}
 {{ entry.stage_barrier(event.barrier_axis_group_key | default(none)) }}
 {% else %}
     ftt::arch::cta_sync();
 {% endif %}
+{% elif event.kind == "loop_copy" %}
+    for (ftt::dim_t _fm_loop_offsets = ftt::arch::thread_id(); _fm_loop_offsets < {{ event.capacity }}LL; _fm_loop_offsets += {{ block_threads }}) {
+        if (({{ event.active | cppexpr }}) && ({{ event.writer_active | cppexpr }})) {
+            ({{ event.result | cppexpr }})[{{ event.result_offset | cppexpr }}] =
+                {% if event.source %}({{ event.source | cppexpr }})[{{ event.source_offset | cppexpr }}]{% else %}{{ event.value | cppexpr }}{% endif %};
+        }
+    }
 {% elif event.kind == "function_call" %}
 {# `arguments` is a comma-separated argument list in the renderer's shared
    expression dialect, so each element needs translating, not the whole string.
@@ -29,10 +39,10 @@
     // tir.call {{ event.call }} -> @{{ event.callee }}
 {% if event.participation_active | default("True") != "True" %}
     if ({{ event.participation_active | cppexpr }}) {
-        {{ callee_symbol }}({{ event.arguments | cppargs }});
+        {{ callee_symbol }}({{ event.arguments | cppargs }}{% if platform == "nvidia" and (barrier_abi | default(distributed_entry)) %}{{ ", " if event.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}{{ ", " if event.arguments or (barrier_abi | default(distributed_entry)) }}ftt_program_trace{% endif %});
     }
 {% else %}
-    {{ callee_symbol }}({{ event.arguments | cppargs }});
+    {{ callee_symbol }}({{ event.arguments | cppargs }}{% if platform == "nvidia" and (barrier_abi | default(distributed_entry)) %}{{ ", " if event.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}{{ ", " if event.arguments or (barrier_abi | default(distributed_entry)) }}ftt_program_trace{% endif %});
 {% endif %}
 {% else %}
 {% if event.barrier_before %}
@@ -45,11 +55,14 @@
     // tir.call {{ event.call }} -> {{ event.family }}/{{ event.variant }} ({{ event.execution_kind }})
 {% if event.participation_active | default("True") != "True" %}
     if ({{ event.participation_active | cppexpr }}) {
-        {{ event.symbol }}({{ event.arguments }});
+        {{ event.symbol }}({{ event.arguments }}{% if platform == "nvidia" and (barrier_abi | default(distributed_entry)) %}{{ ", " if event.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}{{ ", " if event.arguments or (barrier_abi | default(distributed_entry)) }}ftt_program_trace{% endif %});
     }
 {% else %}
-    {{ event.symbol }}({{ event.arguments }});
+    {{ event.symbol }}({{ event.arguments }}{% if platform == "nvidia" and (barrier_abi | default(distributed_entry)) %}{{ ", " if event.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}{{ ", " if event.arguments or (barrier_abi | default(distributed_entry)) }}ftt_program_trace{% endif %});
 {% endif %}
+{% endif %}
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, {{ event.cpp_trace_after }});
 {% endif %}
 {% endfor %}
 {% endif %}
@@ -59,13 +72,34 @@
    to share code across call sites; here they are ordinary functions and the
    COREX backend force-inlines every device call anyway (it cannot execute an
    out-of-line device call), so the attribute would be inert. #}
+{% if cpp_program_entry | default(false) %}
 {% for definition in device_functions | default(()) %}
 static FTT_DEVICE void {{ definition.symbol }}(
 {% for argument in definition.signature_arguments %}
-    {{ entry.parameter(argument) }}{{ "," if not loop.last }}
+    {{ entry.parameter(argument) }}{{ "," if not loop.last or (barrier_abi | default(distributed_entry)) or (program_trace | default(false)) }}
 {% endfor %}
+{% if barrier_abi | default(distributed_entry) %}
+    unsigned int *ftt_grid_barrier{{ "," if program_trace | default(false) }}
+{% endif %}
+{% if program_trace | default(false) %}
+    FlagmegaProgramTrace ftt_program_trace
+{% endif %}
+);
+{% endfor %}
+{% endif %}
+{% for definition in device_functions | default(()) %}
+static FTT_DEVICE void {{ definition.symbol }}(
+{% for argument in definition.signature_arguments %}
+    {{ entry.parameter(argument) }}{{ "," if not loop.last or (platform == "nvidia" and (barrier_abi | default(distributed_entry))) or (program_trace | default(false)) }}
+{% endfor %}
+{% if platform == "nvidia" and (barrier_abi | default(distributed_entry)) %}
+    unsigned int *ftt_grid_barrier{{ "," if program_trace | default(false) }}
+{% endif %}
+{% if program_trace | default(false) %}
+    FlagmegaProgramTrace ftt_program_trace
+{% endif %}
 ) {
-{% if distributed_entry %}
+{% if distributed_entry and platform != "nvidia" %}
     unsigned int *const ftt_grid_barrier = _ftt_grid_barrier_counters;
 {% endif %}
 {{ entry.mesh_coordinates() }}
@@ -77,13 +111,19 @@ static FTT_DEVICE void {{ definition.symbol }}(
 {% endfor %}
 FTT_GLOBAL void {{ symbol }}(
 {% for argument in signature_arguments %}
-    {{ entry.parameter(argument) }}{{ "," if not loop.last }}
+    {{ entry.parameter(argument) }}{{ "," if not loop.last or (platform == "nvidia" and (barrier_abi | default(distributed_entry))) or (program_trace | default(false)) }}
 {% endfor %}
+{% if platform == "nvidia" and (barrier_abi | default(distributed_entry)) %}
+    unsigned int *ftt_grid_barrier{{ "," if program_trace | default(false) }}
+{% endif %}
+{% if program_trace | default(false) %}
+    FlagmegaProgramTrace ftt_program_trace
+{% endif %}
 ) {
 {% for argument in signature_arguments %}
     (void){{ argument }};
 {% endfor %}
-{% if distributed_entry %}
+{% if distributed_entry and platform != "nvidia" %}
 {# Grid barriers need counters in global memory. The Triton backend gets them
    from Triton's compiler-owned global scratch, which the FlagMega runtime
    allocates and zeroes per launch (see runtime/prepared.py). A C++ package
@@ -94,17 +134,43 @@ FTT_GLOBAL void {{ symbol }}(
 {% endif %}
 {{ entry.mesh_coordinates() }}
 {{ entry.barrier_group_slots() }}
+{% for argument in scoped_entry_arguments | default(()) %}
+    {{ argument.name }} = reinterpret_cast<{{ argument_types[argument.name].type }} *>(
+        reinterpret_cast<unsigned char *>({{ argument.name }}) + shard_index * {{ argument.stride }}LL);
+{% endfor %}
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 0);
+{% endif %}
 {{ entry_events_body(entry_events) }}
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 1);
+{% endif %}
 }
 
 
+{% if not (cpp_program_entry | default(false)) %}
 // Host launch shim.  `arguments` is the artifact's runtime-binding signature
 // in order (external buffers, then memory pools), each entry a device address
 // the Python runtime obtained from `tensor.data_ptr()`.
+{% if platform == "nvidia" %}
+{% include "entrypoints/_nvidia_launch.cpp.jinja" %}
+{% else %}
 extern "C" int flagmega_launch(void **arguments, void *stream) {
     if (arguments == nullptr) {
         return -1;
     }
+{% if distributed_entry %}
+    int device = 0;
+    cudaError_t status = cudaGetDevice(&device);
+    if (status != cudaSuccess) return (int)status;
+    cudaDeviceProp properties{};
+    status = cudaGetDeviceProperties(&properties, device);
+    if (status != cudaSuccess) return (int)status;
+    // COREX has no cooperative launch API. Preserve its one-CTA-per-SM
+    // software barrier bound, evaluated against the actual loaded device.
+    if ({{ grid[0] }}LL * {{ grid[1] }}LL * {{ grid[2] }}LL > properties.multiProcessorCount)
+        return (int)cudaErrorInvalidConfiguration;
+{% endif %}
     {{ symbol }}<<<dim3({{ grid[0] }}, {{ grid[1] }}, {{ grid[2] }}),
         dim3({{ block_threads }}), 0, (cudaStream_t)stream>>>(
 {% for argument in signature_arguments %}
@@ -113,7 +179,10 @@ extern "C" int flagmega_launch(void **arguments, void *stream) {
     );
     return (int)cudaGetLastError();
 }
+{% endif %}
 
 extern "C" int flagmega_argument_count() { return {{ signature_arguments | length }}; }
 
 extern "C" int flagmega_abi_version() { return FLAGMEGA_CPP_ABI_VERSION; }
+
+{% endif %}

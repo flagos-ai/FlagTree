@@ -5,7 +5,8 @@
 // through the plain-C ABI declared in <ftt/runtime.h>.
 #include <ftt/ftt.h>
 #include <ftt/runtime.h>
-{% if distributed_entry %}
+#include <cstdint>
+{% if distributed_entry and platform != "nvidia" %}
 
 // Grid-barrier arrival counters. Declared before the kernel templates because
 // a kernel whose schedule has an internal grid barrier refers to them.

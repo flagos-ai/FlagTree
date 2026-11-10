@@ -1,0 +1,61 @@
+{% include 'kernels/u4_common.cpp.jinja' %}
+{% import 'entrypoints/_common.cpp.jinja' as entry with context %}
+{% for call in render_calls if call.family == 'u4_norm_apply_q8_c1_c2' %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const ftt::dim_t group = 4LL * blockIdx.x + warp;
+    // Exactly 40 CTAs x 4 full warps; guard is uniform before all accesses.
+    if (group >= 160LL) return;
+    const ftt::dim_t h = group * 32LL + lane;
+    const auto *const ftt_source = {{ call.u4_pointers.hidden | cppexpr }};
+    const auto *const ftt_stats = {{ call.u4_pointers.stats | cppexpr }};
+    const auto *const ftt_scale = {{ call.u4_pointers.scale | cppexpr }};
+    const auto *const ftt_bias = {{ call.u4_pointers.bias | cppexpr }};
+    auto *const ftt_result = {{ call.u4_pointers.normalized | cppexpr }};
+    auto *q8_c1 = reinterpret_cast<local_u4::Q8Block *>({{ call.u4_pointers.q8_c1 | cppexpr }});
+    auto *q8_c2 = reinterpret_cast<local_u4::Q8Block *>({{ call.u4_pointers.q8_c2 | cppexpr }});
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 2);
+{% endif %}
+    // Authoritative FlagMega norm_apply/_function.cpp.jinja, fixed RMS branch.
+    const float norm_apply_inner_count = 5120.0f;
+    const float norm_apply_mean = 0.0f;
+    float norm_apply_variance = ftt::to_float(ftt_stats[0]) / norm_apply_inner_count;
+    norm_apply_variance = ftt::max(norm_apply_variance, 0.0f);
+    const float norm_apply_inverse_std = ftt::rsqrt(norm_apply_variance + {{ call.epsilon }}f);
+    const float norm_apply_value = ftt::to_float(ftt_source[h]);
+    const float norm_apply_scale = ftt::to_float(ftt_scale[h]);
+    const float norm_apply_bias = ftt::to_float(ftt_bias[h]);
+    float norm_apply_normalized = (norm_apply_value - norm_apply_mean) * norm_apply_inverse_std;
+    const float norm_apply_output = norm_apply_normalized * norm_apply_scale + norm_apply_bias;
+    // Preserve both authoritative source/output BF16 conversions; quantize
+    // only the rounded BF16 value, and keep the residual's hidden immutable.
+    const auto rounded = ftt::store_as(ftt_result,
+        ftt::to_float(ftt::store_as(ftt_source, norm_apply_output)));
+    ftt_result[h] = rounded;
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 12);
+{% endif %}
+    // Literal C1 body from the existing MIT llama.cpp-derived U4 encoder.
+    const float xi = ftt::to_float(rounded);
+    const float amax = local_u4::warp_max(fabsf(xi));
+    const float d = amax / 127.0f;
+    const int q = amax == 0.0f ? 0 : static_cast<int>(roundf(xi / d));
+    reinterpret_cast<signed char *>(q8_c1[group].qs)[lane] = static_cast<signed char>(q);
+    if (lane == 0) q8_c1[group].d = d;
+    // The identical C0 is stored into a second disjoint root, not recomputed.
+    reinterpret_cast<signed char *>(q8_c2[group].qs)[lane] = static_cast<signed char>(q);
+    if (lane == 0) q8_c2[group].d = d;
+    const float residual = __fsub_rn(xi, __fmul_rn(static_cast<float>(q), d));
+    const float rmax = local_u4::warp_max(fabsf(residual));
+    const float rd = rmax / 127.0f;
+    const int rq = rmax == 0.0f ? 0 : static_cast<int>(roundf(residual / rd));
+    reinterpret_cast<signed char *>(q8_c2[160LL + group].qs)[lane] = static_cast<signed char>(rq);
+    if (lane == 0) q8_c2[160LL + group].d = rd;
+{% if program_trace | default(false) %}
+    flagmega_program_event(ftt_program_trace, 3);
+{% endif %}
+    // Normal stream kernel completion publishes all three independently owned fields.
+}
+{% endfor %}

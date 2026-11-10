@@ -1,0 +1,13 @@
+{
+  "mode": "iq4_mmvq",
+  "precision": "dual_glu",
+  "interleaved": "dual",
+  "gdn_warp_state": true,
+  "async_weights": "uniform128_r8",
+  "async_interleaved": true,
+  "gdn_head_projection": "gdn_head_globalq8_qkregs_fullhead48",
+  "u4_scope": "full12",
+  "conv_channel128_fixed96": true,
+  "input_norm_q8": true,
+  "output_norm_owner": true
+}

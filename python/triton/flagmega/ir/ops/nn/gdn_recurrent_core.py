@@ -19,6 +19,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.ops.nn._gdn_state import GatedDeltaNetState
 from triton.flagmega.ir.type_pattern import has_rank, is_ref, is_tensor
+from triton.flagmega.ir.ops.math._quantized import matrix_width
 
 
 @op_definition(
@@ -110,6 +111,14 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
         z_type = cls.z.type_of(inputs)
         state_type = cls.state.type_of(inputs)
         z_tensor = tensor_of(z_type)
+        projection = tensor_of(cls.projection_input.type_of(inputs))
+        for parameter, attribute in ((cls.b_weight, "b_weight_encoding"), (cls.a_weight, "a_weight_encoding")):
+            encoding = attrs.get(attribute)
+            if encoding is not None:
+                weight = tensor_of(parameter.type_of(inputs))
+                if (matrix_width(weight, encoding) != projection.shape[1]
+                        or weight.shape[0] != tensor_type(projection.dtype, (int(attrs["num_value_heads"]),)).shape[0]):
+                    raise IRSchemaError("Native recurrent weights must match projection K and value heads.")
         output = tensor_type(
             z_tensor.dtype,
             (z_tensor.shape[0], int(attrs["num_value_heads"]) * int(attrs["value_head_dim"])),
@@ -205,14 +214,13 @@ def gated_delta_net_recurrent_core(
     if int(qkv.shape[-1]) != conv_dim or int(z.shape[-1]) != value_dim:
         raise EvaluationError("GatedDeltaNet recurrent QKV/Z dimensions do not match attributes.")
     recurrent_state = state.recurrent_layer(0).float()
-    b_projection = torch.matmul(
-        projection_input,
-        b_weight.to(dtype=projection_input.dtype).transpose(0, 1),
-    )
-    a_projection = torch.matmul(
-        projection_input,
-        a_weight.to(dtype=projection_input.dtype).transpose(0, 1),
-    )
+    from triton.flagmega.ir.ops.math._quantized import native_linear
+    def project(weight, encoding):
+        if encoding is not None:
+            return native_linear(projection_input, weight, encoding, output_dtype=projection_input.dtype)
+        return torch.matmul(projection_input, weight.to(projection_input.dtype).transpose(0, 1))
+    b_projection = project(b_weight, attrs.get("b_weight_encoding"))
+    a_projection = project(a_weight, attrs.get("a_weight_encoding"))
     outputs = []
     for token in range(qkv.shape[0]):
         current = qkv[token]

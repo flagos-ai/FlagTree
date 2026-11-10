@@ -13,8 +13,14 @@
 #define FTT_ARCH_ILUVATAR 1
 #endif
 
-#if !defined(FTT_ARCH_ILUVATAR)
-#error "FTT currently supports only the Iluvatar arch; define FTT_ARCH_ILUVATAR."
+#if !defined(FTT_ARCH_ILUVATAR) && (defined(FTT_ARCH_NVIDIA) || defined(__NVCC__))
+#define FTT_ARCH_NVIDIA 1
+#endif
+
+#if defined(FTT_ARCH_ILUVATAR) && defined(FTT_ARCH_NVIDIA)
+#error "Select exactly one FTT architecture."
+#elif !defined(FTT_ARCH_ILUVATAR) && !defined(FTT_ARCH_NVIDIA)
+#error "Define FTT_ARCH_ILUVATAR or FTT_ARCH_NVIDIA."
 #endif
 
 // Device/host function qualifiers.  Iluvatar's COREX toolchain accepts the
@@ -45,13 +51,21 @@
 #define FTT_DEVICE_PASS 1
 #endif
 
+#if defined(FTT_ARCH_NVIDIA) && defined(__CUDACC__)
+#define FTT_INLINE __forceinline__
+#else
 #define FTT_INLINE inline __attribute__((always_inline))
+#endif
 #define FTT_DEVICE_INLINE FTT_DEVICE FTT_INLINE
 
 // Loop hints.  Kernel bodies are generated with statically known trip counts
 // wherever the IR knows them, so full unrolling is the common case.
 #define FTT_UNROLL _Pragma("unroll")
+#if defined(FTT_ARCH_NVIDIA)
+#define FTT_NO_UNROLL _Pragma("unroll 1")
+#else
 #define FTT_NO_UNROLL _Pragma("nounroll")
+#endif
 
 namespace ftt {
 

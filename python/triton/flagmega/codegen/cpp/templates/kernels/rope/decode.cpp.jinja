@@ -1,0 +1,32 @@
+// flagmega-kernel: rope/decode platform=generic
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "rope" and call.variant == "decode" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const rope_source = {{ call.source | cppexpr }};
+    auto *const rope_cosine = {{ call.cosine | cppexpr }};
+    auto *const rope_sine = {{ call.sine | cppexpr }};
+    auto *const rope_result = {{ call.result | cppexpr }};
+{{ entry.strided_loop("rope_offsets", call.local_capacity) }} {
+        if (!({{ call.active | cppexpr }})) continue;
+        const ftt::dim_t rope_dimension = {{ call.dimension | cppexpr }};
+        float rope_value = ftt::to_float(rope_source[{{ call.source_offset | cppexpr }}]);
+        if (rope_dimension < {{ call.rotary_dim }}LL) {
+            const float rope_partner = ftt::to_float(rope_source[{{ call.partner_offset | cppexpr }}]);
+            const float rope_rotated = rope_dimension < {{ call.rotary_dim }}LL / 2LL
+                ? -rope_partner : rope_partner;
+            const float rope_cos = ftt::to_float(rope_cosine[{{ call.cosine_offset | cppexpr }}]);
+            const float rope_sin = ftt::to_float(rope_sine[{{ call.sine_offset | cppexpr }}]);
+            // Both products round to FP32 before the add, as in the semantic
+            // RoPE implementation; NVCC must not contract these into an FMA.
+            const float rope_cos_product = __fmul_rn(rope_value, rope_cos);
+            const float rope_sin_product = __fmul_rn(rope_rotated, rope_sin);
+            rope_value = rope_cos_product + rope_sin_product;
+        }
+        rope_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(rope_result, rope_value);
+    }
+}
+{% endif %}
+{% endfor %}
