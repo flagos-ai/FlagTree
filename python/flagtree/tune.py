@@ -181,8 +181,12 @@ class AutoTuner:
         if cache_version is not None and not isinstance(cache_version, str):
             raise TypeError("cache_version must be a string or None")
         self.cache_version = cache_version
-        self.cache_dir = None if cache_dir is False else Path(cache_dir if cache_dir is not None else os.environ.get(
-            "FLAGTREE_AUTOTUNE_CACHE_DIR", str(Path.home() / ".flagtree" / "autotune"))).expanduser()
+        if cache_dir is None:
+            cache_dir = os.environ.get("FLAGTREE_AUTOTUNE_CACHE_DIR")
+            if cache_dir is None:
+                cache_root = os.environ.get("FLAGTREE_CACHE_DIR")
+                cache_dir = (Path(cache_root) if cache_root is not None else Path.home() / ".flagtree") / "autotune"
+        self.cache_dir = None if cache_dir is False else Path(cache_dir).expanduser()
         update_wrapper(self, func, updated=())
 
     @cached_property

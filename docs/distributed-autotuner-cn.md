@@ -9,7 +9,7 @@
 - 用字典列表定义候选参数，支持 `key_fn` 和 `prune_fn`。
 - 本地调优与指定通信组内的联合调优。
 - 分布式候选参数列表取交集、执行参数一致性检查和统一缓存命中决策。
-- 自动缓存调优结果到 FLAGTREE_AUTOTUNE_CACHE_DIR 环境变量指定的目录或者调优器参数 cache_dir 指定的目录，默认为 ~/.flagtree/autotune/local 或者 ~/.flagtree/autotune/distributed
+- 自动缓存调优结果到缓存目录下的 `local/` 或 `distributed/` 子目录，默认位于 `${FLAGTREE_CACHE_DIR}/autotune`；未设置 `FLAGTREE_CACHE_DIR` 时使用 `~/.flagtree/autotune`。支持通过 `cache_dir` 或 `FLAGTREE_AUTOTUNE_CACHE_DIR` 单独指定目录。
 
 调优器不会自动识别函数是否包含分布式通信。函数涉及多个 rank 协作时，必须显式传入 `autotune_pg` 进程组参数进行分布式调优。
 
@@ -33,7 +33,7 @@ def autotune(
 | `config_space` | 必选参数：包含可调参数的字典列表，键对应被装饰函数的关键字参数。 |
 | `key_fn` | 必选参数：接受与被装饰函数相同参数的函数，返回用于缓存的可哈希 key |
 | `prune_fn` | 可选参数：可选的候选裁剪函数；返回真值保留候选，返回假值丢弃候选。 |
-| `cache_dir` | 可选参数：磁盘缓存目录。默认读取环境变量或使用默认路径；传入 `False` 关闭磁盘缓存。 |
+| `cache_dir` | 可选参数：磁盘缓存目录。路径优先级为显式参数 → `FLAGTREE_AUTOTUNE_CACHE_DIR` → `${FLAGTREE_CACHE_DIR}/autotune` → `~/.flagtree/autotune`。显式参数和专用环境变量直接作为缓存目录，不追加 `autotune/`；传入 `False` 关闭磁盘缓存，保留内存缓存。 |
 | `cache_version` | 可选参数：字符串或 `None`。用于区分需要重新调优的实现，传入自定义值字符串值可以强制生成新的磁盘缓存。 |
 
 ## 2. 基本用法

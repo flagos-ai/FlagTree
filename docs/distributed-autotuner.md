@@ -9,7 +9,7 @@ Key features:
 - Define candidate parameters as a list of dictionaries, with support for `key_fn` and `prune_fn`.
 - Tune locally or jointly within a specified process group.
 - Intersect distributed candidate lists, check that effective tuning parameters agree across ranks, and coordinate cache-hit decisions.
-- Automatically cache tuning results under the directory specified by the `FLAGTREE_AUTOTUNE_CACHE_DIR` environment variable or the tuner's `cache_dir` argument. The default locations are `~/.flagtree/autotune/local` and `~/.flagtree/autotune/distributed`.
+- Automatically cache tuning results in `local/` or `distributed/` subdirectories of the cache directory. The default is `${FLAGTREE_CACHE_DIR}/autotune`, or `~/.flagtree/autotune` when `FLAGTREE_CACHE_DIR` is unset. Override it with `cache_dir` or `FLAGTREE_AUTOTUNE_CACHE_DIR`.
 
 The autotuner does not automatically detect whether a function performs distributed communication. If the function requires multiple ranks to cooperate, explicitly pass the process group through `autotune_pg` to enable distributed tuning.
 
@@ -32,7 +32,7 @@ def autotune(
 | `config_space` | Required. A list of dictionaries containing tunable parameters. Dictionary keys correspond to keyword arguments of the decorated function. |
 | `key_fn` | Required. A function that receives the arguments passed by the caller and returns a hashable cache key. |
 | `prune_fn` | Optional. A function that filters candidates: a truthy return value keeps a candidate, and a falsy value discards it. |
-| `cache_dir` | Optional. The disk-cache directory. Defaults to the environment variable or the default path; pass `False` to disable disk caching. |
+| `cache_dir` | Optional. The disk-cache directory, selected in this order: explicit argument → `FLAGTREE_AUTOTUNE_CACHE_DIR` → `${FLAGTREE_CACHE_DIR}/autotune` → `~/.flagtree/autotune`. The explicit argument and dedicated environment variable specify the directory directly, without appending `autotune/`. Pass `False` to disable disk caching while keeping the memory cache. |
 | `cache_version` | Optional. A string or `None`. Distinguishes implementation versions that require retuning. Changing this string forces a new disk-cache entry. |
 
 ## 2. Basic Usage

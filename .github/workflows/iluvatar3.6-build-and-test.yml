@@ -102,6 +102,8 @@ jobs:
             fi
           fi
 
+          python3 -m pytest -s python/test/unit/test_function_autotune.py
+
           # triton operators unit test
           pytest third_party/iluvatar/python/test/unit/operators/test_blocksparse.py
           pytest third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py

@@ -112,6 +112,7 @@ jobs:
           # python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
           # python3 python/tutorials/12-fused_inv_rope_fp8_quant_reorder.py --only_unit_test
           ## python unit test
+          python3 -m pytest -s python/test/unit/test_function_autotune.py
           python3 -m pytest -s python/test/unit/cuda
           python3 -m pytest -s python/test/unit/instrumentation
           python3 -m pytest -s python/test/unit/language \

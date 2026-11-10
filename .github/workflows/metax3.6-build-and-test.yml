@@ -86,6 +86,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          python3 -m pytest -s python/test/unit/test_function_autotune.py
           cd third_party/metax/python/test/unit
           python3 -m pytest -s . \
             --ignore=runtime/test_specialize.py \

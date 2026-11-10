@@ -99,6 +99,8 @@ jobs:
           export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
           export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
 
+          python3 -m pytest -s python/test/unit/test_function_autotune.py
+
           ## examples
           pushd third_party/tsingmicro/examples
           python3 test_assert.py
