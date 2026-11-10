@@ -37,10 +37,12 @@ MTHREADS_TLE_DYNAMIC_LOOPS_VERSION = getattr(libtriton.ir.builder, "mthreads_tle
 MTHREADS_TLE_SPLIT_M_SQMMA_VERSION = getattr(libtriton.ir.builder, "mthreads_tle_split_m_sqmma_version", 0)
 MTHREADS_TLE_SPLIT128_SQMMA_VERSION = getattr(libtriton.ir.builder, "mthreads_tle_split128_sqmma_version", 0)
 MTHREADS_TLE_LOCAL_BARRIER_VERSION = getattr(libtriton.ir.builder, "mthreads_tle_local_barrier_version", 0)
-MTHREADS_TLE_PERSISTENT_ORDERED_SQMMA_VERSION = getattr(libtriton.ir.builder,
-                                                        "mthreads_tle_persistent_ordered_sqmma_version", 0)
-MTHREADS_TLE_DYNAMIC_PARTITION_SYNC_VERSION = getattr(libtriton.ir.builder,
-                                                      "mthreads_tle_dynamic_partition_sync_version", 0)
+MTHREADS_TLE_PERSISTENT_ORDERED_SQMMA_VERSION = getattr(
+    libtriton.ir.builder, "mthreads_tle_persistent_ordered_sqmma_version", 0
+)
+MTHREADS_TLE_DYNAMIC_PARTITION_SYNC_VERSION = getattr(
+    libtriton.ir.builder, "mthreads_tle_dynamic_partition_sync_version", 0
+)
 MTHREADS_TLE_GROUPED_COMPLETION_VERSION = getattr(libtriton.ir.builder, "mthreads_tle_grouped_completion_version", 0)
 MTHREADS_TLE_16_WARP_PERSISTENT_VERSION = getattr(libtriton.ir.builder, "mthreads_tle_16_warp_persistent_version", 0)
 MTHREADS_TLE_FUSED_PIPE_CONSUMER_VERSION = getattr(libtriton.ir.builder, "mthreads_tle_fused_pipe_consumer_version", 0)
@@ -48,7 +50,10 @@ MTHREADS_TLE_FUSED_PIPE_CONSUMER_VERSION = getattr(libtriton.ir.builder, "mthrea
 # the SQMMA optimizations while avoiding the unsafe max-ILP scheduler.
 MTHREADS_TLE_DISABLE_MAX_ILP_SCHEDULER_VERSION = 1
 
+from .common import device_tensor_descriptor
+
 __all__ = [
+    "device_tensor_descriptor",
     "buffer",
     "common",
     "copy",
