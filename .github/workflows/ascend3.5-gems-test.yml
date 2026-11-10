@@ -49,6 +49,9 @@ jobs:
     with:
       runner: ${{ matrix.runner }}
       backend: ascend
+      # Three device and python combinations run in one matrix, so the runner
+      # label is what keeps their records apart in the Bitable.
+      variant: ${{ matrix.runner }}
       gpu-env-var: ASCEND_RT_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
       flagtree-build-command: |-
@@ -59,3 +62,7 @@ jobs:
         source /usr/local/Ascend/ascend-toolkit/set_env.sh
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      FLAGTREE_FEISHU_APP_ID: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+      FLAGTREE_FEISHU_APP_SECRET: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+      FLAGTREE_FEISHU_BITABLE_APP_TOKEN: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
+      FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID: ${{ secrets.FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID }}
