@@ -592,3 +592,52 @@ def test_build_tree_places_native_modules_for_editable_install(build_helper, mon
         assert destination.is_file() is should_copy
         if should_copy:
             assert destination.read_bytes() == payload
+
+
+# FlagPrism：exercise the actual MetaX launcher without initializing a device runtime.
+@pytest.mark.parametrize(("debug_enabled", "hidden_arg"), ((False, False), (True, False), (True, True), (False, True)))
+def test_metax_debug_launch_metadata_contract(monkeypatch, debug_enabled, hidden_arg):
+    driver_path = PROJECT_ROOT / "third_party" / "metax" / "backend" / "driver.py"
+    tree = ast.parse(driver_path.read_text(), filename=str(driver_path))
+    launcher_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "MacaLauncher")
+    signatures, launches, contexts = [], [], []
+
+    def make_launcher(constants, signature, ids):
+        signatures.append(dict(signature))
+        return "mock launcher source"
+
+    def launch_context(backend, metadata, grid, stream, launch_metadata, user_args):
+        contexts.append((backend, metadata, grid, stream, launch_metadata, user_args))
+        return nullcontext((0x12345678, ) if hidden_arg else ())
+
+    monkeypatch.setattr(_flagprism, "debugger_launch_context", launch_context)
+    namespace = {
+        "make_launcher": make_launcher,
+        "compile_module_from_src": lambda **kwargs: SimpleNamespace(launch=lambda *args: launches.append(args)),
+        "library_dirs": lambda: [],
+        "hdrmaca_dirs": lambda: [],
+        "libraries": [],
+        "_allocation": SimpleNamespace(_allocator=None, _profile_allocator=None),
+        "_flagprism": _flagprism,
+    }
+    exec(compile(ast.Module(body=[launcher_node], type_ignores=[]), str(driver_path), "exec"), namespace)
+    metadata = SimpleNamespace(debug_enabled=debug_enabled, debug_launch_hidden_arg=hidden_arg, global_scratch_size=0,
+                               global_scratch_align=1, profile_scratch_size=0, profile_scratch_align=1)
+    source = SimpleNamespace(signature={0: "*fp32"}, constants={})
+    if hidden_arg and not debug_enabled:
+        with pytest.raises(ValueError, match="debug_launch_hidden_arg.*debug_enabled"):
+            namespace["MacaLauncher"](source, metadata)
+        assert not signatures and not launches and not contexts
+        return
+
+    launcher = namespace["MacaLauncher"](source, metadata)
+    tensor = object()
+    launch_metadata = {"name": "test"}
+    args = (4, launch_metadata, None, None, tensor)
+    launcher(1, 2, 3, 77, 99, *args)
+    assert signatures == [{0: "*fp32", 1: "*i8"} if hidden_arg else {0: "*fp32"}]
+    assert launches == [(1, 2, 3, 77, 99, None, None, *args, *((0x12345678, ) if hidden_arg else ()))]
+    assert contexts == ([("maca", metadata, (1, 2, 3), 77, launch_metadata, (tensor, ))] if debug_enabled else [])
+
+
+# FlagPrism end
