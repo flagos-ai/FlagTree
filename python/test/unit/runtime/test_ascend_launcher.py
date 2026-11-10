@@ -36,6 +36,18 @@ def make_launcher(driver, workspace_size, auto_blockify):
     return driver.make_launcher({}, {}, metadata)
 
 
+@pytest.mark.parametrize("env", [None, "0", "1", "false", "true", "TRUE"])
+@pytest.mark.parametrize("option", [None, False, True])
+def test_auto_blockify_launcher_option(launcher_backend, monkeypatch, env, option):
+    if env is None:
+        monkeypatch.delenv("TRITON_ALL_BLOCKS_PARALLEL", raising=False)
+    else:
+        monkeypatch.setenv("TRITON_ALL_BLOCKS_PARALLEL", env)
+    launcher = make_launcher(launcher_backend, workspace_size=0, auto_blockify=option)
+    expected = option if option is not None else env in ("1", "true", "TRUE")
+    assert ("blockNum = std::min(blockNum" in launcher) == expected
+
+
 @pytest.mark.parametrize("taskqueue", [False, True])
 @pytest.mark.parametrize("auto_blockify", [False, True])
 @pytest.mark.parametrize("optimization", ["-O0", "-O2"])
