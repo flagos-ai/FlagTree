@@ -14,13 +14,21 @@
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <numeric>
 #include <optional>
 #include <pybind11/pybind11.h>
@@ -36,6 +44,518 @@ void register_triton_musa_tle_dialects(mlir::DialectRegistry &registry);
 #endif
 
 namespace {
+
+unsigned canonicalizeLaneShuffles(llvm::Module &module) {
+  unsigned changed = 0;
+  for (auto &fn : module)
+    for (auto &bb : fn)
+      for (auto &inst : bb) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee || callee->getName() != "llvm.musa.shfl.idx.sync.i32" ||
+            call->arg_size() != 4)
+          continue;
+        auto *control =
+            llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+        if (!control || control->getZExtValue() != 12319 ||
+            !llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)))
+          continue;
+        auto *index =
+            llvm::dyn_cast<llvm::BinaryOperator>(call->getArgOperand(1));
+        if (!index || index->getOpcode() != llvm::Instruction::Xor)
+          continue;
+        auto *mask = llvm::dyn_cast<llvm::ConstantInt>(index->getOperand(1));
+        llvm::Value *lane = index->getOperand(0);
+        if (!mask) {
+          mask = llvm::dyn_cast<llvm::ConstantInt>(index->getOperand(0));
+          lane = index->getOperand(1);
+        }
+        if (!mask || mask->getBitWidth() != 32 || mask->getZExtValue() >= 32)
+          continue;
+        auto *lowBits = llvm::dyn_cast<llvm::BinaryOperator>(lane);
+        if (!lowBits || lowBits->getOpcode() != llvm::Instruction::And)
+          continue;
+        auto *bits = llvm::dyn_cast<llvm::ConstantInt>(lowBits->getOperand(1));
+        llvm::Value *tid = lowBits->getOperand(0);
+        if (!bits) {
+          bits = llvm::dyn_cast<llvm::ConstantInt>(lowBits->getOperand(0));
+          tid = lowBits->getOperand(1);
+        }
+        auto *read = llvm::dyn_cast<llvm::CallInst>(tid);
+        auto *reg = read ? read->getCalledFunction() : nullptr;
+        if (!bits || bits->getZExtValue() != 31 || !reg ||
+            reg->getName() != "llvm.musa.read.ptx.sreg.tid.x" ||
+            read->arg_size() != 0)
+          continue;
+        auto *replacement = module.getFunction("llvm.musa.shfl.xor.sync.i32");
+        if (!replacement) {
+          replacement = llvm::Function::Create(
+              callee->getFunctionType(), llvm::GlobalValue::ExternalLinkage,
+              "llvm.musa.shfl.xor.sync.i32", module);
+          replacement->setAttributes(callee->getAttributes());
+        }
+        if (replacement->getFunctionType() != callee->getFunctionType())
+          continue;
+        call->setCalledFunction(replacement);
+        call->setArgOperand(1, mask);
+        ++changed;
+      }
+  return changed;
+}
+
+unsigned tieSignedVectorConversions(llvm::Module &module) {
+  unsigned changed = 0;
+  for (auto &fn : module) {
+    if (fn.hasFnAttribute(llvm::Attribute::StrictFP))
+      continue;
+    llvm::SmallVector<llvm::SIToFPInst *> conversions;
+    for (auto &bb : fn)
+      for (auto &inst : bb)
+        if (auto *cast = llvm::dyn_cast<llvm::SIToFPInst>(&inst)) {
+          auto *src = llvm::dyn_cast<llvm::FixedVectorType>(cast->getSrcTy());
+          auto *dst = llvm::dyn_cast<llvm::FixedVectorType>(cast->getDestTy());
+          if (src && dst && src->getNumElements() == 4 &&
+              dst->getNumElements() == 4 &&
+              src->getElementType()->isIntegerTy(32) &&
+              dst->getElementType()->isFloatTy())
+            conversions.push_back(cast);
+        }
+    for (auto *cast : conversions) {
+
+      auto *type =
+          llvm::FunctionType::get(cast->getSrcTy(), {cast->getSrcTy()}, false);
+      auto *assembly = llvm::InlineAsm::get(type, "CVT.RTE.BST4 $0.f32, $1.s32",
+                                            "=R,0", false);
+      llvm::IRBuilder<> builder(cast);
+      builder.SetCurrentDebugLocation(cast->getDebugLoc());
+      auto *bits = builder.CreateCall(assembly, {cast->getOperand(0)},
+                                      "musa.cvt.tied.bits");
+      bits->setDoesNotAccessMemory();
+      bits->setDoesNotThrow();
+      auto *result =
+          builder.CreateBitCast(bits, cast->getDestTy(), "musa.cvt.tied.fp32");
+      cast->replaceAllUsesWith(result);
+      cast->eraseFromParent();
+      ++changed;
+    }
+  }
+  return changed;
+}
+
+unsigned fuseFp8PackPairSums(llvm::Module &module) {
+  unsigned changed = 0;
+  llvm::SmallPtrSet<llvm::Function *, 8> modified;
+  auto &context = module.getContext();
+  auto *f32 = llvm::Type::getFloatTy(context);
+  auto *i32 = llvm::Type::getInt32Ty(context);
+  auto *v4f = llvm::FixedVectorType::get(f32, 4);
+  auto *resultTy = llvm::StructType::get(context, {i32, f32, f32});
+  auto *signature =
+      llvm::FunctionType::get(resultTy, {v4f, f32, f32, f32, f32}, false);
+  for (auto &fn : module) {
+    if (fn.hasFnAttribute(llvm::Attribute::StrictFP))
+      continue;
+    for (auto &bb : fn) {
+      llvm::SmallVector<llvm::CallInst *> casts;
+      for (auto &inst : bb) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *assembly =
+            call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
+                 : nullptr;
+        if (assembly && !assembly->hasSideEffects() &&
+            assembly->getAsmString() == "CVT.RTE.DENORM.BST4 $0.e4m3, $1.f32" &&
+            assembly->getConstraintString() == "=R,R" &&
+            !call->isConvergent() && call->getType() == i32 &&
+            call->arg_size() == 1 && call->getArgOperand(0)->getType() == v4f)
+          casts.push_back(call);
+      }
+      for (auto *cast : casts) {
+        auto *vector = cast->getArgOperand(0);
+        llvm::BinaryOperator *pairs[2] = {nullptr, nullptr};
+        bool reversed[2] = {false, false};
+        for (auto *user : vector->users()) {
+          auto *add = llvm::dyn_cast<llvm::BinaryOperator>(user);
+          if (!add || add->getOpcode() != llvm::Instruction::FAdd ||
+              add->getParent() != &bb || !cast->comesBefore(add))
+            continue;
+          auto *other = add->getOperand(add->getOperand(0) == vector ? 1 : 0);
+          auto *shuffle = llvm::dyn_cast<llvm::ShuffleVectorInst>(other);
+          if (!shuffle || shuffle->getOperand(0) != vector ||
+              shuffle->getType() != v4f)
+            continue;
+          const auto mask = shuffle->getShuffleMask();
+          for (unsigned pair = 0; pair < 2; ++pair) {
+            const unsigned lane = pair * 2;
+            bool exact = mask[lane] == int(lane + 1);
+            for (unsigned j = 0; j < 4; ++j)
+              if (j != lane && mask[j] >= 0)
+                exact = false;
+            if (exact && !pairs[pair]) {
+              pairs[pair] = add;
+              reversed[pair] = add->getOperand(0) != vector;
+            }
+          }
+        }
+        if (!pairs[0] || !pairs[1])
+          continue;
+
+        llvm::IRBuilder<> builder(cast);
+        builder.SetCurrentDebugLocation(cast->getDebugLoc());
+        llvm::SmallVector<llvm::Value *> inputs{vector};
+        for (unsigned lane = 0; lane < 4; ++lane) {
+          unsigned sourceLane = reversed[lane / 2] ? lane ^ 1 : lane;
+          inputs.push_back(builder.CreateExtractElement(vector, sourceLane));
+        }
+        // Earlier outputs cannot overlap still-live inputs. All outputs are
+        // defined by real instructions.
+        std::string body = "CVT.RTE.DENORM.BST4 $0.e4m3, $3.f32\n\t"
+                           "FOP.ADD $1, $4, $5\n\tFOP.ADD $2, $6, $7";
+        auto *assembly = llvm::InlineAsm::get(signature, body,
+                                              "=&R,=&R,=R,R,R,R,R,R", false);
+        auto *fused = builder.CreateCall(assembly, inputs, "musa.pack.pairs");
+        fused->setDoesNotThrow();
+        fused->setMemoryEffects(llvm::MemoryEffects::none());
+        cast->replaceAllUsesWith(builder.CreateExtractValue(fused, 0));
+
+        for (unsigned pair = 0; pair < 2; ++pair) {
+          auto *value = builder.CreateExtractValue(fused, pair + 1);
+          auto *replacement = builder.CreateInsertElement(
+              llvm::PoisonValue::get(v4f), value, pair * 2);
+          pairs[pair]->replaceAllUsesWith(replacement);
+          pairs[pair]->eraseFromParent();
+        }
+
+        cast->eraseFromParent();
+        ++changed;
+        modified.insert(&fn);
+      }
+    }
+  }
+  // Canonicalize the single-defined-lane vectors we just introduced before
+  // passing the module to the SDK. In particular, turn the surviving local
+  // reduction into scalar operations instead of feeding poison-heavy vector
+  // expressions to the SDK's burst-combine pass. No FP fast-math is enabled.
+  if (!modified.empty()) {
+    llvm::LoopAnalysisManager loops;
+    llvm::FunctionAnalysisManager functions;
+    llvm::CGSCCAnalysisManager cgscc;
+    llvm::ModuleAnalysisManager modules;
+    llvm::PassBuilder builder;
+    builder.registerModuleAnalyses(modules);
+    builder.registerCGSCCAnalyses(cgscc);
+    builder.registerFunctionAnalyses(functions);
+    builder.registerLoopAnalyses(loops);
+    builder.crossRegisterProxies(loops, functions, cgscc, modules);
+    for (auto *fn : modified) {
+      llvm::FunctionPassManager passes;
+      passes.addPass(llvm::InstCombinePass());
+      passes.run(*fn, functions);
+    }
+  }
+  return changed;
+}
+
+unsigned demandedSqmmaAddLanes(llvm::Value *value,
+                               llvm::DenseMap<llvm::Value *, unsigned> &memo,
+                               llvm::SmallPtrSetImpl<llvm::Value *> &visiting) {
+  auto *type = llvm::dyn_cast<llvm::FixedVectorType>(value->getType());
+  if (!type || type->getNumElements() > 32)
+    return ~0u;
+  unsigned width = type->getNumElements();
+  unsigned all = width == 32 ? ~0u : ((1u << width) - 1);
+  auto found = memo.find(value);
+  if (found != memo.end())
+    return found->second;
+  if (!visiting.insert(value).second)
+    return all;
+  unsigned demanded = 0;
+  for (auto *user : value->users()) {
+    if (auto *extract = llvm::dyn_cast<llvm::ExtractElementInst>(user)) {
+      auto *index =
+          llvm::dyn_cast<llvm::ConstantInt>(extract->getIndexOperand());
+      if (!index || index->getZExtValue() >= width) {
+        demanded = all;
+        break;
+      }
+      demanded |= 1u << index->getZExtValue();
+      continue;
+    }
+    if (auto *shuffle = llvm::dyn_cast<llvm::ShuffleVectorInst>(user)) {
+      auto *outputType =
+          llvm::dyn_cast<llvm::FixedVectorType>(shuffle->getType());
+      if (!outputType || outputType->getNumElements() > 32) {
+        demanded = all;
+        break;
+      }
+      unsigned output = demandedSqmmaAddLanes(shuffle, memo, visiting);
+      for (auto [i, lane] : llvm::enumerate(shuffle->getShuffleMask())) {
+        if (i >= 32 || !(output & (1u << i)) || lane < 0)
+          continue;
+        if (lane < static_cast<int>(width) && shuffle->getOperand(0) == value)
+          demanded |= 1u << lane;
+        if (lane >= static_cast<int>(width) && shuffle->getOperand(1) == value)
+          demanded |= 1u << (lane - width);
+      }
+      continue;
+    }
+    if (auto *insert = llvm::dyn_cast<llvm::InsertElementInst>(user)) {
+      auto *index = llvm::dyn_cast<llvm::ConstantInt>(insert->getOperand(2));
+      if (insert->getOperand(0) != value || !index ||
+          index->getZExtValue() >= width) {
+        demanded = all;
+        break;
+      }
+      demanded |= demandedSqmmaAddLanes(insert, memo, visiting) &
+                  ~(1u << index->getZExtValue());
+      continue;
+    }
+    // These operations are pointwise and preserve the lane count. PHI
+    // recursion is deliberately handled as all-live on cycles.
+    auto *inst = llvm::dyn_cast<llvm::Instruction>(user);
+    auto *outType =
+        inst ? llvm::dyn_cast<llvm::FixedVectorType>(inst->getType()) : nullptr;
+    bool pointwise =
+        inst && (llvm::isa<llvm::BinaryOperator, llvm::UnaryOperator,
+                           llvm::PHINode, llvm::SelectInst>(inst));
+    if (auto *call = llvm::dyn_cast_or_null<llvm::CallBase>(inst))
+      if (auto *callee = call->getCalledFunction())
+        pointwise = callee->getIntrinsicID() == llvm::Intrinsic::fma;
+    if (pointwise && outType && outType->getNumElements() == width) {
+      demanded |= demandedSqmmaAddLanes(inst, memo, visiting);
+      continue;
+    }
+    demanded = all;
+    break;
+  }
+  visiting.erase(value);
+  memo[value] = demanded;
+  return demanded;
+}
+
+unsigned orderSqmmaOverlapAdds(llvm::Module &module, unsigned maxAdds = 0,
+                               bool tieInput = false) {
+  llvm::SmallVector<std::pair<llvm::BinaryOperator *, bool>, 32> work;
+  for (auto &fn : module) {
+    if (fn.isDeclaration() || fn.hasFnAttribute(llvm::Attribute::StrictFP))
+      continue;
+    for (auto &bb : fn) {
+      bool pendingFP8 = false;
+      unsigned orderedInRegion = 0;
+      for (auto &inst : bb) {
+        if (auto *call = llvm::dyn_cast<llvm::CallBase>(&inst)) {
+          if (auto *callee = call->getCalledFunction()) {
+            auto name = callee->getName();
+            if (name == "llvm.musa.sqmma.wait")
+              pendingFP8 = false;
+            else if (name.starts_with("llvm.musa.sqmma.") &&
+                     name.ends_with(".mma")) {
+              pendingFP8 = name.starts_with("llvm.musa.sqmma.e4m3.") ||
+                           name.starts_with("llvm.musa.sqmma.e5m2.");
+              orderedInRegion = 0;
+            }
+          }
+        }
+        auto *add = llvm::dyn_cast<llvm::BinaryOperator>(&inst);
+        if (pendingFP8 && add && add->getOpcode() == llvm::Instruction::FAdd &&
+            !add->getFastMathFlags().any()) {
+          auto *vec = llvm::dyn_cast<llvm::FixedVectorType>(add->getType());
+          if (add->getType()->isFloatTy() ||
+              (vec && vec->getElementType()->isFloatTy() &&
+               (vec->getNumElements() == 2 || vec->getNumElements() == 4))) {
+            bool ordered = !maxAdds || orderedInRegion < maxAdds;
+            work.push_back({add, ordered});
+            if (ordered)
+              ++orderedInRegion;
+          }
+        }
+      }
+    }
+  }
+  // Analyze every original use before changing any vector's users.
+  llvm::DenseMap<llvm::Value *, unsigned> demanded;
+  llvm::SmallPtrSet<llvm::Value *, 16> visiting;
+  for (auto [add, mustOrder] : work)
+    if (add->getType()->isVectorTy())
+      demandedSqmmaAddLanes(add, demanded, visiting);
+  unsigned changed = 0;
+  for (auto [add, mustOrder] : work) {
+    llvm::IRBuilder<> builder(add);
+    auto *vec = llvm::dyn_cast<llvm::FixedVectorType>(add->getType());
+    unsigned mask = vec ? demanded.lookup(add) : 1;
+    if (!mask)
+      continue;
+
+    if (vec && mask != ((1u << vec->getNumElements()) - 1)) {
+      auto *scalar = vec->getElementType();
+      auto *type = llvm::FunctionType::get(scalar, {scalar, scalar}, false);
+      // Tying a destructive ADD is a register-allocation constraint only.
+      // LLVM must preserve any later use of the old input with a copy; this
+      // neither changes rounding nor removes the original synchronization.
+      std::string constraints = tieInput ? "=R,0,R" : "=R,R,R";
+      if (mustOrder)
+        constraints += ",~{memory}";
+      auto *code = llvm::InlineAsm::get(type, "FOP.ADD $0, $1, $2", constraints,
+                                        mustOrder);
+      llvm::Value *result = llvm::PoisonValue::get(vec);
+      for (unsigned i = 0; i < vec->getNumElements(); ++i) {
+        if (!(mask & (1u << i)))
+          continue;
+        auto *ordered = builder.CreateCall(
+            code, {builder.CreateExtractElement(add->getOperand(0), i),
+                   builder.CreateExtractElement(add->getOperand(1), i)});
+        ordered->setDebugLoc(add->getDebugLoc());
+        ordered->setDoesNotThrow();
+        result = builder.CreateInsertElement(result, ordered, i);
+      }
+      add->replaceAllUsesWith(result);
+      add->eraseFromParent();
+      changed += mustOrder;
+      continue;
+    }
+    auto *type = llvm::FunctionType::get(
+        add->getType(), {add->getType(), add->getType()}, false);
+    std::string opcode = "FOP.ADD";
+    if (auto *vec = llvm::dyn_cast<llvm::FixedVectorType>(add->getType()))
+      opcode += ".BST" + std::to_string(vec->getNumElements());
+    std::string constraints = tieInput ? "=R,0,R" : "=R,R,R";
+    if (mustOrder)
+      constraints += ",~{memory}";
+    auto *code = llvm::InlineAsm::get(type, opcode + " $0, $1, $2", constraints,
+                                      mustOrder);
+    auto *ordered =
+        builder.CreateCall(code, {add->getOperand(0), add->getOperand(1)});
+    ordered->setDebugLoc(add->getDebugLoc());
+    ordered->setDoesNotThrow();
+    add->replaceAllUsesWith(ordered);
+    add->eraseFromParent();
+    changed += mustOrder;
+  }
+
+  return changed;
+}
+
+unsigned packSqmmaOverlapAdds(llvm::Module &module) {
+  unsigned packed = 0;
+  for (auto &fn : module) {
+    if (fn.isDeclaration() || fn.hasFnAttribute(llvm::Attribute::StrictFP))
+      continue;
+    for (auto &bb : fn) {
+      llvm::SmallVector<llvm::CallInst *, 4> batch;
+      llvm::SmallVector<llvm::Instruction *, 16> moves;
+      llvm::SmallPtrSet<llvm::Instruction *, 16> planned;
+      llvm::InlineAsm *batchCode = nullptr;
+      bool pendingFP8 = false;
+      auto flush = [&]() {
+        if (batch.size() >= 2) {
+          unsigned width = batch.size() >= 4 ? 4 : 2;
+          auto *anchor = batch.front();
+          for (auto *inst : moves)
+            inst->moveBefore(anchor);
+          llvm::IRBuilder<> builder(anchor);
+          auto *vec = llvm::FixedVectorType::get(builder.getFloatTy(), width);
+          llvm::Value *a = llvm::PoisonValue::get(vec);
+          llvm::Value *b = llvm::PoisonValue::get(vec);
+          for (unsigned i = 0; i < width; ++i) {
+            a = builder.CreateInsertElement(a, batch[i]->getArgOperand(0), i);
+            b = builder.CreateInsertElement(b, batch[i]->getArgOperand(1), i);
+          }
+          auto *type = llvm::FunctionType::get(vec, {vec, vec}, false);
+          auto *code = llvm::InlineAsm::get(
+              type, "FOP.ADD.BST" + std::to_string(width) + " $0, $1, $2",
+              batchCode->getConstraintString(), batchCode->hasSideEffects());
+          auto *call = builder.CreateCall(code, {a, b});
+          call->setDoesNotThrow();
+          call->setDebugLoc(anchor->getDebugLoc());
+          for (unsigned i = 0; i < width; ++i)
+            batch[i]->replaceAllUsesWith(builder.CreateExtractElement(call, i));
+          for (unsigned i = 0; i < width; ++i)
+            batch[i]->eraseFromParent();
+          ++packed;
+        }
+        batch.clear();
+        moves.clear();
+        planned.clear();
+        batchCode = nullptr;
+      };
+      // Snapshot the original order; flush removes earlier batch members only.
+      llvm::SmallVector<llvm::Instruction *, 128> original;
+      for (auto &inst : bb)
+        original.push_back(&inst);
+      for (auto *inst : original) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(inst);
+        auto *code =
+            call && call->isInlineAsm()
+                ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
+                : nullptr;
+        bool candidate = pendingFP8 && code && call->getType()->isFloatTy() &&
+                         call->arg_size() == 2 &&
+                         code->getAsmString() == "FOP.ADD $0, $1, $2" &&
+                         (code->getConstraintString() == "=R,R,R,~{memory}" ||
+                          code->getConstraintString() == "=R,0,R,~{memory}" ||
+                          code->getConstraintString() == "=R,R,R" ||
+                          code->getConstraintString() == "=R,0,R");
+        if (candidate) {
+          if (batchCode && batchCode != code)
+            flush();
+          auto *anchor = batch.empty() ? call : batch.front();
+          unsigned previousMoves = moves.size();
+          // A later member may depend on an earlier ADD through extract/insert
+          // views. Reject that batch; hoisting a call or arithmetic is
+          // forbidden.
+          std::function<bool(llvm::Value *)> prepare = [&](llvm::Value *value) {
+            auto *def = llvm::dyn_cast<llvm::Instruction>(value);
+            if (!def || def->getParent() != &bb || def->comesBefore(anchor))
+              return true;
+            if (def == anchor || llvm::is_contained(batch, def))
+              return false;
+            if (planned.contains(def))
+              return true;
+            if (!llvm::isa<llvm::ExtractElementInst, llvm::InsertElementInst,
+                           llvm::ShuffleVectorInst, llvm::BitCastInst>(def))
+              return false;
+            for (auto &operand : def->operands())
+              if (!prepare(operand.get()))
+                return false;
+            planned.insert(def);
+            moves.push_back(def);
+            return true;
+          };
+          if (!prepare(call->getArgOperand(0)) ||
+              !prepare(call->getArgOperand(1))) {
+            // A failed candidate must not contribute partially collected
+            // register views to the preceding batch's hoist plan.
+            moves.resize(previousMoves);
+            planned.clear();
+            for (auto *move : moves)
+              planned.insert(move);
+            flush();
+          }
+          if (batch.empty())
+            batchCode = code;
+          batch.push_back(call);
+          if (batch.size() == 4)
+            flush();
+          continue;
+        }
+        if (call || inst->mayReadOrWriteMemory() ||
+            inst->mayHaveSideEffects() || inst->isTerminator())
+          flush();
+        if (call)
+          if (auto *callee = call->getCalledFunction()) {
+            auto name = callee->getName();
+            if (name == "llvm.musa.sqmma.wait")
+              pendingFP8 = false;
+            else if (name.starts_with("llvm.musa.sqmma.") &&
+                     name.ends_with(".mma"))
+              pendingFP8 = name.starts_with("llvm.musa.sqmma.e4m3.") ||
+                           name.starts_with("llvm.musa.sqmma.e5m2.");
+          }
+      }
+      flush();
+    }
+  }
+  return packed;
+}
 
 llvm::Function *findPrimaryKernel(llvm::Module &module,
                                   llvm::StringRef kernelNameHint) {
@@ -336,6 +856,13 @@ void init_triton_mthreads(py::module &&m) {
           return kernel->getName().str();
         });
 
+  m.def("canonicalize_lane_shuffles", &canonicalizeLaneShuffles);
+  m.def("tie_signed_vector_conversions", &tieSignedVectorConversions,
+        py::arg("module"));
+  m.def("fuse_fp8_pack_pair_sums", &fuseFp8PackPairSums, py::arg("module"));
+  m.def("order_sqmma_overlap_adds", &orderSqmmaOverlapAdds, py::arg("module"),
+        py::arg("max_adds") = 0, py::arg("tie_input") = false);
+  m.def("pack_sqmma_overlap_adds", &packSqmmaOverlapAdds);
   m.def("module_uses_mulhi_helper",
         [](llvm::Module &module) { return moduleUsesMulhiHelper(module); });
 }
