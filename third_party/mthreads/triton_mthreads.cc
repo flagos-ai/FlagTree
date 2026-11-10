@@ -50,7 +50,7 @@ unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
       for (auto &inst : bb) {
         auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
         auto *assembly = call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand()) : nullptr;
-        if (!assembly || !call->use_empty() || call->isTailCall() ||
+        if (!assembly || !call->use_empty() || call->isMustTailCall() ||
             call->hasOperandBundles() ||
             call->arg_size() != 1 || !call->getType()->isFloatTy() ||
             call->getArgOperand(0)->getType() != call->getType() ||
@@ -69,6 +69,10 @@ unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
                                          old->canThrow());
     llvm::IRBuilder<> builder(call);
     auto *replacement = builder.CreateCall(assembly, {call->getArgOperand(0)});
+    // O3 marks these stack-independent inline-asm calls tail even when
+    // later stores remain. Preserve that optional hint; musttail calls were
+    // excluded above because their signature/return contract cannot change.
+    replacement->setTailCallKind(call->getTailCallKind());
     replacement->setCallingConv(call->getCallingConv());
     replacement->setAttributes(call->getAttributes());
     replacement->copyMetadata(*call);

@@ -56,6 +56,7 @@ def test_option_validation_and_cache():
             backend.parse_options({"lower_dead_tied_register_fences": invalid})
 
 
+@pytest.mark.parametrize("optimize", [False, True])
 @pytest.mark.parametrize("constraints,side_effects,dtype,used,expected", [
     ("=R,0", True, "f32", False, 1),
     ("=R,0", True, "f32", True, 0),
@@ -64,7 +65,7 @@ def test_option_validation_and_cache():
     ("=R,0", False, "f32", False, 0),
     ("=R,0", True, "i32", False, 0),
 ])
-def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, used, expected):
+def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, used, expected, optimize):
     """Test the helper before target codegen, including memory-clobber negatives."""
     from triton._C import libtriton
     from triton._C.libtriton import ir, llvm
@@ -86,12 +87,18 @@ def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, u
     module = ir.parse_mlir_module(str(path), context)
     llvm_context = llvm.context()
     llvm_module = llvm.to_module(module, llvm_context)
+    if optimize:
+        llvm.optimize_module(llvm_module, llvm.OPTIMIZE_O3)
     before = str(llvm_module)
+    if optimize and expected:
+        assert 'tail call float asm sideeffect "", "=R,0"' in before
     assert libtriton.mthreads.lower_dead_tied_register_fences(llvm_module) == expected
     after = str(llvm_module)
     if expected:
         assert 'call void asm sideeffect "", "R"' in after
         assert "=R,0" not in after
+        if optimize:
+            assert 'tail call void asm sideeffect "", "R"' in after
         assert libtriton.mthreads.lower_dead_tied_register_fences(llvm_module) == 0
     else:
         assert after == before

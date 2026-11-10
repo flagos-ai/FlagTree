@@ -8,7 +8,8 @@ The only accepted call is a side-effecting empty inline assembly with exactly
 `=R,0` constraints, a single FP32 operand/result and an unused result. It becomes
 a side-effecting empty `R` input-only call at the same location. The input data
 dependency, side-effect marker, calling convention, call attributes and metadata
-are retained. Tail calls, operand bundles and return attributes are excluded.
+are retained. Optional tail-call markers added by LLVM optimization are retained;
+mandatory `musttail` calls, operand bundles and return attributes are excluded.
 Used results, nonempty instructions, other types/constraints and memory clobbers
 are not rewritten. The helper is idempotent.
 
@@ -19,7 +20,8 @@ ordering guarantee. A caller needing ordering through the output keeps a used
 result, which the transform explicitly excludes.
 
 Compiler coverage is in `python/test/unit/tle/test_readonly_register_fence.py`:
-exact LLVM predicate and negative cases, unchanged nonempty instructions,
+exact LLVM predicate and negative cases before and after O3 (including its
+ordinary tail-call markers), unchanged nonempty instructions,
 used-result preservation, default behavior, option validation and cache identity.
 Target-codegen and MP31 runtime checks are required separately before production
 use; historical combined-kernel performance is not an isolated speedup claim.
