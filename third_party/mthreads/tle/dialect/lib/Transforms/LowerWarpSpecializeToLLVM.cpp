@@ -20,6 +20,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -102,10 +103,9 @@ getPositiveConstantIncrement(Value value, Value induction) {
 
 // scf.for has become CFG by late warp-specialize lowering.  Recover the
 // canonical induction variable, lower bound, and positive constant step so
-// every consumer in a shared epoch group waits on the same alternating
-// hardware phase.  In particular, a grid-stride persistent loop uses
-// ((tile - pid) / NUM_SMS) & 1 rather than tile & 1.
-static FailureOr<Value> resolvePartitionSyncPhase(LLVM::CallIntrinsicOp sync,
+// every consumer in a shared epoch group selects the same barrier and phase.
+// Keep the normalized iteration intact: paired barriers need its low two bits.
+static FailureOr<Value> resolvePartitionSyncEpoch(LLVM::CallIntrinsicOp sync,
                                                   Region &partition,
                                                   DominanceInfo &dominance,
                                                   IRRewriter &rewriter) {
@@ -168,9 +168,7 @@ static FailureOr<Value> resolvePartitionSyncPhase(LLVM::CallIntrinsicOp sync,
         arith::DivUIOp::create(rewriter, sync.getLoc(), iteration, loopStep)
             .getResult();
 
-  Value one = arith::ConstantIntOp::create(rewriter, sync.getLoc(), 1, 32);
-  return arith::AndIOp::create(rewriter, sync.getLoc(), iteration, one)
-      .getResult();
+  return iteration;
 }
 
 static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
@@ -186,13 +184,17 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         "ttg.num-warps");
   int32_t defaultWarps = static_cast<int32_t>(defaultWarpsAttr.getInt());
   bool needsLmaCompletion = false;
+  bool pairedBarriers = false;
   if (auto target = module->getAttrOfType<StringAttr>(ttg::AttrTargetName)) {
     StringRef arch = target.getValue();
     int capability = 0;
-    if (arch.consume_front("musa:"))
+    if (arch.consume_front("musa:")) {
       needsLmaCompletion =
           arch.starts_with("ph1") ||
           (!arch.getAsInteger(10, capability) && capability >= 31);
+      pairedBarriers = arch == "ph1" ||
+                       (!arch.getAsInteger(10, capability) && capability == 31);
+    }
   }
 
   SmallVector<Region *> workerRegions(ws.getPartitionRegions().begin(),
@@ -341,17 +343,20 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
     }
   }
 
-  int64_t requiredBarrierIds =
-      privatePartitions.size() + sharedGroupOrder.size();
+  int32_t barriersPerGroup = pairedBarriers ? 2 : 1;
+  int64_t requiredBarrierIds = (static_cast<int64_t>(privatePartitions.size()) +
+                                sharedGroupOrder.size()) *
+                               barriersPerGroup;
   if (requiredBarrierIds <= 0 ||
       requiredBarrierIds > std::numeric_limits<int32_t>::max())
     return syncs.front().op.emitOpError(
         "MUSA TLE partition synchronization barrier count overflow");
 
-  // Each thread executes exactly one static partition, which reuses one
-  // hardware barrier. Track its phase explicitly across every rendezvous,
-  // including loops and request boundaries. LLVM promotes this private slot
-  // to SSA, matching MATE's explicit phase protocol on PH1.
+  // Each thread executes one static partition. PH1 must alternate two barriers
+  // so a late waiter cannot wake the next phase of the same barrier. The low
+  // two state bits select A0, B0, A1, B1 across dynamic rendezvous. Other
+  // targets retain their single-barrier phase protocol. LLVM promotes the slot
+  // to SSA.
   Value phaseSlot;
   {
     OpBuilder::InsertionGuard guard(rewriter);
@@ -362,11 +367,23 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         rewriter, ws.getLoc(),
         LLVM::LLVMPointerType::get(module.getContext(), 5),
         rewriter.getI32Type(), one, 4);
-    LLVM::StoreOp::create(rewriter, ws.getLoc(), zero, phaseSlot);
+    if (!pairedBarriers)
+      LLVM::StoreOp::create(rewriter, ws.getLoc(), zero, phaseSlot);
   }
 
   auto reserved = ttmg::reserveBarrierIdRange(
       syncs.front().op, static_cast<int32_t>(requiredBarrierIds));
+  if (failed(reserved) && pairedBarriers) {
+    auto next = func->getAttrOfType<IntegerAttr>(ttmg::kNextBarrierIdAttr);
+    int32_t current = next ? static_cast<int32_t>(next.getInt())
+                           : ttmg::getReservedBarrierCount(func);
+    current = std::max(current, ttmg::getImplicitAsyncBarrierFloor(func));
+    return syncs.front().op.emitOpError()
+           << "MUSA TLE PH1 partition synchronization requires "
+           << requiredBarrierIds << " barrier slots (2 per synchronization "
+           << "group); available hardware barrier slots: "
+           << ttmg::kMaxBarrierId - current;
+  }
   if (failed(reserved))
     return syncs.front().op.emitOpError(
         "MUSA TLE partition synchronization exhausted hardware barrier "
@@ -388,26 +405,36 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
   else
     rewriter.setInsertionPoint(ws);
   Value phase = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+  if (pairedBarriers)
+    // Match the lifetime of the hardware initialization, including WS reentry.
+    LLVM::StoreOp::create(rewriter, loc, phase, phaseSlot);
   DominanceInfo dominance(func);
-  llvm::DenseMap<Region *, Value> privateBarrierIds;
-  llvm::DenseMap<int32_t, Value> sharedBarrierIds;
+  using BarrierPair = std::array<Value, 2>;
+  llvm::DenseMap<Region *, BarrierPair> privateBarrierIds;
+  llvm::DenseMap<int32_t, BarrierPair> sharedBarrierIds;
   SmallVector<std::pair<Value, Value>> initializationArgs;
   int32_t nextId = *reserved;
   for (PartitionSync &sync : syncs) {
     if (sync.sharedGroup >= 0 || privateBarrierIds.count(sync.partition))
       continue;
-    Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
     Value count =
         arith::ConstantIntOp::create(rewriter, loc, sync.numWarps, 32);
-    initializationArgs.push_back({id, count});
-    privateBarrierIds[sync.partition] = id;
+    BarrierPair ids;
+    for (int32_t slot = 0; slot < barriersPerGroup; ++slot) {
+      ids[slot] = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
+      initializationArgs.push_back({ids[slot], count});
+    }
+    privateBarrierIds[sync.partition] = ids;
   }
   for (int32_t group : sharedGroupOrder) {
-    Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
     Value count = arith::ConstantIntOp::create(
         rewriter, loc, sharedGroupWarps.lookup(group), 32);
-    initializationArgs.push_back({id, count});
-    sharedBarrierIds[group] = id;
+    BarrierPair ids;
+    for (int32_t slot = 0; slot < barriersPerGroup; ++slot) {
+      ids[slot] = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
+      initializationArgs.push_back({ids[slot], count});
+    }
+    sharedBarrierIds[group] = ids;
   }
 
   Value tid =
@@ -432,27 +459,42 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
 
   for (PartitionSync &sync : syncs) {
     rewriter.setInsertionPoint(sync.op);
-    Value id = sync.sharedGroup >= 0 ? sharedBarrierIds.lookup(sync.sharedGroup)
-                                     : privateBarrierIds.lookup(sync.partition);
+    BarrierPair ids = sync.sharedGroup >= 0
+                          ? sharedBarrierIds.lookup(sync.sharedGroup)
+                          : privateBarrierIds.lookup(sync.partition);
+    Value id = ids[0];
     // syncthreads.lm also completes preceding local-memory accesses. A named
     // arrival/wait alone loses that ordering on PH1, including when vector
     // loads are still outstanding as the shared buffer is reused.
     if (needsLmaCompletion)
       LLVM::CallOp::create(rewriter, sync.op.getLoc(), lmaWait, ValueRange{});
-    Value arrived;
+    Value state;
     if (sync.sharedGroup >= 0) {
-      FailureOr<Value> resolved = resolvePartitionSyncPhase(
+      FailureOr<Value> resolved = resolvePartitionSyncEpoch(
           sync.op, *sync.partition, dominance, rewriter);
       if (failed(resolved))
         return sync.op.emitOpError(
             "MUSA TLE consumer epoch sync requires exactly one canonical "
             "outer-loop induction variable");
-      arrived = *resolved;
+      state = *resolved;
     } else {
-      arrived = LLVM::LoadOp::create(rewriter, sync.op.getLoc(),
-                                     rewriter.getI32Type(), phaseSlot)
-                    .getResult();
+      state = LLVM::LoadOp::create(rewriter, sync.op.getLoc(),
+                                   rewriter.getI32Type(), phaseSlot)
+                  .getResult();
     }
+    Value one = arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 1, 32);
+    Value arrived = state;
+    if (pairedBarriers) {
+      Value slot =
+          arith::AndIOp::create(rewriter, sync.op.getLoc(), state, one);
+      Value second = arith::CmpIOp::create(
+          rewriter, sync.op.getLoc(), arith::CmpIPredicate::ne, slot, phase);
+      id = arith::SelectOp::create(rewriter, sync.op.getLoc(), second, ids[1],
+                                   ids[0]);
+      arrived = arith::ShRUIOp::create(rewriter, sync.op.getLoc(), state, one);
+    }
+    if (pairedBarriers || sync.sharedGroup >= 0)
+      arrived = arith::AndIOp::create(rewriter, sync.op.getLoc(), arrived, one);
     LLVM::CallIntrinsicOp::create(
         rewriter, sync.op.getLoc(),
         rewriter.getStringAttr("llvm.musa.async.arrive.none.phaseid"),
@@ -462,10 +504,18 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         rewriter.getStringAttr("llvm.musa.async.wait"),
         ValueRange{id, arrived});
     if (sync.sharedGroup < 0) {
-      Value one =
-          arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 1, 32);
-      Value nextPhase =
-          arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
+      Value nextPhase;
+      if (pairedBarriers) {
+        Value increment =
+            arith::AddIOp::create(rewriter, sync.op.getLoc(), state, one);
+        Value mask =
+            arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 3, 32);
+        nextPhase =
+            arith::AndIOp::create(rewriter, sync.op.getLoc(), increment, mask);
+      } else {
+        nextPhase =
+            arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
+      }
       LLVM::StoreOp::create(rewriter, sync.op.getLoc(), nextPhase, phaseSlot);
     }
     rewriter.eraseOp(sync.op);
