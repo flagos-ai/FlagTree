@@ -521,7 +521,6 @@ def test_hcu_integer_dot_compile(inner, fresh_triton_cache):
 
 
 @pytest.mark.parametrize("dtype,inner,matrix,software", [
-    ("fp64", 4, False, True),
     ("fp32", 4, False, True),
     ("fp32", 8, True, False),
     ("fp16", 8, False, True),

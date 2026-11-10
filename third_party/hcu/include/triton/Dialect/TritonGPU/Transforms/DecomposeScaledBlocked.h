@@ -14,7 +14,7 @@ public:
 protected:
   FloatType getComputeType(ScaleDotElemType aType, ScaleDotElemType bType,
                            PatternRewriter &rewriter) const;
-  TypedValue<RankedTensorType> scaleToFp(PatternRewriter &rewriter,
+  TypedValue<RankedTensorType> scaleTo16(PatternRewriter &rewriter,
                                          TypedValue<RankedTensorType> scale,
                                          FloatType computeType) const;
   TypedValue<RankedTensorType>
@@ -26,9 +26,6 @@ protected:
                                        TypedValue<RankedTensorType> mxfp,
                                        TypedValue<RankedTensorType> scale,
                                        int dim) const;
-  TypedValue<RankedTensorType> decodeArg(PatternRewriter &rewriter,
-                                         DotScaledOp scaledDotOp, int opIdx,
-                                         FloatType computeType) const;
   virtual TypedValue<RankedTensorType> scaleArg(PatternRewriter &rewriter,
                                                 DotScaledOp scaledDotOp,
                                                 int opIdx,
