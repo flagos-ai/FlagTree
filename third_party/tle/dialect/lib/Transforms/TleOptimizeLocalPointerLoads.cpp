@@ -232,6 +232,10 @@ matchStaticSubviewMemDesc(triton::LoadOp load) {
       return std::nullopt;
     if (offset < 0 || offset + loadTy.getShape()[axis] > memDescShape[axis])
       return std::nullopt;
+    // memdesc_subslice can split only at a result-tile boundary. Arbitrary
+    // valid local_ptr offsets must retain the elementwise load instead.
+    if (offset & (loadTy.getShape()[axis] - 1))
+      return std::nullopt;
     offsets[axis] = static_cast<int32_t>(offset);
   }
 
