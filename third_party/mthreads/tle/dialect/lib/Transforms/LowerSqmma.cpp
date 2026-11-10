@@ -261,10 +261,55 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
   ttg::LocalAllocOp root = findRootAlloc(operand);
   if (!root)
     return op.emitOpError("requires SQMMA operands rooted at ttg.local_alloc");
-  if (!root->hasAttr(kAutoSharedLayoutAttr))
-    return op.emitOpError(
-        "requires layout=None and nv_mma_shared_layout=True for initial "
-        "mthreads TLE SQMMA operands");
+  if (!root->hasAttr(kAutoSharedLayoutAttr)) {
+    // An explicit shared layout is a physical contract. Support only a direct
+    // byte matrix allocation or its transpose; other views need independent
+    // origin and bounds proofs before native descriptors may consume them.
+    Value landing = operand;
+    if (auto trans = operand.getDefiningOp<ttg::MemDescTransOp>())
+      landing = trans.getSrc();
+    if (landing != root.getResult() || operandTy.getRank() != 2 ||
+        operandTy.getElementTypeBitWidth() != 8 ||
+        !isa<ttg::SwizzledSharedEncodingAttr>(operandTy.getEncoding()))
+      return op.emitOpError(
+          "explicit SQMMA shared operands require a rank-2 byte allocation "
+          "or its transpose without alias or slice views");
+
+    auto physicalShape = musa::getMemDescPhysicalShape(operandTy);
+    auto order = musa::getSharedOrder(operandTy.getEncoding(), physicalShape);
+    auto swizzle = musa::resolveTMESwizzleConfigFromMatrixView(
+        operandTy, physicalShape, order);
+    if (failed(swizzle) ||
+        failed(musa::getPH1TMELeadingDimGrouping(physicalShape, order,
+                                               elemBytes)))
+      return op.emitOpError(
+          "explicit SQMMA operand requires a representable PH1 matrix "
+          "shared-memory layout");
+
+    // Preserve the caller's byte image and align the allocation for its
+    // swizzle, rather than replacing it with this consumer's preferred layout.
+    int64_t line = musa::getSwizzleLineBytes(swizzle->swizzleLine);
+    int64_t gran = musa::getSwizzleGranularityBytes(swizzle->swizzleGranularity);
+    int64_t stride = musa::getSwizzleStrideBytes(swizzle->swizzleStride);
+    int64_t alignment = gran > 0 ? line * (stride / gran) : line;
+    OpBuilder builder(op);
+    if (alignment > root.getAlignmentOrDefault())
+      root->setAttr("alignment", builder.getI32IntegerAttr(alignment));
+
+    // Attach the contract to the actual view, not every other consumer of
+    // the backing allocation. Reject incompatible reuse of that same view.
+    Operation *view = operand.getDefiningOp();
+    bool rowMajor = inferLayout(operandTy) == musa::SQMMALayout::row;
+    if (auto oldIdx = musa::getSqmmaOpIdx(view)) {
+      auto oldBytes = musa::getSqmmaElemBytes(view);
+      if (*oldIdx != static_cast<int64_t>(operandIdx) || !oldBytes ||
+          *oldBytes != elemBytes ||
+          musa::getSqmmaRowMajor(view, rowMajor) != rowMajor)
+        return view->emitOpError("conflicting TLE SQMMA consumer contract");
+    }
+    musa::setSqmmaAttrs(view, operandIdx, elemBytes, rowMajor);
+    return success();
+  }
 
   SmallVector<int64_t> physicalShape = musa::getMemDescPhysicalShape(operandTy);
   auto order = musa::getSharedOrder(operandTy.getEncoding(), physicalShape);

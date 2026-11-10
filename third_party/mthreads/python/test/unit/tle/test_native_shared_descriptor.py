@@ -12,15 +12,32 @@ require_mthreads_libtriton()
 
 @triton.jit
 def _dot(
-    q, k, out, L: tl.constexpr, GRAN: tl.constexpr, PHASE: tl.constexpr, FP8: tl.constexpr, EXPLICIT_STORE: tl.constexpr
+    q,
+    k,
+    out,
+    L: tl.constexpr,
+    GRAN: tl.constexpr,
+    PHASE: tl.constexpr,
+    FP8: tl.constexpr,
+    EXPLICIT_STORE: tl.constexpr,
+    AUTO_LAYOUT: tl.constexpr,
+    SLICE_VIEW: tl.constexpr,
 ):
     dtype: tl.constexpr = tl.float8e4nv if FP8 else tl.int8
     outtype: tl.constexpr = tl.float32 if FP8 else tl.int32
     shared: tl.constexpr = tle.gpu.swizzled_shared_layout(
         GRAN, PHASE, 256 // GRAN, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0]
     )
-    a = tle.gpu.alloc((32, 128), dtype, layout=shared)
-    b = tle.gpu.alloc((128, 128), dtype, layout=shared)
+    if AUTO_LAYOUT:
+        a = tle.gpu.alloc((32, 128), dtype, layout=None, nv_mma_shared_layout=True)
+        b = tle.gpu.alloc((128, 128), dtype, layout=None, nv_mma_shared_layout=True)
+    elif SLICE_VIEW:
+        backing = tle.gpu.alloc((64, 128), dtype, layout=shared)
+        a = backing.subslice(0, 32, dim=0)
+        b = tle.gpu.alloc((128, 128), dtype, layout=shared)
+    else:
+        a = tle.gpu.alloc((32, 128), dtype, layout=shared)
+        b = tle.gpu.alloc((128, 128), dtype, layout=shared)
     i, j = tl.arange(0, 32), tl.arange(0, 128)
     tle.gpu.copy(q + i[:, None] * 128 + j[None, :], a, (32, 128))
     tle.gpu.copy(k, b, (128, 128), (0, 0))
@@ -39,7 +56,9 @@ def _dot(
         tl.store(out + i[:, None] * 128 + j[None, :], result)
 
 
-def compile_descriptor(gran, phase=2, fp8=True, abi="native_mp31_shared", explicit_store=True):
+def compile_descriptor(
+    gran, phase=2, fp8=True, abi="native_mp31_shared", explicit_store=True, auto_layout=False, slice_view=False
+):
     dtype = "fp8e4nv" if fp8 else "i8"
     return compile_musa(
         _dot,
@@ -52,6 +71,8 @@ def compile_descriptor(gran, phase=2, fp8=True, abi="native_mp31_shared", explic
             "PHASE": "constexpr",
             "FP8": "constexpr",
             "EXPLICIT_STORE": "constexpr",
+            "AUTO_LAYOUT": "constexpr",
+            "SLICE_VIEW": "constexpr",
         },
         {
             "L": tle.gpu.mthreads.MusaSqmmaEncoding([3, 1], [4, 1], [32, 128, 128]),
@@ -59,6 +80,8 @@ def compile_descriptor(gran, phase=2, fp8=True, abi="native_mp31_shared", explic
             "PHASE": phase,
             "FP8": fp8,
             "EXPLICIT_STORE": explicit_store,
+            "AUTO_LAYOUT": auto_layout,
+            "SLICE_VIEW": slice_view,
         },
         options={"num_warps": 4, "sqmma_descriptor_abi": abi},
     )
@@ -133,3 +156,18 @@ def test_native_shared_implicit_output_companion(gran, code):
     assert "llvm.musa.sqmma.desc." not in text
     assert str((5 << 18) | (code << 21)) in text
     assert kernel.module is None and kernel.function is None
+
+
+@pytest.mark.parametrize("abi", ["native_mp31_sg16", "native_mp31_shared"])
+def test_auto_layout_reaches_native_sg16_descriptor(abi):
+    kernel = compile_descriptor(16, abi=abi, auto_layout=True)
+    text = kernel.asm["llir"]
+    assert "llvm.musa.sqmma.desc." not in text
+    assert str((5 << 18) | (1 << 21)) in text
+    assert kernel.module is None and kernel.function is None
+
+
+def test_explicit_native_descriptor_rejects_slice_views(capfd):
+    with pytest.raises(Exception):
+        compile_descriptor(16, slice_view=True)
+    assert "without alias or slice views" in capfd.readouterr().err
