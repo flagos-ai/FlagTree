@@ -171,3 +171,53 @@ def test_explicit_native_descriptor_rejects_slice_views(capfd):
     with pytest.raises(Exception):
         compile_descriptor(16, slice_view=True)
     assert "without alias or slice views" in capfd.readouterr().err
+
+
+@triton.jit
+def _invalid_explicit_operand_contract(out, L: tl.constexpr, NON_BYTE: tl.constexpr):
+    shared: tl.constexpr = tle.gpu.swizzled_shared_layout(16, 2, 16, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0])
+    dtype: tl.constexpr = tl.float16 if NON_BYTE else tl.float8e4nv
+    a = tle.gpu.alloc((128, 128), dtype, layout=shared)
+    if NON_BYTE:
+        b = tle.gpu.alloc((128, 128), dtype, layout=shared)
+    else:
+        # The exact same view cannot simultaneously carry operand A and B's
+        # distinct consumer contract. No transpose or alias hides the reuse.
+        b = a
+    zero = tle.gpu.set_layout(tl.zeros((128, 128), tl.float32), L)
+    pending = tle.gpu.wgmma(a, b, acc=zero)
+    result = tle.gpu.set_layout(tle.gpu.wgmma_wait(0, pending), L)
+    row, col = tl.arange(0, 128), tl.arange(0, 128)
+    ptr = tle.gpu.set_layout(out + row[:, None] * 128 + col[None, :], L)
+    tl.store(ptr, result)
+
+
+@pytest.mark.parametrize(
+    "non_byte,diagnostic",
+    [
+        (True, "explicit SQMMA shared operands require a rank-2 byte allocation"),
+        (False, "conflicting TLE SQMMA consumer contract"),
+    ],
+)
+def test_explicit_operand_rejects_width_and_conflicting_consumer(capfd, non_byte, diagnostic):
+    with pytest.raises(Exception):
+        compile_musa(
+            _invalid_explicit_operand_contract,
+            {"out": "*fp32", "L": "constexpr", "NON_BYTE": "constexpr"},
+            {"L": tle.gpu.mthreads.MusaSqmmaEncoding([3, 1], [4, 1], [32, 128, 128]), "NON_BYTE": non_byte},
+            options={"num_warps": 4, "sqmma_descriptor_abi": "native_mp31_shared"},
+        )
+    assert diagnostic in capfd.readouterr().err
+
+
+@triton.jit
+def _invalid_rank_operand():
+    a = tle.gpu.alloc((1, 128, 128), tl.float8e4nv, layout=None)
+    b = tle.gpu.alloc((128, 128), tl.float8e4nv, layout=None)
+    tle.gpu.wgmma(a, b)
+
+
+def test_rank_three_rejected_by_public_wgmma_frontend():
+    # Python validates rank before the native explicit-layout branch is built.
+    with pytest.raises(Exception, match="requires rank-2 a"):
+        compile_musa(_invalid_rank_operand, {}, options={"num_warps": 4})
