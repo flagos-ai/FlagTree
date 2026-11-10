@@ -68,6 +68,24 @@ class Language(Enum):
     GLUON = 1
 
 
+# flagtree pipeline enhance
+class ReplaceLowering(Exception):
+    """Raised by a backend stage to replace the lowering with one made with adjusted options.
+
+    `products` maps stage extensions (ttgir, llir, ...) to the outputs of that
+    lowering and `metadata` is its metadata; the compiler records them in place
+    of the outputs of the stages it ran. The cache key keeps the options the
+    user asked for. The NVIDIA backend uses it to revert the wgmma carry
+    (pipeline_wgmma_carry) when ptxas spills more registers with it.
+    """
+
+    def __init__(self, products, metadata, reason=""):
+        super().__init__(reason)
+        self.products = products
+        self.metadata = metadata
+        self.reason = reason
+
+
 class BaseBackend(metaclass=ABCMeta):
     supports_native_tensor_specialization = True
 

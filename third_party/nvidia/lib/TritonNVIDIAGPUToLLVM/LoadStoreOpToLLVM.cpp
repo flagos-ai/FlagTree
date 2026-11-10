@@ -1457,6 +1457,10 @@ struct AsyncCopyGlobalToLocalOpConversion
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
 #ifdef __FLAGTREE_PIPELINE_ENHANCE__
     // Modifiers cp.async cannot express fall back to ca/cg in emitCpAsync.
+    // This check, the PTX gate of the L2 hint and the modifier choice below
+    // have no run-time switch, unlike the TTGIR passes behind the same macro
+    // (knobs.nvidia.pipeline_enhance): their #else branches trap in ptxas or
+    // reject the op, so there is no lowering to switch back to.
 #else  // __FLAGTREE_PIPELINE_ENHANCE__
     if (op.getCache() != CacheModifier::NONE &&
         op.getCache() != CacheModifier::CA &&

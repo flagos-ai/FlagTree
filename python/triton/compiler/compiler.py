@@ -26,7 +26,7 @@ import json
 from .._C.libtriton import get_cache_invalidating_env_vars, ir
 from ..backends import get_backend, get_driver
 from ..backends.compiler import Language
-from ..backends.compiler import BaseBackend, GPUTarget
+from ..backends.compiler import BaseBackend, GPUTarget, ReplaceLowering  # flagtree pipeline enhance
 from .. import __version__, knobs
 from flagtree import _flagprism  # FlagPrism
 from ..runtime.autotuner import OutOfResources
@@ -353,40 +353,72 @@ def compile(src, target=None, options=None, _env_vars=None):
 
     if compilation_listener:
         timer.finished_ir_initialization()
-    for ext, compile_ir in list(stages.items())[first_stage:]:
-        next_module = compile_ir(module, metadata)
-        ir_filename = f"{file_name}.{ext}"
-        if fn_override_manager is None:
-            # Users can override kernels at scale by setting `ir_override` in autotune config
-            # without TRITON_KERNEL_OVERRIDE
-            if (ir_override := metadata.get("ir_override", None)) and ir_override.endswith(f".{ext}"):
-                next_module = parse(ir_override, ext, context)
-        elif full_name := fn_override_manager.get_file(ir_filename):
-            print(f"\nOverriding kernel with file {full_name}")
-            next_module = parse(full_name, ext, context)
-        # FlagPrism: publish the final stage output after any IR override.
-        _flagprism.emit_compiler_event(
-            phase="post_override",
-            ir_kind=ext,
-            module=next_module,
-            metadata=metadata,
-        )
-        # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
-        if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
-            metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
-        if fn_dump_manager is not None:
-            fn_dump_manager.put(next_module, ir_filename)
-            if ext == "cubin":
-                sass = get_sass(next_module)
-                fn_dump_manager.put(sass, file_name + ".sass")
-        # use an env variable to parse ir from file
-        if use_ir_loc == ext:
-            ir_full_name = fn_cache_manager.get_file(ir_filename)
-            next_module.create_location_snapshot(ir_full_name)
-            print(f"Creating new locations for {ir_full_name}")
-        module = next_module
+    # flagtree pipeline enhance: the stage loop is a function so that it can
+    # run once more on a replaced lowering (see below)
+    def run_stages(module):
+        for ext, compile_ir in list(stages.items())[first_stage:]:
+            next_module = compile_ir(module, metadata)
+            ir_filename = f"{file_name}.{ext}"
+            if fn_override_manager is None:
+                # Users can override kernels at scale by setting `ir_override` in autotune config
+                # without TRITON_KERNEL_OVERRIDE
+                if (ir_override := metadata.get("ir_override", None)) and ir_override.endswith(f".{ext}"):
+                    next_module = parse(ir_override, ext, context)
+            elif full_name := fn_override_manager.get_file(ir_filename):
+                print(f"\nOverriding kernel with file {full_name}")
+                next_module = parse(full_name, ext, context)
+            # FlagPrism: publish the final stage output after any IR override.
+            _flagprism.emit_compiler_event(
+                phase="post_override",
+                ir_kind=ext,
+                module=next_module,
+                metadata=metadata,
+            )
+            # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
+            if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
+                metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+            if fn_dump_manager is not None:
+                fn_dump_manager.put(next_module, ir_filename)
+                if ext == "cubin":
+                    sass = get_sass(next_module)
+                    fn_dump_manager.put(sass, file_name + ".sass")
+            # use an env variable to parse ir from file
+            if use_ir_loc == ext:
+                ir_full_name = fn_cache_manager.get_file(ir_filename)
+                next_module.create_location_snapshot(ir_full_name)
+                print(f"Creating new locations for {ir_full_name}")
+            module = next_module
+            if compilation_listener:
+                timer.stage_finished(ext)
+
+    # begin flagtree pipeline enhance: a backend stage may hand back a lowering
+    # made with adjusted options (ReplaceLowering). The stages before its
+    # products run again from the stored source IR and the products are
+    # recorded in place of the stage outputs; the cache key keeps the options
+    # the user asked for and the metadata records the options used.
+    try:
+        run_stages(module)
+    except ReplaceLowering as e:
+        metadata.update(e.metadata)
+
+        def replay(product):
+            return lambda src, metadata: product
+
+        stages = {
+            ext: replay(e.products[ext]) if ext in e.products else compile_ir
+            for ext, compile_ir in stages.items()
+        }
         if compilation_listener:
-            timer.stage_finished(ext)
+            stage_count = len(timer.lowering_stage_ends)
+        run_stages(parse(metadata_group[ir_filename], src.ext, context))
+        if compilation_listener:
+            # The second run only records the products: keep the times of the
+            # first run, and the second run's entries for the stages the first
+            # run did not finish (the one that raised).
+            ends = timer.lowering_stage_ends
+            recorded = {name for name, _ in ends[:stage_count]}
+            ends[stage_count:] = [entry for entry in ends[stage_count:] if entry[0] not in recorded]
+    # end flagtree pipeline enhance
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
                                                              binary=False)
