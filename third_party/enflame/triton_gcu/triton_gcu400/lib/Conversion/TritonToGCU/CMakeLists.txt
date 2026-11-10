@@ -39,6 +39,17 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   DEPENDS
   TritonGCUTableGen_${arch}
   MLIRTritonGCUConversionPassIncGen_${arch}
+  # Several sources below (TritonToGCU.cpp, TTSmemLowerToGCU.cpp,
+  # TleLowerPipeToGcuws.cpp, TritonGCUInsertProducerFences.cpp) and
+  # Transforms/Passes.h include "Dialect/GCUWS/IR/Dialect.h", which pulls in
+  # the generated Dialect.h.inc / Ops.h.inc / Types.h.inc /
+  # GCUWSAttrDefs.h.inc / GCUWSAttrEnums.h.inc / GCUWSOpInterfaces.h.inc.
+  # Declare the tablegen targets here as well, otherwise the generated
+  # headers are only produced as a side effect of building GCUWSIR_${arch}
+  # and the build order is not guaranteed (race -> "fatal error:
+  # Dialect/GCUWS/IR/Dialect.h.inc: No such file or directory").
+  GCUWSTableGen_${arch}
+  GCUWSAttrDefsIncGen_${arch}
   triton_gcu400
 
   MemrefExtIR_${arch}

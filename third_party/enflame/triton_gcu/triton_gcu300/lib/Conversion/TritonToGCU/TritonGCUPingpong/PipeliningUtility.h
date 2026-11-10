@@ -16,9 +16,9 @@
 
 #ifndef TRITON_TRIRONTOGCU_PINGPONG_UTILITY_H_
 #define TRITON_TRIRONTOGCU_PINGPONG_UTILITY_H_
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include <utility>
 #include <vector>
+#include <utility>
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 namespace mlir {
 namespace triton {

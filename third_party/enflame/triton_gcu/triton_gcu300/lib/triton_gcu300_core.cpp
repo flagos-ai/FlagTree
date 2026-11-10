@@ -31,10 +31,10 @@
 
 #include "RegisterGCUDialects.h"
 
-#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -98,12 +98,13 @@ Gcu300Pipeline gcu300_pipeline_create(void) {
   }
 }
 
-void gcu300_pipeline_destroy(Gcu300Pipeline p) { delete p; }
+void gcu300_pipeline_destroy(Gcu300Pipeline p) {
+  delete p;
+}
 
 void gcu300_pipeline_add_pass(Gcu300Pipeline p, const char *pass_name,
-                              const char *options_str) {
-  if (!p || !pass_name)
-    return;
+                               const char *options_str) {
+  if (!p || !pass_name) return;
 
   llvm::StringRef name(pass_name);
 
@@ -131,13 +132,13 @@ void gcu300_pipeline_add_pass(Gcu300Pipeline p, const char *pass_name,
     return;
   }
 
-  p->passes.emplace_back(name.str(), options_str ? options_str : std::string());
+  p->passes.emplace_back(name.str(),
+                          options_str ? options_str : std::string());
 }
 
-Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
-                                 size_t input_len) {
-  if (!p)
-    return nullString();
+Gcu300String gcu300_pipeline_run(Gcu300Pipeline p,
+                                  const char *input, size_t input_len) {
+  if (!p) return nullString();
   p->lastError.clear();
 
   mlir::DialectRegistry registry;
@@ -152,8 +153,8 @@ Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(
-      llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(input, input_len),
-                                       "<input>", false),
+      llvm::MemoryBuffer::getMemBuffer(
+          llvm::StringRef(input, input_len), "<input>", false),
       llvm::SMLoc());
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
@@ -185,7 +186,8 @@ Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
       }
       continue;
     }
-    if (mlir::succeeded(mlir::parsePassPipeline(spec, pm, llvm::nulls())))
+    if (mlir::succeeded(
+            mlir::parsePassPipeline(spec, pm, llvm::nulls())))
       continue;
     std::string wrapped = "any(" + spec + ")";
     if (mlir::failed(mlir::parsePassPipeline(wrapped, pm))) {
@@ -236,12 +238,14 @@ static Gcu300String runOptOnChunk(llvm::StringRef chunk,
 
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(
-      llvm::MemoryBuffer::getMemBuffer(chunk, "<input>", false), llvm::SMLoc());
+      llvm::MemoryBuffer::getMemBuffer(chunk, "<input>", false),
+      llvm::SMLoc());
 
   std::unique_ptr<mlir::SourceMgrDiagnosticVerifierHandler> verifyHandler;
   if (verifyDiagnostics)
-    verifyHandler = std::make_unique<mlir::SourceMgrDiagnosticVerifierHandler>(
-        sourceMgr, &ctx);
+    verifyHandler =
+        std::make_unique<mlir::SourceMgrDiagnosticVerifierHandler>(
+            sourceMgr, &ctx);
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &ctx);
@@ -278,7 +282,8 @@ static Gcu300String runOptOnChunk(llvm::StringRef chunk,
       }
       continue;
     }
-    if (mlir::succeeded(mlir::parsePassPipeline(normalized, pm, llvm::nulls())))
+    if (mlir::succeeded(
+            mlir::parsePassPipeline(normalized, pm, llvm::nulls())))
       continue;
     std::string wrapped = "any(" + normalized + ")";
     if (mlir::failed(mlir::parsePassPipeline(wrapped, pm))) {
@@ -339,7 +344,8 @@ Gcu300String gcu300_run_opt(const char *input, size_t input_len,
       printModuleScope = true;
       continue;
     }
-    if (a.starts_with("-mlir-timing") || a.starts_with("--mlir-timing")) {
+    if (a.starts_with("-mlir-timing") ||
+        a.starts_with("--mlir-timing")) {
       enableTiming = true;
       continue;
     }
@@ -387,10 +393,10 @@ Gcu300String gcu300_run_opt(const char *input, size_t input_len,
     if (trimmed.empty())
       continue;
 
-    Gcu300String result =
-        runOptOnChunk(chunk, passArgs, printGeneric, printAfterAll,
-                      disableThreading, printModuleScope, enableTiming,
-                      allowUnregisteredDialects, verifyDiagnostics);
+    Gcu300String result = runOptOnChunk(
+        chunk, passArgs, printGeneric, printAfterAll,
+        disableThreading, printModuleScope, enableTiming,
+        allowUnregisteredDialects, verifyDiagnostics);
     if (!result.data)
       return nullString();
 
@@ -434,4 +440,4 @@ int gcu300_opt_main(int argc, char **argv) {
       mlir::MlirOptMain(argc, argv, "GCU300 optimizer driver\n", registry));
 }
 
-} // extern "C"
+}  // extern "C"

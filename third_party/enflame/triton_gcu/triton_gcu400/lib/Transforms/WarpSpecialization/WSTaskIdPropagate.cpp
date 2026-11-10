@@ -47,9 +47,16 @@ int doTaskIdPropagate(triton::FuncOp &funcOp) {
 
   solver.load<DeadCodeAnalysis>();
   solver.load<SparseConstantPropagation>();
-  solver.load<ttgcu::TaskIdBackwardPropagation>(symbolTable);
+  auto *analysis = solver.load<ttgcu::TaskIdBackwardPropagation>(symbolTable);
   if (failed(solver.initializeAndRun(op))) {
     LDBG() << "Failed to doTaskIdPropagate initializeAndRun";
+    return -1;
+  }
+  // The analysis reports control flow it could not propagate through instead
+  // of failing a transfer function: the partitioner cannot realize the task
+  // ids it produced, so decline warp specialization for this function.
+  if (analysis->hasUnsupportedControlFlow()) {
+    LDBG() << "Failed to doTaskIdPropagate: unsupported control flow";
     return -1;
   }
 

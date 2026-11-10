@@ -43,6 +43,11 @@ llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
 
 std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v);
 
+// Pre-check if v is scalar-extractable without creating ops or emitting
+// diagnostics. getScalarValue reports an error on failure, which a pattern that
+// merely declines must not do.
+bool canExtractScalar(Value v);
+
 // Process addition of two OFRs. If both OFRs are Integer Attributes, result
 // is an Integer Attribute. Otherwise, insert the arith.addi instruction if
 // needed and use its result Value.
@@ -79,8 +84,8 @@ OpFoldResult remOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
 OpFoldResult divOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
                      const OpFoldResult rhs);
 
-} // namespace gcu
-} // namespace triton
-} // namespace mlir
+}  // namespace gcu
+}  // namespace triton
+}  // namespace mlir
 
-#endif // GCU_ANALYSIS_OPFOLDRESULTUTILS_H
+#endif  // GCU_ANALYSIS_OPFOLDRESULTUTILS_H

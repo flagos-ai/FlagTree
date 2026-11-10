@@ -5,9 +5,9 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
+#include "Utility.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "Utility.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -52,7 +52,8 @@ struct TritonGCULayoutOptimizePass
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<arith::ArithDialect, memref::MemRefDialect,
-                triton::TritonDialect, mlir::triton::gcu::TritonGCUDialect>();
+                triton::TritonDialect,
+                mlir::triton::gcu::TritonGCUDialect>();
   }
 };
 
@@ -79,7 +80,7 @@ void TritonGCULayoutOptimizePass::reWriteGcuLoadLayout(
 void TritonGCULayoutOptimizePass::reWriteGcuStoreLayout(
     triton::gcu::StoreOp store) {
   auto src = store.getValue().getDefiningOp();
-  if (auto convetLayout = dyn_cast<triton::gpu::ConvertLayoutOp>(src)) {
+  if (auto convetLayout = dyn_cast_or_null<triton::gpu::ConvertLayoutOp>(src)) {
     auto users = src->getUsers();
     auto userNumber = std::distance(users.begin(), users.end());
     // only one user delete and fusion convert layout to store

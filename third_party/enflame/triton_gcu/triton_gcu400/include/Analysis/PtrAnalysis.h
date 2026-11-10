@@ -44,16 +44,30 @@ using llvm::SmallVector;
 
 struct MaskState;
 
+extern const char *const kSkipDte;
+
 struct PtrInfo {
   Value base;
   llvm::SmallVector<Value, 4> shape;
   llvm::SmallVector<Value, 4> strides;
-  // For loads: per-dim memory offsets (kept at zero; the mask start is folded
-  // into the base). For stores: per-dim within-tile mask start (e.g. half for
-  // a `>=`-style mask); ConfigGcuStore combines it with each warp's partition
-  // to compute the per-warp source slice offset and destination offset.
+  // For loads: per-dim memory offsets, normally zero because the mask start is
+  // folded into the base (see foldMaskStartIntoBase). For stores AND for DMA
+  // loads whose mask carries a non-zero within-tile start, `offsets` carries
+  // the per-dim mask start (e.g. half for a `>=`-style mask): ConfigGcuStore /
+  // ConfigGcuLoad convert it into the per-warp source slice offset and the
+  // destination (tile) write offset.
   llvm::SmallVector<Value, 4> offsets;
   llvm::DenseSet<int32_t> broadcastDims;
+
+  /// Build a dense 0/1 array of length `rank`: 1 if the dimension is a
+  /// broadcast (zero-stride) dimension, 0 otherwise.
+  SmallVector<int32_t> getBroadcastDimsArray(unsigned rank) const {
+    SmallVector<int32_t> arr(rank, 0);
+    for (auto d : broadcastDims)
+      if (d < static_cast<int32_t>(rank))
+        arr[d] = 1;
+    return arr;
+  }
 };
 
 // Data structure used to decode pointer arithmetic and potentially to be
@@ -92,7 +106,7 @@ struct PtrState {
   void setState(OpBuilder &builder, Location loc, const PtrState &srcState);
 
   PtrInfo getPtrInfo(OpBuilder &builder, Location loc, const MaskState &mstate,
-                     bool exposeMaskStartOffset);
+                     bool foldMaskStartIntoBase, bool exposeMaskStartOffset);
 };
 
 class PtrAnalysis {
@@ -265,17 +279,18 @@ public:
   //  The resulting state for all will be trans
   static void
   visitOperandTrans(PatternRewriter &rewriter, Location loc,
-                    triton::TransOp transOp, PtrState &state,
-                    llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                      triton::TransOp transOp, PtrState &state,
+                      llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of dots
   // Main assumptions:
   //  Rank of source and result is the same
   // Expected result:
   //  The resulting state for all will be same
-  static void visitOperandDot(PatternRewriter &rewriter, Location loc,
-                              triton::DotOp dotOp, PtrState &state,
-                              llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+  static void
+  visitOperandDot(PatternRewriter &rewriter, Location loc,
+                  triton::DotOp dotOp, PtrState &state,
+                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of reduce
   // Main assumptions:
@@ -284,17 +299,18 @@ public:
   //  The resulting state for all will be same
   static void
   visitOperandReduce(PatternRewriter &rewriter, Location loc,
-                     triton::ReduceOp reduceOp, PtrState &state,
-                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                  triton::ReduceOp reduceOp, PtrState &state,
+                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of load
   // Main assumptions:
   //  Rank of source and result is the same
   // Expected result:
   //  The resulting state for all will be same
-  static void visitOperandLoad(PatternRewriter &rewriter, Location loc,
-                               triton::LoadOp loadOp, PtrState &state,
-                               llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+  static void
+  visitOperandLoad(PatternRewriter &rewriter, Location loc,
+                  triton::LoadOp loadOp, PtrState &state,
+                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of extsi
   // Main assumptions:
@@ -303,8 +319,8 @@ public:
   //  The resulting state for all will be same
   static void
   visitOperandExtsi(PatternRewriter &rewriter, Location loc,
-                    arith::ExtSIOp extsiOp, PtrState &state,
-                    llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                  arith::ExtSIOp extsiOp, PtrState &state,
+                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // Operand is the result of triton_gcu.memdesc_to_ptr.
   // Treat as a scalar base pointer for shared memory.
@@ -323,8 +339,8 @@ public:
   //  The resulting state for all will be same
   static void
   visitOperandExtui(PatternRewriter &rewriter, Location loc,
-                    arith::ExtUIOp extuiOp, PtrState &state,
-                    llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
+                  arith::ExtUIOp extuiOp, PtrState &state,
+                  llvm::SmallDenseMap<Value, PtrState> &knownPtrs);
 
   // bypass ForOp not include ld/st.
   static bool byPassForOp(PatternRewriter &rewriter, scf::ForOp op,
@@ -332,7 +348,8 @@ public:
   // Parse the state of ForOp, insert any instruction needed to calculate
   // strides and offsets, build PtrState for this operand, and record PtrState
   // in knownPtrs.
-  static LogicalResult rewriteForOp(
+  static LogicalResult
+  rewriteForOp(
       PatternRewriter &rewriter, scf::ForOp op,
       SmallDenseMap<Value, PtrState> &knownPtrs,
       SmallDenseMap<Value, MaskState> &knownMasks,
@@ -355,7 +372,8 @@ public:
                             const SmallVector<Operation *, 8> &candidateOps);
 
   // Rewrite WhileOp to propagate PtrState through both before/after regions.
-  static LogicalResult rewriteWhileOp(
+  static LogicalResult
+  rewriteWhileOp(
       PatternRewriter &rewriter, scf::WhileOp op,
       SmallDenseMap<Value, PtrState> &knownPtrs,
       SmallDenseMap<Value, MaskState> &knownMasks,
@@ -363,19 +381,19 @@ public:
       SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints);
 
   // Rewrite the scf.condition terminator in WhileOp's before region.
-  static void
-  rewriteConditionOp(PatternRewriter &rewriter, scf::ConditionOp op,
-                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
-                     llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+  static void rewriteConditionOp(
+      PatternRewriter &rewriter, scf::ConditionOp op,
+      llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
+      llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
   // Collect candidate load/store op which could be converted to dma.
-  static void collectCandidateLoadStoreOps(
-      ModuleOp &moduleOp, llvm::SmallVector<Operation *, 8> &candidates,
+  static void collectCandidateLoadStoreOps(ModuleOp &moduleOp,
+      llvm::SmallVector<Operation *, 8> &candidates,
       llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateOrders);
 
   static bool preProcessEntry(ModuleOp &moduleOp, Value &condition);
   static void postProcessEntry(ModuleOp &moduleOp, Value &condition,
-                               bool bStaticCondition, bool bEnableStride0);
+    bool bStaticCondition, bool bEnableStride0);
 };
 
 } // namespace gcu

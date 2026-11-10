@@ -34,6 +34,7 @@ int doTaskPartition(mlir::triton::FuncOp &funcOp, unsigned numWarpGroups);
 int doTaskIdPropagate(triton::FuncOp &funcOp);
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers,
                      unsigned numWarps, bool innerBarrier);
+bool isSupportedForCodePartition(triton::FuncOp &funcOp);
 } // namespace mlir::triton::gcu
 
 namespace mlir {
@@ -48,6 +49,15 @@ namespace ttg = mlir::triton::gpu;
 namespace ttgcu = mlir::triton::gcu;
 
 namespace {
+
+// doTaskPartition annotates the producer/consumer ops with async_task_id before
+// the later stages (task id propagation, code partition) can decide that the
+// function is not supported. Those annotations are not rolled back by the early
+// returns below, so drop them explicitly: a declined warp specialization must
+// leave the kernel on the non-WS path with no stale task ids behind.
+void dropAsyncTaskIds(tt::FuncOp funcOp) {
+  funcOp->walk([](mlir::Operation *op) { op->removeAttr("async_task_id"); });
+}
 
 class GCUWarpSpecializationPass
     : public impl::GCUWarpSpecializationBase<GCUWarpSpecializationPass> {
@@ -100,15 +110,22 @@ public:
     }
 
     // Propagate taskId.
-    int retCode = ttgcu::doTaskIdPropagate(funcOp);
-    if (retCode == -1) {
-      llvm_unreachable("Fail to propagate task id.");
+    if (ttgcu::doTaskIdPropagate(funcOp) != 0) {
+      llvm::dbgs() << "// -----// Unsupported WarpSpec\n\n\n";
+      dropAsyncTaskIds(funcOp);
       return;
     }
     if (dumpIntermediateSteps) {
       llvm::dbgs()
           << "// -----// WarpSpec internal IR Dump After: doTaskIdPropagate\n"
           << moduleOp << "\n\n\n";
+    }
+
+    // An unsupported loop leaves the kernel on the non-WS path.
+    if (!ttgcu::isSupportedForCodePartition(funcOp)) {
+      llvm::dbgs() << "// -----// Unsupported WarpSpec\n\n\n";
+      dropAsyncTaskIds(funcOp);
+      return;
     }
 
     // Code partition

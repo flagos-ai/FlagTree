@@ -17,11 +17,11 @@
 #include <map>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "PatternTritonGPUOpToGCU.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Utility.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Dialect/GCU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
@@ -70,7 +70,8 @@ struct TritonMakeRangeOpLowering
     auto vectorType = VectorType::get(ArrayRef<int64_t>{vectorLength},
                                       resultType.getElementType());
     Value initValue =
-        rewriter.create<gcu::VectorStepOp>(loc, vectorType, start).getResult();
+        rewriter.create<gcu::VectorStepOp>(loc, vectorType, start)
+            .getResult();
     Value step = rewriter.create<vector::BroadcastOp>(
         loc, vectorType,
         rewriter.create<arith::ConstantIntOp>(loc, resultType.getElementType(),
@@ -98,8 +99,8 @@ void mlir::triton::populateMakeRangeOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool) {
   patterns.add<TritonMakeRangeOpLowering>(converter, patterns.getContext(),
-                                          userAnalysis, replaced2Origin,
-                                          pTagPool);
+                                          userAnalysis,
+                                          replaced2Origin, pTagPool);
 }
