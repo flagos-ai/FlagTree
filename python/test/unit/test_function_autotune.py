@@ -87,7 +87,8 @@ class LocalAutotuneTest(unittest.TestCase):
 
         @self.tune.autotune(
             config_space=[{"block": 16}, {"block": 32}, {"block": 64}],
-            key_fn=key_fn, prune_fn=prune_fn,
+            key_fn=key_fn,
+            prune_fn=prune_fn,
         )
         def operation(size, *, block, offset):
             calls.append((size, block, offset))
@@ -104,13 +105,16 @@ class LocalAutotuneTest(unittest.TestCase):
         self.assertEqual(len(calls), 8)
 
     def test_disabled_tuning_uses_first_config(self):
+
         def unexpected(*args, **kwargs):
             self.fail("disabled tuning must not evaluate the key, pruning, or benchmark")
 
         self.use_benchmarker(unexpected)
 
         @self.tune.autotune(
-            [{"block": 16}, {"block": 32}], unexpected, unexpected,
+            [{"block": 16}, {"block": 32}],
+            unexpected,
+            unexpected,
         )
         def operation(value, block):
             return value, block
@@ -119,6 +123,7 @@ class LocalAutotuneTest(unittest.TestCase):
         self.assertEqual(operation.best_configs, {})
 
     def test_local_keyword_override_requires_opt_in(self):
+
         @self.tune.autotune([{"block": 16}], lambda: None)
         def operation(block):
             return block
@@ -127,7 +132,6 @@ class LocalAutotuneTest(unittest.TestCase):
             operation(block=8, autotune=False)
         with self.assertWarns(UserWarning):
             self.assertEqual(operation(block=8, autotune=False, autotune_allow_arg_overwrite=True), 8)
-
 
     def test_local_arbitrary_config_objects_preserve_identity(self):
         config = object()
@@ -141,12 +145,15 @@ class LocalAutotuneTest(unittest.TestCase):
         self.assertIs(operation.best_configs[None]["config"], config)
 
     def test_empty_pruning_and_unhashable_key_do_not_execute(self):
+
         def unexpected(*args, **kwargs):
             self.fail("invalid inputs must fail before execution")
 
         self.use_benchmarker(unexpected)
         empty = self.tune.autotune(
-            [{"block": 16}], lambda: None, lambda config: False,
+            [{"block": 16}],
+            lambda: None,
+            lambda config: False,
         )(unexpected)
         with self.assertRaises(ValueError):
             empty()
@@ -158,6 +165,7 @@ class LocalAutotuneTest(unittest.TestCase):
         self.assertEqual(unhashable.best_configs, {})
 
     def test_invalid_and_failed_candidates_are_not_selected(self):
+
         def benchmark(call, **kwargs):
             block = call()
             if block == 1:
@@ -171,6 +179,7 @@ class LocalAutotuneTest(unittest.TestCase):
             return block
 
         self.assertEqual(operation(), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
