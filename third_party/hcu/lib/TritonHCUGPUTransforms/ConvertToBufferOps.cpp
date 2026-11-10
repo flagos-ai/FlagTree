@@ -732,6 +732,17 @@ private:
         info->getContiguity(0) < numElements || info->getDivisibility(0) < 4 ||
         numElements * bits % (numWarps * 64 * 32) != 0)
       return failure();
+    // Prove LDS alignment too. An alias can start at any byte, independently
+    // of the aligned global destination. Keep unproven views on the ordinary
+    // local-load/global-store path instead of issuing a misaligned DWORD DMA.
+    Value allocation = load.getSrc();
+    while (auto view = allocation.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+      if (view.getOffsets()[0] * (bits / 8) % 4)
+        return failure();
+      allocation = view.getSrc();
+    }
+    if (!allocation.getDefiningOp<ttg::LocalAllocOp>())
+      return failure();
     rewriter.replaceOpWithNewOp<triton::hcugpu::BufferStoreLdsOp>(
         op, load.getSrc(), op.getPtr());
     return success();

@@ -182,6 +182,36 @@ def precision_reverse_copy(X, Y, N: tl.constexpr, STRIDE: tl.constexpr = 1, OFFS
 
 
 @triton.jit
+def precision_reverse_subview(X, Y, SOURCE_OFFSET: tl.constexpr, BLOCK: tl.constexpr = 1024):
+    full = tl.arange(0, 2 * BLOCK)
+    value = tl.load(X + full)
+    shared = tle.gpu.alloc((2 * BLOCK, ), X.dtype.element_ty, init_value=value, nv_mma_shared_layout=False)
+    tl.debug_barrier()
+    local = tl.arange(0, BLOCK)
+    selected = tl.load(tle.gpu.local_ptr(shared, (local + SOURCE_OFFSET, )))
+    tl.store(Y + local, selected)
+
+
+@triton.jit
+def precision_reverse_alias(X, Y, OFFSET_BYTES: tl.constexpr, BLOCK: tl.constexpr = 1024):
+    full = tl.arange(0, 2 * BLOCK)
+    shared = tle.gpu.alloc((2 * BLOCK, ), X.dtype.element_ty, init_value=tl.load(X + full), nv_mma_shared_layout=False)
+    alias = tle.gpu.alloc((BLOCK, ), X.dtype.element_ty, alias=shared, alias_offset_bytes=OFFSET_BYTES,
+                          nv_mma_shared_layout=False)
+    tl.debug_barrier()
+    tle.gpu.copy(alias, Y + tl.arange(0, BLOCK), (BLOCK, ))
+
+
+@triton.jit
+def precision_tle_local_load(X, Y, ASYNC: tl.constexpr, BLOCK: tl.constexpr = 1024):
+    local = tl.arange(0, BLOCK)
+    shared = tle.gpu.alloc((BLOCK, ), X.dtype.element_ty, init_value=tl.load(X + local), nv_mma_shared_layout=False)
+    tl.debug_barrier()
+    value = tle.load(tle.gpu.local_ptr(shared, (local, )), mask=local < BLOCK - 1, other=0, is_async=ASYNC)
+    tl.store(Y + local, value)
+
+
+@triton.jit
 def precision_integer_scaled(A, SA, B, SB, ACC, C, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
                              FORMAT_A: tl.constexpr, FORMAT_B: tl.constexpr, OUT_DTYPE: tl.constexpr = tl.float32):
     rows = tl.arange(0, M)
@@ -751,6 +781,46 @@ def test_hcu_reverse_copy_fallback_compile(constants, arch, dtype, fresh_triton_
     assert "buffer_store_lds_dword" not in compiled.asm["amdgcn"]
 
 
+@pytest.mark.parametrize("dtype", ["u8", "fp16", "i32"])
+@pytest.mark.parametrize("offset", [0, 1, 4, 1024])
+def test_hcu_reverse_subview_compile(dtype, offset, fresh_triton_cache):
+    compiled = triton.compile(
+        ASTSource(precision_reverse_subview, {"X": "*" + dtype, "Y": "*" + dtype},
+                  constexprs={"SOURCE_OFFSET": offset, "BLOCK": 1024}, attrs={(1, ): [("tt.divisibility", 16)]}),
+        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "num_stages": 1})
+    assert ("buffer_store_lds_dword" in compiled.asm["amdgcn"]) == (offset % 1024 == 0)
+
+
+@pytest.mark.parametrize("dtype,offset", [("u8", 1), ("fp16", 2), ("i32", 16), ("u8", 0)])
+def test_hcu_reverse_alias_compile(dtype, offset, fresh_triton_cache):
+    compiled = triton.compile(
+        ASTSource(precision_reverse_alias, {"X": "*" + dtype, "Y": "*" + dtype},
+                  constexprs={"OFFSET_BYTES": offset, "BLOCK": 1024}, attrs={(1, ): [("tt.divisibility", 16)]}),
+        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "num_stages": 1})
+    assert "buffer_store_lds_dword" not in compiled.asm["amdgcn"]
+
+
+@pytest.mark.parametrize("source,destination", [("fp8e4nv", "fp8e5"), ("fp8e5", "fp8e4nv")])
+@pytest.mark.parametrize("arch", ["gfx936", "gfx938"])
+def test_hcu_fp8_cross_cast_compile(source, destination, arch, fresh_triton_cache):
+    triton.compile(
+        ASTSource(precision_cast, {"X": "*" + source, "Y": "*" + destination},
+                  constexprs={"N": 256, "BLOCK": 256, "ROUND": None}), target=GPUTarget("hip", arch, 64),
+        options={"num_warps": 4})
+
+
+@pytest.mark.parametrize("async_request", [False, True])
+def test_hcu_tle_local_load_compile(async_request, fresh_triton_cache):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = triton.compile(
+            ASTSource(precision_tle_local_load, {"X": "*i32", "Y": "*i32"},
+                      constexprs={"ASYNC": async_request, "BLOCK": 1024}), target=GPUTarget("hip", "gfx936", 64),
+            options={"num_warps": 4, "num_stages": 1})
+    assert "async_copy_global_to_local" not in compiled.asm["ttgir"]
+    assert any("synchronous load" in str(item.message) for item in caught) == async_request
+
+
 def test_hcu_unbounded_async_diagnostic(fresh_triton_cache, capfd):
     # A pointer range is deliberately absent, so buffer conversion is illegal.
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
@@ -1035,6 +1105,69 @@ def test_hcu_shared_copy_values(dtype, copy, device):
                                                         num_stages=1)
         torch.testing.assert_close(output[16:-16].cpu().view(storage), host[16:-16], rtol=0, atol=0)
         assert torch.all(output[:16].view(storage) == 42) and torch.all(output[-16:].view(storage) == 42)
+
+
+@pytest.mark.parametrize("async_request", [False, True])
+def test_hcu_tle_local_load_values(async_request, device):
+    host = torch.arange(1024, dtype=torch.int32) * 37 + 13
+    expected = host.clone()
+    expected[-1] = 0
+    output = torch.full((1056, ), 42, dtype=torch.int32, device=device)
+    compiled = precision_tle_local_load[(1, )](host.to(device), output[16:-16], async_request, num_warps=4,
+                                               num_stages=1)
+    torch.testing.assert_close(output[16:-16].cpu(), expected, rtol=0, atol=0)
+    assert torch.all(output[:16] == 42) and torch.all(output[-16:] == 42)
+    assert not re.search(r"(?:global|buffer)_load\w*[^\n]*\blds\b", compiled.asm["amdgcn"])
+
+
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.float16, torch.int32])
+@pytest.mark.parametrize("offset", [0, 1, 4, 1024])
+def test_hcu_reverse_subview_values(dtype, offset, device):
+    block, repeats = 1024, 500
+    width = torch.empty((), dtype=dtype).element_size()
+    host = torch.randint(0, 256, (2 * block * width, ), dtype=torch.uint8,
+                         generator=torch.Generator().manual_seed(1493))
+    source = host.to(device).view(dtype)
+    span = block + 32
+    output = torch.full((repeats * span * width, ), 42, dtype=torch.uint8, device=device)
+    for repeat in range(repeats):
+        compiled = precision_reverse_subview[(1, )](source, output.view(dtype)[repeat * span + 16:], offset,
+                                                    num_warps=4, num_stages=1)
+    expected = torch.full((repeats, span * width), 42, dtype=torch.uint8)
+    expected[:, 16 * width:(16 + block) * width] = host[offset * width:(offset + block) * width]
+    torch.testing.assert_close(output.cpu().reshape_as(expected), expected, rtol=0, atol=0)
+    arch = triton.runtime.driver.active.get_current_target().arch.split(":")[0].lower()
+    assert ("buffer_store_lds_dword" in compiled.asm["amdgcn"]) == (arch == "gfx936" and offset % block == 0)
+
+
+@pytest.mark.parametrize("dtype,offset", [(torch.uint8, 1), (torch.float16, 2), (torch.int32, 16), (torch.uint8, 0)])
+def test_hcu_reverse_alias_values(dtype, offset, device):
+    block = 1024
+    width = torch.empty((), dtype=dtype).element_size()
+    host = torch.randint(0, 256, (2 * block * width, ), dtype=torch.uint8,
+                         generator=torch.Generator().manual_seed(1493))
+    output = torch.full((block * width + 32, ), 42, dtype=torch.uint8, device=device)
+    compiled = precision_reverse_alias[(1, )](host.to(device).view(dtype), output[16:-16].view(dtype), offset,
+                                              num_warps=4, num_stages=1)
+    torch.testing.assert_close(output[16:-16].cpu(), host[offset:offset + block * width], rtol=0, atol=0)
+    assert torch.all(output[:16] == 42) and torch.all(output[-16:] == 42)
+    assert "buffer_store_lds_dword" not in compiled.asm["amdgcn"]
+
+
+@pytest.mark.parametrize("source,destination", [(torch.float8_e4m3fn, torch.float8_e5m2),
+                                                (torch.float8_e5m2, torch.float8_e4m3fn)])
+def test_hcu_fp8_cross_cast_values(source, destination, device):
+    host = torch.arange(256, dtype=torch.int32).to(torch.uint8).view(source)
+    limit = torch.finfo(destination).max
+    expected = host.float().clamp(-limit, limit).to(destination)
+    output = torch.full((288, ), 42, dtype=torch.uint8, device=device).view(destination)
+    precision_cast[(1, )](host.to(device), output[16:-16], 256, 256)
+    actual = output[16:-16].cpu().float()
+    assert torch.equal(actual.isnan(), expected.float().isnan())
+    valid = ~expected.float().isnan()
+    torch.testing.assert_close(output[16:-16].cpu().view(torch.uint8)[valid],
+                               expected.view(torch.uint8)[valid], rtol=0, atol=0)
+    assert torch.all(output[:16].view(torch.uint8) == 42) and torch.all(output[-16:].view(torch.uint8) == 42)
 
 
 @pytest.mark.parametrize(
