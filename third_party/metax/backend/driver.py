@@ -466,14 +466,10 @@ class MacaLauncher(object):
         self.metadata = metadata
         self.user_arg_count = len(signature)
         self.num_ctas = getattr(metadata, "num_ctas", 1)
-        # FlagPrism：cache capture state and validate the kernel's hidden-argument ABI.
-        self._debug_enabled = bool(getattr(metadata, "debug_enabled", False))
-        self._debug_launch_hidden_arg = bool(getattr(metadata, "debug_launch_hidden_arg", False))
-        if self._debug_launch_hidden_arg and not self._debug_enabled:
-            raise ValueError("debug_launch_hidden_arg=True requires debug_enabled=True")
-        # Enabled capture without a hidden argument is valid for metadata-only collection.
+        # FlagPrism：use the hidden-argument ABI flag for both signature and launch, as MThreads does.
+        self._debug_enabled = bool(getattr(metadata, "debug_launch_hidden_arg", False))
         # if bool(getattr(metadata, "debug_launch_hidden_arg", False)):
-        if self._debug_launch_hidden_arg:
+        if self._debug_enabled:
             signature[len(signature)] = "*i8"
         # FlagPrism end
         src = make_launcher(constants, signature, ids)

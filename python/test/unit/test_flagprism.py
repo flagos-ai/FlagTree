@@ -624,12 +624,6 @@ def test_metax_debug_launch_metadata_contract(monkeypatch, debug_enabled, hidden
     metadata = SimpleNamespace(debug_enabled=debug_enabled, debug_launch_hidden_arg=hidden_arg, global_scratch_size=0,
                                global_scratch_align=1, profile_scratch_size=0, profile_scratch_align=1)
     source = SimpleNamespace(signature={0: "*fp32"}, constants={})
-    if hidden_arg and not debug_enabled:
-        with pytest.raises(ValueError, match="debug_launch_hidden_arg.*debug_enabled"):
-            namespace["MacaLauncher"](source, metadata)
-        assert not signatures and not launches and not contexts
-        return
-
     launcher = namespace["MacaLauncher"](source, metadata)
     tensor = object()
     launch_metadata = {"name": "test"}
@@ -637,7 +631,7 @@ def test_metax_debug_launch_metadata_contract(monkeypatch, debug_enabled, hidden
     launcher(1, 2, 3, 77, 99, *args)
     assert signatures == [{0: "*fp32", 1: "*i8"} if hidden_arg else {0: "*fp32"}]
     assert launches == [(1, 2, 3, 77, 99, None, None, *args, *((0x12345678, ) if hidden_arg else ()))]
-    assert contexts == ([("maca", metadata, (1, 2, 3), 77, launch_metadata, (tensor, ))] if debug_enabled else [])
+    assert contexts == ([("maca", metadata, (1, 2, 3), 77, launch_metadata, (tensor, ))] if hidden_arg else [])
 
 
 # FlagPrism end
