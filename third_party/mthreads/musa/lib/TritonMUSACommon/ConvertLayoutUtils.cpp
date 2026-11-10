@@ -88,13 +88,6 @@ bool useConservativeCarrierScratch(RankedTensorType srcTy,
           dstTy.getEncoding()))
     return false;
 
-#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
-  // A proven warp-local pointer conversion uses two 32-bit MUSA shuffles.
-  // Keep the conservative scratch path for sub-byte and cross-warp carriers.
-  if (isPointerCarrier && cvtNeedsWarpShuffle(srcTy, dstTy))
-    return false;
-#endif
-
   LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
   StringAttr kBlock = StringAttr::get(srcTy.getContext(), "block");
   return !llvm::is_contained(conversion.getInDimNames(), kBlock);
