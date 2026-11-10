@@ -111,7 +111,9 @@ write data/history to `.local/results/` and process/WG/operator figures to
 `.local/figures/` or the exact run. Keep final iteration/comparison figures in
 `figures/`, update links and render commands, and document the local data needed
 to redraw them. Otherwise use the reference's self-contained public export
-layout. Code reproduction remains independent of private process records.
+layout. When the user requests SVG-only figures, keep SVG as the chart output,
+remove redundant PNGs and PNG export steps, and record the format preference
+in the artifact layout. Code reproduction remains independent of private process records.
 
 Every assignment follows the [Markdown report conventions](references/agent-report-templates.md):
 full role reports at major handoffs, compact evidence-linked deltas for bounded follow-ups.

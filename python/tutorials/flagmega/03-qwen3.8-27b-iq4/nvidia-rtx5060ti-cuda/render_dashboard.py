@@ -88,8 +88,7 @@ def href(value):
     p = PurePosixPath(str(value))
     if p.is_absolute() or ".." in p.parts or not p.parts:
         raise ValueError("Unsafe public link")
-    final_figures = {"performance-vs-iteration.svg", "performance-vs-iteration.png",
-                     "performance-comparison.svg", "performance-comparison.png"}
+    final_figures = {"performance-vs-iteration.svg", "performance-comparison.svg"}
     if p.parts[0] == "results" or (p.parts[0] == "figures" and p.name not in final_figures):
         p = PurePosixPath(".local") / p
     if (not re.fullmatch(r"[A-Za-z0-9_./-]+", str(p))
@@ -465,6 +464,26 @@ def collect_snapshot(run):
         pins.append({"label": public_text(label), **actual})
         return document
 
+    format_migration = (progress_receipt(state["figure_format_migration"], "SVG 格式修改记录")
+                        if state.get("figure_format_migration") else {})
+
+    def presentation_matches(expected, actual, target):
+        fields = ("nbytes", "sha256")
+        if all(expected.get(k) == actual[k] for k in fields):
+            return True
+        # Presentation revisions retain the original scientific review. Accept
+        # only an explicitly pinned before/after mapping for this exact file.
+        if (format_migration.get("figure_formats") != ["svg"]
+                or target.suffix not in {".html", ".md"}):
+            return False
+        for change in format_migration.get("presentation_changes", []):
+            before, after = change["before"], change["after"]
+            if (Path(after["path"]).resolve() == target.resolve()
+                    and all(before.get(k) == expected.get(k) for k in fields)
+                    and all(after.get(k) == actual[k] for k in fields)):
+                return True
+        return False
+
     coverage_path = run / "expert-coverage.json"
     if coverage_path.is_file():
         coverage, coverage_pin = read_json(coverage_path)
@@ -574,6 +593,21 @@ def collect_snapshot(run):
         ("完整优化历史", "optimization-trace.md", "性能改动、取舍、失败与后续诊断"),
         ("当前普通发布", f"results/{history_id}/readme.md", "当前候选、完整样本及局部对照结论"),
     ]
+    for receipt in state.get("local_swimlane_galleries", []):
+        gallery = progress_receipt(receipt, "SVG 泳道图库安装记录")
+        if (gallery.get("status") != "qualified_svg_gallery_installed"
+                or gallery.get("installed_bytes_verified") is not True
+                or gallery.get("figure_formats") != ["svg"]):
+            raise ValueError("SVG gallery lacks verified installation")
+        relative = href(gallery["entry_href"])
+        target = (delivery / relative).resolve()
+        if not target.is_relative_to(delivery / ".local/results"):
+            raise ValueError("SVG gallery is outside local results")
+        raw = target.read_bytes()
+        actual = {"nbytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        if any(gallery["entry"].get(k) != actual[k] for k in actual):
+            raise ValueError("SVG gallery differs from its installation record")
+        links.insert(0, (public_text(gallery["title"]), relative, public_text(gallery["description"])))
     fullhead48 = state.get("current_gdn_fullhead48_diagnostic_export")
     if fullhead48:
         release = progress_receipt(fullhead48, "GDN fullhead48 图库安装凭据")
@@ -590,7 +624,7 @@ def collect_snapshot(run):
                 raise ValueError("GDN fullhead48 link is outside the public results")
             raw = target.read_bytes()
             actual = {"nbytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-            if any(expected.get(k) != actual[k] for k in actual):
+            if not presentation_matches(expected, actual, target):
                 raise ValueError("GDN fullhead48 link differs from its verified publication")
             relative = href(target.relative_to(delivery).as_posix())
             pins.append({"label": title, "href": relative, **actual})
@@ -620,7 +654,7 @@ def collect_snapshot(run):
                 raise ValueError(f"{name} link is outside the public results")
             raw = target.read_bytes()
             actual = {"nbytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-            if any(expected.get(k) != actual[k] for k in actual):
+            if not presentation_matches(expected, actual, target):
                 raise ValueError(f"{name} link differs from its verified publication")
             relative = href(target.relative_to(delivery).as_posix())
             pins.append({"label": title, "href": relative, **actual})
@@ -642,7 +676,7 @@ def collect_snapshot(run):
         index = delivery / ".local/results" / gdn_id / "index.html"
         raw = index.read_bytes()
         actual = {"nbytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-        if any(gdn_release.get("public_index", {}).get(k) != actual[k] for k in actual):
+        if not presentation_matches(gdn_release.get("public_index", {}), actual, index):
             raise ValueError("GDN gallery differs from its verified publication")
         relative = href(index.relative_to(delivery).as_posix())
         pins.append({"label": f"{gdn_id} GDN 图库", "href": relative, **actual})
@@ -660,7 +694,7 @@ def collect_snapshot(run):
             raise ValueError("Retained gallery points outside public delivery")
         raw = index.read_bytes()
         actual = {"nbytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-        if any(expected.get(k) != actual[k] for k in actual):
+        if not presentation_matches(expected, actual, index):
             raise ValueError("Retained gallery differs from its verified publication")
         relative = href(index.relative_to(delivery).as_posix())
         pins.append({"label": f"{retained_id} 保留候选图库", "href": relative, **actual})

@@ -247,6 +247,13 @@ mappings; resolve historical pins through the mapping instead of rewriting
 their scientific contents. State that redrawing final figures requires the
 local data. A later request for a self-contained shareable package is separate.
 
+Record requested chart formats in `artifact_layout.figure_formats`. For an
+SVG-only request, use `["svg"]`: remove redundant PNG outputs, default bitmap
+generation and PNG download controls, and update image links to the SVGs.
+Retain figures that have no SVG equivalent. Keep historical review records
+unchanged and document any removed delivery copies or changed presentation code
+in a format-migration receipt; do not repeat scientific profiling for this change.
+
 When simplifying a multi-scenario performance chart, preserve the declared
 statistic and data lineage. If the user chooses a geometric mean, first compute
 each scenario's throughput from its qualified latency samples, then take the

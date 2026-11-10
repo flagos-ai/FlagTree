@@ -1407,7 +1407,7 @@ m129 使用当前普通 U4 library `10983da7afdfb1fafbe637ad4e606b5afce31ef63c6d
 
 #### 7. Published data and figures
 
-[当前 U4 SVG](.local/figures/operator-latency-candidate.svg)、[PNG](.local/results/e0016/operator-latency-m129.png)、[全部数据与重画](.local/results/e0016/README.md)已发布，SVG218139B。历史 t9 图保存在[e0013](.local/results/e0013/operator-m0102.svg)；累计普通性能图仍为 e0015，硬件泳道仍对应各自历史版本。
+[当前 U4 SVG](.local/figures/operator-latency-candidate.svg)、[PNG](.local/results/e0016/operator-latency-m129.svg)、[全部数据与重画](.local/results/e0016/README.md)已发布，SVG218139B。历史 t9 图保存在[e0013](.local/results/e0013/operator-m0102.svg)；累计普通性能图仍为 e0015，硬件泳道仍对应各自历史版本。
 
 <a id="p0026"></a>
 
@@ -1458,7 +1458,7 @@ m137 是 layer0/entry11/ordinal11 的一次完整原949调用前向，只有指�
 
 #### 7. Published data and figures
 
-[e0017轻量入口](.local/results/e0017/index.html)、[总览SVG](.local/figures/kernel-swimlane-u4-layer0-glu-overview.svg)、[CTA0–7细节SVG](.local/figures/kernel-swimlane-u4-layer0-glu-cta00-07.svg)、[PNG总览](.local/results/e0017/overview.png)、[PNG细节](.local/results/e0017/detail.png)已发布。两SVG为296570/171286B；公开细节只含CTA0–7，其余原始trace私有保留。硬件标为GPU聚合采样，3.008µs周期/对齐不确定性，独立lane scale；没有逐warp硬件归属或精确engine区间。累计普通性能图仍为e0015，无新点。
+[e0017轻量入口](.local/results/e0017/index.html)、[总览SVG](.local/figures/kernel-swimlane-u4-layer0-glu-overview.svg)、[CTA0–7细节SVG](.local/figures/kernel-swimlane-u4-layer0-glu-cta00-07.svg)、[PNG总览](.local/results/e0017/overview.svg)、[PNG细节](.local/results/e0017/detail.svg)已发布。两SVG为296570/171286B；公开细节只含CTA0–7，其余原始trace私有保留。硬件标为GPU聚合采样，3.008µs周期/对齐不确定性，独立lane scale；没有逐warp硬件归属或精确engine区间。累计普通性能图仍为e0015，无新点。
 
 <a id="p0027"></a>
 
@@ -1682,7 +1682,7 @@ m0144-glu-rows2-ordinary-O-candidate-r2 的库、源码、plan 身份和候选�
 
 #### 7. Published data and figures
 
-[e0022 便携说明](.local/results/e0022/README.md)、[当前SVG](.local/figures/operator-latency-candidate.svg)及[PNG](.local/results/e0022/operator-latency-m144.png)已发布。本次没有增加或重写任何测量；[e0021累计性能图数据](.local/results/e0021/summary.json)和性能图字节保持不变，其他新诊断由运行账本记录并待其独立审查后发布。
+[e0022 便携说明](.local/results/e0022/README.md)、[当前SVG](.local/figures/operator-latency-candidate.svg)及[PNG](.local/results/e0022/operator-latency-m144.svg)已发布。本次没有增加或重写任何测量；[e0021累计性能图数据](.local/results/e0021/summary.json)和性能图字节保持不变，其他新诊断由运行账本记录并待其独立审查后发布。
 
 
 <a id="p0031"></a>
@@ -2763,7 +2763,7 @@ V49 包装检查通过；Root 于 2026-11-08T14:24:18.532477+00:00 安装并核�
 
 #### 7. Published data and figures
 
-[e0039 入口](.local/results/e0039/index.html)、[全部147 SVG/147 PNG与144事件页](.local/results/e0039/portable/index.html)、[t18 invocation6代表图](.local/results/e0039/portable/figures/t18-candidate-inv6.png)、[命令与依赖](.local/results/e0039/render-commands.json)、[便携readme](.local/results/e0039/readme.md)已安装并逐文件核验后公开。源脚本、紧凑数据及全部依赖位于同包，渲染不读取私有目录。原[迭代0–19累计SVG](figures/performance-vs-iteration.svg)、[e0037普通数据](.local/results/e0037/summary.json)与[t18算子SVG](.local/figures/operator-latency-candidate.svg)保持；本次不是新的执行型候选verification，不新增模型/算子测量或普通曲线点。剩余门槛见[公开待办](.local/results/e0039/pending-gates.json)。
+[e0039 入口](.local/results/e0039/index.html)、[全部147 SVG/147 PNG与144事件页](.local/results/e0039/portable/index.html)、[t18 invocation6代表图](.local/results/e0039/portable/figures/t18-candidate-inv6.svg)、[命令与依赖](.local/results/e0039/render-commands.json)、[便携readme](.local/results/e0039/readme.md)已安装并逐文件核验后公开。源脚本、紧凑数据及全部依赖位于同包，渲染不读取私有目录。原[迭代0–19累计SVG](figures/performance-vs-iteration.svg)、[e0037普通数据](.local/results/e0037/summary.json)与[t18算子SVG](.local/figures/operator-latency-candidate.svg)保持；本次不是新的执行型候选verification，不新增模型/算子测量或普通曲线点。剩余门槛见[公开待办](.local/results/e0039/pending-gates.json)。
 
 <a id="p0049"></a>
 
@@ -3173,7 +3173,7 @@ t23普通GDN48−10.187840%、whole885−0.310985%仍keep_provisional，t19/r3�
 
 [e0046入口](.local/results/e0046/index.html)、[408完整记录/52普通组](.local/results/e0046/summary.json)、[迭代0–24累计普通图](.local/results/e0046/performance-vs-iteration.svg)、[34程序全部885×2普通O事件图](.local/results/e0046/operator-iteration24/operator-latency-m0389-m0391.svg)、[算子数据](.local/results/e0046/operator-iteration24/paired-operator-data.json)、[包内16图便携重画](.local/results/e0046/readme.md)。保留390旧记录和全部失败，增加54条ledger事件/18诊断/0普通点，e45的1163行截点含义不变。
 
-[当前分页泳道](.local/results/gdn-fullhead48-swimlanes-r1/index.html)、[候CTA0 SVG](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.svg)、[PNG](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.png)、[阶段统计](.local/results/gdn-fullhead48-swimlanes-r1/analysis/role-stage-summary.json)提供所有96调用的便携本地事件/PM/rendering数据。单页最大243239字节/1590节点，file://无需服务；仅一次装入当前调用包与当前SVG。[旧t19图库](.local/results/e0042/norm-q8-swimlanes/index.html)与所有历史scope继续保留。
+[当前分页泳道](.local/results/gdn-fullhead48-swimlanes-r1/index.html)、[候CTA0 SVG](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.svg)、[PNG](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.svg)、[阶段统计](.local/results/gdn-fullhead48-swimlanes-r1/analysis/role-stage-summary.json)提供所有96调用的便携本地事件/PM/rendering数据。单页最大243239字节/1590节点，file://无需服务；仅一次装入当前调用包与当前SVG。[旧t19图库](.local/results/e0042/norm-q8-swimlanes/index.html)与所有历史scope继续保留。
 
 <a id="p0056"></a>
 ### p0056 — iteration25 common Q8 fixed screen passed provisionally
@@ -3592,7 +3592,7 @@ Entry34选定32warp Publication wait为min224 / median2880 / max2976ns。warp1�
 
 #### 7. Published data and figures
 
-[新图库](.local/results/kernel-t12-head-i1-j2-r1/index.html)、[13/13范围](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)、[V84资格](.local/results/kernel-t12-head-i1-j2-r1/presentation-qualification.json)、[Entry34总览SVG](.local/results/kernel-t12-head-i1-j2-r1/figures/entry34-overview.svg)、[固定CTA0–7细节SVG](.local/results/kernel-t12-head-i1-j2-r1/figures/entry34-detail.svg)、[细节PNG](.local/results/kernel-t12-head-i1-j2-r1/figures/entry34-detail.png)、[等待交集](.local/results/kernel-t12-head-i1-j2-r1/analysis/selected-wait-overlap.json)、[便携重画](.local/results/kernel-t12-head-i1-j2-r1/README.md)。e0053仅为该保留图库的scoped回执；普通累计历史仍是[e0052](.local/results/e0052/summary.json)，原[e0038](.local/results/e0038/scope-completion.json)保留当时12/13。
+[新图库](.local/results/kernel-t12-head-i1-j2-r1/index.html)、[13/13范围](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)、[V84资格](.local/results/kernel-t12-head-i1-j2-r1/presentation-qualification.json)、[Entry34总览SVG](.local/results/kernel-t12-head-i1-j2-r1/figures/entry34-overview.svg)、[固定CTA0–7细节SVG](.local/results/kernel-t12-head-i1-j2-r1/figures/entry34-detail.svg)、[细节PNG](.local/results/kernel-t12-head-i1-j2-r1/figures/entry34-detail.svg)、[等待交集](.local/results/kernel-t12-head-i1-j2-r1/analysis/selected-wait-overlap.json)、[便携重画](.local/results/kernel-t12-head-i1-j2-r1/README.md)。e0053仅为该保留图库的scoped回执；普通累计历史仍是[e0052](.local/results/e0052/summary.json)，原[e0038](.local/results/e0038/scope-completion.json)保留当时12/13。
 
 <a id="p0063"></a>
 ### p0063 — retained t13 layer0 gallery with observed wait/work intersections
@@ -3658,7 +3658,7 @@ O/D/M/F/P控制边界原样保留，F216 baseline与before是同一次观察。b
 
 #### 7. Published data and figures
 
-[15action图库](.local/results/kernel-t13-layer0-r1/index.html)、[layer0当前范围](.local/results/kernel-t13-layer0-r1/scope-completion.json)、[V84资格](.local/results/kernel-t13-layer0-r1/presentation-qualification.json)、[Entry5总览SVG](.local/results/kernel-t13-layer0-r1/figures/entry5-overview.svg)、[矩阵流水细节SVG](.local/results/kernel-t13-layer0-r1/figures/entry5-detail.svg)、[GDN细节PNG](.local/results/kernel-t13-layer0-r1/figures/entry6-detail.png)、[等待相交明细](.local/results/kernel-t13-layer0-r1/analysis/selected-wait-work-overlap.json)、[便携重画说明](.local/results/kernel-t13-layer0-r1/README.md)。e0054为本次scoped发布回执；普通累计历史仍为[e0052](.local/results/e0052/summary.json)，t12的[e0053 scope](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)与既有t14图库不变。
+[15action图库](.local/results/kernel-t13-layer0-r1/index.html)、[layer0当前范围](.local/results/kernel-t13-layer0-r1/scope-completion.json)、[V84资格](.local/results/kernel-t13-layer0-r1/presentation-qualification.json)、[Entry5总览SVG](.local/results/kernel-t13-layer0-r1/figures/entry5-overview.svg)、[矩阵流水细节SVG](.local/results/kernel-t13-layer0-r1/figures/entry5-detail.svg)、[GDN细节PNG](.local/results/kernel-t13-layer0-r1/figures/entry6-detail.svg)、[等待相交明细](.local/results/kernel-t13-layer0-r1/analysis/selected-wait-work-overlap.json)、[便携重画说明](.local/results/kernel-t13-layer0-r1/README.md)。e0054为本次scoped发布回执；普通累计历史仍为[e0052](.local/results/e0052/summary.json)，t12的[e0053 scope](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)与既有t14图库不变。
 
 <a id="p0064"></a>
 ### p0064 — retained t14 layer0 gallery with observed wait/work intersections
@@ -3723,7 +3723,7 @@ O/D/M/F/P控制边界原样保留，F243 baseline与before是同一次观察。b
 
 #### 7. Published data and figures
 
-[15action图库](.local/results/kernel-t14-layer0-r1/index.html)、[layer0当前范围](.local/results/kernel-t14-layer0-r1/scope-completion.json)、[V84资格](.local/results/kernel-t14-layer0-r1/presentation-qualification.json)、[Entry11 row4总览SVG](.local/results/kernel-t14-layer0-r1/figures/entry11-overview.svg)、[Row4逐warp细节SVG](.local/results/kernel-t14-layer0-r1/figures/entry11-detail.svg)、[GDN细节PNG](.local/results/kernel-t14-layer0-r1/figures/entry6-detail.png)、[等待相交明细](.local/results/kernel-t14-layer0-r1/analysis/selected-wait-work-overlap.json)、[便携重画说明](.local/results/kernel-t14-layer0-r1/README.md)。e0055为本次scoped发布回执；普通累计历史仍为[e0052](.local/results/e0052/summary.json)，t12的[e0053 scope](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)与既有t14图库不变。
+[15action图库](.local/results/kernel-t14-layer0-r1/index.html)、[layer0当前范围](.local/results/kernel-t14-layer0-r1/scope-completion.json)、[V84资格](.local/results/kernel-t14-layer0-r1/presentation-qualification.json)、[Entry11 row4总览SVG](.local/results/kernel-t14-layer0-r1/figures/entry11-overview.svg)、[Row4逐warp细节SVG](.local/results/kernel-t14-layer0-r1/figures/entry11-detail.svg)、[GDN细节PNG](.local/results/kernel-t14-layer0-r1/figures/entry6-detail.svg)、[等待相交明细](.local/results/kernel-t14-layer0-r1/analysis/selected-wait-work-overlap.json)、[便携重画说明](.local/results/kernel-t14-layer0-r1/README.md)。e0055为本次scoped发布回执；普通累计历史仍为[e0052](.local/results/e0052/summary.json)，t12的[e0053 scope](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)与既有t14图库不变。
 
 <a id="p0065"></a>
 ### p0065 — current two D libraries pass full four-job NUM; bounded diagnostic supplement

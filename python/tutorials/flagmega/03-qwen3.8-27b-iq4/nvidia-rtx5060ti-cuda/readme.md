@@ -6,7 +6,7 @@
 
 ![最终双场景与几何平均性能对比](figures/performance-comparison.svg)
 
-结果与历史导出位于 `.local/results/`，过程图位于 `.local/figures/`；`figures/` 仅保留这两张最终图的 SVG/PNG。重画需要本地数据：[统计口径与逐点来源](.local/results/final-performance/README.md)、[绘图数据](.local/results/final-performance/series.json)。
+结果与历史导出位于 `.local/results/`，过程图位于 `.local/figures/`；`figures/` 仅保留这两张最终图的 SVG。已有 SVG 的图不再保留重复 PNG，见[格式整理记录](.local/results/svg-only-migration-r1/README.md)。重画需要本地数据：[统计口径与逐点来源](.local/results/final-performance/README.md)、[绘图数据](.local/results/final-performance/series.json)。
 
 ```sh
 python render_results.py --data .local/results/e0052/summary.json
@@ -14,28 +14,32 @@ python render_results.py --data .local/results/e0052/summary.json
 
 [查看进度 Dashboard](dashboard.html)：当前优化、已完成、正在做、下一步，以及负责人、等待原因、耗时和泳道图入口。页面标注最近更新时间。
 
-[t26 输出归一化泳道图](.local/results/output-norm-swimlanes-r1/index.html)已通过独立呈现审核并发布：两侧各64调用，共49,152个物理warp、3,072个明细页。每页最多16个warp，单张SVG最大约218KB，按需加载并支持SVG/PNG导出；本机安装后浏览器首次打开82ms。[阶段与overlap分析](.local/results/output-norm-swimlanes-r1/analysis/overlap-summary.html)保留owner与nonowner的软件阶段、等待和交集，硬件为同调用3.008µs GPU聚合采样，包含插桩扰动。[独立核验](.local/results/output-norm-swimlanes-r1/independent-review/qualification.json)与[证据及复现说明](.local/results/output-norm-swimlanes-r1/README.md)可直接访问。 [当前范围汇总](.local/results/output-norm-swimlanes-r1/scope-qualification.json)确认t26声明范围microprofile全部通过；图库内待审字样保留作者冻结时状态，完整候选验收仍开放。
+[t27 当前候选完整泳道图库](.local/results/reset49-swimlanes-svg-r1/index.html)已安装：两侧共 550 调用、211,200 个物理 warp、13,750 个分页视图，只提供 SVG。数据、阶段交集、同调用硬件采样和分页绘图已独立核验；去除 PNG 后复用全部 SVG 原字节，并通过选择、失败恢复和导出检查。硬件活动为 3.008 µs GPU 聚合采样，软件区间含插桩开销。[呈现核验](.local/results/svg-only-migration-r1/t27-scientific-presentation-review.json)及[SVG 格式检查](.local/results/svg-only-migration-r1/t27-format-review.json)保留证据边界；范围汇总与历史剩余分析继续完成。
 
-![t26候选CTA0–3：owner与nonowner流水，以及同次硬件活动采样](.local/results/output-norm-swimlanes-r1/figures/candidate-e13-i0013-cta-000.png)
+[原卷积基线全 48 调用泳道](.local/results/convolution-baseline-all48-swimlanes-svg-r1/index.html)也已安装 SVG 版，包含 18,432 个物理 warp 和 1,200 个分页视图，保留每个活跃 warp 的 80 轮重复事件。[格式差异检查](.local/results/svg-only-migration-r1/all48-format-review.json)复用原独立数据和呈现审核；候选卷积的采集另行进行。
 
-[t24 Common Q8完整泳道图库](.local/results/common-q8-swimlanes-r1/index.html)已通过独立呈现与离线复现审核：父版128 / 候选112调用、全部59,904个物理warp、3,744个细节页。每页最多16个warp，一次只加载一个SVG；提供480组静态SVG/PNG，也可导出任意细节页。[独立核验](.local/results/common-q8-swimlanes-r1/independent-review/qualification.json)与[复现/证据说明](.local/results/common-q8-swimlanes-r1/README.md)保留3.008µs GPU聚合硬件采样分辨率、软件插桩扰动和W字节证据边界；不表示逐WG硬件归属或精确引擎起止。图库内“待审核”是作者冻结时的状态；[当前范围汇总](.local/results/common-q8-swimlanes-r1/scope-qualification.json)已确认声明范围内微剖析完成，完整候选验收仍开放。
+[t26 输出归一化泳道图](.local/results/output-norm-swimlanes-r1/index.html)已通过独立呈现审核并发布：两侧各64调用，共49,152个物理warp、3,072个明细页。每页最多16个warp，单张SVG最大约218KB，按需加载并支持SVG导出；本机安装后浏览器首次打开82ms。[阶段与overlap分析](.local/results/output-norm-swimlanes-r1/analysis/overlap-summary.html)保留owner与nonowner的软件阶段、等待和交集，硬件为同调用3.008µs GPU聚合采样，包含插桩扰动。[独立核验](.local/results/output-norm-swimlanes-r1/independent-review/qualification.json)与[证据及复现说明](.local/results/output-norm-swimlanes-r1/README.md)可直接访问。 [当前范围汇总](.local/results/output-norm-swimlanes-r1/scope-qualification.json)确认t26声明范围microprofile全部通过；图库内待审字样保留作者冻结时状态，完整候选验收仍开放。
 
-保留的 [t23 GDN全96调用泳道](.local/results/gdn-fullhead48-swimlanes-r1/index.html)已通过独立数据/轴/扰动/呈现审核：36,864物理warp、2,400分页SVG、192静态PNG；可直接file://打开。硬件为同调用3.008µs中位间隔的GPU聚合采样，软件含记录器/未分类等待；无逐WG硬件归属、精确引擎区间或低开销结论。[阶段与overlap](.local/results/gdn-fullhead48-swimlanes-r1/analysis/stage-summary.md)、[当前资格](.local/results/t23-gdn-microprofile-r1/summary.json)。旧SVG误下载缺陷经Root修复与K212真实浏览器14项正负例通过，首次渲染348.48ms。
+![t26候选CTA0–3：owner与nonowner流水，以及同次硬件活动采样](.local/results/output-norm-swimlanes-r1/figures/candidate-e13-i0013-cta-000.svg)
 
-![t23 GDN候选CTA0：物理warp软件阶段与同次GPU聚合采样](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.png)
+[t24 Common Q8完整泳道图库](.local/results/common-q8-swimlanes-r1/index.html)已通过独立呈现与离线复现审核：父版128 / 候选112调用、全部59,904个物理warp、3,744个细节页。每页最多16个warp，一次只加载一个SVG；提供480组静态SVG，也可导出任意细节页。[独立核验](.local/results/common-q8-swimlanes-r1/independent-review/qualification.json)与[复现/证据说明](.local/results/common-q8-swimlanes-r1/README.md)保留3.008µs GPU聚合硬件采样分辨率、软件插桩扰动和W字节证据边界；不表示逐WG硬件归属或精确引擎起止。图库内“待审核”是作者冻结时的状态；[当前范围汇总](.local/results/common-q8-swimlanes-r1/scope-qualification.json)已确认声明范围内微剖析完成，完整候选验收仍开放。
+
+保留的 [t23 GDN全96调用泳道](.local/results/gdn-fullhead48-swimlanes-r1/index.html)已通过独立数据/轴/扰动/呈现审核：36,864物理warp、2,400分页SVG；可直接file://打开。硬件为同调用3.008µs中位间隔的GPU聚合采样，软件含记录器/未分类等待；无逐WG硬件归属、精确引擎区间或低开销结论。[阶段与overlap](.local/results/gdn-fullhead48-swimlanes-r1/analysis/stage-summary.md)、[当前资格](.local/results/t23-gdn-microprofile-r1/summary.json)。旧SVG误下载缺陷经Root修复与K212真实浏览器14项正负例通过，首次渲染348.48ms。
+
+![t23 GDN候选CTA0：物理warp软件阶段与同次GPU聚合采样](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.svg)
 
 [SVG下载](.local/results/gdn-fullhead48-swimlanes-r1/figures/candidate-e05-i0005-cta-000.svg)及[全部角色统计](.local/results/gdn-fullhead48-swimlanes-r1/analysis/role-stage-summary.json)保留实际观察与分辨率。
 
-保留 [t19完整泳道索引](.local/results/e0042/norm-q8-swimlanes/index.html)覆盖父128/候64 action和全部45,056个物理warp，提供3,008个有界SVG、384默认/概览PNG及CTA阶段交集矩阵。一次只加载选中分页；[K190独立审核](.local/results/e0042/proofs/profile-current/K190-presentation.json)已通过。硬件为3.008微秒GPU aggregate采样，软件包含global-store插桩影响；不声称逐WG硬件归属、精确引擎起止或低扰动。
+保留 [t19完整泳道索引](.local/results/e0042/norm-q8-swimlanes/index.html)覆盖父128/候64 action和全部45,056个物理warp，提供3,008个有界SVG及CTA阶段交集矩阵。一次只加载选中分页；[K190独立审核](.local/results/e0042/proofs/profile-current/K190-presentation.json)已通过。硬件为3.008微秒GPU aggregate采样，软件包含global-store插桩影响；不声称逐WG硬件归属、精确引擎起止或低扰动。
 
 ![t19候选layer0 CTA0–3：逐warp观测阶段与GPU聚合硬件采样](.local/figures/kernel-swimlane-norm-q8-candidate.svg)
 
 [父版示例](.local/figures/kernel-swimlane-norm-q8-parent.svg)与[全部层/CTA和便携重画](.local/results/e0042/readme.md)保留真实事件和分辨率说明。图内presentation-pending是生成快照，顶层补充后续通过receipt，原图字节未改。
 
-最新评估 **t27/r0001，尝试35 / 迭代28：两次原始GGUF公开独立重建与原8进程复现通过**。Synthetic32 **35.6919901460 vs35.8951393229 ms/token（−0.5659517716%）**，Chinese64 **35.7558040729 vs35.8314655547（−0.2111593277%）**。完整NUM、33实际资源、原53参考、隔离/轮转及1152样本均独立通过；reproduction_accepted=true。诊断NUM/WG硬件/扰动与历史范围仍待，full_microprofile/performance_accepted=false、accepted_best=null。
+最新评估 **t27/r0001，尝试35 / 迭代28：两次原始GGUF公开独立重建与原8进程复现通过**。Synthetic32 **35.6919901460 vs35.8951393229 ms/token（−0.5659517716%）**，Chinese64 **35.7558040729 vs35.8314655547（−0.2111593277%）**。完整NUM、33实际资源、原53参考、隔离/轮转及1152样本均独立通过；reproduction_accepted=true。当前诊断NUM、W、扰动、时间轴与WG/硬件泳道分别通过；范围汇总和历史剩余范围仍待，full_microprofile/performance_accepted=false、accepted_best=null。
 
 
-最新算子图为 **t27 / 迭代28**：[完整869调用/33程序组SVG](.local/results/operator-t27-r1/figures/operator-latency-m0535-m0536.svg)、[PNG](.local/results/operator-t27-r1/figures/operator-latency-m0535-m0536.png)、[逐调用数据与重画](.local/results/operator-t27-r1/README.md)及[独立核验](.local/results/operator-t27-r1/independent-review.json)。m535/m536的CUDA-event总和为 **39.4476158703→39.7073279188 ms（+0.658372%）**；每个调用一次观察，排除scratch reset、反馈复制和host准备，不能直接用于归因reset49收益，也不等于host ms/token。1738个时长、66个分组及便携SVG/PNG逐字节重画已独立通过。图内待审字样是作者冻结时快照。此前[t26算子图](.local/figures/operator-latency-candidate.svg)及[t25拒绝结果](.local/results/e0048/index.html)保留。
+最新算子图为 **t27 / 迭代28**：[完整869调用/33程序组SVG](.local/results/operator-t27-r1/figures/operator-latency-m0535-m0536.svg)、[逐调用数据与重画](.local/results/operator-t27-r1/README.md)及[独立核验](.local/results/operator-t27-r1/independent-review.json)。m535/m536的CUDA-event总和为 **39.4476158703→39.7073279188 ms（+0.658372%）**；每个调用一次观察，排除scratch reset、反馈复制和host准备，不能直接用于归因reset49收益，也不等于host ms/token。1738个时长、66个分组及便携SVG逐字节重画已独立通过。图内待审字样是作者冻结时快照。此前[t26算子图](.local/figures/operator-latency-candidate.svg)及[t25拒绝结果](.local/results/e0048/index.html)保留。
 
 [最新结果入口](.local/results/e0052/index.html)、[全部506条记录/72组](.local/results/e0052/summary.json)、[当前公开matched](.local/results/matched-t27-public-r1/summary.json)、[全部1152样本](.local/results/matched-t27-public-r1/all-samples.csv)及[重画说明](.local/results/e0052/readme.md)冻结1509行；e51全部493条不变，新增8formal/4组及5诊断执行，另3项未启动单独保留。旧私有t27 matched、b0003 P1与历史matched各自独立。[待办](.local/results/e0052/pending-gates.json)、[Dashboard](dashboard.html)。
 
@@ -47,13 +51,13 @@ python .local/results/e0052/rebuild.py --only-current --output-dir .local/result
 
 t19全部192 action及t23 GDN全部96 action的逐warp数据、固定轴、描述性扰动与分页呈现已独立通过；硬件为同次GPU聚合采样。t20–t25普通NCU均已通过。t24声明范围的完整WG/同次硬件/扰动/W/呈现及汇总已独立通过；t26声明范围也已全部通过；当前t27严格matched及两次原始GGUF公开重建复现已通过；当前与历史剩余scope的完整微剖析义务继续保留。[当前待办](.local/results/e0052/pending-gates.json)。
 
-保留 t18 的 [GDN 完整诊断图库](.local/results/e0039/index.html)及保留 t16 candidate/parent 共三个 cohort，各48/48 action、147 SVG/147 PNG和144事件页已完成独立展示审核与便携包装。K172明确继承K164父级诊断，非fresh matched parent；384 body warp/action、CTA0–7细节和约3.008µs GPU聚合采样限制见[说明](.local/results/e0039/readme.md)。本导出无新普通样本或迭代；全候选/全微剖析、strict matched及原GGUF重建仍开放。
+保留 t18 的 [GDN 完整诊断图库](.local/results/e0039/index.html)及保留 t16 candidate/parent 共三个 cohort，各48/48 action、147 SVG和144事件页已完成独立展示审核与便携包装。K172明确继承K164父级诊断，非fresh matched parent；384 body warp/action、CTA0–7细节和约3.008µs GPU聚合采样限制见[说明](.local/results/e0039/readme.md)。本导出无新普通样本或迭代；全候选/全微剖析、strict matched及原GGUF重建仍开放。
 
-t12已声明的限定诊断呈现现为 **13/13**：[最后head-i1-j2泳道图](.local/results/kernel-t12-head-i1-j2-r1/index.html)已通过独立呈现审核并安装，含8SVG/8PNG、全部994,208warp包络总览及固定CTA0–7的128warp/920事件细节。硬件为同action3.008µs GPU聚合采样；[等待交集](.local/results/kernel-t12-head-i1-j2-r1/analysis/selected-wait-overlap.json)、[独立资格](.local/results/kernel-t12-head-i1-j2-r1/presentation-qualification.json)与[13/13范围汇总](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)保留插桩和证据限制。t12仍rejected，没有新增普通样本或完整候选验收。[旧e0038图库](.local/results/e0038/index.html)及其当时12/13快照原样保留；e0053是本次scoped回执，普通历史仍为e0052。
+t12已声明的限定诊断呈现现为 **13/13**：[最后head-i1-j2泳道图](.local/results/kernel-t12-head-i1-j2-r1/index.html)已通过独立呈现审核并安装，含8SVG、全部994,208warp包络总览及固定CTA0–7的128warp/920事件细节。硬件为同action3.008µs GPU聚合采样；[等待交集](.local/results/kernel-t12-head-i1-j2-r1/analysis/selected-wait-overlap.json)、[独立资格](.local/results/kernel-t12-head-i1-j2-r1/presentation-qualification.json)与[13/13范围汇总](.local/results/kernel-t12-head-i1-j2-r1/scope-completion.json)保留插桩和证据限制。t12仍rejected，没有新增普通样本或完整候选验收。[旧e0038图库](.local/results/e0038/index.html)及其当时12/13快照原样保留；e0053是本次scoped回执，普通历史仍为e0052。
 
-保留的 [t13 layer0 泳道图](.local/results/kernel-t13-layer0-r1/index.html)已通过独立呈现审核并安装：15个action、30SVG/30PNG，179,488个物理warp的包络总览，以及固定CTA0–7的480warp/11,840事件细节。[256条等待/其他warp工作交集](.local/results/kernel-t13-layer0-r1/analysis/selected-wait-work-overlap.json)可复算；硬件为同action3.008µs GPU聚合采样。[独立资格](.local/results/kernel-t13-layer0-r1/presentation-qualification.json)和[当前范围](.local/results/kernel-t13-layer0-r1/scope-completion.json)仅放行layer0呈现，TMA专用证据未提供，其余t13范围与完整验收继续待办。原图待审字样保留作者快照；e0054是本次scoped回执，没有新增普通样本或迭代。
+保留的 [t13 layer0 泳道图](.local/results/kernel-t13-layer0-r1/index.html)已通过独立呈现审核并安装：15个action、30SVG，179,488个物理warp的包络总览，以及固定CTA0–7的480warp/11,840事件细节。[256条等待/其他warp工作交集](.local/results/kernel-t13-layer0-r1/analysis/selected-wait-work-overlap.json)可复算；硬件为同action3.008µs GPU聚合采样。[独立资格](.local/results/kernel-t13-layer0-r1/presentation-qualification.json)和[当前范围](.local/results/kernel-t13-layer0-r1/scope-completion.json)仅放行layer0呈现，TMA专用证据未提供，其余t13范围与完整验收继续待办。原图待审字样保留作者快照；e0054是本次scoped回执，没有新增普通样本或迭代。
 
-保留的 [t14 layer0 泳道图](.local/results/kernel-t14-layer0-r1/index.html)已通过独立呈现审核并安装：15个action、30SVG/30PNG，127,264个物理warp包络总览和固定CTA0–7的480warp/15,376事件细节。只有entry11使用row4，各warp负责独立输出行；[A103 r4解释](.local/results/kernel-t14-layer0-r1/analysis/marker-interpretation.json)保留部分lookup、lookup尾部PRMT与DP4A/记录器窗口的区别。[224条等待相交](.local/results/kernel-t14-layer0-r1/analysis/selected-wait-work-overlap.json)、[独立资格](.local/results/kernel-t14-layer0-r1/presentation-qualification.json)和[当前范围](.local/results/kernel-t14-layer0-r1/scope-completion.json)保留同action3.008µs GPU聚合采样与TMA未测限制。entry11属于layer0，不把旧e0033与本包相加成2/13；公开计数仍1/13，其余scope和完整验收待办。e0055仅为本次scoped回执，没有新增普通样本或迭代。
+保留的 [t14 layer0 泳道图](.local/results/kernel-t14-layer0-r1/index.html)已通过独立呈现审核并安装：15个action、30SVG，127,264个物理warp包络总览和固定CTA0–7的480warp/15,376事件细节。只有entry11使用row4，各warp负责独立输出行；[A103 r4解释](.local/results/kernel-t14-layer0-r1/analysis/marker-interpretation.json)保留部分lookup、lookup尾部PRMT与DP4A/记录器窗口的区别。[224条等待相交](.local/results/kernel-t14-layer0-r1/analysis/selected-wait-work-overlap.json)、[独立资格](.local/results/kernel-t14-layer0-r1/presentation-qualification.json)和[当前范围](.local/results/kernel-t14-layer0-r1/scope-completion.json)保留同action3.008µs GPU聚合采样与TMA未测限制。entry11属于layer0，不把旧e0033与本包相加成2/13；公开计数仍1/13，其余scope和完整验收待办。e0055仅为本次scoped回执，没有新增普通样本或迭代。
 
 当前两个 D 诊断库的双场景完整 NUM 已独立通过：[e0056 诊断补充](.local/results/e0056/index.html)公开四个 job 的原55/21检查、全部33个资源条目、1,152次 forward、960份 owned graph 观察与55,646,355,456B arena留存资格。规定8-token独立前缀通过，synthetic32后续独立序列分歧及原误差统计完整保留。D只有header、流水records为0，NUM timing不作为普通性能样本，也不放行WG/hardware overlap；[历史失败与修复](.local/results/e0056/failure-recovery.json)及原8+新2同库clock均保留。e52普通性能数据/曲线、e53/e54/e55图库和e33的1/13计数不变；本次仅为p0065诊断补充，无新迭代或普通性能重发布。
 
@@ -67,11 +71,11 @@ python .local/results/e0032/rebuild.py --output-dir .local/results/e0032/rebuilt
 
 普通[e32/iteration15](.local/results/e0032/readme.md)的225条记录、288普通样本和原数据曲线保持不变；新增[e33十四条诊断](.local/results/e0033/incremental-diagnostics.json)合计239个measurement ID，普通样本/曲线点/iteration新增0。V27快照截止ledger751，m235 ENOSPC失败、m236独立重试及当时m239/240 pending状态均保留。[单独当前进度](.local/results/e0033/current-progress.json)说明K123现已通过旧t12 head-i1-j0数据/轴/扰动但图未审，当前t14 layer0 m241–243控制已由K124核验，joint/after已准备，仍不纳入这14条补充。当前t14仅1/13，旧t12/e31的9/13独立保持；t13全部原义务、t14其他12scope及完整画廊、原双方双场景各2独立进程×3轮strict matched llama、原GGUF公开重建仍开放，accepted_best=null。[完整待办](.local/results/e0033/pending-gates.json)。
 
-当前 rows2 head-i0-j3 的[四action图库](.local/results/e0031/index.html)提供8 SVG/8 PNG；[限定范围](.local/results/e0031/scope-completion.json)为9/13，仍属t0012/r0001 attempt17/iteration13。
+当前 rows2 head-i0-j3 的[四action图库](.local/results/e0031/index.html)提供8 SVG；[限定范围](.local/results/e0031/scope-completion.json)为9/13，仍属t0012/r0001 attempt17/iteration13。
 
-![m217 head-i0-j3 entry34全warp总览：保留late waves，3.008µs GPU聚合采样](.local/results/e0031/portable/figures/entry34-overview.png)
+![m217 head-i0-j3 entry34全warp总览：保留late waves，3.008µs GPU聚合采样](.local/results/e0031/portable/figures/entry34-overview.svg)
 
-![m217 head-i0-j3 entry34细节：CTA0–7实际iteration0/word3软件阶段](.local/results/e0031/portable/figures/entry34-detail.png)
+![m217 head-i0-j3 entry34细节：CTA0–7实际iteration0/word3软件阶段](.local/results/e0031/portable/figures/entry34-detail.svg)
 
 [总览SVG](.local/figures/kernel-swimlane-rows2-head-i0-j3-entry34-overview.svg)、[细节SVG](.local/figures/kernel-swimlane-rows2-head-i0-j3-entry34-detail.svg)、[九条诊断](.local/results/e0031/incremental-diagnostics.json)、[独立呈现资格](.local/results/e0031/presentation-qualification.json)及[便携重画](.local/results/e0031/readme.md)绑定全部994208warp投影和128warp/1088记录细节。硬件为各action独立3.008µs聚合采样，端点±3.008µs/时长6.016µs，不逐warp归因或推导精确engine时长；专用TMA未测。
 
@@ -79,11 +83,11 @@ python .local/results/e0032/rebuild.py --output-dir .local/results/e0032/rebuilt
 
 m210为t13固定clock单位证据；m214旧D scope绑定失败保留，m219修复D已由K108核验，m215/M与m216/F继续有效、joint已准备。[当前修复资格](.local/results/e0032/proofs/t13-repaired-D-review.json)。上述t12图不补t13/t14强制微剖析；当前row4普通NUM/O/NCU进展与未完成门槛见[e0032](.local/results/e0032/readme.md)。
 
-历史 rows2 head-i0-j2 的[全部四action图库](.local/results/e0030/index.html)提供8 SVG和8 PNG；[限定完成范围](.local/results/e0030/scope-completion.json)为8/13，保持t0012/r0001、attempt17/iteration13身份。
+历史 rows2 head-i0-j2 的[全部四action图库](.local/results/e0030/index.html)提供8 SVG；[限定完成范围](.local/results/e0030/scope-completion.json)为8/13，保持t0012/r0001、attempt17/iteration13身份。
 
-![m208 head-i0-j2 entry34：全warp总览含late waves，3.008µs GPU聚合采样](.local/results/e0030/portable/figures/entry34-overview.png)
+![m208 head-i0-j2 entry34：全warp总览含late waves，3.008µs GPU聚合采样](.local/results/e0030/portable/figures/entry34-overview.svg)
 
-![m208 head-i0-j2 entry34：CTA0–7实际iteration0/word2软件阶段](.local/results/e0030/portable/figures/entry34-detail.png)
+![m208 head-i0-j2 entry34：CTA0–7实际iteration0/word2软件阶段](.local/results/e0030/portable/figures/entry34-detail.svg)
 
 [总览SVG](.local/figures/kernel-swimlane-rows2-head-i0-j2-entry34-overview.svg)、[细节SVG](.local/figures/kernel-swimlane-rows2-head-i0-j2-entry34-detail.svg)、[九条诊断](.local/results/e0030/incremental-diagnostics.json)、[图源/审查](.local/results/e0030/figure-source-review-manifest.json)和[便携重画](.local/results/e0030/readme.md)公开保留994208物理warp总览、128warp/1088记录细节。Entry34实际word2的100–106事件描述Activation load、Header/scale、Word/lookup、DP4A软件区域，包含记录与等待。
 
@@ -91,63 +95,63 @@ m210为t13固定clock单位证据；m214旧D scope绑定失败保留，m219修�
 
 当前t13的m201/m202完整诊断NUM与[288诊断样本](.local/results/e0030/diagnostic-NUM/samples.csv)独立保留；m206/m207的[ordinary NCU表](.local/results/e0030/ordinary-NCU/current-action-counter-table.csv)只支持受分辨率限制的GPU聚合计数。Entry10/27仅0–1点、entry26仅3点，旧parent entry11未新鲜配对；不从t12图转移t13微剖析资格。
 
-历史 rows2 head-i0-j1 的[全部四action图库](.local/results/e0029/index.html)提供8 SVG和8 PNG；[限定完成范围](.local/results/e0029/scope-completion.json)为7/13，保持已拒绝的t0012/r0001、attempt17/iteration13身份。
+历史 rows2 head-i0-j1 的[全部四action图库](.local/results/e0029/index.html)提供8 SVG；[限定完成范围](.local/results/e0029/scope-completion.json)为7/13，保持已拒绝的t0012/r0001、attempt17/iteration13身份。
 
-![m199 head-i0-j1 entry34：全994208warp总览含late waves；硬件为3.008µs GPU聚合采样](.local/results/e0029/portable/figures/entry34-overview.png)
+![m199 head-i0-j1 entry34：全994208warp总览含late waves；硬件为3.008µs GPU聚合采样](.local/results/e0029/portable/figures/entry34-overview.svg)
 
-![m199 head-i0-j1 entry34：CTA0–7实际iteration0/word1四个内部软件区间](.local/results/e0029/portable/figures/entry34-detail.png)
+![m199 head-i0-j1 entry34：CTA0–7实际iteration0/word1四个内部软件区间](.local/results/e0029/portable/figures/entry34-detail.svg)
 
 [总览SVG](.local/figures/kernel-swimlane-rows2-head-i0-j1-entry34-overview.svg)、[细节SVG](.local/figures/kernel-swimlane-rows2-head-i0-j1-entry34-detail.svg)、[六次诊断](.local/results/e0029/incremental-diagnostics.json)、[图源/审查](.local/results/e0029/figure-source-review-manifest.json)和[重画命令](.local/results/e0029/readme.md)可公开使用。Entry34实际word1的100–106事件展开Activation load、Header/scale、Word/lookup与DP4A；所有action合计994208物理warp，细节128warp/1088记录。软件区域含recording/load/wait，不是精确硬件指令时间或普通kernel瓶颈。
 
 entry34 F/O为**4.262791×**；before/joint/after软件包络6.800480/7.991648/6.805344ms。Joint外层CUDA-event232.867065ms与NCU workload bracket7.992384ms边界不同，base-clock/cache-all及插桩影响不支持纯profiler成本或普通流水还原。[控制CSV](.local/results/e0029/analysis/per-action-controls.csv)保留全部action对照。各action独立固定轴，3.008µs采样、±3.008µs端点和6.016µs时长预算；硬件GPU聚合值不归因到warp。专用TMA活动未测，[K93/K83静态模块非使用谱系](.local/results/e0029/proofs/K93-module-lineage-review.json)与PM零值分离。
 
-历史 rows2 head-i0-j0 的[PNG 图库](.local/results/e0027/index.html)包含四action矩阵细节；[e0027范围快照](.local/results/e0027/scope-completion.json)当时为6/13 scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13。
+历史 rows2 head-i0-j0 的[SVG 图库](.local/results/e0027/index.html)包含四action矩阵细节；[e0027范围快照](.local/results/e0027/scope-completion.json)当时为6/13 scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13。
 
-![当前rows2 m189 head-i0-j0 entry34总览：全部warp含late waves与3.008μs GPU采样；6/13scope](.local/results/e0027/portable/figures/entry34-overview.png)
+![当前rows2 m189 head-i0-j0 entry34总览：全部warp含late waves与3.008μs GPU采样；6/13scope](.local/results/e0027/portable/figures/entry34-overview.svg)
 
-![当前rows2 m189 head-i0-j0 entry34细节：CTA0–7真实Activation load、Header/scale、Word/lookup与DP4A软件区间](.local/results/e0027/portable/figures/entry34-detail.png)
+![当前rows2 m189 head-i0-j0 entry34细节：CTA0–7真实Activation load、Header/scale、Word/lookup与DP4A软件区间](.local/results/e0027/portable/figures/entry34-detail.svg)
 
 [总览SVG](.local/figures/kernel-swimlane-rows2-head-i0-j0-entry34-overview.svg)、[细节SVG](.local/figures/kernel-swimlane-rows2-head-i0-j0-entry34-detail.svg)、[图源/审查](.local/results/e0027/figure-source-review-manifest.json)和[复现说明](.local/results/e0027/readme.md)提供994208warp总览与128warp/1088记录细节。每warp事件4/8/18/4，entry34保留i0/j0的100..106矩阵事件。软件区域含记录与等待，不等于精确指令或engine-busy；硬件为GPU聚合采样，强扰动不支持普通流水或逐warp硬件归因。[当前source/library谱系](.local/results/e0027/proofs/K87-module-lineage-review.json)复用静态模块not_used证明，区别于PM零值和专用TMA未测。
 
-当前 rows2 head-coarse 的[PNG 图库](.local/results/e0026/index.html)覆盖entry32–35共4个action；[e0026范围快照](.local/results/e0026/scope-completion.json)当时为5/13 scope；e0027导出时为6/13 scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13 scope。
+当前 rows2 head-coarse 的[SVG 图库](.local/results/e0026/index.html)覆盖entry32–35共4个action；[e0026范围快照](.local/results/e0026/scope-completion.json)当时为5/13 scope；e0027导出时为6/13 scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13 scope。
 
-![当前rows2 m183 head-coarse entry34总览：全部晚到波次聚合与3.008μs GPU采样；e0026导出时5/13 scope快照](.local/results/e0026/portable/figures/entry34-overview.png)
+![当前rows2 m183 head-coarse entry34总览：全部晚到波次聚合与3.008μs GPU采样；e0026导出时5/13 scope快照](.local/results/e0026/portable/figures/entry34-overview.svg)
 
-![当前rows2 m183 head-coarse entry34细节：CTA0–7软件阶段与同次GPU聚合采样](.local/results/e0026/portable/figures/entry34-detail.png)
+![当前rows2 m183 head-coarse entry34细节：CTA0–7软件阶段与同次GPU聚合采样](.local/results/e0026/portable/figures/entry34-detail.svg)
 
 [总览SVG](.local/figures/kernel-swimlane-rows2-head-coarse-entry34-overview.svg)、[细节SVG](.local/figures/kernel-swimlane-rows2-head-coarse-entry34-detail.svg)、[图源与审查清单](.local/results/e0026/figure-source-review-manifest.json)及[证据与复现](.local/results/e0026/readme.md)已提供。总览聚合覆盖994208物理warp，细节128warp / 864记录。硬件为3.008μs GPU聚合模块采样；软件阶段及在途包络含等待/记录，粗粒度trace不能提供精确cp.async边界，TMA活动未测。[静态source/PTX审查](.local/results/e0026/proofs/K83-head-module-usage-review.json)另证四head函数TMA/cp.async/Tensor Core未使用，并非根据采样零值推断。显著扰动不支持普通流水、精确hardware busy或逐warp硬件归因。
 
-当前 rows2 layer63 的[PNG 图库](.local/results/e0025/index.html)覆盖entry15–31共17 action的总览/细节与便携数据。[e0025完成快照](.local/results/e0025/scope-completion.json)在当时确认4/13 scope；e0026导出时为5/13 scope；e0027导出时为6/13 scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13 scope。
+当前 rows2 layer63 的[SVG 图库](.local/results/e0025/index.html)覆盖entry15–31共17 action的总览/细节与便携数据。[e0025完成快照](.local/results/e0025/scope-completion.json)在当时确认4/13 scope；e0026导出时为5/13 scope；e0027导出时为6/13 scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13 scope。
 
-![当前rows2 m177 layer63 entry28总览：插桩软件包络与GPU聚合采样；e0025导出时4/13 scope快照](.local/results/e0025/portable/figures/entry28-overview.png)
+![当前rows2 m177 layer63 entry28总览：插桩软件包络与GPU聚合采样；e0025导出时4/13 scope快照](.local/results/e0025/portable/figures/entry28-overview.svg)
 
-![当前rows2 m177 layer63 entry28细节：CTA0–7的软件阶段与同次GPU聚合采样](.local/results/e0025/portable/figures/entry28-detail.png)
+![当前rows2 m177 layer63 entry28细节：CTA0–7的软件阶段与同次GPU聚合采样](.local/results/e0025/portable/figures/entry28-detail.svg)
 
 [总览 SVG](.local/figures/kernel-swimlane-rows2-layer63-entry28-overview.svg)、[细节 SVG](.local/figures/kernel-swimlane-rows2-layer63-entry28-detail.svg)、[全部17 action数据与重画](.local/results/e0025/readme.md)及[独立终验](.local/results/e0025/proofs/K78-handoff.json)已提供。总览保留136640物理warp，细节共544warp / 13008记录。硬件为3008 ns周期/对齐预算的GPU聚合采样；软件含记录与等待，扰动显著，不能解释为普通流水、精确hardware busy或逐warp硬件归因。
 
-当前 rows2 layer3 的[PNG 图库](.local/results/e0024/index.html)覆盖entry15–31共17action的总览/细节与便携数据。e0024导出时为3/13scope快照；e0025加入layer63后为4/13scope快照；e0026导出时为5/13scope；e0027导出时为6/13scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13scope。
+当前 rows2 layer3 的[SVG 图库](.local/results/e0024/index.html)覆盖entry15–31共17action的总览/细节与便携数据。e0024导出时为3/13scope快照；e0025加入layer63后为4/13scope快照；e0026导出时为5/13scope；e0027导出时为6/13scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13scope。
 
-![当前rows2 m168 layer3 entry28：插桩软件包络与GPU聚合采样；e0024导出时3/13scope快照](.local/results/e0024/portable/figures/entry28-overview.png)
+![当前rows2 m168 layer3 entry28：插桩软件包络与GPU聚合采样；e0024导出时3/13scope快照](.local/results/e0024/portable/figures/entry28-overview.svg)
 
 [轻量SVG](.local/figures/kernel-swimlane-rows2-layer3-entry28-overview.svg)、[全部17action数据和重画](.local/results/e0024/readme.md)、[独立终验](.local/results/e0024/proofs/K70-handoff.json)与[完成回执](.local/results/e0024/scope-completion.json)已提供。总览保留136640物理warp，细节覆盖各action前8CTA共544warp /13008记录。3008ns周期/对齐预算，软件包含记录和等待；无精确硬件busy、逐warp硬件归因、低扰动或普通流水结论。
 
-当前 rows2 layer0 的[PNG 图库](.local/results/e0023/index.html)覆盖15action的总览/细节图与便携复现源。e0023导出时为2/13scope快照；e0024导出时增至3/13scope；e0025导出时为4/13scope；e0026导出时为5/13scope；e0027导出时为6/13scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13scope。
+当前 rows2 layer0 的[SVG 图库](.local/results/e0023/index.html)覆盖15action的总览/细节图与便携复现源。e0023导出时为2/13scope快照；e0024导出时增至3/13scope；e0025导出时为4/13scope；e0026导出时为5/13scope；e0027导出时为6/13scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13scope。
 
-![当前rows2 m161 layer0 entry11：插桩软件包络与GPU聚合采样；e0023导出时2/13scope快照](.local/results/e0023/layer0/portable/figures/entry11-overview.png)
+![当前rows2 m161 layer0 entry11：插桩软件包络与GPU聚合采样；e0023导出时2/13scope快照](.local/results/e0023/layer0/portable/figures/entry11-overview.svg)
 
 [轻量SVG](.local/figures/kernel-swimlane-rows2-layer0-entry11-overview.svg)、[全部15action紧凑数据与重画](.local/results/e0023/readme.md)、[独立终验](.local/results/e0023/proofs/K63-handoff.json)已提供。总览保留144672物理warp，细节覆盖各action前8CTA共480warp /12960记录；3008ns采样/对齐预算，软件含记录和等待，不构成精确硬件busy或普通流水。e0023导出时layer3图/join尚待完成；现已由[e0024完成回执](.local/results/e0024/scope-completion.json)补全。
 
-已完成首 entry11 scope 的[联合微剖析入口](.local/results/e0021/index.html)已发布：[总览 SVG](.local/figures/kernel-swimlane-rows2-layer0-glu-overview.svg)和 [CTA 0–7 细节 SVG](.local/figures/kernel-swimlane-rows2-layer0-glu-cta00-07.svg)，以及 [PNG 总览](.local/results/e0021/first-scope/overview.png) / [PNG 细节](.local/results/e0021/first-scope/detail.png)。这两张图与便携复现属于已完成的首 entry11/layer0/ordinal11 scope；与layer0合计的2/13scope是e0023导出时快照；e0024时加上layer3为3/13scope；e0025时加上layer63为4/13scope；e0026导出时为5/13scope；e0027导出时为6/13scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13scope。
+已完成首 entry11 scope 的[联合微剖析入口](.local/results/e0021/index.html)已发布：[总览 SVG](.local/figures/kernel-swimlane-rows2-layer0-glu-overview.svg)和 [CTA 0–7 细节 SVG](.local/figures/kernel-swimlane-rows2-layer0-glu-cta00-07.svg)。这两张图与便携复现属于已完成的首 entry11/layer0/ordinal11 scope；与layer0合计的2/13scope是e0023导出时快照；e0024时加上layer3为3/13scope；e0025时加上layer63为4/13scope；e0026导出时为5/13scope；e0027导出时为6/13scope；e0029导出时为7/13；e0030导出时为8/13；当前e0031为9/13scope。
 
-![rows2 m155：全部34816warp软件包络聚合与同次GPU硬件采样；首scope通过，仅代表插桩执行](.local/results/e0021/first-scope/overview.png)
+![rows2 m155：全部34816warp软件包络聚合与同次GPU硬件采样；首scope通过，仅代表插桩执行](.local/results/e0021/first-scope/overview.svg)
 
 完整 raw 审查覆盖 8704 CTA / 34816 物理 warp / 2907136 条记录；公开包包含全部 warp 包络聚合、12×744 硬件采样以及首 8 CTA 的 32 warp / 2672 条细节。硬件为 GPU 聚合采样，主周期及对齐预算约 3.008µs，不提供精确硬件 busy 或逐 warp 硬件归因；专用 TMA 未测量。软件区间包含记录与等待，工作量和 marker 数共同变化，不能推断普通 kernel 瓶颈。
 
 F/O 约 5.35449×，U/P/U 软件包络为 1.344896/1.587168/1.342176ms；P 使用 base clock/cache-all。P 的外层 CUDA-event 为 1034.9888916ms，NCU workload bracket 为 1.588128ms，边界不可互换。单次控制不提供重复分布、纯 profiler 开销或普通流水还原。[完整范围、精度、扰动和独立重画](.local/results/e0021/readme.md)保留全部限制；普通性能曲线没有新增点。
 
-历史父版 U4 的 [kernel 泳道轻量入口](.local/results/e0017/index.html)已发布：[总览 SVG](.local/figures/kernel-swimlane-u4-layer0-glu-overview.svg)（296570 B）、[CTA 0–7 细节 SVG](.local/figures/kernel-swimlane-u4-layer0-glu-cta00-07.svg)（171286 B），以及对应 [PNG 总览](.local/results/e0017/overview.png) / [PNG 细节](.local/results/e0017/detail.png)。两张图均已实际渲染、视觉检查，并在隔离文件访问的独立进程中复现。
+历史父版 U4 的 [kernel 泳道轻量入口](.local/results/e0017/index.html)已发布：[总览 SVG](.local/figures/kernel-swimlane-u4-layer0-glu-overview.svg)（296570 B）、[CTA 0–7 细节 SVG](.local/figures/kernel-swimlane-u4-layer0-glu-cta00-07.svg)（171286 B）。两张图均已实际渲染、视觉检查，并在隔离文件访问的独立进程中复现。
 
-![U4 m137：全部warp软件包络聚合与同次GPU硬件活动采样；仅代表插桩执行](.local/results/e0017/overview.png)
+![U4 m137：全部warp软件包络聚合与同次GPU硬件活动采样；仅代表插桩执行](.local/results/e0017/overview.svg)
 
 范围仅为 layer0 / entry11 / ordinal11：完整原始 trace 保留全部69632个物理warp，公开包包含它们的边界聚合、12×924个硬件采样值，以及CTA0–7的32warp/1552条事件细节。硬件为GPU聚合活动，采样周期与对齐不确定性约3.008µs；软件阶段包含记录器和等待开销，不是逐warp硬件模块精确起止时间。[数据、对照和独立重画](.local/results/e0017/README.md)可脱离私有目录使用；其他CTA细节须从保留的原始trace按需提取。
 

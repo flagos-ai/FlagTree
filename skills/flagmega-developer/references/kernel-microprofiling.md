@@ -272,11 +272,14 @@ render, rather than publishing one document with every recorded interval.
 
 For an interactive gallery, verify that the visible selection, rendered data
 and exported filename always identify the same view. Clear and disable previous
-exports when a selection starts or its load/decode fails. Bind asynchronous PNG
-decode/encoding to the captured selection, SVG and filename, and discard work
-whose selection changed before completion. Exercise actual browser failures and
-selection changes during both decode and encoding; a successful first render
-does not cover these cases. Reuse the latest qualified viewer repair separately
+exports when a selection starts or its load/decode fails. Exercise actual browser
+failures and selection changes; a successful first render does not cover these
+cases. When bitmap export is explicitly requested, bind asynchronous encoding
+to the captured selection, SVG and filename, and discard work whose selection
+changed before completion. Otherwise an SVG-only request removes duplicate PNGs,
+default rasterization and PNG export controls. Use a lightweight static SVG for
+fallback and label its actual scope if it differs from the selected detail page.
+Reuse the latest qualified viewer repair separately
 from immutable historical data and SVGs, so copying an older gallery cannot
 silently restore a known export defect.
 

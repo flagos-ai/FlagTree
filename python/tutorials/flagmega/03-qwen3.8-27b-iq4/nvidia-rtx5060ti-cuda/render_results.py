@@ -124,7 +124,6 @@ def render(data_path, output_dir, series_path=None):
 
     def save_figure(fig, name):
         fig.savefig(output / (name + ".svg"), metadata={"Date": None}, bbox_inches="tight", pad_inches=.16)
-        fig.savefig(output / (name + ".png"), dpi=160, bbox_inches="tight", pad_inches=.16)
         plt.close(fig)
 
     indices = [point["iteration"] for point in series["points"]]
